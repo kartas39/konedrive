@@ -118,7 +118,8 @@ impl HelperHub {
     /// §8.3): its outbox waits to fetch it wherever it is
     /// (`move-out`), its tree store knows it, or the drive the id names
     /// (`<drive>!<n>`, a personal account's) is that account's. A store that
-    /// cannot be read claims it. An account with no store open says nothing:
+    /// cannot be read claims it. The store is kept with the folder while it is recorded, up or down,
+    /// whether or not its sync runs. An account with no store open says nothing:
     /// what it would miss, its own move-out keeps (`move_out::kept`).
     /// Blocking: a reconcile asks from its own thread.
     pub(super) fn claimed_elsewhere(&self, me: &Weak<SyncService>, id: &str) -> bool {
@@ -128,7 +129,7 @@ impl HelperHub {
         }
         let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
         self.accounts().into_iter().filter(|a| !std::ptr::eq(Arc::as_ptr(a), me.as_ptr())).any(|other| {
-            let Some(store) = other.store.lock().unwrap().clone() else { return false };
+            let Some(store) = other.tree_store() else { return false };
             let (id, drive) = (id.to_owned(), drive.clone());
             store
                 .call_blocking(move |s| {
@@ -439,7 +440,7 @@ async fn by_item_id(candidates: Vec<Arc<SyncService>>, fd: &OwnedFd) -> Option<A
     let id = item_id_of(fd).await?;
     for account in candidates {
         let Ok(lifecycle) = Arc::clone(&account.folder).try_read_owned() else { continue };
-        let Some(store) = account.store.lock().unwrap().clone() else { continue };
+        let Some(store) = lifecycle.store() else { continue };
         let id = id.clone();
         let known = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
@@ -554,11 +555,25 @@ pub(super) async fn device_of(path: &Path) -> Option<u64> {
     tokio::task::spawn_blocking(move || std::fs::metadata(path).ok().map(|m| m.dev())).await.ok().flatten()
 }
 
-/// A content source is what an account is, to the fill loop.
+/// What fills an open of a file of `account`'s: the source its folder has now, held for
+/// the whole fill, so that a download under way ends as a download whatever becomes of
+/// the folder meanwhile. A folder with no source — a local one not populated yet — fills
+/// nothing, and says so.
 pub(crate) fn filler(account: Arc<SyncService>) -> Filler {
     let report = account.report().clone();
     let pool = Arc::clone(account.pool());
-    (account as Arc<dyn ContentSource>, report, pool)
+    let source = account.content_source().unwrap_or_else(|| Arc::new(NoSource));
+    (source, report, pool)
+}
+
+/// The source of a folder that has none.
+struct NoSource;
+
+#[async_trait::async_trait]
+impl ContentSource for NoSource {
+    async fn fetch(&self, item_id: &str, _from: u64, _end: Option<u64>) -> Result<crate::hydration::source::Fetched, crate::hydration::source::SourceError> {
+        Err(crate::hydration::source::SourceError::NotFound(format!("{item_id}: no content source is registered")))
+    }
 }
 
 /// The fill loop's routing ([`HelperHub::route`]).

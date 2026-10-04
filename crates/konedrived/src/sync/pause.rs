@@ -179,15 +179,16 @@ impl SyncService {
     /// `Pause`, `Resume`, a sync starting, the sources, the settings, and the clock when a
     /// timed pause has run out.
     ///
-    /// The store is there from the folder's first sync start until a Forget, also while
-    /// the sync is stopped. Without one nothing is paused, and only the hold stops the pool.
+    /// The store is the folder's: there from the folder's first sync start until the folder
+    /// goes down or is forgotten, also while the sync is stopped. Without one nothing is
+    /// paused, and only the hold stops the pool.
     pub(super) fn show_pause(&self) {
         // Only a OneDrive folder has background work to hold back.
         let held = match self.require_onedrive() {
             Ok(_) => self.running.held().map(|h| h.as_str().to_owned()).unwrap_or_default(),
             Err(_) => String::new(),
         };
-        let store = self.store.lock().unwrap().clone();
+        let store = self.tree_store();
         let mut changed = false;
         self.clock.show(|| {
             let before = self.state.get();

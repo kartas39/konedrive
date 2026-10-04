@@ -96,30 +96,7 @@ impl Listing {
     /// The tree lock of a read-write folder (`writes`), as the cycle waits for it.
     pub(super) async fn tree_lock(&self, writes: &Writes, cancel: &CancellationToken) -> Result<OwnedMutexGuard<()>, CycleError> {
         let lock = Arc::clone(&writes.tree_lock).lock_owned();
-        #[cfg(test)]
-        let lock = self.waiting_said(lock);
         cancellable(cancel, lock).await
-    }
-
-    /// Tests only: `lock`, with [`waits_for_tree`](Self::waits_for_tree) true from the poll
-    /// that left it queued until it is taken or given up.
-    #[cfg(test)]
-    async fn waiting_said<T>(&self, lock: impl std::future::Future<Output = T>) -> T {
-        let mut lock = std::pin::pin!(lock);
-        let _over = super::OnDrop(Some(|| self.waits_for_tree.store(false, Ordering::SeqCst)));
-        std::future::poll_fn(|cx| {
-            let polled = lock.as_mut().poll(cx);
-            self.waits_for_tree.store(polled.is_pending(), Ordering::SeqCst);
-            polled
-        })
-        .await
-    }
-
-    /// Tests only: whether a cycle is queued for the tree lock right now, behind whoever
-    /// holds it.
-    #[cfg(test)]
-    pub(crate) fn waits_for_tree(&self) -> bool {
-        self.waits_for_tree.load(Ordering::SeqCst)
     }
 
     /// What was fetched, staged and reconciled in read-write mode (the

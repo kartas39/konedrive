@@ -112,6 +112,8 @@ pub struct FolderStatus {
     pub live_changes: String,
     /// `Account.Mode` of the folder's account.
     pub mode: Option<String>,
+    /// `Folder.Writable`: whether what is changed in the folder is uploaded now.
+    pub writable: Option<bool>,
     /// Files left to download, and their size.
     pub download_left: Option<(u32, u64)>,
     pub scan: Option<LocalScan>,
@@ -190,7 +192,7 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
             line("Changes from OneDrive:", live);
         }
         if let Some(mode) = &status.mode {
-            line("Mode:", &mode_text(mode));
+            line("Mode:", &mode_text(mode, status.writable));
         }
         if let Some((count, bytes)) = status.download_left {
             line("Waiting to download:", &waiting_download_text(count, bytes));
@@ -247,9 +249,14 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
 /// longest label.
 const SYNC_STATUS_WIDTH: usize = 24;
 
-/// `sync status`'s `Mode:` line.
-pub fn mode_text(mode: &str) -> String {
+/// `sync status`'s `Mode:` line: the account's mode, and for a read-write account whether
+/// the folder is `writable` (`Folder.Writable`) — one that is not runs read-only for now. A
+/// daemon that does not say (`None`) leaves the account's mode alone.
+pub fn mode_text(mode: &str, writable: Option<bool>) -> String {
     match mode {
+        "read-write" if writable == Some(false) => {
+            "read-write, but this folder is read-only for now: nothing made or changed here is uploaded".to_owned()
+        }
         "read-write" => "read-write: changes made here are uploaded".to_owned(),
         "read-only" => "read-only: nothing made or changed here is uploaded".to_owned(),
         other => other.to_owned(),

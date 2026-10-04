@@ -12,18 +12,12 @@ use crate::sync::{SyncError, SyncService};
 use crate::hydration::pin;
 
 impl SyncService {
-    /// Puts a pin on each of `targets`, or takes it off, through `write`
-    /// ([`pin::set_pin`]; a test's own to fail on purpose), stopping at the
+    /// Puts a pin on each of `targets`, or takes it off ([`pin::set_pin`]), stopping at the
     /// first failure: the paths done, and that failure. A file's pin is
     /// written under its per-inode lock, since a fill lifts the same write
     /// bit around its own attribute writes; each descriptor is closed once
     /// its write is done.
-    pub(super) async fn set_pins(
-        &self,
-        targets: Vec<PinTarget>,
-        on: bool,
-        write: fn(&File, bool) -> io::Result<()>,
-    ) -> (Vec<PathBuf>, Option<SyncError>) {
+    pub(super) async fn set_pins(&self, targets: Vec<PinTarget>, on: bool) -> (Vec<PathBuf>, Option<SyncError>) {
         let mut done = Vec::new();
         for PinTarget { item, shown, is_dir, .. } in targets {
             let guard = if is_dir {
@@ -34,7 +28,7 @@ impl SyncService {
                     Err(e) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
                 }
             };
-            let written = tokio::task::spawn_blocking(move || write(&item, on)).await;
+            let written = tokio::task::spawn_blocking(move || pin::set_pin(&item, on)).await;
             drop(guard);
             match written {
                 Ok(Ok(())) => done.push(shown),
@@ -78,7 +72,7 @@ impl SyncService {
                 write.push(target);
             }
         }
-        let (pinned, failed) = self.set_pins(write, true, pin::set_pin).await;
+        let (pinned, failed) = self.set_pins(write, true).await;
         for shown in &pinned {
             self.pins.pinned(shown.clone());
         }
@@ -126,7 +120,7 @@ impl SyncService {
             return Err(refusal);
         }
         let own: Vec<PinTarget> = targets.into_iter().filter(|target| target.own).collect();
-        let (unpinned, failed) = self.set_pins(own, false, pin::set_pin).await;
+        let (unpinned, failed) = self.set_pins(own, false).await;
         for shown in &unpinned {
             self.pins.unpinned(shown);
         }

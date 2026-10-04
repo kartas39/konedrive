@@ -46,6 +46,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         last_checked: Some(now - 20),
         live_changes: "connected".into(),
         mode: Some("read-write".into()),
+        writable: Some(true),
         download_left: Some((3, 3 << 20)),
         scan: Some(super::LocalScan { state: "idle".into(), finished: now - 300, took: 40, ..Default::default() }),
         pending: Some((2, 2048)),
@@ -123,4 +124,15 @@ fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
     );
     let account = super::AccountStatus { state: Some("signed-in".into()), email: "ann@outlook.com".into(), ..Default::default() };
     assert_eq!(super::status_text(&account, Some("id")), "State:      signed-in\nClient ID:  id\n");
+}
+
+/// A folder that is not writable though its account is read-write reads so in the `Mode:`
+/// line; a read-only account reads as before, whatever the folder.
+#[test]
+fn the_mode_line_says_a_read_write_account_whose_folder_is_read_only_for_now() {
+    assert!(super::mode_text("read-write", Some(false)).contains("read-only for now"));
+    assert!(super::mode_text("read-write", Some(true)).contains("changes made here are uploaded"));
+    assert_eq!(super::mode_text("read-only", Some(false)), super::mode_text("read-only", Some(true)));
+    // A daemon that does not say leaves the account's mode alone.
+    assert_eq!(super::mode_text("read-write", None), super::mode_text("read-write", Some(true)));
 }

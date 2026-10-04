@@ -16,12 +16,19 @@ pub struct Lease(Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Held> + Send>> + Se
 pub struct Held(#[allow(dead_code)] Box<dyn Send>);
 
 impl Lease {
-    /// A lease on `lock`, held for reading.
+    /// A lease on `lock`, held for reading. It does not keep `lock` alive: what `lock`
+    /// guards may own the very cycle that holds the lease. Once `lock` is gone there is
+    /// nothing left to wait for, and the lease is given at once.
     pub fn on<T: Send + Sync + 'static>(lock: &Arc<RwLock<T>>) -> Self {
-        let lock = Arc::clone(lock);
+        let lock = Arc::downgrade(lock);
         Self(Arc::new(move || {
-            let lock = Arc::clone(&lock);
-            Box::pin(async move { Held(Box::new(lock.read_owned().await)) })
+            let lock = lock.upgrade();
+            Box::pin(async move {
+                match lock {
+                    Some(lock) => Held(Box::new(lock.read_owned().await)),
+                    None => Held(Box::new(())),
+                }
+            })
         }))
     }
 

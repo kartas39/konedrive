@@ -2,14 +2,13 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, State, StateError};
 
 use crate::hydration::tracked::Tracked;
 use crate::helper::{Clearance, NotCleared};
 use crate::folder::root::DehydrateError;
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::{Answered, ContentSource, Fetched, FillError, SourceError};
+use crate::hydration::source::{Answered, FillError};
 use crate::folder::locks::{InodeKey, unless_removed};
 use crate::sync::{SyncError, SyncService};
 use crate::hydration::server::fill_event;
@@ -69,7 +68,7 @@ impl SyncService {
     /// being opened, and `Hydrate`, keep one stream.
     pub(super) async fn fill_now(&self, path: &Path, class: Option<konedrive_graph::pool::Class>) -> Result<Answered, SyncError> {
         let reg = self.require_record()?;
-        let Some(source) = self.source.lock().unwrap().clone() else {
+        let Some(source) = self.content_source() else {
             return Err(SyncError::NoSource);
         };
 
@@ -226,26 +225,6 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
         Err(StateError::Io(e)) => Err(SyncError::Io(e.to_string())),
         Err(StateError::Corrupt(value)) => {
             Err(SyncError::Io(format!("unrecognised state {value:?}")))
-        }
-    }
-}
-
-/// `SyncService` is itself a valid, if initially empty, `ContentSource`:
-/// `serve_hydrations` is started once, at daemon startup,
-/// before any root — let alone any source directory — necessarily exists
-/// yet. Delegating to whatever `populate_from_directory` most recently
-/// registered means `serve_hydrations` does not need to be restarted (or
-/// handed a source through some other side channel) once a root and a
-/// source do exist.
-#[async_trait]
-impl ContentSource for SyncService {
-    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let source = self.source.lock().unwrap().clone();
-        match source {
-            Some(source) => source.fetch(item_id, from, end).await,
-            None => Err(SourceError::NotFound(format!(
-                "{item_id}: no content source is registered"
-            ))),
         }
     }
 }

@@ -145,6 +145,13 @@ pub struct FolderStatus {
     /// Why a folder registered without the helper could not be switched to interception
     /// once the helper connected: said right behind `last_error`, and gone with it.
     pub switch_note: Option<SwitchNote>,
+    /// Why the folder is under the read-only lock though its account is read-write (its
+    /// watcher could not start, or did not finish walking it); empty otherwise.
+    pub locked_note: String,
+    /// `Writable`: what is changed in the folder is uploaded now — it shows OneDrive, its
+    /// account is read-write, its watcher and outbox worker run and the read-only lock is
+    /// off. False from the moment a change of the folder tells its sync to stop.
+    pub writable: bool,
     /// `HelperState` (HS1).
     pub helper_state: HelperState,
     /// The registered folder needs the helper and does not have it (HS2,
@@ -446,6 +453,7 @@ pub fn published_error(s: &SyncSnapshot) -> String {
         registration.as_str(),
         s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
         replacement.as_str(),
+        s.folder.locked_note.as_str(),
         s.local.watch_note.as_str(),
         s.local.handles_note.as_str(),
         outbox.as_str(),

@@ -9,7 +9,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, Stopped, Up};
+use super::folder::{Content, Down, Kept, Folder, Interception, Is, OneDriveFolder, Record, Recovery, Standing, Stopped, Up};
+use super::running_sync::{Sync, Why};
 use super::persisted::{no_root_id, Persisted};
 use super::{hub, RootSource, SyncError, SyncService};
 use crate::account::state::SignInState;
@@ -276,7 +277,7 @@ impl SyncService {
                 tracing::error!("{why}");
                 let dev = hub::device_of(&root.path).await;
                 // Nothing was added to Baloo for it.
-                let record = Record { root, interception: Interception::Intercepted, source, baloo: false, dev };
+                let record = Record { root, interception: Interception::Intercepted, source, baloo: false, dev, kept: Kept::default() };
                 stopped.folder_mut().is = Is::Down(record, Down::Kept { why: why.clone() });
                 Err(SyncError::Helper(why))
             }
@@ -370,8 +371,20 @@ impl SyncService {
         // (an old `config.toml`) gets the id its folder carries.
         self.remember(&Persisted::of(&root, interception, source, baloo));
         let dev = hub::device_of(&root.path).await;
-        let record = Record { root, interception, source, baloo, dev };
-        stopped.folder_mut().is = Is::Up(Up { record, recovery, switch_failed: None });
+        // What is kept with the folder stays with it: what a local one was filled from by
+        // hand, a OneDrive one's tree store and tree lock.
+        let mut kept = stopped.folder().record().map(|record| record.kept.clone()).unwrap_or_default();
+        if source == RootSource::OneDrive && kept.source.is_none() {
+            // Files are downloaded from the drive whether or not the folder can be kept
+            // in step, from its first bring-up on.
+            kept.source = self.drive().map(|drive| self.wiring.sources.onedrive(drive));
+        }
+        let record = Record { root, interception, source, baloo, dev, kept };
+        let content = match source {
+            RootSource::Local => Content::Local,
+            RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(Why::NotStarted), watcher_ended: None }),
+        };
+        stopped.folder_mut().is = Is::Up(Up { record, recovery, switch_failed: None, content });
         stopped.publish();
         // `LocalBytes` for the folder now registered.
         self.report.space.kick();

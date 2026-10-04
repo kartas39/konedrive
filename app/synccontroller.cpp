@@ -209,6 +209,9 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
             m_ignorePatterns = it->toStringList();
         }
         text("HeldBack", m_heldBack);
+        if (const auto it = p.constFind(QLatin1String("Writable")); it != p.constEnd()) {
+            m_writable = it->toBool();
+        }
         text("LiveChanges", m_liveChanges);
         if (const auto it = p.constFind(QLatin1String("Thumbnails")); it != p.constEnd()) {
             m_thumbnails = it->toBool();

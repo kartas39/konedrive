@@ -4,17 +4,20 @@
 //! be uploaded, the mass-delete guard's decision and what stays local. `dbus::upload_queue` is
 //! the thin wrapper around the last.
 
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use konedrive_tree::outbox::{OutboxState, Reason};
 use konedrive_tree::{ActivityRow, Store};
 
 use super::folder::Stopped;
+use super::running_sync::Handles;
 use super::{SyncError, SyncService};
-use crate::conditions::running::Running;
-use crate::config::Mode;
+use crate::conditions::running::Running as WhatRuns;
 use crate::folder::root::SyncRoot;
+use crate::hydration::source::ContentSource;
+use crate::remote::listing::PollHandle;
 use crate::status::snapshot::OutboxNote;
+use crate::upload::kept_back::SummaryRow;
 use crate::upload::{self, OutboxHost, OutboxWorker, WorkerConfig, WorkerStatus};
 
 /// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
@@ -24,14 +27,14 @@ pub type OutboxEntry = (u64, String, String, String, u64, u64, String, i64);
 impl SyncService {
     /// The tree store of this account's OneDrive folder: refused as `Refresh`
     /// is for a folder that is not connected to OneDrive, and `NotUp`, with why,
-    /// before its sync has opened one.
+    /// for a folder that is not up, or whose store has not been opened yet.
     pub(super) fn outbox_store(&self) -> Result<Store, SyncError> {
         self.require_onedrive()?;
         // The state first: the store of a folder that went down is still here.
         if self.view().down.is_some() {
             return Err(self.sync_not_running());
         }
-        self.store.lock().unwrap().clone().ok_or_else(|| self.sync_not_running())
+        self.tree_store().ok_or_else(|| self.sync_not_running())
     }
 
     /// Runs `f` on the store's read-only connection, on a blocking thread:
@@ -51,82 +54,56 @@ impl SyncService {
         self.outbox_store()?.call(f).await.map_err(|e| SyncError::Store(e.to_string()))
     }
 
-    /// Starts the outbox worker of the read-write folder at `root` (`docs/design/writes.md`
-    /// §5): the sync starting it keeps it, beside the watcher, and stops it with the
-    /// watcher, without the state lock. Called in the critical section that publishes
-    /// the sync: it spawns and returns, taking no lock. Rows a previous run left `running`
-    /// are replayed first; the rest go as the watcher's examination records them.
-    pub(super) fn start_outbox(&self, root: &SyncRoot, store: &Store, drive: &konedrive_graph::drive::DriveClient) -> Option<OutboxWorker> {
-        if self.mode() != Mode::ReadWrite {
-            return None;
-        }
-        let worker = OutboxWorker::new(WorkerConfig {
+    /// The outbox worker of the read-write folder at `root` (`docs/design/writes.md`
+    /// §5), built and not started: the sync being built keeps it, beside the watcher, and
+    /// starts it once its poller runs. It is linked to the parts it talks to — the poller,
+    /// through `poll`, told once that runs — and to nothing of the service but what it
+    /// reports to.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn outbox_worker(
+        &self,
+        root: &SyncRoot,
+        store: &Store,
+        drive: &konedrive_graph::drive::DriveClient,
+        tree_lock: &Arc<tokio::sync::Mutex<()>>,
+        source: &Arc<dyn ContentSource>,
+        kept_back: Arc<Mutex<Option<Vec<SummaryRow>>>>,
+        poll: Arc<OnceLock<PollHandle>>,
+    ) -> OutboxWorker {
+        OutboxWorker::new(WorkerConfig {
             root: root.clone(),
             store: store.clone(),
             drive: drive.clone(),
             locks: self.locks.clone(),
             machine_name: self.machine_name(),
-            tree_lock: Arc::clone(&self.tree_lock),
-            host: Arc::new(Host::new(self.me.clone(), Arc::clone(&self.running))),
+            tree_lock: Arc::clone(tree_lock),
+            host: Arc::new(Host {
+                state: self.state.clone(),
+                report: self.report.clone(),
+                running: Arc::clone(&self.running),
+                root: root.path.clone(),
+                kept_back,
+                poll,
+                gate: self.gate(),
+            }),
             limits: upload::Limits::default(),
             // Moves out of the folder: the helper over this account's link, fills
-            // through its source, and the hub's router.
-            moved_out: Some(self.move_outs()),
+            // through the folder's source, and the hub's router.
+            moved_out: Some(self.move_outs(Some(Arc::clone(source)))),
             quota: self.quota(),
-        });
-        // The folder's first delta cycle runs before the outbox (`docs/design/writes.md` §3).
-        worker.wait_for_cycle(false);
-        worker.start();
-        Some(worker)
-    }
-
-    /// Stops the running sync's outbox worker, if any, and waits for it: a request under way
-    /// finishes, nothing more is taken. The rest of the sync goes on.
-    pub(super) async fn stop_outbox(&self) {
-        let outbox = self.syncing.lock().unwrap().as_mut().and_then(|s| s.outbox.take());
-        if let Some(outbox) = outbox {
-            outbox.stop().await;
-            self.clear_outbox_counts();
-        }
+        })
     }
 
     /// Wakes the worker of the sync running now, if any.
     pub(super) fn wake_outbox(&self) {
-        if let Some(outbox) = self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()) {
+        if let Some(outbox) = self.running().as_ref().and_then(Handles::outbox) {
             outbox.wake();
         }
     }
 
-    /// What the watcher's examination calls when it recorded rows: wakes the outbox worker
-    /// of the sync running now, if any.
-    pub(super) fn outbox_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let me = self.me.clone();
-        Arc::new(move || {
-            let Some(service) = me.upgrade() else { return };
-            let syncing = service.syncing.lock().unwrap();
-            if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
-                outbox.wake();
-            }
-        })
-    }
-
-    /// What a read-write cycle calls when it went through: the outbox worker of the sync
-    /// running now, which waits for the folder's first delta cycle, may go.
-    pub(super) fn cycled_hook(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let me = self.me.clone();
-        Arc::new(move || {
-            let Some(service) = me.upgrade() else { return };
-            let syncing = service.syncing.lock().unwrap();
-            if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
-                outbox.cycle_done();
-            }
-        })
-    }
-
     /// `Refresh()`'s part for the outbox: rows in backoff go now.
     pub(super) fn retry_outbox(&self) {
-        let syncing = self.syncing.lock().unwrap();
-        if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
+        if let Some(outbox) = self.running().as_ref().and_then(Handles::outbox) {
             outbox.retry_now();
         }
     }
@@ -134,8 +111,7 @@ impl SyncService {
     /// The network came back (`docs/design/writes.md` §9): the outbox waits for the delta
     /// cycle this asks for, then sends what backed off meanwhile.
     pub(super) fn outbox_after_network(&self) {
-        let syncing = self.syncing.lock().unwrap();
-        if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
+        if let Some(outbox) = self.running().as_ref().and_then(Handles::outbox) {
             outbox.wait_for_cycle(true);
         }
     }
@@ -144,7 +120,7 @@ impl SyncService {
     /// takes nothing more and lets the requests in flight return. The future
     /// ends when it has; the caller bounds the wait (`crate::daemon::stop`).
     pub fn close_outbox(&self) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
-        self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()).map(|outbox| outbox.close())
+        self.running().as_ref().and_then(Handles::outbox).map(|outbox| outbox.close())
     }
 
     /// A quota just read into the account's quota, here or by the account (`RefreshInfo`):
@@ -153,8 +129,7 @@ impl SyncService {
         if !upload::space::known(quota) {
             return;
         }
-        let syncing = self.syncing.lock().unwrap();
-        if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
+        if let Some(outbox) = self.running().as_ref().and_then(Handles::outbox) {
             outbox.quota_read(quota);
         }
     }
@@ -162,7 +137,6 @@ impl SyncService {
     /// The outbox's counts on the bus are 0: its worker stopped, or its rows
     /// were dropped (the outbox on the bus). A worker that starts counts again.
     pub(super) fn clear_outbox_counts(&self) {
-        *self.kept_back.lock().unwrap() = None;
         self.state.update(|s| {
             s.outbox.pending_count = 0;
             s.outbox.pending_bytes = 0;
@@ -216,7 +190,7 @@ impl SyncService {
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
         self.outbox_store()?;
-        if let Some(kept) = self.kept_back.lock().unwrap().clone() {
+        if let Some(kept) = self.running().and_then(|running| running.kept_back.lock().unwrap().clone()) {
             return Ok(kept);
         }
         let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
@@ -246,18 +220,25 @@ impl SyncService {
     /// worker's commits are, so that a cycle's swap cannot give the items
     /// their forgotten local objects back.
     pub async fn restore_deletes(&self) -> Result<u32, SyncError> {
+        // The store and the tree lock as last published, and no state lock: a cycle holds
+        // the tree lock while it waits for the state, so nothing that holds the state may
+        // wait for the tree lock (`F198`).
+        let store = self.outbox_store()?;
+        let view = self.view();
         let dropped = {
-            let _tree = self.tree_lock.lock().await;
-            self.with_outbox(|s| s.outbox_drop_held()).await?
+            let _tree = match &view.tree_lock {
+                Some(tree) => Some(tree.lock().await),
+                None => None,
+            };
+            store.call(|s| s.outbox_drop_held()).await.map_err(|e| SyncError::Store(e.to_string()))?
         };
         if !dropped.is_empty() {
             self.nudge_full();
         }
         // What a dropped move out named outside the folder is tidied, before the
         // answer, whether or not a worker runs.
-        let store = self.store.lock().unwrap().clone();
-        if let (Some(record), Some(store)) = (self.record(), store) {
-            self.tidy_dropped(&record.root, &store, &dropped).await;
+        if let Some(record) = view.record {
+            self.tidy_dropped(&record.root, &store, view.source, &dropped).await;
         }
         self.wake_outbox();
         Ok(dropped.len() as u32)
@@ -269,17 +250,15 @@ impl SyncService {
     /// dropped, the item would stay under that name, and its local object
     /// would go.
     ///
-    /// Inside a change of the folder's state, with the folder's tasks stopped: this takes
-    /// the tree lock, and only a cycle, which those stops end, holds the tree lock while it
-    /// waits for the state (`docs/design/writes.md` §9).
-    pub(super) async fn drop_outbox(&self, stopped: &Stopped<'_>) {
-        let store = self.store.lock().unwrap().clone();
-        let root = stopped.folder().record().map(|record| record.root.clone());
-        let (Some(store), Some(root)) = (store, root) else { return };
+    /// Inside a change of the folder's state, with every part of the folder's sync stopped
+    /// and waited for: no cycle and no worker is there to share the store with, so no tree
+    /// lock is taken. The store is the folder's, or the one on disk for a folder that is
+    /// not up — a folder that waits for the helper still has its rows.
+    pub(super) async fn drop_outbox(&self, stopped: &mut Stopped<'_>) {
+        let Some(store) = self.store_in(stopped).await else { return };
+        let Some(root) = stopped.folder().record().map(|record| record.root.clone()) else { return };
+        let source = stopped.folder().source();
         let (dropping, marked) = (store.clone(), root.clone());
-        // Under the tree lock: a cycle's swap must not give a moved-out item back the object
-        // it forgets here.
-        let tree = stopped.tree().await;
         let dropped = tokio::task::spawn_blocking(move || {
             let rows = dropping.call_blocking(move |s| {
                 let mut rows = upload::move_out::drop_rows(s)?;
@@ -290,7 +269,6 @@ impl SyncService {
             Ok::<_, konedrive_tree::TreeError>(rows)
         })
         .await;
-        drop(tree);
         // The upload sessions of the rows dropped are given up: cancelled now, so that no
         // empty placeholder keeps a name in OneDrive (issue #47). One that fails stays listed
         // for the worker of a later read-write start.
@@ -301,7 +279,7 @@ impl SyncService {
         // What moves out of the folder left outside it is tidied.
         self.forget_moved_out();
         if let Ok(Ok(rows)) = &dropped {
-            self.tidy_dropped(&root, &store, rows).await;
+            self.tidy_dropped(&root, &store, source, rows).await;
         }
         match dropped.map(|rows| rows.map(|rows| rows.len())) {
             Ok(Ok(0)) => {}
@@ -311,14 +289,47 @@ impl SyncService {
         }
     }
 
-    /// How many changes wait in this folder's tree store — the running
-    /// sync's, or with none running, the one on disk its next sync opens — for a Forget and
-    /// `Accounts.Remove`, which would delete them with the store. Only read, so it needs no
-    /// lock. A running store that cannot be read refuses; one on disk that cannot be opened
+    /// The tree store of the recorded OneDrive folder, inside a change, for what the change
+    /// does to what waits in it: the one kept with the folder, or else the one on disk,
+    /// opened now and kept ([`kept_store`](Self::kept_store)). `None` for a folder that has
+    /// none: a local one, or one whose store was never made or cannot be opened.
+    pub(super) async fn store_in(&self, stopped: &mut Stopped<'_>) -> Option<Store> {
+        if let Some(store) = stopped.folder().store() {
+            return Some(store);
+        }
+        if stopped.folder().record()?.source != super::RootSource::OneDrive {
+            return None;
+        }
+        let paths = self.sync_paths()?.clone();
+        if !paths.tree_db.exists() {
+            return None;
+        }
+        self.kept_store(stopped, &paths).await.map_err(|e| tracing::warn!("{e}")).ok()
+    }
+
+    /// The one connection to the recorded folder's tree store: the one kept with the
+    /// folder's record, or the store on disk, opened now — made if there is none — and
+    /// kept with the record from here on. Nothing else opens it, so there is never a
+    /// second connection for one folder.
+    pub(super) async fn kept_store(&self, stopped: &mut Stopped<'_>, paths: &super::SyncPaths) -> Result<Store, String> {
+        if let Some(store) = stopped.folder().store() {
+            return Ok(store);
+        }
+        let store = super::start_stop::open_store(paths).await?;
+        match stopped.folder_mut().record_mut() {
+            Some(record) => record.kept.store = Some(store.clone()),
+            None => return Err("no folder is recorded".into()),
+        }
+        Ok(store)
+    }
+
+    /// How many changes wait in `store`, the folder's tree store while its sync runs or
+    /// inside a change — or, with none, in the one on disk its next sync opens — for a
+    /// Forget and `Accounts.Remove`, which would delete them with the store. Only read. A
+    /// store that is open and cannot be read refuses; one on disk that cannot be opened
     /// holds nothing a sync could send (it is rebuilt empty).
-    pub(super) async fn changes_in_store(&self) -> Result<u64, SyncError> {
-        let running = self.store.lock().unwrap().clone();
-        if let Some(store) = running {
+    pub(super) async fn changes_waiting(&self, store: Option<Store>) -> Result<u64, SyncError> {
+        if let Some(store) = store {
             return store
                 .call(|s| s.outbox_len())
                 .await
@@ -396,46 +407,41 @@ pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::
 /// runs at once (issue #47).
 const DROPPED_CANCELS: usize = 256;
 
-/// The outbox worker's view of its account's sync: live activity, its
-/// status in the published state, and a cycle when OneDrive changed under a
-/// row.
+/// What the outbox worker reports to and asks of: the activity log, the published state,
+/// the poller of its own sync for a cycle, and the write gate. It holds no way back to the
+/// service.
 pub(super) struct Host {
-    sync: Weak<SyncService>,
+    state: crate::status::snapshot::SyncStateHandle,
+    report: crate::status::report::Report,
     /// The account's one place that decides what runs, and its clock.
-    running: Arc<Running>,
-}
-
-impl Host {
-    pub(super) fn new(sync: Weak<SyncService>, running: Arc<Running>) -> Self {
-        Self { sync, running }
-    }
+    running: Arc<WhatRuns>,
+    /// The folder, for the full paths of what is uploading.
+    root: std::path::PathBuf,
+    kept_back: Arc<Mutex<Option<Vec<SummaryRow>>>>,
+    /// The poller of the worker's sync, once it runs.
+    poll: Arc<OnceLock<PollHandle>>,
+    gate: super::mode::Gate,
 }
 
 impl OutboxHost for Host {
     /// `ActivityLog.Added`: the worker has written the event into the store with
     /// its commit.
     fn activity(&self, event: &ActivityRow) {
-        if let Some(service) = self.sync.upgrade() {
-            service.report.activity.announce(event.clone());
-        }
+        self.report.activity.announce(event.clone());
     }
 
     /// `NotUploadedSummary()`'s answer from now on.
-    fn kept_back(&self, summary: &[crate::upload::kept_back::SummaryRow]) {
-        if let Some(service) = self.sync.upgrade() {
-            *service.kept_back.lock().unwrap() = Some(summary.to_vec());
-        }
+    fn kept_back(&self, summary: &[SummaryRow]) {
+        *self.kept_back.lock().unwrap() = Some(summary.to_vec());
     }
 
     /// `PendingCount`, `PendingBytes`, `BlockedCount` and `Uploads`; and the folder's note
     /// while OneDrive asked the uploads to wait or the worker cannot open the folder
     /// (`OutboxNote::after_worker`, in `LastError`).
     fn status(&self, status: &WorkerStatus) {
-        let Some(service) = self.sync.upgrade() else { return };
-        let root = service.record().map(|record| record.root.path).unwrap_or_default();
         let uploads: Vec<(String, u64, u64)> =
-            status.uploads.iter().map(|u| (root.join(&u.rel).display().to_string(), u.sent, u.total)).collect();
-        service.state.update(|s| {
+            status.uploads.iter().map(|u| (self.root.join(&u.rel).display().to_string(), u.sent, u.total)).collect();
+        self.state.update(|s| {
             s.outbox.pending_count = status.counts.pending;
             s.outbox.pending_bytes = status.counts.pending_bytes;
             s.outbox.blocked_count = status.counts.blocked;
@@ -457,8 +463,9 @@ impl OutboxHost for Host {
     /// needs is gone there: the next cycle comes now, and its delta carries
     /// the change (the outbox on the bus: no Full reconcile).
     fn cycle_wanted(&self) {
-        if let Some(service) = self.sync.upgrade() {
-            service.nudge();
+        if let Some(poll) = self.poll.get() {
+            poll.refresh();
+            poll.wake_live();
         }
     }
 
@@ -466,8 +473,8 @@ impl OutboxHost for Host {
     /// only in part): the next cycle comes now, with a Full reconcile, so
     /// that it is placed again though the delta may have carried it already.
     fn full_cycle_wanted(&self) {
-        if let Some(service) = self.sync.upgrade() {
-            service.nudge_full();
+        if let Some(poll) = self.poll.get() {
+            poll.refresh_full();
         }
     }
 
@@ -483,10 +490,7 @@ impl OutboxHost for Host {
 
     /// The write gate, asked again before each row.
     fn may_write(&self) -> Result<(), String> {
-        match self.sync.upgrade() {
-            Some(service) => service.write_gate(),
-            None => Err("the folder's sync is gone".into()),
-        }
+        self.gate.check()
     }
 }
 

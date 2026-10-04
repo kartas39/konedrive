@@ -45,11 +45,58 @@ impl Schedule {
 /// (Poller). The live task (`live`), when the schedule has one, runs alongside and stops
 /// with it.
 pub struct Poller {
-    refresh: Arc<Notify>,
-    cancel: CancellationToken,
-    task: tokio::task::JoinHandle<()>,
+    handle: PollHandle,
+    /// `None` once it has been waited for.
+    task: Option<tokio::task::JoinHandle<()>>,
     listing: Arc<Listing>,
     live: Option<crate::remote::live::Live>,
+}
+
+/// What may be asked of a running poller by whoever does not own it: a cycle now, and to
+/// stop. Only its owner can wait for it ([`Poller::join`]). Asking a stopped poller does
+/// nothing.
+#[derive(Clone)]
+pub struct PollHandle {
+    refresh: Arc<Notify>,
+    cancel: CancellationToken,
+    /// Weak: a handle is held by parts the listing itself reaches (the outbox worker's
+    /// host), and must not keep the listing, and its tree store, alive after the poller.
+    listing: std::sync::Weak<Listing>,
+    live: Option<Arc<Notify>>,
+}
+
+impl PollHandle {
+    /// A cycle now.
+    pub fn refresh(&self) {
+        self.refresh.notify_one();
+    }
+
+    /// The pause, the hold or the network may have changed: the live task looks again.
+    pub fn wake_live(&self) {
+        if let Some(live) = &self.live {
+            live.notify_one();
+        }
+    }
+
+    /// A cycle now whose reconcile is Full: it places again what is missing
+    /// here though OneDrive did not change it (`RestoreDeletes`, an item whose
+    /// local object was forgotten).
+    pub fn refresh_full(&self) {
+        if let Some(listing) = self.listing.upgrade() {
+            listing.request_full();
+        }
+        self.refresh.notify_one();
+    }
+
+    /// Tells the poller, the live task and every replacement under way to stop, without
+    /// waiting for them: a cycle gives up where it waits, and a file call it has begun
+    /// ends first.
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+        if let Some(listing) = self.listing.upgrade() {
+            listing.stop_replacements();
+        }
+    }
 }
 
 impl Poller {
@@ -70,44 +117,56 @@ impl Poller {
             crate::remote::live::Live::start(ctx, timing, cancel.clone())
         });
         let task = tokio::spawn(run(Arc::clone(&listing), schedule, Arc::clone(&refresh), cancel.clone(), up.subscribe()));
-        Self { refresh, cancel, task, listing, live }
+        let handle = PollHandle { refresh, cancel, listing: Arc::downgrade(&listing), live: live.as_ref().map(crate::remote::live::Live::waker) };
+        Self { handle, task: Some(task), listing, live }
+    }
+
+    /// What others may ask of this poller without owning it.
+    pub fn handle(&self) -> PollHandle {
+        self.handle.clone()
     }
 
     pub fn refresh(&self) {
-        self.refresh.notify_one();
+        self.handle.refresh();
     }
 
-    /// The pause, the hold or the network may have changed: the live task looks again.
+    /// See [`PollHandle::wake_live`].
     pub fn wake_live(&self) {
-        if let Some(live) = &self.live {
-            live.wake();
-        }
+        self.handle.wake_live();
     }
 
-    /// Tests only: the listing whose cycles this poller runs.
-    #[cfg(test)]
-    pub(crate) fn listing(&self) -> &Listing {
-        &self.listing
-    }
-
-    /// A cycle now whose reconcile is Full: it places again what is missing
-    /// here though OneDrive did not change it (`RestoreDeletes`, an item whose
-    /// local object was forgotten).
+    /// See [`PollHandle::refresh_full`].
     pub fn refresh_full(&self) {
-        self.listing.request_full();
-        self.refresh.notify_one();
+        self.handle.refresh_full();
     }
 
     /// Stops the poller, the live task and every replacement under way, and waits for them.
-    pub async fn stop(self) {
-        self.cancel.cancel();
-        self.listing.stop_replacements();
-        let _ = self.task.await;
-        if let Some(live) = self.live {
+    pub async fn stop(mut self) {
+        self.join().await;
+    }
+
+    /// [`stop`](Self::stop) for an owner that may be cut while it waits: what was waited
+    /// for is not waited for again, and the rest is by the next call.
+    pub async fn join(&mut self) {
+        self.handle.cancel();
+        if let Some(task) = self.task.as_mut() {
+            let _ = task.await;
+            self.task = None;
+        }
+        if let Some(live) = self.live.as_mut() {
             live.join().await;
+            self.live = None;
         }
         self.listing.ctx.state.set_live_changes(crate::status::snapshot::LiveChanges::Off);
         self.listing.join_replacements().await;
+    }
+}
+
+impl Drop for Poller {
+    /// A poller dropped without [`stop`](Poller::stop) still ends: it is told to stop,
+    /// and nobody waits for it.
+    fn drop(&mut self) {
+        self.handle.cancel();
     }
 }
 

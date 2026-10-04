@@ -338,6 +338,9 @@ async fn emit_changes(
     if old.pause.held_back != new.pause.held_back {
         folder.held_back_changed(emitter).await?;
     }
+    if old.folder.writable != new.folder.writable {
+        folder.writable_changed(emitter).await?;
+    }
     if old.cycle.live_changes != new.cycle.live_changes {
         folder.live_changes_changed(emitter).await?;
     }

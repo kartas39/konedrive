@@ -472,6 +472,15 @@ private Q_SLOTS:
         QTRY_COMPARE(accounts.count(), 1);
         QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
         QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
+        // The mode line follows Folder.Writable: a read-write account whose folder cannot be
+        // watched reads "Read-only for now".
+        auto *modeLine = window->findChild<QQuickItem *>(QStringLiteral("modeLine"));
+        QVERIFY(modeLine);
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Changes upload"));
+        fake.sync->folder->set({{QStringLiteral("Writable"), false}});
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Read-only for now"));
+        fake.sync->folder->set({{QStringLiteral("Writable"), true}});
+        QTRY_COMPARE(modeLine->property("text").toString(), QStringLiteral("Changes upload"));
         auto *line = window->findChild<QQuickItem *>(QStringLiteral("scanLine"));
         QVERIFY(line);
         QTRY_VERIFY(line->isVisible());

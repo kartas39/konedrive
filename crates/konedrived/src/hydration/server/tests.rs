@@ -11,10 +11,56 @@ use konedrive_fs::placeholder::{read_state, State};
 
 use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
 use crate::helper::{HelperLink, HydrateRequest};
-use crate::sync::tests::{CountingSource, FakeHelper, Seen, fake_helper, placeholder, wait_until};
+use crate::sync::tests::{CountingSource, FakeHelper, Seen, placeholder, wait_until};
+use crate::status::report::Report;
+use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 use crate::folder::locks::InodeLocks;
 use crate::hydration::source;
 use super::*;
+
+/// A stand-in helper: accepts one connection, greets, acknowledges the
+/// handshake `Hello`, then acknowledges everything and reports every
+/// `HydrateDone` it sees. The listener is bound on the caller's thread,
+/// before this returns, so `connect` cannot race `bind`.
+///
+/// It reports through a `tokio` channel rather than a `std` one because
+/// the tests below wait for it *inside* the runtime: a blocking
+/// `recv_timeout` on a current-thread runtime would park the one thread
+/// that has to run `serve_hydrations`.
+pub(crate) fn fake_helper(path: std::path::PathBuf) -> mpsc::UnboundedReceiver<(u64, i32)> {
+    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
+        .unwrap();
+    let addr = UnixAddr::new(&path).unwrap();
+    bind(fd.as_raw_fd(), &addr).unwrap();
+    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        let listener: OwnedFd = fd;
+        let accepted = accept(listener.as_raw_fd()).unwrap();
+        // SAFETY: `accept` just returned a freshly opened descriptor that
+        // this process now solely owns.
+        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
+        let mut channel = Channel::new(stream).unwrap();
+        channel
+            .send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None)
+            .unwrap();
+        let (hello, _) = channel.recv::<ToHelper>().unwrap();
+        assert!(
+            matches!(hello, ToHelper::Hello { version } if version == PROTOCOL_VERSION),
+            "{hello:?}"
+        );
+        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
+        while let Ok((message, _fd)) = channel.recv::<ToHelper>() {
+            if let ToHelper::HydrateDone { req_id, errno } = message {
+                let _ = tx.send((req_id, errno));
+            }
+            if channel.send(&ToDaemon::Ack { errno: 0 }, None).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
 
 struct Panics;
 
@@ -465,4 +511,200 @@ async fn a_fill_stopped_by_a_removal_answers_an_errno_the_kernel_delivers() {
         "the opener of a removed file is answered errno {errno}, which the kernel does not \
          accept in a FAN_DENY response; the helper denies with EIO instead"
     );
+}
+
+/// The per-inode lock table, from the interception side: two suspended opens of
+/// one inode must not be filled at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_inode_is_filled_one_fill_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("helper.sock");
+    let mut seen = fake_helper(socket_path.clone());
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), vec![4u8; 4096]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let first = placeholder(local.path(), "file.bin", "ITEM", 4096);
+    // A second descriptor for the very same inode, exactly as two
+    // suspended opens of one file would arrive.
+    let second = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(local.path().join("file.bin"))
+        .unwrap()
+        .into();
+
+    let (source, peak) = CountingSource::new(remote.path(), Duration::from_millis(300));
+    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+    tokio::spawn(serve_hydrations(link, rx, source, InodeLocks::new()));
+    tx.send(HydrateRequest { req_id: 1, fd: first }).await.unwrap();
+    tx.send(HydrateRequest { req_id: 2, fd: second }).await.unwrap();
+
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(10), seen.recv())
+            .await
+            .expect("both fills must answer")
+            .unwrap();
+    }
+    assert_eq!(
+        peak.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "two suspended opens of one inode were filled at once"
+    );
+}
+
+/// The other half of that, and the reason the key has to be the inode
+/// rather than anything coarser: two *different* files must still be
+/// filled at the same time. A lock that over-matches turns four
+/// concurrent hydrations into a queue of one, which no other test here
+/// would notice. The source lets neither fill go until both have begun, so
+/// fills taken one after the other never end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_different_inodes_are_filled_at_the_same_time() {
+    /// A directory whose fetches each wait until two are under way.
+    struct Together {
+        dir: std::path::PathBuf,
+        both: tokio::sync::Barrier,
+        met: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl ContentSource for Together {
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+            use std::sync::atomic::Ordering::SeqCst;
+            // Only the first fetch of each fill waits: later ranges go straight through.
+            if !self.met.load(SeqCst) {
+                self.both.wait().await;
+                self.met.store(true, SeqCst);
+            }
+            LocalDir::new(self.dir.clone()).fetch(item_id, from, end).await
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("helper.sock");
+    let mut seen = fake_helper(socket_path.clone());
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), vec![4u8; 4096]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let one = placeholder(local.path(), "one.bin", "ITEM", 4096);
+    let another = placeholder(local.path(), "another.bin", "ITEM", 4096);
+
+    let source = Arc::new(Together {
+        dir: remote.path().to_path_buf(),
+        both: tokio::sync::Barrier::new(2),
+        met: std::sync::atomic::AtomicBool::new(false),
+    });
+    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+    tokio::spawn(serve_hydrations(link, rx, source, InodeLocks::new()));
+    tx.send(HydrateRequest { req_id: 1, fd: one }).await.unwrap();
+    tx.send(HydrateRequest { req_id: 2, fd: another }).await.unwrap();
+
+    for _ in 0..2 {
+        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv())
+            .await
+            .expect("two unrelated files were filled one after the other: the lock matches more than the inode it is supposed to")
+            .unwrap();
+        assert_eq!(answered.1, 0);
+    }
+}
+
+/// What a fill on open records (item 8): the helper's request, filled through
+/// `serve_hydrations_reporting`, is a `downloaded` event under the name the file has, with
+/// its size — sent after the opener is answered; one that fails is a `failed` event; and a
+/// full disk reads exactly "not enough disk space", the words the window's notifier turns
+/// into "disk full".
+#[tokio::test]
+async fn a_fill_on_open_is_recorded_as_downloaded_or_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().canonicalize().unwrap();
+    let source_dir = tempfile::tempdir().unwrap();
+    std::fs::write(source_dir.path().join("ITEM"), vec![3u8; 4096]).unwrap();
+    // Events are kept only for the folder registered now.
+    let report = Report::new(SyncStateHandle::new(SyncSnapshot {
+        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
+        ..SyncSnapshot::default()
+    }));
+    let mut added = report.activity.subscribe();
+    let socket_path = folder.join("helper.sock");
+    let mut seen = fake_helper(socket_path.clone());
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+    let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
+    tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
+
+    // (the file, the item it carries, the errno the opener gets, the event's kind and detail)
+    let cases = [("opened.bin", "ITEM", 0, "downloaded", Some("4.0 KiB")), ("gone.bin", "GONE", libc::EIO, "failed", None)];
+    for (n, (name, item, errno, kind, detail)) in cases.into_iter().enumerate() {
+        let fd = placeholder(&folder, name, item, 4096);
+        tx.send(HydrateRequest { req_id: n as u64, fd }).await.unwrap();
+        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(answered, (n as u64, errno), "{name}");
+        let event = tokio::time::timeout(Duration::from_secs(10), added.recv()).await.unwrap().unwrap();
+        let shown = folder.join(name).display().to_string();
+        assert_eq!((event.kind.as_str(), event.path.as_str()), (kind, shown.as_str()));
+        if let Some(detail) = detail {
+            assert_eq!(event.detail, detail);
+        }
+    }
+
+    for errno in [libc::ENOSPC, libc::EDQUOT] {
+        let event = fill_event(&Answered::Failed(FillError::Errno(errno)), "/r/f.bin", None).unwrap();
+        assert_eq!((event.kind.as_str(), event.detail.as_str()), ("failed", crate::status::activity::NO_DISK_SPACE));
+    }
+}
+
+/// Item 6: a fill gives its slot back before it records what it did. The
+/// log is held still here, so every recording waits: with four slots
+/// held by fills that are only recording, a fifth request was never
+/// filled at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fill_lets_go_of_its_slot_before_it_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().canonicalize().unwrap();
+    let source_dir = tempfile::tempdir().unwrap();
+    let report = Report::new(SyncStateHandle::new(SyncSnapshot {
+        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
+        ..SyncSnapshot::default()
+    }));
+    let socket_path = folder.join("helper.sock");
+    let mut seen = fake_helper(socket_path.clone());
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let (tx, rx) = mpsc::channel::<HydrateRequest>(8);
+    let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
+    tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
+
+    // The log is kept in a store, and the store is held, as a write under way holds it.
+    let store = konedrive_tree::Store::new(konedrive_tree::TreeStore::in_memory().unwrap());
+    let (attached, at) = (store.clone(), folder.clone());
+    let attaching = report.clone();
+    tokio::task::spawn_blocking(move || attaching.activity.attach(attached, &at)).await.unwrap();
+    let (taken, held_now) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holding = std::thread::spawn(move || {
+        store
+            .call_blocking(move |_| {
+                let _ = taken.send(());
+                let _ = released.recv();
+                Ok(())
+            })
+            .unwrap();
+    });
+    held_now.recv().unwrap();
+    for n in 0..5u64 {
+        std::fs::write(source_dir.path().join(format!("ITEM{n}")), vec![1u8; 1024]).unwrap();
+        let fd = placeholder(&folder, &format!("f{n}.bin"), &format!("ITEM{n}"), 1024);
+        tx.send(HydrateRequest { req_id: n, fd }).await.unwrap();
+    }
+    for _ in 0..5 {
+        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv())
+            .await
+            .expect("a request waited for a slot held by a fill that was only recording");
+        assert_eq!(answered.unwrap().1, 0);
+    }
+    drop(release);
+    holding.join().unwrap();
 }

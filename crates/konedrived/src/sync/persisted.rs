@@ -153,6 +153,7 @@ impl SyncService {
             source: persisted.source,
             baloo: persisted.baloo_excluded,
             dev,
+            kept: super::folder::Kept::default(),
         };
         (record, down)
     }

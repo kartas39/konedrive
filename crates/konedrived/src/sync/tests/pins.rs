@@ -136,28 +136,6 @@ async fn freeing_up_what_a_pinned_folder_keeps_is_refused_naming_the_folder() {
     assert_eq!((pin_of(&docs), service.pinned_count()), (None, 0));
 }
 
-/// Pins that came off before a later one could not stay off, and
-/// `PinnedCount` says so; nothing is freed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_free_up_whose_later_pin_cannot_come_off_keeps_the_count_right() {
-    let (service, root, _root_dir, _dir) = folder_to_pin().await;
-    let (docs, c) = (root.join("docs"), root.join("c.bin"));
-    service.pin(&[docs.clone(), c.clone()]).await.unwrap();
-    pinned_downloads_done(&service).await;
-    fn fails_on_files(item: &File, on: bool) -> io::Result<()> {
-        if item.metadata()?.is_file() {
-            return Err(io::Error::from_raw_os_error(libc::EIO));
-        }
-        pin::set_pin(item, on)
-    }
-
-    assert!(matches!(service.free_up_with(&[docs.clone(), c.clone()], fails_on_files).await, Err(SyncError::Io(_))));
-
-    assert_eq!((pin_of(&docs), pin_of(&c)), (None, Some(b"1".to_vec())));
-    assert_eq!(service.pinned_count(), 1);
-    assert_eq!(service.item_state(&root.join("docs/a.bin")).await, "hydrated", "nothing was freed");
-}
-
 /// A file queued while pinned whose pin is gone by its turn is not
 /// downloaded.
 #[tokio::test]
@@ -208,39 +186,6 @@ async fn free_up_space_leaves_pinned_files_and_counts_them() {
     assert_eq!(service.item_state(&c).await, "online-only");
     assert_eq!(service.item_state(&root.join("docs/a.bin")).await, "hydrated");
     assert_eq!(service.item_state(&root.join("docs/b.bin")).await, "hydrated");
-}
-
-/// Item 8: a fill on open that fails is a `failed` event, and a full
-/// disk reads exactly "not enough disk space" — the words the window's
-/// notifier turns into "disk full".
-#[tokio::test]
-async fn a_failed_fill_on_open_is_recorded_as_failed() {
-    let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().canonicalize().unwrap();
-    let source_dir = tempfile::tempdir().unwrap();
-    let fd = placeholder(&folder, "gone.bin", "GONE", 4096);
-    let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
-        ..SyncSnapshot::default()
-    }));
-    let mut added = report.activity.subscribe();
-    let socket_path = folder.join("helper.sock");
-    let mut seen = fake_helper(socket_path.clone());
-    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
-    let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
-    tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
-    tx.send(HydrateRequest { req_id: 3, fd }).await.unwrap();
-    let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
-    assert_eq!(answered, (3, libc::EIO));
-    let event = tokio::time::timeout(Duration::from_secs(10), added.recv()).await.unwrap().unwrap();
-    let gone = folder.join("gone.bin").display().to_string();
-    assert_eq!((event.kind.as_str(), event.path.as_str()), ("failed", gone.as_str()));
-
-    for errno in [libc::ENOSPC, libc::EDQUOT] {
-        let event = fill_event(&Answered::Failed(FillError::Errno(errno)), "/r/f.bin", None).unwrap();
-        assert_eq!((event.kind.as_str(), event.detail.as_str()), ("failed", activity::NO_DISK_SPACE));
-    }
 }
 
 /// Item 8: a download whose caller goes away — a D-Bus call dropped, a

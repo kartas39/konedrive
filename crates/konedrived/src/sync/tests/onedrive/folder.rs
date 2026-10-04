@@ -532,8 +532,9 @@ async fn refresh_starts_a_sync_that_could_not_start_or_says_why() {
 
     std::fs::remove_file(&blocker).unwrap();
     service.refresh().await.unwrap();
+    // The state leaves `error` when the cycle ends, after its counts are published.
     listed(&service).await;
-    assert_eq!(service.root_state(), "ready");
+    wait_until("the cycle ended", || service.root_state() == "ready").await;
     service.stop_sync().await;
 }
 
@@ -720,4 +721,167 @@ async fn skipped_asked_during_a_forget_waits_for_it() {
     w.helper.release(Seen::UnregisterRoot);
     forgetting.await.unwrap().unwrap();
     assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String)>::new());
+}
+
+/// Whose file an open is, and whose item an id is, by the tree store of a running sync
+/// (design §2.4 step 3, write design §8.3): with two folders on one filesystem, a file
+/// unlinked while its open waits is routed to the account whose tree knows its item id;
+/// and that id, and any id that names that account's drive, is claimed for every other
+/// account, never for its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_whose_tree_knows_an_item_is_routed_its_opens_and_claims_it() {
+    use std::os::fd::OwnedFd;
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let hub = Arc::clone(service.hub());
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = testing::wiring().hub(&hub).build();
+    other.register_root_without_interception(other_dir.path()).await.unwrap();
+
+    // A file of the other folder, carrying an id the OneDrive folder's tree knows, unlinked.
+    std::fs::write(other_dir.path().join("h"), b"").unwrap();
+    xattr::set(other_dir.path().join("h"), konedrive_fs::placeholder::XATTR_ITEM_ID, b"F").unwrap();
+    let unlinked: OwnedFd = std::fs::File::open(other_dir.path().join("h")).unwrap().into();
+    std::fs::remove_file(other_dir.path().join("h")).unwrap();
+    let routed = hub.route(&unlinked).await;
+    assert!(routed.is_some_and(|account| Arc::ptr_eq(&account, &service)), "found by its item id");
+
+    let (ours, theirs) = (Arc::downgrade(&service), Arc::downgrade(&other));
+    let claimed = |of: &std::sync::Weak<SyncService>, id: &str| konedrive_tree::off_runtime(|| hub.claimed_elsewhere(of, id));
+    assert!(claimed(&theirs, "F"), "the OneDrive folder's tree knows it");
+    assert!(claimed(&theirs, "d1!42"), "the id names its drive");
+    assert!(!claimed(&theirs, "DEF456!42"));
+    assert!(!claimed(&ours, "F"), "never one's own");
+
+    // The store is the folder's, not the running sync's: with the sync stopped, the tree
+    // still claims its items, and what waits is still answered.
+    service.stop_sync().await;
+    assert!(claimed(&theirs, "F"), "claimed while the sync is stopped");
+    assert!(service.outbox(0).await.unwrap().is_empty());
+
+    // Kept while the folder is down too: a bring-up that fails leaves the store open and
+    // the source in place, so the tree still claims its items (another account's reconcile
+    // sets a file of this account aside rather than remove it), what waits is still
+    // counted, and a file is still downloaded.
+    w.helper.refuse(Seen::RegisterRoot, libc::EIO);
+    service.resume().await;
+    assert_eq!(service.root_state(), "error", "{}", service.last_error());
+    assert!(matches!(service.outbox(0).await, Err(SyncError::NotUp(_))), "down: what needs the sync is refused");
+    assert!(claimed(&theirs, "F"), "claimed while the folder is down");
+    {
+        use crate::account::PendingUploads;
+        assert_eq!(service.pending_uploads().await, 0, "the store answers");
+    }
+    let content = tempfile::tempdir().unwrap();
+    std::fs::write(content.path().join("F"), b"abc").unwrap();
+    super::super::install_source(&service, Arc::new(crate::hydration::source::LocalDir::new(content.path())));
+    let file = w.folder.path().join("docs/f.txt");
+    service.hydrate_now(&file).await.unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"abc", "filled from the folder's source while it is down");
+
+    // And a Forget closes it: nothing of the stopped sync keeps the store's file open.
+    service.unregister_root().await.unwrap();
+    let tree = w.config.path().join("tree.sqlite").display().to_string();
+    let open = || {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .any(|target| target.to_string_lossy().starts_with(&tree))
+    };
+    wait_until("the tree store is closed", || !open()).await;
+    assert!(!claimed(&theirs, "F"), "a forgotten folder claims nothing");
+}
+
+/// The same for a read-write sync, whose parts hold more of each other: once the folder is
+/// forgotten nothing keeps the tree store open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forgotten_read_write_folder_leaves_no_tree_store_open() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let before = deltas(&w).await;
+    service.follow_mode(crate::config::Mode::ReadWrite).await;
+    wait_for_deltas(&w, before).await;
+    wait_until("the folder is writable", || service.writable()).await;
+    let tree = w.config.path().join("tree.sqlite").display().to_string();
+    let open = || {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .any(|target| target.to_string_lossy().starts_with(&tree))
+    };
+    assert!(open(), "open while the folder is up");
+
+    // A download is under way when the folder is forgotten: the Forget does not wait for
+    // it, and the download holds nothing of the store. So the store is closed when the
+    // Forget returns, before its files are removed.
+    let content = tempfile::tempdir().unwrap();
+    std::fs::write(content.path().join("F"), b"abc").unwrap();
+    let slow = Arc::new(crate::hydration::source::LocalDir::new(content.path()).delay(Duration::from_millis(1500)));
+    super::super::install_source(&service, Arc::clone(&slow) as Arc<dyn crate::hydration::source::ContentSource>);
+    let file = w.folder.path().join("docs/f.txt");
+    let (filling, target) = (Arc::clone(&service), file.clone());
+    let fill = tokio::spawn(async move { filling.hydrate_now(&target).await });
+    wait_until("the fill began", || slow.fetches() > 0).await;
+    service.unregister_root().await.unwrap();
+    assert!(!open(), "closed when the Forget returns, with the fill still running");
+    assert!(!fill.is_finished(), "the Forget did not wait for the fill");
+
+    // The folder registered again has a new store at the same path, and the old fill
+    // ending takes nothing of it away.
+    service.register_root(w.folder.path()).await.unwrap();
+    wait_until("the new store is open", || open()).await;
+    let journal = std::path::PathBuf::from(format!("{tree}-wal"));
+    wait_until("the new store has its journal", || journal.exists()).await;
+    let _ = fill.await.unwrap();
+    assert!(journal.exists(), "the old download's end removed the new store's journal");
+    service.pause_syncing(0).await.unwrap();
+    service.resume_syncing().await.unwrap();
+    service.stop_sync().await;
+}
+
+/// Two changes of the folder, the second queued behind the first: a bring-up that waits
+/// for the helper, and a Forget that comes meanwhile. The bring-up starts the sync again
+/// and the Forget takes it out; while the Forget waits for the helper nothing reads as
+/// running or writable, and both end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_queued_behind_another_leaves_no_sync_that_reads_as_running() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let_write(&service);
+    let before = deltas(&w).await;
+    service.follow_mode(crate::config::Mode::ReadWrite).await;
+    wait_for_deltas(&w, before).await;
+    wait_until("the folder is writable", || service.writable()).await;
+
+    w.helper.forget();
+    w.helper.hold(Seen::RegisterRoot);
+    w.helper.hold(Seen::UnregisterRoot);
+    let resuming = Arc::clone(&service);
+    let bring_up = tokio::spawn(async move { resuming.resume().await });
+    wait_until("the bring-up asked the helper", || w.helper.seen().contains(&Seen::RegisterRoot)).await;
+    assert!(!service.writable(), "told to stop");
+    let forgetting = Arc::clone(&service);
+    let forget = tokio::spawn(async move { forgetting.unregister_root().await });
+    // The Forget waits for the folder's state: a reader of it stops being answered.
+    let waits = tokio::time::timeout(Duration::from_secs(60), async {
+        while tokio::time::timeout(Duration::from_millis(200), service.skipped()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(waits.is_ok(), "the Forget never came to wait for the folder's state");
+    w.helper.release(Seen::RegisterRoot);
+    bring_up.await.unwrap();
+    wait_until("the Forget asked the helper", || w.helper.seen().contains(&Seen::UnregisterRoot)).await;
+    // The sync the bring-up started is taken out again, and nothing says otherwise.
+    assert!(!service.writable(), "no sync reads as writable while the Forget waits");
+    w.helper.release(Seen::UnregisterRoot);
+    forget.await.unwrap().unwrap();
+    assert_eq!(service.root_state(), "none");
 }

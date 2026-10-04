@@ -439,6 +439,13 @@ impl WatchHandle {
         self.shared.status()
     }
 
+    /// Tells the watcher to stop, without waiting for it: the examination under way
+    /// finishes first, and only its owner can wait for that ([`Watcher::stop`]).
+    pub fn cancel(&self) {
+        self.shared.stop();
+        let _ = self.tx.send(ToExaminer::Wake);
+    }
+
     /// Examines `batch` as soon as the examiner is free: places the daemon itself
     /// changed — a conflict copy, a folder made local — whose events it drops by pid.
     pub fn examine(&self, batch: Batch) {

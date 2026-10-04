@@ -5,7 +5,7 @@ use crate::config::Mode;
 use crate::folder::root::SyncRoot;
 use crate::helper::status::HelperState;
 use crate::status::snapshot::{published_error, published_state, FolderStatus};
-use crate::sync::folder::{Record, Up};
+use crate::sync::folder::{Content, OneDriveFolder, Record, Up};
 
 fn record(interception: Interception, source: RootSource) -> Record {
     Record {
@@ -14,6 +14,7 @@ fn record(interception: Interception, source: RootSource) -> Record {
         source,
         baloo: false,
         dev: Some(7),
+        kept: Default::default(),
     }
 }
 
@@ -22,22 +23,36 @@ fn folder(is: Is) -> Folder {
 }
 
 fn up(interception: Interception, source: RootSource, recovery: Recovery) -> Is {
-    Is::Up(Up { record: record(interception, source), recovery, switch_failed: None })
+    Is::Up(Up { record: record(interception, source), recovery, switch_failed: None, content: content(source, Why::NotStarted) })
+}
+
+/// What a folder that is up and shows `source` holds, its sync not running for `why`.
+fn content(source: RootSource, why: Why) -> Content {
+    match source {
+        RootSource::Local => Content::Local,
+        RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(why), watcher_ended: None }),
+    }
 }
 
 /// What the bus shows of `folder` with a link to the helper (`link`) or none, the helper
 /// in the state `helper`: `Path`, `State`, `LastError`, `Source`.
 fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static str, String, &'static str) {
     let published = publish(folder);
+    let cycle = crate::status::snapshot::CycleStatus {
+        sync_trouble: published.cannot_start.map(|text| SyncTrouble { text, blocking: true }),
+        ..Default::default()
+    };
     let folder = FolderStatus {
         root_path: published.path,
         root_state: published.state,
         last_error: published.error,
         switch_note: published.switch_note,
         waits_for_helper: published.helper.waits(link),
+        locked_note: published.locked_note,
+        writable: published.writable,
         helper_state: helper,
     };
-    let snapshot = SyncSnapshot { folder, ..SyncSnapshot::default() };
+    let snapshot = SyncSnapshot { folder, cycle, ..SyncSnapshot::default() };
     let source = published.view.record.map_or("", |record| record.source.as_str());
     (snapshot.folder.root_path.clone(), published_state(&snapshot), published_error(&snapshot), source)
 }
@@ -51,6 +66,26 @@ const HELD: &str = "this account is held back: its label repeats";
 /// What a case is, the folder, whether there is a link, the helper's state, and what is
 /// shown: `Path`, `State`, `LastError`, `Source`.
 type Case = (&'static str, Folder, bool, HelperState, (&'static str, &'static str, String, &'static str));
+
+/// `Writable`, and the sentence of a folder that is locked though its account is read-write,
+/// from what the running sync does about local changes: writable only for a read-write
+/// folder whose lock is off, not while its watcher still walks it.
+#[test]
+fn a_folder_is_writable_only_once_its_lock_is_off() {
+    use crate::sync::running_sync::{Lock, Uploading};
+    let why = "the folder stays read-only and nothing is uploaded";
+    let cases = [
+        ("no sync runs", Mode::ReadWrite, None, (false, "")),
+        ("read-only, locked", Mode::ReadOnly, Some(Uploading::Locked(None)), (false, "")),
+        ("read-write, its watcher could not start", Mode::ReadWrite, Some(Uploading::Locked(Some(why.into()))), (false, why)),
+        ("read-write, its watcher still walks", Mode::ReadWrite, Some(Uploading::Open(Lock::Walking)), (false, "")),
+        ("read-write, the walk was cut", Mode::ReadWrite, Some(Uploading::Open(Lock::Stays(why.into()))), (false, why)),
+        ("read-write, the lock off", Mode::ReadWrite, Some(Uploading::Open(Lock::Off)), (true, "")),
+    ];
+    for (what, wanted, uploading, (writable, note)) in cases {
+        assert_eq!(uploads(wanted, uploading), (writable, note.to_owned()), "{what}");
+    }
+}
 
 /// Every state of the folder, and what the bus shows of it.
 #[test]
@@ -119,8 +154,25 @@ fn every_state_is_published_as_its_path_state_error_and_source() {
             (PATH, "error", format!("{advice}. {NO_INTERCEPTION_WARNING}"), "onedrive"),
         ),
         (
+            "up and intercepted, showing OneDrive, its sync could not start",
+            folder(Is::Up(Up {
+                record: record(Intercepted, OneDrive),
+                recovery: Recovery::Clean,
+                switch_failed: None,
+                content: content(OneDrive, Why::CannotStart("the tree store cannot be opened: errno 5".into())),
+            })),
+            true,
+            Connected,
+            (PATH, "error", "the tree store cannot be opened: errno 5".into(), "onedrive"),
+        ),
+        (
             "up without interception, the switch to interception failed",
-            folder(Is::Up(Up { record: record(switching, Local), recovery: Recovery::Clean, switch_failed: Some("errno 5".into()) })),
+            folder(Is::Up(Up {
+                record: record(switching, Local),
+                recovery: Recovery::Clean,
+                switch_failed: Some("errno 5".into()),
+                content: Content::Local,
+            })),
             true,
             Connected,
             (PATH, "no-interception", format!("{NO_INTERCEPTION_WARNING}. {}", SwitchNote { why: "errno 5".into() }.text()), "local"),

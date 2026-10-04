@@ -67,7 +67,7 @@ async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    let watching = |service: &SyncService| service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.watcher.is_some());
+    let watching = |service: &SyncService| service.writable();
     assert!(!watching(&service), "read-only");
 
     service.follow_mode(Mode::ReadWrite).await;
@@ -128,7 +128,7 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
     listed(&service).await;
     let_write(&service);
     service.follow_mode(Mode::ReadWrite).await;
-    assert!(service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.outbox.is_some()), "beside the watcher");
+    assert!(service.writable(), "watched, and its worker runs");
     let mut announced = service.report().activity.subscribe();
     let made = std::process::Command::new("sh")
         .args(["-c", "echo new > docs/new.txt"])
@@ -160,7 +160,7 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
     assert!(service.state().get().outbox.uploads.is_empty());
 
     service.follow_mode(Mode::ReadOnly).await;
-    assert!(service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.outbox.is_none()), "stopped with the sync");
+    assert!(!service.writable(), "stopped with the sync");
     service.stop_sync().await;
 }
 
@@ -220,7 +220,7 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    let store = service.store.lock().unwrap().clone().unwrap();
+    let store = testing::tree_store(&service).unwrap();
     let file = w.folder.path().join("docs/f.txt");
     let base = Base { etag: None, ctag: Some("c1".into()), parent: Some("D".into()), name: Some("f.txt".into()) };
     let change = Detection {
@@ -287,7 +287,7 @@ async fn the_bus_answers_while_the_store_is_held() {
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     service.follow_mode(Mode::ReadWrite).await;
-    let store = service.store.lock().unwrap().clone().unwrap();
+    let store = testing::tree_store(&service).unwrap();
     let blocked = Detection {
         kind: OutboxKind::Update,
         item_id: Some("F".into()),
@@ -304,7 +304,11 @@ async fn the_bus_answers_while_the_store_is_held() {
     };
     store.call(move |s| s.outbox_record(&blocked)).await.unwrap();
     wait_until("BlockedCount counts it", || service.state().get().outbox.blocked_count == 1).await;
-    wait_until("the summary is summed", || service.kept_back.lock().unwrap().as_ref().is_some_and(|k| k.iter().any(|r| r.1 == "name-characters"))).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while !service.not_uploaded_summary().await.unwrap().iter().any(|r| r.1 == "name-characters") {
+        assert!(std::time::Instant::now() < deadline, "the summary never names the blocked row");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // An apply that holds the store for two seconds.
     let (held, release) = std::sync::mpsc::channel::<()>();
@@ -343,7 +347,7 @@ async fn restoring_held_deletes_brings_the_files_back_at_once() {
     service.follow_mode(Mode::ReadWrite).await;
     let file = w.folder.path().join("docs/f.txt");
     std::fs::remove_file(&file).unwrap();
-    let store = service.store.lock().unwrap().clone().unwrap();
+    let store = testing::tree_store(&service).unwrap();
     let held = Detection {
         kind: OutboxKind::Delete,
         item_id: Some("F".into()),
@@ -359,7 +363,8 @@ async fn restoring_held_deletes_brings_the_files_back_at_once() {
         size: None,
     };
     store.call(move |s| s.outbox_record(&held)).await.unwrap();
-    service.wake_outbox();
+    // `Refresh()` has the worker look at its outbox.
+    service.refresh().await.unwrap();
     wait_until("HeldCount counts it", || service.state().get().outbox.held_count == 1).await;
 
     assert_eq!(service.restore_deletes().await.unwrap(), 1);
@@ -388,10 +393,19 @@ async fn a_free_up_that_cannot_tell_whether_a_change_waits_refuses() {
         konedrive_fs::placeholder::write_stamp(&opened).unwrap();
     }
     service.stop_sync().await;
-    *service.store.lock().unwrap() = None;
-    let refused = service.dehydrate(&file).await.unwrap_err();
+    service.hub().set_link(None);
+    // The next run cannot open its tree store: nothing can tell what waits.
+    let tree = w.config.path().join("tree.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", tree.display()));
+    }
+    std::fs::create_dir(&tree).unwrap();
+    let restarted = connected(&w, true).await;
+    restarted.resume().await;
+    let refused = restarted.dehydrate(&file).await.unwrap_err();
     assert!(matches!(&refused, SyncError::Io(why) if why.contains("cannot tell")), "{refused:?}");
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
+    restarted.stop_sync().await;
 }
 
 /// the outbox on the bus: a directory of the user's own that is newly ignored
@@ -650,7 +664,7 @@ async fn a_switch_nobody_forced_keeps_the_changes(expired: bool) {
     .await;
     assert_eq!(service.mode(), Mode::ReadOnly);
     let before = deltas(&w).await;
-    service.nudge();
+    service.refresh_now();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(deltas(&w).await, before, "no cycle while the change waits");
     assert!(docs.join("g.txt").exists() && !docs.join("f.txt").exists(), "nothing local is put back");
@@ -720,6 +734,86 @@ async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
     service.follow_mode(Mode::ReadWrite).await;
     assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
     assert!(service.last_error().contains("stays read-only"), "{}", service.last_error());
+    // The account is read-write and the folder is not: `Writable` says so.
+    assert_eq!(service.mode(), Mode::ReadWrite);
+    assert!(!service.writable());
+
+    // A watcher that starts: the folder is writable, and the sentence is gone.
+    testing::parts(&service).watchers.fail(false);
+    service.refresh().await.unwrap();
+    service.follow_mode(Mode::ReadOnly).await;
+    service.follow_mode(Mode::ReadWrite).await;
+    assert!(service.writable());
+    assert!(!service.last_error().contains("stays read-only"), "{}", service.last_error());
+    assert_eq!(mode(&w.folder.path().join("docs")), 0o755);
+    service.stop_sync().await;
+}
+
+/// Stopping is dropping: a change of the folder that is cut before its end leaves no part
+/// of the sync running and none that reads as running, and the next `Refresh()`, or the
+/// next change, starts the sync again. Cut at two points: while the change waits for the
+/// folder's state (a free-up holds it, waiting for the helper), with the sync told to stop
+/// and still in the state; and once it has the state (a bring-up waiting for the helper),
+/// with the sync taken out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_cut_before_its_end_leaves_no_sync_and_the_next_one_starts_it() {
+    use crate::account::PendingUploads;
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let file = w.folder.path().join("docs/f.txt");
+    {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let opened = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+        use std::io::Write as _;
+        (&opened).write_all(b"abc").unwrap();
+        konedrive_fs::placeholder::write_state(&opened, konedrive_fs::placeholder::State::Hydrated).unwrap();
+        konedrive_fs::placeholder::write_stamp(&opened).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)).unwrap();
+    }
+
+    // Before the lock: a free-up holds the folder's state while the helper does not answer.
+    w.helper.forget();
+    w.helper.hold(Seen::ClearIgnore);
+    let (freeing, target) = (Arc::clone(&service), file.clone());
+    let free_up = tokio::spawn(async move { freeing.dehydrate(&target).await });
+    wait_until("the free-up asked the helper", || w.helper.seen().contains(&Seen::ClearIgnore)).await;
+    let switching = Arc::clone(&service);
+    let switch = tokio::spawn(async move { switching.follow_mode(Mode::ReadWrite).await });
+    // The switch tells the sync to stop and then waits for the state behind the free-up:
+    // a reader of the state (`Skipped()`) stops being answered once it does.
+    let waits = tokio::time::timeout(Duration::from_secs(60), async {
+        while tokio::time::timeout(Duration::from_millis(200), service.skipped()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(waits.is_ok(), "the switch never came to wait for the folder's state");
+    switch.abort();
+    let _ = switch.await;
+    w.helper.release(Seen::ClearIgnore);
+    free_up.await.unwrap().unwrap();
+    assert_eq!(service.mode(), Mode::ReadOnly, "the switch never happened");
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
+
+    // With the lock: the helper is back, and does not answer the registration; the
+    // bring-up waits, with the sync taken out of the state, and is dropped there.
+    w.helper.forget();
+    w.helper.hold(Seen::RegisterRoot);
+    let resuming = Arc::clone(&service);
+    let bring_up = tokio::spawn(async move { resuming.resume().await });
+    wait_until("the bring-up asked the helper", || w.helper.seen().contains(&Seen::RegisterRoot)).await;
+    bring_up.abort();
+    let _ = bring_up.await;
+    w.helper.release(Seen::RegisterRoot);
+
+    // The next change of the folder, whatever it is for, starts the sync it finds stopped.
+    let before = deltas(&w).await;
+    service.drop_pending_uploads().await;
+    wait_for_deltas(&w, before).await;
     service.stop_sync().await;
 }
 
@@ -808,26 +902,15 @@ async fn a_folder_moved_away_stops_its_sync_and_says_so() {
     service.stop_sync().await;
 }
 
-/// Whether the folder's cycle is queued for the tree lock, behind whoever holds it.
-fn cycle_waits_for_tree(service: &SyncService) -> bool {
-    service.syncing.lock().unwrap().as_ref().is_some_and(|syncing| syncing.poller.listing().waits_for_tree())
-}
-
-/// SY1: a forced switch to read-only and a bring-up end, with a cycle under way. The set-up:
-/// the test holds the tree lock, as a commit of the outbox worker does; a cycle has fetched
-/// and waits for that lock; the forced switch stops the folder's tasks, which ends the cycle,
-/// takes the folder's state for writing and waits for the tree lock; a bring-up after the helper
-/// reconnects waits for the state behind it. Then the test lets go, and both must end.
-/// When the switch took the state for reading and left the cycle running, the cycle, the
-/// switch and the bring-up waited for each other for good.
+/// SY1: a forced switch to read-only and a bring-up end, with a cycle under way. The switch
+/// and the bring-up are each a change of the folder: the change tells the cycle to stop
+/// before it waits for the folder's state, waits for the cycle to end once it has the
+/// state, and takes no tree lock, so none of the three can wait for another for good.
+/// When the switch took the state for reading and left the cycle running, the cycle (the
+/// tree lock held, waiting for the state behind the bring-up), the switch (the state held,
+/// waiting for the tree lock) and the bring-up waited for each other for good.
 ///
-/// Which cycle waits is not the test's to choose. The test takes the tree lock once the
-/// sync's first cycle has asked OneDrive, and that cycle takes it right after the answer:
-/// whichever is first, a cycle that reconciles in full ends up behind the test. If the test
-/// is first, it is the first cycle itself, which is Full as every sync's first is, and the
-/// cycle asked for below cannot start before it ends. If the cycle is first, the test gets
-/// the lock when the cycle is done with it, and the cycle asked for below is the one. So the
-/// set-up waits for a cycle queued for the lock, not for one more request (`D31`).
+/// How far the cycle has come when the two changes arrive is not the test's to choose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
     use crate::account::PendingUploads;
@@ -837,32 +920,16 @@ async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
     listed(&service).await;
     let before = deltas(&w).await;
     service.follow_mode(Mode::ReadWrite).await;
-    // The read-write sync's first cycle has asked OneDrive: the watcher's first scan, which
-    // takes the tree lock too, is over.
+    // The read-write sync's first cycle has asked OneDrive: the watcher's first scan is over.
     wait_for_deltas(&w, before).await;
 
-    let held = Arc::clone(&service.tree_lock).lock_owned().await;
-    // A cycle that reconciles in full has fetched and is queued for the tree lock.
-    assert!(service.nudge_full());
-    wait_until("a cycle waits for the tree lock", || cycle_waits_for_tree(&service)).await;
-    // The forced switch: it holds the folder's state, and cannot end while the test holds
-    // the tree lock. Waited for however long a loaded machine takes to stop the folder's
-    // tasks; a reader of the state (`Skipped()`) stops being answered once it is held.
+    // A cycle is asked for, and the switch and the bring-up come at once, while it runs.
+    service.refresh().await.unwrap();
     let switching = Arc::clone(&service);
     let switch = tokio::spawn(async move { switching.drop_pending_uploads().await });
-    let taken = tokio::time::timeout(Duration::from_secs(60), async {
-        while tokio::time::timeout(Duration::from_millis(200), service.skipped()).await.is_ok() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(taken.is_ok(), "the switch never took the folder's state");
     // The helper reconnected: the bring-up waits for the state too.
     let resuming = Arc::clone(&service);
     let bring_up = tokio::spawn(async move { resuming.resume().await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!switch.is_finished() && !bring_up.is_finished(), "neither ends while the tree lock is held");
-    drop(held);
 
     let ended = tokio::time::timeout(Duration::from_secs(15), async {
         switch.await.unwrap();
@@ -873,6 +940,11 @@ async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
         ended.is_ok(),
         "the forced switch and the bring-up never end: a cycle, the switch and the bring-up wait for each other"
     );
+    assert_eq!(service.mode(), Mode::ReadOnly);
+    // The sync runs again: a cycle asked for comes.
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
     service.stop_sync().await;
 }
 
@@ -892,16 +964,21 @@ async fn a_forced_drop_turns_the_folder_read_only_and_records_nothing_again() {
     assert_eq!(service.pending_uploads().await, 1);
 
     service.drop_pending_uploads().await;
-    let running = |service: &SyncService| service.syncing.lock().unwrap().as_ref().map(|s| s.watcher.is_some());
+    // Nothing scans the folder, and nothing waits in its store.
+    let waiting = |service: Arc<SyncService>| async move { service.outbox(0).await.map(|rows| rows.len()) };
     assert_eq!(service.mode(), Mode::ReadOnly);
-    assert_eq!(running(&service), Some(false), "a sync runs, with no watcher to scan the folder");
+    assert!(!service.writable(), "no watcher to scan the folder");
     assert_eq!(mode(&w.folder.path().join("docs")), 0o555, "locked again");
-    assert_eq!(service.changes_in_store().await.unwrap(), 0, "nothing waits in the store");
+    assert!(matches!(waiting(Arc::clone(&service)).await, Ok(0)), "nothing waits in the store");
+    // And its sync runs on, read-only: a cycle asked for comes.
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
     assert!(w.folder.path().join("docs/new.txt").exists());
 
     // The folder told to follow finds itself turned, and its sync is left running.
     service.follow_mode(Mode::ReadOnly).await;
-    assert_eq!(running(&service), Some(false));
-    assert_eq!(service.changes_in_store().await.unwrap(), 0);
+    assert!(!service.writable());
+    assert!(matches!(waiting(Arc::clone(&service)).await, Ok(0)));
     service.stop_sync().await;
 }

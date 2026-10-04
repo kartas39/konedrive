@@ -56,7 +56,7 @@ mod fetch;
 mod poller;
 /// Downloaded files that changed in OneDrive, replaced after the cycle.
 mod replacements;
-pub use poller::{Poller, Schedule};
+pub use poller::{PollHandle, Poller, Schedule};
 use replacements::Replacements;
 pub use replacements::REPLACE_WORKERS;
 
@@ -260,9 +260,6 @@ pub struct Listing {
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
     revisit_from: std::sync::atomic::AtomicI64,
-    /// Tests only: a read-write cycle is queued for the tree lock (`rw`'s `waits_for_tree`).
-    #[cfg(test)]
-    waits_for_tree: AtomicBool,
 }
 
 /// Runs its closure when dropped, unless disarmed first.
@@ -319,8 +316,6 @@ impl Listing {
             turns: Arc::new(tokio::sync::Mutex::new(())),
             replacements,
             revisit_from: std::sync::atomic::AtomicI64::new(0),
-            #[cfg(test)]
-            waits_for_tree: AtomicBool::new(false),
         })
     }
 

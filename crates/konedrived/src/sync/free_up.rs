@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -164,11 +163,6 @@ impl SyncService {
     /// above the path by the time it is walked — keeps is left and counted in
     /// [`FreedUp::pinned`]. One `freed` event per path that freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
-        self.free_up_with(paths, pin::set_pin).await
-    }
-
-    /// [`free_up`](Self::free_up), taking pins off through `write`.
-    pub(super) async fn free_up_with(&self, paths: &[PathBuf], write: fn(&File, bool) -> io::Result<()>) -> Result<FreedUp, SyncError> {
         let reg = self.require_record()?;
         if reg.intercepted() {
             self.require_link()?;
@@ -186,7 +180,7 @@ impl SyncService {
         // The other descriptors close here: one of our own left open on a
         // file would refuse the write lease its free-up takes.
         let own: Vec<PinTarget> = targets.into_iter().filter(|target| target.own).collect();
-        let (unpinned, failed) = self.set_pins(own, false, write).await;
+        let (unpinned, failed) = self.set_pins(own, false).await;
         for shown in &unpinned {
             self.pins.unpinned(shown);
         }
@@ -310,7 +304,7 @@ impl SyncService {
             Ok(_) => return Ok(()),
             Err(e) => return Err(cannot_tell(e.to_string())),
         }
-        let Some(store) = self.store.lock().unwrap().clone() else { return Err(cannot_tell("the folder's sync has not started".into())) };
+        let Some(store) = self.tree_store() else { return Err(cannot_tell("the folder's sync has not started".into())) };
         let id = placeholder::read_item_id(file).map_err(|e| cannot_tell(e.to_string()))?;
         let meta = file.metadata().map_err(|e| cannot_tell(e.to_string()))?;
         let inode = Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() };

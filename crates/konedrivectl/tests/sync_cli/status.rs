@@ -103,9 +103,15 @@ async fn the_folder_follows_the_accounts_mode() {
     f.account.state().update(|s| s.mode = Mode::ReadWrite);
     wait_for(|| modes() == (0o644, 0o755, 0o755)).await;
     assert_eq!(f.service.mode(), Mode::ReadWrite);
+    // `Folder.Writable`, and `sync status`'s `Mode:` line with it.
+    wait_for(|| f.service.writable()).await;
+    assert!(f.proxy.folder.writable().await.unwrap());
+    let text = out_text(&run(f._bus.address(), &["sync", "status"]));
+    assert!(text.lines().any(|l| l.starts_with("Mode:") && l.contains("changes made here are uploaded")), "{text}");
     f.account.state().update(|s| s.mode = Mode::ReadOnly);
     wait_for(|| modes() == (0o444, 0o555, 0o555)).await;
     assert_eq!(f.service.mode(), Mode::ReadOnly);
+    assert!(!f.proxy.folder.writable().await.unwrap());
 }
 
 /// `sync status` says how the local scan goes (issue #8): a read-only folder has none.
