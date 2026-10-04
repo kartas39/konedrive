@@ -188,7 +188,8 @@ pub fn own_fill_is_silent(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String>
 /// helper refuses), and `LastError` says so.
 pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     use konedrive_fs::placeholder::XATTR_ROOT;
-    use konedrived::local::{IgnoreList, NoLiveness};
+    use konedrived::local::liveness::NoLiveness;
+    use konedrived::local::IgnoreList;
     use konedrived::folder::root::SyncRoot;
     use konedrived::local::watcher::ExamineSink;
     use konedrived::folder::locks::InodeLocks;

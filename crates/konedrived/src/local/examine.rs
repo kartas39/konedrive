@@ -36,10 +36,24 @@
 //! lease before trusting what it reads. A row the worker is running is never
 //! taken from under it: what changed since waits behind it. An entry this
 //! daemon is refused to open, strip or read is passed over and examined
-//! again later; its trouble never fails the batch. Everything found is
-//! applied to the store in one transaction.
+//! again later; its trouble never fails the batch.
+//!
+//! A listed entry is opened through [`Run::open_same`], which gives it up
+//! when the name holds another object by then: what is read, stripped or
+//! restored is the object the run looked at, never whatever stands at its
+//! name later. (The removal of an empty copy checks the same in its own way.)
+//!
+//! The rows, the recorded objects and the skipped list are applied to the
+//! store in one transaction, at the end (`finish`). Four things are done on
+//! the way, while deciding, because a decision depends on whether they
+//! worked; each is what the next run would do again, so a batch that fails
+//! after one of them converges: a copy's marks are taken off (it is an
+//! ordinary file with no row, found new by the next scan of its directory),
+//! an empty copy is removed and said in Activity (it held nothing), a cut
+//! placeholder gets its size back, and a touched file's stamp is renewed.
 
 mod classify;
+mod detect;
 mod finish;
 mod found;
 mod list;
@@ -50,7 +64,6 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
@@ -61,7 +74,7 @@ use super::batch::Batch;
 use super::entry::{self, Entry};
 use super::ignore::IgnoreList;
 use super::liveness::Liveness;
-use crate::folder::disk::{Disk, HOLDING, NEW_PREFIX};
+use crate::folder::disk::{daemon_owned, gone, Disk};
 use crate::folder::locks::InodeLocks;
 use konedrive_tree::outbox::{Base, Detection, Inode, LocalSkip, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use konedrive_tree::{Located, Row, Store, TreeError};
@@ -92,7 +105,7 @@ pub enum ExamineError {
 pub struct Examined {
     /// The rows written and removed.
     pub applied: OutboxApplied,
-    /// To examine again after [`RECHECK`]: files open for writing, being
+    /// To examine again after [`RECHECK`](super::RECHECK): files open for writing, being
     /// filled or freed, and items that moved somewhere the batch did not see.
     pub recheck: Batch,
     /// Placeholders a `truncate(2)` had cut: their size is the cloud's again
@@ -389,16 +402,8 @@ impl Rows {
         found.extend(self.by_inode.get(&(e.dev, e.ino)).into_iter().flatten());
         found.sort_unstable();
         found.dedup();
-        found
-            .into_iter()
-            .map(|i| &self.all[i])
-            .filter(|row| {
-                row.inode.as_ref().is_some_and(|i| match (&i.handle, &e.handle) {
-                    (Some(a), Some(b)) => a == b,
-                    _ => i.dev == e.dev && i.ino == e.ino,
-                })
-            })
-            .collect()
+        let object = e.inode();
+        found.into_iter().map(|i| &self.all[i]).filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(&object))).collect()
     }
 
     /// The rows at `rel` exactly.
@@ -460,14 +465,6 @@ impl Objects {
 
 fn depth(rel: &Path) -> usize {
     rel.components().count()
-}
-
-fn daemon_owned(name: &OsStr) -> bool {
-    name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
-}
-
-fn gone(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP))
 }
 
 fn denied(e: &io::Error) -> bool {

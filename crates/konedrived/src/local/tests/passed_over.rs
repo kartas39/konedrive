@@ -32,7 +32,7 @@ impl<F: Fn(u64)> ScanProgress for AfterListing<F> {
 
 /// A Full local scan during which `change` runs after each directory listed,
 /// with the number of files read so far.
-fn scan_changing(fx: &Fx, change: impl Fn(u64)) -> Result<Examined, ExamineError> {
+pub(super) fn scan_changing(fx: &Fx, change: impl Fn(u64)) -> Result<Examined, ExamineError> {
     let disk = fx.disk();
     let examiner = Examiner { disk: &disk, store: &fx.store, liveness: &fx.liveness, ignore: &fx.ignore, locks: &fx.locks, now: 1000 };
     examiner.examine_reporting(&Batch::full(), Some(&AfterListing(change)))

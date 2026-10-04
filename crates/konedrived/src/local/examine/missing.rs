@@ -3,9 +3,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::local::entry::Type;
-use konedrive_tree::outbox::{is_under, place_name, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{is_under, place_name, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use konedrive_tree::{Kind, Placement, Row, Table};
 
+use super::detect::leaves;
 use super::{base_of, ExamineError, Expect, object, Objects, Place, Run, Settle};
 
 impl Run<'_, '_> {
@@ -92,20 +93,7 @@ impl Run<'_, '_> {
             self.ops.push(OutboxOp::Remove(row.seq));
             return;
         }
-        self.detections.push(Detection {
-            kind: OutboxKind::Delete,
-            item_id: None,
-            inode: row.inode.clone(),
-            rel: row.rel.clone(),
-            base: None,
-            target_parent: None,
-            target_name: None,
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: None,
-        });
+        self.detections.push(leaves(OutboxKind::Delete, None, None, row.inode.clone(), &row.rel, None));
     }
 
     /// Item `id`, expected at `rel`, is not in the batch.
@@ -223,21 +211,9 @@ impl Run<'_, '_> {
                 }
             }
         }
-        self.detections.push(Detection {
-            kind,
-            item_id: Some(id.to_owned()),
-            inode,
-            rel: rel.to_path_buf(),
-            base: Some(base_of(base)),
-            target_parent: None,
-            // Where a move out went, proved: what a later `ESTALE` is checked against.
-            target_name: went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(place_name).map(str::to_owned),
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: None,
-        });
+        // Where a move out went, proved: what a later `ESTALE` is checked against.
+        let went_to = went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(place_name).map(str::to_owned);
+        self.detections.push(leaves(kind, Some(id), Some(base_of(base)), inode, rel, went_to));
         Ok(Settle::Done)
     }
 

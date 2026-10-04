@@ -13,7 +13,7 @@ use konedrive_fs::placeholder::{Stamp, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_S
 use nix::errno::Errno;
 use nix::fcntl::AtFlags;
 
-use konedrive_tree::outbox::{Inode, LocalSkip};
+use konedrive_tree::outbox::{Inode, LocalSkip, Snapshot};
 use konedrive_tree::usable_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +78,11 @@ impl Entry {
 
     pub fn same_object(&self, other: &Entry) -> bool {
         self.inode().same_object(&other.inode())
+    }
+
+    /// The content as it was listed: its size and time.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot::content(self.size, self.mtime.0, self.mtime.1)
     }
 
     /// Downloaded, and so readable for an upload (WR1).

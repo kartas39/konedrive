@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 use crate::helper::HelperError;
-use crate::local::liveness::answered;
+use crate::local::liveness::{answered, Whereabouts};
 
 /// The helper's answer as the examination reads it: `ESTALE` is gone, a descriptor says
 /// where, `EPERM` — never gone — decides nothing, and neither does a helper that is not

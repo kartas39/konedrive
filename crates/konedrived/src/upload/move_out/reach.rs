@@ -43,7 +43,7 @@ pub(super) async fn reach(helper: &dyn Helper, store: &Store, root: &File, handl
         Ok(object) => Reach::Open(Arc::new(File::from(object))),
         // Every decode failure is `ESTALE`: believed only for handles taken on the
         // filesystem the folder is on now.
-        Err(HelperError::Refused(libc::ESTALE)) if handles::current_async(store, root).await => Reach::Gone,
+        Err(HelperError::Refused(libc::ESTALE)) if handles_current(store, root).await => Reach::Gone,
         Err(HelperError::Refused(libc::ESTALE)) => Reach::Stale,
         Err(HelperError::Refused(libc::EPERM)) => Reach::Refused,
         Err(HelperError::Refused(libc::EAGAIN)) => Reach::Busy,
@@ -51,4 +51,12 @@ pub(super) async fn reach(helper: &dyn Helper, store: &Store, root: &File, handl
         Err(HelperError::Refused(errno)) => Reach::Errno(errno),
         Err(other) => Reach::NoHelper(other),
     }
+}
+
+/// [`handles::current`], in a blocking section. When it cannot be asked the answer is no:
+/// the `ESTALE` then says nothing, and nothing is taken for gone.
+async fn handles_current(store: &Store, root: &File) -> bool {
+    let Ok(root) = root.try_clone() else { return false };
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || handles::current(&store, &root)).await.unwrap_or(false)
 }

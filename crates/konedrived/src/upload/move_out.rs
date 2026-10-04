@@ -40,7 +40,7 @@
 //! own lookups, checks that it is the same inode, and goes down one name at a time from there,
 //! never following a symlink.
 //!
-//! [`handles_current`]: crate::local::handles::current_async
+//! [`handles_current`]: crate::local::handles::current
 //!
 //! **Where it is written.** [`run`] makes the row's [`MoveOut`](row::MoveOut), whose step
 //! (`row`) asks the helper (`reach`), finds where the object is (`place`, `trash`) and takes

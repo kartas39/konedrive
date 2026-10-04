@@ -206,13 +206,14 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `examine/run.rs` — a run's reads of the store, and what it expects where.
 - `examine/list.rs` — reading every place the batch names.
 - `examine/classify.rs` — which entry is which item; strangers and backups.
-- `examine/found.rs` — an item found: where it is, and its content.
+- `examine/detect.rs` — the detections a run records, each shape made once; whether a file is ready to be read.
+- `examine/found.rs` — an item found: where it is, and its content; the one open of a listed entry.
 - `examine/missing.rs` — an item not found: removed, moved away, or moved out of the folder.
 - `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows.
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
 - `liveness.rs` — whether a missing object is still there, and where; the proof that it is absent from a place.
-- `handles.rs` — which filesystem the recorded file handles belong to, and taking them again when it changed.
+- `handles.rs` — which filesystem the recorded file handles belong to, and taking them again when it changed; the record of the object a replacement swapped in.
 - `testing.rs` — tests: the stand-in for the helper's answer about an object (`FakeLiveness`).
 - `scan.rs` — how the Full local scan goes, for `org.konedrive.LocalScan`. `[tests]`
 

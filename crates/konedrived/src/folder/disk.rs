@@ -7,6 +7,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -25,6 +26,20 @@ use konedrive_tree::usable_id;
 pub const HOLDING: &str = ".konedrive-holding";
 /// A new folder's name until it is labelled and marked.
 pub const NEW_PREFIX: &str = ".konedrive-new-";
+
+/// Whether `name` is one the daemon uses for itself in the folder: the holding
+/// directory, or a new folder before it has its name. Nothing under such a name is
+/// the user's: the examination and the watcher both pass it over.
+pub fn daemon_owned(name: &OsStr) -> bool {
+    name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
+}
+
+/// Whether `e` says that what was asked for by name is not there any more: no such
+/// name, a part of the path that is no directory by now, or a symbolic link where an
+/// open that follows none met one (the name holds something else).
+pub fn gone(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
@@ -364,7 +379,7 @@ impl Disk {
     /// away while the walk was on its way to it, and what lies deeper than
     /// `konedrive_fs::MAX_DEPTH`, which the helper does not mark either.
     pub fn scan(&self, root_item_id: &str) -> io::Result<Vec<Scanned>> {
-        let gone = |e: &io::Error| e.raw_os_error() == Some(libc::ENOENT);
+        let went = |e: &io::Error| e.raw_os_error() == Some(libc::ENOENT);
         let at = |rel: &Path, e: io::Error| {
             let shown = if rel.as_os_str().is_empty() { Path::new("the folder itself") } else { rel };
             io::Error::new(e.kind(), format!("cannot scan {}: {e}", shown.display()))
@@ -379,7 +394,7 @@ impl Disk {
             let listed = self.dir(&rel).and_then(|dir| Ok((self.list(&dir)?, dir)));
             let (names, dir) = match listed {
                 Ok(listed) => listed,
-                Err(e) if gone(&e) && depth > 0 => continue,
+                Err(e) if went(&e) && depth > 0 => continue,
                 Err(e) => return Err(at(&rel, e)),
             };
             for name in names {

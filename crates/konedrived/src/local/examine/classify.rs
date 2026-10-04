@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -11,9 +10,10 @@ use crate::local::batch::Batch;
 use crate::local::entry::{proc_path, Entry, StateAttr, Type};
 use crate::local::names;
 use konedrive_fs::RESERVED_PREFIX;
-use konedrive_tree::outbox::{Base, Detection, LocalSkip, OutboxKind, OutboxOp, OutboxState, Snapshot};
+use konedrive_tree::outbox::{LocalSkip, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{ActivityKind, ActivityRow, Kind, Row, Table};
 
+use super::found::Opened;
 use super::{daemon_owned, depth, ExamineError, Expect, lossy, Run};
 
 impl Run<'_, '_> {
@@ -245,15 +245,13 @@ impl Run<'_, '_> {
             }
             run.consumed.insert(i);
         };
-        let strip = |opened: io::Result<File>| opened.and_then(|object| placeholder::strip_konedrive_xattrs(&object));
-        let dir = self.ex.disk.dir(e.dir_rel());
         let stripped = match e.ty {
-            Type::Dir => strip(dir.and_then(|dir| self.ex.disk.open_subdir(&dir, &e.name))),
             Type::File if e.hydrated() && e.nlink > 1 => {
                 listed(self, LocalSkip::HardLink);
                 return Ok(());
             }
-            Type::File if e.hydrated() => strip(dir.and_then(|dir| self.ex.disk.open_file(&dir, &e.name))),
+            Type::Dir => self.strip(&e)?,
+            Type::File if e.hydrated() => self.strip(&e)?,
             _ => {
                 if certain && self.remove_empty(&e) {
                     self.consumed.insert(i);
@@ -263,10 +261,11 @@ impl Run<'_, '_> {
                 return Ok(());
             }
         };
-        if self.entry_io(&e, stripped)?.is_none() {
-            // Not stripped, because it was refused or because it went: it
-            // is not uploaded as new, and what was listed inside it gets no
-            // row in this run (`unnamed`). In any other run, and at the
+        if !stripped {
+            // Not stripped, because it was refused, because it went, or
+            // because its name holds another object by now: it is not
+            // uploaded as new, and what was listed inside it gets no row in
+            // this run (`unnamed`). In any other run, and at the
             // worker, the id it may still carry is no folder to go into
             // (`upload::steps::shared::dir_id`).
             self.consumed.insert(i);
@@ -281,6 +280,24 @@ impl Run<'_, '_> {
         self.entries[i].state = StateAttr::Absent;
         self.fresh.push(i);
         Ok(())
+    }
+
+    /// Takes konedrive's marks off the object `e` was listed as, the item
+    /// id first ([`placeholder::strip`]), and says whether it did. Through
+    /// a descriptor proved to be that object ([`open_same`](Self::open_same)):
+    /// a name that holds another object by now — the item's own file,
+    /// renamed over a copy while the run was under way — is left as it is,
+    /// and looked at again.
+    fn strip(&mut self, e: &Entry) -> Result<bool, ExamineError> {
+        let object = match self.open_same(e)? {
+            Opened::Same(object) => object,
+            Opened::Gone => {
+                self.recheck(e);
+                return Ok(false);
+            }
+            Opened::Passed => return Ok(false),
+        };
+        Ok(self.entry_io(e, placeholder::strip(&object))?.is_some())
     }
 
     /// A copy marked as not downloaded that holds no data — a regular file
@@ -344,16 +361,8 @@ impl Run<'_, '_> {
         for &i in group {
             self.consumed.insert(i);
             let e = self.entries[i].clone();
-            if e.hydrated() {
-                let stripped = self
-                    .ex
-                    .disk
-                    .dir(e.dir_rel())
-                    .and_then(|dir| self.ex.disk.open_file(&dir, &e.name))
-                    .and_then(|file| placeholder::strip_konedrive_xattrs(&file));
-                if self.entry_io(&e, stripped)?.is_some() {
-                    self.out.stripped.push(e.rel);
-                }
+            if e.hydrated() && self.strip(&e)? {
+                self.out.stripped.push(e.rel);
             }
         }
         self.consumed.insert(s);
@@ -371,40 +380,14 @@ impl Run<'_, '_> {
     /// create of that file goes (never one being sent: callers exclude it).
     pub(super) fn save_by_rename(&mut self, id: &str, base: &Row, s: usize) -> Result<(), ExamineError> {
         let e = self.entries[s].clone();
-        let Some((state, reason, next_try)) = self.probe_writer(&e)? else { return Ok(()) };
+        let Some(ready) = self.probe_writer(&e)? else { return Ok(()) };
         if let Some(row) = self.pending_row(&e).filter(|row| row.state != OutboxState::Running) {
             self.ops.push(OutboxOp::Remove(row.seq));
         }
-        let mut d = self.detection(OutboxKind::Update, id, base, &e, None);
-        (d.state, d.reason, d.next_try) = (state, reason, next_try);
+        let mut d = self.of_item(OutboxKind::Update, id, base, &e, None);
+        ready.onto(&mut d);
         self.detections.push(d);
         Ok(())
-    }
-
-    pub(super) fn detection(&self, kind: OutboxKind, id: &str, base: &Row, e: &Entry, local_ctag: Option<&str>) -> Detection {
-        // The version the local content derives from: the file's own cTag
-        // when it names another than the base's (a download not yet
-        // replaced); the eTag guards only the base's own version.
-        let same_version = local_ctag.is_none_or(|c| Some(c) == base.ctag.as_deref());
-        Detection {
-            kind,
-            item_id: Some(id.to_owned()),
-            inode: Some(e.inode()),
-            rel: e.rel.clone(),
-            base: Some(Base {
-                etag: if same_version { base.etag.clone() } else { None },
-                ctag: if same_version { base.ctag.clone() } else { local_ctag.map(str::to_owned) },
-                parent: base.parent_id.clone(),
-                name: Some(base.name.clone()),
-            }),
-            target_parent: self.dir_id(e.dir_rel()),
-            target_name: Some(lossy(&e.name)),
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: (e.ty == Type::File).then_some(e.size),
-        }
     }
 
     /// Rules 3–5: an entry without an item id.
@@ -416,7 +399,6 @@ impl Run<'_, '_> {
             return Ok(());
         }
         let pending = self.pending_row(&e).cloned();
-        let target_parent = self.dir_id(e.dir_rel());
         // 3. Ignored — its name, or a directory of the user's own above it
         // (the outbox on the bus): stays local, and a create it had goes — unless the
         // worker is creating it right now: then it is an item already, which
@@ -424,20 +406,7 @@ impl Run<'_, '_> {
         if self.ex.ignore.matches(&e.name) || self.in_ignored_dir(e.dir_rel()) {
             let being_created = self.being_created(&e);
             if being_created {
-                self.detections.push(Detection {
-                    kind: OutboxKind::Move,
-                    item_id: None,
-                    inode: Some(e.inode()),
-                    rel: e.rel.clone(),
-                    base: None,
-                    target_parent,
-                    target_name: Some(lossy(&e.name)),
-                    same_content: false,
-                    state: OutboxState::Ready,
-                    reason: None,
-                    next_try: None,
-                    size: None,
-                });
+                self.detections.push(self.new_object(OutboxKind::Move, &e));
             } else if let Some(row) = pending.filter(|r| matches!(r.kind, OutboxKind::Create | OutboxKind::Mkdir)) {
                 self.ops.push(OutboxOp::Remove(row.seq));
             }
@@ -465,26 +434,12 @@ impl Run<'_, '_> {
                 }
             }
         }
-        let mut d = Detection {
-            kind: if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create },
-            item_id: None,
-            inode: Some(e.inode()),
-            rel: e.rel.clone(),
-            base: None,
-            target_parent,
-            target_name: Some(lossy(&e.name)),
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: (!is_dir).then_some(e.size),
-        };
+        let mut d = self.new_object(if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create }, &e);
         if let Some(row) = &pending {
             if is_dir && row.rel != e.rel {
                 self.ops.push(OutboxOp::Rebase { from: row.rel.clone(), to: e.rel.clone() });
             }
-            let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
-            if !is_dir && row.state == OutboxState::Running && row.snapshot_is(now) {
+            if !is_dir && row.state == OutboxState::Running && row.snapshot_is(e.snapshot()) {
                 // Being uploaded as it is now: only where it is matters.
                 d.kind = OutboxKind::Move;
             }
@@ -494,9 +449,10 @@ impl Run<'_, '_> {
             d.state = OutboxState::Blocked;
             d.reason = Some(refused.reason());
         } else if !is_dir {
-            // One that cannot be opened is passed over: no row.
-            let Some(probed) = self.probe_writer(&e)? else { return Ok(()) };
-            (d.state, d.reason, d.next_try) = probed;
+            // One that cannot be opened is passed over, one that went is
+            // not there: no row.
+            let Some(ready) = self.probe_writer(&e)? else { return Ok(()) };
+            ready.onto(&mut d);
         }
         self.detections.push(d);
         Ok(())

@@ -264,6 +264,7 @@ application must never read zeros where real content should be.
 - [F259](F259.md) — A file changed here whose name OneDrive exchanged with another file's: one request nobody made, which OneDrive refuses, and then both versions are kept
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
+- [F262](F262.md) — Taking the marks off a copy waits for the disk, with the folder's tree lock held
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
 - [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
 - [F267](F267.md) — A notification group that cannot be read is tried again without a pause
@@ -274,8 +275,10 @@ application must never read zeros where real content should be.
 - [F272](F272.md) — A directory of the folder that cannot be read stops the sync of the whole folder
 - [F273](F273.md) — The daemon exits when a task it needs is gone, and counts on systemd to start it again
 - [F274](F274.md) — The properties the daemon announces are one table; four properties are outside it, and the check is by name
+- [F275](F275.md) — What changed at a name between the listing and the act waits for the next look at that name
 - [F276](F276.md) — A stale drive that cannot be taken off an empty folder stays, and the folder is registered all the same
 - [F277](F277.md) — A placeholder that is in the way is removed, not rescued, also when it is being filled
+- [F280](F280.md) — The removal of an empty copy opens its entry by itself, not through the examination's one open
 
 ---
 
@@ -393,6 +396,7 @@ application must never read zeros where real content should be.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
 - [D39](D39.md) — An item OneDrive moved where the folder cannot hold it: what the upload worker knows, and when.
 - [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
+- [D41](D41.md) — The tests of `local/` after the first part of its restructuring: what was not brought in line.
 - [D42](D42.md) — What the running sync as an object leaves by hand.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus

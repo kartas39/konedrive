@@ -513,11 +513,11 @@ fn find_by_handle(bases: &[PathBuf], handle: &FileHandle) -> Option<PathBuf> {
 /// from where the objects really are.
 pub(super) struct Scanning(pub(super) Vec<PathBuf>);
 
-impl crate::local::Liveness for Scanning {
-    fn whereabouts(&self, handle: &FileHandle) -> std::io::Result<crate::local::Whereabouts> {
+impl crate::local::liveness::Liveness for Scanning {
+    fn whereabouts(&self, handle: &FileHandle) -> std::io::Result<crate::local::liveness::Whereabouts> {
         Ok(match find_by_handle(&self.0, handle) {
-            Some(path) => crate::local::Whereabouts::At(path),
-            None => crate::local::Whereabouts::Gone,
+            Some(path) => crate::local::liveness::Whereabouts::At(path),
+            None => crate::local::liveness::Whereabouts::Gone,
         })
     }
 }
