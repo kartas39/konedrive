@@ -93,7 +93,7 @@ impl Drop for LocalSpace {
 async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure) {
     loop {
         kick.notified().await;
-        let root = state.get().root_path;
+        let root = state.get().folder.root_path;
         let bytes = if root.is_empty() {
             0
         } else {
@@ -109,8 +109,8 @@ async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure) {
         // A folder forgotten, or another registered, while it walked: what
         // it found is not about the folder there is now.
         state.update(|s| {
-            if s.root_path == root {
-                s.local_bytes = bytes;
+            if s.folder.root_path == root {
+                s.local.local_bytes = bytes;
             }
         });
         tokio::time::sleep(SPACE_SPACING).await;

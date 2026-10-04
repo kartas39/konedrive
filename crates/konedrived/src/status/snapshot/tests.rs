@@ -1,20 +1,25 @@
 use crate::helper::status::HelperState;
 use super::*;
 
+/// A snapshot whose folder is `folder`, the rest as at the start.
+fn folder(folder: FolderStatus) -> SyncSnapshot {
+    SyncSnapshot { folder, ..SyncSnapshot::default() }
+}
+
 #[test]
 fn the_published_state_is_computed_from_the_registration_and_the_sync() {
-    let mut s = SyncSnapshot { root_state: RootState::Ready, ..SyncSnapshot::default() };
+    let mut s = folder(FolderStatus { root_state: RootState::Ready, ..FolderStatus::default() });
     assert_eq!(published_state(&s), "ready");
-    s.listing = true;
+    s.cycle.listing = true;
     assert_eq!(published_state(&s), "listing");
-    s.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false });
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false });
     assert_eq!(published_state(&s), "listing", "no network is said, not an error");
-    s.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true });
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true });
     assert_eq!(published_state(&s), "error");
-    s.root_state = RootState::Error;
-    s.last_error = "the helper is not connected".into();
-    s.replacement_note = Some(ReplacementNote { files: 1, why: "no space".into() });
-    s.conflict_count = 1;
+    s.folder.root_state = RootState::Error;
+    s.folder.last_error = "the helper is not connected".into();
+    s.cycle.replacement_note = Some(ReplacementNote { files: 1, why: "no space".into() });
+    s.local.conflict_count = 1;
     assert_eq!(
         published_error(&s),
         "the helper is not connected. signed out. 1 file(s) changed in OneDrive could not be updated here yet: no space",
@@ -23,7 +28,8 @@ fn the_published_state_is_computed_from_the_registration_and_the_sync() {
     assert_eq!(published_state(&SyncSnapshot::default()), "none");
 
     // `listing` never hides `no-interception`.
-    let s = SyncSnapshot { root_state: RootState::NoInterception, listing: true, ..SyncSnapshot::default() };
+    let mut s = folder(FolderStatus { root_state: RootState::NoInterception, ..FolderStatus::default() });
+    s.cycle.listing = true;
     assert_eq!(published_state(&s), "no-interception");
 }
 
@@ -33,13 +39,13 @@ fn the_published_state_is_computed_from_the_registration_and_the_sync() {
 #[test]
 fn a_folder_waiting_for_the_helper_says_how_to_start_it() {
     let said = |helper_state| {
-        let s = SyncSnapshot {
+        let s = folder(FolderStatus {
             root_state: RootState::Ready,
             waits_for_helper: true,
             helper_state,
             last_error: "recovery left 1 file".into(),
-            ..SyncSnapshot::default()
-        };
+            ..FolderStatus::default()
+        });
         (published_state(&s), published_error(&s))
     };
     let (state, error) = said(HelperState::NotInstalled);
@@ -56,7 +62,7 @@ fn a_folder_waiting_for_the_helper_says_how_to_start_it() {
     assert!(said(HelperState::Unknown).1.starts_with("the konedrive helper is not connected. "));
     assert_eq!(said(HelperState::Connected).1, "recovery left 1 file", "nothing to say of a connected helper");
 
-    let s = SyncSnapshot { root_state: RootState::Ready, helper_state: HelperState::Stopped, ..SyncSnapshot::default() };
+    let s = folder(FolderStatus { root_state: RootState::Ready, helper_state: HelperState::Stopped, ..FolderStatus::default() });
     assert_eq!((published_state(&s), published_error(&s).as_str()), ("ready", ""), "a folder not waiting says nothing of it");
 }
 
@@ -135,9 +141,9 @@ fn the_worker_takes_back_only_its_own_notes() {
 #[test]
 fn the_switch_note_stands_behind_the_registrations_text() {
     let note = SwitchNote { why: "errno 5".into() };
-    let mut s = SyncSnapshot { switch_note: Some(note.clone()), ..SyncSnapshot::default() };
+    let mut s = folder(FolderStatus { switch_note: Some(note.clone()), ..FolderStatus::default() });
     assert_eq!(published_error(&s), note.text());
-    s.last_error = "recovery left 1 file".into();
+    s.folder.last_error = "recovery left 1 file".into();
     assert_eq!(published_error(&s), format!("recovery left 1 file. {}", note.text()));
 }
 
@@ -147,7 +153,7 @@ fn the_switch_note_stands_behind_the_registrations_text() {
 #[test]
 fn a_folder_not_up_yet_waits_calmly_until_the_helper_is_known_to_be_down() {
     let said = |helper_state, waits_for_helper| {
-        let s = SyncSnapshot { root_state: RootState::Waiting, waits_for_helper, helper_state, ..SyncSnapshot::default() };
+        let s = folder(FolderStatus { root_state: RootState::Waiting, waits_for_helper, helper_state, ..FolderStatus::default() });
         (published_state(&s), published_error(&s))
     };
     assert_eq!(said(HelperState::Unknown, true), ("waiting", String::new()));

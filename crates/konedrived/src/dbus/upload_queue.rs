@@ -42,46 +42,46 @@ impl UploadQueue {
     /// Changes waiting to be uploaded (not blocked, not held).
     #[zbus(property)]
     async fn pending_count(&self) -> u32 {
-        self.service.state().get().pending_count
+        self.service.state().get().outbox.pending_count
     }
 
     /// The size of the files those changes send.
     #[zbus(property)]
     async fn pending_bytes(&self) -> u64 {
-        self.service.state().get().pending_bytes
+        self.service.state().get().outbox.pending_bytes
     }
 
     /// Changes that need the user to go up.
     #[zbus(property)]
     async fn blocked_count(&self) -> u32 {
-        self.service.state().get().blocked_count
+        self.service.state().get().outbox.blocked_count
     }
 
     /// Removals the mass-delete guard holds for `ConfirmDeletes` or
     /// `RestoreDeletes`.
     #[zbus(property)]
     async fn held_count(&self) -> u32 {
-        self.service.state().get().held_count
+        self.service.state().get().outbox.held_count
     }
 
     /// OneDrive is full: no content goes up (issue #2).
     #[zbus(property)]
     async fn quota_full(&self) -> bool {
-        self.service.state().get().quota_full
+        self.service.state().get().outbox.quota_full
     }
 
     #[zbus(property)]
     async fn quota_waiting_count(&self) -> u32 {
-        self.service.state().get().space_waiting_count
+        self.service.state().get().outbox.space_waiting_count
     }
 
     #[zbus(property)]
     async fn quota_waiting_bytes(&self) -> u64 {
-        self.service.state().get().space_waiting_bytes
+        self.service.state().get().outbox.space_waiting_bytes
     }
 
     #[zbus(property)]
     async fn too_big_count(&self) -> u32 {
-        self.service.state().get().too_big_count
+        self.service.state().get().outbox.too_big_count
     }
 }

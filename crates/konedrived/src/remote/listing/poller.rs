@@ -125,8 +125,8 @@ async fn held_back(listing: &Listing) -> bool {
         Some(n) => Some(OutboxNote::HeldBack(n)),
         None => Some(OutboxNote::Unreadable),
     };
-    if listing.ctx.state.get().outbox_note != note {
-        listing.ctx.state.update(|s| s.outbox_note = note);
+    if listing.ctx.state.get().outbox.note != note {
+        listing.ctx.state.update(|s| s.outbox.note = note);
     }
     waiting != Some(0)
 }

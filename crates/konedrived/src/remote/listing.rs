@@ -337,12 +337,12 @@ impl Listing {
 
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
-        let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        let was_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
         self.publish_outcome(&result);
         // The trouble that closed the write gate is gone only now, after the cycle's own
         // word to the outbox (`Writes::cycled`): the worker is told again. Whatever the
         // cycle came to: one that failed with trouble that is only said opens the gate too.
-        let is_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        let is_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
         if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped && !is_stopped) {
             (writes.reopened)();
         }
@@ -388,7 +388,7 @@ impl Listing {
         let fetch_seq = match &self.ctx.writes {
             Some(writes) => {
                 writes.scanned(cancel).await?;
-                Some(self.on_store(turn, |s| s.outbox_seq()).await?)
+                Some((writes, self.on_store(turn, |s| s.outbox_seq()).await?))
             }
             None => None,
         };
@@ -411,8 +411,8 @@ impl Listing {
         let listed = matches!(fetched, Fetched::Listed { .. } | Fetched::Placed(_));
         let (reconciled, changes) = match (fetched, fetch_seq) {
             (Fetched::Placed(placed), _) => (placed, 0),
-            (fetched, Some(seq)) => {
-                let done = self.reconcile_rw_fetched(turn, fetched, seq, full_requested, cancel).await?;
+            (fetched, Some((writes, seq))) => {
+                let done = self.reconcile_rw_fetched(turn, writes, fetched, seq, full_requested, cancel).await?;
                 self.revisit_from.store(seq, Ordering::SeqCst);
                 done
             }
@@ -458,7 +458,7 @@ impl Listing {
         // so a restart still knows when the folder was last in step.
         let now = activity::unix_now();
         self.on_store(turn, move |s| s.set_last_checked(now)).await?;
-        self.ctx.state.update(|s| s.last_checked = now);
+        self.ctx.state.update(|s| s.cycle.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
         // §16.1), whether or not anyone asks for the list: a batch of them
         // looked over each cycle (issue #39). Not through `on_store`: the
@@ -560,9 +560,9 @@ impl Listing {
     async fn publish_counts(&self, turn: &Turn) -> Result<(), CycleError> {
         let counts = self.on_store(turn, |s| s.counts()).await?;
         self.ctx.state.update(|s| {
-            s.items_listed = counts.listed;
-            s.items_placed = counts.placed;
-            s.skipped_count = counts.skipped;
+            s.cycle.items_listed = counts.listed;
+            s.cycle.items_placed = counts.placed;
+            s.cycle.skipped_count = counts.skipped;
         });
         Ok(())
     }
@@ -570,16 +570,16 @@ impl Listing {
     fn publish_outcome(&self, result: &Result<CycleReport, CycleError>) {
         self.ctx.state.update(|s| match result {
             Ok(_) => {
-                s.sync_trouble = None;
-                s.waits_for_helper = false;
+                s.cycle.sync_trouble = None;
+                s.folder.waits_for_helper = false;
             }
             Err(CycleError::Cancelled) => {}
             // The folder waits for the helper (HS2, HS3): `LastError` says so
             // in the helper's own words (`HelperState`), and `RootState`
             // reads `error`. `SyncService` publishes the same the moment the
             // link drops; this only makes sure of it.
-            Err(CycleError::NoHelper) => s.waits_for_helper = true,
-            Err(e) => s.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
+            Err(CycleError::NoHelper) => s.folder.waits_for_helper = true,
+            Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
         });
     }
 }

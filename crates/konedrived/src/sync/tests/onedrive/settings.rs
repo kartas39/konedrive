@@ -55,7 +55,7 @@ async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it()
     let service = made(&w, wiring);
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    wait_until("connected", || service.state().get().live_changes == LiveChanges::Connected).await;
+    wait_until("connected", || service.state().get().cycle.live_changes == LiveChanges::Connected).await;
     let before = deltas(&w).await;
 
     graph.with(|c| c.add_file("X", ROOT, "x.txt", b"x"));
@@ -64,11 +64,11 @@ async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it()
     assert_eq!(deltas(&w).await, before + 1, "one delta for the event");
 
     service.pause_syncing(0).await.unwrap();
-    wait_until("closed by the pause", || service.state().get().live_changes == LiveChanges::Off && graph.sockets.open() == 0).await;
+    wait_until("closed by the pause", || service.state().get().cycle.live_changes == LiveChanges::Off && graph.sockets.open() == 0).await;
     service.resume_syncing().await.unwrap();
-    wait_until("open again", || service.state().get().live_changes == LiveChanges::Connected).await;
+    wait_until("open again", || service.state().get().cycle.live_changes == LiveChanges::Connected).await;
     service.stop_sync().await;
-    assert_eq!(service.state().get().live_changes, LiveChanges::Off, "no sync, no socket");
+    assert_eq!(service.state().get().cycle.live_changes, LiveChanges::Off, "no sync, no socket");
 }
 
 /// Issue #57: on a metered connection the account holds back — no upload, no poll, no
@@ -96,8 +96,8 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     wait_for_deltas(&w, before).await;
 
     service.set_conditions(running::Conditions { metered: true, ..running::Conditions::default() });
-    assert_eq!(service.state().get().held_back, "metered");
-    assert_eq!(service.state().get().paused_until, None, "a hold is not the user's pause");
+    assert_eq!(service.state().get().pause.held_back, "metered");
+    assert_eq!(service.state().get().pause.paused_until, None, "a hold is not the user's pause");
     assert!(service.pool().try_acquire_sized(Class::Download, Size::Small).is_none(), "no pinned download");
     assert!(service.pool().try_acquire_sized(Class::Open, Size::Small).is_some(), "an open still downloads");
     let made = std::process::Command::new("sh").args(["-c", "echo new > docs/new.txt"]).current_dir(w.folder.path()).status().unwrap();
@@ -112,7 +112,7 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     assert!(service.outbox(0).await.unwrap().iter().all(|row| row.3 == "paused"), "the rows read paused");
 
     service.set_conditions(running::Conditions::default());
-    assert_eq!(service.state().get().held_back, "");
+    assert_eq!(service.state().get().pause.held_back, "");
     wait_for_deltas(&w, seen).await;
     for _ in 0..250 {
         if asked().await > 0 {
@@ -171,20 +171,20 @@ async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_
     let on_battery = running::Conditions { on_battery: true, ..running::Conditions::default() };
     service.set_hold_settings(hold(OnBattery::Pause));
     service.set_conditions(on_battery);
-    assert_eq!(service.state().get().held_back, "on-battery");
+    assert_eq!(service.state().get().pause.held_back, "on-battery");
 
     let seen = deltas(&w).await;
     service.sync_anyway().unwrap();
-    assert_eq!(service.state().get().held_back, "");
+    assert_eq!(service.state().get().pause.held_back, "");
     wait_for_deltas(&w, seen).await;
     service.set_conditions(running::Conditions { power_saver: true, ..on_battery });
-    assert_eq!(service.state().get().held_back, "on-battery", "the profile changed: held again");
+    assert_eq!(service.state().get().pause.held_back, "on-battery", "the profile changed: held again");
 
     service.sync_anyway().unwrap();
     service.set_hold_settings(hold(OnBattery::PowerSaver));
-    assert_eq!(service.state().get().held_back, "power-saver", "the setting changed: worked out again");
+    assert_eq!(service.state().get().pause.held_back, "power-saver", "the setting changed: worked out again");
     service.set_hold_settings(hold(OnBattery::Sync));
-    assert_eq!(service.state().get().held_back, "", "sync on battery");
+    assert_eq!(service.state().get().pause.held_back, "", "sync on battery");
 
     service.stop_sync().await;
     service.hub().set_link(None);
@@ -196,10 +196,10 @@ async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_
     restarted.restore().await;
     let seen = deltas(&w).await;
     restarted.resume().await;
-    wait_until("held again after a restart", || restarted.state().get().held_back == "on-battery").await;
+    wait_until("held again after a restart", || restarted.state().get().pause.held_back == "on-battery").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(deltas(&w).await, seen, "and asks OneDrive for nothing");
-    assert_eq!(restarted.state().get().paused_until, None, "and not paused");
+    assert_eq!(restarted.state().get().pause.paused_until, None, "and not paused");
     restarted.stop_sync().await;
 }
 

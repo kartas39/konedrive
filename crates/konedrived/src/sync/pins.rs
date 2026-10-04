@@ -138,7 +138,7 @@ impl SyncService {
 
     /// `PinnedCount`.
     pub fn pinned_count(&self) -> u32 {
-        self.state.get().pinned_count
+        self.state.get().local.pinned_count
     }
 }
 

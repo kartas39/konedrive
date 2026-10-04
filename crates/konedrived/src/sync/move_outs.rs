@@ -74,7 +74,7 @@ impl SyncService {
         let me = self.me.clone();
         Arc::new(move |note| {
             if let Some(service) = me.upgrade() {
-                service.state.update(|s| s.handles_note = note.clone().unwrap_or_default());
+                service.state.update(|s| s.local.handles_note = note.clone().unwrap_or_default());
             }
         })
     }

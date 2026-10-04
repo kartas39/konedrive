@@ -206,7 +206,7 @@ impl Replacements {
             .values()
             .max_by_key(|failed| failed.said)
             .map(|newest| ReplacementNote { files: state.failed.len(), why: newest.failure.text.clone() });
-        self.status.update_if_changed(|s| s.replacement_note = note);
+        self.status.update_if_changed(|s| s.cycle.replacement_note = note);
         recorded
     }
 

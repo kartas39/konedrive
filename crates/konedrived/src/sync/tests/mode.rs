@@ -528,7 +528,7 @@ async fn a_failed_registration_is_undone_at_the_helper_and_in_the_config() {
     assert!(service.root().is_none(), "a failed registration stored a root anyway");
     assert_eq!(helper.seen(), vec![Seen::RegisterRoot, Seen::UnregisterRoot]);
     assert_eq!(recorded_root(&config_file), "");
-    assert_eq!((service.state().get().root_path.as_str(), service.root_state().as_str(), service.last_error().as_str()), ("", "none", ""), "nor published");
+    assert_eq!((service.state().get().folder.root_path.as_str(), service.root_state().as_str(), service.last_error().as_str()), ("", "none", ""), "nor published");
     service.register_root(root_dir.path()).await.unwrap();
     assert_eq!(service.root_state(), "ready");
 }

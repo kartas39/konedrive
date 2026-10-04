@@ -4,7 +4,7 @@ use super::*;
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
 use crate::helper::status::HelperState;
-use crate::status::snapshot::{published_error, published_state};
+use crate::status::snapshot::{published_error, published_state, FolderStatus};
 use crate::sync::folder::{Record, Up};
 
 fn record(interception: Interception, source: RootSource) -> Record {
@@ -29,17 +29,17 @@ fn up(interception: Interception, source: RootSource, recovery: Recovery) -> Is 
 /// in the state `helper`: `Path`, `State`, `LastError`, `Source`.
 fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static str, String, &'static str) {
     let published = publish(folder);
-    let snapshot = SyncSnapshot {
+    let folder = FolderStatus {
         root_path: published.path,
         root_state: published.state,
         last_error: published.error,
         switch_note: published.switch_note,
         waits_for_helper: published.helper.waits(link),
         helper_state: helper,
-        ..SyncSnapshot::default()
     };
+    let snapshot = SyncSnapshot { folder, ..SyncSnapshot::default() };
     let source = published.view.record.map_or("", |record| record.source.as_str());
-    (snapshot.root_path.clone(), published_state(&snapshot), published_error(&snapshot), source)
+    (snapshot.folder.root_path.clone(), published_state(&snapshot), published_error(&snapshot), source)
 }
 
 const PATH: &str = "/home/u/OneDrive";

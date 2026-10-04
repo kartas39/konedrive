@@ -59,8 +59,8 @@ impl ScanProgress for ScanRun<'_> {
         self.seen.set((0, 0));
         let (reason, started) = (self.reason.as_str().to_owned(), unix_now());
         self.report.state.update(|s| {
-            let expected = s.items_placed;
-            let scan = &mut s.scan;
+            let expected = s.cycle.items_placed;
+            let scan = &mut s.local.scan;
             scan.state = ScanState::Running;
             scan.reason = reason;
             scan.started = started;
@@ -78,8 +78,8 @@ impl ScanProgress for ScanRun<'_> {
         }
         self.last.set(Some(now));
         self.report.state.update(|s| {
-            s.scan.directories = directories;
-            s.scan.files = files;
+            s.local.scan.directories = directories;
+            s.local.scan.files = files;
         });
     }
 }
@@ -93,7 +93,7 @@ impl ScanRun<'_> {
         let took = u32::try_from(began.elapsed().as_secs()).unwrap_or(u32::MAX);
         let finished = unix_now();
         self.report.state.update(|s| {
-            let scan = &mut s.scan;
+            let scan = &mut s.local.scan;
             // A switch to read-only meanwhile has the last word.
             if scan.state == ScanState::Running {
                 scan.state = ScanState::Idle;

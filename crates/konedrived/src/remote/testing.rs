@@ -58,7 +58,7 @@ use crate::remote::listing::reconcile::{Commit, Held, Mode, Prepared, Reconcile,
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
 use crate::remote::materialize::{Applied, Claimed, Scope};
 use crate::status::report::Report;
-use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle};
 use crate::upload::{Engine, Limits, NoHost, WorkerConfig};
 
 /// The longest a test waits for anything: a regression that would hang it
@@ -181,7 +181,7 @@ impl World {
         xattr::set(&folder, XATTR_ROOT, root_id.as_bytes()).unwrap();
         let store = Store::new(TreeStore::in_memory().unwrap());
         // The folder is what `SyncService` has registered: what its events are about.
-        let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
+        let state = SyncStateHandle::new(SyncSnapshot { folder: FolderStatus { root_path: folder.display().to_string(), ..FolderStatus::default() }, ..SyncSnapshot::default() });
         let report = Report::new(state.clone());
         konedrive_tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
         let pins = Pins::detached(state.clone());
@@ -346,8 +346,9 @@ impl World {
             })
             .await
             .unwrap();
+        let shared = self.writes(None);
         let mode = match tree {
-            Some(tree) => Mode::ReadWrite(RwCycle { tree, upload_differences: false, waiting }),
+            Some(tree) => Mode::ReadWrite(RwCycle { writes: &shared, tree, upload_differences: false, waiting }),
             None => Mode::ReadOnly,
         };
         let (reconcile, held) = listing.begin_reconcile(&turn, mode, &CancellationToken::new()).await.unwrap();

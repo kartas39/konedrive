@@ -65,7 +65,7 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
-    let note = s.state.get().replacement_note.expect("the status says it");
+    let note = s.state.get().cycle.replacement_note.expect("the status says it");
     assert_eq!(note.files, 1);
     assert!(published_error(&s.state.get()).contains("could not be updated"), "{note:?}");
     let (kind, at, why) = s.activity().pop().unwrap();
@@ -79,7 +79,7 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
     assert!(!report.full, "a failed replacement is retried as it is, with no Full reconcile");
     listing.join_replacements().await;
     assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-    assert_eq!(s.state.get().replacement_note, None);
+    assert_eq!(s.state.get().cycle.replacement_note, None);
     assert_eq!(s.activity().pop().unwrap(), ("updated".into(), s.full("docs/f.txt"), "11 B".into()));
     assert!(s.report.transfers.list().is_empty(), "no download is left showing");
 }
@@ -103,7 +103,7 @@ async fn a_replacement_with_no_room_on_the_disk_says_exactly_that() {
         s.activity().pop().unwrap(),
         ("update-failed".to_owned(), s.full("docs/f.txt"), activity::NO_DISK_SPACE.to_owned())
     );
-    let note = s.state.get().replacement_note.expect("the status says it");
+    let note = s.state.get().cycle.replacement_note.expect("the status says it");
     assert!(note.why.contains("not enough space"), "{note:?}");
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
 }
@@ -132,7 +132,7 @@ async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
     assert_eq!(asked, 2, "it was tried again");
     let recorded = s.activity().into_iter().filter(|(kind, _, _)| kind == "update-failed").count();
     assert_eq!(recorded, 1, "the same failure again is not news: {:?}", s.activity());
-    assert!(s.state.get().replacement_note.is_some(), "the status still says it");
+    assert!(s.state.get().cycle.replacement_note.is_some(), "the status still says it");
 }
 
 /// I1's other half: a failure is news again when its reason changes — not
@@ -150,9 +150,9 @@ fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
     assert!(!news("c2", failed(FailureReason::Download(libc::EIO), "other words")), "the same reason in other words");
     assert!(news("c2", failed(FailureReason::NoSpace, "b")), "another reason");
     assert!(news("c3", failed(FailureReason::NoSpace, "b")), "a newer version");
-    assert_eq!(state.get().replacement_note, Some(ReplacementNote { files: 1, why: "b".into() }));
+    assert_eq!(state.get().cycle.replacement_note, Some(ReplacementNote { files: 1, why: "b".into() }));
     assert!(news("c3", ReplaceOutcome::Replaced));
-    assert_eq!(state.get().replacement_note, None);
+    assert_eq!(state.get().cycle.replacement_note, None);
     assert!(news("c3", failed(FailureReason::NoSpace, "b")), "failing after it went through");
 }
 
@@ -210,7 +210,7 @@ async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
     assert!(asked, "the replacement is under way");
     tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("the stop cuts the download short");
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten");
-    assert_eq!(s.state.get().replacement_note, None);
+    assert_eq!(s.state.get().cycle.replacement_note, None);
     s.feed(Some("L2"), json!([]), "L3").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(!report.full, "a replacement the stop cut short is no reason for a Full reconcile");

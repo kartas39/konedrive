@@ -49,7 +49,7 @@ async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
     let schedule = Schedule { live_interval: Duration::from_secs(3600), live: Some(live), ..Schedule::polled(Duration::from_millis(400), vec![]) };
     let poller = Poller::start(s.listing(), schedule);
     let mut seen = s.state.subscribe();
-    tokio::time::timeout(PATIENCE, seen.wait_for(|state| state.live_changes == LiveChanges::Connected)).await.expect("the socket comes up").unwrap();
+    tokio::time::timeout(PATIENCE, seen.wait_for(|state| state.cycle.live_changes == LiveChanges::Connected)).await.expect("the socket comes up").unwrap();
     // A cycle that was due as the socket came up may still run.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let while_up = s.delta_requests().await;
@@ -58,7 +58,7 @@ async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
 
     s.graph.sockets.refuse(true);
     s.graph.sockets.drop_all();
-    tokio::time::timeout(PATIENCE, seen.wait_for(|state| state.live_changes == LiveChanges::Connecting)).await.expect("the socket is down").unwrap();
+    tokio::time::timeout(PATIENCE, seen.wait_for(|state| state.cycle.live_changes == LiveChanges::Connecting)).await.expect("the socket is down").unwrap();
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(s.delta_requests().await >= while_up + 2, "the normal interval again: {} then, {} now", while_up, s.delta_requests().await);
     tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
@@ -99,7 +99,7 @@ async fn stopping_does_not_wait_for_a_slow_answer_from_graph() {
     let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(s.delta_requests().await, 1, "the listing has asked");
-    assert!(s.state.get().listing);
+    assert!(s.state.get().cycle.listing);
     tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("stop does not wait for the answer");
-    assert!(!s.state.get().listing, "a stopped listing is not said to run");
+    assert!(!s.state.get().cycle.listing, "a stopped listing is not said to run");
 }

@@ -30,16 +30,16 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
     let state = SyncStateHandle::new(SyncSnapshot::default());
     let activity = Activity::new(state.clone());
     activity.attach(store.clone(), Path::new("/r"));
-    assert_eq!(state.get().conflict_count, 450 - 20, "the first batch of 200 dropped its 20 gone");
+    assert_eq!(state.get().local.conflict_count, 450 - 20, "the first batch of 200 dropped its 20 gone");
     activity.prune();
-    assert_eq!(state.get().conflict_count, 450 - 40);
+    assert_eq!(state.get().local.conflict_count, 450 - 40);
     activity.prune();
-    assert_eq!(state.get().conflict_count, 450 - 45, "the last 50, and round again");
+    assert_eq!(state.get().local.conflict_count, 450 - 45, "the last 50, and round again");
     activity.prune();
-    assert_eq!(state.get().conflict_count, 405);
+    assert_eq!(state.get().local.conflict_count, 405);
     std::fs::remove_file(dir.path().join("c449")).unwrap();
     assert_eq!(activity.conflicts().unwrap().len(), 404, "the bus's list looks at every one");
-    assert_eq!(state.get().conflict_count, 404);
+    assert_eq!(state.get().local.conflict_count, 404);
 }
 
 /// The cap on its own: the first `per_kind` of each kind in
@@ -64,7 +64,7 @@ fn capped_keeps_the_first_of_each_kind_and_counts_the_rest() {
 }
 
 fn in_folder(root: &str) -> SyncStateHandle {
-    SyncStateHandle::new(SyncSnapshot { root_path: root.into(), ..SyncSnapshot::default() })
+    SyncStateHandle::new(SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_path: root.into(), ..Default::default() }, ..SyncSnapshot::default() })
 }
 
 fn fresh_store() -> Store {
@@ -78,7 +78,7 @@ fn an_event_of_another_folder_is_not_carried_into_the_one_attached() {
     let state = in_folder("/a");
     let activity = Activity::new(state.clone());
     activity.record_blocking(vec![event(Kind::Downloaded, "/a/f.bin", "1 B")]);
-    state.update(|s| s.root_path = "/b".into());
+    state.update(|s| s.folder.root_path = "/b".into());
     activity.record_blocking(vec![event(Kind::Downloaded, "/b/g.bin", "1 B")]);
     activity.attach(fresh_store(), Path::new("/b"));
     let paths: Vec<String> = activity.recent(10).unwrap().into_iter().map(|e| e.path).collect();

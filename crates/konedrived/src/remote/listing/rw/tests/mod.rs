@@ -810,7 +810,7 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
         reopened: Arc::new({
             let (reopened, state) = (Arc::clone(&reopened), w.state.clone());
             // What the worker would find at its wake.
-            move || reopened.lock().unwrap().push(state.get().sync_trouble)
+            move || reopened.lock().unwrap().push(state.get().cycle.sync_trouble)
         }),
         ..w.writes(None)
     };
@@ -818,15 +818,15 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "trouble that closes no gate");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
     w.cycle(&listing).await;
     assert_eq!(*reopened.lock().unwrap(), vec![None], "woken once, with the trouble already cleared");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
     w.graph.with(|c| c.script("GET", "root/delta", ResponseTemplate::new(503), 10));
     let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
     assert!(!err.blocking(), "{err:?}");

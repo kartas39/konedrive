@@ -81,7 +81,7 @@ async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
     assert!(made.success());
     assert_eq!(service.pending_uploads().await, 1);
     // `PendingCount` as the worker counts it.
-    wait_until("the worker counted the change", || service.state().get().pending_count == 1).await;
+    wait_until("the worker counted the change", || service.state().get().outbox.pending_count == 1).await;
 
     // A forced switch (only that drops them): the drop, then the
     // folder follows.
@@ -91,7 +91,7 @@ async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
     // A read-only folder uploads nothing; its rows are dropped, the file stays.
     assert_eq!(service.pending_uploads().await, 0);
     // the outbox on the bus: and the bus says so.
-    assert_eq!(service.state().get().pending_count, 0);
+    assert_eq!(service.state().get().outbox.pending_count, 0);
     assert!(w.folder.path().join("docs/new.txt").exists());
     service.stop_sync().await;
 }
@@ -156,8 +156,8 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
     .await
     .expect("ActivityLog.Added for the upload");
     assert_eq!(event.path, file.display().to_string());
-    wait_until("the outbox counted empty", || service.state().get().pending_count == 0).await;
-    assert!(service.state().get().uploads.is_empty());
+    wait_until("the outbox counted empty", || service.state().get().outbox.pending_count == 0).await;
+    assert!(service.state().get().outbox.uploads.is_empty());
 
     service.follow_mode(Mode::ReadOnly).await;
     assert!(service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.outbox.is_none()), "stopped with the sync");
@@ -179,7 +179,7 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     service.pause_syncing(0).await.unwrap();
-    assert_eq!(service.state().get().paused_until, Some(0));
+    assert_eq!(service.state().get().pause.paused_until, Some(0));
     let before = deltas(&w).await;
     service.refresh().await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -191,21 +191,21 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     restarted.restore().await;
     restarted.resume().await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(restarted.state().get().paused_until, Some(0), "the pause outlasts a restart");
+    assert_eq!(restarted.state().get().pause.paused_until, Some(0), "the pause outlasts a restart");
     assert_eq!(deltas(&w).await, before);
     restarted.resume_syncing().await.unwrap();
     wait_for_deltas(&w, before).await;
-    assert_eq!(restarted.state().get().paused_until, None);
+    assert_eq!(restarted.state().get().pause.paused_until, None);
 
     restarted.pause_syncing(3600).await.unwrap();
-    assert_eq!(restarted.state().get().paused_until, Some(START + 3600));
+    assert_eq!(restarted.state().get().pause.paused_until, Some(START + 3600));
     let before = deltas(&w).await;
     clock.advance(3599);
     restarted.refresh().await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!((restarted.state().get().paused_until, deltas(&w).await), (Some(START + 3600), before), "not before its time");
+    assert_eq!((restarted.state().get().pause.paused_until, deltas(&w).await), (Some(START + 3600), before), "not before its time");
     clock.advance(1);
-    wait_until("the timed pause ends by itself", || restarted.state().get().paused_until.is_none()).await;
+    wait_until("the timed pause ends by itself", || restarted.state().get().pause.paused_until.is_none()).await;
     wait_for_deltas(&w, before).await;
     restarted.stop_sync().await;
 }
@@ -303,7 +303,7 @@ async fn the_bus_answers_while_the_store_is_held() {
         size: Some(3),
     };
     store.call(move |s| s.outbox_record(&blocked)).await.unwrap();
-    wait_until("BlockedCount counts it", || service.state().get().blocked_count == 1).await;
+    wait_until("BlockedCount counts it", || service.state().get().outbox.blocked_count == 1).await;
     wait_until("the summary is summed", || service.kept_back.lock().unwrap().as_ref().is_some_and(|k| k.iter().any(|r| r.1 == "name-characters"))).await;
 
     // An apply that holds the store for two seconds.
@@ -318,7 +318,7 @@ async fn the_bus_answers_while_the_store_is_held() {
     });
     release.recv().unwrap();
     let start = std::time::Instant::now();
-    assert_eq!(service.state().get().blocked_count, 1);
+    assert_eq!(service.state().get().outbox.blocked_count, 1);
     let summary = service.not_uploaded_summary().await.unwrap();
     assert_eq!(summary, vec![("per-file".to_owned(), "name-characters".to_owned(), 1, 3)]);
     assert_eq!(service.outbox(21).await.unwrap().len(), 1);
@@ -360,11 +360,11 @@ async fn restoring_held_deletes_brings_the_files_back_at_once() {
     };
     store.call(move |s| s.outbox_record(&held)).await.unwrap();
     service.wake_outbox();
-    wait_until("HeldCount counts it", || service.state().get().held_count == 1).await;
+    wait_until("HeldCount counts it", || service.state().get().outbox.held_count == 1).await;
 
     assert_eq!(service.restore_deletes().await.unwrap(), 1);
     wait_until("the file is placed again at once", || file.exists()).await;
-    wait_until("HeldCount is 0 again", || service.state().get().held_count == 0).await;
+    wait_until("HeldCount is 0 again", || service.state().get().outbox.held_count == 0).await;
     let deleted = w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "DELETE").count();
     assert_eq!(deleted, 0, "nothing is deleted in OneDrive");
     service.stop_sync().await;
@@ -703,9 +703,9 @@ async fn a_forgotten_folder_is_not_paused() {
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     service.pause_syncing(3600).await.unwrap();
-    assert!(service.state().get().paused_until.is_some());
+    assert!(service.state().get().pause.paused_until.is_some());
     service.unregister_root().await.unwrap();
-    assert_eq!(service.state().get().paused_until, None);
+    assert_eq!(service.state().get().pause.paused_until, None);
 }
 
 /// the watcher: a folder turning read-write whose watcher cannot start stays locked,

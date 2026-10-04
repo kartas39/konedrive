@@ -88,13 +88,9 @@ impl Writes {
 }
 
 impl Listing {
-    pub(super) fn writes(&self) -> &Writes {
-        self.ctx.writes.as_ref().expect("a read-write folder's cycle")
-    }
-
-    /// The tree lock, as the cycle waits for it.
-    pub(super) async fn tree_lock(&self, cancel: &CancellationToken) -> Result<OwnedMutexGuard<()>, CycleError> {
-        let lock = Arc::clone(&self.writes().tree_lock).lock_owned();
+    /// The tree lock of a read-write folder (`writes`), as the cycle waits for it.
+    pub(super) async fn tree_lock(&self, writes: &Writes, cancel: &CancellationToken) -> Result<OwnedMutexGuard<()>, CycleError> {
+        let lock = Arc::clone(&writes.tree_lock).lock_owned();
         #[cfg(test)]
         let lock = self.waiting_said(lock);
         cancellable(cancel, lock).await
@@ -121,11 +117,12 @@ impl Listing {
         self.waits_for_tree.load(Ordering::SeqCst)
     }
 
-    /// What was fetched, staged and reconciled in read-write mode; with the
-    /// number of entries the delta had.
+    /// What was fetched, staged and reconciled in read-write mode (the
+    /// folder's `writes`); with the number of entries the delta had.
     pub(super) async fn reconcile_rw_fetched(
         &self,
         turn: &Turn,
+        writes: &Writes,
         fetched: Fetched,
         fetch_seq: i64,
         full_requested: bool,
@@ -134,7 +131,7 @@ impl Listing {
         match fetched {
             Fetched::Placed(placed) => Ok((placed, 0)),
             Fetched::Listed { link, upload_differences } => {
-                let tree = self.tree_lock(cancel).await?;
+                let tree = self.tree_lock(writes, cancel).await?;
                 // `staging` holds the whole new listing: what the outbox
                 // committed since the listing began is read again.
                 let since = self.on_store(turn, move |s| s.committed_since(fetch_seq)).await?;
@@ -148,12 +145,12 @@ impl Listing {
                     s.deferred_ids()
                 })
                 .await?;
-                let rw = RwCycle { tree, upload_differences, waiting: Waiting { fetch_seq, consumed, whole_listing: true, brought: Vec::new() } };
+                let rw = RwCycle { writes, tree, upload_differences, waiting: Waiting { fetch_seq, consumed, whole_listing: true, brought: Vec::new() } };
                 Ok((self.reconcile(turn, Mode::ReadWrite(rw), Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0))
             }
             Fetched::Changes { changes, link } => {
                 let count = changes.len();
-                let tree = self.tree_lock(cancel).await?;
+                let tree = self.tree_lock(writes, cancel).await?;
                 let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
                 let since = self.revisit_from.load(Ordering::SeqCst);
                 let brought: Vec<String> = changes.iter().map(|c| c.id().to_owned()).collect();
@@ -163,7 +160,7 @@ impl Listing {
                     return Ok((Reconciled::default(), count));
                 };
                 let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
-                let rw = RwCycle { tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed, whole_listing: false, brought } };
+                let rw = RwCycle { writes, tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed, whole_listing: false, brought } };
                 Ok((self.reconcile(turn, Mode::ReadWrite(rw), scope, Commit::Swap { link, listing: false }, cancel).await?, count))
             }
         }

@@ -36,7 +36,7 @@ async fn a_fill_on_open_is_recorded_as_downloaded() {
     let fd = placeholder(&folder, "opened.bin", "ITEM", 4096);
     // Events are kept only for the folder registered now.
     let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        root_path: folder.display().to_string(),
+        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
         ..SyncSnapshot::default()
     }));
     let mut added = report.activity.subscribe();
@@ -176,7 +176,7 @@ async fn local_bytes_are_what_the_downloaded_file_takes() {
     let expected = (data_blocks(&a) + data_blocks(&b)) * 512;
     assert!(expected >= 64 * 1024);
     let mut state = service.state().subscribe();
-    tokio::time::timeout(Duration::from_secs(60), state.wait_for(|s| s.local_bytes == expected))
+    tokio::time::timeout(Duration::from_secs(60), state.wait_for(|s| s.local.local_bytes == expected))
         .await
         .unwrap_or_else(|_| panic!("LocalBytes stayed {}, not {expected}", service.status().1))
         .unwrap();
@@ -230,7 +230,7 @@ async fn a_fill_lets_go_of_its_slot_before_it_records() {
     let folder = dir.path().canonicalize().unwrap();
     let source_dir = tempfile::tempdir().unwrap();
     let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        root_path: folder.display().to_string(),
+        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
         ..SyncSnapshot::default()
     }));
     let socket_path = folder.join("helper.sock");

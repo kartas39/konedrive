@@ -24,7 +24,7 @@ async fn a_hundred_changes_in_a_second_are_at_most_five_messages() {
     for step in 1..=100u64 {
         entry.progress(step * 10, 1000);
         if step % 10 == 0 {
-            state.update(|s| s.items_listed = step);
+            state.update(|s| s.cycle.items_listed = step);
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

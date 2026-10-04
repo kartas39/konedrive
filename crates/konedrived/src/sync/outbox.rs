@@ -164,19 +164,19 @@ impl SyncService {
     pub(super) fn clear_outbox_counts(&self) {
         *self.kept_back.lock().unwrap() = None;
         self.state.update(|s| {
-            s.pending_count = 0;
-            s.pending_bytes = 0;
-            s.blocked_count = 0;
-            s.held_count = 0;
-            s.uploads.clear();
-            s.quota_full = false;
-            s.space_waiting_count = 0;
-            s.space_waiting_bytes = 0;
-            s.too_big_count = 0;
-            s.too_big_bytes = 0;
+            s.outbox.pending_count = 0;
+            s.outbox.pending_bytes = 0;
+            s.outbox.blocked_count = 0;
+            s.outbox.held_count = 0;
+            s.outbox.uploads.clear();
+            s.outbox.quota_full = false;
+            s.outbox.space_waiting_count = 0;
+            s.outbox.space_waiting_bytes = 0;
+            s.outbox.too_big_count = 0;
+            s.outbox.too_big_bytes = 0;
             // What the worker said of itself went with the worker.
-            if let Some(note) = OutboxNote::after_worker(&s.outbox_note, None, None, 0) {
-                s.outbox_note = note;
+            if let Some(note) = OutboxNote::after_worker(&s.outbox.note, None, None, 0) {
+                s.outbox.note = note;
             }
         });
     }
@@ -188,8 +188,8 @@ impl SyncService {
         let rows = self.read_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let state = self.state.get();
-        let (paused, full) = (state.stopped(), state.quota_full);
-        let uploads = state.uploads;
+        let (paused, full) = (state.stopped(), state.outbox.quota_full);
+        let uploads = state.outbox.uploads;
         tokio::task::spawn_blocking(move || entries(rows, &root, &uploads, paused, full))
             .await
             .map_err(|e| SyncError::Io(format!("the outbox task failed: {e}")))
@@ -220,7 +220,7 @@ impl SyncService {
             return Ok(kept);
         }
         let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
-        let full = self.state.get().quota_full;
+        let full = self.state.get().outbox.quota_full;
         Ok(crate::upload::kept_back::summary(&skipped, &groups, full))
     }
 
@@ -228,7 +228,7 @@ impl SyncService {
     /// at most `limit` (0 for all), and how many there are.
     pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
-        let full = self.state.get().quota_full;
+        let full = self.state.get().outbox.quota_full;
         self.read_outbox(move |s| crate::upload::kept_back::files(s, &root, full, &reason, limit)).await
     }
 
@@ -436,19 +436,19 @@ impl OutboxHost for Host {
         let uploads: Vec<(String, u64, u64)> =
             status.uploads.iter().map(|u| (root.join(&u.rel).display().to_string(), u.sent, u.total)).collect();
         service.state.update(|s| {
-            s.pending_count = status.counts.pending;
-            s.pending_bytes = status.counts.pending_bytes;
-            s.blocked_count = status.counts.blocked;
-            s.held_count = status.counts.held;
-            s.uploads = uploads;
-            s.quota_full = status.quota_full;
-            s.space_waiting_count = status.counts.space_waiting;
-            s.space_waiting_bytes = status.counts.space_waiting_bytes;
-            s.too_big_count = status.counts.too_big;
-            s.too_big_bytes = status.counts.too_big_bytes;
+            s.outbox.pending_count = status.counts.pending;
+            s.outbox.pending_bytes = status.counts.pending_bytes;
+            s.outbox.blocked_count = status.counts.blocked;
+            s.outbox.held_count = status.counts.held;
+            s.outbox.uploads = uploads;
+            s.outbox.quota_full = status.quota_full;
+            s.outbox.space_waiting_count = status.counts.space_waiting;
+            s.outbox.space_waiting_bytes = status.counts.space_waiting_bytes;
+            s.outbox.too_big_count = status.counts.too_big;
+            s.outbox.too_big_bytes = status.counts.too_big_bytes;
             let now = crate::status::activity::unix_now();
-            if let Some(note) = OutboxNote::after_worker(&s.outbox_note, status.folder_closed.as_deref(), status.throttled_until, now) {
-                s.outbox_note = note;
+            if let Some(note) = OutboxNote::after_worker(&s.outbox.note, status.folder_closed.as_deref(), status.throttled_until, now) {
+                s.outbox.note = note;
             }
         });
     }

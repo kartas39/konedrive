@@ -96,10 +96,10 @@ impl SyncService {
         // the sync starting below says it again if it still holds.
         self.state.update(|s| {
             if mode == Mode::ReadOnly {
-                s.watch_note.clear();
-                s.handles_note.clear();
+                s.local.watch_note.clear();
+                s.local.handles_note.clear();
             }
-            s.outbox_note = None;
+            s.outbox.note = None;
         });
         let root = stopped.folder().up().filter(|up| up.record.source == RootSource::OneDrive).map(|up| up.record.root.clone());
         if let Some(root) = root {
@@ -129,7 +129,7 @@ impl SyncService {
         } else {
             tracing::warn!("{} stays locked: its watcher did not finish walking it", root.path.display());
             self.state.update(|s| {
-                s.watch_note = "the folder stays read-only and nothing is uploaded: local changes could not be watched \
+                s.local.watch_note = "the folder stays read-only and nothing is uploaded: local changes could not be watched \
                                 (see the log)"
                     .into()
             });
@@ -208,10 +208,10 @@ impl SyncService {
     /// host from a blocking thread, as one section (`Engine::may_write`).
     pub(super) fn write_gate(&self) -> Result<(), String> {
         let refusal = self.gate_refusal();
-        let note = OutboxNote::after_gate(&self.state.get().outbox_note, refusal.as_deref());
+        let note = OutboxNote::after_gate(&self.state.get().outbox.note, refusal.as_deref());
         let changed = note.is_some();
         if let Some(note) = note {
-            self.state.update(|s| s.outbox_note = note);
+            self.state.update(|s| s.outbox.note = note);
         }
         match refusal {
             None => Ok(()),
@@ -249,7 +249,7 @@ impl SyncService {
             }
             Some(_) => {}
         }
-        if let Some(trouble) = self.state.get().sync_trouble.filter(|t| t.blocking) {
+        if let Some(trouble) = self.state.get().cycle.sync_trouble.filter(|t| t.blocking) {
             return Some(format!("the folder's sync is stopped ({})", trouble.text));
         }
         None

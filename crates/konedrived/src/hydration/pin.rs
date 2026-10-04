@@ -490,7 +490,7 @@ impl Pins {
         let _sweeping = SweepGuard(&self.explicit);
         let walked = root.clone();
         let swept = tokio::task::spawn_blocking(move || sweep_walk(&walked)).await;
-        let current = self.state.get().root_path == root.display().to_string();
+        let current = self.state.get().folder.root_path == root.display().to_string();
         let swept = {
             let mut explicit = self.explicit.lock().unwrap();
             match swept {
@@ -573,12 +573,12 @@ impl Pins {
     /// download (issue #16).
     fn publish_waiting(&self, queue: &Queue) {
         let left = queue.left();
-        self.state.update(|s| s.pinned_waiting = left);
+        self.state.update(|s| s.local.pinned_waiting = left);
     }
 
     fn publish(&self, explicit: &BTreeSet<PathBuf>) {
         let count = explicit.len() as u32;
-        self.state.update(|s| s.pinned_count = count);
+        self.state.update(|s| s.local.pinned_count = count);
     }
 
     /// Takes files off the queue and downloads them, each in a slot of the

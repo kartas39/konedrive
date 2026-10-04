@@ -8,7 +8,7 @@ use crate::status::report::Report;
 use crate::status::snapshot::SyncSnapshot;
 
 fn in_folder(root: &str) -> SyncStateHandle {
-    SyncStateHandle::new(SyncSnapshot { root_path: root.into(), ..SyncSnapshot::default() })
+    SyncStateHandle::new(SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_path: root.into(), ..Default::default() }, ..SyncSnapshot::default() })
 }
 
 /// `LocalBytes` is what the files occupy (`st_blocks ×
@@ -59,7 +59,7 @@ async fn a_report_for_nowhere_starts_no_walker_and_a_stopped_one_starts_again() 
 /// up. On the paused clock: no real second passes.
 #[tokio::test(start_paused = true)]
 async fn local_space_is_measured_at_once_then_at_most_every_five_seconds() {
-    let state = SyncStateHandle::new(SyncSnapshot { root_path: "/r".into(), ..SyncSnapshot::default() });
+    let state = SyncStateHandle::new(SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_path: "/r".into(), ..Default::default() }, ..SyncSnapshot::default() });
     let walks = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&walks);
     // Each walk "measures" how many walks there have been.
@@ -68,13 +68,13 @@ async fn local_space_is_measured_at_once_then_at_most_every_five_seconds() {
 
     let start = tokio::time::Instant::now();
     space.kick();
-    seen.wait_for(|s| s.local_bytes == 1).await.unwrap();
+    seen.wait_for(|s| s.local.local_bytes == 1).await.unwrap();
     assert!(start.elapsed() < SPACE_SPACING, "the first walk waits for nothing");
 
     let asked = tokio::time::Instant::now();
     space.kick();
     space.kick();
-    seen.wait_for(|s| s.local_bytes == 2).await.unwrap();
+    seen.wait_for(|s| s.local.local_bytes == 2).await.unwrap();
     assert!(asked.elapsed() >= SPACE_SPACING - Duration::from_millis(1), "{:?}", asked.elapsed());
     tokio::time::sleep(SPACE_SPACING * 3).await;
     assert_eq!(walks.load(SeqCst), 2, "two kicks meanwhile make one walk");

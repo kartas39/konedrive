@@ -196,11 +196,11 @@ impl SyncService {
                 None => (None, !held.is_empty()),
             };
             self.state.update(|s| {
-                s.paused_until = paused;
-                s.held_back = held.clone();
+                s.pause.paused_until = paused;
+                s.pause.held_back = held.clone();
             });
             let was_stopped = self.pool.set_paused(stopped);
-            changed = before.paused_until != paused || before.held_back != held || was_stopped != stopped;
+            changed = before.pause.paused_until != paused || before.pause.held_back != held || was_stopped != stopped;
             paused
         });
         if changed {
@@ -213,8 +213,8 @@ impl SyncService {
     pub(super) fn forget_pause(&self) {
         self.clock.forget(|| {
             self.state.update(|s| {
-                s.paused_until = None;
-                s.held_back.clear();
+                s.pause.paused_until = None;
+                s.pause.held_back.clear();
             });
             self.pool.set_paused(false);
         });

@@ -14,11 +14,11 @@ impl Listing {
     /// A full listing into `staging`, page by page, publishing its progress.
     pub(super) async fn list_all(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
         self.ctx.state.update(|s| {
-            s.listing = true;
-            s.items_listed = 0;
+            s.cycle.listing = true;
+            s.cycle.items_listed = 0;
         });
         // However the listing ends — also when its future is dropped.
-        let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.listing = false)));
+        let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.cycle.listing = false)));
         self.list_all_pages(turn, cancel).await
     }
 
@@ -31,7 +31,7 @@ impl Listing {
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
             listed += changes.iter().filter(|c| !matches!(c, Change::Root(_) | Change::Delete(_))).count() as u64;
             self.on_store(turn, move |s| s.stage(&changes)).await?;
-            self.ctx.state.update(|s| s.items_listed = listed);
+            self.ctx.state.update(|s| s.cycle.items_listed = listed);
             match page.next {
                 DeltaNext::Page(next) => from = DeltaFrom::Link(next),
                 DeltaNext::Done(link) => return Ok(Fetched::Listed { link, upload_differences: false }),
@@ -98,9 +98,9 @@ impl Listing {
     /// Graph turns down fails the cycle like any trouble with Graph; the
     /// next cycle resumes from it.
     pub(super) async fn list_placing(&self, turn: &Turn, mut from: DeltaFrom, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
-        self.ctx.state.update(|s| s.listing = true);
+        self.ctx.state.update(|s| s.cycle.listing = true);
         // However the listing ends — also when its future is dropped.
-        let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.listing = false)));
+        let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.cycle.listing = false)));
         // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
         let (seq, counts) = self
             .on_store(turn, |s| {
@@ -113,9 +113,9 @@ impl Listing {
         // each page adds what it listed and placed (issue #39).
         let (mut listed, mut shown) = (counts.listed, counts.placed);
         self.ctx.state.update(|s| {
-            s.items_listed = counts.listed;
-            s.items_placed = counts.placed;
-            s.skipped_count = counts.skipped;
+            s.cycle.items_listed = counts.listed;
+            s.cycle.items_placed = counts.placed;
+            s.cycle.skipped_count = counts.skipped;
         });
         let mut placed = Reconciled::default();
         let mut full = true;
@@ -132,7 +132,7 @@ impl Listing {
                 Err(e) if resuming && refused(&e) => {
                     tracing::info!("OneDrive would not go on with the listing ({e}); listing the drive again from the start");
                     self.on_store(turn, |s| s.forget_listing_next()).await?;
-                    self.ctx.state.update(|s| s.items_listed = 0);
+                    self.ctx.state.update(|s| s.cycle.items_listed = 0);
                     return self.list_all_pages(turn, cancel).await;
                 }
                 Err(e) => return Err(drive_error(e)),
@@ -148,14 +148,14 @@ impl Listing {
             // would grow with the square of a large listing. An examination
             // writes nothing before the listing is complete (`NoBase`).
             let tree = match &self.ctx.writes {
-                Some(_) => {
-                    let tree = self.tree_lock(cancel).await?;
+                Some(writes) => {
+                    let tree = self.tree_lock(writes, cancel).await?;
                     let seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     if staged_at.is_some_and(|at| at != seq) {
                         self.on_store(turn, |s| s.begin_staging(konedrive_tree::NewTree::Delta)).await?;
                     }
                     staged_at = Some(seq);
-                    Some(tree)
+                    Some((writes, tree))
                 }
                 None => None,
             };
@@ -168,11 +168,11 @@ impl Listing {
             let changed = !full;
             let mode = match tree {
                 None => Mode::ReadOnly,
-                Some(tree) => {
+                Some((writes, tree)) => {
                     let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     // The last page ends a whole listing of the drive.
                     let waiting = Waiting { fetch_seq, consumed: Vec::new(), whole_listing: next.is_none(), brought: Vec::new() };
-                    Mode::ReadWrite(RwCycle { tree, upload_differences: false, waiting })
+                    Mode::ReadWrite(RwCycle { writes, tree, upload_differences: false, waiting })
                 }
             };
             let done = self.reconcile(turn, mode, scope, commit, cancel).await?;
@@ -187,8 +187,8 @@ impl Listing {
             shown += done.applied.counts.created;
             placed.add(done);
             self.ctx.state.update(|s| {
-                s.items_listed = listed;
-                s.items_placed = shown;
+                s.cycle.items_listed = listed;
+                s.cycle.items_placed = shown;
             });
             match next {
                 Some(next) => from = DeltaFrom::Link(next),

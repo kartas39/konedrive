@@ -67,7 +67,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
     entry.progress(1 << 20, 4 << 20);
     // The totals are counted at most once a second.
-    wait_for(|| f.service.state().get().queue.down.left_count == 1).await;
+    wait_for(|| f.service.state().get().transfers.queue.down.left_count == 1).await;
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
@@ -76,7 +76,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let list = text.lines().nth(3).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
-    wait_for(|| f.service.state().get().queue.down.left_count == 0).await;
+    wait_for(|| f.service.state().get().transfers.queue.down.left_count == 0).await;
     assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), idle);
 }
 

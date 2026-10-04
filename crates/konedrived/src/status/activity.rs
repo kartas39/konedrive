@@ -132,7 +132,7 @@ fn there(path: &str) -> bool {
 ///
 /// - once [`detach`](Self::detach) returns, no write under way still holds a
 ///   clone of the store, which is what lets a Forget remove the store's files
-///   (see `SyncService::store`);
+///   (`sync/start_stop.rs` detaches before the store goes);
 /// - [`attach`](Self::attach) moves what memory holds into the store and
 ///   hands the store over in the same hold, so nothing recorded meanwhile can
 ///   fall between the two.
@@ -210,7 +210,7 @@ impl Activity {
             backing.store = None;
             backing.memory.clear();
         }
-        self.state.update(|s| s.conflict_count = 0);
+        self.state.update(|s| s.local.conflict_count = 0);
     }
 
     /// Records `events`, oldest first, and announces each — those inside the
@@ -219,7 +219,7 @@ impl Activity {
     pub fn record_blocking(&self, events: Vec<Event>) {
         let kept: Vec<Event> = {
             let mut backing = self.backing();
-            let root = self.state.get().root_path;
+            let root = self.state.get().folder.root_path;
             let (kept, dropped): (Vec<Event>, Vec<Event>) = events.into_iter().partition(|e| inside(&root, &e.path));
             if !dropped.is_empty() {
                 tracing::debug!("{} event(s) of a folder no longer registered are not recorded", dropped.len());
@@ -254,7 +254,7 @@ impl Activity {
     /// the commit they belong to. Dropped when it is not inside the folder
     /// registered now.
     pub fn announce(&self, event: Event) {
-        if inside(&self.state.get().root_path, &event.path) {
+        if inside(&self.state.get().folder.root_path, &event.path) {
             // Nobody listening is not an error.
             let _ = self.added.send(event);
         }
@@ -319,7 +319,7 @@ impl Activity {
             kept
         };
         let count = kept.len() as u32;
-        self.state.update(|s| s.conflict_count = count);
+        self.state.update(|s| s.local.conflict_count = count);
         Ok(kept)
     }
 
@@ -356,7 +356,7 @@ impl Activity {
             })
         };
         match counted {
-            Ok(count) => self.state.update(|s| s.conflict_count = u32::try_from(count).unwrap_or(u32::MAX)),
+            Ok(count) => self.state.update(|s| s.local.conflict_count = u32::try_from(count).unwrap_or(u32::MAX)),
             Err(e) => tracing::warn!("cannot read the conflicts: {e}"),
         }
     }

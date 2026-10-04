@@ -121,12 +121,12 @@ impl SyncService {
         self.view.send_replace(published.view);
         let waits = published.helper.waits(self.link().is_some());
         self.state.update_if_changed(|s| {
-            s.root_path = published.path;
-            s.root_state = published.state;
-            s.last_error = published.error;
-            s.switch_note = published.switch_note;
-            s.waits_for_helper = waits;
-            s.scan.follow(folder.wanted);
+            s.folder.root_path = published.path;
+            s.folder.root_state = published.state;
+            s.folder.last_error = published.error;
+            s.folder.switch_note = published.switch_note;
+            s.folder.waits_for_helper = waits;
+            s.local.scan.follow(folder.wanted);
             also(s);
         });
     }
@@ -141,7 +141,7 @@ impl SyncService {
     /// for) must not hold this back. The folder is read as last published.
     pub fn report_helper_lost(&self) {
         if self.record().is_some_and(|record| record.needs_helper()) {
-            self.state.update(|s| s.waits_for_helper = true);
+            self.state.update(|s| s.folder.waits_for_helper = true);
         }
     }
 }
