@@ -57,7 +57,11 @@ impl Run<'_, '_> {
                 d.next_try = None;
             }
         }
-        let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
+        // Where the base has it: by the folder's id and the name, or, when
+        // this batch did not read the folder above (so its id is not known
+        // here), by the path the base places it at.
+        let at_base = d.target_name.as_deref() == Some(base.name.as_str())
+            && (d.target_parent.as_deref() == base.parent_id.as_deref() || (d.target_parent.is_none() && self.located(id)?.is_some_and(|at| at.placed && at.rel == e.rel)));
         // In place, unchanged or unknown, with no row: nothing to record.
         if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
             return Ok(());

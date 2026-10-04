@@ -700,7 +700,10 @@ impl Materializer {
             }
             Probe::Managed { id, .. } => {
                 if let Some(rw) = &self.rw {
-                    if self.holds_the_name(rw, &id, &rel, run)? {
+                    // Held by a local change, or an item whose own move
+                    // waits in this run: it keeps the name, and this one
+                    // waits behind it.
+                    if self.holds_the_name(rw, &id, &rel, run)? || run.out.pending.unsettled.contains(&id) {
                         run.out.pending.unsettled.insert(row.id.clone());
                         return Ok(None);
                     }
@@ -735,9 +738,10 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
-                    // The rows of what waits below a folder follow it.
-                    if let (true, Some(_), Some(from)) = (is_folder, &self.rw, run.moved_from.get(&row.id).cloned()) {
-                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from, to: rel.clone() }];
+                    // The rows below a folder went to the holding directory
+                    // with it, and follow it out.
+                    if is_folder && self.rw.is_some() {
+                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: PathBuf::from(HOLDING).join(&row.id), to: rel.clone() }];
                         self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
                     }
                     self.record_placed(run, &dir, name, &row.id)?;

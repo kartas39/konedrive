@@ -706,16 +706,38 @@ impl Materializer {
 
     /// Whether the place the new tree gives item `id` is held by a local
     /// change: another item's object there that a row holds, that the base
-    /// does not have there, or that this run left; or a file or folder made
-    /// here whose row waits. The item is then left where it is, with what
-    /// is below it, and its move waits: taken to the holding directory, it
-    /// could only be put back.
+    /// does not have there, or that this run left; a file or folder made
+    /// here whose row waits; or another item's object that is itself to
+    /// move and whose own new place is held — a chain of names that hangs
+    /// on a local change, followed to its end. The item is then left where
+    /// it is, with what is below it, and its move waits: taken to the
+    /// holding directory it could only be put back, and under another name
+    /// if its own was taken meanwhile. Asked of the disk and the plan, not
+    /// of what this run did so far, so the answer does not depend on the
+    /// order the items are looked at in.
     fn destination_held(&self, rw: &Rw, id: &str, planned: &Planned, run: &Run) -> Result<bool, ApplyError> {
+        self.held_from(rw, id, planned, run, &mut HashSet::new())
+    }
+
+    fn held_from(&self, rw: &Rw, id: &str, planned: &Planned, run: &Run, seen: &mut HashSet<String>) -> Result<bool, ApplyError> {
+        // Names that only go round (an exchange) hang on nothing.
+        if !seen.insert(id.to_owned()) {
+            return Ok(false);
+        }
         let Some(to) = planned.new_place() else { return Ok(false) };
         let Some(name) = to.rel.file_name() else { return Ok(false) };
         let Ok(dir) = self.disk.dir(to.rel.parent().unwrap_or(Path::new(""))) else { return Ok(false) };
         Ok(match self.disk.probe(&dir, name)? {
-            Probe::Managed { id: other, .. } if other != id && !run.leaving.contains(&other) => self.holds_the_name(rw, &other, &to.rel, run)?,
+            Probe::Managed { id: other, .. } if other != id && !run.leaving.contains(&other) => {
+                if self.holds_the_name(rw, &other, &to.rel, run)? {
+                    return Ok(true);
+                }
+                let theirs = self.store.call_blocking({ let other = other.clone(); move |s| s.plan(&[other]) })?;
+                let theirs = theirs.of(&other);
+                // It stands where the base has it: held if the tree moves it
+                // on to a place that is held.
+                theirs.new_place().is_some_and(|next| next.rel != to.rel) && self.held_from(rw, &other, theirs, run, seen)?
+            }
             Probe::Unmanaged { .. } => rw.pending_at(&to.rel),
             _ => false,
         })
