@@ -497,6 +497,8 @@ fn a_missing_item_is_decided_by_its_object() {
     assert_eq!(fx.summary(), vec![(Delete, "a.txt".into(), Some("A".into())), (MoveOut, "b.txt".into(), Some("B".into()))]);
     assert_eq!(fx.row_at("b.txt").inode.and_then(|i| i.handle), Some(b));
     assert_eq!(fx.liveness.asked().len(), 3);
+    // What is elsewhere in the folder is not reported: the next look finds it there.
+    assert!(out.undecided.is_empty() && out.unproven.is_empty(), "{:?} {:?}", out.undecided, out.unproven);
     fx.examine(&out.recheck);
     assert_eq!(fx.row_at("docs/c.txt").kind, Move);
 
