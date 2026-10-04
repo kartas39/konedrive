@@ -138,6 +138,8 @@ inside it. `LO5` after these.
   timeout.
 - **Fix:** `liveness.rs` and `handles.rs`; one path-opening helper; a stuck flag per run.
 - **Size:** M.
+- **Fixed 2026-10-04** in `f49e23f` (#177): `local/handles.rs` and `local/liveness.rs`, one
+  `open_no_symlinks`; a helper that times out is asked once in an examination (`F260`).
 
 ## LO11. Test hooks and test doubles
 
