@@ -1404,7 +1404,7 @@ mod foreign_parent;
 #[test]
 fn a_failure_is_one_of_four_keys() {
     use super::engine::{outcome_of, Fail, Outcome};
-    use konedrive_graph::drive::write::WriteError;
+    use konedrive_graph::drive::WriteError;
     let key = |fail: Fail| match outcome_of(fail) {
         Outcome::Again { reason, backoff: true, detail: Some(_), .. } => reason.unwrap(),
         other => panic!("not a backoff with a detail: {other:?}"),

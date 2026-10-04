@@ -171,7 +171,7 @@ impl AccountService {
         let Ok(token) = self.token_for_refresh().await else { return };
         let graph = self.graph();
         let mut result = tokio::try_join!(graph.profile(&token), graph.drive(&token));
-        if matches!(result, Err(GraphError::Unauthorized)) {
+        if matches!(&result, Err(e) if e.status() == Some(Status::UNAUTHORIZED)) {
             // The cached access token was rejected (e.g. its lifetime elapsed across a
             // suspend, which `Instant`-based expiry cannot see coming). Invalidate it and
             // retry once with a freshly refreshed one before giving up.

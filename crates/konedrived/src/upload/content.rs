@@ -621,7 +621,7 @@ impl Job<'_> {
                         rounds += 1;
                         if rounds > 2 {
                             // The session stays, to be resumed.
-                            return Err(WriteError::Transient(format!("the upload session still expects bytes from {} of {size}", progress.next)).into());
+                            return Err(WriteError::Transient(format!("the upload session still expects bytes from {} of {size}", progress.next).into()).into());
                         }
                         next = progress.next;
                     }
@@ -680,7 +680,7 @@ impl Job<'_> {
         if let Some((parent, name)) = place.clone() {
             carried = self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
         }
-        let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
+        let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.sec).await {
             Ok(opened) => opened,
             Err(err) => {
                 // Any answer but `Transient` (a timeout, a lost connection, a

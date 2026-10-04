@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::Paths;
+use konedrive_graph::secret::MemoryStore;
 
 #[tokio::test]
 async fn memory_store_round_trip() {

@@ -233,11 +233,16 @@ impl TransferPool {
     /// A pool that starts at [`START`] (or `ceiling`, if lower), with [`DEFAULT_LARGE`] large
     /// transfers at once.
     pub fn new(ceiling: usize) -> Arc<Self> {
-        Self::starting_at(START, ceiling)
+        Self::build(START, ceiling)
     }
 
     /// A pool that starts at `start` slots (tests).
+    #[cfg(any(test, feature = "testing"))]
     pub fn starting_at(start: usize, ceiling: usize) -> Arc<Self> {
+        Self::build(start, ceiling)
+    }
+
+    fn build(start: usize, ceiling: usize) -> Arc<Self> {
         let ceiling = ceiling.clamp(CEILING_MIN, CEILING_MAX);
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -297,7 +302,9 @@ impl TransferPool {
         self.lock().held[class.index()]
     }
 
-    /// Streams of large sync transfers under way now; a file being opened is never one.
+    /// Streams of large sync transfers under way now; a file being opened is never one
+    /// (tests).
+    #[cfg(any(test, feature = "testing"))]
     pub fn large_held(&self) -> usize {
         self.lock().large_held
     }
@@ -342,7 +349,9 @@ impl TransferPool {
         Acquire { pool: self.arc(), class, large: is_large(class, size), id: None, done: false }
     }
 
-    /// A small slot of `class` if one would be handed out now, without waiting in line.
+    /// A small slot of `class` if one would be handed out now, without waiting in line
+    /// (tests).
+    #[cfg(any(test, feature = "testing"))]
     pub fn try_acquire(&self, class: Class) -> Option<Slot> {
         self.try_acquire_sized(class, Size::Small)
     }

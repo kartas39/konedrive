@@ -22,15 +22,18 @@
 //! leaves it out, and so do the errors).
 
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::{header, StatusCode};
+use reqwest::header;
 use serde::Deserialize;
 use serde_json::json;
 use url::Url;
 
+use super::error::{classify, Kind, Status};
 use super::item::parse_graph_time;
+use super::send::{Auth, Throttle};
 use super::write::{error_from, file_system_info, item_from, ItemChange, WriteError};
 use super::{DriveClient, DriveItem};
 
@@ -124,17 +127,12 @@ impl ProgressBody {
 }
 
 impl DriveClient {
-    /// Opens a session for `size` bytes. The session request carries the
-    /// guard and the time, but not the size: a personal drive answers
-    /// `fileSize` with `400 invalidRequest` (measured on a test account,
-    /// although Microsoft's documentation lists it), so a full drive shows
-    /// itself only when a fragment is refused.
-    pub async fn create_upload_session(
-        &self,
-        target: UploadTarget<'_>,
-        _size: u64,
-        modified: i64,
-    ) -> Result<UploadSession, WriteError> {
+    /// Opens a session. The session request carries the guard and the time,
+    /// but not the file's size: a personal drive answers `fileSize` with
+    /// `400 invalidRequest` (measured on a test account, although Microsoft's
+    /// documentation lists it), so a full drive shows itself only when a
+    /// fragment is refused.
+    pub async fn create_upload_session(&self, target: UploadTarget<'_>, modified: i64) -> Result<UploadSession, WriteError> {
         let (url, item, if_match) = match target {
             UploadTarget::New { parent_id, name } => (
                 self.child_url(parent_id, name, Some("createUploadSession"))?,
@@ -158,8 +156,8 @@ impl DriveClient {
         };
         let body = json!({ "item": item });
         let response = self
-            .send_write(|token| {
-                let request = self.api.post(url.clone()).bearer_auth(token).json(&body);
+            .send(Auth::Account, Throttle::Return, || {
+                let request = self.api.post(url.clone()).json(&body);
                 match if_match {
                     Some(tag) => request.header(header::IF_MATCH, tag),
                     None => request,
@@ -172,7 +170,7 @@ impl DriveClient {
         let session: SessionBody = response
             .json()
             .await
-            .map_err(|e| WriteError::Transient(format!("an unreadable upload session from Graph: {}", e.without_url())))?;
+            .map_err(|e| WriteError::Transient(format!("an unreadable upload session from Graph: {}", e.without_url()).into()))?;
         Ok(UploadSession {
             url: session.upload_url,
             expires: session.expiration_date_time.as_deref().and_then(parse_graph_time),
@@ -200,87 +198,88 @@ impl DriveClient {
         total: u64,
         chunk: Vec<u8>,
     ) -> Result<ChunkOutcome, WriteError> {
-        let len = chunk.len() as u64;
-        let end = offset
-            .checked_add(len)
-            .filter(|&end| len > 0 && end <= total)
-            .ok_or_else(|| WriteError::Failed(format!("{len} bytes at {offset} do not fit a file of {total}")))?;
-        if len >= MAX_FRAGMENT || (end < total && !len.is_multiple_of(FRAGMENT_UNIT)) {
-            return Err(WriteError::Failed(format!(
-                "a fragment of {len} bytes: each must be under 60 MiB, and all but the last a multiple of 320 KiB"
-            )));
-        }
+        let end = fragment_end(offset, chunk.len() as u64, total)?;
+        let url = session_url_of(session_url)?;
         let chunk = Arc::new(chunk);
-        let mut sent = 0;
+        let mut sent = 1;
         loop {
-            sent += 1;
-            // The body goes out in pieces, each counted into the pool's speed as it is taken.
-            let request = self
-                .upload
-                .put(session_url_of(session_url)?)
-                .header(header::CONTENT_RANGE, format!("bytes {offset}-{}/{total}", end - 1))
-                .header(header::CONTENT_LENGTH, len.to_string())
-                .body(self.metered(Arc::clone(&chunk)));
-            let (refusal, wait) = match send_to_session(request).await {
-                Ok(response) => {
-                    self.answered(&response);
-                    match response.status() {
-                        StatusCode::ACCEPTED => {
-                            let body = progress_from(response).await?;
-                            return Ok(ChunkOutcome::More(SessionProgress { next: body.next().unwrap_or(end), expires: body.expires() }));
-                        }
-                        StatusCode::OK | StatusCode::CREATED => {
-                            return item_from(response).await.map(|item| ChunkOutcome::Done(Box::new(item)));
-                        }
-                        StatusCode::RANGE_NOT_SATISFIABLE => return self.upload_status(session_url).await.map(ChunkOutcome::More),
-                        status if session_ended(status) => return Err(WriteError::SessionGone),
-                        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
-                            let wait = self.wait_for(&response);
-                            (error_from(response).await, wait)
-                        }
-                        _ => return Err(error_from(response).await),
-                    }
+            match self.send_fragment(&url, session_url, offset..end, total, &chunk).await {
+                Fragment::Settled(outcome) => break outcome,
+                Fragment::NotTaken { refusal, .. } if sent >= self.retry.attempts => break Err(refusal),
+                Fragment::NotTaken { refusal, wait } => {
+                    tracing::debug!("a fragment at {offset} was not taken ({refusal}); it goes again to the same session");
+                    tokio::time::sleep(wait).await;
                 }
-                // A dropped connection, a timeout: the fragment may or may not have gone in.
-                Err(lost) => (lost, self.retry.default_wait.min(self.retry.max_wait)),
-            };
-            if sent >= self.retry.attempts {
-                return Err(refusal);
             }
-            tracing::debug!("a fragment at {offset} was not taken ({refusal}); it goes again to the same session");
-            tokio::time::sleep(wait).await;
-            let progress = self.upload_status(session_url).await?;
-            if progress.next != offset {
-                return Ok(ChunkOutcome::More(progress));
+            match self.upload_status(session_url).await {
+                Ok(progress) if progress.next == offset => sent += 1,
+                moved_on => break moved_on.map(ChunkOutcome::More),
             }
         }
     }
 
+    /// One send of the fragment `range` of a file of `total` bytes: what its answer
+    /// settles, or the refusal a later send may get past.
+    async fn send_fragment(&self, url: &Url, session_url: &str, range: Range<u64>, total: u64, chunk: &Arc<Vec<u8>>) -> Fragment {
+        // The body goes out in pieces, each counted into the pool's speed as it is taken.
+        let sent = self
+            .send(Auth::Session, Throttle::Return, || {
+                self.upload
+                    .put(url.clone())
+                    .header(header::CONTENT_RANGE, format!("bytes {}-{}/{total}", range.start, range.end - 1))
+                    .header(header::CONTENT_LENGTH, chunk.len().to_string())
+                    .body(self.metered(Arc::clone(chunk)))
+            })
+            .await;
+        let response = match sent {
+            Ok(response) => response,
+            // A dropped connection, a timeout: the fragment may or may not have gone in.
+            Err(lost) => return Fragment::NotTaken { refusal: lost.into(), wait: self.retry.default_wait.min(self.retry.max_wait) },
+        };
+        let status = Status::of(&response);
+        Fragment::Settled(match (status.code(), classify(status, "")) {
+            (202, _) => progress_from(response)
+                .await
+                .map(|body| ChunkOutcome::More(SessionProgress { next: body.next().unwrap_or(range.end), expires: body.expires() })),
+            (200 | 201, _) => item_from(response).await.map(|item| ChunkOutcome::Done(Box::new(item))),
+            (_, Kind::RangeNotSatisfiable) => self.upload_status(session_url).await.map(ChunkOutcome::More),
+            (_, kind) if session_ended(kind) => Err(WriteError::SessionGone),
+            (_, Kind::Throttled) => {
+                let wait = self.wait_for(&response);
+                return Fragment::NotTaken { refusal: error_from(response).await, wait };
+            }
+            _ => Err(error_from(response).await),
+        })
+    }
+
     /// Where a session stands: what to resume from after an interruption.
     pub async fn upload_status(&self, session_url: &str) -> Result<SessionProgress, WriteError> {
-        let request = self.upload.get(session_url_of(session_url)?).timeout(SESSION_CALL_TIMEOUT);
-        let response = send_to_session(request).await?;
-        self.answered(&response);
-        match response.status() {
-            StatusCode::OK => {
+        let url = session_url_of(session_url)?;
+        let response =
+            self.send(Auth::Session, Throttle::Return, || self.upload.get(url.clone()).timeout(SESSION_CALL_TIMEOUT)).await?;
+        let status = Status::of(&response);
+        match (status.code(), classify(status, "")) {
+            (200, _) => {
                 let body = progress_from(response).await?;
                 // Nothing missing, yet not completed: it takes no more fragments.
                 let next = body.next().ok_or(WriteError::SessionGone)?;
                 Ok(SessionProgress { next, expires: body.expires() })
             }
-            status if session_ended(status) => Err(WriteError::SessionGone),
+            (_, kind) if session_ended(kind) => Err(WriteError::SessionGone),
             _ => Err(error_from(response).await),
         }
     }
 
     /// Abandons a session, dropping what it holds. One already gone is done.
     pub async fn cancel_upload(&self, session_url: &str) -> Result<(), WriteError> {
-        let request = self.upload.delete(session_url_of(session_url)?).timeout(SESSION_CALL_TIMEOUT);
-        let response = send_to_session(request).await?;
-        self.answered(&response);
-        match response.status() {
-            status if status.is_success() || session_ended(status) => Ok(()),
-            _ => Err(error_from(response).await),
+        let url = session_url_of(session_url)?;
+        let response =
+            self.send(Auth::Session, Throttle::Return, || self.upload.delete(url.clone()).timeout(SESSION_CALL_TIMEOUT)).await?;
+        let status = Status::of(&response);
+        if status.is_success() || session_ended(classify(status, "")) {
+            Ok(())
+        } else {
+            Err(error_from(response).await)
         }
     }
 
@@ -299,11 +298,10 @@ impl DriveClient {
             UploadTarget::Existing { id, if_match } => (self.item_url(id, Some("content"))?, Some(if_match)),
         };
         let response = self
-            .send_write(|token| {
+            .send(Auth::Account, Throttle::Return, || {
                 let request = self
                     .api
                     .put(url.clone())
-                    .bearer_auth(token)
                     .header(header::CONTENT_TYPE, "application/octet-stream")
                     .header(header::CONTENT_LENGTH, "0")
                     .body(Vec::new());
@@ -345,29 +343,46 @@ impl DriveClient {
 /// The pieces an upload's body goes out in, for its speed.
 const METER_PIECE: usize = 256 * 1024;
 
+/// What one send of a fragment came to.
+enum Fragment {
+    /// The answer settles the call: the session moved on or completed, or refused the
+    /// fragment for good.
+    Settled(Result<ChunkOutcome, WriteError>),
+    /// Refused for now (`429`, `503`), or no answer: after `wait` the session is asked
+    /// where it stands.
+    NotTaken { refusal: WriteError, wait: Duration },
+}
+
+/// Where the fragment of `len` bytes at `offset` ends in a file of `total`; refused, before
+/// anything is sent, if it does not fit the file or Microsoft's bounds on a fragment.
+fn fragment_end(offset: u64, len: u64, total: u64) -> Result<u64, WriteError> {
+    let end = offset
+        .checked_add(len)
+        .filter(|&end| len > 0 && end <= total)
+        .ok_or_else(|| WriteError::Failed(format!("{len} bytes at {offset} do not fit a file of {total}").into()))?;
+    if len >= MAX_FRAGMENT || (end < total && !len.is_multiple_of(FRAGMENT_UNIT)) {
+        return Err(WriteError::Failed(
+            format!("a fragment of {len} bytes: each must be under 60 MiB, and all but the last a multiple of 320 KiB").into(),
+        ));
+    }
+    Ok(end)
+}
+
 /// A session URL that answers these no longer takes fragments: gone (`404`,
 /// `410`) or refused (`401`, `403`: its own authorisation has lapsed).
-fn session_ended(status: StatusCode) -> bool {
-    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::GONE)
+fn session_ended(kind: Kind) -> bool {
+    matches!(kind, Kind::Unauthorized | Kind::Forbidden | Kind::NotFound | Kind::Gone)
 }
 
 fn session_url_of(url: &str) -> Result<Url, WriteError> {
     Url::parse(url).map_err(|_| WriteError::Failed("an upload URL from Graph cannot be parsed".into()))
 }
 
-/// Sends a request to a session URL: no token, and no URL in the error.
-async fn send_to_session(request: reqwest::RequestBuilder) -> Result<reqwest::Response, WriteError> {
-    request
-        .send()
-        .await
-        .map_err(|e| WriteError::Transient(format!("cannot reach OneDrive's upload service: {}", e.without_url())))
-}
-
 async fn progress_from(response: reqwest::Response) -> Result<ProgressBody, WriteError> {
     response
         .json()
         .await
-        .map_err(|e| WriteError::Transient(format!("an unreadable upload status: {}", e.without_url())))
+        .map_err(|e| WriteError::Transient(format!("an unreadable upload status: {}", e.without_url()).into()))
 }
 
 #[cfg(test)]

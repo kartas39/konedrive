@@ -92,7 +92,7 @@ impl DriveClient {
     pub async fn socket_endpoint(&self) -> Result<SocketEndpoint, DriveError> {
         let body: EndpointBody = self.get_json(self.route("me/drive/root/subscriptions/socketIo")?).await?;
         let notification_url = Url::parse(&body.notification_url)
-            .map_err(|e| DriveError::Failed(format!("the notification URL from Graph cannot be parsed: {e}")))?;
+            .map_err(|e| DriveError::Failed(format!("the notification URL from Graph cannot be parsed: {e}").into()))?;
         let given = body
             .expiration_date_time
             .as_deref()

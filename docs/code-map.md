@@ -429,20 +429,25 @@ Design: `sync.md`; `writes.md` for the writes and the upload sessions.
 
 ### `crates/konedrive-graph/`
 
-- `Cargo.toml` — the crate.
+- `Cargo.toml` — the crate; the feature `testing`, for the daemon's tests.
 
 ### `crates/konedrive-graph/src/`
 
-- `lib.rs` — the list of the modules.
+- `lib.rs` — the list of the modules, and what each offers.
 - `oauth.rs` — the authorization URL and the token endpoint; the scopes. `[tests]`
 - `pkce.rs` — PKCE and random `state` values. `[tests]`
 - `loopback.rs` — the one-shot listener for the OAuth redirect. `[tests]`
 - `token.rs` — access tokens: cached, refreshed on demand, one refresh at a time. `[tests]`
 - `secret.rs` — the refresh token's store, as the token manager sees it.
-- `graph.rs` — the two calls the account page needs: the profile and the drive. `[tests]`
 - `pool.rs` — the transfer pool: how many requests an account has in flight. `[tests]`
 - `quickxor.rs` — QuickXorHash. `[tests]`
 - `drive/mod.rs` — the drive API, reading: the delta feed, one item, content. `[tests]`
+- `drive/error.rs` — an answer's status, what it and Graph's error code mean, a read's error.
+  `[tests]`
+- `drive/send.rs` — the one way a request leaves the client: who it is authorised as, and
+  what a `429` or a `503` does to it.
+- `drive/account.rs` — the two calls the account page needs: the profile and the drive.
+  `[tests]`
 - `drive/item.rs` — a `driveItem`. `[tests]`
 - `drive/write.rs` — the drive API, writing: a new folder, a move, a delete. `[tests]`
 - `drive/upload.rs` — upload sessions. `[tests]`

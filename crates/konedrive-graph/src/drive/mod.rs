@@ -5,48 +5,36 @@
 //! worker does, and the scope stays `Files.Read` until an account is switched
 //! to read-write.
 
+mod account;
+mod error;
 pub mod item;
+mod send;
 pub mod socket;
-pub mod upload;
-pub mod write;
+mod upload;
+mod write;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::TryStreamExt;
-use reqwest::{header, StatusCode};
+use reqwest::header;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
 
+pub use account::{Drive, Profile};
+pub use error::{Detail, DriveError, Status};
 pub use item::DriveItem;
+pub use send::RetryPolicy;
 pub use upload::{ChunkOutcome, SessionProgress, UploadSession, UploadTarget, CHUNK_SIZE, FRAGMENT_UNIT, SMALL_UPLOAD_MAX};
-pub use write::{ItemChange, WriteError};
+pub use write::{ItemChange, WriteError, MAX_RETRY_AFTER};
+
+use error::{classify, graph_error, Kind};
+use send::{Auth, Throttle};
 
 use crate::pool::{Direction, TransferPool};
-use crate::token::{AuthError, TokenSource};
-
-#[derive(Debug, thiserror::Error)]
-pub enum DriveError {
-    #[error("signed out: sign in again")]
-    SignedOut,
-    #[error("the item is not in OneDrive any more")]
-    NotFound,
-    #[error("the change feed has expired and the drive must be listed again")]
-    ResyncRequired,
-    /// `410` with `resyncChangesUploadDifferences` (`docs/design/writes.md` §9): listed
-    /// again, and what the new listing leaves out is uploaded rather than
-    /// removed. Only a read-write folder tells it from [`Self::ResyncRequired`].
-    #[error("the change feed has expired and the drive must be listed again, keeping what it no longer has")]
-    ResyncUpload,
-    #[error("the download link has expired")]
-    UrlExpired,
-    #[error("{0}")]
-    Transient(String),
-    #[error("{0}")]
-    Failed(String),
-}
+use crate::token::TokenSource;
 
 /// Where a delta request starts: the beginning (a full listing), or a link
 /// Graph handed out earlier.
@@ -87,7 +75,7 @@ pub enum Thumbnail {
     None,
     /// Any other `4xx` but `401`, `408` and `429`: Graph will not make one
     /// at this size (`406` for some items at `c512x512`).
-    Refused(StatusCode),
+    Refused(Status),
 }
 
 /// The cap on `thumbnail`'s body: far more than any
@@ -98,21 +86,6 @@ const MAX_THUMBNAIL_BYTES: u64 = 8 * 1024 * 1024;
 /// The bound on one upload request: a 10 MiB fragment in 10 minutes needs
 /// about 140 kbit/s.
 const UPLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// How long to wait out throttling (`429`, `503`): `Retry-After` when given,
-/// capped, and how many answers of that kind to take before giving up.
-#[derive(Debug, Clone, Copy)]
-pub struct RetryPolicy {
-    pub attempts: u32,
-    pub default_wait: Duration,
-    pub max_wait: Duration,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self { attempts: 5, default_wait: Duration::from_secs(10), max_wait: Duration::from_secs(300) }
-    }
-}
 
 #[derive(Clone)]
 pub struct DriveClient {
@@ -260,17 +233,19 @@ impl DriveClient {
     /// carried no download URL.
     pub async fn content_url(&self, id: &str) -> Result<String, DriveError> {
         let url = self.item_url(id, Some("content"))?;
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
-        match response.status() {
-            status if status.is_redirection() => response
+        let response = self.send(Auth::Account, Throttle::Wait, || self.content.get(url.clone())).await?;
+        let status = Status::of(&response);
+        if status.is_redirection() {
+            return response
                 .headers()
                 .get(header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
-                .ok_or_else(|| DriveError::Failed("a redirect without a Location".into())),
-            StatusCode::NOT_FOUND => Err(DriveError::NotFound),
-            status if status.is_server_error() => Err(DriveError::Transient(format!("content returned {status}"))),
-            status => Err(DriveError::Failed(format!("content returned {status}"))),
+                .ok_or_else(|| DriveError::Failed("a redirect without a Location".into()));
+        }
+        match classify(status, "") {
+            Kind::NotFound => Err(DriveError::NotFound),
+            _ => Err(refused(format!("content returned {status}"), status, "")),
         }
     }
 
@@ -280,7 +255,7 @@ impl DriveClient {
     /// authorisation; the account's token is never sent to it.
     pub async fn download(&self, url: &str, from: u64, end: Option<u64>) -> Result<Download, DriveError> {
         let url = Url::parse(url)
-            .map_err(|e| DriveError::Failed(format!("a download URL from Graph cannot be parsed: {e}")))?;
+            .map_err(|e| DriveError::Failed(format!("a download URL from Graph cannot be parsed: {e}").into()))?;
         if end.is_some_and(|end| end <= from) {
             return Ok(Download { served_from: from, stream: Box::new(tokio::io::empty()) });
         }
@@ -291,7 +266,7 @@ impl DriveClient {
             None => None,
         };
         let response = self
-            .send_anonymous(|| {
+            .send(Auth::Link, Throttle::Wait, || {
                 let request = self.content.get(url.clone());
                 match &range {
                     Some(range) => request.header(header::RANGE, range.as_str()),
@@ -306,13 +281,14 @@ impl DriveClient {
                 None => stream,
             }
         };
-        match response.status() {
-            StatusCode::PARTIAL_CONTENT => {
+        let status = Status::of(&response);
+        match status.code() {
+            206 => {
                 let start = content_range_start(response.headers())
                     .ok_or_else(|| DriveError::Failed("a partial answer without a readable Content-Range".into()))?;
                 Ok(Download { served_from: start, stream: bounded(self.body(response), start) })
             }
-            StatusCode::OK => {
+            200 => {
                 let mut stream = self.body(response);
                 if from > 0 {
                     // The server ignored the range, as it may.
@@ -320,24 +296,21 @@ impl DriveClient {
                     // where this says it does.
                     let skipped = tokio::io::copy(&mut (&mut stream).take(from), &mut tokio::io::sink())
                         .await
-                        .map_err(|e| DriveError::Transient(e.to_string()))?;
+                        .map_err(|e| DriveError::Transient(e.to_string().into()))?;
                     if skipped != from {
-                        return Err(DriveError::Transient(format!(
-                            "the body ended after {skipped} of the {from} bytes to skip"
-                        )));
+                        return Err(DriveError::Transient(
+                            format!("the body ended after {skipped} of the {from} bytes to skip").into(),
+                        ));
                     }
                 }
                 Ok(Download { served_from: from, stream: bounded(stream, from) })
             }
-            // Asked from the end of the file or past it: nothing to serve.
-            StatusCode::RANGE_NOT_SATISFIABLE => {
-                Ok(Download { served_from: from, stream: Box::new(tokio::io::empty()) })
-            }
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND | StatusCode::GONE => {
-                Err(DriveError::UrlExpired)
-            }
-            status if status.is_server_error() => Err(DriveError::Transient(format!("the download returned {status}"))),
-            status => Err(DriveError::Failed(format!("the download returned {status}"))),
+            _ => match classify(status, "") {
+                // Asked from the end of the file or past it: nothing to serve.
+                Kind::RangeNotSatisfiable => Ok(Download { served_from: from, stream: Box::new(tokio::io::empty()) }),
+                Kind::Unauthorized | Kind::Forbidden | Kind::NotFound | Kind::Gone => Err(DriveError::UrlExpired),
+                _ => Err(refused(format!("the download returned {status}"), status, "")),
+            },
         }
     }
 
@@ -355,7 +328,7 @@ impl DriveClient {
     pub async fn thumbnail(&self, id: &str, size: &str) -> Result<Thumbnail, DriveError> {
         let mut url = self.item_url(id, Some("thumbnails"))?;
         url.path_segments_mut().map_err(|()| DriveError::Failed("the Graph base URL cannot take a path".into()))?.push("0").push(size).push("content");
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
+        let response = self.send(Auth::Account, Throttle::Wait, || self.content.get(url.clone())).await?;
         let response = if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -364,20 +337,21 @@ impl DriveClient {
                 .ok_or_else(|| DriveError::Failed("a thumbnail redirect without a Location".into()))?
                 .to_owned();
             let redirected = Url::parse(&location)
-                .map_err(|e| DriveError::Failed(format!("a thumbnail redirect cannot be parsed: {e}")))?;
-            self.send_anonymous(|| self.content.get(redirected.clone())).await?
+                .map_err(|e| DriveError::Failed(format!("a thumbnail redirect cannot be parsed: {e}").into()))?;
+            self.send(Auth::Link, Throttle::Wait, || self.content.get(redirected.clone())).await?
         } else {
             response
         };
-        match response.status() {
-            status if status.is_success() => self.bounded_thumbnail_body(response).await,
-            StatusCode::NOT_FOUND => Ok(Thumbnail::None),
-            status @ (StatusCode::UNAUTHORIZED | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS) => {
-                Err(DriveError::Transient(format!("a thumbnail returned {status}")))
-            }
-            status if status.is_client_error() => Ok(Thumbnail::Refused(status)),
-            status if status.is_server_error() => Err(DriveError::Transient(format!("a thumbnail returned {status}"))),
-            status => Err(DriveError::Failed(format!("a thumbnail returned {status}"))),
+        let status = Status::of(&response);
+        if status.is_success() {
+            return self.bounded_thumbnail_body(response).await;
+        }
+        let passing = || DriveError::Transient(Detail::answered(format!("a thumbnail returned {status}"), status, ""));
+        match classify(status, "") {
+            Kind::NotFound => Ok(Thumbnail::None),
+            Kind::Unauthorized | Kind::Timeout | Kind::Throttled => Err(passing()),
+            _ if status.is_client_error() => Ok(Thumbnail::Refused(status)),
+            _ => Err(refused(format!("a thumbnail returned {status}"), status, "")),
         }
     }
 
@@ -393,7 +367,7 @@ impl DriveClient {
         }
         let mut stream = response.bytes_stream();
         let mut buf = Vec::new();
-        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.without_url().to_string()))? {
+        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.without_url().to_string().into()))? {
             self.pool.moved(Direction::Down, chunk.len() as u64);
             buf.extend_from_slice(&chunk);
             if buf.len() as u64 > MAX_THUMBNAIL_BYTES {
@@ -404,85 +378,22 @@ impl DriveClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, DriveError> {
-        let response = self.send(|token| self.api.get(url.clone()).bearer_auth(token)).await?;
-        match response.status() {
-            status if status.is_success() => response
+        let response = self.send(Auth::Account, Throttle::Wait, || self.api.get(url.clone())).await?;
+        let status = Status::of(&response);
+        if status.is_success() {
+            return response
                 .json()
                 .await
-                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()))),
-            StatusCode::NOT_FOUND => Err(DriveError::NotFound),
-            StatusCode::GONE => Err(resync(response).await),
-            status if status.is_server_error() => Err(DriveError::Transient(format!("Graph returned {status}"))),
-            status => Err(DriveError::Failed(format!("Graph returned {status}"))),
+                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()).into()));
         }
-    }
-
-    /// Sends a request with the account's token. A `401` is answered once by
-    /// dropping the cached token and asking again; `429` and `503` wait as
-    /// told (Ruling of), and tell the pool, which hands out nothing meanwhile.
-    async fn send(&self, request: impl Fn(&str) -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
-        let mut renewed = false;
-        let mut throttled = 0;
-        loop {
-            let token = self.token().await?;
-            let response = request(&token)
-                .send()
-                .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
-            match response.status() {
-                StatusCode::UNAUTHORIZED if !renewed => {
-                    renewed = true;
-                    self.tokens.invalidate().await;
-                }
-                StatusCode::UNAUTHORIZED => {
-                    return Err(DriveError::Failed("Microsoft Graph rejected the access token".into()))
-                }
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
-                    throttled += 1;
-                    if throttled >= self.retry.attempts {
-                        return Err(DriveError::Transient(format!(
-                            "Microsoft Graph kept answering {}",
-                            response.status()
-                        )));
-                    }
-                    let wait = self.wait_for(&response);
-                    self.pool.throttled(Some(wait));
-                    tokio::time::sleep(wait).await;
-                }
-                _ => return Ok(response),
+        match classify(status, "") {
+            Kind::NotFound => Err(DriveError::NotFound),
+            Kind::Gone => Err(resync(response).await),
+            _ => {
+                let code = graph_error(response).await.code;
+                Err(refused(format!("Graph returned {status}"), status, &code))
             }
         }
-    }
-
-    /// [`send`](Self::send) for a pre-authenticated URL: no token at all.
-    async fn send_anonymous(&self, request: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
-        let mut throttled = 0;
-        loop {
-            let response = request()
-                .send()
-                .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {}", e.without_url())))?;
-            match response.status() {
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
-                    throttled += 1;
-                    if throttled >= self.retry.attempts {
-                        return Err(DriveError::Transient(format!("OneDrive kept answering {}", response.status())));
-                    }
-                    let wait = self.wait_for(&response);
-                    self.pool.throttled(Some(wait));
-                    tokio::time::sleep(wait).await;
-                }
-                _ => return Ok(response),
-            }
-        }
-    }
-
-    async fn token(&self) -> Result<String, DriveError> {
-        self.tokens.access_token().await.map_err(|e| match e {
-            AuthError::SignedOut => DriveError::SignedOut,
-            AuthError::Locked => DriveError::Transient("the secret storage is locked".into()),
-            AuthError::Transient(message) => DriveError::Transient(message),
-        })
     }
 
     /// A download's body, its bytes counted into the pool's speed as they are read.
@@ -495,15 +406,8 @@ impl DriveClient {
         Box::new(tokio_util::io::StreamReader::new(Box::pin(stream)))
     }
 
-    /// `Retry-After` in seconds or as an HTTP date, else the default; capped.
-    fn wait_for(&self, response: &reqwest::Response) -> Duration {
-        write::retry_after(response.headers(), std::time::SystemTime::now())
-            .unwrap_or(self.retry.default_wait)
-            .min(self.retry.max_wait)
-    }
-
     fn route(&self, route: &str) -> Result<Url, DriveError> {
-        self.base.join(route).map_err(|e| DriveError::Failed(format!("{route}: {e}")))
+        self.base.join(route).map_err(|e| DriveError::Failed(format!("{route}: {e}").into()))
     }
 
     /// `me/drive/items/<id>[/<tail>]`, the id as one path segment whatever it
@@ -543,11 +447,22 @@ impl DriveClient {
     /// A link Graph handed out, followed only to Graph itself: the token goes
     /// with it.
     fn same_host(&self, link: &str) -> Result<Url, DriveError> {
-        let url = Url::parse(link).map_err(|e| DriveError::Failed(format!("a link from Graph cannot be parsed: {e}")))?;
+        let url = Url::parse(link).map_err(|e| DriveError::Failed(format!("a link from Graph cannot be parsed: {e}").into()))?;
         if url.scheme() != self.base.scheme() || url.host_str() != self.base.host_str() || url.port_or_known_default() != self.base.port_or_known_default() {
-            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {}", url.host_str().unwrap_or("none"))));
+            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {}", url.host_str().unwrap_or("none")).into()));
         }
         Ok(url)
+    }
+}
+
+/// An answer no call has a meaning for: passing if the service failed (`5xx`), final
+/// otherwise.
+fn refused(message: String, status: Status, code: &str) -> DriveError {
+    let detail = Detail::answered(message, status, code);
+    if status.is_server_error() {
+        DriveError::Transient(detail)
+    } else {
+        DriveError::Failed(detail)
     }
 }
 

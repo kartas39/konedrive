@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use crate::config::{ConfigError, ConfigStore};
 
-pub use konedrive_graph::secret::{MemoryStore, SecretError, SecretStore};
+pub use konedrive_graph::secret::{SecretError, SecretStore};
 
 /// Where a refresh token is kept in the wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

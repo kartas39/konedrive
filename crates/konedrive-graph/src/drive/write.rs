@@ -10,15 +10,16 @@
 //! folder goes, as on Windows, and the recycle bin is the safety net.
 //! Throttling (`429`, `503`) comes back as [`WriteError::Throttled`] with the
 //! wait Graph asked for: the worker pauses the whole account (§4.10), so
-//! nothing here sleeps.
+//! nothing here sleeps ([`Throttle::Return`]).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::{header, StatusCode};
-use serde::Deserialize;
+use reqwest::header;
 use serde_json::{json, Map, Value};
 
+use super::error::{classify, graph_error, Detail, Kind, Status};
 use super::item::{days_from_civil, format_graph_time};
+use super::send::{Auth, Throttle};
 use super::{DriveClient, DriveError, DriveItem};
 
 /// The longest wait a `Retry-After` is taken at: a sanity bound against a
@@ -63,15 +64,15 @@ pub enum WriteError {
     /// `400`: OneDrive refuses the request, most often the name. Carries the
     /// service's own message.
     #[error("OneDrive refused it: {0}")]
-    Refused(String),
+    Refused(Detail),
     #[error("signed out: sign in again")]
     SignedOut,
     /// Another `5xx`, a network error, a locked secret store, an answer that
     /// could not be read: try again later.
     #[error("{0}")]
-    Transient(String),
+    Transient(Detail),
     #[error("{0}")]
-    Failed(String),
+    Failed(Detail),
 }
 
 impl From<DriveError> for WriteError {
@@ -79,8 +80,9 @@ impl From<DriveError> for WriteError {
         match error {
             DriveError::SignedOut => WriteError::SignedOut,
             DriveError::NotFound => WriteError::NotFound,
-            DriveError::Transient(message) => WriteError::Transient(message),
-            other => WriteError::Failed(other.to_string()),
+            DriveError::Transient(detail) => WriteError::Transient(detail),
+            DriveError::Failed(detail) => WriteError::Failed(detail),
+            other => WriteError::Failed(other.to_string().into()),
         }
     }
 }
@@ -118,7 +120,7 @@ impl DriveClient {
     pub async fn create_folder(&self, parent_id: &str, name: &str) -> Result<DriveItem, WriteError> {
         let url = self.item_url(parent_id, Some("children"))?;
         let body = json!({ "name": name, "folder": {}, "@microsoft.graph.conflictBehavior": "fail" });
-        let response = self.send_write(|token| self.api.post(url.clone()).bearer_auth(token).json(&body)).await?;
+        let response = self.send(Auth::Account, Throttle::Return, || self.api.post(url.clone()).json(&body)).await?;
         item_from(response).await
     }
 
@@ -128,9 +130,7 @@ impl DriveClient {
         let url = self.item_url(id, None)?;
         let body = change.body();
         let response = self
-            .send_write(|token| {
-                self.api.patch(url.clone()).bearer_auth(token).header(header::IF_MATCH, if_match).json(&body)
-            })
+            .send(Auth::Account, Throttle::Return, || self.api.patch(url.clone()).header(header::IF_MATCH, if_match).json(&body))
             .await?;
         item_from(response).await
     }
@@ -140,13 +140,9 @@ impl DriveClient {
     pub async fn delete_item(&self, id: &str, if_match: &str) -> Result<(), WriteError> {
         let url = self.item_url(id, None)?;
         let response = self
-            .send_write(|token| self.api.delete(url.clone()).bearer_auth(token).header(header::IF_MATCH, if_match))
+            .send(Auth::Account, Throttle::Return, || self.api.delete(url.clone()).header(header::IF_MATCH, if_match))
             .await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(error_from(response).await)
-        }
+        done(response).await
     }
 
     /// Deletes folder `id`, whole, into OneDrive's recycle bin: no
@@ -156,44 +152,17 @@ impl DriveClient {
     /// is the safety net. [`WriteError::NotFound`] means it is already gone.
     pub async fn delete_folder(&self, id: &str) -> Result<(), WriteError> {
         let url = self.item_url(id, None)?;
-        let response = self.send_write(|token| self.api.delete(url.clone()).bearer_auth(token)).await?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(error_from(response).await)
-        }
+        let response = self.send(Auth::Account, Throttle::Return, || self.api.delete(url.clone())).await?;
+        done(response).await
     }
+}
 
-    /// Sends a write with the account's token. A `401` is answered once by
-    /// dropping the cached token and asking again, as reads do; every other
-    /// answer, throttling included, goes back to the caller as it is — throttling told to
-    /// the account's transfer pool first.
-    pub(super) async fn send_write(
-        &self,
-        request: impl Fn(&str) -> reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response, WriteError> {
-        let mut renewed = false;
-        loop {
-            let token = self.token().await?;
-            let response = request(&token)
-                .send()
-                .await
-                .map_err(|e| WriteError::Transient(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
-            if response.status() == StatusCode::UNAUTHORIZED && !renewed {
-                renewed = true;
-                self.tokens.invalidate().await;
-                continue;
-            }
-            self.answered(&response);
-            return Ok(response);
-        }
-    }
-
-    /// Tells the account's transfer pool of an answer to a write: a `429`/`503` throttles it.
-    pub(super) fn answered(&self, response: &reqwest::Response) {
-        if matches!(response.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) {
-            self.pool.throttled(retry_after(response.headers(), SystemTime::now()));
-        }
+/// A successful answer with nothing to read, or the error an unsuccessful one means.
+async fn done(response: reqwest::Response) -> Result<(), WriteError> {
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(error_from(response).await)
     }
 }
 
@@ -211,61 +180,37 @@ pub(super) async fn item_from(response: reqwest::Response) -> Result<DriveItem, 
     response
         .json()
         .await
-        .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {}", e.without_url())))
-}
-
-#[derive(Deserialize)]
-struct ErrorBody {
-    error: ErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct ErrorDetail {
-    #[serde(default)]
-    code: String,
-    #[serde(default)]
-    message: String,
+        .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()).into()))
 }
 
 /// What an unsuccessful answer means (§3.6). Graph's error code decides where
 /// it is specific; the status otherwise.
 pub(super) async fn error_from(response: reqwest::Response) -> WriteError {
-    let status = response.status();
+    let status = Status::of(&response);
     let wait = retry_after(response.headers(), SystemTime::now());
-    let detail = response
-        .bytes()
-        .await
-        .ok()
-        .and_then(|body| serde_json::from_slice::<ErrorBody>(&body).ok())
-        .map(|body| body.error)
-        .unwrap_or(ErrorDetail { code: String::new(), message: String::new() });
-    match (status, detail.code.as_str()) {
-        (_, "nameAlreadyExists") => WriteError::NameExists,
-        (_, "quotaLimitReached") => WriteError::QuotaExceeded,
-        (StatusCode::PRECONDITION_FAILED, _) => WriteError::Changed,
-        (StatusCode::CONFLICT, _) => WriteError::NameExists,
-        (StatusCode::NOT_FOUND, _) => WriteError::NotFound,
-        (StatusCode::INSUFFICIENT_STORAGE, _) => WriteError::QuotaExceeded,
-        (StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE, _) => {
-            WriteError::Throttled { retry_after: wait }
-        }
-        (StatusCode::LOCKED, _) => WriteError::Locked,
-        (StatusCode::FORBIDDEN, _) => WriteError::Forbidden,
-        (StatusCode::BAD_REQUEST, code) => WriteError::Refused(if detail.message.is_empty() {
-            format!("Graph returned {status} {code}")
-        } else {
-            detail.message
-        }),
-        (StatusCode::UNAUTHORIZED, _) => WriteError::Failed("Microsoft Graph rejected the access token".into()),
-        (status, code) if status.is_server_error() => WriteError::Transient(format!("Graph returned {status} {code}")),
-        (status, code) => WriteError::Failed(format!("Graph returned {status} {code}")),
+    let graph = graph_error(response).await;
+    let code = graph.code.as_str();
+    let answered = |message: String| Detail::answered(message, status, code);
+    match classify(status, code) {
+        Kind::NameExists => WriteError::NameExists,
+        Kind::QuotaExceeded => WriteError::QuotaExceeded,
+        Kind::Changed => WriteError::Changed,
+        Kind::NotFound => WriteError::NotFound,
+        Kind::Throttled => WriteError::Throttled { retry_after: wait },
+        Kind::Locked => WriteError::Locked,
+        Kind::Forbidden => WriteError::Forbidden,
+        Kind::BadRequest if graph.message.is_empty() => WriteError::Refused(answered(format!("Graph returned {status} {code}"))),
+        Kind::BadRequest => WriteError::Refused(answered(graph.message.clone())),
+        Kind::Unauthorized => WriteError::Failed(answered("Microsoft Graph rejected the access token".into())),
+        _ if status.is_server_error() => WriteError::Transient(answered(format!("Graph returned {status} {code}"))),
+        _ => WriteError::Failed(answered(format!("Graph returned {status} {code}"))),
     }
 }
 
 /// How long `Retry-After` asks to wait, given as seconds or as an HTTP date
 /// (RFC 9110 §10.2.3), from `now`, at most [`MAX_RETRY_AFTER`]. A date already
 /// past is no wait. `None` when the header is missing or unreadable.
-pub fn retry_after(headers: &header::HeaderMap, now: SystemTime) -> Option<Duration> {
+pub(super) fn retry_after(headers: &header::HeaderMap, now: SystemTime) -> Option<Duration> {
     let value = headers.get(header::RETRY_AFTER)?.to_str().ok()?.trim();
     let wait = match value.parse::<u64>() {
         Ok(seconds) => Duration::from_secs(seconds),

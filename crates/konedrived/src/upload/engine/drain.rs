@@ -5,7 +5,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use crate::upload::local;
 use crate::upload::{kind, reason, space, BACKOFF_MAX, THROTTLE_FIRST};
-use konedrive_graph::drive::write::MAX_RETRY_AFTER;
+use konedrive_graph::drive::MAX_RETRY_AFTER;
 use konedrive_graph::pool::{Class as PoolClass, Size, Slot};
 use crate::folder::disk::Disk;
 use konedrive_tree::outbox::OutboxState;

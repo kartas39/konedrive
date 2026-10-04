@@ -346,6 +346,7 @@ application must never read zeros where real content should be.
 - [D30](D30.md) — The structure guard reads lines, not Rust.
 - [D31](D31.md) — Some tests fail now and then when the machine is busy.
 - [D32](D32.md) — The tests' private bus has a configuration of its own, and only a test's own connection gives up on a call.
+- [D33](D33.md) — What the one `send` of `konedrive-graph` left as it was, and what it rests on
 
 ---
 

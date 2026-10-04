@@ -310,7 +310,7 @@ impl Run {
         let content = self.content(total as usize);
         let hash = quickxor(&content);
         let target = UploadTarget::New { parent_id: &self.folder, name: "large.bin" };
-        let session = step!("the session", self.drive.create_upload_session(target, total, T0 + 7200).await);
+        let session = step!("the session", self.drive.create_upload_session(target, T0 + 7200).await);
         let first = CHUNK_SIZE as usize;
         match self.drive.upload_chunk(&session.url, 0, total, content[..first].to_vec()).await {
             Ok(ChunkOutcome::More(progress)) if progress.next == CHUNK_SIZE => {}
@@ -354,7 +354,7 @@ impl Run {
         let content = self.content(total as usize);
         let hash = quickxor(&content);
         let target = UploadTarget::Existing { id: &item.id, if_match: &etag };
-        let session = step!("the session", self.drive.create_upload_session(target, total, T0 + 60).await);
+        let session = step!("the session", self.drive.create_upload_session(target, T0 + 60).await);
         let half = CHUNK_SIZE as usize;
         match self.drive.upload_chunk(&session.url, 0, total, content[..half].to_vec()).await {
             Ok(ChunkOutcome::More(progress)) if progress.next == CHUNK_SIZE => {}
@@ -482,10 +482,10 @@ pub async fn send(drive: &DriveClient, target: UploadTarget<'_>, content: Vec<u8
         return drive.upload_empty(target, time).await;
     }
     let total = content.len() as u64;
-    let session = drive.create_upload_session(target, total, time).await?;
+    let session = drive.create_upload_session(target, time).await?;
     match drive.upload_chunk(&session.url, 0, total, content).await? {
         ChunkOutcome::Done(item) => Ok(*item),
-        ChunkOutcome::More(progress) => Err(WriteError::Transient(format!("a one-fragment session expects byte {}", progress.next))),
+        ChunkOutcome::More(progress) => Err(WriteError::Transient(format!("a one-fragment session expects byte {}", progress.next).into())),
     }
 }
 
