@@ -317,6 +317,26 @@ async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
     assert!(w.deferred("F").is_none());
 }
 
+/// An item OneDrive renames to a name the folder cannot hold, while the
+/// folder cannot let it go yet (moved here, not examined): it stays an item
+/// of the folder, its change waits, and it is on the skipped list, and
+/// counted, from that cycle on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_item_that_cannot_stay_and_cannot_go_yet_is_on_the_skipped_list_at_once() {
+    let w = World::read_write().await;
+    let listing = w.listed().await;
+    std::fs::rename(w.path("docs/f.txt"), w.path("docs/moved.txt")).unwrap();
+    let long = format!("{}.txt", "x".repeat(260));
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("docs/moved.txt")).as_deref(), Some("F"), "left where it is");
+    assert_eq!(w.base("F").unwrap().placement, konedrive_tree::Placement::Placed, "the base still places it");
+    assert!(w.deferred("F").is_some(), "its change waits");
+    let skipped = w.store.call(|s| s.skipped()).await.unwrap();
+    assert_eq!(skipped, vec![(Path::new("docs").join(&long), konedrive_tree::SkipReason::NameTooLong)]);
+    assert_eq!(w.state.get().cycle.skipped_count, 1);
+}
+
 /// A folder removed in OneDrive while a new file waits in it to be uploaded,
 /// and a download in it was changed here (the owner's ruling of 2026-10-04):
 /// those two stay and reach OneDrive as new files in a new folder; the rest

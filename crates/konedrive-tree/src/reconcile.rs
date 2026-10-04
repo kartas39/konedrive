@@ -23,9 +23,9 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
-use crate::model::{at, placed, row_from, Change, NewTree, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
+use crate::model::{at, placed, row_from, Change, NewTree, Row, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
 #[cfg(test)]
-use crate::model::{Kind, Placement, Row};
+use crate::model::{Kind, Placement};
 use crate::query::get_row;
 use crate::source::{Source, UNTOUCHED};
 use crate::staging::{apply, swap};
@@ -86,6 +86,44 @@ pub(super) fn tombstone(tx: &rusqlite::Transaction<'_>, ids: &[&str], local_seq:
             params![id, local_seq],
         )?;
     }
+    Ok(())
+}
+
+/// The change of item `id` waits as deferred, dated commit count `seq`: the
+/// row OneDrive has of it now, or, with none, its removal there.
+pub(super) fn wait(tx: &rusqlite::Transaction<'_>, id: &str, row: Option<&Row>, seq: i64) -> Result<(), TreeError> {
+    match row {
+        Some(row) => tx.execute(
+            "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                id,
+                seq,
+                row.parent_id,
+                row.name,
+                row.kind.as_str(),
+                row.size as i64,
+                row.mtime,
+                row.etag,
+                row.ctag,
+                row.quickxor,
+                row.mime,
+                row.placement.encode()
+            ],
+        )?,
+        None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
+    };
+    Ok(())
+}
+
+/// Item `id`, just committed into the folder `parent`, is remembered with
+/// what is leaving when `parent` is (issue #104): as an item inside it, of the
+/// same leaving object, from this commit on and not only from the next cycle
+/// ([`TreeStore::leaving_refresh_items`]). A folder made there gives its id
+/// to what is made in it at once.
+pub(super) fn joins_leaving(tx: &rusqlite::Transaction<'_>, id: &str, parent: Option<&str>) -> Result<(), TreeError> {
+    let Some(parent) = parent else { return Ok(()) };
+    tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) SELECT ?1, leaving FROM leaving_items WHERE id = ?2")?.execute(params![id, parent])?;
     Ok(())
 }
 
@@ -237,28 +275,7 @@ impl TreeStore {
                     |r| r.get(0),
                 )?;
                 let seq = seq.max(committed);
-                let staged = get_row(&tx, source, id)?;
-                match staged {
-                    Some(row) => tx.execute(
-                        "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
-                         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                        params![
-                            row.id,
-                            seq,
-                            row.parent_id,
-                            row.name,
-                            row.kind.as_str(),
-                            row.size as i64,
-                            row.mtime,
-                            row.etag,
-                            row.ctag,
-                            row.quickxor,
-                            row.mime,
-                            row.placement.encode()
-                        ],
-                    )?,
-                    None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
-                };
+                wait(&tx, id, get_row(&tx, source, id)?.as_ref(), seq)?;
                 if all && source == Source::Overlay {
                     // Staged over `items`: what it has shows through again.
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
@@ -309,6 +326,7 @@ impl TreeStore {
             for table in [Table::Items, Table::Staging] {
                 tx.execute(&format!("UPDATE {} SET local_handle = ?2 WHERE id = ?1", table.name()), params![id, stored])?;
             }
+            crate::forget::forget_unplaced(&tx, [id])?;
         }
         tx.commit()?;
         Ok(landed)

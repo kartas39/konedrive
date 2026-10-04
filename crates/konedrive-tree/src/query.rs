@@ -103,8 +103,9 @@ impl TreeStore {
         Ok(listed as u64)
     }
 
-    /// What is listed, placed and skipped in `items`: a walk of the whole
-    /// tree, asked for once per cycle that changed it (issue #39).
+    /// What is listed and placed in `items`, and what [`skipped`](Self::skipped)
+    /// lists: a walk of the whole tree, asked for once per cycle that
+    /// changed it (issue #39).
     pub fn counts(&self) -> Result<Counts, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Counts::default());
@@ -118,9 +119,9 @@ impl TreeStore {
                      SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
                       WHERE {own} AND p.depth < {MAX_CHAIN})
                  SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id WHERE {not})",
+                        (SELECT count(*) FROM ({out}) s JOIN placed p ON s.parent_id = p.id)",
                 own = placed("c.placement"),
-                not = skipped("s.placement"),
+                out = not_in_the_folder(),
             ),
             [&root],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -128,19 +129,18 @@ impl TreeStore {
         Ok(Counts { listed, placed: placed as u64, skipped: skipped as u64 })
     }
 
-    /// The skipped items `Skipped()` lists: those whose own folder is in the
-    /// folder. What is inside a skipped folder is covered by that folder's
-    /// line. One query, from the index of skipped items up to the root
-    /// (issue #39).
+    /// The skipped items `Skipped()` lists: those OneDrive has and the folder
+    /// cannot hold, whose own folder is in the folder. What is inside a
+    /// skipped folder is covered by that folder's line. One that is still
+    /// here — the base places it, and OneDrive's row of it waits in
+    /// `deferred` until the disk can let it go — is listed as OneDrive has
+    /// it, from the cycle that learnt of it. One query, from the index of
+    /// skipped items and from what waits, up to the root (issue #39).
     pub fn skipped(&self) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Vec::new());
         };
-        let sql = chains_then(
-            Source::Items,
-            &format!("SELECT id, parent_id, name, placement FROM items WHERE {}", skipped("placement")),
-            "SELECT c.path, i.placement FROM chain c JOIN items i ON i.id = c.start WHERE c.parent_id = ?1 AND c.above",
-        );
+        let sql = chains_then(Source::Items, &not_in_the_folder(), "SELECT c.path, c.start_placement FROM chain c WHERE c.parent_id = ?1 AND c.above");
         let mut statement = self.conn.prepare_cached(&sql)?;
         let mut out = Vec::new();
         for row in statement.query_map([&root], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
@@ -152,6 +152,27 @@ impl TreeStore {
         out.sort();
         Ok(out)
     }
+}
+
+/// The rows of what OneDrive has and the folder cannot hold, as `id,
+/// parent_id, name, placement`: each as its deferred change has it, where one
+/// waits that says so, and as the base has it otherwise. A deferred change
+/// an outbox commit made after it supersedes does not count: it is dropped
+/// when the next cycle stages what waits ([`TreeStore::live_deferred`]).
+fn not_in_the_folder() -> String {
+    let waits = format!(
+        "d.gone = 0 AND {out}
+           AND d.seq >= COALESCE((SELECT i.local_seq FROM items i WHERE i.id = d.id), 0)
+           AND d.seq >= COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = d.id), 0)",
+        out = skipped("d.placement"),
+    );
+    format!(
+        "SELECT d.id, d.parent_id, d.name, d.placement FROM deferred d WHERE {waits}
+         UNION ALL
+         SELECT id, parent_id, name, placement FROM items
+          WHERE {out} AND id NOT IN (SELECT d.id FROM deferred d WHERE {waits})",
+        out = skipped("placement"),
+    )
 }
 
 /// A row of the tree `source`.

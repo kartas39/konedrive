@@ -528,7 +528,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `plan.rs` — the plan of a reconcile, item by item: the base's row and place, the new tree's.
   `[tests]`
 - `read.rs` — `ReadStore`: the store as its read-only connection gives it.
-- `forget.rs` — forgetting the local objects of a subtree.
+- `forget.rs` — forgetting local objects: the one walk of a subtree, and the rule that a row the
+  base does not place records none.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
 - `staging.rs` — the new tree a cycle builds, and its swap into `items`.

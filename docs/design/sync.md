@@ -332,6 +332,11 @@ listed by `Skipped()`, `konedrivectl sync skipped` and the window's "Not in the 
 - **Unsupported**: an item that is neither a file nor a folder, or whose id or name cannot be a
   name in a directory (empty, `.`, `..`, containing `/` or NUL).
 
+In a folder that uploads changes, such an item may still be in the folder for a while: its change
+waits until the disk can let it go ([writes.md](writes.md) §9). It is listed and counted from the
+cycle that learnt of it, as OneDrive has it; the line does not yet say that it is still here
+(limitations log F246).
+
 Only the top of a skipped subtree is listed. `ItemsListed` counts every item in the drive, while
 `ItemsPlaced` and `SkippedCount` count only what the tree reaches from the root through placed
 folders, so the contents of a skipped folder make `ItemsPlaced + SkippedCount` smaller than

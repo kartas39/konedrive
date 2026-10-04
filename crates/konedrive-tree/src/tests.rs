@@ -269,6 +269,36 @@ fn counts_and_the_skipped_list_see_only_what_is_reachable() {
     );
 }
 
+/// An item OneDrive has as the folder cannot hold it, while the base still
+/// places it here and its change waits: it is on the skipped list, as
+/// OneDrive has it, and counted, from the commit that deferred it — once,
+/// whatever the base says of it, and not when it waits to be removed.
+#[test]
+fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
+    let long = |change: Change, name: &str| match change {
+        Change::Upsert(row) => Change::Upsert(Row { name: name.into(), placement: Placement::Skipped(SkipReason::NameTooLong), ..row }),
+        other => other,
+    };
+    let mut store = committed(&[root(), folder("D", "R", "docs"), file("F", "D", "f.txt"), file("G", "D", "g.txt"), long(file("N", "R", "n"), "n")]);
+    store.begin_staging(crate::NewTree::Delta).unwrap();
+    store.stage(&[long(file("F", "D", "f.txt"), "f-long"), long(file("N", "R", "n"), "n-longer"), Change::Delete("G".into())]).unwrap();
+    let whole: Vec<String> = ["F", "N", "G"].map(str::to_owned).to_vec();
+    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1 }).unwrap();
+    assert_eq!(store.locate(Table::Items, "F").unwrap().unwrap(), Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }, "still here");
+    assert_eq!(
+        store.skipped().unwrap(),
+        vec![(PathBuf::from("docs/f-long"), SkipReason::NameTooLong), (PathBuf::from("n-longer"), SkipReason::NameTooLong)]
+    );
+    assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 2 });
+
+    // An outbox commit made after the change of `F` was deferred supersedes
+    // it: OneDrive no longer has the item under that name, and it is off the
+    // list before the next cycle drops what waited.
+    store.conn.execute("UPDATE items SET local_seq = 2 WHERE id = 'F'", []).unwrap();
+    assert_eq!(store.skipped().unwrap(), vec![(PathBuf::from("n-longer"), SkipReason::NameTooLong)]);
+    assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 1 });
+}
+
 /// What a delta changed, read back from the two tables: an upsert, a
 /// rename and a delete are the three ids; a row the delta left alone is
 /// not one of them.

@@ -88,6 +88,40 @@ async fn a_local_move_not_examined_yet_is_left_where_it_is_and_its_change_waits(
     assert_eq!(fx.deferred("F"), Some(file("F", "D", "f.txt", "c2")), "OneDrive's change waits");
 }
 
+/// `TR2`: a row dropped for what OneDrive decided forgets its item's local
+/// objects by the new tree too — here what a cycle that failed left staged,
+/// which moves `top.txt` into the folder. The file is still where it was:
+/// the next cycle finds it by its id and moves it, records it again, and
+/// places no second one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_item_forgotten_while_its_move_was_staged_is_moved_and_not_placed_twice() {
+    use std::os::unix::fs::MetadataExt;
+    let w = listed().await;
+    let inode = std::fs::metadata(w.path("top.txt")).unwrap().ino();
+    std::fs::remove_dir_all(w.path("docs")).unwrap();
+    let seq = w.row(OutboxKind::Delete, Some("D"), "docs");
+    let moved = [file("T", "D", "top.txt", "c1")];
+    w.store
+        .call({
+            let moved = moved.to_vec();
+            move |s| {
+                s.begin_staging(konedrive_tree::NewTree::Delta)?;
+                s.stage(&moved)?;
+                s.outbox_drop(seq, None, Some("D"), None)
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(handle(&w, "T").await, None, "forgotten: the new tree has it below the folder");
+
+    cycle(&w, &moved, false).await.unwrap();
+    assert_eq!(std::fs::metadata(w.path("docs/top.txt")).unwrap().ino(), inode, "the file itself, moved");
+    assert!(!w.path("top.txt").exists());
+    assert!(w.path("docs/f.txt").exists(), "the folder is placed again");
+    let there = konedrive_fs::handle::FileHandle::of(&File::open(w.path("docs/top.txt")).unwrap()).unwrap();
+    assert_eq!(handle(&w, "T").await, Some(there), "and recorded again");
+}
+
 /// §3.7: an item with a live outbox row — in any state — is not moved,
 /// replaced or removed, nor is anything below a folder a row moves; their
 /// changes wait. A disagreement those rows explain never turns a Changed
