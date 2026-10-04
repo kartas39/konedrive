@@ -261,6 +261,9 @@ application must never read zeros where real content should be.
 - [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
+- [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
+- [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
+- [F267](F267.md) — A notification group that cannot be read is tried again without a pause
 
 ---
 
@@ -382,6 +385,7 @@ application must never read zeros where real content should be.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
 - [D46](D46.md) — No test has the real helper hang while the examination asks it
+- [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
 
 ---
 

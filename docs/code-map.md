@@ -204,7 +204,13 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
   `[tests]`
 - `map.rs` — the directory map: which directory a file handle names. `[tests]`
 - `dirt.rs` — what the events since the last hand-over made dirty.
-- `reader.rs` — the reader thread: walks the folder once, then drains the events.
+- `reader.rs` — the reader thread: walks the folder once, then drains the events and settles them.
+  - `reader/tree.rs` — the folder's directories as the reader knows them: the map, what left, what waits.
+  - `reader/marks.rs` — the marks on them: the notification groups and their budget, the helper's `MarkDir`.
+  - `reader/timers.rs` — when the folder is walked again and the helper asked again. `[tests]`
+  - `reader/walk.rs` — a walk of directories, and how each kind of walk treats what it finds.
+- `examiner.rs` — the examiner thread: hands each batch to the sink and says what came of it.
+- `schedule.rs` — what the examiner examines next, and when: retries, rechecks, the periodic scan. `[tests]`
 - `service.rs` — the watcher in the daemon: hands each batch to the examination.
 
 ### `crates/konedrived/src/upload/`
