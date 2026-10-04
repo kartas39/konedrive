@@ -243,8 +243,8 @@ fn hand_over(
     // whichever thread opened (no FAN_REPORT_TID; pinned by
     // marks.rs's INIT_FLAGS and its test). The only files
     // the helper opens are those objects, handed straight to
-    // their owner's daemon, and the feature probe's nameless
-    // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
+    // their owner's daemon (`docs/design/writes.md` §8.2;
+    // SECURITY.md); measured in
     // docs/kernel-behavior-7.2/open-by-handle.md §15.
     if pid == own_pid {
         open.allow();

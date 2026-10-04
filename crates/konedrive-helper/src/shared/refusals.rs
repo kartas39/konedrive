@@ -139,19 +139,13 @@ pub(crate) enum Refusal {
     /// line that names somebody reaching for another user's registration
     /// to a count.
     RootIdTaken,
-    /// A registration whose feature probe the helper's own sandbox stopped.
-    /// Not a refusal — the registration goes on, on the filesystem type
-    /// check — and under the shipped unit the ordinary case of a first
-    /// registration; kept here for the throttle, since a peer can have the
-    /// line as often as it registers.
-    ProbeSkipped,
     /// `roots.json` could not be written. The helper's own trouble, but
     /// while it lasts every registration a peer sends repeats it.
     RootsNotSaved,
 }
 
 impl Refusal {
-    const ALL: [Refusal; 14] = [
+    const ALL: [Refusal; 13] = [
         Refusal::PoolFull,
         Refusal::NoRoot,
         Refusal::TooManyWaiters,
@@ -164,7 +158,6 @@ impl Refusal {
         Refusal::TooManySuspended,
         Refusal::RootRefused,
         Refusal::RootIdTaken,
-        Refusal::ProbeSkipped,
         Refusal::RootsNotSaved,
     ];
 
@@ -219,11 +212,6 @@ impl Refusal {
             }
             Refusal::RootIdTaken => {
                 "requests to register a root id which belongs to another user; refused".into()
-            }
-            Refusal::ProbeSkipped => {
-                "registrations that went on although the helper's own sandbox stopped the \
-                 feature probe, relying on the filesystem type check and the daemon's own probe"
-                    .into()
             }
             Refusal::RootsNotSaved => format!(
                 "registrations and unregistrations refused because the helper cannot save \

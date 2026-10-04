@@ -77,8 +77,7 @@ directory the request is about. A request carries a descriptor for that object, 
 - **The helper's own opens.** The object `OpenByHandle` opens may be one the helper itself
   intercepts, and an open it had to decide on would wait for the very connection that asked. So
   events caused by the helper's own process are let through at once. The helper opens no file
-  but those objects and, at registration, its probe's nameless file, and it reads neither
-  (`docs/limitations/`, F92).
+  but those objects, and it does not read them (`docs/limitations/`, F92).
 - **Unregister.** Only a folder the asking uid registered.
 - **Answer opens.** An intercepted open is handed, as a descriptor, to the daemon of the uid that
   owns the file, and waits for that daemon's answer. So an open of a user's placeholder waits on
@@ -98,13 +97,13 @@ daemon mints (a version 4 UUID). These numbers were chosen, not all of them meas
 (`docs/limitations/`, "Provisional numbers"); what the bounds leave open is in the limitations
 log, F208.
 
-**The registration's write probe.** The first time a folder is registered, the helper checks that
-its filesystem can hold placeholders: as root, it creates a nameless temporary file (`O_TMPFILE`)
-in the folder, writes to it and punches a hole in it, sets a `user.*` attribute and takes a
-lease, then closes it. The file never has a name and is gone when it is closed. Under the unit,
-the helper's view of the filesystem is read-only almost everywhere a sync folder can be
-(`ProtectSystem=strict`, `ProtectHome=read-only`), so this write is normally refused. The helper
-then relies on its filesystem type check, and on the same probe, which the daemon runs as you.
+**The helper writes nothing into a folder.** When a folder is registered, the helper checks the
+type of its filesystem (`fstatfs`) and refuses network and FUSE filesystems, FAT and exFAT.
+Whether the filesystem can hold placeholders is measured by the daemon, as you: it creates a
+nameless temporary file (`O_TMPFILE`) in the folder, writes to it and punches a hole in it, sets
+a `user.*` attribute and takes a lease, then closes it. The helper used to run the same probe as
+root; under the unit that write was refused almost everywhere a sync folder can be
+(`ProtectSystem=strict`, `ProtectHome=read-only`), and it is gone (`docs/limitations/`, F232).
 
 ## What the unit's hardening prevents
 

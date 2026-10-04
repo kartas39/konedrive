@@ -359,7 +359,7 @@ Design: `hydration.md`; [`SECURITY.md`](../SECURITY.md). Its end-to-end tests ar
 - `events/decision.rs` — what an intercepted open is answered, and carrying it out. `[tests]`
 - `events/hydration.rs` — asking the owner's daemon, and passing its answer on.
 - `connection.rs` — the connection with one daemon.
-- `registration.rs` — registering and unregistering a root, with its filesystem checks.
+- `registration.rs` — registering and unregistering a root, with its filesystem check.
   `[tests]`
 - `marks.rs` — the fanotify permission group: marks on directories, ignore marks on files.
   `[tests]`

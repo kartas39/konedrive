@@ -2,9 +2,6 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
-
-use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_helper::{marks, roots};
 use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 
@@ -329,7 +326,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // outcome this whole component exists to prevent.
     //
     // And a uid that already holds every root it may is refused here, before
-    // the directory is resolved and probed for it. Both are asked again by
+    // the directory is resolved for it. Both are asked again by
     // the decision below, which is the one that counts.
     let (previous_owner, held) = shared.roots.owner_and_held(&root_id, uid);
     if previous_owner.is_some_and(|other| other != uid) {
@@ -344,46 +341,13 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
         Err(errno) => return errno,
     };
 
-    // Re-registering a root we already hold skips the write
-    // probe. The directory is already marked from the first registration, so
-    // creating the probe's temporary file inside it (`O_TMPFILE`, and so
-    // nameless since, but still an `open` in a marked directory)
-    // can raise a permission event aimed at this very helper (kernel fact 7
-    // — `docs/kernel-behavior-7.2/interception.md` §7) while this thread is blocked
-    // inside the probe. A worker answers it
-    // today, but only because the pool is a separate thread set, and under a
-    // saturated pool the probe is denied `EAGAIN` and a perfectly good
-    // re-registration fails. The probe told us nothing new anyway: the
-    // filesystem was probed when the root was first registered, and the type
-    // check below is re-run either way.
-    //
-    // closes the last two ways into the same hazard: a directory
-    // already registered under *another* id, and one lying inside somebody's
-    // registered root, are both already marked, and both are about to be
-    // refused `EINVAL` by the nesting check — but the probe ran first and so
-    // wrote into a marked directory anyway. Asking the same question here,
-    // before the probe, costs one lock and removes it. The authoritative
-    // nesting check stays where it is, under the lock that inserts; this one
-    // only decides whether to probe.
-    //
-    // `Contains` is deliberately not in the set: a directory that contains a
-    // registered root sits *above* every mark, so probing in it is safe.
-    let reregistration = previous_owner == Some(uid);
-    let already_marked = reregistration
-        || matches!(
-            shared.roots.nesting_conflict(&path, meta.dev(), meta.ino()),
-            Some(roots::Nesting::SameDirectory(_)) | Some(roots::Nesting::Inside(_))
-        );
-    let outcome = if already_marked {
-        check_filesystem_type(&dir, &path).map_err(|unusable| {
-            shared.refusals.report(Refusal::RootRefused, || unusable.why);
-            unusable.errno
-        })
-    } else {
-        check_filesystem(shared, &dir, &path)
-    };
-    if let Err(errno) = outcome {
-        return errno;
+    // The type of the filesystem, from `fstatfs`: the half of the check that
+    // writes nothing. The helper does not probe the filesystem's features
+    // itself (the limitations log, F232): the daemon probes the folder, as
+    // its user, before it registers it.
+    if let Err(unusable) = check_filesystem_type(&dir, &path) {
+        shared.refusals.report(Refusal::RootRefused, || unusable.why);
+        return unusable.errno;
     }
 
     let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id };
@@ -408,7 +372,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     let displaced = {
         let change = shared.roots.change();
         // Decided on the registrations as they are now. The checks above ran
-        // before `resolve_root_path` and the filesystem checks, all of which
+        // before `resolve_root_path` and the filesystem check, both of which
         // do I/O no lock is held across — and in that gap another connection
         // could have claimed this id, or taken the user's last free place.
         // Asking here, with the change begun so that nothing is registered
@@ -548,70 +512,17 @@ fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<
     Ok(path.to_owned())
 }
 
-/// Two checks, because they fail for different reasons and only one
-/// of them works inside the helper's sandbox.
-///
-/// The filesystem type comes from `fstatfs` on the descriptor itself and is
-/// authoritative: a network filesystem is refused outright, because a file
-/// that can change on another machine cannot be intercepted here at all.
-///
-/// The feature probe writes a temporary file, and the helper's unit runs with
-/// `ProtectHome=read-only`, so it can legitimately be refused permission to
-/// write into a directory that is otherwise perfectly good. A genuine "this
-/// filesystem does not implement hole punching / user xattrs" answer is fatal;
-/// being refused the write is logged and the probe skipped — the daemon runs
-/// its own probe in the user's own context (§10), and refusing every
-/// registration because of our own sandbox would be worse than the check is
-/// worth.
-///
-/// What it says is throttled, and the path in it escaped and cut: a peer can
-/// offer such a directory as often as it likes.
-fn check_filesystem(shared: &Shared, dir: &File, path: &str) -> Result<(), i32> {
-    let refused = |line: String| shared.refusals.report(Refusal::RootRefused, || line);
-    check_filesystem_type(dir, path).map_err(|unusable| {
-        refused(unusable.why);
-        unusable.errno
-    })?;
-    let path = roots::shown_path(path);
-
-    // Probed through `/proc/self/fd/<n>` rather than by path, so the probe
-    // lands in the exact directory we were handed and cannot be redirected by
-    // swapping a component of the path.
-    let through_fd = format!("/proc/self/fd/{}", dir.as_raw_fd());
-    match probe_dir(Path::new(&through_fd)) {
-        Ok(()) => Ok(()),
-        Err(ProbeError::Missing { feature, .. }) => {
-            refused(format!("{path}: the filesystem does not support {feature}"));
-            Err(libc::EOPNOTSUPP)
-        }
-        Err(ProbeError::Unusable {
-            why,
-            errno: Some(libc::EROFS) | Some(libc::EACCES) | Some(libc::EPERM),
-            ..
-        }) => {
-            // Not a refusal, so not under the refusals' key: the registration
-            // goes on, and under the shipped unit this is the ordinary case.
-            shared.refusals.report(Refusal::ProbeSkipped, || {
-                format!(
-                    "{path}: the helper's own sandbox stopped the feature probe ({why}); relying \
-                     on the filesystem type check and the daemon's own probe instead"
-                )
-            });
-            Ok(())
-        }
-        Err(e) => {
-            refused(format!("{path}: {e}"));
-            Err(libc::EIO)
-        }
-    }
-}
-
-/// The half of §10's check that writes nothing.
+/// The helper's check of a root's filesystem: its type, which writes
+/// nothing.
 ///
 /// `fstatfs` on the descriptor itself, so it is authoritative and cannot be
-/// defeated by the helper's own sandbox, and it raises no fanotify event —
-/// which is why this is the only half that runs at startup and on a
-/// re-registration.
+/// defeated by the helper's own sandbox, and it raises no fanotify event, at
+/// a registration, a re-registration or the helper's start. A network
+/// filesystem is refused outright, because a file that can change on another
+/// machine cannot be intercepted here at all. Whether the filesystem has
+/// what a placeholder needs (hole punching, `user.*` attributes, leases) is
+/// measured by the daemon, as its user (`konedrived/src/folder/root.rs`
+/// `check_root_dir`), and not here: the limitations log, F232.
 ///
 /// It writes nothing itself: the reason comes back with the errno, for the
 /// caller to say — throttled for a registration, which a peer can repeat at
@@ -651,8 +562,9 @@ pub(crate) struct Unusable {
 
 /// Filesystems a sync root may never live on. A denylist rather
 /// than an allowlist: the hard requirements are sparse files with hole
-/// punching and `user.*` xattrs, and `probe_dir` measures those directly on
-/// whatever filesystem is actually there, so the type check only has to catch
+/// punching and `user.*` xattrs, and the daemon's `probe_dir` measures those
+/// directly on whatever filesystem is actually there, so the type check only
+/// has to catch
 /// the cases a probe cannot — a filesystem whose files can change behind our
 /// back, which no local test can detect.
 /// Magic numbers as `include/uapi/linux/magic.h` defines them.

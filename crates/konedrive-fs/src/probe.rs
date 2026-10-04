@@ -15,9 +15,7 @@ pub enum ProbeError {
     /// Something about this directory, right now, stopped the probe.
     /// `errno` is the underlying OS error where there was one, so a caller can
     /// tell a filesystem that cannot host placeholders from a caller that is
-    /// merely not allowed to write here — the privileged helper runs under
-    /// `ProtectHome=read-only` and will see `EROFS` for a directory that is
-    /// otherwise perfectly good.
+    /// merely not allowed to write here (`EROFS`, `EACCES`).
     #[error("{path}: {why}")]
     Unusable { path: String, why: String, errno: Option<i32> },
     #[error("{path}: the filesystem does not support {feature}")]
