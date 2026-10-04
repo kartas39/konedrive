@@ -191,7 +191,7 @@ impl Materializer {
         // and its mount point cannot be removed. Nothing of the folder is
         // touched; its removal waits until it is unmounted, and the rest of
         // the cycle goes on.
-        if self.rw.is_some() {
+        if self.mode.read_write().is_some() {
             if let Some(mount) = self.mount_below(dir, name, rel, device(dir)?)? {
                 tracing::info!("{} is gone from OneDrive and stays for now: another filesystem is mounted at {}", rel.display(), mount.display());
                 return Ok(TakenOff { removal: Removal::Kept, waits: Some(WaitsFor::MountedInside(shown(&mount))) });
@@ -199,11 +199,11 @@ impl Materializer {
         }
         // Read before anything is forgotten: an error here leaves nothing
         // half done.
-        let items = if self.rw.is_some() { self.items_at(dir, name)? } else { HashSet::new() };
+        let items = if self.mode.read_write().is_some() { self.items_at(dir, name)? } else { HashSet::new() };
         let is_dir = matches!(self.disk.probe(dir, name)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
         let stopped = self.forget(&survey, policy, run)?;
         let before = run.kept;
-        let removed = match &self.rw {
+        let removed = match self.mode.read_write() {
             Some(rw) => {
                 let keep = if policy == Policy::Resync { Keep::Downloaded } else { Keep::Changed };
                 self.remove_whole(&Whole { rw, keep, items }, dir, name, rel, false, run)
@@ -223,13 +223,13 @@ impl Materializer {
                 self.settle_stopped(dir, name, &stopped);
                 // What is left was forgotten: an examination records it
                 // again where it stands.
-                if self.rw.is_some() {
+                if self.mode.read_write().is_some() {
                     run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
                 }
                 return Err(e);
             }
         };
-        if self.rw.is_some() {
+        if self.mode.read_write().is_some() {
             let dropped = self.store.call_blocking({ let rel = rel.to_path_buf(); move |s| s.outbox_drop_under(&rel) })?;
             if !dropped.is_empty() {
                 tracing::info!("{} was taken off the disk: {} change(s) waiting there are dropped", rel.display(), dropped.len());
@@ -552,7 +552,7 @@ impl Materializer {
     /// looks again.
     fn take_off_unplaced(&self, dir: &File, name: &OsStr, rel: &Path, survey: &Survey, run: &mut Run) -> Result<TakenOff, ApplyError> {
         let stays = |waits| Ok(TakenOff { removal: Removal::Kept, waits: Some(waits) });
-        let Some(rw) = &self.rw else { return Err(ApplyError::Io(format!("{} is taken off as no longer placed in a read-only folder", rel.display()))) };
+        let Some(rw) = self.mode.read_write() else { return Err(ApplyError::Io(format!("{} is taken off as no longer placed in a read-only folder", rel.display()))) };
         let mut names = Vec::new();
         let waits = self.waits(rw, dir, name, rel, run, &mut names)?;
         // Whether a file that is not downloaded and not where the base has

@@ -18,8 +18,9 @@
 //! through: when step 1 or step 2 fails, [`Reconcile::failed`] still records
 //! the rescues and copies and hands the places over to the watcher.
 //!
-//! The mode is [`Mode`]: the read phase's reconcile, or a read-write folder's
-//! (`docs/design/writes.md` §9), which holds the tree lock until the swap.
+//! The mode is [`Mode`] with a read-write cycle's load ([`RwCycle`]): the
+//! read phase's reconcile, or a read-write folder's (`docs/design/writes.md`
+//! §9), which holds the tree lock until the swap.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ use crate::folder::locks::InodeLocks;
 use crate::folder::root::SyncRoot;
 use crate::helper::HelperLink;
 use crate::local::{Batch, IgnoreList};
+use crate::remote::mode::Mode;
 use crate::remote::materialize::{Applied, Changed, Claimed, Failed, Kept, Materializer, OnDisk, Rw, Scope};
 use crate::status::activity::{self, Kind};
 use crate::status::report::Report;
@@ -83,15 +85,6 @@ pub(crate) enum Said {
     Nothing,
 }
 
-/// How a folder is reconciled.
-pub(crate) enum Mode<'a> {
-    /// The read phase's way: the folder shows OneDrive, and a local version
-    /// in the way is rescued.
-    ReadOnly,
-    /// A read-write folder's: what the disk does not show yet waits.
-    ReadWrite(RwCycle<'a>),
-}
-
 /// What a read-write reconcile carries from its staging to its swap.
 pub(crate) struct RwCycle<'a> {
     /// What the cycle shares with the folder's outbox worker and watcher.
@@ -117,15 +110,14 @@ pub(crate) struct Waiting {
 /// A read-write commit's rules: what the outbox holds, and what the cycle
 /// carries to its swap.
 pub(crate) struct Plan {
-    rw: Rw,
+    rw: Arc<Rw>,
     waiting: Waiting,
 }
 
 /// What a reconcile reads before it touches the folder ([`Reconcile::prepare`]).
 pub(crate) struct Prepared {
     root_item_id: String,
-    /// `None` in read-only mode.
-    plan: Option<Plan>,
+    plan: Mode<Plan>,
 }
 
 /// The locks a reconcile holds until the folder is no longer being changed:
@@ -156,16 +148,17 @@ pub(crate) struct Reconcile {
     link: Option<HelperLink>,
     runtime: tokio::runtime::Handle,
     locks: InodeLocks,
-    locked: bool,
     rescue_dir: PathBuf,
     cancel: CancellationToken,
     report: Report,
-    /// Read-only mode: whether another account claims an item id.
+    /// Whether another account claims an item id. A read-only folder's
+    /// only: a read-write one sets nothing aside.
     claimed: Option<Claimed>,
     /// The drive to write into `config.toml` and onto the folder first.
     drive: Option<(DriveRecord, String)>,
-    /// `None`: the read phase's reconcile.
-    writing: Option<Writing>,
+    /// The mode, with a read-write reconcile's part. A read-only folder is
+    /// reconciled under its lock.
+    mode: Mode<Writing>,
 }
 
 impl Listing {
@@ -183,7 +176,7 @@ impl Listing {
     /// materializer sees `cancel` itself between steps; the commit follows
     /// the change to the folder in the same task, so a page placed is a page
     /// committed unless the daemon dies in between.
-    pub(super) async fn reconcile(&self, turn: &Turn, mode: Mode<'_>, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
+    pub(super) async fn reconcile(&self, turn: &Turn, mode: Mode<RwCycle<'_>>, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
         let (reconcile, held) = self.begin_reconcile(turn, mode, cancel).await?;
         tokio::task::spawn_blocking(move || {
             let _held = held;
@@ -196,7 +189,7 @@ impl Listing {
     /// A reconcile in `mode`, with the locks it holds while it runs. Waits
     /// for the folder's lease; a folder with no helper is not reconciled
     /// (HS2).
-    pub(crate) async fn begin_reconcile(&self, turn: &Turn, mode: Mode<'_>, cancel: &CancellationToken) -> Result<(Reconcile, Held), CycleError> {
+    pub(crate) async fn begin_reconcile(&self, turn: &Turn, mode: Mode<RwCycle<'_>>, cancel: &CancellationToken) -> Result<(Reconcile, Held), CycleError> {
         let lease = cancellable(cancel, self.ctx.lease.hold()).await?;
         // The link as it is now. A helper's reconnect sets it before `resume`
         // takes the lock to re-register the root, so this may be a new link
@@ -206,8 +199,8 @@ impl Listing {
         if link.is_none() {
             return Err(CycleError::NoHelper);
         }
-        let (tree, claimed, writing) = match mode {
-            Mode::ReadOnly => (None, self.ctx.neighbours.as_ref().map(|n| Arc::clone(&n.claimed)), None),
+        let (tree, claimed, mode) = match mode {
+            Mode::ReadOnly => (None, self.ctx.neighbours.as_ref().map(|n| Arc::clone(&n.claimed)), Mode::ReadOnly),
             Mode::ReadWrite(RwCycle { writes, tree, upload_differences, waiting }) => {
                 let writing = Writing {
                     machine: writes.machine_name.clone(),
@@ -219,7 +212,7 @@ impl Listing {
                 };
                 // Read-write mode sets nothing aside: an object whose id the base does not
                 // know is left alone (F115), or goes with what OneDrive removed (F116).
-                (Some(tree), None, Some(writing))
+                (Some(tree), None, Mode::ReadWrite(writing))
             }
         };
         let reconcile = Reconcile {
@@ -228,13 +221,12 @@ impl Listing {
             link,
             runtime: tokio::runtime::Handle::current(),
             locks: self.ctx.locks.clone(),
-            locked: self.ctx.locked,
             rescue_dir: self.ctx.rescue_dir.clone(),
             cancel: cancel.clone(),
             report: self.ctx.report.clone(),
             claimed,
             drive: self.pending_drive.lock().unwrap().take(),
-            writing,
+            mode,
         };
         Ok((reconcile, Held { _turn: Arc::clone(turn), _lease: lease, _tree: tree }))
     }
@@ -284,12 +276,12 @@ impl Reconcile {
     /// nothing can be placed yet.
     pub(crate) fn prepare(&self) -> Result<Option<Prepared>, CycleError> {
         let Some(root_item_id) = self.store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))? else { return Ok(None) };
-        let plan = match &self.writing {
-            None => None,
-            Some(writing) => {
+        let plan = match &self.mode {
+            Mode::ReadOnly => Mode::ReadOnly,
+            Mode::ReadWrite(writing) => {
                 let (machine, differences, ignore) = (writing.machine.clone(), writing.upload_differences, writing.ignore.clone());
                 let rw = self.store.call_blocking(move |s| Rw::read(s, machine, differences, ignore))?;
-                Some(Plan { rw, waiting: writing.waiting.clone() })
+                Mode::ReadWrite(Plan { rw: Arc::new(rw), waiting: writing.waiting.clone() })
             }
         };
         Ok(Some(Prepared { root_item_id, plan }))
@@ -301,7 +293,7 @@ impl Reconcile {
     /// fails has its work on disk recorded and handed over ([`Self::failed`]).
     pub(crate) fn apply_with_handover(&self, prepared: &Prepared, scope: Scope) -> Result<Reconciled, CycleError> {
         let materializer = Materializer {
-            disk: Disk::open(&self.root, self.locked).map_err(|e| applying(e.into()))?,
+            disk: Disk::open(&self.root, self.mode.is_read_only()).map_err(|e| applying(e.into()))?,
             store: self.store.clone(),
             link: self.link.clone(),
             runtime: self.runtime.clone(),
@@ -311,7 +303,7 @@ impl Reconcile {
             // filesystem: a rescue is one rename, never a copy.
             rescue_into: rescue_base(&self.root.path, &self.rescue_dir).join(rescue_stamp(SystemTime::now())),
             cancel: self.cancel.clone(),
-            rw: prepared.plan.as_ref().map(|plan| plan.rw.clone()),
+            mode: prepared.plan.as_ref().map(|plan| Arc::clone(&plan.rw)),
             claimed: self.claimed.clone(),
         };
         match materializer.apply_with_handover(scope) {
@@ -326,7 +318,7 @@ impl Reconcile {
 
     /// Step 3, once the tree the folder was made to match is committed.
     pub(crate) fn after_commit(&self, applied: &Applied, said: Said) {
-        if let Some(writing) = &self.writing {
+        if let Mode::ReadWrite(writing) = &self.mode {
             self.drop_removed(writing);
         }
         // Where each rescued file went is a conflict: a row
@@ -360,7 +352,7 @@ impl Reconcile {
     /// user's own (their `mkdir`), and the watcher is told what to examine —
     /// the attributes are off already, and nothing else says so.
     fn hand_over(&self, done: &OnDisk) {
-        let Some(writing) = &self.writing else { return };
+        let Mode::ReadWrite(writing) = &self.mode else { return };
         if !done.recreated.is_empty() {
             let recreated = done.recreated.clone();
             if let Err(e) = self.store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
@@ -407,13 +399,13 @@ fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleErr
 /// Step 2: the commit. `staging` is swapped in with its link, or a page
 /// goes into `items` with the link to the next one.
 ///
-/// With a `plan` (read-write mode) the swap keeps the base row of what the
+/// With a plan (read-write mode) the swap keeps the base row of what the
 /// disk does not show yet, and its change waits (the read-write reconcile
 /// must, items 3 and 4): an item the outbox holds or the reconcile left
 /// unsettled waits whole; one whose new content is still to land waits for
 /// its content only. Never what is being removed, and never what the
 /// reconcile took off the disk.
-pub(crate) fn commit_cycle(store: &Store, plan: Option<&Plan>, done: &Reconciled, commit: Commit) -> Result<Said, CycleError> {
+pub(crate) fn commit_cycle(store: &Store, plan: Mode<&Plan>, done: &Reconciled, commit: Commit) -> Result<Said, CycleError> {
     let (link, listing) = match commit {
         Commit::Page { changes, next } => {
             store.call_blocking(move |s| s.commit_page(&changes, &next))?;
@@ -422,8 +414,8 @@ pub(crate) fn commit_cycle(store: &Store, plan: Option<&Plan>, done: &Reconciled
         Commit::Swap { link, listing } => (link, listing),
     };
     match plan {
-        None => store.call_blocking(move |s| s.commit_staging(&link))?,
-        Some(Plan { rw, waiting }) => {
+        Mode::ReadOnly => store.call_blocking(move |s| s.commit_staging(&link))?,
+        Mode::ReadWrite(Plan { rw, waiting }) => {
             let applied = &done.applied;
             let changed = store.call_blocking(move |s| s.changed_ids())?;
             let goes = |id: &String| rw.removing.contains(id) || applied.on_disk.taken.contains(id);

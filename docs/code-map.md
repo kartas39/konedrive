@@ -286,12 +286,14 @@ What changed in OneDrive, brought into the folder. Design: `sync.md`, `writes.md
 reconcile in read-write mode).
 
 - `mod.rs` — the list of the modules.
+- `mode.rs` — `Mode<W>`: read-only, or read-write with what a level needs for it (the folder's
+  `Writes`, a cycle's `RwCycle`, a pass's `Rw`).
 - `testing.rs` — the one fixture of this area's tests (`World`): a temporary folder, the store, the
-  fake OneDrive and a fake helper; a real cycle, or the cycle's reconcile in its two steps.
+  fake OneDrive and a fake helper; a real cycle, or the cycle's staging and its reconcile in two steps.
 - `live.rs` — changes from OneDrive at once: the notification socket's task. `[tests]`
-- `listing.rs` — `Listing`: one folder's cycle, from the delta feed to the reconcile.
-  `[tests]`
-- `listing/fetch.rs` — a full listing and the changes since the last one, page by page.
+- `listing.rs` — `Listing`: one folder's cycle in three steps (fetch, stage and reconcile, what
+  follows a cycle that went through). `[tests]`
+- `listing/fetch.rs` — `fetch`: a full listing and the changes since the last one, page by page.
   `[tests]`
 - `listing/lease.rs` — the folder's lease a cycle holds while it changes the folder; `sync/` hands it in.
 - `listing/poller.rs` — when a cycle runs. `[tests]`
@@ -299,17 +301,30 @@ reconcile in read-write mode).
   `commit_cycle` (what waits), `after_commit`; what a failed cycle still hands over and records.
 - `listing/replacements.rs` — `Replacements`: which changed files are being replaced, wait or
   failed; the workers that replace them, several at once. `[tests]`
-- `listing/rw.rs` — a read-write folder's cycle up to its reconcile: the tree lock, the
-  stale-delta guard, what is staged again. `[tests]`
-- `materialize.rs` — `Materializer`: makes the folder match the tree. `[tests]`
+- `listing/rw.rs` — `Writes`: what a read-write folder's cycle shares with its outbox worker and
+  watcher. `[tests]`
+- `listing/stage.rs` — `stage`: what was fetched put into `staging`, and the reconcile it asks
+  for (scope, commit, mode); a read-write folder's tree lock, stale-delta guard and what is
+  staged again.
+- `materialize.rs` — `Materializer`: makes the folder match the tree; the Full and the Changed
+  pass, each once for both modes, and `place`. `[tests]`
+- `materialize/answers.rs` — what the mode answers: every question a pass asks where a read-only
+  and a read-write folder differ.
+- `materialize/applied.rs` — what a pass did, left for later, and how it failed (`Applied`,
+  `OnDisk`, `Pending`, `ApplyError`).
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — the holding directory; rescues.
 - `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
   (survey, forget, remove, settle), what is kept of it, and what an item that can no longer be
   placed waits for.
 - `materialize/replace.rs` — replacing one changed file. `[tests]`
-- `materialize/rw.rs` — the reconcile in read-write mode. `[tests]`
+- `materialize/rw.rs` — `Rw`: a read-write folder's rules, read once per reconcile, and what
+  they say of a name, a missing item and a local version in the way. `[tests]`
 - `materialize/rw/holding.rs` — putting back what was held.
+- `materialize/rw/sort.rs` — phase 1 in a read-write folder: what is done with each object, by
+  the base, the new tree and what a local change holds.
+- `materialize/rw/unplaced.rs` — what can no longer be placed: `after_placement` (it goes or
+  waits whole), the step aside.
 
 ### `crates/konedrived/src/remote/listing/rw/tests/`
 
@@ -318,6 +333,8 @@ The tests of a read-write folder's cycle.
 - `mod.rs` — the cycle with the outbox and the examination; what the topics share.
 - `stale.rs` — what the daemon takes off the disk itself is never deleted or moved in
   OneDrive.
+- `stale/names.rs` — names taken and given in one listing: the enumeration of small listings.
+- `stale/read_only.rs` — the same listings in a read-only folder.
 
 ### `crates/konedrived/src/desktop/`
 

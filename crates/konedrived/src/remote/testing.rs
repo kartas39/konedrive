@@ -7,20 +7,23 @@
 //!   OneDrive — changed through [`FakeGraph::with`], or answered by hand
 //!   ([`World::feed`], [`World::page`], [`World::held`]) where a test needs a
 //!   page, a stop or a failure at an exact point;
-//! - [`World::listed_as`], [`World::changed`] and [`World::step`] stage what
-//!   OneDrive says as tree rows and run the cycle's real reconcile over them
-//!   ([`Reconcile::run`]). A [`Step`] runs it in its two halves,
+//! - [`World::listed_as`], [`World::changed`] and [`World::step`] say what
+//!   OneDrive says as tree rows, in place of the cycle's fetch, and hand
+//!   them to the cycle's own staging ([`Listing::stage`]) and reconcile
+//!   ([`Reconcile::run`]). A [`Step`] runs the reconcile in its two halves,
 //!   [`Step::apply`] and [`Step::commit`], for what happens between the
 //!   folder and the swap.
 //!
-//! The reconcile, the commit and what follows them are the daemon's own
-//! functions. What comes before them in the second way is not: `World::step`
-//! stages the rows itself (`begin_staging` and `stage`, or `stage_rw`) and
-//! picks the scope, so every test through `listed_as`, `changed`,
-//! `changed_full` and `step` skips the cycle's fetch, its stale-delta guard,
-//! `stage_over`, the outbox commits looked at again and the cycle's choice
-//! between a Changed and a Full reconcile (limitations log F190). Those are
-//! covered only by the tests that run [`World::cycle`].
+//! From the staging on, everything is the daemon's own: the stale-delta
+//! guard, what is staged again, the choice between a Changed and a Full
+//! reconcile, the reconcile, the commit and what follows it. A step stands
+//! for a cycle of a `Listing` of its own, whose turn it holds; a test says
+//! whether that cycle was asked for a Full reconcile ([`Says`]).
+//!
+//! A folder made neither read-write nor locked ([`Options`]) is a read-only
+//! one, reconciled under the lock as the daemon does, whose lock the
+//! fixture takes off again after every step and cycle, so that a test can
+//! put its own files into it.
 
 use std::fs::File;
 use std::io::Write;
@@ -34,11 +37,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
-use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient};
+use konedrive_graph::drive::DriveClient;
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrive_tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxRow, OutboxState, Recorded};
-use konedrive_tree::reconcile::RwStaged;
-use konedrive_tree::{Change, NewTree, Row, Store, Table, TreeStore};
+use konedrive_tree::{Change, Row, Store, Table, TreeStore};
 use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -54,7 +56,9 @@ use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::pin::Pins;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::remote::listing::reconcile::{Commit, Held, Mode, Prepared, Reconcile, Reconciled, RwCycle, Waiting};
+use crate::remote::listing::reconcile::{Commit, Held, Prepared, Reconcile, Reconciled};
+use crate::remote::listing::stage::{News, Staged};
+use crate::remote::mode::Mode;
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
 use crate::remote::materialize::{Applied, Claimed, Scope};
 use crate::status::report::Report;
@@ -81,7 +85,8 @@ pub(crate) fn spawn_cycle(listing: &Arc<Listing>, cancel: &CancellationToken) ->
 pub(crate) struct Options {
     /// A read-write folder: its cycles hold the tree lock and defer.
     pub writes: bool,
-    /// The folder is kept under the read-only lock.
+    /// A read-only folder is left under its lock, as the daemon keeps it.
+    /// Otherwise the fixture takes the lock off after every step and cycle.
     pub locked: bool,
     /// The preferred rescue directory; a temporary one otherwise.
     pub rescue_dir: Option<PathBuf>,
@@ -258,8 +263,10 @@ impl World {
             after_cycle: None,
             report: self.report.clone(),
             pins: Arc::clone(&self.pins),
-            locked: self.locked,
-            writes: self.writes.then(|| self.writes(None)),
+            mode: match self.writes {
+                true => Mode::ReadWrite(self.writes(None)),
+                false => Mode::ReadOnly,
+            },
             neighbours: self.claimed.clone().map(|claimed| Neighbours { claimed, drive_seen: Arc::new(|_| {}) }),
             running: Arc::default(),
         }
@@ -277,6 +284,7 @@ impl World {
     pub(crate) async fn cycle(&self, listing: &Arc<Listing>) -> CycleReport {
         let report = listing.cycle(&CancellationToken::new()).await.unwrap();
         listing.join_replacements().await;
+        self.hands_free();
         report
     }
 
@@ -305,70 +313,40 @@ impl World {
         self.step(Says::DeltaInFull(changes)).await.run().await
     }
 
-    /// What OneDrive `says`, staged, and the reconcile of it ready to run:
-    /// whole ([`Step::run`]) or in its two halves.
+    /// What OneDrive `says`, staged as a cycle stages it, and the reconcile
+    /// of it ready to run: whole ([`Step::run`]) or in its two halves.
     pub(crate) async fn step(&self, says: Says<'_>) -> Step {
         let listing = self.listing();
         let turn: Turn = Arc::new(Arc::new(tokio::sync::Mutex::new(())).lock_owned().await);
-        let tree = match self.writes {
-            true => Some(Arc::clone(&self.tree_lock).lock_owned().await),
-            false => None,
-        };
-        let (changes, whole, full, link) = match says {
-            Says::Whole(changes) => (changes.to_vec(), true, true, None),
-            Says::Delta(changes) => (changes.to_vec(), false, false, None),
-            Says::DeltaInFull(changes) => (changes.to_vec(), false, true, None),
+        let cancel = CancellationToken::new();
+        let mode = listing.begin(&turn, &cancel).await.unwrap();
+        let link = format!("link-{}", self.links.fetch_add(1, Ordering::SeqCst) + 1);
+        let (news, full_requested) = match says {
+            Says::Whole(changes) => {
+                listing.begin_listing(&turn).await.unwrap();
+                listing.stage_page(&turn, changes.to_vec()).await.unwrap();
+                (News::Listed { link, upload_differences: false }, false)
+            }
+            Says::Delta(changes) => (News::Changes { changes: changes.to_vec(), link }, false),
+            Says::DeltaInFull(changes) => (News::Changes { changes: changes.to_vec(), link }, true),
             Says::Fetched => {
-                let (changes, link) = self.fetch().await;
-                (changes, false, false, Some(link))
+                let stored = self.store.call(|s| s.delta_link()).await.unwrap().expect("a folder listed once");
+                (listing.fetch_changes(&turn, stored, &cancel).await.unwrap(), false)
             }
         };
-        let link = link.unwrap_or_else(|| format!("link-{}", self.links.fetch_add(1, Ordering::SeqCst) + 1));
-        let writes = self.writes;
-        let (ids, waiting) = self
-            .store
-            .call(move |s| {
-                let fetch_seq = s.outbox_seq()?;
-                if whole {
-                    s.begin_staging(NewTree::Whole)?;
-                    s.stage(&changes)?;
-                    let consumed = if writes { s.deferred_ids()? } else { Vec::new() };
-                    return Ok((Vec::new(), Waiting { fetch_seq, consumed }));
-                }
-                if !writes {
-                    s.begin_staging(NewTree::Delta)?;
-                    s.stage(&changes)?;
-                    return Ok((s.changed_ids()?, Waiting::default()));
-                }
-                let RwStaged { ids, consumed } = s.stage_rw(&changes, 0, true)?.expect("a cycle asked for in full always stages");
-                Ok((ids, Waiting { fetch_seq, consumed }))
-            })
-            .await
-            .unwrap();
-        let mode = match tree {
-            Some(tree) => {
-                let writes = listing.writes().expect("a read-write world's listing");
-                Mode::ReadWrite(RwCycle { writes, tree, upload_differences: false, waiting })
-            }
-            None => Mode::ReadOnly,
-        };
-        let (reconcile, held) = listing.begin_reconcile(&turn, mode, &CancellationToken::new()).await.unwrap();
-        let scope = if full { Scope::Full } else { Scope::Changed(ids) };
-        Step { reconcile: Some(reconcile), _held: held, scope: Some(scope), link, passed: None }
+        let unlock = (!self.writes && !self.locked).then(|| self.root.clone());
+        let (staged, _) = listing.stage(&turn, mode, news, full_requested, &cancel).await.unwrap();
+        // Nothing changed and nothing to look at again: the cycle ends here.
+        let Some(Staged { mode, scope, commit }) = staged else { return Step { reconcile: None, _held: None, scope: None, commit: None, passed: None, unlock } };
+        let (reconcile, held) = listing.begin_reconcile(&turn, mode, &cancel).await.unwrap();
+        Step { reconcile: Some(reconcile), _held: Some(held), scope: Some(scope), commit: Some(commit), passed: None, unlock }
     }
 
-    /// What the fake OneDrive's delta feed says since the stored link, and
-    /// the link it ends with.
-    async fn fetch(&self) -> (Vec<Change>, String) {
-        let stored = self.store.call(|s| s.delta_link()).await.unwrap().expect("a folder listed once");
-        let (drive, mut from, mut changes) = (self.drive(), DeltaFrom::Link(stored), Vec::new());
-        loop {
-            let page = drive.delta(&from).await.unwrap();
-            changes.extend(page.items.iter().map(classify));
-            match page.next {
-                DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                DeltaNext::Done(link) => return (changes, link),
-            }
+    /// The lock taken off a read-only folder that the test did not ask to
+    /// be left locked ([`Options::locked`]).
+    fn hands_free(&self) {
+        if !self.writes && !self.locked {
+            unlock(&self.root);
         }
     }
 
@@ -572,41 +550,52 @@ impl World {
     }
 }
 
-/// What OneDrive says to a reconcile staged by hand ([`World::step`]).
+/// What OneDrive says to the cycle a [`World::step`] stands for.
 pub(crate) enum Says<'a> {
     /// Its whole listing: reconciled in full.
     Whole(&'a [Change]),
-    /// A delta on top of what is committed: reconciled over what it changes.
+    /// A delta on top of what is committed: reconciled over what it
+    /// changes, or not at all when it changes nothing and nothing waits.
     Delta(&'a [Change]),
-    /// A delta, reconciled in full.
+    /// A delta, in a cycle asked for a Full reconcile.
     DeltaInFull(&'a [Change]),
     /// What the fake OneDrive's delta feed says since the stored link.
     Fetched,
 }
 
-/// One reconcile over what a test staged, holding its locks: run whole, or
+fn unlock(root: &SyncRoot) {
+    Disk::open(root, false).unwrap().unlock_tree().unwrap();
+}
+
+/// One reconcile over what a cycle staged, holding its locks: run whole, or
 /// its folder half and its commit half one after the other, with whatever
 /// the test does in between — what an examination or a crash at that moment
-/// meets.
+/// meets. Where the staging found nothing to reconcile, every half does
+/// nothing.
 pub(crate) struct Step {
     reconcile: Option<Reconcile>,
-    _held: Held,
+    _held: Option<Held>,
     scope: Option<Scope>,
-    link: String,
+    commit: Option<Commit>,
     passed: Option<(Prepared, Reconciled)>,
+    /// The folder whose lock is taken off after each half ([`Options::locked`]).
+    unlock: Option<SyncRoot>,
 }
 
 impl Step {
     /// The whole reconcile, as a cycle runs it.
     pub(crate) async fn run(mut self) -> Result<Reconciled, CycleError> {
-        let (reconcile, scope) = (self.reconcile.take().unwrap(), self.scope.take().unwrap());
-        let commit = Commit::Swap { link: self.link.clone(), listing: false };
-        tokio::task::spawn_blocking(move || reconcile.run(scope, commit)).await.unwrap()
+        let Some(reconcile) = self.reconcile.take() else { return Ok(Reconciled::default()) };
+        let (scope, commit) = (self.scope.take().unwrap(), self.commit.take().unwrap());
+        let done = tokio::task::spawn_blocking(move || reconcile.run(scope, commit)).await.unwrap();
+        self.unlock.iter().for_each(unlock);
+        done
     }
 
     /// The folder made to match `staging`; nothing is committed.
     pub(crate) async fn apply(&mut self) -> Result<(), CycleError> {
-        let (reconcile, scope) = (self.reconcile.take().unwrap(), self.scope.take().unwrap());
+        let Some(reconcile) = self.reconcile.take() else { return Ok(()) };
+        let scope = self.scope.take().unwrap();
         let (reconcile, passed) = tokio::task::spawn_blocking(move || {
             let passed = reconcile.prepare().and_then(|prepared| {
                 let prepared = prepared.expect("the drive's root is listed");
@@ -618,15 +607,16 @@ impl Step {
         .await
         .unwrap();
         self.reconcile = Some(reconcile);
+        self.unlock.iter().for_each(unlock);
         self.passed = Some(passed?);
         Ok(())
     }
 
     /// The commit of what [`apply`](Self::apply) did, and what follows it.
     pub(crate) async fn commit(mut self) -> Result<Reconciled, CycleError> {
-        let reconcile = self.reconcile.take().unwrap();
+        let Some(reconcile) = self.reconcile.take() else { return Ok(Reconciled::default()) };
         let (prepared, done) = self.passed.take().expect("applied first");
-        let commit = Commit::Swap { link: self.link.clone(), listing: false };
+        let commit = self.commit.take().unwrap();
         tokio::task::spawn_blocking(move || reconcile.commit(&prepared, done, commit)).await.unwrap()
     }
 }

@@ -43,7 +43,7 @@ All of this runs in the daemon, as the user, once for each account.
 | Account | `account/`, `konedrive-graph/src/oauth.rs`, `konedrive-graph/src/token.rs` | Sign-in, tokens, the account's name and quota (§12) |
 | Configuration | `config/` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
 | Watcher, examination, outbox worker | `local/watcher/`, `local/`, `upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
-| Read-write reconcile | `remote/listing/rw.rs`, `remote/materialize/rw.rs` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
+| Read-write reconcile | `remote/listing/stage.rs`, `remote/listing/rw.rs`, `remote/materialize/answers.rs`, `remote/materialize/rw.rs`, `remote/materialize/rw/` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
 
 ## 3. Which folders sync
 

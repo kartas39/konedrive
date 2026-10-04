@@ -66,7 +66,7 @@ the #104 test gaps filled first. `RE4` waits for these.
   closure that adds seven steps inline and a test hook.
 - **Fix:** one `reconcile(mode)` with the shared skeleton; the read-write additions as named
   functions (`plan_deferred`, `settle_outbox_after_swap`, `hand_to_watcher`).
-- **Size:** M. **Risk:** medium: the order of steps around the swap matters (F190).
+- **Size:** M. **Risk:** medium: the order of steps around the swap matters.
 - **Fixed 2026-10-04** in `48cc690` (#170): one `Listing::reconcile` over `Mode`, `commit_cycle`, one commit
   tail; `before_swap` is gone; the tests of `remote/` run on one `World` (`remote/testing.rs`).
 

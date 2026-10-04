@@ -27,6 +27,7 @@ use crate::fake_onedrive::{FakeItem, ROOT};
 use crate::folder::disk::Disk;
 use crate::hydration::graph_source::GraphSource;
 use crate::local::{Batch, Examined, Examiner, IgnoreList};
+use crate::remote::mode::Mode;
 use crate::remote::testing::{id_at, now, state_at, write_version, World};
 use crate::upload::{Engine, OutboxWorker};
 use konedrive_tree::outbox::{Committed, OutboxKind, OutboxState};
@@ -248,7 +249,7 @@ async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
     let w = World::read_write().await;
-    let read_only = || Listing::new(ListingContext { locked: true, writes: None, ..w.context() });
+    let read_only = || Listing::new(ListingContext { mode: Mode::ReadOnly, ..w.context() });
     let listing = read_only();
     w.cycle(&listing).await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
@@ -266,7 +267,7 @@ async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
 async fn the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle() {
     let w = World::read_write().await;
     let (scanned, first_scan) = tokio::sync::watch::channel(false);
-    let listing = Listing::new(ListingContext { writes: Some(w.writes(Some(first_scan))), ..w.context() });
+    let listing = Listing::new(ListingContext { mode: Mode::ReadWrite(w.writes(Some(first_scan))), ..w.context() });
     let cycle = {
         let listing = Arc::clone(&listing);
         tokio::spawn(async move { listing.cycle(&CancellationToken::new()).await })
@@ -835,7 +836,7 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
         }),
         ..w.writes(None)
     };
-    let listing = Listing::new(ListingContext { writes: Some(writes), ..w.context() });
+    let listing = Listing::new(ListingContext { mode: Mode::ReadWrite(writes), ..w.context() });
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
 

@@ -7,13 +7,14 @@ use konedrive_fs::placeholder::{self, read_state, State};
 
 use crate::status::activity::Kind as EventKind;
 use konedrive_tree::Row;
-use super::{holds_local_work, ApplyError, Materializer, Replacement, Run};
+use super::{ApplyError, Materializer, Replacement, Run};
 
 impl Materializer {
     /// A file already in place, and what its content needs:
     /// a placeholder takes the new size, time and cTag in place; a downloaded
-    /// file of another version is queued for replacement (§7.3), or rescued
-    /// first when it holds local work (§9.3); a file being filled or freed up
+    /// file of another version is queued for replacement (§7.3), or moved out
+    /// of the way first when it holds local work (§9.3: rescued, or kept
+    /// beside it in a read-write folder); a file being filled or freed up
     /// right now is left for the next cycle.
     ///
     /// A placeholder's content is told by its cTag and size alone, never by
@@ -33,8 +34,8 @@ impl Materializer {
                 if !same_content {
                     if self.update_placeholder(file, row, run)? {
                         run.note(EventKind::Updated, rel, None);
-                    } else if self.rw.is_some() {
-                        run.out.pending.content_waits.insert(row.id.clone());
+                    } else {
+                        self.content_waits(&row.id, run);
                     }
                 } else if meta.mtime() != row.mtime {
                     self.put_time_back(file, row, run)?;
@@ -45,45 +46,27 @@ impl Materializer {
                 if local_ctag.is_some() && local_ctag.as_deref() == row.ctag.as_deref() {
                     return Ok(());
                 }
-                if let Some(rw) = &self.rw {
-                    // An outbox row recorded since the cycle began: the
-                    // worker's guard settles it (§3.7, excluded).
-                    if !self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.outbox_for_item(&row_id) })?.is_empty() {
-                        run.out.pending.unsettled.insert(row.id.clone());
-                        return Ok(());
-                    }
-                    // Edit × edit (§6), or a version OneDrive may have lost
-                    // (`resyncChangesUploadDifferences`): both are kept.
-                    if self.local_work(&file) || rw.upload_differences {
-                        drop(file);
-                        self.copy_aside(rw, dir, name, rel, run)?;
-                        self.create(dir, row, rel, run)?;
-                        run.note(EventKind::Updated, rel, None);
-                        return Ok(());
-                    }
-                } else if holds_local_work(&file) {
+                if self.changed_since_the_cycle_began(row, run)? {
+                    return Ok(());
+                }
+                // Local work in it (edit × edit, §6), or a version OneDrive
+                // may have lost: not replaced, but moved out of the way.
+                if self.local_work(&file) || self.keeps_every_download() {
                     drop(file);
-                    self.rescue(dir, name, rel, run)?;
+                    self.out_of_the_way(dir, name, rel, run)?;
                     self.create(dir, row, rel, run)?;
                     run.note(EventKind::Updated, rel, None);
                     return Ok(());
                 }
                 if let Some(ctag) = &row.ctag {
                     run.out.pending.replacements.push(Replacement { id: row.id.clone(), rel: rel.to_path_buf(), ctag: ctag.clone(), size: row.size });
-                    // The base keeps the version on disk until the new one
-                    // is in place (the read-write reconcile must, item 4); its place is the one the
-                    // disk took.
-                    if self.rw.is_some() {
-                        run.out.pending.content_waits.insert(row.id.clone());
-                    }
+                    self.content_waits(&row.id, run);
                 }
                 Ok(())
             }
             Ok(Some(State::Hydrating | State::Dehydrating)) => {
                 run.out.counts.deferred += 1;
-                if self.rw.is_some() {
-                    run.out.pending.content_waits.insert(row.id.clone());
-                }
+                self.content_waits(&row.id, run);
                 Ok(())
             }
             // Ours by its id, in no state anyone can vouch for.
@@ -91,10 +74,7 @@ impl Materializer {
                 let work = self.local_work(&file);
                 drop(file);
                 if work {
-                    match &self.rw {
-                        None => self.rescue(dir, name, rel, run)?,
-                        Some(rw) => self.copy_aside(rw, dir, name, rel, run)?,
-                    }
+                    self.out_of_the_way(dir, name, rel, run)?;
                 } else {
                     self.disk.remove(dir, name, false)?;
                 }

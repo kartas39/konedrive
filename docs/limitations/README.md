@@ -218,7 +218,6 @@ application must never read zeros where real content should be.
 - [F187](F187.md) — What is lost when OneDrive removes an item
 - [F188](F188.md) — A folder that can no longer be placed stays on disk while anything in it waits
 - [F189](F189.md) — A row placed again carries no local object
-- [F190](F190.md) — The window between a cycle's reconcile and its swap is tested with the delta staged by the fixture
 - [F191](F191.md) — A stopped download is dropped where it is
 - [F192](F192.md) — An item moved here into a folder that OneDrive then removes is removed here, and stays in OneDrive where it was
 - [F193](F193.md) — A file saved by rename and then moved before any examination is deleted in OneDrive and uploaded as new
@@ -278,6 +277,7 @@ application must never read zeros where real content should be.
 - [F275](F275.md) — What changed at a name between the listing and the act waits for the next look at that name
 - [F276](F276.md) — A stale drive that cannot be taken off an empty folder stays, and the folder is registered all the same
 - [F277](F277.md) — A placeholder that is in the way is removed, not rescued, also when it is being filled
+- [F278](F278.md) — Where the one pass over the folder still differs by scope, and where the mode is still asked outside its questions
 - [F280](F280.md) — The removal of an empty copy opens its entry by itself, not through the examination's one open
 
 ---
@@ -407,6 +407,7 @@ application must never read zeros where real content should be.
 - [D49](D49.md) — Test support that is still in the code of `hydration/`
 - [D50](D50.md) — What `dbus/` and `daemon/` still share by hand
 - [D51](D51.md) — The helper's stand-in is one accept loop for `helper/`, `hydration/` and `folder/`, not for the daemon
+- [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 
 ---
 

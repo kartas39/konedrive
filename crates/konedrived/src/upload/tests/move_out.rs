@@ -833,7 +833,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
             root_item_id: "RB".into(),
             rescue_into: w.beside("rescued-b/now"),
             cancel: CancellationToken::new(),
-            rw: None,
+            mode: crate::remote::mode::Mode::ReadOnly,
             claimed: Some(Arc::clone(&claimed)),
         }
         .apply(Scope::Full)

@@ -159,30 +159,65 @@ async fn a_step_aside_below_a_folder_renamed_in_the_same_listing_sends_no_name()
 
 /// One combination of the enumeration.
 #[derive(Clone, Copy, Debug)]
-struct Case {
+pub(super) struct Case {
     /// Which item OneDrive takes out of what the folder can hold, if any.
-    item: Option<usize>,
+    pub(super) item: Option<usize>,
     /// How: a name too long (`N`), or a move into a folder that is not
     /// placed (`M`). In a chain also `R`: a rename the folder can hold.
-    reason: char,
+    pub(super) reason: char,
     /// What else the same listing does (see [`cloud_changes`]).
-    other: u8,
+    pub(super) other: u8,
     /// What was done on this computer before (see [`local_work`]).
-    local: u8,
-    full: bool,
+    pub(super) local: u8,
+    /// Which file, downloaded here and unchanged, gets a new version in the
+    /// same listing: 0 none, 1 `docs/sub/x.txt`, 2 `docs/g.txt`.
+    pub(super) version: u8,
+    pub(super) full: bool,
+}
+
+/// The files a combination may give a new version: item, path here, content.
+pub(super) const VERSIONED: [(&str, &str, &[u8]); 2] = [("X", "docs/sub/x.txt", b"x"), ("G", "docs/g.txt", b"g")];
+
+/// The file of [`Case::version`], downloaded here as OneDrive has it.
+pub(super) fn download_versioned(w: &World, case: Case) {
+    if let Some((id, rel, content)) = case.version.checked_sub(1).map(|n| VERSIONED[usize::from(n)]) {
+        write_version(&w.path(rel), content, &w.cloud_ctag(id));
+    }
+}
+
+/// Every file here whose version is not the base's while nothing waits for
+/// it: the base is ahead of the disk, and a change made here now would go
+/// up against a version this computer never had.
+pub(super) async fn base_ahead_of_disk(w: &World) -> Vec<String> {
+    let deferred = w.store.call(|s| s.deferred_ids()).await.unwrap();
+    let mut ahead = Vec::new();
+    for (at, id, _, _) in objects(w) {
+        let path = w.path(&at);
+        if id.is_empty() || deferred.contains(&id) || !path.is_file() {
+            continue;
+        }
+        let on_disk = std::fs::File::open(&path).ok().and_then(|file| placeholder::read_ctag(&file).ok().flatten());
+        let base = w.base(&id).and_then(|row| row.ctag);
+        if base.is_some() && on_disk != base {
+            ahead.push(format!("{at} holds version {on_disk:?}, the base has {base:?}, and nothing waits"));
+        }
+    }
+    ahead
 }
 
 /// The item, its folder in OneDrive, its name.
 const ITEMS: [(&str, &str, &str); 4] = [("D", ROOT, "docs"), ("S", "D", "sub"), ("F", "D", "f.txt"), ("T", ROOT, "top.txt")];
 /// A chain: the item leaves (or is renamed), `g.txt` takes its name, `top.txt` takes `g.txt`'s.
-const CHAIN: u8 = 8;
+pub(super) const CHAIN: u8 = 8;
+/// The folder `docs/sub` is moved to the root, with what is in it.
+pub(super) const SUB_OUT: u8 = 9;
 /// Two folders, `docs` and `papers`, exchange names.
 const FOLDERS: u8 = 7;
 /// Two files exchange names (or places).
 const FILES: u8 = 6;
 
 /// What OneDrive does in one listing.
-fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
+pub(super) fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
     let item = case.item.map(|n| ITEMS[n]);
     let id = item.map_or("", |i| i.0);
     if let Some((id, parent, name)) = item {
@@ -223,13 +258,19 @@ fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
             c.rename("G", "D", "f.txt");
             c.rename("T", "D", "g.txt");
         }
+        SUB_OUT => c.rename("S", ROOT, "sub"),
+        _ => {}
+    }
+    match case.version {
+        1 => c.edit("X", b"x, a newer version"),
+        2 => c.edit("G", b"g, a newer version"),
         _ => {}
     }
 }
 
 /// Whether the combination cannot be: a name freed by nothing, a folder
 /// above the root, a folder both gone and exchanged, a chain with no head.
-fn senseless(case: Case) -> bool {
+pub(super) fn senseless(case: Case) -> bool {
     let id = case.item.map_or("", |n| ITEMS[n].0);
     // A rename the folder can hold is the head of a chain only.
     if (case.reason == 'R') != (case.other == CHAIN && case.reason != 'N' && case.reason != 'M') {
@@ -239,6 +280,7 @@ fn senseless(case: Case) -> bool {
         1..=3 => case.item.is_none(),
         5 | FOLDERS => id == "D",
         CHAIN => id != "F",
+        SUB_OUT => id == "S",
         _ => false,
     }
 }
@@ -295,7 +337,7 @@ async fn local_work(w: &World, case: Case) -> (Vec<(String, String)>, &'static s
 
 /// Where OneDrive has item `id`, as a path here; `None` where the folder
 /// cannot hold it.
-fn place_in_onedrive(c: &crate::fake_onedrive::Cloud, id: &str) -> Option<String> {
+pub(super) fn place_in_onedrive(c: &crate::fake_onedrive::Cloud, id: &str) -> Option<String> {
     let mut names = Vec::new();
     let mut at = id.to_owned();
     while at != ROOT {
@@ -325,11 +367,19 @@ async fn run(case: Case) -> Vec<String> {
         c.add(folder_item("L", ROOT, &"y".repeat(260)));
     });
     w.cycle(&listing).await;
+    download_versioned(&w, case);
     let (users, of) = local_work(&w, case).await;
     let id = case.item.map_or("", |n| ITEMS[n].0);
     // Every file with data here before: none of it may be lost.
-    let data_before: Vec<(String, Vec<u8>)> = objects(&w).iter().filter_map(|o| Some((o.0.clone(), std::fs::read(w.path(&o.0)).ok()?))).filter(|(at, data)| !data.is_empty() && crate::remote::testing::state_at(&w.path(at)) != Some(State::OnlineOnly)).collect();
-    w.graph.with(|c| cloud_changes(c, case));
+    let data_before: Vec<(String, Vec<u8>)> = objects(&w).iter().filter_map(|o| Some((o.0.clone(), std::fs::read(w.path(&o.0)).ok()?))).filter(|(at, data)| !data.is_empty() && crate::remote::testing::state_at(&w.path(at)) != Some(State::OnlineOnly)).filter(|(at, _)| case.version == 0 || VERSIONED[usize::from(case.version - 1)].1 != at).collect();
+    w.graph.with(|c| {
+        cloud_changes(c, case);
+        // A new version takes a moment to come: what a cycle commits is
+        // looked at before the replacement has landed.
+        if case.version != 0 {
+            c.delay("GET", "dl/", std::time::Duration::from_millis(100), 4);
+        }
+    });
     type InOneDrive = BTreeMap<String, (Option<String>, String, Vec<u8>)>;
     let in_onedrive = |w: &World| -> InOneDrive { w.graph.with(|c| c.items.values().map(|i| (i.id.clone(), (i.parent.clone(), i.name.clone(), i.content.clone()))).collect()) };
     let staged = in_onedrive(&w);
@@ -342,6 +392,12 @@ async fn run(case: Case) -> Vec<String> {
     for _ in 0..8 {
         if let Err(e) = listing.cycle(&tokio_util::sync::CancellationToken::new()).await {
             return vec![format!("a cycle failed: {e}")];
+        }
+        // What the cycle committed, before the new version has landed.
+        for ahead in base_ahead_of_disk(&w).await {
+            if !wrong.contains(&ahead) {
+                wrong.push(ahead);
+            }
         }
         listing.join_replacements().await;
         w.examine_handed().await;
@@ -369,6 +425,7 @@ async fn run(case: Case) -> Vec<String> {
     if on_disk != ends.iter().map(|o| (o.0.clone(), o.1.clone())).collect::<Vec<_>>() {
         wrong.push(format!("a scan of the whole folder and one more round moved objects: {on_disk:?}"));
     }
+    wrong.extend(base_ahead_of_disk(&w).await);
     let sent = w.sent();
     if sent.len() != sent_then {
         wrong.push(format!("a scan of the whole folder and one more round sent {:?}", &sent[sent_then..]));
@@ -488,49 +545,62 @@ async fn run(case: Case) -> Vec<String> {
 }
 
 /// The gate. A small folder — `docs` with `f.txt`, `g.txt` and `sub/x.txt`,
-/// `papers` with `p.txt`, and `top.txt` — and every combination that makes
-/// sense of: which item OneDrive takes out of what the folder can hold
+/// `papers` with `p.txt`, and `top.txt` — and the combinations [`always`]
+/// selects (the whole product runs them all) of: which item OneDrive takes out of what the folder can hold
 /// (none, `docs`, `docs/sub`, `docs/f.txt`, `top.txt`), and how (a name too
 /// long, a move into a folder that is not placed); one more change in the
 /// same listing (none, a new file or a new folder at the freed name, an
 /// existing item renamed to it, something moved out to the root, the folder
 /// above renamed, two files exchanging names, two folders exchanging names,
-/// a chain of three names); what was done here before (nothing, a new file
+/// a chain of three names, `docs/sub` moved to the root); a new version in
+/// the same listing of a file downloaded here (none, `docs/sub/x.txt`,
+/// `docs/g.txt`; with nothing done here); what was done here before (nothing, a new file
 /// that cannot go up, a change of content, a rename, a rename with a
 /// change, a delete); in a Changed and in a Full reconcile. Each must
 /// settle, lose nothing, send nothing the user did not do, leave OneDrive
-/// as the listing had it, and say the truth on the skipped list ([`run`]).
+/// as the listing had it, say the truth on the skipped list, and never
+/// leave the base with a version of a file the disk does not hold while
+/// nothing waits for it ([`run`], [`base_ahead_of_disk`]).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_small_combination_of_an_unplaceable_item_another_change_and_local_work_keeps_the_invariants() {
     enumerate(false).await;
 }
 
-/// The whole product, which takes most of a minute: with the move into a
-/// folder that is not placed as the reason in every cell, not only in the
-/// plain ones, the chain and the exchange of folders.
+/// The whole product, which takes about a minute: every combination that
+/// makes sense, where the test above runs the selection of [`always`].
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "about a minute: run with --ignored when remote/materialize or the upload steps change"]
 async fn every_combination_the_whole_product() {
     enumerate(true).await;
 }
 
+/// The combinations that run with every run of the tests: each value of
+/// each dimension at least once, each kind of second change with nothing
+/// done here, each thing done here in the plain listings, and every
+/// combination that has failed. The rest is the whole product's.
+pub(super) fn always(case: Case) -> bool {
+    let plain = case.other == 0;
+    match (case.version, case.reason) {
+        // A new version: in the plain listings, and where `docs/sub` is
+        // moved out of a folder that leaves (which failed once).
+        (1.., _) => (plain || case.other == SUB_OUT) && matches!(case.item, None | Some(0)),
+        (_, 'M') => plain && (case.local == 0 || (case.local == 2 && case.item == Some(0))),
+        // A name too long, or the chain: every second change with nothing
+        // done here, and every thing done here in the plain listings, the
+        // chain and the exchange of folders.
+        _ => case.local == 0 || plain || (matches!(case.other, CHAIN | FOLDERS) && case.local <= 2),
+    }
+}
+
 async fn enumerate(whole: bool) {
     let mut cases = Vec::new();
     for item in [None, Some(0), Some(1), Some(2), Some(3)] {
         for reason in if item.is_none() { vec!['N'] } else { vec!['N', 'M', 'R'] } {
-            for other in 0..=CHAIN {
-                for local in 0..6 {
+            for other in 0..=SUB_OUT {
+                for (local, version) in (0..6).map(|local| (local, 0)).chain([(0, 1), (0, 2)]) {
                     for full in [false, true] {
-                        let case = Case { item, reason, other, local, full };
-                        // Always: a name too long in every cell with the
-                        // three first local states, the acts made here
-                        // where they met something, and the other reason
-                        // in the plain cells, the chain and the exchange.
-                        let always = match reason {
-                            'M' => matches!(other, 0 | FOLDERS | CHAIN) && local <= 2,
-                            _ => local <= 2 || matches!(other, 0 | 1 | 3 | 5 | FOLDERS | CHAIN),
-                        };
-                        if !senseless(case) && (whole || always) {
+                        let case = Case { item, reason, other, local, version, full };
+                        if !senseless(case) && (whole || always(case)) {
                             cases.push(case);
                         }
                     }
@@ -601,5 +671,53 @@ async fn a_child_whose_new_name_is_held_here_is_not_touched_until_the_name_is_fr
         assert!(!w.path("docs").exists(), "full={full}: and its folder left");
         assert!(w.graph.with(|c| c.items.values().any(|i| i.content == b"mine")), "full={full}: {:?}", w.graph.with(|c| c.paths()));
         assert_eq!((w.deletes(), w.graph.with(|c| c.count("PATCH", "items/"))), (0, 0), "full={full}");
+    }
+}
+
+/// A file downloaded here is changed here, with its row recorded, and
+/// OneDrive has a new version of it in the next listing: a plain file, and
+/// one in a folder that can no longer be placed. Neither side overwrites
+/// the other: what the user wrote ends in OneDrive, and the version
+/// OneDrive had is still there. Nothing but uploads is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_version_and_an_edit_here_of_the_same_file_lose_neither() {
+    for (leaves, full) in [(false, false), (false, true), (true, false), (true, true)] {
+        let case = format!("leaves={leaves} full={full}");
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        changed_here(&w, "docs/f.txt", "F").await;
+        let theirs: &[u8] = b"a newer version in OneDrive";
+        w.graph.with(|c| {
+            c.edit("F", theirs);
+            if leaves {
+                c.rename("D", ROOT, &long_name());
+            }
+        });
+        if full {
+            listing.request_full();
+        }
+        let mut last = None;
+        let mut settled = false;
+        for _ in 0..8 {
+            listing.cycle(&tokio_util::sync::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{case}: {e}"));
+            listing.join_replacements().await;
+            w.examine_handed().await;
+            w.upload().await;
+            let now = (objects(&w), w.sent().len());
+            settled = last.as_ref() == Some(&now);
+            last = Some(now);
+            if settled {
+                break;
+            }
+        }
+        assert!(settled, "{case}: does not settle: {last:?}");
+        let in_onedrive: Vec<(String, Vec<u8>)> = w.graph.with(|c| c.items.values().map(|i| (i.name.clone(), i.content.clone())).collect());
+        let names = |content: &[u8]| in_onedrive.iter().filter(|(_, has)| has == content).map(|(name, _)| name.len()).collect::<Vec<_>>();
+        assert_eq!(names(b"changed here").len(), 1, "{case}: what was written here is in OneDrive, once: {:?}", w.sent());
+        assert_eq!(names(theirs).len(), 1, "{case}: OneDrive's version is still there: {:?}", w.sent());
+        assert!(w.graph.with(|c| c.bin.is_empty()), "{case}");
+        let not_uploads: Vec<_> = w.sent().into_iter().filter(|request| !is_an_upload(request)).collect();
+        assert_eq!(not_uploads, [], "{case}");
+        assert_eq!(base_ahead_of_disk(&w).await, Vec::<String>::new(), "{case}");
     }
 }

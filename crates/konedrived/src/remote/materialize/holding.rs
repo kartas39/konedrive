@@ -49,14 +49,10 @@ impl Materializer {
         // it, each folder's with its own: by the path it has in the holding
         // directory, which no other folder has, and from there to where it
         // is placed or put back.
-        if self.rw.is_some() {
-            let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: rel.to_path_buf(), to: PathBuf::from(HOLDING).join(id) }];
-            self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
-        }
-        Ok(())
+        self.rows_follow(rel.to_path_buf(), PathBuf::from(HOLDING).join(id))
     }
 
-    pub(super) fn drain_holding(&self, run: &mut Run) -> Result<(), ApplyError> {
+    pub(super) fn drain_rescuing(&self, run: &mut Run) -> Result<(), ApplyError> {
         let Some(holding) = self.holding_if_any()? else {
             return Ok(());
         };
