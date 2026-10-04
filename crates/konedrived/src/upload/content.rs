@@ -526,7 +526,8 @@ impl Job<'_> {
             }
             let tree = tree(self.e).await;
             let followed = if moved_there { follow_cloud(self.e, self.disk, &tree, self.found, &remote).await? } else { None };
-            let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent.clone(), name: Some(remote_name.clone()) };
+            let held = followed.is_some() || holds(self.e, &remote).await?;
+            let fresh = super::steps::base_after_a_change(&base, self.parent, self.name, &remote, held);
             let seq = row.seq;
             self.e.store().call(move |s| {
                 s.outbox_amend(seq, |next| {

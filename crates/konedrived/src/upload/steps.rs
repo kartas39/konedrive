@@ -18,7 +18,7 @@ mod shared;
 pub(super) use meta::delete;
 pub(crate) use sections::Sections;
 pub(super) use sections::{blocking, blocking_under, off, share, tree};
-pub(super) use shared::{answer_row, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, parent_of, upload_as_new, wanted_name, Guard, Named, Ours};
+pub(super) use shared::{answer_row, base_after_a_change, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, parent_of, upload_as_new, wanted_name, Guard, Named, Ours};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
     let rel = row.rel.clone();

@@ -34,6 +34,8 @@ mod file;
 mod holding;
 /// The one way a managed object is taken off the disk: forgotten first.
 mod removal;
+#[cfg(test)]
+pub(in crate::remote) use removal::testing::before_the_next_removal;
 /// One downloaded file swapped for its new version.
 mod replace;
 use file::cloud_time;

@@ -161,6 +161,11 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     assert_eq!(place(&s, "L"), Some(("old".into(), true)));
     assert_eq!((place(&s, "I"), place(&s, "J")), (Some(("old/inside.txt".into(), true)), Some(("old/sub/deep.txt".into(), true))));
     assert_eq!((s.local_handle("L").unwrap(), s.local_handle("I").unwrap()), (Some(handle(5)), None));
+    assert_eq!(s.local_handle("J").unwrap(), None, "an object a build before left below it would prove a delete");
+    // A folder that was leaving inside it is carried into it, whatever the
+    // order of their ids, with what waits in it.
+    assert_eq!((place(&s, "B"), s.local_handle("B").unwrap()), (Some(("old/in".into(), true)), Some(handle(12))));
+    assert_eq!(place(&s, "C"), Some(("old/in/c.txt".into(), true)));
     assert_eq!((place(&s, "F"), s.local_handle("F").unwrap()), (Some(("d/f.txt".into(), true)), Some(handle(6))));
     assert_eq!((place(&s, "W"), s.local_handle("W").unwrap()), (Some(("d/w.txt".into(), true)), Some(handle(9))));
     let waits = |s: &mut TreeStore| s.live_deferred().unwrap().into_iter().map(|change| match change {
@@ -169,6 +174,7 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     }).collect::<Vec<_>>();
     assert_eq!(waits(&mut s), [
         ("A".into(), "D".into(), "a.txt".into(), Placement::Placed),
+        ("B".into(), "L".into(), "b".repeat(300), Placement::Skipped(SkipReason::NameTooLong)),
         ("F".into(), "D".into(), long_file.clone(), Placement::Skipped(SkipReason::NameTooLong)),
         ("L".into(), "R".into(), long_folder.clone(), Placement::Skipped(SkipReason::NameTooLong)),
         ("W".into(), "V".into(), "w.txt".into(), Placement::Placed),
@@ -186,7 +192,7 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     );
     // The next cycle stages what waits over the base, which it differs from.
     let staged = s.stage_rw(&[], 20, false).unwrap().unwrap();
-    for id in ["F", "L", "W"] {
+    for id in ["B", "F", "L", "W"] {
         assert!(staged.ids.contains(&id.to_owned()), "{id}");
         assert!(!s.locate(Table::Staging, id).unwrap().is_some_and(|at| at.placed), "{id} is to leave");
     }
@@ -205,7 +211,10 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
         (4, OutboxKind::Update, OutboxState::Ready, None),
         (6, OutboxKind::Create, OutboxState::Ready, None),
         (7, OutboxKind::Delete, OutboxState::Ready, None),
+        (9, OutboxKind::Update, OutboxState::Ready, None),
+        (10, OutboxKind::Create, OutboxState::Ready, None),
     ]);
+    assert_eq!((rows[6].item_id.as_deref(), rows[7].target_parent.as_deref()), (Some("C"), Some("B")), "what waited in the inner folder still goes into it");
     let base = |row: &crate::outbox::OutboxRow| row.base.as_ref().map(|base| (base.parent.clone().unwrap(), base.name.clone().unwrap(), base.etag.clone().unwrap()));
     assert_eq!(base(&rows[3]), Some(("D".into(), "f.txt".into(), "e-F".into())), "against the place the disk has: no name is sent");
     assert_eq!((rows[3].target_parent.as_deref(), rows[3].target_name.as_deref()), (Some("D"), Some("f.txt")));

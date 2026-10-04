@@ -363,6 +363,14 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     s.outbox_commit(behind, Committed::Item { row: &moved, handle: Some(&handle) }, None).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), moved, "a folder the base places is a place");
     assert!(s.live_deferred().unwrap().is_empty(), "and the commit supersedes what waited");
+
+    // A temporary step is a commit like any other in this.
+    let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
+    let swapped = Row { parent_id: Some("V".into()), name: format!("{SWAP_PREFIX}X"), ..x.clone() };
+    s.outbox_commit_temporary(swap, &swapped, Some(&handle), "D", "y", None).unwrap();
+    let kept = s.get(Table::Items, "X").unwrap().unwrap();
+    assert_eq!((kept.parent_id.as_deref(), kept.name.as_str(), s.local_handle("X").unwrap()), (Some("D"), "x", Some(handle)), "the place is kept");
+    assert_eq!(s.live_deferred().unwrap().len(), 1);
 }
 
 /// The item a bad upload left in OneDrive (quality finding `UP2`) is kept

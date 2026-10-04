@@ -440,6 +440,26 @@ pub(in crate::upload) async fn holds(e: &Engine, remote: &DriveItem) -> Result<b
     Ok(e.store().call(move |s| s.locate(Table::Items, &parent)).await?.is_some_and(|at| at.placed))
 }
 
+/// The base of a row that met a `412`, read again: the item's fresh tag,
+/// and OneDrive's place — but where the folder cannot hold that place
+/// (`held` false), only for what the user changed. The row was recorded
+/// with `base` and sends the item to (`parent`, `name`): a field in which
+/// the two agree is one nobody changed here, and it keeps the row's own
+/// value, so that the next request does not send it. A rename made here is
+/// then a rename, never also a move back out of where OneDrive put the
+/// item, and the other way round.
+pub(in crate::upload) fn base_after_a_change(base: &Base, parent: &str, name: &str, remote: &DriveItem, held: bool) -> Base {
+    let (remote_parent, remote_name) = place(remote);
+    let moved_here = base.parent.as_deref() != Some(parent);
+    let renamed_here = base.name.as_deref() != Some(name);
+    Base {
+        etag: remote.e_tag.clone(),
+        ctag: base.ctag.clone(),
+        parent: if held || moved_here { remote_parent } else { Some(parent.to_owned()) },
+        name: Some(if held || renamed_here { remote_name } else { name.to_owned() }),
+    }
+}
+
 /// Rename × rename (§6): the first to reach OneDrive wins, so the local
 /// object goes where OneDrive has it. `None` where it cannot or must not:
 /// OneDrive's folder is not placed here, the name is taken here, or it is a

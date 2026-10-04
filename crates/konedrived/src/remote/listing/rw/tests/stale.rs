@@ -466,7 +466,7 @@ async fn a_filesystem_mounted_inside_keeps_the_folder_and_says_so() {
     let listing = w.listed().await;
     let made = std::process::Command::new("btrfs").arg("subvolume").arg("create").arg(w.path("docs/sub")).output();
     if !made.is_ok_and(|o| o.status.success()) {
-        eprintln!("no Btrfs subvolume can be made here: skipped");
+        println!("NOT RUN: no Btrfs subvolume can be made here, so a mount inside the folder is not tested");
         return;
     }
     w.graph.with(|c| c.rename("D", ROOT, &long_name()));
@@ -866,7 +866,7 @@ async fn a_filesystem_mounted_inside_a_folder_removed_in_onedrive_makes_its_remo
     let listing = w.listed().await;
     let made = std::process::Command::new("btrfs").arg("subvolume").arg("create").arg(w.path("docs/sub")).output();
     if !made.is_ok_and(|o| o.status.success()) {
-        eprintln!("no Btrfs subvolume can be made here: skipped");
+        println!("NOT RUN: no Btrfs subvolume can be made here, so a mount inside the folder is not tested");
         return;
     }
     std::fs::write(w.path("docs/sub/mine.txt"), b"mine").unwrap();
@@ -885,4 +885,128 @@ async fn a_filesystem_mounted_inside_a_folder_removed_in_onedrive_makes_its_remo
     w.rounds(&listing, 1).await;
     assert!(!w.path("docs").exists() && w.base("D").is_none(), "gone once nothing is mounted inside");
     assert_eq!(w.deletes(), 0);
+}
+
+/// A rename of the item made here while OneDrive has it where the folder
+/// cannot hold it is the user's act, and is sent — as a rename, and nothing
+/// more. Under a name too long in OneDrive, the item gets the user's name.
+/// Moved in OneDrive into a folder that is not placed (as into the Personal
+/// Vault), it gets the user's name there: it is never moved back out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rename_made_here_of_an_item_that_waits_is_sent_as_a_rename_and_never_moves_it_back() {
+    for moved_away in [false, true] {
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        w.graph.with(|c| c.add(folder_item("S", ROOT, &long_name())));
+        w.cycle(&listing).await;
+        std::fs::rename(w.path("docs/f.txt"), w.path("docs/g.txt")).unwrap();
+        let mut batch = crate::local::Batch::new();
+        batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+        batch.name(Path::new("docs"), std::ffi::OsStr::new("g.txt"));
+        assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
+        w.graph.with(|c| if moved_away { c.rename("F", "S", "f.txt") } else { c.rename("F", "D", &long_name()) });
+        w.rounds(&listing, 2).await;
+        let (parent, name) = w.graph.with(|c| c.item("F").map(|f| (f.parent.clone().unwrap(), f.name.clone())).unwrap());
+        assert_eq!((parent.as_str(), name.as_str()), (if moved_away { "S" } else { "D" }, "g.txt"), "moved_away={moved_away}");
+        assert_eq!(w.deletes(), 0);
+        if !moved_away {
+            assert_eq!(id_at(&w.path("docs/g.txt")).as_deref(), Some("F"), "a name the folder can hold: it stays");
+            assert!(w.store.call(|s| s.skipped()).await.unwrap().iter().all(|line| line.waits.is_none()));
+        }
+    }
+}
+
+/// The look right before the unlink: a placed file the user moves into the
+/// folder after the cycle looked at it and before it is removed is not the
+/// folder's to remove. The removal stops, nothing of the file is lost, no
+/// `DELETE` is sent for it, and its move reaches OneDrive before the folder
+/// goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_moved_in_between_the_look_and_the_removal_stops_the_removal() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    let (from, to) = (w.path("top.txt"), w.path("docs/top.txt"));
+    crate::remote::materialize::before_the_next_removal(&w.root.path, move || std::fs::rename(from, to).unwrap());
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("docs/top.txt")).as_deref(), Some("T"), "not removed");
+    assert_eq!(w.waits().await, [WaitsFor::Changes("docs/top.txt".into())]);
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.graph.with(|c| c.item("T").and_then(|t| t.parent.clone())).as_deref(), Some("D"), "the user's move is sent");
+    assert_eq!(w.deletes(), 0);
+    assert!(!w.path("docs").exists(), "and then the folder goes");
+}
+
+/// An editor's save by rename inside a folder that waits is a change of the
+/// item, as anywhere: the new content goes into the item, nothing is made
+/// anew and nothing is deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_by_rename_inside_a_waiting_folder_is_the_items_new_content() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.scan_and_upload().await;
+    w.docs_waiting(&listing).await;
+    let items = w.graph.with(|c| c.items.len());
+    std::fs::write(w.path("docs/f.txt.new"), b"saved by rename").unwrap();
+    std::fs::rename(w.path("docs/f.txt.new"), w.path("docs/f.txt")).unwrap();
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().content.clone()), b"saved by rename");
+    assert_eq!((w.graph.with(|c| c.items.len()), w.deletes(), w.patches_of("F")), (items, 0, 0));
+}
+
+/// A download a program has open for writing keeps the folder, and the
+/// skipped list says so; closed and unchanged, it goes with the folder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_open_for_writing_keeps_the_folder_and_says_so() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    let open = std::fs::OpenOptions::new().append(true).open(w.path("docs/f.txt")).unwrap();
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.rounds(&listing, 2).await;
+    assert!(w.path("docs/f.txt").exists());
+    assert_eq!(w.waits().await, [WaitsFor::OpenForWriting("docs/f.txt".into())]);
+    drop(open);
+    w.rounds(&listing, 2).await;
+    assert!(!w.path("docs").exists(), "gone once it is closed");
+    assert_eq!(w.deletes(), 0);
+}
+
+/// A reconcile of the whole folder: `docs` can no longer be placed, and in
+/// the same listing OneDrive moved `g.txt` out of it. The file is moved, the
+/// one object it was, and then the folder goes; with something waiting in
+/// the folder, the file is moved all the same and the folder stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_a_full_reconcile_what_onedrive_moved_out_is_moved_before_the_folder_goes_or_waits() {
+    for waiting in [false, true] {
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        w.graph.with(|c| c.add_file("G", "D", "g.txt", b"g"));
+        w.cycle(&listing).await;
+        let g = handle_of(&w.path("docs/g.txt"));
+        if waiting {
+            std::fs::write(w.path("docs/new.txt"), b"new").unwrap();
+        }
+        w.graph.with(|c| {
+            c.rename("D", ROOT, &long_name());
+            c.rename("G", ROOT, "g.txt");
+        });
+        listing.request_full();
+        let report = w.cycle(&listing).await;
+        assert!(report.full, "waiting={waiting}");
+        assert_eq!(handle_of(&w.path("g.txt")), g, "waiting={waiting}: moved, not made again");
+        assert_eq!(w.path("docs").exists(), waiting);
+        if waiting {
+            assert!(w.path("docs/f.txt").exists() && !w.path("docs/g.txt").exists());
+            assert_eq!(w.waits().await, [WaitsFor::Changes("docs/new.txt".into())]);
+            w.rounds(&listing, 3).await;
+            assert!(!w.path("docs").exists(), "gone once the new file is up");
+            assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "new.txt" && i.parent.as_deref() == Some("D"))));
+        }
+        w.scan_and_upload().await;
+        assert_eq!((w.deletes(), w.graph.with(|c| c.count("PATCH", "items/"))), (0, 0), "waiting={waiting}");
+    }
 }

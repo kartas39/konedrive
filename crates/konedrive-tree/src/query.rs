@@ -128,7 +128,7 @@ impl TreeStore {
             [&root],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let skipped = skipped as u64 + self.waiting_below_unplaced(&root)?.len() as u64;
+        let skipped = (skipped as u64 + self.waiting_below_unplaced(&root)?.len() as u64).saturating_sub(self.inside_what_waits()?.len() as u64);
         Ok(Counts { listed, placed: placed as u64, skipped })
     }
 
@@ -151,16 +151,21 @@ impl TreeStore {
             Source::Items,
             &not_in_the_folder("id, parent_id, name, placement"),
             &format!(
-                "SELECT c.path, c.start_placement, w.id, w.waits FROM chain c LEFT JOIN ({waiting}) w ON w.id = c.start
+                "SELECT c.path, c.start_placement, w.id, w.waits, c.start FROM chain c LEFT JOIN ({waiting}) w ON w.id = c.start
                   WHERE c.parent_id = ?1 AND c.above",
                 waiting = waiting("d.id, d.waits", &format!("EXISTS (SELECT 1 FROM items i WHERE i.id = d.id AND {})", placed("i.placement")))
             ),
         );
         let mut statement = self.conn.prepare_cached(&sql)?;
         let mut out = Vec::new();
-        let rows = statement.query_map([&root], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)))?;
-        for row in rows {
-            let (path, placement, here, waits) = row?;
+        let rows: Vec<(String, String, Option<String>, Option<String>, String)> =
+            statement.query_map([&root], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
+        let inside = self.inside_what_waits()?;
+        for (path, placement, here, waits, id) in rows {
+            // What is inside a folder that waits is covered by its line.
+            if inside.contains(&id) {
+                continue;
+            }
             if let Placement::Skipped(reason) = Placement::decode(&placement) {
                 // Still here, where the base places it. With nothing said
                 // yet: an outbox commit deferred it, and no cycle has looked
@@ -173,6 +178,35 @@ impl TreeStore {
         out.extend(self.waiting_below_unplaced(&root)?);
         out.sort_by(|a, b| (&a.rel, &a.reason).cmp(&(&b.rel, &b.reason)));
         Ok(out)
+    }
+
+    /// Of the items that wait to leave the folder, those the base has
+    /// inside another one that waits: the folder's line covers them, as a
+    /// skipped folder's covers what is in it. The base still has them below
+    /// that folder under its name on disk, so a line of their own would
+    /// name a path that is nowhere.
+    fn inside_what_waits(&self) -> Result<std::collections::HashSet<String>, TreeError> {
+        let waiting: std::collections::HashSet<String> = {
+            let mut statement = self.conn.prepare_cached(&waiting("d.id", &skipped("d.placement")))?;
+            let ids = statement.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            ids
+        };
+        let mut inside = std::collections::HashSet::new();
+        if waiting.len() < 2 {
+            return Ok(inside);
+        }
+        for id in &waiting {
+            let mut at = self.get(Table::Items, id)?.and_then(|row| row.parent_id);
+            for _ in 0..MAX_CHAIN {
+                let Some(folder) = at.take() else { break };
+                if waiting.contains(&folder) {
+                    inside.insert(id.clone());
+                    break;
+                }
+                at = self.get(Table::Items, &folder)?.and_then(|row| row.parent_id);
+            }
+        }
+        Ok(inside)
     }
 
     /// The items that wait to leave the folder because OneDrive has them

@@ -77,7 +77,7 @@
          the full path of the first thing found, changes (made, changed,
          moved or deleted here and not recorded yet), open-for-writing,
          unknown-state (a file whose state cannot be read), not-downloaded
-         (a file from elsewhere that is not downloaded), local-only (a name
+         (a file that is not downloaded and is not where OneDrive has it), local-only (a name
          on the ignore list) and mounted-inside (another filesystem). It
          leaves the disk in the first cycle that finds none of these. An
          item still here that OneDrive has inside a folder that is not

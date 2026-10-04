@@ -243,8 +243,9 @@ fn placement_indexes(conn: &Connection) -> Result<(), TreeError> {
 /// the base does not place forgets its local object (invariant I1), which
 /// builds before version 8 only did as they wrote a row.
 ///
-/// Nothing on disk is read or changed, and no row of the outbox that could
-/// still be sent is lost.
+/// A folder is carried before what was leaving inside it. Nothing on disk
+/// is read or changed, and no row of the outbox that could still be sent is
+/// lost.
 fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
     use rusqlite::OptionalExtension;
     conn.execute_batch("ALTER TABLE deferred ADD COLUMN waits TEXT;")?;
@@ -255,8 +256,13 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
         .flatten()
         .and_then(|count| count.parse().ok())
         .unwrap_or(0);
-    let leaving: Vec<(String, Vec<u8>, Option<Vec<u8>>)> =
-        conn.prepare("SELECT id, rel, handle FROM leaving ORDER BY id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    let mut leaving: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = conn
+        .prepare("SELECT id, CAST(rel AS BLOB), handle FROM leaving ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    // A folder before what is leaving inside it: the inner one is carried
+    // into a folder the base places again.
+    leaving.sort_by_key(|(_, rel, _)| rel.iter().filter(|byte| **byte == b'/').count());
     // The item `items` places at `name` in `parent`, if any.
     let placed_child = |parent: &str, name: &str| -> Result<Option<String>, TreeError> {
         Ok(conn
@@ -292,7 +298,7 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
     let mut dropped: Vec<Vec<u8>> = Vec::new();
     let mut carried_at: Vec<Vec<u8>> = Vec::new();
     for (id, rel, handle) in leaving {
-        let mut carry = || -> Result<bool, TreeError> {
+        let carry = || -> Result<bool, TreeError> {
             let Ok(path) = std::str::from_utf8(&rel) else { return Ok(false) };
             let mut names: Vec<&str> = path.split('/').collect();
             let Some(name) = names.pop().filter(|name| !name.is_empty()) else { return Ok(false) };
@@ -305,25 +311,42 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
                 return Ok(false);
             }
             let last: i64 = conn.query_row("SELECT local_seq FROM items WHERE id = ?1", [&id], |r| r.get(0))?;
+            // A change of it that waits already is newer than the row of
+            // `items`: it is kept, and only dated so that it stays.
             conn.execute(
-                "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, waits)
-                 SELECT id, MAX(?2, COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = items.id), 0)), 0,
-                        parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, NULL
+                "INSERT OR IGNORE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, waits)
+                 SELECT id, 0, 0, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, NULL
                    FROM items WHERE id = ?1",
+                [&id],
+            )?;
+            conn.execute(
+                "UPDATE deferred SET seq = MAX(seq, ?2, COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = deferred.id), 0)) WHERE id = ?1",
                 params![id, commits.max(last)],
             )?;
             // A handle is at least its kind: anything shorter was never one.
             let object = handle.filter(|stored| stored.len() >= 4);
             conn.execute("UPDATE items SET parent_id = ?2, name = ?3, placement = 'placed', local_handle = ?4 WHERE id = ?1", params![id, parent, name, object])?;
+            // What the base has below it is placed with it, and records no
+            // object: none was left by version 7, and one left by a build
+            // before it would prove a delete.
+            conn.execute(
+                "WITH RECURSIVE below(id, depth) AS (
+                     SELECT id, 1 FROM items WHERE parent_id = ?1
+                     UNION ALL
+                     SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < 130)
+                 UPDATE items SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below)",
+                [&id],
+            )?;
             // Its own content row was recorded against OneDrive's place.
             conn.execute(
                 "UPDATE outbox SET base_parent = ?2, base_name = ?3, target_parent = ?2, target_name = ?3 WHERE item_id = ?1 AND kind = 'update'",
                 params![id, parent, name],
             )?;
-            carried_at.push(rel.clone());
             Ok(true)
         };
-        if !carry()? {
+        if carry()? {
+            carried_at.push(rel);
+        } else {
             dropped.push(rel);
         }
     }

@@ -298,6 +298,16 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     store.commit_staging_deferring("link-3", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &whole, content: &[], fetched_at: 1, waits: &waits }).unwrap();
     assert_eq!(store.skipped().unwrap()[0], Skipped { rel: "docs/f-long".into(), reason: SkipReason::NameTooLong, waits: Some(WaitsFor::Uploads(2)) });
 
+    // A folder that waits covers what waits inside it: one line, one count,
+    // and no path made of the folder's name here and the file's in OneDrive.
+    store.begin_staging(crate::NewTree::Delta).unwrap();
+    store.stage(&[long(folder("D", "R", "docs"), "docs-long")]).unwrap();
+    store.commit_staging_deferring("link-4", &crate::reconcile::Deferrals { consumed: &[], whole: &["D".to_owned()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    let lines: Vec<PathBuf> = store.skipped().unwrap().into_iter().map(|s| s.rel).collect();
+    assert_eq!(lines, [PathBuf::from("docs-long"), PathBuf::from("n-longer")]);
+    assert_eq!(store.counts().unwrap().skipped, 2);
+    store.conn.execute("DELETE FROM deferred WHERE id = 'D'", []).unwrap();
+
     // An outbox commit made after the change of `F` was deferred supersedes
     // it: OneDrive no longer has the item under that name, and it is off the
     // list before the next cycle drops what waited.

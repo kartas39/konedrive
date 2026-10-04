@@ -218,6 +218,11 @@ impl Materializer {
             Ok(removal) => removal,
             Err(e) => {
                 self.settle_stopped(dir, name, &stopped);
+                // What is left was forgotten: an examination records it
+                // again where it stands.
+                if self.rw.is_some() {
+                    run.out.on_disk.examine.push((rel.to_path_buf(), true));
+                }
                 return Err(e);
             }
         };
@@ -548,18 +553,31 @@ impl Materializer {
         if let Some(waits) = self.waits(rw, dir, name, rel, run)? {
             return stays(waits);
         }
+        #[cfg(test)]
+        if let Ok(root) = self.disk.dir(Path::new("")) {
+            testing::before_removal(&root);
+        }
         let stopped = self.forget(survey, Policy::Unplaced, run)?;
-        match self.remove_unplaced(rw, dir, name, rel, run) {
-            Ok(true) => {
+        // Only what was looked at goes: an object that carries another id
+        // came since (a placed item the user moved in), and its record was
+        // not forgotten.
+        let ours: HashSet<&str> = survey.ids.iter().map(String::as_str).collect();
+        let is_dir = matches!(self.disk.probe(dir, name), Ok(Probe::Managed { is_dir: true, .. }));
+        match self.remove_unplaced(rw, &ours, dir, name, rel, run) {
+            Ok(None) => {
                 run.out.on_disk.taken.extend(survey.ids.iter().cloned());
                 Ok(TakenOff { removal: Removal::Gone, waits: None })
             }
-            Ok(false) => {
+            Ok(Some(waits)) => {
                 self.settle_stopped(dir, name, &stopped);
-                stays(WaitsFor::Changes(rel.display().to_string()))
+                stays(waits)
             }
             Err(e) => {
                 self.settle_stopped(dir, name, &stopped);
+                // The objects are forgotten, and what is left of them is
+                // still the base's: an examination records them again where
+                // they stand, also when the next cycle only finds rows.
+                run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
                 Err(e)
             }
         }
@@ -629,11 +647,14 @@ impl Materializer {
                     let expected = base.get(&child).is_some_and(|row| row.id == id && (row.kind == Kind::Folder) == is_dir);
                     if !expected {
                         // Moved, renamed or copied here, or from elsewhere.
-                        // One that is not downloaded and is no item of this
-                        // folder goes up with nothing, and stays listed.
-                        let known = self.store.call_blocking({ let id = id.clone(); move |s| s.get(Table::Items, &id) })?.is_some();
+                        // A file that is not downloaded may be one the user
+                        // renamed, whose row an examination records; one
+                        // that is not the item's object has nothing to send
+                        // and stays listed until the user removes it. Which
+                        // of the two is the examination's to say, so it is
+                        // said as what stays, and the place is handed over.
                         let empty = !is_dir && !matches!(self.disk.open_file(&sub, &child).map(|file| read_state(&file)), Ok(Ok(Some(State::Hydrated))));
-                        if !known && empty {
+                        if empty {
                             first(stays, WaitsFor::NotDownloaded(shown(&at)));
                             continue;
                         }
@@ -674,37 +695,44 @@ impl Materializer {
     }
 
     /// `dir/name` (at `rel`), which nothing was found waiting in, goes with
-    /// everything below it. `false` when the look at a file right before
-    /// its unlink finds what [`Self::waits`] did not: local work, or
-    /// something new. That stays, with the directories above it.
-    fn remove_unplaced(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<bool, ApplyError> {
+    /// everything below it. Each object is looked at again right before
+    /// its unlink: what [`Self::waits`] did not find there stops the
+    /// removal, and is returned — local work, something new, an object
+    /// whose id is not one of `ours` (those looked at and forgotten),
+    /// another filesystem. That stays, with the directories above it.
+    fn remove_unplaced(&self, rw: &Rw, ours: &HashSet<&str>, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<Option<WaitsFor>, ApplyError> {
         self.check_cancel()?;
-        let managed = match self.disk.probe(dir, name)? {
-            Probe::Absent => return Ok(true),
+        let changes = || Ok(Some(WaitsFor::Changes(shown(rel))));
+        match self.disk.probe(dir, name)? {
+            Probe::Absent => return Ok(None),
+            Probe::Managed { id, .. } if !ours.contains(id.as_str()) => return changes(),
             Probe::Managed { is_dir: true, .. } => {
                 let sub = self.disk.open_subdir(dir, name)?;
                 if device(&sub)? != device(dir)? {
-                    return Ok(false);
+                    return Ok(Some(WaitsFor::MountedInside(shown(rel))));
                 }
-                let mut whole = true;
+                let mut stays = None;
                 for child in self.disk.list(&sub)? {
-                    whole &= self.remove_unplaced(rw, &sub, &child, &rel.join(&child), run)?;
+                    let stayed = self.remove_unplaced(rw, ours, &sub, &child, &rel.join(&child), run)?;
+                    stays = stays.or(stayed);
                 }
-                if !whole {
-                    return Ok(false);
+                if stays.is_some() {
+                    return Ok(stays);
                 }
-                self.disk.remove(dir, name, true)?;
-                true
+                // One that will not go has something in it that came since.
+                match self.disk.remove(dir, name, true) {
+                    Ok(()) => {}
+                    Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTEMPTY | libc::EEXIST)) => return changes(),
+                    Err(e) => return Err(e.into()),
+                }
             }
             Probe::Managed { is_dir: false, .. } => {
                 let file = self.disk.open_file(dir, name)?;
-                let holds = match read_state(&file) {
-                    Ok(Some(State::Hydrated)) => self.local_work(&file) || konedrive_fs::lease::open_for_writing(&file).unwrap_or(true),
-                    Ok(Some(_)) => false,
-                    Ok(None) | Err(_) => true,
-                };
-                if holds {
-                    return Ok(false);
+                match read_state(&file) {
+                    Ok(Some(State::Hydrated)) if self.local_work(&file) => return changes(),
+                    Ok(Some(State::Hydrated)) if konedrive_fs::lease::open_for_writing(&file).unwrap_or(true) => return Ok(Some(WaitsFor::OpenForWriting(shown(rel)))),
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => return Ok(Some(WaitsFor::UnknownState(shown(rel)))),
                 }
                 let other_names = self.with_other_names(dir, name)?;
                 self.disk.remove(dir, name, false)?;
@@ -715,27 +743,23 @@ impl Materializer {
                     }
                     release_other_names(&file, rel);
                 }
-                true
             }
             Probe::Unmanaged { is_dir } => {
                 if !matches!(self.unmanaged(rw, dir, name)?, Unmanaged::Ours | Unmanaged::Beside) {
-                    return Ok(false);
+                    return changes();
                 }
                 // The daemon's own, or nothing to lose. One that will not
                 // go (a directory with something in it) stays for now.
-                match self.disk.remove(dir, name, is_dir) {
-                    Ok(()) => {}
-                    Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
-                    Err(_) => return Ok(false),
-                }
-                false
+                return match self.disk.remove(dir, name, is_dir) {
+                    Ok(()) => Ok(None),
+                    Err(e) if e.raw_os_error() == Some(libc::ENOENT) => Ok(None),
+                    Err(_) => changes(),
+                };
             }
-        };
-        if managed {
-            run.out.counts.deleted += 1;
-            run.note(EventKind::Removed, rel, None);
         }
-        Ok(true)
+        run.out.counts.deleted += 1;
+        run.note(EventKind::Removed, rel, None);
+        Ok(None)
     }
 }
 

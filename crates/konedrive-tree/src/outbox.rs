@@ -239,7 +239,7 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
 
 /// Whether the base would place `row`, written into `items`: its own
 /// placement, and the folder it names placed up to the root.
-fn would_place(tx: &rusqlite::Transaction<'_>, row: &Row) -> Result<bool, TreeError> {
+pub(super) fn would_place(tx: &rusqlite::Transaction<'_>, row: &Row) -> Result<bool, TreeError> {
     if row.placement != Placement::Placed {
         return Ok(false);
     }

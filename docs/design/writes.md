@@ -895,8 +895,8 @@ the disk may not be able to take yet, and has no state of its own (`take_off`, p
   that an examination has still to record (made, changed, moved, renamed or deleted here); a file
   open for writing; and, until the user does something, a file of ours whose state cannot be read, a
   file from elsewhere that is not downloaded, a file or directory under an ignored name that only
-  this computer has (F255), another filesystem mounted inside. For the first three the place is
-  handed to the watcher. What was found is the third field of the item's line in `Skipped()`
+  this computer has (F255), another filesystem mounted inside. For what an examination can record
+  the place is handed to the watcher. What was found is the third field of the item's line in `Skipped()`
   (F257). There is no notification. The look is repeated right before each unlink (F188).
 - **The upload worker sends no name and no folder of OneDrive's side back.** When OneDrive answers
   `412` and has the item where the folder cannot hold it, and the object stands where the base has

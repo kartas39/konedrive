@@ -8,7 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
-use crate::forget::forget_subtrees;
+use crate::forget::{base_places, forget_subtrees, forget_unplaced};
+use crate::query::get_row;
 use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
@@ -147,11 +148,28 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_outbox_seq(&tx)?;
-        upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
+        // As [`TreeStore::outbox_commit`]: an answer in a folder the base
+        // does not place takes no placed item's place away, and a row the
+        // base does not place records no object (I1).
+        let placed = Row { placement: Placement::Placed, ..answer.clone() };
+        let stays = match get_row(&tx, Source::Items, &answer.id)? {
+            Some(base) if base_places(&tx, &answer.id)? && !super::would_place(&tx, &placed)? => Some(base),
+            _ => None,
+        };
+        match stays {
+            Some(base) => {
+                upsert(&tx, Table::Items, &Row { parent_id: base.parent_id, name: base.name, placement: base.placement, ..answer.clone() })?;
+                crate::reconcile::wait(&tx, &answer.id, Some(answer), local_seq, None)?;
+            }
+            None => {
+                upsert(&tx, Table::Items, &placed)?;
+            }
+        }
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],
         )?;
+        forget_unplaced(&tx, [answer.id.as_str()])?;
         let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent: answer.parent_id.clone(), name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
         if let Some(inode) = committed.inode.clone() {

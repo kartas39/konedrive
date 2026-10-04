@@ -128,7 +128,10 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             // Changed there, not moved (or its place cannot be followed here,
             // such as its own temporary name): the move goes again against
             // the fresh eTag; the delta brings the content (§6).
-            let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent, name: Some(remote_name) };
+            // Where the folder cannot hold OneDrive's place, only what the
+            // user changed is sent: a rename here is no move back.
+            let held = super::shared::holds(e, &remote).await?;
+            let fresh = super::shared::base_after_a_change(&base, &parent, &name, &remote, held);
             let seq = row.seq;
             e.store().call(move |s| s.outbox_amend(seq, |next| next.base = Some(fresh))).await?;
             Ok(Outcome::again())

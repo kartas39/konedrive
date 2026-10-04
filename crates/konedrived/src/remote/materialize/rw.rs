@@ -298,9 +298,13 @@ impl Materializer {
         // Directories a local change holds, with everything below them. The
         // scan lists a directory's entry before what is in it.
         let mut left_dirs: HashSet<PathBuf> = HashSet::new();
-        // Directories no longer placed that this scan took off the disk:
-        // what it listed below them is gone with them.
-        let mut gone_dirs: HashSet<PathBuf> = HashSet::new();
+        // What is no longer placed (issue #104): each topmost object, taken
+        // off whole or left whole once what OneDrive moved out of it is in
+        // the holding directory; and what the scan lists below one, which
+        // follows it.
+        let mut unplaced: Vec<&Scanned> = Vec::new();
+        let mut unplaced_dirs: HashSet<PathBuf> = HashSet::new();
+        let mut below_unplaced: Vec<&Scanned> = Vec::new();
         // What moved in OneDrive goes to the holding directory, what it
         // removed goes in place: deepest first, in one order, so that nothing
         // is moved out from above what is still to be done below it.
@@ -341,7 +345,15 @@ impl Materializer {
                     misplaced.push((entry, false));
                     continue;
                 }
-                if entry.rel.ancestors().skip(1).any(|a| gone_dirs.contains(a)) {
+                if entry.rel.ancestors().skip(1).any(|a| unplaced_dirs.contains(a)) {
+                    // What OneDrive moved out of it to where the tree places
+                    // it is moved, as anywhere; the rest stays with it.
+                    let moved_out = is_misplaced(entry, rows.get(id)) && where_it_was(entry, plan.of(id)) == Was::Moved && !(rw.held.contains(id) || rw.removing.contains(id));
+                    if moved_out {
+                        misplaced.push((entry, false));
+                    } else {
+                        below_unplaced.push(entry);
+                    }
                     continue;
                 }
                 if entry.rel.ancestors().skip(1).any(|a| left_dirs.contains(a)) {
@@ -367,20 +379,12 @@ impl Materializer {
                 match (where_it_was(entry, planned), held) {
                     // Whatever a local change holds, what OneDrive removed goes.
                     (Was::Removed, _) => misplaced.push((entry, true)),
-                    // What is no longer placed goes whole, now, or waits
-                    // whole: with everything the scan lists below it, which
-                    // is left as it is (issue #104).
+                    // What is no longer placed goes whole or waits whole,
+                    // decided once the moves below are done.
                     (Was::Unplaced, _) => {
-                        let parent = entry.rel.parent().unwrap_or(Path::new(""));
-                        let name = entry.rel.file_name().expect("a scanned entry has a name");
-                        match self.take_off(&self.disk.dir(parent)?, name, &entry.rel, Policy::Unplaced, run)?.waits {
-                            None => {
-                                gone_dirs.insert(entry.rel.clone());
-                            }
-                            Some(waits) => {
-                                self.wait_to_leave(id, &entry.rel, entry.is_dir, waits, run)?;
-                                leave(run, &mut left_dirs);
-                            }
+                        unplaced.push(entry);
+                        if entry.is_dir {
+                            unplaced_dirs.insert(entry.rel.clone());
                         }
                     }
                     (_, true) | (Was::Elsewhere, false) => leave(run, &mut left_dirs),
@@ -407,6 +411,22 @@ impl Materializer {
                 }
             } else {
                 self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
+            }
+        }
+        unplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
+        for entry in unplaced {
+            self.check_cancel()?;
+            let id = entry.id.as_deref().expect("filtered above");
+            let parent = entry.rel.parent().unwrap_or(Path::new(""));
+            let name = entry.rel.file_name().expect("a scanned entry has a name");
+            if let Some(waits) = self.take_off(&self.disk.dir(parent)?, name, &entry.rel, Policy::Unplaced, run)?.waits {
+                self.wait_to_leave(id, &entry.rel, entry.is_dir, waits, run)?;
+                // It is left as it is, with what the scan listed below it.
+                let inside = below_unplaced.iter().filter(|below| below.rel.starts_with(&entry.rel)).filter_map(|below| below.id.clone());
+                for left in inside.chain([id.to_owned()]) {
+                    run.left.insert(left.clone());
+                    run.out.pending.unsettled.insert(left);
+                }
             }
         }
         let root = self.disk.dir(Path::new(""))?;
@@ -480,9 +500,11 @@ impl Materializer {
             }
             let parent = old.rel.parent().unwrap_or(Path::new(""));
             let Some(name) = old.rel.file_name() else { continue };
-            let found = match self.disk.dir(parent) {
-                Ok(dir) => self.disk.probe(&dir, name)?,
-                Err(_) => Probe::Absent,
+            // Whether nothing is there for sure: a folder that cannot be
+            // opened for another reason says nothing of what is in it.
+            let (found, looked) = match self.disk.dir(parent) {
+                Ok(dir) => (self.disk.probe(&dir, name)?, true),
+                Err(e) => (Probe::Absent, matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))),
             };
             let at_place = matches!(&found, Probe::Managed { id: found, .. } if found == id);
             // A local change holds it — unless OneDrive removed it and its
@@ -491,6 +513,10 @@ impl Materializer {
             // holds it is one more thing it waits for (issue #104).
             if rw.held.contains(id) && (placed_now || !at_place) {
                 run.out.pending.unsettled.insert(id.clone());
+                if planned.new.is_some() && !placed_now {
+                    // No longer placed, and the user's own move holds it.
+                    run.out.pending.waits.push((id.clone(), konedrive_tree::WaitsFor::Uploads(1).to_string()));
+                }
                 continue;
             }
             if !at_place {
@@ -502,7 +528,7 @@ impl Materializer {
                 // No longer placed, not here, and no object of it on record:
                 // nothing an examination could still find. The base takes
                 // the change.
-                let nothing_left = planned.new.is_some() && !placed_now && self.store.call_blocking({ let id = id.clone(); move |s| s.local_handle(&id) })?.is_none();
+                let nothing_left = looked && planned.new.is_some() && !placed_now && self.store.call_blocking({ let id = id.clone(); move |s| s.local_handle(&id) })?.is_none();
                 if nothing_left {
                     run.out.on_disk.taken.insert(id.clone());
                 } else if !placed_now {
@@ -634,7 +660,7 @@ impl Materializer {
             }
         }
         run.out.pending.unsettled.insert(id.to_owned());
-        if matches!(waits, WaitsFor::Changes(_) | WaitsFor::OpenForWriting(_)) {
+        if matches!(waits, WaitsFor::Changes(_) | WaitsFor::OpenForWriting(_) | WaitsFor::NotDownloaded(_)) {
             run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
         }
         run.out.pending.waits.push((id.to_owned(), waits.to_string()));

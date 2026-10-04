@@ -594,7 +594,8 @@ pub enum WaitsFor {
     OpenForWriting(String),
     /// A file of ours whose state cannot be read.
     UnknownState(String),
-    /// A file that is not downloaded and is not the folder's.
+    /// A file that is not downloaded and is not where the base has its item:
+    /// from elsewhere, a copy, or renamed here and not recorded yet.
     NotDownloaded(String),
     /// A file or a directory whose name is on the ignore list: it is only on
     /// this computer, and is never uploaded.
