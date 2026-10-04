@@ -136,6 +136,13 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `send_large` (`:728–835`).
 - **Fix:** one `send_session` with a small step enum. **Size:** M. **Risk:** medium; this is the
   replay-critical code, well covered by `tests/sessions.rs`.
+- **Fixed 2026-10-04** in `95a5b75` (#167): one `send_session` over a `Step` enum; `Sent` in place of the
+  nested results. A defect found and fixed with it: a changed file of one fragment whose
+  session was resumed (after a `429`, a network failure, a stop) went up with no look at the
+  item, so a version saved in OneDrive meanwhile was overwritten; a resumed session now reads
+  the item again before its last fragment. Left (`docs/limitations/F239.md`): a last fragment
+  sent again inside `upload_chunk` is not preceded by a new read of the item; nothing of the
+  new shape was measured against real OneDrive.
 
 ## UP6. Blocking filesystem calls on runtime threads, some under the tree lock
 
