@@ -218,7 +218,7 @@ application must never read zeros where real content should be.
 - [F187](F187.md) — What is lost when OneDrive removes an item
 - [F188](F188.md) — A folder that stopped being placed stays on disk while its uploads run
 - [F189](F189.md) — A row placed again carries no local object
-- [F190](F190.md) — The window between a cycle's reconcile and its swap is tested through a hook
+- [F190](F190.md) — The window between a cycle's reconcile and its swap is tested with the delta staged by the fixture
 - [F191](F191.md) — A stopped download is dropped where it is
 - [F192](F192.md) — An item moved here into a folder that OneDrive then removes is removed here, and stays in OneDrive where it was
 - [F193](F193.md) — A stale handle can still record a `delete` for a file moved into a leaving folder
