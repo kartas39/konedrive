@@ -206,8 +206,19 @@ struct Held {
 /// as well. A blocking section of a fill carries one (`hydration::source`):
 /// the section runs to its end on its own thread even when the fill is
 /// dropped, and whoever takes the lock next must not find it still writing.
+///
+/// It can carry something of its holder's that has to last as long as the
+/// section does ([`holding_with`]): let go of after the lock.
 #[derive(Clone)]
-pub struct InodeHold(#[allow(dead_code)] Arc<Held>);
+pub struct InodeHold {
+    #[allow(dead_code)]
+    held: Arc<Held>,
+    #[allow(dead_code)]
+    with: Option<Carried>,
+}
+
+/// What an [`InodeHold`] carries for its holder.
+pub(crate) type Carried = Arc<dyn std::any::Any + Send + Sync>;
 
 impl InodeGuard {
     /// Done when the inode is being taken off the disk ([`InodeLocks::cancel`]).
@@ -215,8 +226,10 @@ impl InodeGuard {
         self.cancel.cancelled().await
     }
 
-    fn hold(&self) -> InodeHold {
-        InodeHold(Arc::clone(&self.held))
+    /// A share in the lock, for a blocking section started under it that is
+    /// not a fill's (the upload's commit and reads, `upload::steps::blocking_under`).
+    pub(crate) fn hold(&self) -> InodeHold {
+        InodeHold { held: Arc::clone(&self.held), with: None }
     }
 }
 
@@ -230,7 +243,14 @@ tokio::task_local! {
 /// locked until it ends, whether `work` is still there by then or was
 /// dropped.
 pub(crate) async fn holding<T>(guard: &InodeGuard, work: impl std::future::Future<Output = T>) -> T {
-    HELD.scope(guard.hold(), work).await
+    holding_with(guard, None, work).await
+}
+
+/// [`holding`], each share in the lock carrying `with` as well: the upload
+/// worker's count of the sections its rows have under way, so that its stop
+/// waits for a section of a fill a row started (`upload::steps::Sections`).
+pub(crate) async fn holding_with<T>(guard: &InodeGuard, with: Option<Carried>, work: impl std::future::Future<Output = T>) -> T {
+    HELD.scope(InodeHold { with, ..guard.hold() }, work).await
 }
 
 /// A share in the lock the calling work runs under, if it was started under

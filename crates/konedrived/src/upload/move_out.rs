@@ -60,7 +60,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use konedrive_fs::placeholder::{self, State};
 
+use konedrive_fs::handle::FileHandle;
+
 use super::engine::{Engine, Fail, Outcome};
+use super::steps::{blocking, off};
 use crate::folder::disk::Disk;
 use crate::helper::linked::Helper;
 use crate::helper::{reopen_for_writing, Clearance, HelperError};
@@ -145,15 +148,56 @@ impl Protection {
 /// examination recorded behind it — the object came back, and went on — supersedes it, and it
 /// goes), and the object is still proved to be outside this account's folder. `Some` is what the
 /// row does instead.
-async fn before_marker(e: &Engine, disk: &Disk, row: &OutboxRow, id: &str, object: &File) -> Result<Option<Outcome>, Fail> {
+async fn before_marker(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow, id: &str, object: &Arc<File>) -> Result<Option<Outcome>, Fail> {
     if let Some(outcome) = superseded(e, row, id).await? {
         return Ok(Some(outcome));
     }
-    let Some(path) = verified_path(object) else { return Ok(Some(Outcome::backoff(Reason::PlaceUnknown))) };
-    if root_path(disk).is_some_and(|root| path.starts_with(root)) {
-        return Ok(Some(Outcome::backoff(Reason::BackInside)));
-    }
-    Ok(None)
+    let (on, at) = (Arc::clone(disk), Arc::clone(object));
+    // Whether it is outside the folder; `None` where its place is not proved.
+    let outside = blocking(move || Ok(verified_path(&at).map(|path| !root_path(&on).is_some_and(|root| path.starts_with(root))))).await?;
+    Ok(match outside {
+        None => Some(Outcome::backoff(Reason::PlaceUnknown)),
+        Some(false) => Some(Outcome::backoff(Reason::BackInside)),
+        Some(true) => None,
+    })
+}
+
+/// [`verified_path`], off the runtime.
+async fn proved_path(object: &Arc<File>) -> Result<Option<PathBuf>, Fail> {
+    let object = Arc::clone(object);
+    blocking(move || Ok(verified_path(&object))).await
+}
+
+/// [`place_of`], off the runtime.
+async fn place(e: &Engine, disk: &Arc<Disk>, object: &Arc<File>, handle: &FileHandle) -> Result<Place, Fail> {
+    let (mo, disk, object, handle) = (e.moved_out().clone(), Arc::clone(disk), Arc::clone(object), handle.clone());
+    blocking(move || Ok(place_of(&mo, &disk, &object, &handle))).await
+}
+
+/// Whether nothing, or another object, stands where the row's object was last proved to be
+/// ([`absent_at`]). A place that was not kept proves nothing.
+async fn absent(place: Option<&Path>, handle: &FileHandle) -> Result<bool, Fail> {
+    let Some(place) = place.map(Path::to_owned) else { return Ok(false) };
+    let handle = handle.clone();
+    blocking(move || Ok(absent_at(&place, &handle))).await
+}
+
+/// [`in_another_folder`] for a row's last place, if it has one.
+async fn elsewhere_registered(mo: &MoveOuts, disk: &Arc<Disk>, place: Option<&Path>) -> Result<bool, Fail> {
+    let Some(place) = place.map(Path::to_owned) else { return Ok(false) };
+    let (mo, disk) = (mo.clone(), Arc::clone(disk));
+    blocking(move || Ok(in_another_folder(&mo, &disk, &place))).await
+}
+
+/// A file's state, read off the runtime.
+async fn state_of(file: &Arc<File>) -> Result<Result<Option<State>, placeholder::StateError>, Fail> {
+    let file = Arc::clone(file);
+    blocking(move || Ok(placeholder::read_state(&file))).await
+}
+
+/// Whether a file reads `hydrated`.
+async fn hydrated(file: &Arc<File>) -> Result<bool, Fail> {
+    Ok(matches!(state_of(file).await?, Ok(Some(State::Hydrated))))
 }
 
 /// A newer row of the same item (the examination's, behind this running one) supersedes it: this
@@ -185,8 +229,8 @@ fn last_place(row: &OutboxRow) -> Option<&Path> {
 
 /// Keeps where `object` is now, proved, as the row's last place. A name that is not UTF-8 is not
 /// kept: its `ESTALE` stays unproved.
-async fn remember_place(e: &Engine, row: &OutboxRow, object: &File) -> Result<(), Fail> {
-    let Some(path) = verified_path(object) else { return Ok(()) };
+async fn remember_place(e: &Engine, row: &OutboxRow, object: &Arc<File>) -> Result<(), Fail> {
+    let Some(path) = proved_path(object).await? else { return Ok(()) };
     let Some(text) = place_name(&path).filter(|t| row.target_name.as_deref() != Some(*t)) else { return Ok(()) };
     let (seq, text) = (row.seq, text.to_owned());
     Ok(e.store().call(move |s| s.outbox_set_target(seq, None, Some(&text))).await?)
@@ -209,9 +253,9 @@ impl Engine {
     /// into it), then filled through a descriptor of its own for writing, under the per-inode
     /// lock every fill takes. `Yes` only for a file that reads `hydrated` afterwards — the fill's
     /// commit point, after the whole content and its hash.
-    async fn make_local(&self, object: &File, shown: &Path) -> Result<Local, Fail> {
+    async fn make_local(&self, object: &Arc<File>, shown: &Path) -> Result<Local, Fail> {
         let mo = self.moved_out();
-        if matches!(placeholder::read_state(object), Ok(Some(State::Hydrated))) {
+        if hydrated(object).await? {
             return Ok(Local::Yes);
         }
         if let Err(e) = mo.helper.mark_file(object).await {
@@ -228,15 +272,15 @@ impl Engine {
         // Reopened before the lock: the reopen is an open like any other, and is let through at
         // once only as this daemon's own (F91). A fill it could wait for takes the same lock.
         let reopened = {
-            let object = object.try_clone()?;
-            super::steps::blocking(move || {
+            let object = Arc::clone(object);
+            blocking(move || {
                 let fd: OwnedFd = object.try_clone()?.into();
                 placeholder::with_owner_write(&object, || reopen_for_writing(&fd))
             })
             .await
         };
         let inode = self.cfg.locks.lock(InodeKey::of(object)?).await;
-        let state = placeholder::read_state(object).map_err(|e| Fail::Io(io::Error::other(e.to_string())))?;
+        let state = state_of(object).await?.map_err(|e| Fail::Io(io::Error::other(e.to_string())))?;
         let clearance = match state {
             Some(State::Hydrated) => return Ok(Local::Yes),
             Some(State::OnlineOnly) => None,
@@ -255,9 +299,11 @@ impl Engine {
             Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(Reason::NotOpened(Some(err.to_string()))))),
             Err(other) => return Err(other),
         };
-        // Under the lock: a section of the fill that outlives it keeps the inode locked.
-        match crate::folder::locks::holding(&inode, mo.filler.fill(writable, shown, clearance.as_ref())).await {
-            Ok(()) if matches!(placeholder::read_state(object), Ok(Some(State::Hydrated))) => Ok(Local::Yes),
+        // Under the lock: a section of the fill that outlives it keeps the inode locked, and
+        // the worker's stop waits for it.
+        let counted = super::steps::share().await;
+        match crate::folder::locks::holding_with(&inode, counted, mo.filler.fill(writable, shown, clearance.as_ref())).await {
+            Ok(()) if hydrated(object).await? => Ok(Local::Yes),
             Ok(()) => Ok(Local::No(Outcome::backoff(Reason::NotLocal))),
             Err(e) => {
                 tracing::info!("{} could not be downloaded before its item leaves OneDrive: errno {}", shown.display(), e.errno());
@@ -278,7 +324,7 @@ impl Engine {
     /// nothing marks it (Z3). Each row is marked once per helper connection
     /// ([`Protection::helper_back`]); an answer that may change (`EAGAIN`, a helper that does not
     /// answer) leaves it for the next look.
-    pub(super) async fn protect(&self, disk: &Disk) {
+    pub(super) async fn protect(&self, disk: &Arc<Disk>) {
         let Some(mo) = self.cfg.moved_out.as_ref() else { return };
         let Ok(rows) = self.store().call(|s| s.outbox_move_outs()).await else { return };
         let mut ids = HashSet::new();
@@ -305,7 +351,7 @@ impl Engine {
             }
             let Some(handle) = row.inode.as_ref().and_then(|i| i.handle.clone()) else { continue };
             let object = match mo.helper.open_by_handle(&root, &handle).await {
-                Ok(object) => File::from(object),
+                Ok(object) => Arc::new(File::from(object)),
                 // Gone, not the user's to have, or no handle: nothing to mark. The row decides.
                 Err(HelperError::Refused(libc::ESTALE | libc::EPERM | libc::EINVAL)) => {
                     self.protection().marked.insert(row.seq);
@@ -326,7 +372,7 @@ impl Engine {
             }
             let marked = if object.metadata().is_ok_and(|m| m.is_dir()) {
                 self.mark_tree(&object).await
-            } else if matches!(placeholder::read_state(&object), Ok(Some(State::Hydrated))) {
+            } else if hydrated(&object).await.unwrap_or(false) {
                 Ok(())
             } else {
                 mo.helper.mark_file(&object).await
@@ -344,21 +390,24 @@ impl Engine {
     /// `MarkDir` for a moved-out directory and every directory below it, whatever it holds: the
     /// marks it took along are gone once the helper restarts. The first failure is the answer,
     /// and the row is marked again at the next look.
-    async fn mark_tree(&self, object: &File) -> Result<(), HelperError> {
+    async fn mark_tree(&self, object: &Arc<File>) -> Result<(), HelperError> {
         let mo = self.moved_out();
         mo.helper.mark_dir(object).await?;
         let unreadable = |what: &str| HelperError::Io(format!("a moved-out directory cannot be {what}"));
-        let top = verified_path(object).and_then(|path| reopen_dir(&path, object).ok().flatten()).ok_or_else(|| unreadable("found by its path"))?;
-        let top2 = top.try_clone().map_err(|e| HelperError::Io(e.to_string()))?;
-        let met = super::steps::blocking(move || walk(&top2)).await.map_err(|_| unreadable("walked"))?;
-        for m in met.iter().filter(|m| m.is_dir) {
-            let dir = open_met(&top, m).map_err(|e| HelperError::Io(e.to_string()))?;
+        let at = Arc::clone(object);
+        let top = off(move || Ok(verified_path(&at).and_then(|path| reopen_dir(&path, &at).ok().flatten()))).await.ok().flatten();
+        let top = Arc::new(top.ok_or_else(|| unreadable("found by its path"))?);
+        let below = Arc::clone(&top);
+        let met = blocking(move || walk(&below)).await.map_err(|_| unreadable("walked"))?;
+        for m in met.into_iter().filter(|m| m.is_dir) {
+            let below = Arc::clone(&top);
+            let dir = off(move || open_met(&below, &m)).await.map_err(|e| HelperError::Io(e.to_string()))?;
             mo.helper.mark_dir(&dir).await?;
         }
         Ok(())
     }
 
-    async fn unmark(&self, disk: &Disk, dir: &File) {
+    async fn unmark(&self, disk: &Arc<Disk>, dir: &Arc<File>) {
         unmark(self.moved_out(), disk, dir).await;
     }
 }
@@ -366,19 +415,20 @@ impl Engine {
 /// `UnmarkDir`, but never for a directory beneath a registered folder, wherever it went
 /// meanwhile. A mark left behind costs a round trip per open, which the helper lets through (the
 /// files are ordinary now); it goes with the helper's next start.
-async fn unmark(mo: &MoveOuts, disk: &Disk, dir: &File) {
-    match verified_path(dir) {
-        Some(path) if !beneath_a_root(mo, disk, &path) => {
-            if let Err(err) = mo.helper.unmark_dir(dir).await {
-                tracing::debug!("a moved-out directory keeps its mark: {err}");
-            }
+async fn unmark(mo: &MoveOuts, disk: &Arc<Disk>, dir: &Arc<File>) {
+    let (registered, on, at) = (mo.clone(), Arc::clone(disk), Arc::clone(dir));
+    let outside = off(move || Ok(verified_path(&at).is_some_and(|path| !beneath_a_root(&registered, &on, &path)))).await;
+    if outside.unwrap_or(false) {
+        if let Err(err) = mo.helper.unmark_dir(dir).await {
+            tracing::debug!("a moved-out directory keeps its mark: {err}");
         }
-        _ => tracing::info!("a directory that left the folder is in a folder again, or cannot be placed: it stays marked"),
+    } else {
+        tracing::info!("a directory that left the folder is in a folder again, or cannot be placed: it stays marked");
     }
 }
 
 /// A `move-out` row's step.
-pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
+pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let Some(mo) = e.cfg.moved_out.as_ref() else {
         return Ok(Outcome::later(Reason::MoveOut, Duration::from_secs(3600)));
     };
@@ -387,7 +437,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     };
     let root = disk.dir(Path::new(""))?;
     let object = match mo.helper.open_by_handle(&root, &handle).await {
-        Ok(object) => File::from(object),
+        Ok(object) => Arc::new(File::from(object)),
         // Every decode failure is `ESTALE`: believed only for handles taken on the filesystem the
         // folder is on now.
         Err(HelperError::Refused(libc::ESTALE)) if !handles_current_async(e.store(), &root).await => {
@@ -401,12 +451,12 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         }
         // ...and with its evidence: nothing, or another object, where it was last proved to be. An
         // inode that cannot be read says `ESTALE` every time, and stands there.
-        Err(HelperError::Refused(libc::ESTALE)) if !last_place(&row).is_some_and(|p| absent_at(p, &handle)) => {
+        Err(HelperError::Refused(libc::ESTALE)) if !absent(last_place(&row), &handle).await? => {
             return Ok(Outcome::backoff(Reason::GoneUnproved));
         }
         // Last proved inside another account's folder: that account may have taken it for none
         // of its own. Nothing is deleted in OneDrive.
-        Err(HelperError::Refused(libc::ESTALE)) if last_place(&row).is_some_and(|p| in_another_folder(mo, disk, p)) => {
+        Err(HelperError::Refused(libc::ESTALE)) if elsewhere_registered(mo, disk, last_place(&row)).await? => {
             return kept(e, &row, &id).await;
         }
         Err(HelperError::Refused(libc::ESTALE)) => return gone(e, disk, &row, &id).await,
@@ -415,7 +465,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         // The same object, where it was last proved to be inside another account's folder, with
         // no item id: that account's examination took it for its own, and uploads it (review
         // m5). Still not "gone": nothing is deleted in OneDrive, and the item comes back here.
-        Err(HelperError::Refused(libc::EPERM)) if stands_in_another_folder(mo, disk, &row, &handle) => {
+        Err(HelperError::Refused(libc::EPERM)) if stands_in_another_folder(mo, disk, &row, &handle).await? => {
             return kept(e, &row, &id).await;
         }
         // Never "gone" (F90): kept, and asked again now and then.
@@ -428,13 +478,17 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             return Ok(Outcome::backoff(Reason::NoHelper));
         }
     };
-    if item_id_of(&object).as_deref() != Some(id.as_str()) {
+    let carried = {
+        let object = Arc::clone(&object);
+        blocking(move || Ok(item_id_of(&object))).await?
+    };
+    if carried.as_deref() != Some(id.as_str()) {
         // The helper hands over only an object carrying an item id: another one's is no answer.
         return Ok(Outcome::blocked(Reason::AnotherItem));
     }
     remember_place(e, &row, &object).await?;
     let is_dir = object.metadata()?.is_dir();
-    match place_of(e, disk, &object, &handle) {
+    match place(e, disk, &object, &handle).await? {
         // A marker stays: what it took off may be taken off already.
         Place::Inside => {
             if let Some(outcome) = superseded(e, &row, &id).await? {
@@ -452,7 +506,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             }
         }
         Place::Trash(_) | Place::Elsewhere(_) => {
-            let shown = verified_path(&object).unwrap_or_else(|| e.cfg.root.path.join(&row.rel));
+            let shown = proved_path(&object).await?.unwrap_or_else(|| e.cfg.root.path.join(&row.rel));
             if is_dir {
                 elsewhere_folder(e, disk, &row, &id, object, &shown).await
             } else {
@@ -460,9 +514,4 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             }
         }
     }
-}
-
-/// `f` on a blocking thread.
-async fn off<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
-    tokio::task::spawn_blocking(f).await.map_err(io::Error::other)?
 }

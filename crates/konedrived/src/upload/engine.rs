@@ -110,6 +110,9 @@ pub(super) struct Shared {
     cancel_after: i64,
 }
 
+#[cfg(test)]
+pub(super) type RecordHook = Box<dyn FnOnce(std::sync::mpsc::Receiver<()>) + Send>;
+
 pub(crate) struct Engine {
     pub(super) cfg: WorkerConfig,
     shared: Mutex<Shared>,
@@ -119,6 +122,14 @@ pub(crate) struct Engine {
     /// What the pending `move-out` rows name, re-marked on this helper
     /// connection.
     protection: Mutex<super::move_out::Protection>,
+    /// The blocking sections the rows in flight have under way, the askings
+    /// of the write gate among them: a stop waits for them.
+    pub(super) sections: super::steps::Sections,
+    /// Run once inside the next section that changes the folder and records
+    /// it, between the two, with a receiver that ends when the row's task is
+    /// dropped.
+    #[cfg(test)]
+    pub(super) record_hook: Mutex<Option<RecordHook>>,
     /// One quota read at a time: refusals of rows running together share it.
     pub(super) quota_lock: tokio::sync::Mutex<()>,
     /// The counts are wanted again though the outbox did not change (OneDrive
@@ -129,11 +140,6 @@ pub(crate) struct Engine {
     /// worker's run ends once the rows in flight have. For good: a worker
     /// closed is not started again.
     closing: CancellationToken,
-    /// Held, for reading, by every asking of the write gate while it runs on its blocking
-    /// thread ([`may_write`](Self::may_write)): a row cut off while it waits for the answer
-    /// leaves the asking running, and the drain that cut it waits here until it has ended
-    /// ([`gate_idle`](Self::gate_idle)).
-    gate_running: Arc<tokio::sync::RwLock<()>>,
 }
 
 /// The `user.konedrive.sync` value for a row's file (§9).
@@ -182,10 +188,12 @@ impl Engine {
             wake: Notify::new(),
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
+            sections: super::steps::Sections::default(),
+            #[cfg(test)]
+            record_hook: Mutex::new(None),
             quota_lock: tokio::sync::Mutex::new(()),
             recount: Notify::new(),
             closing: CancellationToken::new(),
-            gate_running: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -218,6 +226,14 @@ impl Engine {
 
     pub(super) fn store(&self) -> &Store {
         &self.cfg.store
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_record(&self, row_dropped: std::sync::mpsc::Receiver<()>) {
+        let hook = self.record_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(row_dropped);
+        }
     }
 
     pub(super) fn fault(&self, fault: Fault) -> Result<(), Fail> {
@@ -387,9 +403,10 @@ impl Engine {
     /// The host's write gate ([`OutboxHost::may_write`](super::OutboxHost::may_write)), asked
     /// on a blocking thread, as one section: the answer takes reading `config.toml` again.
     /// The section is awaited here; where the asking task is cut off instead (a row between
-    /// two fragments, at a stop), [`gate_idle`](Self::gate_idle) waits for it.
+    /// two fragments, at a stop), the drain that cut it waits for the section as for any
+    /// other of the worker's ([`Sections::ended`](super::steps::Sections::ended)).
     pub(super) async fn may_write(&self) -> Result<(), String> {
-        let running = Arc::clone(&self.gate_running).read_owned().await;
+        let running = self.sections.running().await;
         let host = Arc::clone(&self.cfg.host);
         let asked = tokio::task::spawn_blocking(move || {
             let _running = running;
@@ -400,12 +417,6 @@ impl Engine {
             Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
             Err(_) => Err("the daemon is stopping".into()),
         }
-    }
-
-    /// Ends once no asking of the write gate is running: after the rows were cut off, so
-    /// that a stop does not return while one of them still writes the folder's note.
-    pub(super) async fn gate_idle(&self) {
-        drop(self.gate_running.write().await);
     }
 
     /// The write gate, asked again before every row (`docs/design/writes.md` §2.3): the

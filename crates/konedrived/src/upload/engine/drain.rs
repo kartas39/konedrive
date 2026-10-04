@@ -104,7 +104,7 @@ impl Engine {
                             let handle = set.spawn(async move {
                                 // The row holds its slot for all it sends, every fragment.
                                 let mut slot = slot;
-                                let outcome = crate::upload::steps::run(&engine, &disk, claimed).await;
+                                let outcome = engine.sections.of(crate::upload::steps::run(&engine, &disk, claimed)).await;
                                 if matches!(outcome, Outcome::Done) {
                                     slot.succeeded();
                                 }
@@ -138,8 +138,9 @@ impl Engine {
                 _ = self.wake.notified() => {}
                 _ = cancel.cancelled() => {
                     set.shutdown().await;
-                    // A row cut off at the write gate leaves its asking running.
-                    self.gate_idle().await;
+                    // A row dropped while it waited for a blocking section: the
+                    // section ends before the worker has stopped.
+                    self.sections.ended().await;
                     self.shared().in_flight.clear();
                     break;
                 }

@@ -5,6 +5,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::Arc;
 
 use konedrive_fs::placeholder::{self, State};
 use nix::fcntl::AtFlags;
@@ -106,23 +107,31 @@ impl Tidy<'_> {
     /// another link or being filled, and anything the helper cannot reach now, is left as it is.
     /// Local only: nothing is sent.
     pub(crate) async fn dropped(&self, rows: &[OutboxRow]) {
-        let Ok(disk) = Disk::open(self.root, false) else { return };
+        let registered = self.root.clone();
+        let Ok(disk) = off(move || Disk::open(&registered, false)).await.map(Arc::new) else { return };
         let Ok(root) = disk.dir(Path::new("")) else { return };
         for row in rows.iter().filter(|r| r.kind == OutboxKind::MoveOut) {
             let (Some(id), Some(handle)) = (row.item_id.as_deref(), row.inode.as_ref().and_then(|i| i.handle.as_ref())) else { continue };
             let object = match self.mo.helper.open_by_handle(&root, handle).await {
-                Ok(object) => File::from(object),
+                Ok(object) => Arc::new(File::from(object)),
                 Err(HelperError::Refused(libc::ESTALE | libc::EPERM)) => continue,
                 Err(err) => {
                     tracing::warn!("what left the folder as {} is left as it is, not reached: {err}", row.rel.display());
                     continue;
                 }
             };
-            if item_id_of(&object).as_deref() != Some(id) {
-                continue;
-            }
-            let Some(path) = verified_path(&object).filter(|p| !beneath_a_root(self.mo, &disk, p)) else { continue };
-            let entry = trash_of(&path, self.mo.home_trash.as_deref(), nix::unistd::geteuid().as_raw(), &is_mount_point).filter(real_trash);
+            // Whether it is the item's, and where it is: outside every folder, in a Trash or not.
+            let (mo, on, at, item) = (self.mo.clone(), Arc::clone(&disk), Arc::clone(&object), id.to_owned());
+            let placed = off(move || {
+                if item_id_of(&at).as_deref() != Some(item.as_str()) {
+                    return Ok(None);
+                }
+                let Some(path) = verified_path(&at).filter(|p| !beneath_a_root(&mo, &on, p)) else { return Ok(None) };
+                let entry = trash_of(&path, mo.home_trash.as_deref(), nix::unistd::geteuid().as_raw(), &is_mount_point).filter(real_trash);
+                Ok(Some((path, entry)))
+            })
+            .await;
+            let Ok(Some((path, entry))) = placed else { continue };
             match self.tidy(&disk, id, object, &path, entry.as_ref()).await {
                 Ok(()) => tracing::info!("{} stays in OneDrive: what had left the folder is tidied at {}", row.rel.display(), path.display()),
                 Err(err) => tracing::warn!("what left the folder as {} is left as it is: {err}", row.rel.display()),
@@ -130,7 +139,7 @@ impl Tidy<'_> {
         }
     }
 
-    async fn tidy(&self, disk: &Disk, id: &str, object: File, path: &Path, entry: Option<&TrashEntry>) -> io::Result<()> {
+    async fn tidy(&self, disk: &Arc<Disk>, id: &str, object: Arc<File>, path: &Path, entry: Option<&TrashEntry>) -> io::Result<()> {
         let mut inside: HashSet<String> =
             { let folder = id.to_owned(); self.store.call(move |s| s.descendants(Table::Items, &folder)).await }.map_err(|_| io::Error::other("the base cannot be read"))?.into_iter().collect();
         inside.insert(id.to_owned());
@@ -164,16 +173,18 @@ impl Tidy<'_> {
                     _ => {}
                 }
             }
-            Ok(Some((top, met, inside)))
+            Ok(Some((Arc::new(top), met, inside)))
         })
         .await?;
         let Some((top, met, inside)) = walked else { return Ok(()) };
         for m in met.iter().rev().filter(|m| m.is_dir && m.id.as_ref().is_some_and(|i| inside.contains(i))) {
-            let dir = open_met(&top, m)?;
+            let (below, met) = (Arc::clone(&top), m.clone());
+            let dir = Arc::new(off(move || open_met(&below, &met)).await?);
             unmark(self.mo, disk, &dir).await;
-            let parent = dir_below(&top, m.dir())?;
+            let (below, in_dir) = (Arc::clone(&top), m.dir().to_owned());
             let name = m.rel.file_name().map(OsStr::to_os_string);
             off(move || {
+                let parent = dir_below(&below, &in_dir)?;
                 strip(&dir)?;
                 if let Some(name) = name {
                     remove_empty_dir(&dir, &parent, &name);
