@@ -54,12 +54,12 @@ impl LocalSpace {
 
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {
-        self.task.lock().unwrap().as_ref().is_some_and(|task| !task.is_finished())
+        crate::panic::lock(&self.task).as_ref().is_some_and(|task| !task.is_finished())
     }
 
     /// Stops the walker, if one runs; the next kick starts another.
     pub fn stop(&self) {
-        if let Some(task) = self.task.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(task) = crate::panic::lock(&self.task).take() {
             task.abort();
         }
     }
@@ -71,7 +71,7 @@ impl LocalSpace {
             return;
         }
         {
-            let mut task = self.task.lock().unwrap();
+            let mut task = crate::panic::lock(&self.task);
             if task.is_none() {
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                     let (kick, state, measure) = (Arc::clone(&self.kick), self.state.clone(), Arc::clone(&self.measure));

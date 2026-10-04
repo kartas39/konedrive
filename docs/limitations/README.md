@@ -280,6 +280,8 @@ application must never read zeros where real content should be.
 - [F278](F278.md) — Where the one pass over the folder still differs by scope, and where the mode is still asked outside its questions
 - [F279](F279.md) — What an examination says in Activity is written after its rows, in a call of its own
 - [F281](F281.md) — A line of the "not uploaded" list inside a place that cannot be read stays until the place is read again
+- [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
+- [F291](F291.md) — What a pin worker does when it ends by a panic is not tested, and rests on how tokio drops a task
 
 ---
 
@@ -411,6 +413,7 @@ application must never read zeros where real content should be.
 - [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 - [D53](D53.md) — The enumeration of local acts is held to a small model of the rule, a second writing of it; what the examination's four parts left as it was
 - [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but `local/` and the helper keep their own
+- [D58](D58.md) — The rule for locks is not asked of `local/`, of the helper or of test doubles, and the wall clock is still read in `local/` by itself
 
 ---
 

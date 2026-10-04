@@ -214,7 +214,7 @@ impl SyncService {
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
         self.outbox_store()?;
-        if let Some(kept) = self.running().and_then(|running| running.kept_back.lock().unwrap().clone()) {
+        if let Some(kept) = self.running().and_then(|running| crate::panic::lock(&running.kept_back).clone()) {
             return Ok(kept);
         }
         let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
@@ -449,7 +449,7 @@ impl OutboxHost for Host {
 
     /// `NotUploadedSummary()`'s answer from now on.
     fn kept_back(&self, summary: &[SummaryRow]) {
-        *self.kept_back.lock().unwrap() = Some(summary.to_vec());
+        *crate::panic::lock(&self.kept_back) = Some(summary.to_vec());
     }
 
     /// `PendingCount`, `PendingBytes`, `BlockedCount` and `Uploads`; and the folder's note
@@ -469,7 +469,7 @@ impl OutboxHost for Host {
             s.outbox.space_waiting_bytes = status.counts.space_waiting_bytes;
             s.outbox.too_big_count = status.counts.too_big;
             s.outbox.too_big_bytes = status.counts.too_big_bytes;
-            let now = crate::status::activity::unix_now();
+            let now = crate::clock::unix_now();
             if let Some(note) = OutboxNote::after_worker(&s.outbox.note, status.folder_closed.as_deref(), status.throttled_until, now) {
                 s.outbox.note = note;
             }

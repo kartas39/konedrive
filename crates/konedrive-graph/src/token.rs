@@ -101,18 +101,18 @@ impl TokenManager {
     }
 
     pub fn set_oauth(&self, oauth: Option<OAuthClient>) {
-        *self.oauth.lock().unwrap() = oauth;
+        *crate::lock(&self.oauth) = oauth;
     }
 
     /// What each refreshed token turns out to be valid for is told to `hook`. It runs with
     /// the refresh lock held: it must not ask for a token.
     pub fn set_on_granted(&self, hook: GrantedHook) {
-        *self.on_granted.lock().unwrap() = Some(hook);
+        *crate::lock(&self.on_granted) = Some(hook);
     }
 
     /// What a refresh asks for now: the installed client's scope, read-only without one.
     fn asked(&self) -> &'static str {
-        self.oauth.lock().unwrap().as_ref().map_or(SCOPES, OAuthClient::scope)
+        crate::lock(&self.oauth).as_ref().map_or(SCOPES, OAuthClient::scope)
     }
 
     /// Caches the access token obtained at sign-in, as asked for with what a refresh asks
@@ -129,24 +129,24 @@ impl TokenManager {
     }
 
     fn set_own(&self, response: &TokenResponse, asked: &'static str) {
-        *self.cached.lock().unwrap() = Slots { own: Some(Cached::from_response(response, asked)), read_only: None };
+        *crate::lock(&self.cached) = Slots { own: Some(Cached::from_response(response, asked)), read_only: None };
     }
 
     fn clear(&self) {
-        *self.cached.lock().unwrap() = Slots::default();
+        *crate::lock(&self.cached) = Slots::default();
     }
 
     /// The account's own cached token and its scope, if it is fresh and was asked for under
     /// `asked`.
     fn fresh_own(&self, asked: &'static str) -> Option<(String, String)> {
-        let slots = self.cached.lock().unwrap();
+        let slots = crate::lock(&self.cached);
         slots.own.as_ref().filter(|c| c.fresh() && c.asked == asked).map(|c| (c.token.clone(), c.scope.clone()))
     }
 
     /// A cached token that can change nothing, if there is a fresh one: the account's own
     /// when it is read-only, otherwise the one kept for `read_only_token`.
     fn fresh_read_only(&self) -> Option<String> {
-        let slots = self.cached.lock().unwrap();
+        let slots = crate::lock(&self.cached);
         let usable = |c: &&Cached| c.fresh() && is_read_only(&c.scope);
         let found = slots.own.as_ref().filter(usable).or(slots.read_only.as_ref().filter(usable));
         found.map(|c| c.token.clone())
@@ -207,10 +207,10 @@ impl TokenManager {
         if let Some(own) = self.fresh_own(self.asked()) {
             return Ok(own);
         }
-        let oauth = self.oauth.lock().unwrap().clone().ok_or(AuthError::SignedOut)?;
+        let oauth = crate::lock(&self.oauth).clone().ok_or(AuthError::SignedOut)?;
         let (response, granted) = self.refresh_with(&oauth).await?;
-        self.cached.lock().unwrap().own = Some(Cached::from_response(&response, oauth.scope()));
-        let hook = self.on_granted.lock().unwrap().clone();
+        crate::lock(&self.cached).own = Some(Cached::from_response(&response, oauth.scope()));
+        let hook = crate::lock(&self.on_granted).clone();
         if let Some(hook) = hook {
             hook(oauth.scope(), &granted);
         }
@@ -238,14 +238,14 @@ impl TokenManager {
         if let Some(token) = self.fresh_read_only() {
             return Ok(token);
         }
-        let oauth = self.oauth.lock().unwrap().clone().ok_or(AuthError::SignedOut)?.with_scope(SCOPES);
+        let oauth = crate::lock(&self.oauth).clone().ok_or(AuthError::SignedOut)?.with_scope(SCOPES);
         let (response, granted) = self.refresh_with(&oauth).await?;
         if !is_read_only(&granted) {
             return Err(AuthError::Transient(format!(
                 "Microsoft answered a request for a read-only token with one valid for {granted:?}; it is not handed out"
             )));
         }
-        self.cached.lock().unwrap().read_only = Some(Cached::from_response(&response, SCOPES));
+        crate::lock(&self.cached).read_only = Some(Cached::from_response(&response, SCOPES));
         Ok(response.access_token)
     }
 

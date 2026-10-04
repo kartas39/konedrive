@@ -385,7 +385,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
 #[tokio::test]
 async fn last_checked_moves_only_when_a_cycle_succeeds() {
     let s = World::read_only().await;
-    let before = activity::unix_now();
+    let before = crate::clock::unix_now();
     let listing = listed(&s).await;
     let checked = s.state.get().cycle.last_checked;
     assert!(checked >= before, "{checked} < {before}");

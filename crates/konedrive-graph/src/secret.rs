@@ -44,17 +44,17 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn with_token(token: &str) -> Self {
         let store = Self::default();
-        *store.token.lock().unwrap() = Some(token.to_owned());
+        *crate::lock(&store.token) = Some(token.to_owned());
         store
     }
 
     /// Simulates a locked wallet whose unlock prompt the user refuses.
     pub fn set_locked(&self, locked: bool) {
-        *self.locked.lock().unwrap() = locked;
+        *crate::lock(&self.locked) = locked;
     }
 
     pub fn current(&self) -> Option<String> {
-        self.token.lock().unwrap().clone()
+        crate::lock(&self.token).clone()
     }
 }
 
@@ -62,23 +62,23 @@ impl MemoryStore {
 #[async_trait]
 impl SecretStore for MemoryStore {
     async fn exists(&self) -> Result<bool, SecretError> {
-        Ok(self.token.lock().unwrap().is_some())
+        Ok(crate::lock(&self.token).is_some())
     }
 
     async fn load(&self) -> Result<Option<String>, SecretError> {
-        if *self.locked.lock().unwrap() {
+        if *crate::lock(&self.locked) {
             return Err(SecretError::Locked);
         }
-        Ok(self.token.lock().unwrap().clone())
+        Ok(crate::lock(&self.token).clone())
     }
 
     async fn store(&self, refresh_token: &str) -> Result<(), SecretError> {
-        *self.token.lock().unwrap() = Some(refresh_token.to_owned());
+        *crate::lock(&self.token) = Some(refresh_token.to_owned());
         Ok(())
     }
 
     async fn delete(&self) -> Result<(), SecretError> {
-        *self.token.lock().unwrap() = None;
+        *crate::lock(&self.token) = None;
         Ok(())
     }
 }

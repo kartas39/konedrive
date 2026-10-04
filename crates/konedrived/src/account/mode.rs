@@ -196,7 +196,7 @@ impl AccountService {
                 }
             }
         }
-        let uploads = self.uploads.lock().unwrap().as_ref().and_then(Weak::upgrade);
+        let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
         if self.configured_mode() == Mode::ReadOnly {
             // Read-only already, changes may still wait: a switch nobody forced kept them.
             // Forced, they go now — the way out a Forget and a Remove refused

@@ -30,7 +30,6 @@ use std::sync::Arc;
 use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity;
 use crate::status::report::Report;
 use super::materialize::{Applied, ApplyError, Claimed};
 use crate::hydration::pin::Pins;
@@ -392,7 +391,7 @@ impl Listing {
         }
         // `LastChecked`: this cycle succeeded. Kept in the store,
         // so a restart still knows when the folder was last in step.
-        let now = activity::unix_now();
+        let now = crate::clock::unix_now();
         self.on_store(turn, move |s| s.set_last_checked(now)).await?;
         self.ctx.state.update(|s| s.cycle.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
@@ -487,7 +486,7 @@ impl Listing {
             if !self.drive_recorded.swap(true, Ordering::SeqCst) {
                 // Written by the next reconcile, which holds the lifecycle
                 // lock anyway: the Graph phase never waits for it (B3).
-                *self.pending_drive.lock().unwrap() = Some((record.clone(), id));
+                *crate::panic::lock(&self.pending_drive) = Some((record.clone(), id));
             }
         }
         Ok(())

@@ -208,7 +208,7 @@ impl AccountService {
         self.save_cache(|info| {
             info.display_name = display_name.clone();
             info.email = email.clone();
-            info.fetched_at = unix_now();
+            info.fetched_at = u64::try_from(crate::clock::unix_now()).unwrap_or(0);
             info.granted_scopes = granted_scopes;
             info.drive_id = drive.id.clone();
         });
@@ -232,7 +232,7 @@ impl AccountService {
         // reason. A drive that is not the recorded one turns a read-write account read-only.
         self.recompute_mode();
         // The folder's outbox decides by the quota just read whether OneDrive is still full.
-        let uploads = self.uploads.lock().unwrap().as_ref().and_then(Weak::upgrade);
+        let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
         if let Some(uploads) = uploads {
             uploads.quota_read(&drive.quota);
         }

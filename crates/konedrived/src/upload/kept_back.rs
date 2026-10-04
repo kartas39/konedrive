@@ -38,7 +38,7 @@ pub fn group_of(key: &str, blocked: bool) -> Group {
     let known = known_group(key);
     if known.is_none() {
         static LOGGED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-        let mut logged = LOGGED.lock().unwrap_or_else(|p| p.into_inner());
+        let mut logged = crate::panic::lock(&LOGGED);
         if logged.len() < UNKNOWN_LOGGED && logged.insert(key.to_owned()) {
             let shown = if blocked { "per file" } else { "waiting" };
             tracing::warn!("a change is kept back for a reason not in the table: {key:?}; shown as {shown}");

@@ -33,10 +33,16 @@ impl OutboxChanges {
         self.generation.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// The changed rows, locked; also after a holder of the lock panicked: each change of
+    /// them is one insert, one flag set or one take, so they are whole either way.
+    fn dirty(&self) -> std::sync::MutexGuard<'_, (HashSet<i64>, bool)> {
+        self.dirty.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn touched(&self, seq: Option<i64>) {
         self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(seq) = seq {
-            let mut dirty = self.dirty.lock().unwrap_or_else(|p| p.into_inner());
+            let mut dirty = self.dirty();
             if dirty.0.len() < DIRTY_MAX {
                 dirty.0.insert(seq);
             } else {
@@ -48,7 +54,7 @@ impl OutboxChanges {
     /// The outbox rows written or removed since the last call: `None` when
     /// too many to remember (look at them all).
     pub fn take_dirty(&self) -> Option<HashSet<i64>> {
-        let mut dirty = self.dirty.lock().unwrap_or_else(|p| p.into_inner());
+        let mut dirty = self.dirty();
         let (seqs, overflow) = std::mem::take(&mut *dirty);
         (!overflow).then_some(seqs)
     }

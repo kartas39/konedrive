@@ -332,6 +332,27 @@ impl Queue {
     }
 }
 
+/// The worker's place in [`Queue::working`], for a worker that ends by a panic: nothing
+/// is left marked as worked on. What waited and what was downloading is forgotten (the
+/// downloads end with the worker), and a sweep is owed, which queues it all again.
+/// A worker that ends by itself has cleared the mark under the lock, and is not touched
+/// here: another may run by then.
+struct Worker<'a>(&'a Pins);
+
+impl Drop for Worker<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        // Nothing is published here: a panic in a drop during a panic ends the process.
+        let mut queue = crate::panic::lock(&self.0.queue);
+        queue.drain();
+        queue.known.clear();
+        queue.working = false;
+        self.0.resweep.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A slot asked for, in [`Pins::work`]: waits for it, or for ever when none is asked for.
 async fn granted(asked: &mut Option<Pin<Box<Acquire>>>) -> Slot {
     match asked {
@@ -357,7 +378,7 @@ struct SweepGuard<'a>(&'a Mutex<Explicit>);
 
 impl Drop for SweepGuard<'_> {
     fn drop(&mut self) {
-        let mut explicit = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut explicit = crate::panic::lock(self.0);
         explicit.sweeping -= 1;
         if explicit.sweeping == 0 {
             explicit.journal.clear();
@@ -413,7 +434,7 @@ impl Pins {
 
     /// How many items have a pin of their own, as far as is known.
     pub fn count(&self) -> usize {
-        self.explicit.lock().unwrap().set.len()
+        crate::panic::lock(&self.explicit).set.len()
     }
 
     /// Whether a sweep is owed since a pinned download failed; asking
@@ -424,7 +445,7 @@ impl Pins {
 
     /// Every file pending or downloading now, sorted.
     pub fn queued(&self) -> Vec<PathBuf> {
-        let mut all: Vec<PathBuf> = self.queue.lock().unwrap().known.iter().cloned().collect();
+        let mut all: Vec<PathBuf> = crate::panic::lock(&self.queue).known.iter().cloned().collect();
         all.sort();
         all
     }
@@ -433,7 +454,7 @@ impl Pins {
     /// now — a file given twice, or pending or downloading already, is not counted
     /// again. Starts a worker when none runs.
     pub fn add(self: &Arc<Self>, files: Vec<Wanted>) -> u32 {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = crate::panic::lock(&self.queue);
         let mut added = 0u32;
         for (file, bytes) in files {
             if queue.known.insert(file.clone()) {
@@ -485,14 +506,14 @@ impl Pins {
     /// forgotten, or another registered, while it walked: what it found is
     /// not about the folder there is now, and nothing comes of it.
     pub async fn sweep(self: &Arc<Self>, root: PathBuf) -> u32 {
-        self.explicit.lock().unwrap().sweeping += 1;
+        crate::panic::lock(&self.explicit).sweeping += 1;
         // Counted off however this ends, a dropped future included.
         let _sweeping = SweepGuard(&self.explicit);
         let walked = root.clone();
         let swept = tokio::task::spawn_blocking(move || sweep_walk(&walked)).await;
         let current = self.state.get().folder.root_path == root.display().to_string();
         let swept = {
-            let mut explicit = self.explicit.lock().unwrap();
+            let mut explicit = crate::panic::lock(&self.explicit);
             match swept {
                 Ok(swept) if current => {
                     // What the walk found, with every change made while it
@@ -535,7 +556,7 @@ impl Pins {
     }
 
     fn change(&self, path: PathBuf, on: bool) {
-        let mut explicit = self.explicit.lock().unwrap();
+        let mut explicit = crate::panic::lock(&self.explicit);
         if on {
             explicit.set.insert(path.clone());
         } else {
@@ -554,16 +575,16 @@ impl Pins {
         // The queue first: a download cancelled below gives its slot back,
         // and nothing may be left for the slot to take.
         {
-            let mut queue = self.queue.lock().unwrap();
+            let mut queue = crate::panic::lock(&self.queue);
             queue.drain();
             queue.known.clear();
             self.publish_waiting(&queue);
         }
         // A worker waiting for a slot looks again, and gives up the slots it asked for.
         self.wake.notify_one();
-        std::mem::take(&mut *self.cancel.lock().unwrap()).cancel();
+        std::mem::take(&mut *crate::panic::lock(&self.cancel)).cancel();
         self.resweep.store(false, Ordering::SeqCst);
-        let mut explicit = self.explicit.lock().unwrap();
+        let mut explicit = crate::panic::lock(&self.explicit);
         explicit.set.clear();
         explicit.journal.clear();
         self.publish(&explicit.set);
@@ -584,6 +605,8 @@ impl Pins {
     /// Takes files off the queue and downloads them, each in a slot of the
     /// account's transfer pool, until the queue is empty and nothing downloads.
     async fn work(self: Arc<Self>, filler: Weak<dyn PinFill>) {
+        // Before the downloads, so that they are dropped first.
+        let _worker = Worker(&self);
         let mut running = JoinSet::new();
         // A slot asked for the next small file, and one for the next large file.
         let mut asked: [Option<Pin<Box<Acquire>>>; 2] = [None, None];
@@ -592,7 +615,7 @@ impl Pins {
             // Only while a file waits is a slot asked for, so that the pool sees work
             // queued exactly when there is some.
             let waiting = {
-                let mut queue = self.queue.lock().unwrap();
+                let mut queue = crate::panic::lock(&self.queue);
                 if queue.is_empty() && running.is_empty() {
                     queue.working = false;
                     return;
@@ -619,7 +642,7 @@ impl Pins {
             let size = permit.size();
             asked[usize::from(size == Size::Large)] = None;
             let next = {
-                let mut queue = self.queue.lock().unwrap();
+                let mut queue = crate::panic::lock(&self.queue);
                 let next = queue.next(size);
                 self.publish_waiting(&queue);
                 next
@@ -630,14 +653,14 @@ impl Pins {
             };
             let Some(fill) = filler.upgrade() else {
                 // The service is gone: nothing is left to download for.
-                let mut queue = self.queue.lock().unwrap();
+                let mut queue = crate::panic::lock(&self.queue);
                 queue.drain();
                 queue.known.clear();
                 queue.working = false;
                 self.publish_waiting(&queue);
                 return;
             };
-            let (this, cancel) = (Arc::clone(&self), self.cancel.lock().unwrap().clone());
+            let (this, cancel) = (Arc::clone(&self), crate::panic::lock(&self.cancel).clone());
             let mut permit = permit;
             running.spawn(async move {
                 // Cancelled by a Forget: the fill's future is dropped, as a
@@ -660,7 +683,7 @@ impl Pins {
         if matches!(filled, Filled::Failed | Filled::NoSpace) {
             self.resweep.store(true, Ordering::SeqCst);
         }
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = crate::panic::lock(&self.queue);
         queue.known.remove(path);
         if filled == Filled::NoSpace && !queue.is_empty() {
             let waiting = queue.drain();

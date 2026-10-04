@@ -6,6 +6,9 @@
 #   2. no Rust source file holds tests;
 #   3. in konedrived, a directory uses only the directories before it in the
 #      layer order, and remote/ does not use upload/. Test code is exempt.
+#   7. a lock of std::sync is taken through the one function that goes on
+#      after a panic (konedrived: panic::lock, read, write), never with
+#      `.lock().unwrap()` or a recovery written out. Test code is exempt.
 #
 # It reads the files git tracks, prints one line for each thing against a rule
 # and exits with 1 if there is any. Run from anywhere in the checkout:
@@ -87,8 +90,35 @@ function uses(file, number, line, own, top,    text, name) {
     }
 }
 
-function read_rust(file,    line, number, pending, own, top, name, by_path) {
+# Whether rule 7 is asked of a file: not of the files that hold the one
+# function, not of test doubles (`testing.rs`, `testing/`), not of the helper
+# (it has its own `lock`, and root code is not changed for tidiness), and not
+# yet of local/ (docs/limitations/D58.md).
+function locks_checked(file) {
+    if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
+        return 0
+    if (file ~ /(^|\/)testing(\.rs$|\/)/)
+        return 0
+    return index(file, "crates/konedrive-helper/") != 1 && index(file, DAEMON "local/") != 1
+}
+
+# A lock, a read or a write taken with nothing passed, and then the poison
+# unwrapped or recovered from by hand: on one line, or on the next.
+function poison(file, number, line, chained,    text) {
+    text = line
+    sub(/\/\/.*$/, "", text)
+    if (text ~ /\.(lock|read|write)\(\)[ \t]*\.(unwrap|expect|unwrap_or_else)\(/ || (chained && text ~ /^[ \t]*\.(unwrap|expect|unwrap_or_else)\(/)) {
+        found++
+        found_file[found] = file
+        found_text[found] = file ":" number ": a lock taken without panic::lock, read or write (rule 7)"
+    }
+    return text ~ /\.(lock|read|write)\(\)[ \t]*$/
+}
+
+function read_rust(file,    line, number, pending, own, top, name, by_path, locks, chained) {
     by_path = test_by_path(file)
+    locks = locks_checked(file)
+    chained = 0
     own = area(file)
     top = (file == DAEMON own "/mod.rs")
     if (own != "" && !(own in layer) && !by_path) {
@@ -105,6 +135,8 @@ function read_rust(file,    line, number, pending, own, top, name, by_path) {
             continue
         if (own != "")
             uses(file, number, line, own, top)
+        if (locks)
+            chained = poison(file, number, line, chained)
         if (line ~ /^[ \t]*#\[(tokio::)?test[]( ]/) {
             found++
             found_file[found] = file
@@ -183,7 +215,7 @@ END {
             bad++
         }
     }
-    # Rule 3 is for source files: what was found in test code is dropped.
+    # Rules 3 and 7 are for source files: what was found in test code is dropped.
     # Rule 2 has no such exemption: a test is in tests.rs or under tests/,
     # which were not read for it at all.
     for (i = 1; i <= found; i++) {

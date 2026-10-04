@@ -15,7 +15,10 @@ pub mod sync;
 pub mod daemon;
 pub mod dbus;
 
-/// Not a layer: what a caught panic said, for whoever catches one.
+/// Not a layer: the wall clock, read in one place.
+pub mod clock;
+
+/// Not a layer: what a caught panic said, and a lock taken after one.
 pub mod panic;
 
 /// A fake OneDrive on wiremock: the tests of every area that talks to OneDrive, and the VM

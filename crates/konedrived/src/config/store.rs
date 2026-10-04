@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::config::atomic::write_atomic;
 use crate::config::migrate::V1Config;
@@ -159,7 +159,7 @@ impl ConfigStore {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // A change that panicked wrote nothing and left `config` as it was.
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::panic::lock(&self.inner)
     }
 
     /// The configuration as last read or written; empty while poisoned. Held accounts are

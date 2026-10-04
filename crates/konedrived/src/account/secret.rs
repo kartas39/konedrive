@@ -69,7 +69,7 @@ impl AccountSecrets {
     }
 
     fn label(&self) -> String {
-        let email = self.email.lock().unwrap();
+        let email = crate::panic::lock(&self.email);
         if email.is_empty() {
             V1_LABEL.into()
         } else {
@@ -143,7 +143,7 @@ impl SecretStore for AccountSecrets {
     }
 
     fn describe(&self, email: &str) {
-        *self.email.lock().unwrap() = email.to_owned();
+        *crate::panic::lock(&self.email) = email.to_owned();
     }
 }
 

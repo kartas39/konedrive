@@ -101,7 +101,7 @@ impl Replacements {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::panic::lock(&self.state)
     }
 
     /// The poller stops: no replacement starts from now on, and one under

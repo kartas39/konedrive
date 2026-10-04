@@ -81,12 +81,18 @@ These rules hold for every change:
    `dbus/`.
 5. **Every `impl SyncService` is in `sync/`.** The directories before `sync/` do not know
    `SyncService`.
-6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3. It runs on every pull request
+6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3 and 7. It runs on every pull request
    (`.github/workflows/structure.yml`); run it yourself before sending a change:
 
 ```
 scripts/check-structure.sh
 ```
+
+7. **Locks.** A lock of `std::sync` is taken through `crate::panic::lock`, `read` or `write`,
+   which go on after a holder of the lock panicked; never with `.lock().unwrap()` or a
+   recovery written out. What is done under such a lock must therefore not be able to leave its data half-changed.
+   `konedrive-graph` and `konedrive-tree` have a function of their own for it. Test code is
+   exempt.
 
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.

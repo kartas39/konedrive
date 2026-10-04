@@ -46,7 +46,7 @@ pub mod testing;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tokio::sync::{oneshot, Mutex};
 
@@ -347,7 +347,7 @@ impl AccountService {
 
     /// The account's folder, for the mode switch's question about waiting uploads.
     pub fn set_uploads(&self, uploads: Weak<dyn PendingUploads>) {
-        *self.uploads.lock().unwrap() = Some(uploads);
+        *crate::panic::lock(&self.uploads) = Some(uploads);
     }
 
     pub fn config(&self) -> &Arc<ConfigStore> {
@@ -506,7 +506,7 @@ impl AccountService {
 
     /// One read-modify-write of `account.json`, under its lock.
     fn save_cache(&self, change: impl FnOnce(&mut AccountInfo)) {
-        let _cache = self.cache_lock.lock().unwrap();
+        let _cache = crate::panic::lock(&self.cache_lock);
         let mut info = crate::account::cache::load(&self.cache).unwrap_or_default();
         change(&mut info);
         if let Err(e) = crate::account::cache::save(&self.cache, &info) {
@@ -515,7 +515,7 @@ impl AccountService {
     }
 
     fn siblings(&self) -> Option<Arc<Siblings>> {
-        self.siblings.lock().unwrap().clone()
+        crate::panic::lock(&self.siblings).clone()
     }
 
     /// Restores the session from the wallet (existence check only) and the account cache.
@@ -586,17 +586,17 @@ pub struct Siblings(std::sync::Mutex<Vec<Weak<AccountService>>>);
 impl Siblings {
     /// `account` is one of them from now on.
     pub fn add(self: &Arc<Self>, account: &Arc<AccountService>) {
-        self.0.lock().unwrap().push(Arc::downgrade(account));
-        *account.siblings.lock().unwrap() = Some(Arc::clone(self));
+        crate::panic::lock(&self.0).push(Arc::downgrade(account));
+        *crate::panic::lock(&account.siblings) = Some(Arc::clone(self));
     }
 
     /// Account `id` is not one of them any more.
     pub fn remove(&self, id: &AccountId) {
-        self.0.lock().unwrap().retain(|a| a.upgrade().is_some_and(|a| a.id != *id));
+        crate::panic::lock(&self.0).retain(|a| a.upgrade().is_some_and(|a| a.id != *id));
     }
 
     fn others(&self, id: &AccountId) -> Vec<Arc<AccountService>> {
-        self.0.lock().unwrap().iter().filter_map(Weak::upgrade).filter(|a| a.id != *id).collect()
+        crate::panic::lock(&self.0).iter().filter_map(Weak::upgrade).filter(|a| a.id != *id).collect()
     }
 }
 
@@ -613,7 +613,7 @@ fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::account
         if s.state != SignInState::SignedIn {
             return;
         }
-        let _cache = lock.lock().unwrap();
+        let _cache = crate::panic::lock(&lock);
         let mut info = crate::account::cache::load(&cache).unwrap_or_default();
         info.quota = s.quota.clone();
         if let Err(e) = crate::account::cache::save(&cache, &info) {
@@ -627,10 +627,3 @@ const NO_DRIVE: &str = "Microsoft Graph did not say which drive this is";
 
 /// What a retired account answers a sign-in.
 const RETIRED: &str = "this account is being removed";
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}

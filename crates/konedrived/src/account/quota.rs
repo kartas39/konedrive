@@ -7,11 +7,11 @@
 //! `account.json` at every read.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use konedrive_graph::drive::DriveQuota;
 use serde::{Deserialize, Serialize};
 
+use crate::clock::unix_now;
 use crate::account::state::{AccountSnapshot, StateHandle};
 
 /// The quota as last read, whoever read it: the one shape it has in the account's state and
@@ -130,10 +130,6 @@ impl Quota {
         }
         self.state.update(|s| s.quota.uploaded(bytes));
     }
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

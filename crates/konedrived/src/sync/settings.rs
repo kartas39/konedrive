@@ -51,7 +51,7 @@ impl SyncService {
 
     /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §4.4).
     pub fn ignore_patterns(&self) -> Vec<String> {
-        self.ignore.read().unwrap_or_else(|p| p.into_inner()).patterns().to_vec()
+        crate::panic::read(&self.ignore).patterns().to_vec()
     }
 
     /// `SetIgnorePatterns(patterns)`: the account's ignore list from now on,
@@ -72,7 +72,7 @@ impl SyncService {
         // list's own lock: two calls at once leave both the same (the outbox on the bus).
         let (shared, persist) = (Arc::clone(&self.ignore), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
-            let mut list = shared.write().unwrap_or_else(|p| p.into_inner());
+            let mut list = crate::panic::write(&shared);
             let kept = unique.clone();
             persist
                 .store

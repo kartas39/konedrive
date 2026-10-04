@@ -69,7 +69,7 @@ impl PauseClock {
     /// none runs; one that runs is told of another pause than it sleeps for, so that a
     /// shorter pause ends at its own time. Outside a runtime no timer is started.
     pub(super) fn show(&self, publish: impl FnOnce() -> Option<i64>) {
-        let mut inner = self.shared.inner.lock().unwrap();
+        let mut inner = crate::panic::lock(&self.shared.inner);
         let shown = publish();
         let running = inner.timer.as_ref().is_some_and(|timer| !timer.is_finished());
         if running && shown != inner.shown {
@@ -87,7 +87,7 @@ impl PauseClock {
     /// The pause is gone with what it was a pause of: the timer stops, and `publish` takes
     /// it off wherever it is shown, as one step of [`show`](Self::show)'s kind.
     pub(super) fn forget(&self, publish: impl FnOnce()) {
-        let mut inner = self.shared.inner.lock().unwrap();
+        let mut inner = crate::panic::lock(&self.shared.inner);
         if let Some(timer) = inner.timer.take() {
             timer.abort();
         }
@@ -98,7 +98,7 @@ impl PauseClock {
 
 impl Drop for PauseClock {
     fn drop(&mut self) {
-        if let Some(timer) = self.shared.inner.lock().unwrap().timer.take() {
+        if let Some(timer) = crate::panic::lock(&self.shared.inner).timer.take() {
             timer.abort();
         }
     }
@@ -115,7 +115,7 @@ impl Drop for PauseClock {
 async fn keep_time(shared: Arc<Shared>) {
     loop {
         let until = {
-            let mut inner = shared.inner.lock().unwrap();
+            let mut inner = crate::panic::lock(&shared.inner);
             match inner.shown {
                 Some(until) if until > 0 => until,
                 // Under the lock: a pause shown after this finds no timer and starts one.
@@ -131,7 +131,7 @@ async fn keep_time(shared: Arc<Shared>) {
             continue;
         }
         (shared.over)();
-        let mut inner = shared.inner.lock().unwrap();
+        let mut inner = crate::panic::lock(&shared.inner);
         if inner.shown == Some(until) && until <= shared.clock.now() {
             inner.timer = None;
             return;

@@ -10,7 +10,6 @@ use std::collections::VecDeque;
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use tokio::sync::broadcast;
 
@@ -29,10 +28,8 @@ pub type Event = ActivityRow;
 /// §16.1), plus one "and N more".
 pub const PER_KIND: usize = 50;
 
-/// Unix seconds now.
-pub fn unix_now() -> i64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+/// For the tests that still name it here.
+pub use crate::clock::unix_now;
 
 /// An event that happens now.
 pub fn event(kind: Kind, path: impl Into<String>, detail: impl Into<String>) -> Event {
@@ -179,7 +176,7 @@ impl Activity {
     }
 
     fn backing(&self) -> std::sync::MutexGuard<'_, Backing> {
-        self.backing.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::panic::lock(&self.backing)
     }
 
     /// Keeps the log of the folder at `root` in `store` from now on: what was
@@ -326,7 +323,7 @@ impl Activity {
         let counted = {
             let backing = self.backing();
             let Some(store) = backing.store.as_ref() else { return };
-            let after = std::mem::take(&mut *self.pruned_to.lock().unwrap_or_else(|p| p.into_inner()));
+            let after = std::mem::take(&mut *crate::panic::lock(&self.pruned_to));
             let looked = {
                 let after = after.clone();
                 store.read_blocking(move |s| s.conflicts_after(&after, PRUNE_BATCH))
@@ -339,7 +336,7 @@ impl Activity {
                 }
             };
             if batch.len() == PRUNE_BATCH {
-                *self.pruned_to.lock().unwrap_or_else(|p| p.into_inner()) = batch[PRUNE_BATCH - 1].rescued.clone();
+                *crate::panic::lock(&self.pruned_to) = batch[PRUNE_BATCH - 1].rescued.clone();
             }
             let gone: Vec<String> = batch.into_iter().filter(|row| !there(&row.rescued)).map(|row| row.rescued).collect();
             store.call_blocking(move |s| {
