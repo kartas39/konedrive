@@ -74,8 +74,9 @@ pub struct Materializer {
     pub rescue_into: PathBuf,
     pub cancel: CancellationToken,
     /// The mode, with a read-write folder's rules (`docs/design/writes.md`
-    /// §9). Asked only through the questions of `answers`.
-    pub mode: Mode<Rw>,
+    /// §9), which the commit after the pass goes by too. Asked through the
+    /// questions of `answers`.
+    pub mode: Mode<std::sync::Arc<Rw>>,
     /// Asked before an object with an id this folder does not know is
     /// removed: another account's is set aside instead, alive, for that
     /// account's move out to download where it is. `None`

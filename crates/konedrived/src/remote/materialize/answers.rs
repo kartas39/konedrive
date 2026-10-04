@@ -90,7 +90,7 @@ impl Materializer {
     /// way: a read-only one takes it to the holding directory, and the
     /// drain rescues what it holds.
     pub(super) fn remove_in_place(&self, rel: &Path, run: &mut Run) -> Result<bool, ApplyError> {
-        let policy = self.mode.read_write().map_or(Policy::Removed, super::Rw::removed);
+        let policy = self.mode.read_write().map_or(Policy::Removed, |rw| rw.removed());
         let parent = rel.parent().unwrap_or(Path::new(""));
         let name = rel.file_name().ok_or_else(|| ApplyError::Io(format!("{} has no name", rel.display())))?;
         Ok(self.take_off(&self.disk.dir(parent)?, name, rel, policy, run)?.waits.is_some())

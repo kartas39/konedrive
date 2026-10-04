@@ -110,7 +110,7 @@ pub(crate) struct Waiting {
 /// A read-write commit's rules: what the outbox holds, and what the cycle
 /// carries to its swap.
 pub(crate) struct Plan {
-    rw: Rw,
+    rw: Arc<Rw>,
     waiting: Waiting,
 }
 
@@ -281,7 +281,7 @@ impl Reconcile {
             Mode::ReadWrite(writing) => {
                 let (machine, differences, ignore) = (writing.machine.clone(), writing.upload_differences, writing.ignore.clone());
                 let rw = self.store.call_blocking(move |s| Rw::read(s, machine, differences, ignore))?;
-                Mode::ReadWrite(Plan { rw, waiting: writing.waiting.clone() })
+                Mode::ReadWrite(Plan { rw: Arc::new(rw), waiting: writing.waiting.clone() })
             }
         };
         Ok(Some(Prepared { root_item_id, plan }))
@@ -303,7 +303,7 @@ impl Reconcile {
             // filesystem: a rescue is one rename, never a copy.
             rescue_into: rescue_base(&self.root.path, &self.rescue_dir).join(rescue_stamp(SystemTime::now())),
             cancel: self.cancel.clone(),
-            mode: prepared.plan.as_ref().map(|plan| plan.rw.clone()),
+            mode: prepared.plan.as_ref().map(|plan| Arc::clone(&plan.rw)),
             claimed: self.claimed.clone(),
         };
         match materializer.apply_with_handover(scope) {
