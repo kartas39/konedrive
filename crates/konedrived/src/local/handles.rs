@@ -15,7 +15,7 @@ use std::path::Path;
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::Inode;
-use konedrive_tree::{Store, TreeError};
+use konedrive_tree::{ActivityKind, ActivityRow, Store, TreeError};
 use nix::fcntl::OFlag;
 
 use super::entry::proc_path;
@@ -67,23 +67,27 @@ pub struct Prepared {
 ///   taken off every item and the new filesystem recorded ([`renew`]);
 /// - recorded for this one: nothing is written.
 ///
-/// A root whose handle cannot be read, or a record that cannot be read or written, leaves the
-/// handles not current. Only a failed [`renew`] is an error: half of it may be written, and
-/// the examination must not go on.
-pub fn prepare(store: &Store, root: &File) -> Result<Prepared, TreeError> {
+/// A root whose handle cannot be read, a record that cannot be read or written, or a place
+/// outside the folder that cannot be looked at ([`Standing::Unreachable`]) leaves the handles
+/// not current, and nothing is written: the next examination tries again. Only a [`renew`]
+/// that failed in the store is an error: half of it may be written, and the examination must
+/// not go on. `now` is the time of what is said in Activity.
+pub fn prepare(store: &Store, root: &File, now: i64) -> Result<Prepared, TreeError> {
     let unknown = Prepared { current: false, renewed: false };
-    let Ok(now) = namespace(root) else { return Ok(unknown) };
+    let Ok(on) = namespace(root) else { return Ok(unknown) };
     match store.call_blocking(|s| s.handles_filesystem()) {
-        Ok(Some(recorded)) if recorded == now => Ok(Prepared { current: true, renewed: false }),
-        Ok(Some(_)) => {
-            let dropped = renew(store, &now)?;
-            tracing::warn!(
-                "the folder's filesystem is not the one its file handles were taken on: they are taken again, and \
-                 {dropped} move(s) out of the folder whose object is not where it was are left to OneDrive"
-            );
-            Ok(Prepared { current: true, renewed: true })
-        }
-        Ok(None) => Ok(Prepared { current: store.call_blocking(move |s| s.set_handles_filesystem(&now)).is_ok(), renewed: false }),
+        Ok(Some(recorded)) if recorded == on => Ok(Prepared { current: true, renewed: false }),
+        Ok(Some(_)) => match renew(store, root, &on, now)? {
+            Some(dropped) => {
+                tracing::warn!(
+                    "the folder's filesystem is not the one its file handles were taken on: they are taken again, and \
+                     {dropped} move(s) out of the folder whose object is not where it was are left to OneDrive"
+                );
+                Ok(Prepared { current: true, renewed: true })
+            }
+            None => Ok(unknown),
+        },
+        Ok(None) => Ok(Prepared { current: store.call_blocking(move |s| s.set_handles_filesystem(&on)).is_ok(), renewed: false }),
         Err(_) => Ok(unknown),
     }
 }
@@ -96,51 +100,103 @@ pub async fn current_async(store: &Store, root: &File) -> bool {
     matches!(store.call(|s| s.handles_filesystem()).await, Ok(Some(recorded)) if recorded == now)
 }
 
-/// The folder's filesystem changed: its recorded handles say nothing any more. In the store,
-/// in one go: every item forgets its local object — a Full local scan takes each again where
+/// The folder's filesystem changed: its recorded handles say nothing any more. Every
+/// `move-out` row is looked at first, with nothing written ([`standing_at`]); if one of the
+/// places cannot be looked at, nothing is renewed (`None`) and everything waits. Then, in the
+/// store: each `move-out` row whose object is found takes its handle and the place it stands
+/// at now, and the user's move out goes on; a row whose object is not there, or is not the
+/// item, goes — the item stays in OneDrive and is placed again, which is logged and said in
+/// Activity. Every item forgets its local object — a Full local scan takes each again where
 /// it is, and one missing then is placed again from OneDrive rather than deleted (WR4) — and
-/// each `move-out` row takes the handle of what stands at the place it last proved if that
-/// carries the row's item id ([`standing_at`]), or goes (the item stays in OneDrive and is
-/// placed again). Then `now` is recorded. How many rows went.
-fn renew(store: &Store, now: &str) -> Result<usize, TreeError> {
+/// `on` is recorded. How many rows went.
+fn renew(store: &Store, root: &File, on: &str, now: i64) -> Result<Option<usize>, TreeError> {
     let rows = store.call_blocking(move |s| s.outbox_move_outs())?;
-    let mut dropped = 0;
+    let mut found = Vec::new();
     for row in rows {
         let Some(id) = row.item_id.clone() else { continue };
-        match row.last_place().and_then(|path| standing_at(path, &id)) {
-            Some(inode) => {
-                store.call_blocking(move |s| s.outbox_amend(row.seq, |r| r.inode = Some(inode)))?;
+        let standing = row.last_place().map_or(Standing::NotThere, |place| standing_at(place, &id));
+        if let Standing::Unreachable(err) = &standing {
+            tracing::warn!(
+                "the folder's filesystem changed, and where {} went cannot be looked at ({err}): the handles are not taken again yet, and nothing is deleted meanwhile",
+                row.rel.display()
+            );
+            return Ok(None);
+        }
+        found.push((row, id, standing));
+    }
+    let folder = std::fs::read_link(proc_path(root)).ok();
+    let mut dropped = 0;
+    for (row, id, standing) in found {
+        match standing {
+            Standing::Item { inode, place } => {
+                store.call_blocking(move |s| {
+                    s.outbox_amend(row.seq, |r| {
+                        r.inode = Some(inode);
+                        if place.is_some() {
+                            r.target_name = place;
+                        }
+                    })
+                })?;
             }
-            None => {
-                store.call_blocking(move |s| s.outbox_drop(row.seq, None, Some(&id), None))?;
+            Standing::NotThere | Standing::Unreachable(_) => {
+                tracing::warn!(
+                    "{} left the folder, and after the folder's filesystem changed it is not where it went: it stays in OneDrive and is placed in the folder again",
+                    row.rel.display()
+                );
+                let event = ActivityRow {
+                    at: now,
+                    kind: ActivityKind::Restored,
+                    path: folder.as_deref().map_or_else(|| row.rel.clone(), |folder| folder.join(&row.rel)).display().to_string(),
+                    detail: "moved out of the folder, and not found where it went after the folder's disk changed: it stays in OneDrive".to_owned(),
+                };
+                store.call_blocking(move |s| s.outbox_drop(row.seq, None, Some(&id), Some(&event)))?;
                 dropped += 1;
             }
         }
     }
-    let now = now.to_owned();
+    let on = on.to_owned();
     store.call_blocking(move |s| {
         s.forget_local_handles()?;
-        s.set_handles_filesystem(&now)
+        s.set_handles_filesystem(&on)
     })?;
-    Ok(dropped)
+    Ok(Some(dropped))
 }
 
-/// The object at `path`, if it carries item `id`. The path is walked through the user's own
-/// lookups with no symbolic link in it, the last part included, and the id, the inode and the
-/// handle are all read from the one object that was opened: a link put at the place since
-/// names nothing.
-fn standing_at(path: &Path, id: &str) -> Option<Inode> {
-    let object = open_no_symlinks(path, OFlag::O_PATH | OFlag::O_NOFOLLOW).ok()?;
-    let meta = object.metadata().ok()?;
+/// What stands where a `move-out` row's object was last proved.
+enum Standing {
+    /// The object carrying the row's item id, and the path it stands at with every link in
+    /// the recorded one resolved (if that can be written as the row keeps it).
+    Item { inode: Inode, place: Option<String> },
+    /// Nothing, or something that is not the item.
+    NotThere,
+    /// The place cannot be looked at for a reason that says nothing of what is there
+    /// (`ENOSYS`: no `openat2` here): not a proof of anything.
+    Unreachable(io::Error),
+}
+
+/// What stands at `path`, a place recorded on the filesystem the folder was on before: is it
+/// item `id`? The recorded path may lead through a symbolic link by now (a home copied to a
+/// new disk, and `/home` made a link to it), so it is resolved first; the resolved path is
+/// then opened through the user's own lookups with no link in it, and the id, the inode and
+/// the handle are all read from that one descriptor. What proves the place is the id the
+/// object carries, not the path that led to it.
+fn standing_at(path: &Path, id: &str) -> Standing {
+    let Ok(resolved) = std::fs::canonicalize(path) else { return Standing::NotThere };
+    let object = match open_no_symlinks(&resolved, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+        Ok(object) => object,
+        Err(err) if err.raw_os_error() == Some(libc::ENOSYS) => return Standing::Unreachable(err),
+        Err(_) => return Standing::NotThere,
+    };
+    let Ok(meta) = object.metadata() else { return Standing::NotThere };
     if meta.file_type().is_symlink() {
-        return None;
+        return Standing::NotThere;
     }
     // By the descriptor's name in `/proc`, followed: an `O_PATH` descriptor reads no attribute
     // itself, and the name is the object, not a path walked again.
-    let carries = xattr::get_deref(proc_path(&object), XATTR_ITEM_ID).ok().flatten()?;
-    if carries != id.as_bytes() {
-        return None;
+    let carries = xattr::get_deref(proc_path(&object), XATTR_ITEM_ID).ok().flatten();
+    let Ok(handle) = FileHandle::of(&object) else { return Standing::NotThere };
+    if carries.as_deref() != Some(id.as_bytes()) {
+        return Standing::NotThere;
     }
-    let handle = FileHandle::of(&object).ok()?;
-    Some(Inode { dev: meta.dev(), ino: meta.ino(), handle: Some(handle) })
+    Standing::Item { inode: Inode { dev: meta.dev(), ino: meta.ino(), handle: Some(handle) }, place: resolved.to_str().map(str::to_owned) }
 }

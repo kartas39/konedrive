@@ -166,7 +166,7 @@ impl Examiner<'_> {
         // not one the renewed handles make.
         let progress = progress.filter(|_| batch.is_full());
         let full = Batch::full();
-        let handles = super::handles::prepare(self.store, &root)?;
+        let handles = super::handles::prepare(self.store, &root, self.now)?;
         let batch = if handles.renewed { &full } else { batch };
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;

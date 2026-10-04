@@ -720,7 +720,7 @@ move out is a delete for OneDrive, done only after the content is on this comput
 A helper silent for its whole timeout (30 s) is asked once in an examination, which waits with the
 tree lock held: what it would have asked after is undecided, and asked after again 30 s later
 (F260). On a changed filesystem (`local::handles::prepare`) each `move-out` row takes the handle
-of what stands at its last place, opened with no symbolic link in the path, or goes (F261).
+of the item's object at its last place, links in the old path resolved, or goes (F261).
 
 ### 8.2 `OpenByHandle`
 

@@ -40,8 +40,9 @@ pub enum Whereabouts {
 pub trait Liveness: Send + Sync {
     /// Where the object `handle` names is. An error decides nothing: the
     /// item is examined again later. An answer that did not come in time is
-    /// [`io::ErrorKind::TimedOut`], and no other error is: the examination
-    /// asks nothing more in the run that met one.
+    /// [`io::ErrorKind::TimedOut`] — the link's timeout, this side's own, or
+    /// a helper that refuses with `ETIMEDOUT` — and the examination asks
+    /// nothing more in the run that met one.
     fn whereabouts(&self, handle: &FileHandle) -> io::Result<Whereabouts>;
 }
 
@@ -97,7 +98,7 @@ impl Liveness for HelperLiveness {
 /// opening it again ([`same_place`]: a file whose dentry the kernel could not
 /// connect reads as `/`, and decides nothing); any other refusal — `EPERM` is
 /// never gone (F90) — or no answer decides nothing. The link's own timeout
-/// is told apart ([`io::ErrorKind::TimedOut`]).
+/// reads as [`io::ErrorKind::TimedOut`], as a refusal with `ETIMEDOUT` does.
 pub fn answered(answer: Result<OwnedFd, HelperError>) -> io::Result<Whereabouts> {
     match answer {
         Ok(object) => {

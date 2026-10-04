@@ -260,7 +260,7 @@ application must never read zeros where real content should be.
 - [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
 - [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
-- [F261](F261.md) — After the folder's filesystem changed, a move out whose place leads through a symbolic link is given up, and the item comes back
+- [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
 
 ---
 
