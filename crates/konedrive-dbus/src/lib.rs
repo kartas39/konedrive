@@ -16,10 +16,13 @@
 //! `/org/konedrive/Daemon`, the single-account object of earlier versions.
 
 pub mod accounts;
+mod refusal;
 pub mod testing;
 pub mod version;
 
 use zbus::zvariant::OwnedObjectPath;
+
+pub use refusal::Refusal;
 
 pub const SERVICE_NAME: &str = "org.konedrive.Daemon";
 
@@ -58,10 +61,11 @@ pub fn account_path(id: &str) -> Option<OwnedObjectPath> {
     })
 }
 
-/// The prefix every named refusal carries. A client that
+/// The prefix every named refusal of the daemon's own carries. A client that
 /// wants to tell "the file was modified locally" from "the file is not
 /// downloaded" matches on `<prefix>.ModifiedLocally` and
-/// `<prefix>.NotHydrated` rather than on the message.
+/// `<prefix>.NotHydrated` rather than on the message: in Rust, on
+/// [`Refusal::ModifiedLocally`] and [`Refusal::NotHydrated`].
 pub const ERROR_PREFIX: &str = "org.konedrive.Error";
 
 /// What to tell a person about the helper in each `Accounts.HelperState`

@@ -244,14 +244,14 @@ impl SyncService {
         self.state.update(|s| {
             s.root_path.clear();
             s.root_state = RootState::None;
-            s.last_error.clear();
+            s.clear_error();
             s.listing = false;
             s.items_listed = 0;
             s.items_placed = 0;
             s.skipped_count = 0;
             s.sync_trouble = None;
             s.replacement_note.clear();
-            s.outbox_note.clear();
+            s.outbox_note = None;
             s.last_checked = 0;
             s.local_bytes = 0;
             s.conflict_count = 0;

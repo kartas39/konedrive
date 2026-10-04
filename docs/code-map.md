@@ -92,7 +92,7 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 - `mod.rs` — `AccountService`: the sign-in state machine of one Microsoft account.
 - `sign_in.rs` — starting, finishing and cancelling a sign-in; sign-out; the account's drive.
 - `mode.rs` — `Account.SetMode`: the switch between read-only and read-write.
-- `state.rs` — the observable account state. `[tests]`
+- `state.rs` — the observable account state, and the mode's note in `LastError`. `[tests]`
 - `quota.rs` — the quota of the account's drive. `[tests]`
 - `cache.rs` — the cached profile and quota (`account.json`), shown offline. `[tests]`
 - `secret.rs` — the refresh token's storage: the Secret Service, or memory in tests. `[tests]`
@@ -135,7 +135,7 @@ What the sync reports. Design: `desktop.md`.
 - `activity.rs` — the activity log, conflicts and transfers. `[tests]`
 - `totals.rs` — the queue totals: how much is left to download and to upload. `[tests]`
 - `snapshot.rs` — `SyncSnapshot` and the published states: the root, the local scan, live
-  changes. `[tests]`
+  changes; `LastError` and its notes. `[tests]`
 
 ### `crates/konedrived/src/hydration/`
 
@@ -329,7 +329,7 @@ The D-Bus interfaces, one file each, named like the XML in `dbus/`. Design: `des
 - `token_export.rs` — `org.konedrive.TokenExport`, only in a development build.
 - `export.rs` — putting the objects on the bus and taking them off; `OnBus`.
 - `signals.rs` — `PropertiesChanged`, coalesced. `[tests]`
-- `fault.rs` — every refusal as a D-Bus error name.
+- `fault.rs` — `Fault`: every refusal under the name of a `Refusal`. `[tests]`
 
 ### `crates/konedrived/tests/`
 
@@ -415,7 +415,9 @@ What is printed, by topic.
 - `uploads.rs` — the upload queue and what is not uploaded. `[tests]`
 - `transfers.rs` — transfers and the queue totals. `[tests]`
 - `files.rs` — skipped items, conflicts, pins, free-up. `[tests]`
-- `refusals.rs` — a refusal explained. `[tests]`
+- `refusals.rs` — a refusal explained: the actions, and what the CLI read after the refusal. `[tests]`
+- `refusals/folder.rs` — the sentences of a refused folder call, by the group of the action.
+- `refusals/account.rs` — the sentences of a refused call on the accounts and the token export.
 - `accounts.rs` — `account list`.
 - `formats.rs` — sizes, times, durations, shell words. `[tests]`
 
@@ -551,6 +553,7 @@ Design: `desktop.md`.
 - `build.rs` — the version and the commit a build shows.
 - `src/lib.rs` — the D-Bus names and the client proxies. `[tests]`
 - `src/accounts.rs` — the proxies of the accounts' interfaces. `[tests]`
+- `src/refusal.rs` — `Refusal`: every name a call is refused under. `[tests]`
 - `src/version.rs` — the version line, the same in every program. `[tests]`
 - `src/testing.rs` — a private session bus for tests.
 - `tests/test_bus.rs` — tests: the private bus starts no program; a test's connection has the method timeout.

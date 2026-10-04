@@ -4,7 +4,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::interface;
 
 use crate::dbus::Folder;
-use crate::dbus::fault::{Result, SyncFault, to_fault};
+use crate::dbus::fault::{Fault, Result, to_fault};
 
 #[interface(name = "org.konedrive.Folder")]
 impl Folder {
@@ -65,13 +65,13 @@ impl Folder {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<()> {
         self.service.set_ignore_patterns(patterns).await.map_err(to_fault)?;
-        self.ignore_patterns_changed(&emitter).await.map_err(SyncFault::ZBus)
+        self.ignore_patterns_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
     /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
     async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
         self.service.change_run_settings(move |s| s.thumbnails = on).await.map_err(to_fault)?;
-        self.thumbnails_changed(&emitter).await.map_err(SyncFault::ZBus)
+        self.thumbnails_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
     /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /

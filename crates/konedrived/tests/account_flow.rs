@@ -66,7 +66,7 @@ async fn sign_in_happy_path() {
     assert_eq!(s.display_name, "Test User");
     assert_eq!(s.email, "test@outlook.com");
     assert_eq!((s.quota_used, s.quota_total), (1073741824, 5368709120));
-    assert_eq!(s.last_error, "");
+    assert_eq!(s.published_error(), "");
     assert_eq!(f.store.current().as_deref(), Some("RT1"));
     assert!(f.cache().exists());
     assert_eq!(f.svc.config().account(f.svc.id()).unwrap().drive_id, "D1", "the sign-in recorded its drive");
@@ -100,7 +100,7 @@ async fn cancel_returns_to_signed_out_without_error() {
     f.svc.begin_sign_in().await.unwrap();
     f.svc.cancel_sign_in().await;
     let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
-    assert_eq!(s.last_error, "");
+    assert_eq!(s.published_error(), "");
 }
 
 #[tokio::test]
@@ -245,7 +245,7 @@ async fn graph_401_invalidates_the_cached_token_and_retries_once() {
     assert_eq!(s.state, SignInState::SignedIn);
     assert_eq!(s.display_name, "Test User");
     assert_eq!((s.quota_used, s.quota_total), (1, 2));
-    assert_eq!(s.last_error, "");
+    assert_eq!(s.published_error(), "");
 }
 
 /// With no client ID configured (e.g. `config.toml` was lost while a wallet item survives)
@@ -291,7 +291,7 @@ async fn refresh_with_no_client_id_set_uses_the_built_in_one() {
 
     let s = svc.state().get();
     assert_eq!(s.state, SignInState::SignedIn);
-    assert_eq!(s.last_error, "");
+    assert_eq!(s.published_error(), "");
     assert_eq!((s.display_name.as_str(), s.quota_total), ("Test User", 2));
 }
 

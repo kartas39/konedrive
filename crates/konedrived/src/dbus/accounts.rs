@@ -4,7 +4,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zbus::{interface, Connection};
 
-use crate::dbus::fault::ManagerFault;
+use crate::dbus::fault::Fault;
 use crate::daemon::manager::AccountManager;
 
 /// `org.konedrive.Accounts` (`dbus/org.konedrive.Accounts.xml`).
@@ -19,7 +19,7 @@ impl Accounts {
         label: &str,
         #[zbus(connection)] connection: &Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> Result<OwnedObjectPath, ManagerFault> {
+    ) -> Result<OwnedObjectPath, Fault> {
         let account = self.manager.add(label, connection).await?;
         self.list_changed(&emitter).await?;
         Ok(account.path.clone())
@@ -30,20 +30,20 @@ impl Accounts {
         account: ObjectPath<'_>,
         #[zbus(connection)] connection: &Connection,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> Result<(), ManagerFault> {
+    ) -> Result<(), Fault> {
         self.manager.remove(&account, connection).await?;
         self.list_changed(&emitter).await?;
         Ok(())
     }
 
-    async fn set_client_id(&self, id: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ManagerFault> {
+    async fn set_client_id(&self, id: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), Fault> {
         self.manager.set_client_id(id).await?;
         self.client_id_changed(&emitter).await?;
         Ok(())
     }
 
     /// Whether every account holds back on a metered connection; written to `config.toml`.
-    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ManagerFault> {
+    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), Fault> {
         self.manager.set_pause_on_metered(on).await?;
         self.pause_on_metered_changed(&emitter).await?;
         Ok(())
@@ -51,7 +51,7 @@ impl Accounts {
 
     /// What every account does on battery: `sync`, `power-saver` or `pause`; refused
     /// `InvalidArgs` otherwise. Written to `config.toml`.
-    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ManagerFault> {
+    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), Fault> {
         self.manager.set_on_battery(choice).await?;
         self.on_battery_changed(&emitter).await?;
         Ok(())

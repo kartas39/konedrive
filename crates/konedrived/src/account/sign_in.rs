@@ -25,14 +25,14 @@ impl AccountService {
         if !self.state.try_transition(SignInState::SignedOut, SignInState::SigningIn) {
             return Err(AccountError::Busy);
         }
-        self.state.update(|s| s.last_error.clear());
+        self.state.update(|s| s.clear_error());
         let listener = match LoopbackListener::bind().await {
             Ok(listener) => listener,
             Err(e) => {
                 let message = format!("cannot listen on localhost: {e}");
                 self.state.update(|s| {
                     s.state = SignInState::SignedOut;
-                    s.last_error = message.clone();
+                    s.set_error(message.clone());
                 });
                 return Err(AccountError::Failed(message));
             }
@@ -100,7 +100,7 @@ impl AccountService {
         self.state.update(|s| {
             if s.state == SignInState::SigningIn {
                 s.state = SignInState::SignedOut;
-                s.last_error.clear();
+                s.clear_error();
             }
         });
     }
@@ -146,7 +146,7 @@ impl AccountService {
         self.state.update(|s| {
             if s.state == SignInState::SigningIn {
                 s.state = SignInState::SignedOut;
-                s.last_error.clear();
+                s.clear_error();
             }
         });
         // Takes TokenManager's own lock, so an in-flight access-token refresh commits its
@@ -155,7 +155,7 @@ impl AccountService {
         crate::account::cache::remove(&self.cache);
         self.state.update(|s| {
             s.state = SignInState::SignedOut;
-            s.last_error.clear();
+            s.clear_error();
             s.clear_account();
         });
         // Nothing is granted any more: read-only until the next sign-in, which asks for the
@@ -183,7 +183,7 @@ impl AccountService {
             Ok(both) => both,
             Err(e) => {
                 self.state
-                    .update(|s| s.last_error = format!("Could not load account info: {e}"));
+                    .update(|s| s.set_error(format!("Could not load account info: {e}")));
                 return;
             }
         };
@@ -219,7 +219,7 @@ impl AccountService {
                 s.display_name = display_name.clone();
                 s.email = email.clone();
                 s.live_drive = drive.id.clone();
-                s.last_error.clear();
+                s.clear_error();
             }
         });
         // One quota for the account: this read is the one `QuotaRemaining` shows, and the one
@@ -274,7 +274,7 @@ impl AccountService {
             Ok(token) => Ok(token),
             Err(AuthError::Transient(message)) => {
                 self.state
-                    .update(|s| s.last_error = format!("Could not load account info: {message}"));
+                    .update(|s| s.set_error(format!("Could not load account info: {message}")));
                 Err(())
             }
             // Wallet locked: the token manager already set `LastError` and the state is
@@ -293,11 +293,11 @@ impl AccountService {
             Err(AuthError::SignedOut) => {
                 self.state.update(|s| {
                     if s.state == SignInState::SignedIn {
-                        s.last_error = if s.client_id.is_empty() {
-                            "Set a client ID first, then sign in again.".into()
+                        s.set_error(if s.client_id.is_empty() {
+                            "Set a client ID first, then sign in again."
                         } else {
-                            "The stored sign-in was lost. Sign in again.".into()
-                        };
+                            "The stored sign-in was lost. Sign in again."
+                        });
                         s.state = SignInState::SignedOut;
                         s.clear_account();
                     }
@@ -497,7 +497,7 @@ impl AccountService {
         self.tokens.seed_as(&tokens, asked).await;
         self.state.update(|s| {
             s.state = SignInState::SignedIn;
-            s.last_error.clear();
+            s.clear_error();
         });
         // What the sign-in granted, and the drive it reached, decide the mode (§7): a
         // read-write account that signed in again with Files.ReadWrite, to its own drive, is
@@ -518,7 +518,7 @@ impl AccountService {
         }
         self.state.update(|s| {
             s.state = SignInState::SignedOut;
-            s.last_error = message.clone();
+            s.set_error(message.clone());
         });
     }
 }

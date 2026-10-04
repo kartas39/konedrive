@@ -37,6 +37,7 @@ use super::{RootSource, SyncError, SyncService};
 use crate::account::PendingUploads;
 use crate::config::Mode;
 use crate::account::state::AccountSnapshot;
+use crate::status::snapshot::OutboxNote;
 
 impl SyncService {
     /// The mode the folder follows now.
@@ -114,7 +115,7 @@ impl SyncService {
                 s.watch_note.clear();
                 s.handles_note.clear();
             }
-            s.outbox_note.clear();
+            s.outbox_note = None;
         });
         let folder = self.registration().filter(|reg| reg.source == RootSource::OneDrive && reg.brought_up);
         if let Some(reg) = &folder {
@@ -341,10 +342,9 @@ impl SyncService {
     /// host from a blocking thread, as one section (`Engine::may_write`).
     pub(super) fn write_gate(&self) -> Result<(), String> {
         let refusal = self.gate_refusal();
-        let note = refusal.as_ref().map(|why| format!("{GATE_NOTE}{why}")).unwrap_or_default();
-        let shown = self.state.get().outbox_note;
-        let changed = shown != note && (refusal.is_some() || shown.starts_with(GATE_NOTE));
-        if changed {
+        let note = OutboxNote::after_gate(&self.state.get().outbox_note, refusal.as_deref());
+        let changed = note.is_some();
+        if let Some(note) = note {
             self.state.update(|s| s.outbox_note = note);
         }
         match refusal {
@@ -487,9 +487,6 @@ const DROPPED_CANCELS: usize = 256;
 
 /// How long the switch to read-only waits for the watcher to hand over what it holds.
 const FLUSH_WITHIN: Duration = Duration::from_secs(30);
-
-/// How the folder's `LastError` begins while the write gate is closed.
-const GATE_NOTE: &str = "nothing is uploaded: ";
 
 /// A read-write folder's watcher (`local::watcher`), as its sync keeps it. Made only by
 /// [`SyncService::start_watcher`], and given back to [`SyncService::stop_watcher`] by whoever

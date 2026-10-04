@@ -26,7 +26,14 @@ impl SignInState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSnapshot {
     pub state: SignInState,
+    /// What last went wrong: a sign-in, a refresh, a switch. Written through
+    /// [`set_error`](Self::set_error) and [`clear_error`](Self::clear_error); `LastError` is
+    /// [`published_error`](Self::published_error).
     pub last_error: String,
+    /// Why the account runs read-only against `config.toml`, or holds more than it asked
+    /// for: `recompute_mode`'s alone to set and to take back. It stands in `LastError`
+    /// where an error would, so one takes the other's place.
+    pub mode_note: Option<ModeNote>,
     pub client_id: String,
     /// `Account.Label`: what the account is called here, as `config.toml` keeps it.
     pub label: String,
@@ -65,6 +72,7 @@ impl Default for AccountSnapshot {
         Self {
             state: SignInState::SignedOut,
             last_error: String::new(),
+            mode_note: None,
             client_id: String::new(),
             label: String::new(),
             display_name: String::new(),
@@ -83,6 +91,35 @@ impl Default for AccountSnapshot {
 }
 
 impl AccountSnapshot {
+    /// `LastError` as published: what went wrong, or with nothing wrong the mode's note.
+    pub fn published_error(&self) -> String {
+        match &self.mode_note {
+            Some(note) if self.last_error.is_empty() => note.text(),
+            _ => self.last_error.clone(),
+        }
+    }
+
+    /// Says what went wrong, in place of whatever `LastError` said, the mode's note included.
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.last_error = message.into();
+        self.mode_note = None;
+    }
+
+    /// Empties `LastError`: the error and the mode's note.
+    pub fn clear_error(&mut self) {
+        self.last_error.clear();
+        self.mode_note = None;
+    }
+
+    /// Sets the mode's note in place of whatever `LastError` said, or takes it back; an
+    /// error said since it was set stays.
+    pub fn set_mode_note(&mut self, note: Option<ModeNote>) {
+        if note.is_some() {
+            self.last_error.clear();
+        }
+        self.mode_note = note;
+    }
+
     /// What goes when the account is no longer signed in: its name and quota, and with its
     /// token what the token allowed — so it runs read-only until it signs in again.
     pub fn clear_account(&mut self) {
@@ -97,6 +134,47 @@ impl AccountSnapshot {
         self.wider_grant.clear();
         self.live_drive.clear();
         self.mode = Mode::ReadOnly;
+    }
+}
+
+/// Why an account runs read-only against `config.toml`, or holds more than it asked for
+/// (`AccountService::recompute_mode`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeNote {
+    /// A read-only request was answered with a token that can change files; what it was
+    /// granted.
+    WiderGrant(String),
+    /// `config.toml` cannot be read now.
+    ConfigUnreadable,
+    /// `config.toml` says read-write, and the gate does not let the drive through.
+    GateKeepsReadOnly,
+    /// The sign-in reaches another drive than `config.toml` records: the one it reaches,
+    /// and the one recorded.
+    DriveMismatch { live: String, recorded: String },
+    /// The token does not carry `Files.ReadWrite`.
+    SignInToWrite,
+    /// Which drive the sign-in reaches has not been seen yet.
+    DriveNotSeen,
+}
+
+impl ModeNote {
+    /// The note as `LastError` says it.
+    pub fn text(&self) -> String {
+        use super::{CONFIG_UNREADABLE, DRIVE_MISMATCH, DRIVE_NOT_SEEN, GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE, WIDER_GRANT};
+        match self {
+            Self::WiderGrant(granted) => format!(
+                "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
+                 stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
+            ),
+            Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
+            Self::GateKeepsReadOnly => GATE_KEEPS_READ_ONLY.to_owned(),
+            Self::DriveMismatch { live, recorded } => format!(
+                "{DRIVE_MISMATCH} {live}, but config.toml records drive {recorded} for it; it runs read-only \
+                 until the two agree"
+            ),
+            Self::SignInToWrite => SIGN_IN_TO_WRITE.to_owned(),
+            Self::DriveNotSeen => DRIVE_NOT_SEEN.to_owned(),
+        }
     }
 }
 
@@ -140,13 +218,13 @@ impl StateHandle {
 /// What a failed token refresh does to the account's state.
 impl konedrive_graph::token::RefreshReport for StateHandle {
     fn failed(&self, message: &str) {
-        self.update(|s| s.last_error = message.to_owned());
+        self.update(|s| s.set_error(message));
     }
 
     fn signed_out(&self, message: &str) {
         self.update(|s| {
             s.state = SignInState::SignedOut;
-            s.last_error = message.to_owned();
+            s.set_error(message);
             s.clear_account();
         });
     }

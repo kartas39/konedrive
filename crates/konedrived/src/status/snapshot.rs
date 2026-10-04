@@ -120,7 +120,13 @@ impl RootState {
 pub struct SyncSnapshot {
     pub root_path: String,
     pub root_state: RootState,
+    /// What the registration ran into. Written through [`set_error`](Self::set_error) and
+    /// [`clear_error`](Self::clear_error), which take [`switch_note`](Self::switch_note)
+    /// with what it stood beside.
     pub last_error: String,
+    /// Why a folder registered without the helper could not be switched to interception
+    /// once the helper connected: said right behind `last_error`, and gone with it.
+    pub switch_note: Option<SwitchNote>,
     /// An initial or `410` listing of the drive is running.
     pub listing: bool,
     pub items_listed: u64,
@@ -160,8 +166,8 @@ pub struct SyncSnapshot {
     pub handles_note: String,
     /// What keeps the outbox's changes from going: the write gate
     /// closed under a read-write folder, or a read-only one whose sync holds its cycles while
-    /// changes wait. Empty otherwise.
-    pub outbox_note: String,
+    /// changes wait. `None` otherwise.
+    pub outbox_note: Option<OutboxNote>,
     /// `PendingCount`, `PendingBytes`, `BlockedCount`: the outbox as its
     /// worker last saw it.
     pub pending_count: u32,
@@ -207,6 +213,19 @@ pub struct SyncSnapshot {
 }
 
 impl SyncSnapshot {
+    /// Says what the registration ran into, in place of what it said before; the note of
+    /// a failed switch goes with that.
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.last_error = message.into();
+        self.switch_note = None;
+    }
+
+    /// Takes back what the registration said, the note of a failed switch included.
+    pub fn clear_error(&mut self) {
+        self.last_error.clear();
+        self.switch_note = None;
+    }
+
     /// Whether the account's background work stops: paused by the user, or held back.
     pub fn stopped(&self) -> bool {
         self.paused_until.is_some() || !self.held_back.is_empty()
@@ -219,6 +238,7 @@ impl Default for SyncSnapshot {
             root_path: String::new(),
             root_state: RootState::None,
             last_error: String::new(),
+            switch_note: None,
             listing: false,
             items_listed: 0,
             items_placed: 0,
@@ -233,7 +253,7 @@ impl Default for SyncSnapshot {
             waits_for_helper: false,
             watch_note: String::new(),
             handles_note: String::new(),
-            outbox_note: String::new(),
+            outbox_note: None,
             pending_count: 0,
             pending_bytes: 0,
             blocked_count: 0,
@@ -264,6 +284,75 @@ pub struct SyncTrouble {
     pub blocking: bool,
 }
 
+/// Why a switch to interception did not go through (`SyncService::upgrade`); the folder
+/// stays as it was, and the next connect tries again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchNote {
+    pub why: String,
+}
+
+impl SwitchNote {
+    /// The note as `LastError` says it.
+    pub fn text(&self) -> String {
+        format!(
+            "the konedrive helper is connected, but switching this folder to interception failed: {}; it is \
+             tried again the next time the helper connects",
+            self.why
+        )
+    }
+}
+
+/// What keeps the outbox's changes from going, and who says so: the write gate's note is
+/// the gate's alone to take back (`SyncService::write_gate`), the other two are the
+/// poller's (`remote::listing::poller`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboxNote {
+    /// The write gate is closed under a read-write folder: why.
+    GateClosed(String),
+    /// A read-only folder holds changes waiting to upload, so its cycles wait: how many.
+    HeldBack(usize),
+    /// A read-only folder whose waiting changes cannot be read.
+    Unreadable,
+}
+
+impl OutboxNote {
+    /// What the write gate makes of the note `shown`, the gate being closed for `refusal`
+    /// or open: the note to show instead, or `None` when nothing changes. The gate says
+    /// why it is closed over whatever is shown, and takes back only its own note.
+    pub fn after_gate(shown: &Option<Self>, refusal: Option<&str>) -> Option<Option<Self>> {
+        let note = refusal.map(|why| Self::GateClosed(why.to_owned()));
+        let own = matches!(shown, Some(Self::GateClosed(_)));
+        (*shown != note && (refusal.is_some() || own)).then_some(note)
+    }
+
+    /// The note as `LastError` says it.
+    pub fn text(&self) -> String {
+        match self {
+            Self::GateClosed(why) => format!("nothing is uploaded: {why}"),
+            Self::HeldBack(n) => format!(
+                "{n} change(s) made here wait to be uploaded, so the folder is not kept in step with \
+                 OneDrive: they go once the account is read-write again, or are dropped by a forced \
+                 switch to read-only"
+            ),
+            Self::Unreadable => {
+                "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive".to_owned()
+            }
+        }
+    }
+}
+
+/// What the registration says in `LastError`: its error, and behind it the note of a
+/// failed switch.
+fn registration_error(s: &SyncSnapshot) -> String {
+    let Some(note) = &s.switch_note else { return s.last_error.clone() };
+    let before = s.last_error.trim_end_matches(". ");
+    if before.is_empty() {
+        note.text()
+    } else {
+        format!("{before}. {}", note.text())
+    }
+}
+
 /// `RootState` as published: the registration's state, unless
 /// the folder waits for the helper or the sync is blocked (`error`), or an
 /// initial listing runs (`listing`).
@@ -282,8 +371,9 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 }
 
 /// `LastError` as published: what the helper's absence means, the
-/// registration's text, the sync's and the replacement note, in that order
-/// — problems only. Where local work was moved out of the way is a conflict
+/// registration's text with the note of a failed switch, the sync's and the
+/// replacement note, then the watcher's, the handles' and the outbox's notes, in
+/// that order — problems only. Where local work was moved out of the way is a conflict
 /// (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here
 ///: said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
@@ -293,14 +383,16 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 /// "failed" when systemd says so.
 pub fn published_error(s: &SyncSnapshot) -> String {
     let helper = if s.waits_for_helper { s.helper_state.advice().unwrap_or("") } else { "" };
+    let registration = registration_error(s);
+    let outbox = s.outbox_note.as_ref().map(OutboxNote::text).unwrap_or_default();
     [
         helper,
-        s.last_error.as_str(),
+        registration.as_str(),
         s.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
         s.replacement_note.as_str(),
         s.watch_note.as_str(),
         s.handles_note.as_str(),
-        s.outbox_note.as_str(),
+        outbox.as_str(),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())

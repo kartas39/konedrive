@@ -71,7 +71,7 @@ impl AccountService {
             if let Some(previous) = session.cancel.replace(cancel_tx) {
                 let _ = previous.send(());
             }
-            self.state.update(|s| s.last_error.clear());
+            self.state.update(|s| s.clear_error());
             session.generation
         };
         let attempt = SignInAttempt { oauth, listener, redirect_uri, pkce, csrf, cancel: cancel_rx, generation };
@@ -159,7 +159,7 @@ impl AccountService {
                     }
                 });
                 if written.is_ok() {
-                    self.state.update(|s| s.last_error.clear());
+                    self.state.update(|s| s.clear_error());
                 }
                 self.recompute_mode();
                 written
@@ -180,7 +180,7 @@ impl AccountService {
         if session.generation != generation || message.is_empty() {
             return;
         }
-        self.state.update(|s| s.last_error = message);
+        self.state.update(|s| s.set_error(message));
     }
 
     /// [`set_mode`](Self::set_mode) to read-only.

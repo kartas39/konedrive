@@ -21,7 +21,7 @@ use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
 use konedrive_graph::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
 use konedrive_graph::pkce::{random_token, Pkce};
 use crate::account::secret::SecretStore;
-use crate::account::state::{AccountSnapshot, SignInState, StateHandle};
+use crate::account::state::{AccountSnapshot, ModeNote, SignInState, StateHandle};
 use konedrive_graph::token::{AuthError, TokenManager};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -98,33 +98,12 @@ pub const CONFIG_UNREADABLE: &str = "config.toml cannot be read now, so this acc
      until it can";
 
 /// The start of `LastError` for a sign-in that reaches another drive than the one
-/// `config.toml` records.
+/// `config.toml` records ([`ModeNote::DriveMismatch`]).
 const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive";
 
-fn drive_mismatch_message(live: &str, recorded: &str) -> String {
-    format!(
-        "{DRIVE_MISMATCH} {live}, but config.toml records drive {recorded} for it; it runs read-only \
-         until the two agree"
-    )
-}
-
-/// The start of `LastError` for a read-only request answered with more.
+/// The start of `LastError` for a read-only request answered with more
+/// ([`ModeNote::WiderGrant`]).
 const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
-
-fn wider_grant_message(granted: &str) -> String {
-    format!(
-        "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
-         stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
-    )
-}
-
-/// Whether `text` is one of the messages [`AccountService::recompute_mode`] sets, and so
-/// takes back when its reason is gone.
-fn is_mode_message(text: &str) -> bool {
-    [GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE, DRIVE_NOT_SEEN, CONFIG_UNREADABLE].contains(&text)
-        || text.starts_with(DRIVE_MISMATCH)
-        || text.starts_with(WIDER_GRANT)
-}
 
 /// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
 /// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
@@ -384,28 +363,26 @@ impl AccountService {
             s.mode = if configured == Mode::ReadWrite && same_drive && granted { Mode::ReadWrite } else { Mode::ReadOnly };
             let signed_in = s.state == SignInState::SignedIn;
             let why = if signed_in && !s.wider_grant.is_empty() {
-                Some(wider_grant_message(&s.wider_grant))
+                Some(ModeNote::WiderGrant(s.wider_grant.clone()))
             } else if signed_in && unreadable {
-                Some(CONFIG_UNREADABLE.to_owned())
+                Some(ModeNote::ConfigUnreadable)
             } else if signed_in && configured == Mode::ReadWrite {
                 match &allowed {
-                    None => Some(GATE_KEEPS_READ_ONLY.to_owned()),
+                    None => Some(ModeNote::GateKeepsReadOnly),
                     // Another drive seen comes first: signing in again cannot cure it.
                     Some(drive) if !s.live_drive.is_empty() && !same_drive => {
-                        Some(drive_mismatch_message(&s.live_drive, drive))
+                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.clone() })
                     }
-                    Some(_) if !granted => Some(SIGN_IN_TO_WRITE.to_owned()),
-                    Some(_) if s.live_drive.is_empty() => Some(DRIVE_NOT_SEEN.to_owned()),
+                    Some(_) if !granted => Some(ModeNote::SignInToWrite),
+                    Some(_) if s.live_drive.is_empty() => Some(ModeNote::DriveNotSeen),
                     Some(_) => None,
                 }
             } else {
                 None
             };
-            match why {
-                Some(why) => s.last_error = why,
-                None if is_mode_message(&s.last_error) => s.last_error.clear(),
-                None => {}
-            }
+            // The note takes the place of what `LastError` said; with no reason left, only
+            // the note goes, and an error said since stays.
+            s.set_mode_note(why);
         });
         self.install_oauth(&self.state.get().client_id);
     }
@@ -520,7 +497,7 @@ impl AccountService {
                 tokio::spawn(async move { this.refresh_account_info().await });
             }
             Ok(false) => crate::account::cache::remove(&self.cache),
-            Err(e) => self.state.update(|s| s.last_error = e.to_string()),
+            Err(e) => self.state.update(|s| s.set_error(e.to_string())),
         }
     }
 
