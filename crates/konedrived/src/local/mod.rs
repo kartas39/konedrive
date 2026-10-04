@@ -19,12 +19,15 @@
 pub mod batch;
 mod entry;
 pub mod examine;
+pub mod handles;
 pub mod ignore;
 pub mod liveness;
 pub mod names;
 #[cfg(test)]
 mod tests;
 pub mod scan;
+#[cfg(test)]
+pub mod testing;
 pub mod watcher;
 
 use std::ffi::OsStr;
@@ -36,7 +39,7 @@ pub use batch::{Batch, ScanReason};
 pub use examine::{ExamineError, Examined, Examiner, ScanProgress};
 pub use ignore::IgnoreList;
 #[cfg(test)]
-pub use liveness::FakeLiveness;
+pub use testing::FakeLiveness;
 pub use liveness::{HelperLiveness, Liveness, NoLiveness, Whereabouts};
 
 use konedrive_fs::handle::FileHandle;

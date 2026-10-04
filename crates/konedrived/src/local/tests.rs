@@ -27,6 +27,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
 mod identity;
+mod liveness;
 mod passed_over;
 
 const TIME: i64 = 1_700_000_000;

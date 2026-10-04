@@ -259,6 +259,8 @@ application must never read zeros where real content should be.
 - [F249](F249.md) — The order of an account's locks is a written rule, and two of them are held across slow work
 - [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
 - [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
+- [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
+- [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
 
 ---
 
@@ -379,6 +381,7 @@ application must never read zeros where real content should be.
 - [D42](D42.md) — What the running sync as an object leaves by hand.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
+- [D46](D46.md) — No test has the real helper hang while the examination asks it
 
 ---
 
