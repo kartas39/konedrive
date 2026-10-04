@@ -48,8 +48,11 @@ pub struct Scanned {
     pub parent_id: Option<String>,
 }
 
+/// Cloned to go into a blocking section (`remote::materialize::replace`): the
+/// clones share the root's one descriptor.
+#[derive(Clone)]
 pub struct Disk {
-    root: File,
+    root: std::sync::Arc<File>,
     locked: bool,
 }
 
@@ -122,7 +125,7 @@ impl Disk {
         let dir = root
             .open_registered()?
             .ok_or_else(|| io::Error::other(format!("{} no longer carries its root id", root.path.display())))?;
-        Ok(Self { root: dir, locked })
+        Ok(Self { root: std::sync::Arc::new(dir), locked })
     }
 
     pub fn locked(&self) -> bool {

@@ -255,3 +255,61 @@ async fn a_leased_replacement_stopped_right_after_its_swap_has_recorded_the_new_
     let recorded = f.store.call(|s| s.local_handle("F")).await.unwrap();
     assert_eq!(recorded, Some(new), "the item's recorded object is the inode swapped in");
 }
+
+/// A swap that has begun ends on its own thread when its replacement is dropped, and it
+/// keeps the tree lock and the old file's lock until it has: whoever takes either next does
+/// not find it still at work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swap_left_behind_keeps_both_locks_until_it_ends() {
+    let f = fixture_async();
+    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
+    f.listed_async(false).await;
+    hydrate_by_hand(&path, b"old version", "c-F");
+    let old = crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap();
+
+    // The store's thread is held: the swap's section waits there, after its rename.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (holding, held_now) = tokio::sync::oneshot::channel::<()>();
+    let store = f.store.clone();
+    let holder = tokio::spawn(async move {
+        store
+            .call(move |_| {
+                let _ = holding.send(());
+                let _ = held.recv();
+                Ok(())
+            })
+            .await
+    });
+    held_now.await.unwrap();
+
+    let (store, tree_lock, locks) = (f.store.clone(), std::sync::Arc::new(tokio::sync::Mutex::new(())), InodeLocks::new());
+    let (worker_tree_lock, worker_locks) = (std::sync::Arc::clone(&tree_lock), locks.clone());
+    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
+    let worker = tokio::spawn(async move {
+        let source = Memory::new("c2", b"the new version");
+        let leased = Leased { tree_lock: &worker_tree_lock, store: &store };
+        replace_leased(&disk, &worker_locks, &source, &replacement, Some(&leased)).await
+    });
+    for _ in 0..500 {
+        if std::fs::read(&path).unwrap() == b"the new version" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"the new version", "swapped in");
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    assert!(tree_lock.try_lock().is_err(), "the section left behind has the tree lock");
+    assert!(locks.try_lock(old).is_none(), "and the old file's lock");
+
+    release.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+    for _ in 0..500 {
+        if tree_lock.try_lock().is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(tree_lock.try_lock().is_ok(), "let go of when the section ended");
+    assert!(locks.try_lock(old).is_some());
+}

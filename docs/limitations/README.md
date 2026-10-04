@@ -238,6 +238,7 @@ application must never read zeros where real content should be.
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
 - [F221](F221.md) — One refresh at a time, and a cached token handed out beside it
 - [F230](F230.md) — A fill's file calls run in blocking sections, and a section that has begun ends by itself
+- [F232](F232.md) — A replacement's file calls run in three blocking sections, and a section that has begun ends by itself
 
 ---
 
