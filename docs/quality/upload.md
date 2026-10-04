@@ -136,6 +136,10 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **Where:** `steps.rs:272–281, 355, 375–381, 565–573, 115`; `content.rs:58–64`;
   `move_out.rs:153, 190, 437`. A `blocking()` helper exists (`steps.rs:43`).
 - **Size:** S to M. Part of `X2`.
+- **Fixed 2026-10-04** in `e9b716a` (#155): every listed place is a blocking section, and the worker's stop
+  waits for the sections under way. Left on runtime threads, outside the task's files:
+  `upload/engine/drain.rs` (`Disk::open`, `local::size_at`), `upload/space.rs` `release_fitting`,
+  `handles_current_async` (`docs/limitations/F233.md`).
 
 ## UP7. Two `strip` functions with different crash guarantees
 
@@ -186,7 +190,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 ## UP13. A crash between a conflict copy's rename and its record leaves the copy never uploaded — **defect?**
 
 - **Where:** `upload/steps.rs` `copy`: the rename and the strip of the conflict copy, then
-  `outbox_copied` (lines 400–435 on the branch of quality task `B3c`). The same shape in
+  `outbox_copied` (as of `e9b716a`: the rename, the strip and the record are one blocking section). The same shape in
   `upload_as_new`: the strip, then `outbox_orphan`.
 - **What:** if the daemon dies after the rename and before the store has the record, an `update`
   row (an edit against an edit) is left `running` at the old name while the file is at the copy

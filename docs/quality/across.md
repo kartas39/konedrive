@@ -45,6 +45,10 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   to store calls and one blocking hop. Or record it in the limitations log.
 - **Size:** M in all. **Risk:** low to medium; lock guards must move into the blocking section,
   and a dropped fill must still stop only where it stops today.
+- **Fixed 2026-10-04** in `a9779f8` (#149, the fill), `cc0ee68` (#152, the replacement), `8a4a9a6` (#153,
+  the hub and the write gate) and `e9b716a` (#155, the upload steps). A section that has begun runs
+  to its end, and a stop of the poller and of the outbox waits for the sections under way. What
+  each leaves is in `docs/limitations/F230.md`, `F231.md`, `F232.md` and `F233.md`.
 
 ## X3. One small thing written several times across areas
 
