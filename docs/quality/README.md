@@ -89,6 +89,7 @@ not fixed moves there.
 | [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | fixed in `57216c9` |
 | [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | fixed in `2cdf5dd` |
 | [`SY13`](sync.md) | `daemon/startup.rs:91–92`, `:108`; `dbus/export.rs:87` | The first call to a daemon that has just started is dropped with no reply; the caller waits for ever | fixed in `8fb6ac2` (#146) |
+| [`UP13`](upload.md) | `upload/steps.rs` `copy`, `upload_as_new` | A crash between a conflict copy's rename and its record leaves the copy on disk, never uploaded, its row blocked | open; by reading |
 | [`DB2`](ctl.md) | `konedrive-dbus/src/testing.rs:12–23` | The tests' private bus can start the installed daemon against the real `~/.config` | fixed in `8fb6ac2` (#146) |
 
 ### The order of the fixes

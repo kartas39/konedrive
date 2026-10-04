@@ -182,3 +182,26 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `move_out.rs:283, 289, 301`, `space.rs:117`, `engine.rs:546`, `move_out/tidy.rs:135`.
   `answer_row` wraps a bad Graph answer as `Fail::Io` (`steps.rs:133`), stored as `local-error`.
   Stale comments: `space.rs:203`, `content.rs:49`, `mod.rs:61–68`.
+
+## UP13. A crash between a conflict copy's rename and its record leaves the copy never uploaded — **defect?**
+
+- **Where:** `upload/steps.rs` `copy`: the rename and the strip of the conflict copy, then
+  `outbox_copied` (lines 400–435 on the branch of quality task `B3c`). The same shape in
+  `upload_as_new`: the strip, then `outbox_orphan`.
+- **What:** if the daemon dies after the rename and before the store has the record, an `update`
+  row (an edit against an edit) is left `running` at the old name while the file is at the copy
+  name with no attributes and no conflict recorded. At the next start the scan records a
+  follow-up row with no item id; the replay's `locate` finds nothing at the row's place and
+  `content::removed` drops the row ("the file was removed here"); the follow-up ends
+  `blocked(NoItem)`, and again after every examination. The user's content stays on disk under
+  the copy name, is never uploaded, and no conflict is said. Nothing is deleted in OneDrive by
+  this path. For `create`, `mkdir` and `move` rows the replay converges (a second copy name; the
+  first rename has no conflict record).
+- **Found 2026-10-04, by reading, in the review of `B3c`** (#155), where a stop could have
+  produced the same state; there the record is being moved into the same blocking section as the
+  rename, which narrows the crash window to the store's own write and does not close it.
+  **Status: open; by reading, not reproduced.** Not traced: what the read-write reconcile does
+  with the item meanwhile; what a later delete of the copy by the user does (the base still
+  records that inode as the item's object, so a `delete` of the item could be recorded).
+- **Fix:** make the replay of a `running` row recognise its own conflict copy (the row's inode at
+  another name with no attributes), or record the intent before the rename. **Size:** S to M.
