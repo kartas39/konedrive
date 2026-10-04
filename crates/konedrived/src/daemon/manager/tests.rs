@@ -21,7 +21,7 @@ fn a_half_removal_says_what_was_done_under_the_failures_own_name() {
     assert!(!said(None, false, false).contains("folder"));
 
     let half = |forgotten| HalfRemoved { forgotten, still_recorded: true, signed_out: true };
-    let gone = half(folder()).refusal("Personal", ManagerError::from(ConfigError::NoAccount("3f9a".into())));
+    let gone = half(folder()).refusal("Personal", ManagerError::from(ConfigError::NoAccount(crate::config::AccountId::new("3f9a"))));
     assert!(matches!(gone, ManagerError::NoAccount(_)), "{gone:?}");
     let gone = gone.to_string();
     assert!(gone.starts_with("there is no account \"3f9a\" in config.toml any more"), "{gone}");

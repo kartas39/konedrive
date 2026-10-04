@@ -25,7 +25,7 @@ pub async fn start_daemon_showing(bus: &TestBus, dir: &Path, drive: konedrived::
     let nowhere = |path: &str| url::Url::parse(&format!("http://127.0.0.1:9/{path}/")).unwrap();
     let options = konedrived::daemon::manager::Options {
         endpoints: konedrive_graph::oauth::Endpoints { authority: nowhere("authority"), graph: nowhere("graph") },
-        wallet: Arc::new(konedrived::account::secret::MemoryWallet::default()),
+        wallet: Arc::new(konedrived::account::testing::MemoryWallet::default()),
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,

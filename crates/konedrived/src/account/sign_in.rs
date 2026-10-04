@@ -230,7 +230,8 @@ impl AccountService {
         // Says again why a read-write account runs read-only, if it does: the drive may have
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
-        self.recompute_mode();        // The folder's outbox decides by the quota just read whether OneDrive is still full.
+        self.recompute_mode();
+        // The folder's outbox decides by the quota just read whether OneDrive is still full.
         let uploads = self.uploads.lock().unwrap().as_ref().and_then(Weak::upgrade);
         if let Some(uploads) = uploads {
             uploads.quota_read(&drive.quota);
@@ -238,16 +239,14 @@ impl AccountService {
     }
 
     /// The drive recorded for this account, if one is.
-    fn recorded_drive(&self) -> Option<String> {
-        self.config.account(&self.id).map(|a| a.drive_id).filter(|d| !d.is_empty())
+    fn recorded_drive(&self) -> Option<DriveId> {
+        self.config.account(&self.id).and_then(|a| a.drive_id)
     }
 
     /// Records `drive` as this account's when it has none yet; the drive recorded.
-    fn record_drive(&self, drive: &str) -> Result<String, String> {
-        if drive.is_empty() {
-            return Err("Microsoft Graph did not say which drive this is".into());
-        }
-        let recorded = self.config.record_drive(&self.id, drive).map_err(|e| e.to_string())?;
+    fn record_drive(&self, drive: &str) -> Result<DriveId, String> {
+        let drive = DriveId::new(drive).ok_or(NO_DRIVE)?;
+        let recorded = self.config.record_drive(&self.id, &drive).map_err(|e| e.to_string())?;
         if recorded != drive {
             tracing::warn!(
                 "account {:?} is signed in to drive {drive}, but drive {recorded} is recorded for it",
@@ -259,7 +258,7 @@ impl AccountService {
 
     /// Asks Graph which drive this account is, and records it if none is recorded yet
     /// (§8.2: asked by another account's sign-in). The drive recorded.
-    pub async fn learn_drive(&self) -> Result<String, String> {
+    pub async fn learn_drive(&self) -> Result<DriveId, String> {
         let token = self.tokens.access_token().await.map_err(|e| e.to_string())?;
         let drive = self.graph().drive(&token).await.map_err(|e| e.to_string())?;
         self.record_drive(&drive.id)
@@ -349,11 +348,8 @@ impl AccountService {
     pub(super) async fn identify(&self, access_token: &str) -> Result<Identity, String> {
         let graph = self.graph();
         let (drive, profile) = tokio::join!(graph.drive(access_token), graph.profile(access_token));
-        let drive = drive.map_err(|e| e.to_string())?;
-        if drive.id.is_empty() {
-            return Err("Microsoft Graph did not say which drive this is".into());
-        }
-        Ok(Identity { drive: drive.id, email: profile.ok().map(|p| p.email).filter(|e| !e.is_empty()) })
+        let drive = DriveId::new(drive.map_err(|e| e.to_string())?.id).ok_or(NO_DRIVE)?;
+        Ok(Identity { drive, email: profile.ok().map(|p| p.email).filter(|e| !e.is_empty()) })
     }
 
     /// The other accounts the guard cannot tell apart from this drive (§8.2), by id: those
@@ -361,7 +357,7 @@ impl AccountService {
     /// token they have not used yet (a wallet that did not answer at startup leaves an
     /// account signed out with its token still stored). Each is asked for its drive first,
     /// and is left out once it has one.
-    async fn settle_siblings(&self) -> Vec<String> {
+    async fn settle_siblings(&self) -> Vec<AccountId> {
         let others = self.siblings().map(|s| s.others(&self.id)).unwrap_or_default();
         let mut unsettled = Vec::new();
         for other in others {
@@ -389,32 +385,25 @@ impl AccountService {
     /// `Ok(true)` when the drive was recorded now, which [`unclaim`](Self::unclaim) undoes
     /// if the sign-in fails after all. The email the sign-in found, when there is one, is kept
     /// as the account's `login_hint` in the same write.
-    fn claim(&self, drive: &str, email: Option<&str>, unsettled: &[String]) -> Result<bool, String> {
-        let who = {
-            let s = self.state.get();
-            if s.email.is_empty() {
-                format!("'{}'", s.label)
-            } else {
-                s.email
-            }
-        };
+    fn claim(&self, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<bool, String> {
+        let who = self.who();
         self.config.update(|config| -> Result<bool, String> {
             let mine = config.account(&self.id).ok_or_else(|| "This account was removed.".to_owned())?;
-            if !mine.drive_id.is_empty() && mine.drive_id != drive {
+            if mine.drive_id.as_ref().is_some_and(|recorded| recorded != drive) {
                 return Err(format!(
                     "This account is {who}. You signed in as a different Microsoft account; to \
                      connect that one, add a new account."
                 ));
             }
-            if let Some(other) = config.accounts.iter().find(|a| a.id != self.id && a.drive_id == drive) {
+            if let Some(other) = config.accounts.iter().find(|a| a.id != self.id && a.drive_id.as_ref() == Some(drive)) {
                 return Err(format!("This Microsoft account is already connected as '{}'.", other.label));
             }
-            if config.accounts.iter().any(|a| a.id != self.id && a.drive_id.is_empty() && unsettled.contains(&a.id)) {
+            if config.accounts.iter().any(|a| a.id != self.id && a.drive_id.is_none() && unsettled.contains(&a.id)) {
                 return Err("Could not check which account this is; try again.".into());
             }
             let mine = config.account_mut(&self.id).expect("found above");
-            let recorded = mine.drive_id.is_empty();
-            mine.drive_id = drive.to_owned();
+            let recorded = mine.drive_id.is_none();
+            mine.drive_id = Some(drive.clone());
             if let Some(email) = email.filter(|email| !email.is_empty()) {
                 mine.login_hint = email.to_owned();
             }
@@ -425,10 +414,10 @@ impl AccountService {
     /// Takes back a drive [`claim`](Self::claim) recorded for a sign-in that then failed:
     /// a failed sign-in stores nothing (§8.2), and a slot that was never signed in must not
     /// keep the identity of the account it tried.
-    fn unclaim(&self, drive: &str) {
+    fn unclaim(&self, drive: &DriveId) {
         let taken_back = self.config.update_account(&self.id, |account| {
-            if account.drive_id == drive {
-                account.drive_id.clear();
+            if account.drive_id.as_ref() == Some(drive) {
+                account.drive_id = None;
             }
             Ok::<_, ConfigError>(())
         });

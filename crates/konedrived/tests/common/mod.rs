@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use konedrived::account::testing::single_account;
 use konedrived::account::AccountService;
-use konedrived::config::Paths;
+use konedrived::config::{ConfigStore, Paths};
 use konedrive_graph::oauth::Endpoints;
 use konedrive_graph::secret::MemoryStore;
 use konedrived::account::state::{AccountSnapshot, StateHandle};
@@ -59,6 +60,8 @@ pub async fn mock_microsoft(server: &MockServer) {
         .await;
 }
 
+/// One account, signed out, in a directory of its own, with [`CLIENT_ID`] in its `config.toml`
+/// and Microsoft mocked.
 pub struct Fixture {
     pub server: MockServer,
     pub dir: tempfile::TempDir,
@@ -72,9 +75,8 @@ impl Fixture {
         mock_microsoft(&server).await;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryStore::default());
-        let svc = AccountService::single(dir.path(), endpoints(&server), store.clone(), sign_in_timeout)
-            .await
-            .unwrap();
+        ConfigStore::open(&Paths::in_dir(dir.path()), async { false }).await.set_client_id(CLIENT_ID).unwrap();
+        let svc = single_account(dir.path(), endpoints(&server), store.clone(), sign_in_timeout).await.unwrap();
         Self { server, dir, store, svc }
     }
 
@@ -84,7 +86,7 @@ impl Fixture {
     }
 }
 
-/// Where `svc`, made with `AccountService::single(dir, …)`, caches its name and quota.
+/// Where `svc`, made with `single_account(dir, …)`, caches its name and quota.
 pub fn cache_of(dir: &Path, svc: &AccountService) -> PathBuf {
     Paths::in_dir(dir).account(svc.id()).unwrap().account_cache
 }
@@ -96,7 +98,7 @@ pub async fn start_daemon(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,
     endpoints: Endpoints,
-    wallet: Arc<konedrived::account::secret::MemoryWallet>,
+    wallet: Arc<konedrived::account::testing::MemoryWallet>,
     sign_in_timeout: Duration,
 ) -> konedrived::daemon::startup::Daemon {
     let options = konedrived::daemon::manager::Options {

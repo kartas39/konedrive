@@ -1,4 +1,5 @@
 use super::*;
+use crate::account::testing::MemoryWallet;
 use crate::config::Paths;
 use konedrive_graph::secret::MemoryStore;
 
@@ -24,7 +25,7 @@ async fn locked_store_reports_existence_but_refuses_load() {
 
 /// A configuration with one account whose `legacy_token` is set, its id, and the
 /// account's secrets on `wallet`.
-async fn migrated(dir: &std::path::Path, wallet: &Arc<MemoryWallet>) -> (Arc<ConfigStore>, String, AccountSecrets) {
+async fn migrated(dir: &std::path::Path, wallet: &Arc<MemoryWallet>) -> (Arc<ConfigStore>, AccountId, AccountSecrets) {
     let config = Arc::new(ConfigStore::open(&Paths::in_dir(dir), async { false }).await);
     let id = config.add_account("Personal").unwrap().id;
     config
@@ -97,7 +98,7 @@ async fn a_sign_out_before_the_move_deletes_both_items() {
 #[ignore]
 async fn secret_service_round_trip() {
     let wallet = SecretServiceWallet::for_tests();
-    let slot = Slot::Account("0123456789ab".into());
+    let slot = Slot::Account(AccountId::new("0123456789ab"));
     wallet.store(&slot, "KOneDrive test", "test-value").await.unwrap();
     assert!(wallet.exists(&slot).await.unwrap());
     assert!(!wallet.exists(&Slot::V1).await.unwrap(), "an account's item is not version 1's");

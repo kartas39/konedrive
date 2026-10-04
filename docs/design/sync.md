@@ -41,7 +41,7 @@ All of this runs in the daemon, as the user, once for each account.
 | Thumbnail filler | `desktop/thumbs.rs` | Puts OneDrive's thumbnails into KDE's cache ([desktop.md](desktop.md) §8) |
 | Baloo exclusion | `desktop/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
 | Account | `account/`, `konedrive-graph/src/oauth.rs`, `konedrive-graph/src/token.rs` | Sign-in, tokens, the account's name and quota (§12) |
-| Configuration | `config/mod.rs` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
+| Configuration | `config/` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
 | Watcher, examination, outbox worker | `local/watcher/`, `local/`, `upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
 | Read-write reconcile | `remote/listing/rw.rs`, `remote/materialize/rw.rs` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
 

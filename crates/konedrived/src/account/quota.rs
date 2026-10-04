@@ -2,14 +2,77 @@
 //! (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`, `QuotaState`), whoever reads it — the
 //! account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a
 //! refused upload, the check every 30 minutes, `upload::space`). Between two reads the
-//! bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. It is kept in the
-//! account's state ([`AccountSnapshot`]), and cached in `account.json` at every read.
+//! bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. Its figures
+//! ([`QuotaFigures`]) are kept in the account's state ([`AccountSnapshot`]), and cached in
+//! `account.json` at every read.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use konedrive_graph::drive::DriveQuota;
+use serde::{Deserialize, Serialize};
+
 use crate::account::state::{AccountSnapshot, StateHandle};
+
+/// The quota as last read, whoever read it: the one shape it has in the account's state and
+/// in `account.json`, whose keys are the fields' with `quota_` before them. `remaining`,
+/// `state` and the time are missing in a file written before they were kept, which reads as
+/// not read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuotaFigures {
+    /// `QuotaUsed`; 0 until read.
+    #[serde(rename = "quota_used")]
+    pub used: u64,
+    /// `QuotaTotal`; 0 until read.
+    #[serde(rename = "quota_total")]
+    pub total: u64,
+    /// `QuotaRemaining`: Graph's `remaining`, less what went up since.
+    #[serde(default, rename = "quota_remaining")]
+    pub remaining: u64,
+    /// `QuotaState`: `normal`, `nearing`, `critical` or `exceeded`; empty until read.
+    #[serde(default, rename = "quota_state")]
+    pub state: String,
+    /// Unix seconds of the last read; 0 for none. Not on the bus.
+    #[serde(default, rename = "quota_read_at")]
+    pub read_at: i64,
+}
+
+impl QuotaFigures {
+    /// `quota`, read at `at`: `used` and `total` when Graph gave them (a total of 0 is none
+    /// given), `remaining` and `state` likewise.
+    pub fn read(&mut self, quota: &DriveQuota, at: i64) {
+        if quota.total > 0 {
+            self.total = quota.total;
+            self.used = quota.used;
+        }
+        if let Some(remaining) = quota.remaining {
+            self.remaining = remaining;
+        }
+        if !quota.state.is_empty() {
+            self.state = quota.state.clone();
+        }
+        self.read_at = at;
+    }
+
+    /// `bytes` went up: they come off what is left and are added to what is used, once a read
+    /// has said what is left.
+    fn uploaded(&mut self, bytes: u64) {
+        if self.read_at > 0 {
+            self.remaining = self.remaining.saturating_sub(bytes);
+            self.used = self.used.saturating_add(bytes);
+        }
+    }
+
+    /// The figures as a read gives them.
+    pub fn as_drive_quota(&self) -> DriveQuota {
+        DriveQuota {
+            total: self.total,
+            used: self.used,
+            remaining: (self.read_at > 0).then_some(self.remaining),
+            state: self.state.clone(),
+        }
+    }
+}
 
 /// What a read writes beside the state: the account's cache, which keeps the quota across
 /// restarts. `None` keeps it nowhere (a test, a tool).
@@ -46,7 +109,7 @@ impl Quota {
 
     /// As [`read`](Self::read), made at `at` (unix seconds).
     pub fn read_at(&self, quota: &DriveQuota, at: i64) {
-        self.state.update(|s| apply(s, quota, at));
+        self.state.update(|s| s.quota.read(quota, at));
         if let Some(keep) = &self.keep {
             keep(&self.state.get());
         }
@@ -55,8 +118,8 @@ impl Quota {
     /// The last read, if it was made within `seconds` of now: what a refusal of another
     /// upload may use instead of asking again. Its figures are the quota's now.
     pub fn read_within(&self, seconds: i64) -> Option<DriveQuota> {
-        let s = self.state.get();
-        (s.quota_read_at > 0 && unix_now() - s.quota_read_at < seconds).then(|| as_drive_quota(&s))
+        let quota = self.state.get().quota;
+        (quota.read_at > 0 && unix_now() - quota.read_at < seconds).then(|| quota.as_drive_quota())
     }
 
     /// `bytes` went up: they come off what is left and are added to what is used, once a read
@@ -65,38 +128,7 @@ impl Quota {
         if bytes == 0 {
             return;
         }
-        self.state.update(|s| {
-            if s.quota_read_at > 0 {
-                s.quota_remaining = s.quota_remaining.saturating_sub(bytes);
-                s.quota_used = s.quota_used.saturating_add(bytes);
-            }
-        });
-    }
-}
-
-/// `quota`, read at `at`, into `s`: `used` and `total` when Graph gave them (a total of 0 is
-/// none given), `remaining` and `state` likewise.
-pub fn apply(s: &mut AccountSnapshot, quota: &DriveQuota, at: i64) {
-    if quota.total > 0 {
-        s.quota_total = quota.total;
-        s.quota_used = quota.used;
-    }
-    if let Some(remaining) = quota.remaining {
-        s.quota_remaining = remaining;
-    }
-    if !quota.state.is_empty() {
-        s.quota_state = quota.state.clone();
-    }
-    s.quota_read_at = at;
-}
-
-/// The quota in `s`, as a read gives it.
-pub fn as_drive_quota(s: &AccountSnapshot) -> DriveQuota {
-    DriveQuota {
-        total: s.quota_total,
-        used: s.quota_used,
-        remaining: (s.quota_read_at > 0).then_some(s.quota_remaining),
-        state: s.quota_state.clone(),
+        self.state.update(|s| s.quota.uploaded(bytes));
     }
 }
 

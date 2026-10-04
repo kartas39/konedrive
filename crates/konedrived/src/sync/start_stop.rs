@@ -99,7 +99,7 @@ impl SyncService {
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = {
             let persist = self.wiring.persist.clone();
-            let recorded = persist.store.account(&persist.account).map(|a| a.drive_id).filter(|d| !d.is_empty());
+            let recorded = persist.store.account(&persist.account).and_then(|a| a.drive_id).map(|drive| drive.into_string());
             Some(listing::DriveRecord { store: persist.store, account: persist.account, recorded })
         };
         // Nudges the thumbnail filler right after a cycle, rather than making

@@ -10,8 +10,9 @@ use common::*;
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::ACCOUNT_INTERFACE_NAME;
-use konedrived::account::secret::{MemoryWallet, Slot};
-use konedrived::config::DEFAULT_CLIENT_ID;
+use konedrived::account::secret::Slot;
+use konedrived::account::testing::MemoryWallet;
+use konedrived::config::{AccountId, DEFAULT_CLIENT_ID};
 use wiremock::MockServer;
 
 const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Account.xml"));
@@ -93,7 +94,7 @@ async fn sign_in_and_out_over_dbus() {
     assert_eq!(proxy.display_name().await.unwrap(), "Test User");
     assert_eq!(proxy.email().await.unwrap(), "test@outlook.com");
     assert_eq!(proxy.quota_used().await.unwrap(), 1073741824);
-    let item = Slot::Account(s.id.clone());
+    let item = Slot::Account(AccountId::new(s.id.clone()));
     assert_eq!(s.wallet.current(&item).as_deref(), Some("RT1"));
     assert_eq!(s.wallet.label(&item).as_deref(), Some("KOneDrive: test@outlook.com"));
 

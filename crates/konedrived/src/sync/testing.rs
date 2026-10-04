@@ -154,7 +154,7 @@ pub fn persist(file: &Path) -> Persist {
     };
     let account = match store.snapshot().accounts.first() {
         Some(account) => account.id.clone(),
-        None => store.add_account("Personal").map(|a| a.id).unwrap_or_else(|_| "0123456789ab".into()),
+        None => store.add_account("Personal").map(|a| a.id).unwrap_or_else(|_| crate::config::AccountId::new("0123456789ab")),
     };
     Persist { store: Arc::new(store), account }
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::account::quota::QuotaFigures;
 use crate::config::Mode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,15 +40,8 @@ pub struct AccountSnapshot {
     pub label: String,
     pub display_name: String,
     pub email: String,
-    /// The account's one quota (`crate::account::quota`): `QuotaUsed`, `QuotaTotal`, `QuotaRemaining`
-    /// (Graph's `remaining`, less what went up since) and `QuotaState` (`normal`, `nearing`,
-    /// `critical`, `exceeded`); 0 and empty until read.
-    pub quota_used: u64,
-    pub quota_total: u64,
-    pub quota_remaining: u64,
-    pub quota_state: String,
-    /// Unix seconds of the last read of the quota; 0 for none. Not on the bus.
-    pub quota_read_at: i64,
+    /// The account's one quota (`crate::account::quota`); 0 and empty until read.
+    pub quota: QuotaFigures,
     /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
     /// while `config.toml` says so, the gate lets its drive through, and `granted_scopes`
     /// carries `Files.ReadWrite`. The account's folder follows it
@@ -77,11 +71,7 @@ impl Default for AccountSnapshot {
             label: String::new(),
             display_name: String::new(),
             email: String::new(),
-            quota_used: 0,
-            quota_total: 0,
-            quota_remaining: 0,
-            quota_state: String::new(),
-            quota_read_at: 0,
+            quota: QuotaFigures::default(),
             mode: Mode::ReadOnly,
             granted_scopes: String::new(),
             wider_grant: String::new(),
@@ -125,11 +115,7 @@ impl AccountSnapshot {
     pub fn clear_account(&mut self) {
         self.display_name.clear();
         self.email.clear();
-        self.quota_used = 0;
-        self.quota_total = 0;
-        self.quota_remaining = 0;
-        self.quota_state.clear();
-        self.quota_read_at = 0;
+        self.quota = QuotaFigures::default();
         self.granted_scopes.clear();
         self.wider_grant.clear();
         self.live_drive.clear();

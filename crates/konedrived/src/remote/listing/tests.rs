@@ -456,7 +456,7 @@ async fn the_drive_kept_beside_the_root_outlives_a_rebuilt_store() {
     let account = store.add_account("Personal").unwrap().id;
     let record = DriveRecord { store: Arc::clone(&store), account: account.clone(), recorded: None };
     listed_with(&s, ListingContext { drive_record: Some(record), ..s.context() }).await;
-    assert_eq!(store.account(&account).unwrap().drive_id, "D", "written by the first cycle");
+    assert_eq!(store.account(&account).unwrap().drive_id, crate::config::DriveId::new("D"), "written by the first cycle");
 
     let rebuilt = Store::new(TreeStore::in_memory().unwrap());
     let record = DriveRecord { store, account, recorded: Some("D0".into()) };
@@ -474,7 +474,7 @@ async fn a_drive_another_account_has_is_not_listed_into_a_second_folder() {
     let config_dir = tempfile::tempdir().unwrap();
     let store = Arc::new(crate::config::ConfigStore::open(&crate::config::Paths::in_dir(config_dir.path()), async { false }).await);
     let first = store.add_account("Work").unwrap().id;
-    store.record_drive(&first, "D").unwrap();
+    store.record_drive(&first, &crate::config::DriveId::new("D").unwrap()).unwrap();
     let account = store.add_account("Personal").unwrap().id;
     let record = DriveRecord { store: Arc::clone(&store), account: account.clone(), recorded: None };
     let listing = Listing::new(ListingContext { drive_record: Some(record), ..s.context() });
@@ -483,7 +483,7 @@ async fn a_drive_another_account_has_is_not_listed_into_a_second_folder() {
 
     assert!(matches!(&err, CycleError::DriveTaken(label) if label == "Work"), "{err:?}");
     assert!(err.blocking());
-    assert_eq!(store.account(&account).unwrap().drive_id, "");
+    assert_eq!(store.account(&account).unwrap().drive_id, None);
     assert!(std::fs::read_dir(&s.root.path).unwrap().next().is_none(), "nothing is placed");
 }
 

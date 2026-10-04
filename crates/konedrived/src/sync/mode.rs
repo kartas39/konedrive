@@ -24,7 +24,7 @@ use crate::local::watcher::WalkState;
 use crate::folder::locks::InodeKey;
 use super::{RootSource, SyncService};
 use crate::account::PendingUploads;
-use crate::config::Mode;
+use crate::config::{Mode, WriteStanding};
 use crate::account::state::AccountSnapshot;
 use crate::status::snapshot::OutboxNote;
 
@@ -239,12 +239,15 @@ impl SyncService {
         }
         match persist.store.write_standing(&persist.account) {
             None => return Some("config.toml cannot be read".into()),
-            Some((Mode::ReadOnly, _)) => return Some("config.toml says the account is read-only".into()),
-            Some((_, None)) => return Some("write_test_drive_ids in config.toml does not list the account's drive".into()),
-            Some((_, Some(drive))) if drive != snapshot.live_drive => {
+            Some(WriteStanding { mode: Mode::ReadOnly, .. }) => return Some("config.toml says the account is read-only".into()),
+            Some(WriteStanding { writable_drive: None, .. }) => {
+                return Some("write_test_drive_ids in config.toml does not list the account's drive".into())
+            }
+            Some(WriteStanding { writable_drive: Some(drive), .. }) if drive != snapshot.live_drive => {
                 return Some(format!(
-                    "the account's token was last seen to reach drive {:?}, not drive {drive:?}, which config.toml lets through",
-                    snapshot.live_drive
+                    "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml lets through",
+                    snapshot.live_drive,
+                    drive.as_str()
                 ))
             }
             Some(_) => {}

@@ -1,4 +1,5 @@
-//! Refresh-token storage. Production: Secret Service (KWallet on Plasma). Tests: memory.
+//! Refresh-token storage: Secret Service (KWallet on Plasma). The tests' wallet, in memory, is
+//! `crate::account::testing::MemoryWallet`.
 //!
 //! Each account keeps its token in an item of its own ([`Slot::Account`]); version 1's one
 //! item ([`Slot::V1`]) is moved into the migrated account's the first time its token is
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use crate::config::{ConfigError, ConfigStore};
+use crate::config::{AccountId, ConfigError, ConfigStore};
 
 pub use konedrive_graph::secret::{SecretError, SecretStore};
 
@@ -21,7 +22,7 @@ pub enum Slot {
     /// An account's own: `application=konedrive, kind=account-refresh-token, account=<id>`.
     /// A `kind` of its own, because a search matches every item whose attributes *include*
     /// the ones asked for: a search for version 1's item would otherwise find these too.
-    Account(String),
+    Account(AccountId),
 }
 
 /// The wallet, item by item.
@@ -34,64 +35,8 @@ pub trait Wallet: Send + Sync {
     async fn delete(&self, slot: &Slot) -> Result<(), SecretError>;
 }
 
-/// A wallet in memory, for tests: each slot's label and secret.
-#[derive(Default)]
-pub struct MemoryWallet {
-    items: Mutex<HashMap<Slot, (String, String)>>,
-    locked: Mutex<bool>,
-}
-
-impl MemoryWallet {
-    /// A wallet holding version 1's item, as the single-account daemon left it.
-    pub fn with_v1(token: &str) -> Self {
-        let wallet = Self::default();
-        wallet.items.lock().unwrap().insert(Slot::V1, (V1_LABEL.into(), token.to_owned()));
-        wallet
-    }
-
-    /// Simulates a locked wallet whose unlock prompt the user refuses.
-    pub fn set_locked(&self, locked: bool) {
-        *self.locked.lock().unwrap() = locked;
-    }
-
-    pub fn current(&self, slot: &Slot) -> Option<String> {
-        self.items.lock().unwrap().get(slot).map(|(_, secret)| secret.clone())
-    }
-
-    pub fn label(&self, slot: &Slot) -> Option<String> {
-        self.items.lock().unwrap().get(slot).map(|(label, _)| label.clone())
-    }
-}
-
-#[async_trait]
-impl Wallet for MemoryWallet {
-    async fn exists(&self, slot: &Slot) -> Result<bool, SecretError> {
-        Ok(self.items.lock().unwrap().contains_key(slot))
-    }
-
-    async fn load(&self, slot: &Slot) -> Result<Option<String>, SecretError> {
-        if *self.locked.lock().unwrap() {
-            return Err(SecretError::Locked);
-        }
-        Ok(self.current(slot))
-    }
-
-    async fn store(&self, slot: &Slot, label: &str, secret: &str) -> Result<(), SecretError> {
-        if *self.locked.lock().unwrap() {
-            return Err(SecretError::Locked);
-        }
-        self.items.lock().unwrap().insert(slot.clone(), (label.to_owned(), secret.to_owned()));
-        Ok(())
-    }
-
-    async fn delete(&self, slot: &Slot) -> Result<(), SecretError> {
-        self.items.lock().unwrap().remove(slot);
-        Ok(())
-    }
-}
-
 /// The label version 1 gave its item, and an account's before its email is known.
-const V1_LABEL: &str = "KOneDrive refresh token";
+pub(super) const V1_LABEL: &str = "KOneDrive refresh token";
 
 /// One account's refresh token (design §7.4): its own item, and — while the account's
 /// `legacy_token` is set in `config.toml` — version 1's too.
@@ -108,14 +53,14 @@ const V1_LABEL: &str = "KOneDrive refresh token";
 pub struct AccountSecrets {
     wallet: Arc<dyn Wallet>,
     config: Arc<ConfigStore>,
-    id: String,
+    id: AccountId,
     /// The email the token belongs to, for the item's label; empty until known.
     email: Mutex<String>,
 }
 
 impl AccountSecrets {
-    pub fn new(wallet: Arc<dyn Wallet>, config: Arc<ConfigStore>, id: &str) -> Self {
-        Self { wallet, config, id: id.to_owned(), email: Mutex::new(String::new()) }
+    pub fn new(wallet: Arc<dyn Wallet>, config: Arc<ConfigStore>, id: &AccountId) -> Self {
+        Self { wallet, config, id: id.clone(), email: Mutex::new(String::new()) }
     }
 
     fn slot(&self) -> Slot {
@@ -228,7 +173,7 @@ impl SecretServiceWallet {
             }
             Slot::Account(id) => {
                 attributes.insert("kind", self.account_kind.to_owned());
-                attributes.insert("account", id.clone());
+                attributes.insert("account", id.to_string());
             }
         }
         attributes

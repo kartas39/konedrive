@@ -19,9 +19,10 @@ use konedrived::account::{
     AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_SEEN, GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE,
 };
 use konedrived::account::cache::AccountInfo;
-use konedrived::config::{ConfigError, ConfigStore, Mode, Paths};
+use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
 use konedrive_graph::secret::MemoryStore;
-use konedrived::account::secret::{MemoryWallet, Slot};
+use konedrived::account::secret::Slot;
+use konedrived::account::testing::{single_account, MemoryWallet};
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -110,7 +111,7 @@ struct Setup {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     export: TokenExportProxy<'static>,
     service: Arc<AccountService>,
-    id: String,
+    id: AccountId,
     _dir: tempfile::TempDir,
     _bus: TestBus,
 }
@@ -144,7 +145,7 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     let dir = tempfile::tempdir().unwrap();
     let wallet = Arc::new(MemoryWallet::default());
     let daemon = start_daemon(&bus, dir.path(), endpoints(&server), wallet.clone(), Duration::from_secs(10)).await;
-    let allowed: Vec<String> = allowed.iter().map(|d| d.to_string()).collect();
+    let allowed: Vec<DriveId> = allowed.iter().filter_map(|d| DriveId::new(*d)).collect();
     daemon
         .manager
         .config()
@@ -172,7 +173,7 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     eventually("signed in", || async move { proxy.state().await.unwrap() == "signed-in" }).await;
     let service = Arc::clone(&daemon.manager.accounts()[0].account);
     let config = Arc::clone(daemon.manager.config());
-    let recorded = || config.account(service.id()).unwrap().drive_id == "D1";
+    let recorded = || config.account(service.id()).unwrap().drive_id.as_deref() == Some("D1");
     for _ in 0..500 {
         if recorded() {
             break;
@@ -182,7 +183,7 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     assert!(recorded(), "the sign-in records the drive");
     eventually("the account's email", || async move { proxy.email().await.unwrap() == "test@outlook.com" }).await;
     assert_eq!(account.mode().await.unwrap(), "read-only");
-    Setup { server, wallet, daemon, account, export, service, id, _dir: dir, _bus: bus }
+    Setup { server, wallet, daemon, account, export, service, id: AccountId::new(id), _dir: dir, _bus: bus }
 }
 
 async fn wait_for_error(account: &AccountProxy<'static>, words: &str) -> String {
@@ -303,7 +304,7 @@ async fn a_switch_that_is_not_granted_changes_nothing() {
 
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     assert_eq!(s.account.state().await.unwrap(), "signed-in");
-    assert_eq!(s.config().account(&s.id).unwrap().drive_id, "D1");
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"));
 }
 
 /// A folder whose uploads wait, as `PendingUploads` says (the outbox worker's outbox, faked here).
@@ -403,11 +404,11 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
         let config = ConfigStore::open(&paths, async { false }).await;
         config.set_client_id(CLIENT_ID).unwrap();
         let id = config.add_account("Test").unwrap().id;
-        config.record_drive(&id, "D1").unwrap();
+        config.record_drive(&id, &DriveId::new("D1").unwrap()).unwrap();
         config
             .update(|c| {
                 c.account_mut(&id).unwrap().mode = Mode::ReadWrite;
-                c.write_test_drive_ids = if allowed { vec!["D1".into()] } else { Vec::new() };
+                c.write_test_drive_ids = DriveId::new("D1").into_iter().filter(|_| allowed).collect();
                 Ok::<_, ConfigError>(())
             })
             .unwrap();
@@ -420,7 +421,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
             };
             konedrived::account::cache::save(&paths.account(&id).unwrap().account_cache, &info).unwrap();
         }
-        let svc = AccountService::single(dir.path(), endpoints(&server), Arc::new(MemoryStore::with_token("RT0")), Duration::from_secs(5))
+        let svc = single_account(dir.path(), endpoints(&server), Arc::new(MemoryStore::with_token("RT0")), Duration::from_secs(5))
             .await
             .unwrap();
         svc.startup().await;
@@ -479,7 +480,7 @@ async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_writ
 
     s.config()
         .update_account(&s.id, |a| {
-            a.drive_id = "D3".into();
+            a.drive_id = DriveId::new("D3");
             Ok::<_, ConfigError>(())
         })
         .unwrap();
@@ -584,6 +585,6 @@ async fn a_read_write_account_signing_in_as_someone_else_stores_nothing() {
     eventually("signed out", || async move { account.state().await.unwrap() == "signed-out" }).await;
     assert!(s.account.last_error().await.unwrap().contains("different Microsoft account"));
     assert_eq!(s.refresh_token(), None, "nothing stored");
-    assert_eq!(s.config().account(&s.id).unwrap().drive_id, "D1");
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"));
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 }

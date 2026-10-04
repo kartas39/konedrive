@@ -31,14 +31,13 @@ fn clear_account_keeps_state_and_client_id() {
         client_id: "cid".into(),
         display_name: "n".into(),
         email: "e".into(),
-        quota_used: 1,
-        quota_total: 2,
+        quota: QuotaFigures { used: 1, total: 2, ..QuotaFigures::default() },
         ..AccountSnapshot::default()
     };
     s.clear_account();
     assert_eq!(s.state, SignInState::SignedIn);
     assert_eq!(s.client_id, "cid");
-    assert_eq!((s.display_name.as_str(), s.email.as_str(), s.quota_used, s.quota_total), ("", "", 0, 0));
+    assert_eq!((s.display_name.as_str(), s.email.as_str(), s.quota), ("", "", QuotaFigures::default()));
 }
 
 /// Every note's text, written out: clients read it (limitations log F64).

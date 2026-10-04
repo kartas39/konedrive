@@ -755,7 +755,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
 #[test]
 fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
     let w = World::new(&[]);
-    let quota = |s: &crate::account::state::AccountSnapshot| (s.quota_used, s.quota_total, s.quota_remaining, s.quota_state.clone());
+    let quota = |s: &crate::account::state::AccountSnapshot| (s.quota.used, s.quota.total, s.quota.remaining, s.quota.state.clone());
     w.h.quota.read(&konedrive_graph::drive::DriveQuota { total: 10 << 20, used: 1 << 20, remaining: Some(1280 * 1024), state: "normal".into() });
     let big = vec![7u8; 1536 * 1024];
     w.cloud(|c| c.free = Some(1280 * 1024));

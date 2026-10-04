@@ -43,7 +43,7 @@ async fn unregister_root_forgets_the_content_source() {
 async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_not() {
     let config_dir = tempfile::tempdir().unwrap();
     let persist = persist(&config_dir.path().join("config.toml"));
-    persist.store.record_drive(&persist.account, "DB").unwrap();
+    persist.store.record_drive(&persist.account, &crate::config::DriveId::new("DB").unwrap()).unwrap();
     let service = testing::service(None, None, Some(persist));
     service.hub().set_socket(config_dir.path().join("no-helper.sock"));
     let (full, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

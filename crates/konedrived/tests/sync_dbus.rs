@@ -36,7 +36,7 @@ use konedrive_dbus::{
 };
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrive_graph::oauth::Endpoints;
-use konedrived::account::secret::MemoryWallet;
+use konedrived::account::testing::MemoryWallet;
 use konedrived::account::state::{SignInState, StateHandle};
 use konedrived::helper::HelperLink;
 use konedrived::sync::SyncService;
