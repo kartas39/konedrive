@@ -320,7 +320,8 @@ impl AccountManager {
     }
 
     /// `Accounts.Add`: a signed-out, read-only account with no folder, after every other,
-    /// on the bus from the moment it is listed.
+    /// listed before its objects are put on the bus, and taken off the list again when they
+    /// cannot be.
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {
         let _changing = self.changing.lock().await;
         let entry = self.config.add_account(label)?;
@@ -335,11 +336,15 @@ impl AccountManager {
         };
         account.account.startup().await;
         follow_mode(&account).await;
+        // Listed before it is on the bus: a call on its own objects finds a folder that is
+        // one of the daemon's already.
+        self.list(Arc::clone(&account));
         if let Err(e) = self.export(connection, &account).await {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
             // start (which stays all the same if the file cannot be written now: F205).
             self.unexport(connection, &account, true).await;
+            self.unlist(&account);
             self.siblings.remove(&account.id);
             if let Err(e) = self.config.remove_account(&entry.id) {
                 tracing::warn!("cannot take the account {:?} out of config.toml again: {e}", entry.label);
@@ -347,7 +352,6 @@ impl AccountManager {
             remove_account_dir(&account.paths.dir);
             return Err(ManagerError::Failed(format!("cannot put the account on the bus: {e}")));
         }
-        self.list(Arc::clone(&account));
         tracing::info!("added the account {:?} ({})", entry.label, entry.id);
         Ok(account)
     }

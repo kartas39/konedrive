@@ -42,6 +42,28 @@ struct Told {
     hold: HoldSettings,
 }
 
+thread_local! {
+    /// Whether this thread is telling the accounts something with the list's lock held
+    /// ([`Registry::tell`]).
+    static TELLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Says, for as long as it lives, that this thread tells accounts under the list's lock.
+struct Telling;
+
+impl Telling {
+    fn begin() -> Self {
+        TELLING.set(true);
+        Self
+    }
+}
+
+impl Drop for Telling {
+    fn drop(&mut self) {
+        TELLING.set(false);
+    }
+}
+
 /// The daemon's accounts, as their folders see each other, and the link they share.
 pub struct Registry {
     /// The one link to the helper.
@@ -99,36 +121,47 @@ impl Registry {
     /// `HelperState`, the conditions and the hold's settings of now, and misses no later
     /// change of them. The account manager's, in the lines that list the account.
     pub fn add(&self, account: &Arc<SyncService>) {
-        let mut accounts = self.accounts.lock().unwrap();
+        let mut accounts = self.list();
         accounts.retain(|(id, a)| a.strong_count() > 0 && id != account.id());
         // Under the accounts' lock, as every later change is told: none is missed.
         let state = self.hub.state();
         account.state().update(|s| s.folder.helper_state = state);
         let told = *self.told.lock().unwrap();
-        account.hold_by(told.hold, told.conditions);
+        {
+            let _telling = Telling::begin();
+            account.hold_by(told.hold, told.conditions);
+        }
         accounts.push((account.id().clone(), Arc::downgrade(account)));
     }
 
     /// The account `id` is not one of the daemon's any more (an account removed): nothing
     /// is routed to it, and it claims nothing.
     pub fn remove(&self, id: &AccountId) {
-        self.accounts.lock().unwrap().retain(|(a, _)| a != id);
+        self.list().retain(|(a, _)| a != id);
         self.moved_out.lock().unwrap().remove(id);
     }
 
     /// Every account, in account order.
     pub fn accounts(&self) -> Vec<Arc<SyncService>> {
-        self.accounts.lock().unwrap().iter().filter_map(|(_, a)| a.upgrade()).collect()
+        self.list().iter().filter_map(|(_, a)| a.upgrade()).collect()
     }
 
     /// Every account but `me`.
     fn others(&self, me: &AccountId) -> Vec<Arc<SyncService>> {
-        self.accounts.lock().unwrap().iter().filter(|(id, _)| id != me).filter_map(|(_, a)| a.upgrade()).collect()
+        self.list().iter().filter(|(id, _)| id != me).filter_map(|(_, a)| a.upgrade()).collect()
     }
 
     /// The account `id`, while it is one of the daemon's.
     fn account(&self, id: &AccountId) -> Option<Arc<SyncService>> {
-        self.accounts.lock().unwrap().iter().find(|(a, _)| a == id).and_then(|(_, a)| a.upgrade())
+        self.list().iter().find(|(a, _)| a == id).and_then(|(_, a)| a.upgrade())
+    }
+
+    /// The list, locked. What an account does when it is told ([`tell`](Self::tell)) runs
+    /// under this lock and must not come back here: said in a debug build, where it would
+    /// otherwise stand still.
+    fn list(&self) -> std::sync::MutexGuard<'_, Vec<(AccountId, Weak<SyncService>)>> {
+        debug_assert!(!TELLING.get(), "an account asked the registry while it was being told the hold");
+        self.accounts.lock().unwrap()
     }
 
     /// The hold's settings every account runs on now.
@@ -160,7 +193,7 @@ impl Registry {
     /// every account in the order they were made, and an account added meanwhile misses
     /// neither.
     fn tell(&self, change: impl FnOnce(&mut Told)) -> bool {
-        let accounts = self.accounts.lock().unwrap();
+        let accounts = self.list();
         let now = {
             let mut told = self.told.lock().unwrap();
             let before = *told;
@@ -170,6 +203,7 @@ impl Registry {
             }
             *told
         };
+        let _telling = Telling::begin();
         for account in accounts.iter().filter_map(|(_, a)| a.upgrade()) {
             account.hold_by(now.hold, now.conditions);
         }

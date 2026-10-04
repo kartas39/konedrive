@@ -238,7 +238,7 @@ application must never read zeros where real content should be.
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
 - [F221](F221.md) — One refresh at a time, and a cached token handed out beside it
 - [F230](F230.md) — A fill's file calls run in blocking sections, and a section that has begun ends by itself
-- [F231](F231.md) — The write gate and the hub's file calls run on blocking threads; the rest of `config.toml`'s readers do not
+- [F231](F231.md) — The write gate and the registry's file calls run on blocking threads; the rest of `config.toml`'s readers do not
 - [F232](F232.md) — A replacement's file calls run in three blocking sections, and a stop is heard only between them
 - [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
@@ -261,7 +261,6 @@ application must never read zeros where real content should be.
 - [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
-- [F262](F262.md) — An account that is added is on the bus a moment before its folder is one of the daemon's
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
 - [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
 - [F267](F267.md) — A notification group that cannot be read is tried again without a pause
