@@ -3,7 +3,9 @@
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{Row, Table, TreeError, TreeStore, ROW_COLUMNS};
+use crate::forget::forget_subtrees;
+use crate::model::{row_from, Row, Table, ROW_COLUMNS};
+use crate::{TreeError, TreeStore};
 
 pub(super) fn set_local_handle(conn: &Connection, id: &str, handle: Option<&FileHandle>) -> Result<(), TreeError> {
     let stored = handle.map(FileHandle::encode);
@@ -57,7 +59,7 @@ impl TreeStore {
     /// placed again later carries no object that is not there.
     pub fn forget_local_objects(&mut self, roots: &[String], handles: &[FileHandle]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        super::forget_subtrees(&tx, roots, true, handles)?;
+        forget_subtrees(&tx, roots, true, handles)?;
         tx.commit()?;
         Ok(())
     }
@@ -71,6 +73,6 @@ impl TreeStore {
     /// The base item whose local object has `handle`.
     pub fn item_by_handle(&self, handle: &FileHandle) -> Result<Option<Row>, TreeError> {
         let sql = format!("SELECT {ROW_COLUMNS} FROM items WHERE local_handle = ?1");
-        Ok(self.conn.query_row(&sql, [handle.encode()], super::row_from).optional()?)
+        Ok(self.conn.query_row(&sql, [handle.encode()], row_from).optional()?)
     }
 }

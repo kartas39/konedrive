@@ -2,7 +2,8 @@
 
 use rusqlite::params;
 
-use super::{TreeError, TreeStore};
+use crate::model::column;
+use crate::{TreeError, TreeStore};
 
 /// A local version kept because the file changed or was removed in
 /// OneDrive.
@@ -35,12 +36,24 @@ impl ConflictKind {
     }
 
     fn parse(value: &str) -> Self {
-        if value == "copy" {
+        if value == Self::Copy.as_str() {
             Self::Copy
         } else {
             Self::Rescued
         }
     }
+}
+
+/// What a query of conflicts selects, in the order [`conflict_row`] reads.
+const COLUMNS: &str = "at, original, rescued, kind";
+
+fn conflict_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConflictRow> {
+    Ok(ConflictRow {
+        at: row.get(const { column(COLUMNS, "at") })?,
+        original: row.get(const { column(COLUMNS, "original") })?,
+        rescued: row.get(const { column(COLUMNS, "rescued") })?,
+        kind: ConflictKind::parse(&row.get::<_, String>(const { column(COLUMNS, "kind") })?),
+    })
 }
 
 impl TreeStore {
@@ -62,17 +75,8 @@ impl TreeStore {
     /// Every recorded conflict, newest first.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let mut statement =
-            self.conn.prepare("SELECT at, original, rescued, kind FROM conflicts ORDER BY at DESC, rescued")?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok(ConflictRow {
-                    at: row.get(0)?,
-                    original: row.get(1)?,
-                    rescued: row.get(2)?,
-                    kind: ConflictKind::parse(&row.get::<_, String>(3)?),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            self.conn.prepare(&format!("SELECT {COLUMNS} FROM conflicts ORDER BY at DESC, rescued"))?;
+        let rows = statement.query_map([], conflict_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
@@ -80,12 +84,8 @@ impl TreeStore {
     /// that order.
     pub fn conflicts_after(&self, after: &str, limit: usize) -> Result<Vec<ConflictRow>, TreeError> {
         let mut statement =
-            self.conn.prepare_cached("SELECT at, original, rescued, kind FROM conflicts WHERE rescued > ?1 ORDER BY rescued LIMIT ?2")?;
-        let rows = statement
-            .query_map(params![after, limit as i64], |row| {
-                Ok(ConflictRow { at: row.get(0)?, original: row.get(1)?, rescued: row.get(2)?, kind: ConflictKind::parse(&row.get::<_, String>(3)?) })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            self.conn.prepare_cached(&format!("SELECT {COLUMNS} FROM conflicts WHERE rescued > ?1 ORDER BY rescued LIMIT ?2"))?;
+        let rows = statement.query_map(params![after, limit as i64], conflict_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 

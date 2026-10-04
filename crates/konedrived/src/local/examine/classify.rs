@@ -8,7 +8,7 @@ use konedrive_fs::placeholder;
 use crate::local::batch::Batch;
 use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
-use konedrive_graph::drive::item::RESERVED_PREFIX;
+use konedrive_fs::RESERVED_PREFIX;
 use konedrive_tree::outbox::{Base, Detection, LocalSkip, OutboxKind, OutboxOp, OutboxState, Snapshot};
 use konedrive_tree::{Kind, Row, Table};
 

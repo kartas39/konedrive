@@ -7,7 +7,7 @@ use konedrive_fs::placeholder::{self, read_state, State};
 use std::os::fd::AsFd;
 
 use crate::remote::materialize::{ApplyError, Materializer, Run};
-use konedrive_graph::drive::item::RESERVED_PREFIX;
+use konedrive_fs::RESERVED_PREFIX;
 use crate::status::activity::Kind as EventKind;
 use crate::folder::disk::Probe;
 use crate::local::names;

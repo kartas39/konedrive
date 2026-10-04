@@ -38,7 +38,8 @@ use crate::upload::{Engine, Limits, NoHost, OutboxWorker, WorkerConfig};
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 use konedrive_tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxState, Recorded};
-use konedrive_tree::{classify, Change, Store, Table, TreeStore};
+use crate::folder::classify::classify;
+use konedrive_tree::{Change, Store, Table, TreeStore};
 
 pub(super) struct World {
     pub(super) graph: FakeGraph,

@@ -3,13 +3,6 @@
 
 use serde::Deserialize;
 
-/// Linux's limit on one name, in bytes (OneDrive's is 255
-/// characters, and a Cyrillic character is two bytes).
-pub const NAME_MAX: usize = 255;
-
-/// The prefix of the daemon's own working names in a folder.
-pub const RESERVED_PREFIX: &str = ".konedrive-";
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveItem {

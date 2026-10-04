@@ -23,3 +23,10 @@ pub mod probe;
 /// on, so this is also what bounds their descriptor use, and what stops a
 /// deliberately pathological tree from recursing without end.
 pub const MAX_DEPTH: usize = 128;
+
+/// Linux's limit on one name, in bytes (OneDrive's is 255
+/// characters, and a Cyrillic character is two bytes).
+pub const NAME_MAX: usize = 255;
+
+/// The prefix of the daemon's own working names in a folder.
+pub const RESERVED_PREFIX: &str = ".konedrive-";

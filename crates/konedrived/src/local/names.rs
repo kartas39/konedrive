@@ -82,7 +82,7 @@ pub fn copy_name(name: &str, machine: &str, n: u32) -> String {
         Some(dot) if dot > 0 => name.split_at(dot),
         _ => (name, ""),
     };
-    let room = konedrive_graph::drive::item::NAME_MAX.saturating_sub(suffix.len() + ext.len());
+    let room = konedrive_fs::NAME_MAX.saturating_sub(suffix.len() + ext.len());
     let mut cut = stem.len().min(room);
     while !stem.is_char_boundary(cut) {
         cut -= 1;
