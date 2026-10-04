@@ -120,6 +120,9 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   (`konedrived/src/folder/root.rs:173`).
 - **Fix:** remove it from the helper; keep `check_filesystem_type`. **Size:** S. **Risk:** VM
   scenarios that expect the helper's refusal would change.
+- **Fixed 2026-10-04** in `e00366c` (#154): the probe is removed from the helper; `check_filesystem_type`
+  stays. Under the unit the probe's write was refused almost everywhere, not everywhere (a
+  filesystem mounted after the helper started): `docs/limitations/F234.md`.
 
 ## HE8. Only workers and connection readers contain a panic
 
@@ -128,6 +131,10 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   event loop is a Z1 event.
 - **Fix:** a `Drop` guard in the writer; `catch_unwind` per batch with the remaining events
   denied; a restart loop around accept. **Size:** S.
+- **Fixed 2026-10-04** in `e00366c` (#154): a panic over a batch denies that open and the rest of the
+  batch `EIO` and the loop reads on; the accept thread starts again; a writer thread ends its
+  connection however it stops. A panic outside the batch still ends the process
+  (`docs/limitations/F234.md`).
 
 ## PR1. The protocol: an advisory version, unbounded fields, one long unsafe function
 
@@ -139,6 +146,10 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   `docs/design/hydration.md:599` calls the messages binary; they are JSON.
 - **Fix:** `recv` split into a raw receive and a parse; the two flags; `ToHelper::validate()`;
   close on a version mismatch. **Size:** S to M.
+- **Fixed 2026-10-04** in `e00366c` (#154): a raw receive and a parse, an aligned control buffer,
+  `MSG_CMSG_CLOEXEC`, `MSG_TRUNC` checked, `ToHelper::validate()`, a `Hello` with another version
+  closes the connection, the design document says JSON. `Hello` stays optional
+  (`docs/limitations/F234.md`).
 
 ## HE10. Error types are inconsistent
 
