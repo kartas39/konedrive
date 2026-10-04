@@ -34,6 +34,12 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   spelling, group and sentence is as before. Refusals, the notes and the sentences the CLI parses
   are `B2`'s. Left: fourteen row reasons and `ignored` have no sentence in `konedrivectl` and are
   printed as stored; the lists of all variants are written by hand (`docs/limitations/D34.md`).
+- **Fixed 2026-10-04** in `4a0919c` (#157), the refusal names and the notes: `Refusal` in `konedrive-dbus` is what the
+  daemon answers through (`dbus/fault.rs`) and what `konedrivectl` reads a reply into; the mode,
+  switch and outbox notes are slots of the snapshots, joined where `LastError` is read. No name,
+  sentence or text changed. Left (`docs/limitations/D35.md`): the C++ tables are still keyed by
+  the names as text, `Refusal::ALL` is written by hand, and data still travels inside the
+  daemon's sentences.
 
 ## X2. Blocking file I/O on async threads
 

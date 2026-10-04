@@ -147,6 +147,14 @@ risky one.
 - **Fixed 2026-10-03** in `2cdf5dd` (#144): a `source` that is neither word refuses the bring-up and
   is said in `LastError`; a folder held for it never comes up on a guess. What a folder in that
   state can and cannot do is in `docs/limitations/F211.md`.
+- **Fixed 2026-10-04** in `4a0919c` (#157), the notes: the note of a failed switch and the outbox's note are slots of
+  the folder's snapshot (`status/snapshot.rs`). `SyncError::Io(String)` and the
+  `Result<_, String>` stay.
+- **Kept as it was, a candidate defect:** a refused ignore pattern goes out under
+  `org.freedesktop.zbus.Error`, its message starting with
+  `org.freedesktop.DBus.Error.InvalidArgs: `, while `dbus/org.konedrive.Folder.xml` and the
+  proxy's comment promise `InvalidArgs` (`dbus/fault.rs`, `to_fault`). `konedrivectl sync ignore`
+  prints it as "changing the ignore list failed: …".
 
 ## SY7. Wiring by setters; a test-only surface on the production type
 

@@ -51,6 +51,11 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   `account/sign_in.rs:141, 177, 188, 232, 251`.
 - **Fix:** `mode_note: Option<ModeNote>` beside `last_error`, joined where the D-Bus property is
   read. **Size:** S to M. **Risk:** clients read the text (F64). Part of `X1`.
+- **Fixed 2026-10-04** in `4a0919c` (#157): the mode's note is a slot of its own (`account/state.rs`, `set_error`,
+  `clear_error`, `set_mode_note`), joined with the error in `published_error()`; the text of the
+  property is as before.
+- **Kept as it was, a candidate defect:** an account error hides the mode note. While an error
+  stands, the note is not shown, and a note set over an error drops the error for good.
 
 ## AC6. Locks ordered by convention; one held across a wallet prompt
 
