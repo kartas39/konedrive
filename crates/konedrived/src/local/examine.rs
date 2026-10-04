@@ -14,10 +14,15 @@
 //! 4. a directory without an item id is a `mkdir`, and its contents are
 //!    examined too; 5. a file without one is a `create`;
 //! 6. an entry with item id I: unknown to the base, it is a file from
-//!    elsewhere (stripped and created if downloaded, listed if not); on
-//!    several inodes, the one whose handle the base records is I and the
-//!    others are copies; where the base has it, its content is checked;
-//!    elsewhere, it is a `move` too;
+//!    elsewhere (stripped and created if downloaded, listed if not). Known,
+//!    it is I only if the base places I and the entry is the object the base
+//!    records for it — or, when that object is not among those seen or none
+//!    is recorded, the one standing where I is expected (at I's base place,
+//!    when a row says I was removed: the removal is taken back); any other
+//!    entry carrying the id is a copy, a file from elsewhere
+//!    (`Run::resolve`), whatever became of I's own object.
+//!    Where the base has I, its content is checked; elsewhere, it is a
+//!    `move` too;
 //! 7. a base item missing from its place and from the whole batch is a
 //!    save-by-rename when a new file stands at its name, and otherwise is
 //!    asked after by its file handle: gone is a `delete`, alive outside the
