@@ -74,6 +74,8 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
     SQL; the comments at `outbox/worker.rs:42` and `outbox.rs:635` describe a state the lock no
     longer allows.
   - **Correction:** the walk is over `items` only, but the `UPDATE` runs on both tables by id.
+- **Fixed 2026-10-04** in `063b3fb` (#174): `outbox_drop` and `outbox_drop_held` forget through
+  `forget_subtrees`, and every commit forgets the object of a row the base does not place (`F245`).
 
 ## TR3. The schema version does not describe the schema
 
