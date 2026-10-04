@@ -11,7 +11,7 @@ use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
 use crate::local::RECHECK;
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{LocalSkip, OutboxKind, OutboxOp, OutboxState, Reason, Snapshot};
+use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState, Reason, Snapshot};
 use konedrive_tree::Row;
 
 use super::{Content, denied, ExamineError, Expect, gone, Run};
@@ -58,50 +58,9 @@ impl Run<'_, '_> {
             }
         }
         let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
-        // In place, unchanged or unknown, with no row — or only rows of an
-        // object of it that is leaving (issue #104): nothing to record.
-        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).all(|r| self.under_leaving(&r.rel)) {
+        // In place, unchanged or unknown, with no row: nothing to record.
+        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
             return Ok(());
-        }
-        self.detections.push(d);
-        Ok(())
-    }
-
-    /// Item `id` found as `e` at or below an object that is leaving (a name
-    /// too long, the Personal Vault...): an object that stays on disk only
-    /// until what waits inside it is uploaded (issue #104). It is never
-    /// moved in OneDrive to where it is here, nor recorded as the item's
-    /// object again; only its content, changed here, goes up into the item
-    /// where OneDrive has it.
-    pub(super) fn found_leaving(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<(), ExamineError> {
-        if e.ty != Type::File {
-            return Ok(());
-        }
-        if matches!(e.state, StateAttr::Absent | StateAttr::Corrupt) {
-            // Whether it holds anything cannot be told: listed, and its
-            // folder stays (issue #104).
-            self.skip(&e.rel, LocalSkip::UnknownState);
-            return Ok(());
-        }
-        // A change OneDrive answered `404` for while it still lists the item
-        // stays blocked until the listing settles it, or the file changes
-        // again (issue #104): looking at it again is no reason to retry.
-        let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
-        if self.rows.of_item(id).any(|row| {
-            row.state == OutboxState::Blocked && row.reason == Some(Reason::LeavingNotFound) && row.snapshot_is(now)
-        }) {
-            return Ok(());
-        }
-        let mut d = self.detection(OutboxKind::Update, id, base, e, e.ctag.as_deref());
-        (d.target_parent, d.target_name) = (base.parent_id.clone(), Some(base.name.clone()));
-        match self.content(id, base, e, batch)? {
-            Content::Changed => {}
-            Content::Waiting => {
-                d.state = OutboxState::Waiting;
-                d.reason = Some(Reason::OpenForWriting);
-                d.next_try = Some(self.ex.now + RECHECK.as_secs() as i64);
-            }
-            Content::Same | Content::Unknown => return Ok(()),
         }
         self.detections.push(d);
         Ok(())

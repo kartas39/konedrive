@@ -22,7 +22,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Opened, Read, Snap};
-use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, local_name, locate, name_taken, never_uploaded, parent_of, tree, upload_as_new, wanted_name, Guard, Named, Ours};
+use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, parent_of, tree, upload_as_new, wanted_name, Guard, Named, Ours};
 use super::Fault;
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -65,34 +65,9 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
         cancel_session(e, &stale).await?;
     }
     e.upload_progress(row.seq, 0, snap.size);
-    // A row whose local path is an object that is leaving, or below one
-    // (issue #104, decision 1): its content goes up into the item where
-    // OneDrive has it — never a rename or a move. A row elsewhere (the
-    // user's own move out of it) is carried out as any other.
-    // A placed item the user moved in is not one of them: its move is
-    // carried out.
-    let held_out = match (&row.item_id, row.kind) {
-        (Some(id), OutboxKind::Update) => {
-            let (rel, id) = (row.rel.clone(), id.clone());
-            e.store()
-                .call(move |s| {
-                    let inside = s.leaving()?.iter().any(|(_, at)| rel.starts_with(at));
-                    Ok(inside && (s.leaving_had(&id)? || !s.locate(konedrive_tree::Table::Items, &id)?.is_some_and(|l| l.placed)))
-                })
-                .await?
-        }
-        _ => false,
-    };
-    let at_base = row.base.as_ref().and_then(|b| Some((b.parent.clone()?, b.name.clone()?))).filter(|_| held_out);
-    let (parent, name) = match at_base {
-        Some(at) => at,
-        None => {
-            let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
-            (parent, wanted_name(&row, &local))
-        }
-    };
-    let content_only = held_out && row.base.as_ref().is_some_and(|b| b.parent.as_deref() == Some(parent.as_str()) && b.name.as_deref() == Some(name.as_str()));
-    let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session, content_only };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
+    let name = wanted_name(&row, &local);
+    let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session };
     match row.kind {
         OutboxKind::Create => job.create().await,
         _ => job.update().await,
@@ -119,7 +94,7 @@ async fn removed(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcom
     }
     tracing::info!("the new version of {} is not uploaded: the file was removed here", row.rel.display());
     let seq = row.seq;
-    e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
+    e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
     Ok(Outcome::Done)
 }
 
@@ -252,10 +227,6 @@ struct Job<'a> {
     /// A session opened for exactly this content (the same snapshot), to
     /// resume.
     session: Option<SessionUrl>,
-    /// The row's local path is a leaving object's, or below it: its content
-    /// only, into the item where OneDrive has it — no rename, no move, no
-    /// local object recorded (issue #104).
-    content_only: bool,
 }
 
 impl Job<'_> {
@@ -490,27 +461,9 @@ impl Job<'_> {
     }
 
     /// The item is gone from OneDrive. Changed here, it goes up again as new
-    /// (§6: local wins) — but not from inside a leaving object: removed in
-    /// OneDrive means removed (issue #104, decision 2), and the row ends.
+    /// (§6: local wins), wherever it is.
     async fn gone_or_new(&self, id: &str) -> Result<Outcome, Fail> {
-        if !self.content_only {
-            return upload_as_new(self.e, self.row, self.found, self.parent, id).await;
-        }
-        // Dropped only once OneDrive's own listing says the item is gone
-        // (the base no longer has it); until then the row waits, blocked,
-        // with a reason the user sees.
-        let known = { let id = id.to_owned(); self.e.store().call(move |s| s.get(konedrive_tree::Table::Items, &id)).await?.is_some() };
-        if known {
-            tracing::warn!("{} is not found in OneDrive, which still lists it: its change waits", self.found.rel.display());
-            return Ok(Outcome::blocked(Reason::LeavingNotFound));
-        }
-        tracing::info!("{} was removed from OneDrive: its change is not uploaded", self.found.rel.display());
-        if let Some(url) = &self.row.session_url {
-            cancel_session(self.e, url).await?;
-        }
-        let seq = self.row.seq;
-        self.e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
-        Ok(Outcome::Done)
+        upload_as_new(self.e, self.row, self.found, self.parent, id).await
     }
 
     /// A `412` on the move before the content: has OneDrive the item where
@@ -544,13 +497,33 @@ impl Job<'_> {
         let remote_parent = remote.parent_reference.as_ref().and_then(|p| p.id.clone());
         let remote_name = remote.name.clone().unwrap_or_default();
         let same_content = remote.quick_xor_hash() == Some(hash.as_str());
-        if same_content && (self.content_only || (remote_parent.as_deref() == Some(self.parent) && remote_name == self.name)) {
+        if same_content && remote_parent.as_deref() == Some(self.parent) && remote_name == self.name {
             return self.commit(remote).await;
         }
         if same_content || (remote.c_tag.is_some() && remote.c_tag == base.ctag) {
-            // Not placed here: OneDrive's place is the row's, and nothing on
-            // disk follows it (issue #104).
-            let moved_there = !self.content_only && (remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref());
+            let moved_there = remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref();
+            // OneDrive has the item where the folder cannot hold it (a name
+            // too long, the Personal Vault...), and nobody moved it here:
+            // its content goes into the item where it is, with no name and
+            // no folder sent — the row was made to send content, and a name
+            // sent now would undo what was done in OneDrive. The commit
+            // keeps the item where the disk has it, and the reconcile takes
+            // it off once nothing in it waits (issue #104).
+            if moved_there && self.unmoved_here(id).await? && !holds(self.e, &remote).await? {
+                tracing::info!("{} is in OneDrive where this folder cannot hold it: its content goes into it there", self.found.rel.display());
+                if same_content {
+                    return self.commit(remote).await;
+                }
+                let guard = Guard::of_item(&remote);
+                return match self.send(UploadTarget::Existing { id, if_match: guard.as_str() }).await? {
+                    Sent::Landed(item, hash) => self.finish(*item, hash).await,
+                    Sent::Settled(outcome) => Ok(outcome),
+                    // Changed there once more meanwhile: looked at again.
+                    Sent::Refused(WriteError::Changed) => Ok(Outcome::again()),
+                    Sent::Refused(WriteError::NotFound) => self.gone_or_new(id).await,
+                    Sent::Refused(other) => Err(other.into()),
+                };
+            }
             let tree = tree(self.e).await;
             let followed = if moved_there { follow_cloud(self.e, self.disk, &tree, self.found, &remote).await? } else { None };
             let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent.clone(), name: Some(remote_name.clone()) };
@@ -571,6 +544,15 @@ impl Job<'_> {
             return Ok(Outcome::again());
         }
         copy(self.e, self.disk, row, self.found, self.parent, Some(id)).await
+    }
+
+    /// Whether the row sends the item nowhere: its object stands where the
+    /// base has the item, under the name the base has. Then a difference
+    /// between the row's place and OneDrive's was made in OneDrive.
+    async fn unmoved_here(&self, id: &str) -> Result<bool, Fail> {
+        let id = id.to_owned();
+        let base = self.e.store().call(move |s| s.get(Table::Items, &id)).await?;
+        Ok(base.is_some_and(|base| base.parent_id.as_deref() == Some(self.parent) && base.name == self.name))
     }
 
     async fn send(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
@@ -973,9 +955,7 @@ impl Job<'_> {
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
         let event = self.e.event(ActivityKind::Uploaded, &self.found.rel, crate::status::activity::human_size(self.snap.size));
-        // An item not placed here records no local object (issue #104).
-        let handle = self.found.inode.handle.as_ref().filter(|_| !self.content_only);
-        commit_row(self.e, self.row, &answer, handle, self.parent, event).await?;
+        commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event).await?;
         Ok(Outcome::Done)
     }
 }

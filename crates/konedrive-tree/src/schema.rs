@@ -188,6 +188,18 @@ impl TreeStore {
         Self::prepare(Connection::open_in_memory()?)
     }
 
+    /// Tests only: brings the store to [`SCHEMA_VERSION`] where it stands,
+    /// as an open does, after a test wrote an older version into it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn upgrade_in_place(&mut self) -> Result<(), TreeError> {
+        let mut version = meta::get(&self.conn, meta::SCHEMA_VERSION)?;
+        while let Some(step) = migrations::from(version.as_deref()) {
+            at_version(&self.conn, step.to, step.run)?;
+            version = meta::get(&self.conn, meta::SCHEMA_VERSION)?;
+        }
+        Ok(())
+    }
+
     fn open_file(path: &Path) -> Result<Self, TreeError> {
         use std::os::unix::fs::PermissionsExt;
         let conn = Connection::open(path)?;

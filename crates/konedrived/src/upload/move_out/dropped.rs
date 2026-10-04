@@ -35,7 +35,7 @@ pub(crate) fn drop_rows(s: &mut TreeStore) -> Result<Vec<OutboxRow>, TreeError> 
             None => false,
         };
         if !swapping {
-            s.outbox_drop(row.seq, None, row.item_id.as_deref(), None)?;
+            s.outbox_drop(row.seq, row.item_id.as_deref(), None)?;
             rows.push(row);
         }
     }

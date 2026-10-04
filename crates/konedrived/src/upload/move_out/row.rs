@@ -178,7 +178,7 @@ impl MoveOut<'_> {
             return Ok(None);
         }
         tracing::info!("{} came back before its move out was done: the newer change goes instead", self.row.rel.display());
-        self.e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
+        self.e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
         Ok(Some(Outcome::Done))
     }
 

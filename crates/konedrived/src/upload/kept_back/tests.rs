@@ -77,20 +77,6 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     assert_eq!(store.read_blocking(move |s| files(s, root, false, "no-such", 20)).unwrap(), (vec![], 0));
 }
 
-/// Issue #104: what keeps a folder no longer synced here on disk needs
-/// the user, and is shown where blocked rows are.
-#[test]
-fn what_keeps_a_leaving_folder_is_blocked() {
-    use konedrive_tree::outbox::LocalSkip;
-    for key in [LocalSkip::UnknownState.key(), LocalSkip::MountedInside.key()] {
-        assert_eq!(group_of(reason_key(key), false), Group::PerFile, "{key}");
-    }
-    let mut store = TreeStore::in_memory().unwrap();
-    store.outbox_apply(&[OutboxOp::Skip { rel: PathBuf::from("docs/u.txt"), reason: LocalSkip::UnknownState, size: 0 }], 1).unwrap();
-    let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups().unwrap(), false);
-    assert_eq!(got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect::<Vec<_>>(), vec![("per-file", LocalSkip::UnknownState.key(), 1)]);
-}
-
 /// Issue #87: the four keys a failure is stored under all wait.
 #[test]
 fn failure_keys_wait() {

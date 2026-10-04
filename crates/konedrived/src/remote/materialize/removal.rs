@@ -7,8 +7,8 @@
 //! record is cleared before anything is unlinked, here and nowhere else
 //! (issue #104, decision 5).
 
-use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -17,7 +17,7 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, read_state, State};
 use konedrive_fs::RESERVED_PREFIX;
 use konedrive_tree::outbox::OutboxKind;
-use konedrive_tree::Table;
+use konedrive_tree::{Kind, Placement, Table, WaitsFor};
 
 use super::{holds_local_work, ApplyError, Materializer, Run, Rw};
 use crate::folder::disk::Probe;
@@ -46,25 +46,22 @@ pub(super) enum Policy {
     /// left its item out (§3.7): as [`Policy::Removed`], and every download
     /// stays too, changed or not: the listing may have lost the item.
     Resync,
-    /// Read-write mode: its item was removed in OneDrive while it, or the
-    /// folder it is in, was leaving. It goes whole, whatever is in it, as
-    /// decision 2 of issue #104 had it for everything: what stays in a
-    /// leaving folder would be examined by that folder's own rules. Goes
-    /// with the leaving rows.
-    RemovedLeaving,
-    /// Read-write mode: it stopped being placed and nothing in it waits any
-    /// more (`rw::leaving`, which decides that; until the leaving rows go,
-    /// this stands where a policy for what is no longer placed will).
-    /// `placed_elsewhere`: the item's own object is another one now, so
-    /// only the objects found here are forgotten, not the item.
-    Leaving { placed_elsewhere: bool },
+    /// Read-write mode: OneDrive still has its item, where the folder
+    /// cannot hold it (a name too long, a reserved one, the Personal Vault,
+    /// shared, OneNote, unsupported). It goes whole, and only when nothing
+    /// in it waits: no outbox row at or below it, and nothing on disk there
+    /// that differs from what the base has ([`Materializer::waits`]). While
+    /// anything does, nothing of it is touched, and what it waits for is
+    /// said ([`TakenOff::waits`]): its change waits, the base keeps it
+    /// placed, and it is an item like any other meanwhile.
+    Unplaced,
 }
 
 /// What [`Materializer::take_off`] did.
 pub(super) struct TakenOff {
     pub(super) removal: Removal,
-    /// The item ids the objects found there carried.
-    pub(super) ids: Vec<String>,
+    /// [`Policy::Unplaced`]: it stays for now, and this is what keeps it.
+    pub(super) waits: Option<WaitsFor>,
 }
 
 /// What became of what was taken off.
@@ -91,15 +88,11 @@ struct Survey {
     handles: Vec<FileHandle>,
     /// The files, for their fills.
     files: Vec<InodeKey>,
-    /// The files that have other names — hard links the user made.
-    linked: Vec<FileHandle>,
 }
 
 /// Which managed files a read-write removal keeps.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keep {
-    /// None: everything goes ([`Policy::Leaving`]).
-    Nothing,
     /// Downloads changed here ([`Policy::Removed`]).
     Changed,
     /// Every download ([`Policy::Resync`]).
@@ -186,18 +179,17 @@ impl Materializer {
     pub(super) fn take_off(&self, dir: &File, name: &OsStr, rel: &Path, policy: Policy, run: &mut Run) -> Result<TakenOff, ApplyError> {
         let survey = self.survey(dir, name)?;
         if !survey.found {
-            return Ok(TakenOff { removal: Removal::Gone, ids: Vec::new() });
+            return Ok(TakenOff { removal: Removal::Gone, waits: None });
+        }
+        if policy == Policy::Unplaced {
+            return self.take_off_unplaced(dir, name, rel, &survey, run);
         }
         let stopped = self.forget(&survey, policy, run)?;
         let before = run.kept;
         let removed = match &self.rw {
             Some(rw) => {
-                let keep = match policy {
-                    Policy::Removed => Keep::Changed,
-                    Policy::Resync => Keep::Downloaded,
-                    Policy::RemovedLeaving | Policy::Leaving { .. } => Keep::Nothing,
-                };
-                let items = if keep == Keep::Nothing { HashSet::new() } else { self.items_at(dir, name)? };
+                let keep = if policy == Policy::Resync { Keep::Downloaded } else { Keep::Changed };
+                let items = self.items_at(dir, name)?;
                 self.remove_whole(&Whole { rw, keep, items }, dir, name, rel, false, run)
             }
             None => self.remove_rescuing(dir, name, rel, &stopped, run).map(|()| Removal::Gone),
@@ -222,7 +214,7 @@ impl Materializer {
                 tracing::info!("{} was taken off the disk: {} change(s) waiting there are dropped", rel.display(), dropped.len());
             }
         }
-        Ok(TakenOff { removal, ids: survey.ids })
+        Ok(TakenOff { removal, waits: None })
     }
 
     /// The item whose object stands at `dir/name`, with the items the base
@@ -250,9 +242,6 @@ impl Materializer {
         };
         survey.found = true;
         if let Ok(handle) = FileHandle::at(dir, name) {
-            if stat.st_mode & libc::S_IFMT == libc::S_IFREG && stat.st_nlink > 1 {
-                survey.linked.push(handle.clone());
-            }
             survey.handles.push(handle);
         }
         if let Probe::Managed { id, .. } = self.disk.probe(dir, name)? {
@@ -275,22 +264,13 @@ impl Materializer {
 
     /// Step 2 of [`Self::take_off`]. The files whose download was told to stop.
     fn forget(&self, survey: &Survey, policy: Policy, run: &mut Run) -> Result<Vec<InodeKey>, ApplyError> {
-        let ids = match policy {
-            Policy::Leaving { placed_elsewhere: true } => Vec::new(),
-            _ => survey.ids.clone(),
-        };
-        let (handles, linked) = (survey.handles.clone(), survey.linked.clone());
+        let ids = survey.ids.clone();
+        let handles = survey.handles.clone();
         self.store.call_blocking({
             let ids = ids.clone();
-            move |s| {
-                // A file with other names is not followed by its handle
-                // once its name here may be gone: the names that stay carry
-                // the same handle, and are the user's own (F238).
-                s.leaving_forget_handles(&linked)?;
-                s.forget_local_objects(&ids, &handles)
-            }
+            move |s| s.forget_local_objects(&ids, &handles)
         })?;
-        if !matches!(policy, Policy::Leaving { .. }) {
+        if policy != Policy::Unplaced {
             // Forgotten and on their way out: the base takes their removal
             // in this cycle, whatever holds them.
             run.out.on_disk.taken.extend(ids);
@@ -319,11 +299,10 @@ impl Materializer {
             Probe::Managed { id, .. } => Some(id.clone()),
             Probe::Unmanaged { .. } => None,
         };
-        let keeps = all.keep != Keep::Nothing;
         let is_dir = matches!(probed, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
         // A directory of the user's own with an ignored name is one thing,
         // kept as it is and not looked into.
-        if keeps && is_dir && id.is_none() && self.unmanaged(all.rw, dir, name)? == Unmanaged::Theirs {
+        if is_dir && id.is_none() && self.unmanaged(all.rw, dir, name)? == Unmanaged::Theirs {
             run.kept.local += 1;
             return Ok(Removal::Kept);
         }
@@ -333,9 +312,17 @@ impl Materializer {
             let mut outcome = Removal::Gone;
             // What stays only where its folder stays, and whether it is a directory.
             let mut beside = Vec::new();
-            if device(&sub)? == device(dir)? {
+            // Another filesystem mounted here is not entered, and cannot be
+            // removed: it stays where it is, on this computer only, with
+            // the folders above it (the examination lists it as on another
+            // device).
+            if device(&sub)? != device(dir)? {
+                run.kept.local += 1;
+                return Ok(Removal::Kept);
+            }
+            {
                 for child in self.disk.list(&sub)? {
-                    let unmarked = keeps && matches!(self.disk.probe(&sub, &child)?, Probe::Unmanaged { .. });
+                    let unmarked = matches!(self.disk.probe(&sub, &child)?, Probe::Unmanaged { .. });
                     if unmarked && self.unmanaged(all.rw, &sub, &child)? == Unmanaged::Beside {
                         let is_dir = matches!(self.disk.probe(&sub, &child)?, Probe::Unmanaged { is_dir: true });
                         beside.push((child, is_dir));
@@ -419,9 +406,6 @@ impl Materializer {
     /// Between this look and the unlink of a file that does not stay a
     /// program can still open it for writing: the window every removal has.
     fn stays(&self, all: &Whole, dir: &File, name: &OsStr, id: Option<&str>) -> Result<Option<bool>, ApplyError> {
-        if all.keep == Keep::Nothing {
-            return Ok(None);
-        }
         let Some(id) = id else {
             return Ok((self.unmanaged(all.rw, dir, name)? == Unmanaged::Theirs).then_some(false));
         };
@@ -524,6 +508,221 @@ impl Materializer {
             _ => {}
         }
     }
+}
+
+impl Materializer {
+    /// [`Self::take_off`] for [`Policy::Unplaced`], once something is found
+    /// there. Nothing is touched while anything waits. Otherwise the
+    /// objects are forgotten and it goes whole; each file is looked at once
+    /// more right before its unlink, and one that holds local work by then
+    /// stops the removal where it is: what is left stays an item of the
+    /// base, which records it again where it stands, and a later cycle
+    /// looks again.
+    fn take_off_unplaced(&self, dir: &File, name: &OsStr, rel: &Path, survey: &Survey, run: &mut Run) -> Result<TakenOff, ApplyError> {
+        let stays = |waits| Ok(TakenOff { removal: Removal::Kept, waits: Some(waits) });
+        let Some(rw) = &self.rw else { return Err(ApplyError::Io(format!("{} is taken off as no longer placed in a read-only folder", rel.display()))) };
+        if let Some(waits) = self.waits(rw, dir, name, rel, run)? {
+            return stays(waits);
+        }
+        let stopped = self.forget(survey, Policy::Unplaced, run)?;
+        match self.remove_unplaced(rw, dir, name, rel, run) {
+            Ok(true) => {
+                run.out.on_disk.taken.extend(survey.ids.iter().cloned());
+                Ok(TakenOff { removal: Removal::Gone, waits: None })
+            }
+            Ok(false) => {
+                self.settle_stopped(dir, name, &stopped);
+                stays(WaitsFor::Changes(rel.display().to_string()))
+            }
+            Err(e) => {
+                self.settle_stopped(dir, name, &stopped);
+                Err(e)
+            }
+        }
+    }
+
+    /// What keeps the item whose object stands at `dir/name` (at `rel`) on
+    /// disk although the folder cannot hold it any more; `None` when
+    /// nothing does. Something waits when an outbox row has a place at or
+    /// below it, or when the disk and the base disagree there: what the
+    /// user made, changed, moved, renamed or deleted and no examination has
+    /// recorded yet, a file open for writing, a state that cannot be read,
+    /// a file from elsewhere that is not downloaded, something under an
+    /// ignored name that only this computer has, another filesystem.
+    fn waits(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &Run) -> Result<Option<WaitsFor>, ApplyError> {
+        let rows = self.store.call_blocking({ let rel = rel.to_path_buf(); move |s| s.outbox_at_or_under(&rel) })?;
+        if !rows.is_empty() {
+            return Ok(Some(WaitsFor::Uploads(rows.len() as u64)));
+        }
+        let Probe::Managed { id, is_dir } = self.disk.probe(dir, name)? else { return Ok(Some(WaitsFor::Changes(shown(rel)))) };
+        // What an examination and the outbox settle by themselves is said
+        // before what only the user can settle: the place is handed to the
+        // watcher for the first.
+        let mut stays = None;
+        let passing = self.differs(rw, dir, name, rel, &id, is_dir, device(dir)?, run, &mut stays)?;
+        Ok(passing.or(stays))
+    }
+
+    /// [`Self::waits`] for the object of item `id` at `dir/name`, which is
+    /// where the base has it, and for everything below it: the directory
+    /// and the base are walked side by side. Returned: the first thing
+    /// found that an examination records or that passes by itself. The
+    /// first thing found that stays until the user does something about it
+    /// goes into `stays`, and the walk goes on.
+    #[allow(clippy::too_many_arguments)]
+    fn differs(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, is_dir: bool, dev: libc::dev_t, run: &Run, stays: &mut Option<WaitsFor>) -> Result<Option<WaitsFor>, ApplyError> {
+        self.check_cancel()?;
+        if !is_dir {
+            let file = self.disk.open_file(dir, name)?;
+            return Ok(match read_state(&file) {
+                Ok(Some(State::Hydrated)) if self.local_work(&file) => Some(WaitsFor::Changes(shown(rel))),
+                Ok(Some(State::Hydrated)) if konedrive_fs::lease::open_for_writing(&file).unwrap_or(true) => Some(WaitsFor::OpenForWriting(shown(rel))),
+                Ok(Some(_)) => None,
+                Ok(None) | Err(_) => {
+                    first(stays, WaitsFor::UnknownState(shown(rel)));
+                    None
+                }
+            });
+        }
+        let sub = self.disk.open_subdir(dir, name)?;
+        if device(&sub)? != dev {
+            first(stays, WaitsFor::MountedInside(shown(rel)));
+            return Ok(None);
+        }
+        let folder = id.to_owned();
+        let mut base: HashMap<OsString, konedrive_tree::Row> = self
+            .store
+            .call_blocking(move |s| s.children(Table::Items, &folder))?
+            .into_iter()
+            .filter(|row| row.placement == Placement::Placed)
+            .map(|row| (OsString::from(&row.name), row))
+            .collect();
+        for child in self.disk.list(&sub)? {
+            let at = rel.join(&child);
+            match self.disk.probe(&sub, &child)? {
+                Probe::Absent => {}
+                Probe::Managed { id, is_dir } => {
+                    let expected = base.get(&child).is_some_and(|row| row.id == id && (row.kind == Kind::Folder) == is_dir);
+                    if !expected {
+                        // Moved, renamed or copied here, or from elsewhere.
+                        // One that is not downloaded and is no item of this
+                        // folder goes up with nothing, and stays listed.
+                        let known = self.store.call_blocking({ let id = id.clone(); move |s| s.get(Table::Items, &id) })?.is_some();
+                        let empty = !is_dir && !matches!(self.disk.open_file(&sub, &child).map(|file| read_state(&file)), Ok(Ok(Some(State::Hydrated))));
+                        if !known && empty {
+                            first(stays, WaitsFor::NotDownloaded(shown(&at)));
+                            continue;
+                        }
+                        return Ok(Some(WaitsFor::Changes(shown(&at))));
+                    }
+                    base.remove(&child);
+                    if let Some(waits) = self.differs(rw, &sub, &child, &at, &id, is_dir, dev, run, stays)? {
+                        return Ok(Some(waits));
+                    }
+                }
+                Probe::Unmanaged { is_dir } => {
+                    if is_dir && self.disk.open_subdir(&sub, &child).and_then(|below| device(&below)).is_ok_and(|below| below != dev) {
+                        first(stays, WaitsFor::MountedInside(shown(&at)));
+                        continue;
+                    }
+                    match self.unmanaged(rw, &sub, &child)? {
+                        Unmanaged::Ours | Unmanaged::Beside => {}
+                        // Never uploaded, and only here: it is not removed.
+                        Unmanaged::Theirs if rw.ignore.matches(&child) => first(stays, WaitsFor::LocalOnly(shown(&at))),
+                        Unmanaged::Theirs | Unmanaged::Folder => return Ok(Some(WaitsFor::Changes(shown(&at)))),
+                    }
+                }
+            }
+        }
+        // What the base has here and the disk does not: deleted or moved by
+        // the user, which an examination proves by the recorded object. One
+        // this run took away itself, or with no object on record, is no
+        // change anybody made here.
+        for (name, row) in base {
+            if run.moved_from.contains_key(&row.id) || run.out.on_disk.taken.contains(&row.id) {
+                continue;
+            }
+            if self.store.call_blocking(move |s| s.local_handle(&row.id))?.is_some() {
+                return Ok(Some(WaitsFor::Changes(shown(&rel.join(name)))));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `dir/name` (at `rel`), which nothing was found waiting in, goes with
+    /// everything below it. `false` when the look at a file right before
+    /// its unlink finds what [`Self::waits`] did not: local work, or
+    /// something new. That stays, with the directories above it.
+    fn remove_unplaced(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<bool, ApplyError> {
+        self.check_cancel()?;
+        let managed = match self.disk.probe(dir, name)? {
+            Probe::Absent => return Ok(true),
+            Probe::Managed { is_dir: true, .. } => {
+                let sub = self.disk.open_subdir(dir, name)?;
+                if device(&sub)? != device(dir)? {
+                    return Ok(false);
+                }
+                let mut whole = true;
+                for child in self.disk.list(&sub)? {
+                    whole &= self.remove_unplaced(rw, &sub, &child, &rel.join(&child), run)?;
+                }
+                if !whole {
+                    return Ok(false);
+                }
+                self.disk.remove(dir, name, true)?;
+                true
+            }
+            Probe::Managed { is_dir: false, .. } => {
+                let file = self.disk.open_file(dir, name)?;
+                let holds = match read_state(&file) {
+                    Ok(Some(State::Hydrated)) => self.local_work(&file) || konedrive_fs::lease::open_for_writing(&file).unwrap_or(true),
+                    Ok(Some(_)) => false,
+                    Ok(None) | Err(_) => true,
+                };
+                if holds {
+                    return Ok(false);
+                }
+                let other_names = self.with_other_names(dir, name)?;
+                self.disk.remove(dir, name, false)?;
+                if let Some(file) = other_names {
+                    #[cfg(test)]
+                    if self.disk.dir(Path::new("")).is_ok_and(|root| testing::stops_after_unlink(&root)) {
+                        return Err(ApplyError::Io(format!("{}: stopped after the unlink (test)", rel.display())));
+                    }
+                    release_other_names(&file, rel);
+                }
+                true
+            }
+            Probe::Unmanaged { is_dir } => {
+                if !matches!(self.unmanaged(rw, dir, name)?, Unmanaged::Ours | Unmanaged::Beside) {
+                    return Ok(false);
+                }
+                // The daemon's own, or nothing to lose. One that will not
+                // go (a directory with something in it) stays for now.
+                match self.disk.remove(dir, name, is_dir) {
+                    Ok(()) => {}
+                    Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+                    Err(_) => return Ok(false),
+                }
+                false
+            }
+        };
+        if managed {
+            run.out.counts.deleted += 1;
+            run.note(EventKind::Removed, rel, None);
+        }
+        Ok(true)
+    }
+}
+
+/// `waits` is what stays, unless something found before it is.
+fn first(stays: &mut Option<WaitsFor>, waits: WaitsFor) {
+    stays.get_or_insert(waits);
+}
+
+/// A path relative to the root, as what an item waits for names it.
+fn shown(rel: &Path) -> String {
+    rel.display().to_string()
 }
 
 /// A file of ours whose name was just unlinked and which has other names —

@@ -130,9 +130,6 @@ impl Materializer {
         for candidate in candidates {
             match self.disk.rename(holding, name, &dir, &candidate) {
                 Ok(()) => {
-                    // What is leaving inside it went along (issue #104).
-                    let (from, to) = (PathBuf::from(HOLDING).join(name), parent.join(&candidate));
-                    self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
                     let is_dir = matches!(self.disk.probe(&dir, &candidate)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
                     run.out.on_disk.examine.push((parent.join(&candidate), is_dir));
                     return Ok(true);

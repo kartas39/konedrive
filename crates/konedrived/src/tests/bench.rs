@@ -546,7 +546,7 @@ fn read_write_cycle(store: &Store, changes: Vec<Change>) {
     materializer_reads(store, &ids);
     let changed = store.call_blocking(|s| s.changed_ids()).unwrap();
     assert!(changed.len() <= ids.len());
-    store.call_blocking(move |s| s.commit_staging_deferring("link-2", &konedrive_tree::reconcile::Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 0 })).unwrap();
+    store.call_blocking(move |s| s.commit_staging_deferring("link-2", &konedrive_tree::reconcile::Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 0, waits: &[] })).unwrap();
     store.call_blocking(|s| s.outbox_drop_removed()).unwrap();
     store.call_blocking(|s| s.counts()).unwrap();
 }

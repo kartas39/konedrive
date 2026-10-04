@@ -81,7 +81,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
         }
         // Where the base has it already: nothing to send.
-        e.store().call(move |s| s.outbox_drop(row.seq, None, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(row.seq, None, None)).await?;
         return Ok(Outcome::Done);
     }
     match e.drive().update_item(&id, guard.as_str(), &change).await {
@@ -199,7 +199,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
         // Never in OneDrive (its create never landed): nothing to delete.
         tracing::info!("{} was never uploaded: its delete leaves the outbox", row.rel.display());
         let seq = row.seq;
-        e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
         return Ok(Outcome::Done);
     };
     let base = row.base.clone().unwrap_or_default();
@@ -240,7 +240,7 @@ async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Ou
     {
         let _tree = e.tree_lock().lock().await;
         let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
-        e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
+        e.store().call(move |s| s.outbox_drop(seq, Some(&id), Some(&stored))).await?;
     }
     e.host().activity(&event);
     e.host().full_cycle_wanted();
