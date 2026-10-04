@@ -163,7 +163,7 @@ async fn baloo_leaves_a_folder_the_user_already_excluded_alone() {
 }
 
 /// Whether this daemon added the exclusion is persisted
-/// (`sync_root_baloo_excluded` in `config.toml`), so a restart
+/// (`baloo_excluded` of the folder's entry in `config.toml`), so a restart
 /// between a registration and its Forget still gets the Forget
 /// right — the exclusion comes off, and it is not re-checked or
 /// re-added at the restart in between.

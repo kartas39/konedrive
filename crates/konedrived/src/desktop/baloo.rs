@@ -14,7 +14,7 @@
 //! Whether *this* daemon is the one that added the exclusion is what decides
 //! whether Forget takes it off again (`config rm excludeFolders`) —
 //! persisted in `config.toml` (`baloo_excluded` of the folder's entry,
-//! `crate::sync::persisted`) so a daemon restart in between still
+//! `crate::config::RootConfig`) so a daemon restart in between still
 //! gets it right. Every bring-up of a folder that does not record it as
 //! excluded asks again: an exclusion that failed, timed out or was
 //! cut off by a kill, or a Baloo installed later, is caught up then. The
