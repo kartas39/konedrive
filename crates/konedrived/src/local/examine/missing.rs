@@ -1,34 +1,61 @@
-use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 
-use crate::local::entry::Type;
+use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{is_under, place_name, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use konedrive_tree::{Kind, Placement, Row, Table};
+use konedrive_tree::{Kind, Row};
 
+use super::decisions::Settle;
 use super::detect::leaves;
-use super::{base_of, ExamineError, Expect, object, Objects, Place, Run, Settle};
+use super::facts::Expect;
+use super::{base_of, object, ExamineError, Place, Run};
+use crate::local::entry::{Entry, Type};
 
-impl Run<'_, '_> {
+/// The objects of the entries listed, to tell whether a pending row's object
+/// was seen ([`Inode::same_object`]) without comparing it with every entry.
+struct Objects {
+    handles: HashSet<FileHandle>,
+    /// Every entry's inode, and those of entries with no handle.
+    inodes: HashSet<(u64, u64)>,
+    unhandled: HashSet<(u64, u64)>,
+}
+
+impl Objects {
+    fn of(entries: &[Entry]) -> Self {
+        let mut objects = Objects { handles: HashSet::new(), inodes: HashSet::new(), unhandled: HashSet::new() };
+        for e in entries {
+            objects.inodes.insert((e.dev, e.ino));
+            match &e.handle {
+                Some(handle) => {
+                    objects.handles.insert(handle.clone());
+                }
+                None => {
+                    objects.unhandled.insert((e.dev, e.ino));
+                }
+            }
+        }
+        objects
+    }
+
+    fn seen(&self, inode: &Inode) -> bool {
+        match &inode.handle {
+            Some(handle) => self.handles.contains(handle) || self.unhandled.contains(&(inode.dev, inode.ino)),
+            None => self.inodes.contains(&(inode.dev, inode.ino)),
+        }
+    }
+}
+
+impl Run<'_, '_, '_> {
     /// Rule 7: base items (and pending rows) expected in the examined
     /// places and not found anywhere in the batch.
     pub(super) fn missing(&mut self) -> Result<(), ExamineError> {
-        let objects = Objects::of(&self.entries);
-        let mut places: Vec<(PathBuf, Option<BTreeSet<OsString>>)> = self.whole.iter().map(|d| (d.clone(), None)).collect();
-        places.extend(self.named.iter().map(|(d, n)| (d.clone(), Some(n.clone()))));
-        for (dir, names) in places {
-            let in_scope = |run: &Self, rel: &Path| {
-                !run.unreadable.contains(rel) && names.as_ref().is_none_or(|n| rel.file_name().is_some_and(|f| n.contains(f)))
-            };
-            let mut items: Vec<(String, PathBuf)> = Vec::new();
+        let objects = Objects::of(self.listing.entries());
+        for (dir, _) in self.listing.places() {
+            let mut items: Vec<(String, std::path::PathBuf)> = Vec::new();
             if let Some(parent) = self.dir_id(&dir) {
-                for child in self.store({ let parent = parent.to_owned(); move |s| s.children(Table::Items, &parent) })? {
-                    if child.placement != Placement::Placed {
-                        continue;
-                    }
-                    self.base.entry(child.id.clone()).or_insert_with(|| Some(child.clone()));
-                    if let Expect::At(rel) = self.expected(&child.id)? {
-                        if rel.parent() == Some(dir.as_path()) && in_scope(self, &rel) {
+                for child in self.facts.children(&parent)? {
+                    if let Expect::At(rel) = self.facts.expected(&child.id)? {
+                        if rel.parent() == Some(dir.as_path()) && self.examined(&rel) {
                             items.push((child.id.clone(), rel));
                         }
                     }
@@ -36,13 +63,13 @@ impl Run<'_, '_> {
             }
             let mut pending: Vec<OutboxRow> = Vec::new();
             let listed: HashSet<String> = items.iter().map(|(id, _)| id.clone()).collect();
-            for row in self.rows.in_dir(&dir) {
-                if row.kind.removes() || !in_scope(self, &row.rel) {
+            for row in self.facts.rows.in_dir(&dir) {
+                if row.kind.removes() || !self.examined(&row.rel) {
                     continue;
                 }
                 match &row.item_id {
                     Some(id) => {
-                        if !listed.contains(id) && self.rows.of_item(id).next_back().map(|r| r.seq) == Some(row.seq) {
+                        if !listed.contains(id) && self.facts.rows.of_item(id).next_back().map(|r| r.seq) == Some(row.seq) {
                             items.push((id.clone(), row.rel.clone()));
                         }
                     }
@@ -50,7 +77,7 @@ impl Run<'_, '_> {
                 }
             }
             for (id, rel) in items {
-                if !self.chosen.contains_key(&id) && !self.decided.contains(&id) {
+                if self.decisions.open(&id) {
                     self.missing_item(&id, &rel)?;
                 }
             }
@@ -71,11 +98,11 @@ impl Run<'_, '_> {
         if row.kind != OutboxKind::Mkdir {
             return Ok(());
         }
-        let inside: Vec<OutboxRow> = self.rows.under(&row.rel).into_iter().cloned().collect();
+        let inside: Vec<OutboxRow> = self.facts.rows.under(&row.rel).into_iter().cloned().collect();
         for r in inside {
             match &r.item_id {
                 None => self.gone_pending(&r),
-                Some(id) if !r.kind.removes() && !self.chosen.contains_key(id) && !self.decided.contains(id) => {
+                Some(id) if !r.kind.removes() && self.decisions.open(id) => {
                     let id = id.clone();
                     self.missing_item(&id, &r.rel)?;
                 }
@@ -90,28 +117,27 @@ impl Run<'_, '_> {
     /// a delete waits behind it, and learns the item id at its commit.
     fn gone_pending(&mut self, row: &OutboxRow) {
         if row.state != OutboxState::Running {
-            self.ops.push(OutboxOp::Remove(row.seq));
+            self.outcome.ops.push(OutboxOp::Remove(row.seq));
             return;
         }
-        self.detections.push(leaves(OutboxKind::Delete, None, None, row.inode.clone(), &row.rel, None));
+        self.outcome.detections.push(leaves(OutboxKind::Delete, None, None, row.inode.clone(), &row.rel, None));
     }
 
     /// Item `id`, expected at `rel`, is not in the batch.
     fn missing_item(&mut self, id: &str, rel: &Path) -> Result<(), ExamineError> {
-        let Some(base) = self.base_row(id)? else { return Ok(()) };
+        let Some(base) = self.facts.row(id)? else { return Ok(()) };
         // Save-by-rename: a new file now stands at its name — not one the
         // worker is creating right now.
         if base.kind == Kind::File {
-            if let Some(&s) = self.at.get(rel) {
-                let e = &self.entries[s];
-                if e.ty == Type::File && e.id.is_none() && !self.consumed.contains(&s) && !self.being_created(e) {
-                    self.consumed.insert(s);
-                    self.chosen.insert(id.to_owned(), s);
+            if let Some(s) = self.listing.at(rel) {
+                let e = &self.listing[s];
+                if e.ty == Type::File && self.decisions.id_of(self.listing, s).is_none() && !self.decisions.taken(s) && !self.facts.rows.being_created(e) {
+                    self.decisions.is_item(id, s);
                     return self.save_by_rename(id, &base, s);
                 }
             }
         }
-        let Some(handle) = self.local_handle(id)? else {
+        let Some(handle) = self.facts.recorded(id)? else {
             // A rebuilt base cannot prove a delete (WR4).
             self.hold_back(id, Settle::Unproven, true);
             return Ok(());
@@ -150,10 +176,10 @@ impl Run<'_, '_> {
     /// running are never removed; a moved-in item's gets its follow-up.
     /// Whether its row was written, or why not.
     pub(super) fn removal(&mut self, kind: OutboxKind, id: &str, base: &Row, rel: &Path, inode: Option<Inode>, went_to: Option<&Path>) -> Result<Settle, ExamineError> {
-        if self.decided.contains(id) {
-            return Ok(self.deferred.get(id).copied().unwrap_or(Settle::Done));
+        if let Some(settled) = self.decisions.settled(id) {
+            return Ok(settled);
         }
-        self.decided.insert(id.to_owned());
+        self.decisions.settle(id, Settle::Done);
         if base.kind == Kind::Folder {
             match self.left_before(id, rel, went_to)? {
                 Settle::Done => {}
@@ -171,11 +197,11 @@ impl Run<'_, '_> {
                     return Ok(Settle::Unproven);
                 }
             }
-            let inside: HashSet<String> = self.store({ let id = id.to_owned(); move |s| s.descendants(Table::Items, &id) })?.into_iter().collect();
-            let mut rows: Vec<OutboxRow> = self.rows.under(rel).into_iter().cloned().collect();
+            let inside: HashSet<String> = self.facts.descendants(id)?.into_iter().collect();
+            let mut rows: Vec<OutboxRow> = self.facts.rows.under(rel).into_iter().cloned().collect();
             let mut taken: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
             for id in &inside {
-                rows.extend(self.rows.of_item(id).filter(|r| taken.insert(r.seq)).cloned());
+                rows.extend(self.facts.rows.of_item(id).filter(|r| taken.insert(r.seq)).cloned());
             }
             rows.sort_by_key(|r| r.seq);
             for r in rows {
@@ -185,7 +211,7 @@ impl Run<'_, '_> {
                         None if is_under(&r.rel, rel) => self.gone_pending(&r),
                         // Moved in from elsewhere while being sent: it leaves
                         // by its own object, behind the running row.
-                        Some(item) if !inside.contains(&item) && !self.chosen.contains_key(&item) && !self.decided.contains(&item) => {
+                        Some(item) if !inside.contains(&item) && self.decisions.open(&item) => {
                             self.missing_item(&item, &r.rel)?;
                         }
                         // What the base has inside waits in front of the
@@ -195,15 +221,15 @@ impl Run<'_, '_> {
                     continue;
                 }
                 match r.item_id.clone() {
-                    None => self.ops.push(OutboxOp::Remove(r.seq)),
-                    Some(item) if self.chosen.contains_key(&item) || self.decided.contains(&item) => {}
+                    None => self.outcome.ops.push(OutboxOp::Remove(r.seq)),
+                    Some(item) if !self.decisions.open(&item) => {}
                     // Left before the folder: kept.
                     Some(_) if r.kind == OutboxKind::MoveOut => {}
                     Some(item) if inside.contains(&item) => {
                         // Gone with the folder in the cloud too — unless the
                         // row takes it elsewhere in the folder.
                         if r.kind == OutboxKind::Delete || is_under(&r.rel, rel) {
-                            self.ops.push(OutboxOp::Remove(r.seq));
+                            self.outcome.ops.push(OutboxOp::Remove(r.seq));
                         }
                     }
                     Some(_) if r.kind == OutboxKind::Delete => {}
@@ -213,7 +239,7 @@ impl Run<'_, '_> {
         }
         // Where a move out went, proved: what a later `ESTALE` is checked against.
         let went_to = went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(place_name).map(str::to_owned);
-        self.detections.push(leaves(kind, Some(id), Some(base_of(base)), inode, rel, went_to));
+        self.outcome.detections.push(leaves(kind, Some(id), Some(base_of(base)), inode, rel, went_to));
         Ok(Settle::Done)
     }
 
@@ -231,25 +257,21 @@ impl Run<'_, '_> {
         let mut settled = Settle::Done;
         let mut queue: VecDeque<String> = VecDeque::from([folder.to_owned()]);
         while let Some(parent) = queue.pop_front() {
-            for child in self.store({ let parent = parent.to_owned(); move |s| s.children(Table::Items, &parent) })? {
-                if child.placement != Placement::Placed {
-                    continue;
-                }
+            for child in self.facts.children(&parent)? {
                 let id = child.id.clone();
-                self.base.entry(id.clone()).or_insert_with(|| Some(child.clone()));
-                if self.chosen.contains_key(&id) {
+                if self.decisions.found(&id) {
                     continue;
                 }
-                if self.decided.contains(&id) {
-                    settled = settled.max(self.deferred.get(&id).copied().unwrap_or(Settle::Done));
+                if let Some(settle) = self.decisions.settled(&id) {
+                    settled = settled.max(settle);
                     continue;
                 }
-                let Expect::At(at) = self.expected(&id)? else { continue };
+                let Expect::At(at) = self.facts.expected(&id)? else { continue };
                 if !is_under(&at, rel) {
                     // A row of its own takes it elsewhere.
                     continue;
                 }
-                let Some(handle) = self.local_handle(&id)? else {
+                let Some(handle) = self.facts.recorded(&id)? else {
                     settled = settled.max(Settle::Unproven);
                     continue;
                 };
@@ -274,40 +296,5 @@ impl Run<'_, '_> {
             }
         }
         Ok(settled)
-    }
-
-    /// Whether `dir` is, or is inside, a directory without an item id whose
-    /// name is ignored: what is in it stays local (the outbox on the bus). A folder
-    /// from OneDrive syncs whatever its name.
-    pub(super) fn in_ignored_dir(&self, dir: &Path) -> bool {
-        let mut at = dir;
-        while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
-            if self.ex.ignore.matches(name) {
-                let managed = self
-                    .ex
-                    .disk
-                    .dir(parent)
-                    .and_then(|d| self.ex.disk.probe(&d, name))
-                    .map(|probe| matches!(probe, crate::folder::disk::Probe::Managed { .. }));
-                // A directory the worker is making right now is an item
-                // already, whatever its name (the outbox on the bus).
-                if matches!(managed, Ok(false)) && !self.dir_being_made(at) {
-                    return true;
-                }
-            }
-            at = parent;
-        }
-        false
-    }
-
-    /// Whether the worker is making the directory at `rel` in OneDrive right
-    /// now: a running `mkdir` of its object.
-    fn dir_being_made(&self, rel: &Path) -> bool {
-        use std::os::unix::fs::MetadataExt;
-        if self.rows.making.is_empty() {
-            return false;
-        }
-        let Ok(meta) = self.ex.disk.dir(rel).and_then(|dir| dir.metadata()) else { return false };
-        self.rows.making.iter().map(|&i| &self.rows.all[i]).any(|row| row.inode.as_ref().is_some_and(|i| i.dev == meta.dev() && i.ino == meta.ino()))
     }
 }

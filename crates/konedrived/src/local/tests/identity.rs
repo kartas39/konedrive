@@ -1,4 +1,4 @@
-//! Which object is the item (invariant I2, `Run::resolve`): the one the base
+//! Which object is the item (invariant I2, `examine::identity::identify`): the one the base
 //! records, or the one at the item's place; every other object carrying the
 //! id is a copy.
 

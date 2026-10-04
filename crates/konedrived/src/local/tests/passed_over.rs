@@ -177,3 +177,28 @@ fn what_was_listed_in_a_copied_folder_that_went_gets_no_row() {
     assert!(out.stripped.is_empty() && out.unreadable.is_empty());
     assert!(fx.rows().is_empty(), "{:?}", fx.summary());
 }
+
+/// A line of the "not uploaded" list inside a directory that cannot be read stays: what
+/// could not be looked at is not known to be gone. It goes when the directory can be read
+/// again and the thing is no longer there.
+#[test]
+fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
+    if root() {
+        return;
+    }
+    let fx = Fx::new(&[folder("D", "R", "photos")]);
+    std::os::unix::fs::symlink("/etc/hostname", fx.path("photos/link")).unwrap();
+    fx.examine(&Batch::full());
+    let listed = || fx.store.call_blocking(|s| s.local_skipped()).unwrap().into_iter().map(|s| s.rel.display().to_string()).collect::<Vec<_>>();
+    assert_eq!(listed(), ["photos/link"]);
+
+    set_mode(&fx.path("photos"), 0o000);
+    let out = fx.examine(&Batch::full());
+    set_mode(&fx.path("photos"), 0o755);
+    assert_eq!(out.unreadable, [PathBuf::from("photos")]);
+    assert_eq!(listed(), ["photos/link"], "the link is still there, only not seen");
+
+    std::fs::remove_file(fx.path("photos/link")).unwrap();
+    fx.examine(&Batch::full());
+    assert!(listed().is_empty());
+}

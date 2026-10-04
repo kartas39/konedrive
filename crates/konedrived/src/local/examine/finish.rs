@@ -1,37 +1,30 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
 
 use crate::local::entry::Type;
 use crate::local::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
-use konedrive_tree::{Kind, Table, TreeError};
+use konedrive_tree::{Kind, TreeError};
 
 use super::{depth, Examined, ExamineError, Run};
 
-impl Run<'_, '_> {
-    /// `local_skipped` lists what is there now: rows for examined places
-    /// that no longer qualify go — after a Full scan, every such row.
-    pub(super) fn tidy_skipped(&mut self, full: bool) -> Result<(), ExamineError> {
-        for s in self.store(|s| s.local_skipped())? {
-            let dir = s.rel.parent().unwrap_or(Path::new(""));
-            let examined = !self.unreadable.contains(&s.rel)
-                && (full
-                    || self.whole.contains(dir)
-                    || self.named.get(dir).is_some_and(|names| s.rel.file_name().is_some_and(|n| names.contains(n))));
-            if examined && !self.skipped.contains_key(&s.rel) {
-                self.ops.push(OutboxOp::Unskip(s.rel));
+impl Run<'_, '_, '_> {
+    /// `local_skipped` lists what is there now: a line for a place this run
+    /// examined ([`examined`](Self::examined)) that no longer qualifies goes.
+    /// A line at or inside a place that was not examined stays: what could
+    /// not be looked at is not known to be gone.
+    pub(super) fn tidy_skipped(&mut self) -> Result<(), ExamineError> {
+        for s in self.facts.skipped()? {
+            if self.examined(&s.rel) && !self.outcome.skipped.contains_key(&s.rel) {
+                self.outcome.ops.push(OutboxOp::Unskip(s.rel));
             }
         }
-        let skipped = std::mem::take(&mut self.skipped);
-        let ops: Vec<OutboxOp> = skipped
-            .into_iter()
-            .map(|(rel, reason)| {
-                // A file's size, for the sums of what is kept back; nothing for the rest.
-                let size = self.at.get(&rel).map(|&i| &self.entries[i]).filter(|e| e.ty == Type::File).map_or(0, |e| e.size);
-                OutboxOp::Skip { rel, reason, size }
-            })
-            .collect();
-        self.ops.extend(ops);
+        let listing = self.listing;
+        let skipped = std::mem::take(&mut self.outcome.skipped);
+        self.outcome.ops.extend(skipped.into_iter().map(|(rel, reason)| {
+            // A file's size, for the sums of what is kept back; nothing for the rest.
+            let size = listing.at(&rel).map(|ix| &listing[ix]).filter(|e| e.ty == Type::File).map_or(0, |e| e.size);
+            OutboxOp::Skip { rel, reason, size }
+        }));
         Ok(())
     }
 
@@ -40,8 +33,8 @@ impl Run<'_, '_> {
         if !removed.insert(id.to_owned()) {
             return Ok(());
         }
-        if self.base_row(id)?.is_some_and(|base| base.kind == Kind::Folder) {
-            removed.extend(self.store({ let id = id.to_owned(); move |s| s.descendants(Table::Items, &id) })?);
+        if self.facts.row(id)?.is_some_and(|base| base.kind == Kind::Folder) {
+            removed.extend(self.facts.descendants(id)?);
         }
         Ok(())
     }
@@ -57,17 +50,21 @@ impl Run<'_, '_> {
     ///
     /// Rows are written freers first: a row that frees a name in OneDrive
     /// before the row that takes it, otherwise shallowest first, in the order
-    /// found.
+    /// found. What is said in Activity (an empty copy removed) is written
+    /// right after the rows, in a call of its own, also when the rows could
+    /// not be written: the removal happened.
     pub(super) fn finish(mut self) -> Result<Examined, ExamineError> {
-        let confirmed: HashSet<String> = self.rows.iter().filter(|r| r.kind.removes() && r.confirmed).filter_map(|r| r.item_id.clone()).collect();
+        let confirmed: HashSet<String> = self.facts.rows.iter().filter(|r| r.kind.removes() && r.confirmed).filter_map(|r| r.item_id.clone()).collect();
         let waiting: Vec<OutboxRow> = self
+            .facts
             .rows
             .iter()
             .filter(|r| r.kind.removes() && !r.confirmed && r.state != OutboxState::Running)
-            .filter(|r| !r.item_id.as_ref().is_some_and(|i| self.decided.contains(i)))
+            .filter(|r| !r.item_id.as_ref().is_some_and(|i| self.decisions.settled(i).is_some()))
             .cloned()
             .collect();
         let new: Vec<String> = self
+            .outcome
             .detections
             .iter()
             .filter(|d| d.kind.removes())
@@ -83,29 +80,36 @@ impl Run<'_, '_> {
         // The items in the folder — a walk of the whole tree — counted only
         // when the share decides (issue #39).
         let trips = fresh
-            && (n > MASS_DELETE_ITEMS || (n >= MASS_DELETE_FLOOR && n * 100 > self.store(|s| s.counts())?.placed * MASS_DELETE_PERCENT));
+            && (n > MASS_DELETE_ITEMS || (n >= MASS_DELETE_FLOOR && n * 100 > self.facts.placed()? * MASS_DELETE_PERCENT));
         if trips {
             tracing::warn!("{n} items would be removed from OneDrive; held until confirmed");
-            for d in self.detections.iter_mut().filter(|d| d.kind.removes() && d.item_id.as_ref().is_some_and(|id| !confirmed.contains(id))) {
+            for d in self.outcome.detections.iter_mut().filter(|d| d.kind.removes() && d.item_id.as_ref().is_some_and(|id| !confirmed.contains(id))) {
                 d.state = OutboxState::Held;
                 d.reason = Some(Reason::MassDelete);
                 d.next_try = None;
             }
             for row in waiting.iter().filter(|r| r.state != OutboxState::Held) {
-                self.ops.push(OutboxOp::Hold { seq: row.seq, reason: Reason::MassDelete });
+                self.outcome.ops.push(OutboxOp::Hold { seq: row.seq, reason: Reason::MassDelete });
             }
-            self.out.held = n;
+            self.outcome.out.held = n;
         }
-        let detections = ordered(std::mem::take(&mut self.detections));
+        let detections = ordered(std::mem::take(&mut self.outcome.detections));
         let mut ops: Vec<OutboxOp> = Vec::new();
         let (first, rest): (Vec<OutboxOp>, Vec<OutboxOp>) =
-            std::mem::take(&mut self.ops).into_iter().partition(|op| matches!(op, OutboxOp::Rebase { .. } | OutboxOp::Remove(_)));
+            std::mem::take(&mut self.outcome.ops).into_iter().partition(|op| matches!(op, OutboxOp::Rebase { .. } | OutboxOp::Remove(_)));
         ops.extend(first);
         ops.extend(detections.into_iter().map(OutboxOp::Record));
         ops.extend(rest);
         let now = self.ex.now;
-        self.out.applied = self.ex.store.call_blocking(move |s| s.outbox_apply(&ops, now))?;
-        Ok(self.out)
+        let applied = self.ex.store.call_blocking(move |s| s.outbox_apply(&ops, now));
+        let said = std::mem::take(&mut self.outcome.activity);
+        if !said.is_empty() {
+            if let Err(err) = self.ex.store.call_blocking(move |s| s.add_activity(&said)) {
+                tracing::warn!("cannot record an activity event: {err}");
+            }
+        }
+        self.outcome.out.applied = applied?;
+        Ok(self.outcome.out)
     }
 }
 

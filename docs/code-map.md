@@ -202,14 +202,19 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `mod.rs` — local changes, from the disk to the outbox. `[tests]`
 - `batch.rs` — a batch: the places a quiet spell of events made dirty. `[tests]`
 - `entry.rs` — one directory entry as the examination sees it.
-- `examine.rs` — the examination: from a batch to the detections recorded in the outbox.
-- `examine/run.rs` — a run's reads of the store, and what it expects where.
-- `examine/list.rs` — reading every place the batch names.
-- `examine/classify.rs` — which entry is which item; strangers and backups.
-- `examine/detect.rs` — the detections a run records, each shape made once; whether a file is ready to be read.
-- `examine/found.rs` — an item found: where it is, and its content; the one open of a listed entry.
+- `examine.rs` — the examination: from a batch to the detections recorded in the outbox; a run's four parts and the order of the rules.
+- `examine/listing.rs` — what a run read of the disk: every place the batch names, read-only once built; whether a place was looked at.
+- `examine/facts.rs` — the store as a run reads it: the live rows, and each item's row, recorded object and expected place.
+- `examine/decisions.rs` — who is who in a run: which entry is which item, what is settled, what is spoken for.
+- `examine/identity.rs` — which entry is the item: one function of facts and entries, and carrying its decision out. `[tests]`
+- `examine/hands.rs` — the one type through which a run opens a listed entry and writes to the disk while deciding.
+- `examine/copies.rs` — what becomes of an entry with an id that is not its own: stripped, listed, or removed when empty.
+- `examine/found.rs` — an item found: where it is, and its content, by the stamp first.
 - `examine/missing.rs` — an item not found: removed, moved away, or moved out of the folder.
-- `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows.
+- `examine/new.rs` — an entry with no id: a new file or folder, unless it stays local.
+- `examine/place.rs` — where an object is now, asked by its handle, and the proof that it is absent.
+- `examine/detect.rs` — the detections a run records, each shape made once; whether a file is ready to be read.
+- `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows, the one transaction.
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
 - `liveness.rs` — whether a missing object is still there, and where; the proof that it is absent from a place.
