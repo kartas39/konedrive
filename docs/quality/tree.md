@@ -116,6 +116,14 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   closed; `deferred_change` (`reconcile.rs:73–96`) is `row_from` again; rows decoded by position.
 - **Fix:** `schema.rs`, `model.rs`, `query.rs`, `forget.rs`; one row decoder per table; unknown
   placement and kind fail closed. **Size:** M. **Risk:** low for the split.
+- **Fixed 2026-10-04** in `bdf3b41` (#156): the split, one decoder for each table over the list its
+  `SELECT` uses, the stored words as constants. **Left open, a candidate for a defect:** an
+  unknown placement still reads as `Placed` and an unknown kind as `File`, and the two halves
+  disagree: SQL and `locate` compare the text, so an unknown placement is "not placed" there
+  while the decoder says `Placed`. Read by `get`, `children`, `item_by_handle`,
+  `thumbnail_candidates`, the deferred reads, `placement_in_items`, `skipped`. Failing closed
+  would leave the folder in error (`should_rebuild` does not cover it). Only a damaged store or
+  one written by a newer version has such a row; not traced further.
 
 ## TR7. The dependency on `konedrive-graph` is the wrong way round
 
@@ -123,6 +131,9 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `konedrive-graph/src/drive/item.rs:6–11` (`NAME_MAX`, `RESERVED_PREFIX`).
 - **Fix:** `classify` and `skip_reason` to the daemon, below `upload/` and `remote/`; the two
   constants to `konedrive-fs`. **Size:** S. **Risk:** low.
+- **Fixed 2026-10-04** in `bdf3b41` (#156): `classify` and `skip_reason` are in the daemon's
+  `folder/classify.rs`, the two constants in `konedrive-fs`; `konedrive-tree` does not depend on
+  `konedrive-graph`.
 
 ## TR10. Test hooks and test-only API
 
