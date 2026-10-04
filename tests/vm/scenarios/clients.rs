@@ -7,7 +7,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use konedrive_fs::placeholder::State;
+use konedrive_proto::{ToDaemon, ToHelper, PROTOCOL_VERSION};
 
+use crate::child::raw_connect;
 use crate::harness::{Checks, Ctx, Reader, Responder, dir_mark_present};
 use crate::HOSTILE_UID;
 
@@ -251,6 +253,41 @@ pub(crate) fn peercred_pid_matches_event_pid(ctx: &Ctx, _checks: &mut Checks) ->
             "a non-daemon open caused {} fetch(es)",
             ctx.fetches() - before
         ));
+    }
+    Ok(())
+}
+
+/// `PR1`. A peer whose `Hello` names another protocol version is not served:
+/// the helper closes the connection, with no `Ack`. It used to answer
+/// `EPROTO` and go on taking that peer's requests. The daemon underneath is
+/// untouched.
+pub(crate) fn another_version_is_closed(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
+    let mut channel = raw_connect().map_err(|e| format!("cannot connect: {e}"))?;
+    channel.get_ref().set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    match channel.recv::<ToDaemon>() {
+        Ok((ToDaemon::Welcome { version: PROTOCOL_VERSION }, _)) => {}
+        other => return Err(format!("not greeted with the helper's version: {other:?}")),
+    }
+    channel
+        .send(&ToHelper::Hello { version: PROTOCOL_VERSION + 1 }, None)
+        .map_err(|e| e.to_string())?;
+    match channel.recv::<ToDaemon>() {
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+        other => {
+            return Err(format!(
+                "a Hello with another version was answered, or the connection kept: {other:?}"
+            ))
+        }
+    }
+    drop(channel);
+    if !ctx.helper_alive() {
+        return Err("the helper exited over a Hello with another version".into());
+    }
+    // The uid's daemon, underneath that connection while it lived, has the
+    // hydrations again.
+    let path = ctx.place("after-version.bin", "ITEM_AFTERVERSION", b"SAME VERSION")?;
+    if ctx.read(&path)? != b"SAME VERSION" {
+        return Err("the daemon's connection did not survive a stranger's Hello".into());
     }
     Ok(())
 }

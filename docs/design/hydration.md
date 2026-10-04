@@ -596,8 +596,9 @@ alike. `failed > 0` publishes `Folder.State = error`; the other counters put a n
 ### 10.1 Transport and messages
 
 `/run/konedrive/helper.sock`, a `SOCK_SEQPACKET` socket. The helper learns the peer's uid from
-`SO_PEERCRED`, never from a message. Messages are small, versioned, binary
-(`crates/konedrive-proto`); descriptors travel with `SCM_RIGHTS`.
+`SO_PEERCRED`, never from a message. Messages are small and versioned, each one JSON in a
+datagram of its own, at most 64 KiB (`crates/konedrive-proto`); descriptors travel with
+`SCM_RIGHTS`, at most one with a message, and arrive close-on-exec.
 
 | Direction | Message |
 |---|---|
@@ -610,7 +611,9 @@ The version is 2 since `OpenByHandle`.
 
 No handshake gates anything: `SO_PEERCRED` is the authority, and a greeting could only carry a
 version the peer might lie about. The helper greets first; the daemon sends `Hello` as its first
-ordinary call, so the version check runs both ways.
+ordinary call, so the version check runs both ways: the daemon hangs up on a `Welcome` with
+another version, and the helper closes the connection, with no `Ack`, on a `Hello` with one. A
+peer that sends no `Hello` is served (limitations log F234).
 
 Replies are paired by order — every daemon message gets exactly one `Ack`, and `HydrateRequest` is
 told apart by type — so a daemon call is bounded (30 s; 120 s for `RegisterRoot` and
@@ -746,7 +749,11 @@ requirement is that the helper does not exit. What defends it, each item proven 
 
 - a bounded worker pool, so running out of threads is `EAGAIN`, not a panic in the event loop;
 - a panic on a worker is caught, its opener denied `EIO`, and the pool kept at strength; a panic on
-  a connection runs that connection's clean-up, which denies its openers `EIO`;
+  a connection, or on the thread that writes to it, runs that connection's clean-up, which denies
+  its openers `EIO`;
+- a panic in the event loop is caught: the open in hand and the events read with it are denied
+  `EIO`, and the loop reads on; a panic on the thread that accepts connections closes the
+  connection in hand, and the thread accepts again a second later;
 - running out of descriptors is survivable: the event loop keeps the group and retries every 50 ms,
   the accept loop backs off, and openers the kernel could not hand over are denied (`EPERM` by the
   kernel, `EIO` by the helper), never allowed;
@@ -801,8 +808,8 @@ SMB/CIFS, FUSE, AFS, Ceph — where files can change on another machine, bypassi
 At registration the daemon creates a nameless `O_TMPFILE` file in the folder and exercises each
 feature: size, hole punching, a `user.*` attribute, a write lease. A failure names the missing
 feature. A named probe file would outlive a crash and make the folder permanently "not empty", so
-the probe never has a name. The helper checks the filesystem type with `fstatfs`; its own write
-probe can be refused by its sandbox and is then skipped. A symbolic link is refused as a root, and
+the probe never has a name. The helper checks the filesystem type with `fstatfs` and probes
+nothing itself (limitations log F234). A symbolic link is refused as a root, and
 `konedrivectl` resolves only the directory a path is in, never its last component, so a link given
 on the command line reaches the daemon as a link and is refused. A folder that already carries its
 root id is not probed again when it is brought back up: a OneDrive folder is locked read-only, so

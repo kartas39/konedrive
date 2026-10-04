@@ -68,7 +68,13 @@ pub(crate) const EXHAUSTION_BACKOFF: Duration = Duration::from_millis(50);
 /// spin, because the loop logged and retried immediately.
 pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
-/// Deliberate panics, for the two unwind paths nothing input-reachable can
+/// How long the thread that accepts connections waits before it accepts
+/// again after a panic. Long enough that a panic that repeats does not flood
+/// the journal; a daemon that connects meanwhile waits in the listener's
+/// backlog.
+pub(crate) const ACCEPT_RESTART: Duration = Duration::from_secs(1);
+
+/// Deliberate panics, for the unwind paths nothing input-reachable can
 /// exercise any more, and one deliberate stall, for a race window too narrow
 /// to hit by chance — compiled in **only** with the `fault-injection` cargo
 /// feature.
@@ -111,6 +117,28 @@ pub(crate) mod fault {
         }
     }
 
+    /// Whether the file the variable `armed_by` names is there, which arms
+    /// a fault for one occurrence: the file is removed as it is found.
+    fn triggered(armed_by: &str) -> bool {
+        std::env::var_os(armed_by).is_some_and(|path| std::fs::remove_file(path).is_ok())
+    }
+
+    /// Panic in the event loop, with an intercepted open in hand, once for
+    /// each time the file the variable names is created.
+    pub fn panic_in_event_loop() {
+        if triggered("KONEDRIVE_FAULT_PANIC_IN_EVENT_LOOP") {
+            panic!("KONEDRIVE_FAULT_PANIC_IN_EVENT_LOOP: deliberate panic in the event loop");
+        }
+    }
+
+    /// Panic on the thread that accepts connections, with a connection just
+    /// accepted, once for each time the file the variable names is created.
+    pub fn panic_on_accept() {
+        if triggered("KONEDRIVE_FAULT_PANIC_ON_ACCEPT") {
+            panic!("KONEDRIVE_FAULT_PANIC_ON_ACCEPT: deliberate panic on the accept thread");
+        }
+    }
+
     /// Stall a worker between reading `hydrated` and placing the ignore
     /// mark, as a preempted thread would. The natural window is well under
     /// 100 µs; this makes it as wide as the VM suite needs to put a
@@ -132,6 +160,12 @@ pub(crate) mod fault {
 
     #[inline(always)]
     pub fn panic_on_mark_file() {}
+
+    #[inline(always)]
+    pub fn panic_in_event_loop() {}
+
+    #[inline(always)]
+    pub fn panic_on_accept() {}
 
     #[inline(always)]
     pub fn delay_before_ignore_mark() {}

@@ -68,7 +68,8 @@ use crate::child::{
     child_burst, child_connections, child_hold, child_hostile, child_pipeline, child_read,
 };
 use crate::clients::{
-    connections_per_uid_are_capped, errno_sweep, hostile_uid, peercred_pid_matches_event_pid,
+    another_version_is_closed, connections_per_uid_are_capped, errno_sweep, hostile_uid,
+    peercred_pid_matches_event_pid,
 };
 use crate::coverage::{
     hardlink_and_second_mount, moved_out_still_covered, new_directory_covered, zero_byte_file,
@@ -77,8 +78,8 @@ use crate::dehydrate::{
     clear_ignore_after_reclaim, dehydrate_in_use, dehydrate_then_open, unregistered_ignore_mark,
 };
 use crate::faults::{
-    connection_panic_contained, cross_device_recovery, disk_full, emfile_survived,
-    worker_panic_contained,
+    accept_panic_contained, connection_panic_contained, cross_device_recovery, disk_full,
+    emfile_survived, event_loop_panic_contained, worker_panic_contained,
 };
 use crate::fills::{
     copy_sees_content, failure_rolls_back, instant_reply, killed_reader, mmap_sees_content,
@@ -688,6 +689,7 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             writes::copy_that_cannot_be_stripped_is_passed_over,
         ),
         ("one uid cannot hold the helper's connections without bound", connections_per_uid_are_capped),
+        ("a Hello with another protocol version closes the connection", another_version_is_closed),
         ("SO_PEERCRED's pid is the pid the event reports", peercred_pid_matches_event_pid),
         (
             "the event fd is writable through a read-only mount of the same tree",
@@ -709,6 +711,8 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             "a panic on a connection denies its openers and keeps the helper",
             connection_panic_contained,
         ),
+        ("a panic in the event loop denies the open in hand and keeps the helper", event_loop_panic_contained),
+        ("a panic on the accept thread closes one connection and the next is served", accept_panic_contained),
         ("disk full denies with ENOSPC or EIO and never commits", disk_full),
         ("a subtree on another filesystem is counted, not silently skipped", cross_device_recovery),
         ("the waiter caps bound how many opens may wait for a daemon", waiter_caps),

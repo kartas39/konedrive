@@ -143,15 +143,12 @@ run_pass() {
     # control), an audit SECCOMP record should an audit daemon be running,
     # and anything the helper reported as refused — ENOSYS too, which is how
     # RestrictSUIDSGID= and RestrictNamespaces= answer the calls whose
-    # arguments seccomp cannot read. One refusal is expected and set aside:
-    # the helper's feature probe cannot write into the user's folder (EACCES
-    # without CAP_DAC_OVERRIDE, EROFS under ProtectSystem=strict), which
-    # check_filesystem in main.rs logs and tolerates.
+    # arguments seccomp cannot read. The helper writes nothing into the
+    # user's folder (it could not: EACCES without CAP_DAC_OVERRIDE, EROFS
+    # under ProtectSystem=strict), so no refusal is expected.
     journalctl -b --no-pager | grep -E 'type=1326|SECCOMP' | grep -i konedrive > /run/denied.txt
-    grep -v 'stopped the feature probe' /run/journal.txt |
-        grep -iE 'EPERM|ENOSYS|operation not permitted|permission denied|function not implemented|os error (1|13|38)\)|status=31|SIGSYS|core-dump' \
-        >> /run/denied.txt
-    echo "expected: $(grep -c 'stopped the feature probe' /run/journal.txt) feature probe(s) refused by the sandbox"
+    grep -iE 'EPERM|ENOSYS|operation not permitted|permission denied|function not implemented|os error (1|13|38)\)|status=31|SIGSYS|core-dump' \
+        /run/journal.txt >> /run/denied.txt
     if [ -s /run/denied.txt ]; then
         cat /run/denied.txt
     else

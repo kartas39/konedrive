@@ -6,19 +6,21 @@ mod decision;
 mod hydration;
 
 use std::os::fd::AsFd;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use konedrive_helper::marks::Marks;
 use konedrive_helper::pending::PendingOpen;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::sys::fanotify::MaskFlags;
+use nix::sys::fanotify::{FanotifyEvent, MaskFlags};
 
 pub(crate) use decision::handle_open;
 pub(crate) use hydration::{dispatch, settle, Finish};
 
 use crate::pool;
 use crate::shared::{
-    Refusal, Shared, Throttle, EVENT_FD_FAILED, EVENT_QUEUE_DEPTH, EVENT_WORKERS,
+    fault, Refusal, Shared, Throttle, EVENT_FD_FAILED, EVENT_QUEUE_DEPTH, EVENT_WORKERS,
     EXHAUSTION_BACKOFF, UNOPENABLE,
 };
 
@@ -124,6 +126,7 @@ fn classify_read_failure(e: Errno) -> ReadFailure {
 /// system service.
 pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
     let mut exhaustion = Throttle::new();
+    let mut panics = Throttle::new();
     let own_pid = std::process::id() as i32;
     loop {
         let mut fds = [PollFd::new(shared.marks.group().as_fd(), PollFlags::POLLIN)];
@@ -201,58 +204,141 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                     ReadFailure::Fatal => return Err(e.into()),
                 },
             };
-            for event in events {
-                let mask = event.mask();
-                if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
-                    tracing::warn!("queue overflow: some opens were not seen");
-                    continue;
-                }
-                if !mask.contains(MaskFlags::FAN_OPEN_PERM) {
-                    // We only ever mark FAN_OPEN_PERM, so this should not
-                    // happen. The event simply drops: there is no permission
-                    // decision pending on an event of a kind we never asked for.
-                    continue;
-                }
-                let pid = event.pid();
-                let Some(open) = PendingOpen::take(event, &shared.marks) else {
-                    tracing::warn!("a permission event arrived with no descriptor");
-                    continue;
-                };
-                // The helper's own opens: an `OpenByHandle` object in a
-                // marked directory, or with a mark of its own, raises
-                // an event aimed at this very group, while the connection
-                // thread that opened it waits in `open_by_handle_at` and
-                // reads nothing more from its daemon — so a hydration asked
-                // of that daemon could never be reported back. Allowed here,
-                // on this thread, before the pool: no worker, no daemon, and
-                // not behind a full queue. The event's pid is the process's,
-                // whichever thread opened (no FAN_REPORT_TID; pinned by
-                // marks.rs's INIT_FLAGS and its test). The only files
-                // the helper opens are those objects, handed straight to
-                // their owner's daemon, and the feature probe's nameless
-                // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
-                // docs/kernel-behavior-7.2/open-by-handle.md §15.
-                if pid == own_pid {
-                    open.allow();
-                    continue;
-                }
-                if let Err(rejected) = pool.submit(pool::OpenEvent { open, pid, since }) {
-                    // Saturation, not failure: EAGAIN tells the application to
-                    // try the open again, which is true and is an answer. The
-                    // alternative — spawning without bound — ends with the
-                    // process dying and the kernel allowing every suspended
-                    // open in the system.
-                    shared.refusals.report(Refusal::PoolFull, || {
-                        format!(
-                            "all {EVENT_WORKERS} workers busy and {EVENT_QUEUE_DEPTH} opens \
-                             already queued; denying an open with EAGAIN"
-                        )
-                    });
-                    rejected.open.deny(libc::EAGAIN);
+            let read = events.len();
+            let handed_over = contain_batch(
+                events,
+                |event| hand_over(shared, pool, own_pid, since, event),
+                |event| deny_unhandled(shared, event),
+            );
+            if !handed_over {
+                // Throttled: whatever panicked may be something an opener
+                // can repeat, at the rate of its opens.
+                if let Some(occurrences) = panics.admit() {
+                    tracing::error!(
+                        "the event loop panicked while handing over an intercepted open \
+                         ({occurrences} time(s)); that open and what was left of the {read} \
+                         event(s) read with it are denied EIO, and the loop carries on"
+                    );
                 }
             }
         }
     }
+}
+
+/// Runs `handle` on each item of one batch, and contains a panic in it: the
+/// items the panic left unhandled are given to `abandon`, each contained in
+/// its turn, and nothing unwinds past here. Returns whether every item was
+/// handled.
+///
+/// The event loop's use of it is what keeps the helper alive through a panic
+/// on its own thread, which used to end the process: the kernel then allows
+/// every open suspended at that moment, and each reads zeros (the
+/// limitations log, Z1). The item in hand when the panic came is dropped by
+/// the unwind, and an intercepted open that is dropped denies `EIO`
+/// (`PendingOpen`).
+fn contain_batch<T>(
+    batch: impl IntoIterator<Item = T>,
+    mut handle: impl FnMut(T),
+    mut abandon: impl FnMut(T),
+) -> bool {
+    let mut batch = batch.into_iter();
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        for item in batch.by_ref() {
+            handle(item);
+        }
+    }));
+    if outcome.is_ok() {
+        return true;
+    }
+    for item in batch {
+        let _ = catch_unwind(AssertUnwindSafe(|| abandon(item)));
+    }
+    false
+}
+
+/// Hands one event of a batch to a worker, or answers it here.
+fn hand_over(
+    shared: &Arc<Shared>,
+    pool: &pool::Pool,
+    own_pid: i32,
+    since: u64,
+    event: FanotifyEvent,
+) {
+    let Some((open, pid)) = owed(event, &shared.marks) else {
+        return;
+    };
+    // `fault-injection` builds only.
+    fault::panic_in_event_loop();
+    // The helper's own opens: an `OpenByHandle` object in a
+    // marked directory, or with a mark of its own, raises
+    // an event aimed at this very group, while the connection
+    // thread that opened it waits in `open_by_handle_at` and
+    // reads nothing more from its daemon — so a hydration asked
+    // of that daemon could never be reported back. Allowed here,
+    // on this thread, before the pool: no worker, no daemon, and
+    // not behind a full queue. The event's pid is the process's,
+    // whichever thread opened (no FAN_REPORT_TID; pinned by
+    // marks.rs's INIT_FLAGS and its test). The only files
+    // the helper opens are those objects, handed straight to
+    // their owner's daemon (`docs/design/writes.md` §8.2;
+    // SECURITY.md); measured in
+    // docs/kernel-behavior-7.2/open-by-handle.md §15.
+    if pid == own_pid {
+        open.allow();
+        return;
+    }
+    if let Err(rejected) = pool.submit(pool::OpenEvent { open, pid, since }) {
+        // Saturation, not failure: EAGAIN tells the application to
+        // try the open again, which is true and is an answer. The
+        // alternative — spawning without bound — ends with the
+        // process dying and the kernel allowing every suspended
+        // open in the system.
+        shared.refusals.report(Refusal::PoolFull, || {
+            format!(
+                "all {EVENT_WORKERS} workers busy and {EVENT_QUEUE_DEPTH} opens \
+                 already queued; denying an open with EAGAIN"
+            )
+        });
+        rejected.open.deny(libc::EAGAIN);
+    }
+}
+
+/// Answers an event the loop read and, having panicked over one before it,
+/// will not hand over: an intercepted open is denied `EIO`. Closing its
+/// descriptor with no answer would leave its opener suspended for as long as
+/// the helper runs.
+fn deny_unhandled(shared: &Arc<Shared>, event: FanotifyEvent) {
+    if let Some((open, _)) = owed(event, &shared.marks) {
+        open.deny(libc::EIO);
+    }
+}
+
+/// The open an event owes an answer to, with its opener's pid; `None` for an
+/// event that owes none, which is said here and dropped.
+///
+/// The first thing done with an event the loop has read. Its mask and pid
+/// are two plain reads, and a permission event is a [`PendingOpen`] before
+/// anything else runs: from there on, whatever happens to it, a panic
+/// included, it is answered by its drop. An event left as it was read would
+/// close its descriptor with no answer, and its opener would stay suspended
+/// for as long as the helper runs.
+fn owed(event: FanotifyEvent, marks: &Arc<Marks>) -> Option<(PendingOpen, i32)> {
+    let mask = event.mask();
+    let pid = event.pid();
+    if mask.contains(MaskFlags::FAN_OPEN_PERM) {
+        let open = PendingOpen::take(event, marks);
+        if open.is_none() {
+            tracing::warn!("a permission event arrived with no descriptor");
+        }
+        return open.map(|open| (open, pid));
+    }
+    if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
+        tracing::warn!("queue overflow: some opens were not seen");
+    }
+    // Anything else: we only ever mark FAN_OPEN_PERM, so this should not
+    // happen. The event simply drops: there is no permission decision
+    // pending on an event of a kind we never asked for.
+    None
 }
 
 #[cfg(test)]

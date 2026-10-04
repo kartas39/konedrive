@@ -120,9 +120,9 @@ would then wait unread behind the open, so the event is never answered and the
 open never returns. The daemon's call timeout (30 s) ends the socket, but not the
 open. So the helper allows events that carry its own pid in its event loop, on
 that thread, before the worker pool. The pid is the process's whichever thread
-opened, since the group has no `FAN_REPORT_TID`. The helper opens only two kinds
-of files: `OpenByHandle` objects, which go straight to their owner's daemon, and
-the feature probe's nameless file at registration. Checked in the VM suite,
+opened, since the group has no `FAN_REPORT_TID`. The helper opens only one kind
+of file: `OpenByHandle` objects, which go straight to their owner's daemon (its
+feature probe at registration is gone, limitations log F234). Checked in the VM suite,
 Btrfs (`tests/vm/run.sh quick --only OpenByHandle`). An `OpenByHandle` of an
 `online-only` placeholder in a marked directory returned in 0.01 s. It fetched
 nothing and left no ignore mark. A reader in another process was intercepted and

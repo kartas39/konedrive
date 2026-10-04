@@ -10,8 +10,8 @@ use std::os::unix::net::UnixStream;
 use nix::sys::socket::{sockopt, ControlMessage, MsgFlags, SockType};
 use serde::{Deserialize, Serialize};
 
-/// Both ends refuse any other (the helper's `Hello` check, the daemon's
-/// `Welcome` check). 2: `OpenByHandle`, and an `Ack` that may carry a
+/// Both ends refuse any other: the daemon hangs up on a `Welcome` with
+/// another version, and the helper closes on a `Hello` with one. 2: `OpenByHandle`, and an `Ack` that may carry a
 /// descriptor.
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const SOCKET_PATH: &str = "/run/konedrive/helper.sock";
@@ -147,11 +147,56 @@ pub enum ToHelper {
     /// §4.6): one of the peer's own, gone from its folder. The attached fd is
     /// a directory of the peer's on the same filesystem, the one the handle
     /// is opened relative to. `handle_type` and `handle` are what
-    /// `name_to_handle_at` gave: at most 128 bytes (`MAX_HANDLE_SZ`). The
+    /// `name_to_handle_at` gave: at most [`MAX_HANDLE_BYTES`]. The
     /// answer is an `Ack`, carrying the object's descriptor when its errno
     /// is 0: `EPERM` when the object is not the peer's to have, `ESTALE`
     /// when it is gone.
     OpenByHandle { handle_type: i32, handle: Vec<u8> },
+}
+
+/// The largest file handle the kernel hands out (`MAX_HANDLE_SZ`), and so
+/// the longest `handle` an [`ToHelper::OpenByHandle`] may carry.
+pub const MAX_HANDLE_BYTES: usize = 128;
+
+/// What [`ToHelper::validate`] found wrong with a message's own fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Malformed {
+    /// A `RegisterRoot` whose `root_id` is not a root id ([`is_root_id`]).
+    RootId,
+    /// An `OpenByHandle` whose handle the kernel could not have given: a
+    /// negative type, no bytes, or more than [`MAX_HANDLE_BYTES`].
+    Handle,
+}
+
+impl ToHelper {
+    /// Whether the fields of this message are what the protocol says they
+    /// are, whatever is attached to it and whoever sent it. One definition
+    /// for both ends: the helper asks before it acts on a request, and
+    /// refuses a malformed one `EINVAL`.
+    ///
+    /// Two fields are bounded by nothing but the datagram, and say so here:
+    /// the `root_id` of an `UnregisterRoot`, which is only ever compared
+    /// with the ids the helper holds (see the variant), and the `errno` of
+    /// a `HydrateDone`, which the helper clamps ([`clamp_deny_errno`]).
+    pub fn validate(&self) -> Result<(), Malformed> {
+        match self {
+            ToHelper::RegisterRoot { root_id } if !is_root_id(root_id) => Err(Malformed::RootId),
+            ToHelper::OpenByHandle { handle_type, handle }
+                if *handle_type < 0 || handle.is_empty() || handle.len() > MAX_HANDLE_BYTES =>
+            {
+                Err(Malformed::Handle)
+            }
+            ToHelper::Hello { .. }
+            | ToHelper::RegisterRoot { .. }
+            | ToHelper::UnregisterRoot { .. }
+            | ToHelper::MarkDir
+            | ToHelper::UnmarkDir
+            | ToHelper::MarkFile
+            | ToHelper::ClearIgnore
+            | ToHelper::HydrateDone { .. }
+            | ToHelper::OpenByHandle { .. } => Ok(()),
+        }
+    }
 }
 
 /// The helper's half.
@@ -217,10 +262,26 @@ impl Channel {
         }
     }
 
+    /// The next message, and the descriptor that came with it: one datagram
+    /// taken off the socket ([`receive`](Self::receive)), then read as an `M`.
+    /// A datagram that is not an `M` is an error, and its descriptor is
+    /// closed.
     pub fn recv<M: for<'de> Deserialize<'de>>(&mut self) -> io::Result<(M, Option<OwnedFd>)> {
-        let mut buffer = vec![0u8; 64 * 1024];
-        let mut control =
-            vec![0u8; unsafe { libc::CMSG_SPACE(MAX_CONTROL_FDS * mem::size_of::<RawFd>() as u32) } as usize];
+        let Datagram { bytes, fd } = self.receive()?;
+        let message = serde_json::from_slice(&bytes)?;
+        Ok((message, fd))
+    }
+
+    /// Takes one datagram off the socket, as it came: nothing in it is
+    /// looked at.
+    ///
+    /// An error for a closed peer, for a datagram longer than
+    /// [`MAX_MESSAGE_BYTES`], and for more than one descriptor attached;
+    /// every descriptor the kernel installed for a refused datagram is
+    /// closed. Descriptors arrive close-on-exec (`MSG_CMSG_CLOEXEC`).
+    fn receive(&mut self) -> io::Result<Datagram> {
+        let mut buffer = vec![0u8; MAX_MESSAGE_BYTES];
+        let mut control = ControlBuffer::new();
 
         let mut iov = libc::iovec {
             iov_base: buffer.as_mut_ptr().cast::<c_void>(),
@@ -232,14 +293,16 @@ impl Channel {
         let mut msg: libc::msghdr = unsafe { mem::zeroed() };
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast::<c_void>();
-        msg.msg_controllen = control.len();
+        msg.msg_control = control.bytes.as_mut_ptr().cast::<c_void>();
+        msg.msg_controllen = control.bytes.len();
 
         let received = loop {
             // SAFETY: `msg` points at `iov` and `control`, both of which are
             // live local buffers for the duration of this call; the fd is a
             // valid, open socket owned by `self.socket`.
-            let rc = unsafe { libc::recvmsg(self.socket.as_raw_fd(), &mut msg, 0) };
+            let rc = unsafe {
+                libc::recvmsg(self.socket.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC)
+            };
             if rc >= 0 {
                 break rc as usize;
             }
@@ -250,49 +313,14 @@ impl Channel {
             return Err(error);
         };
 
-        // Walk whatever control data the kernel actually wrote, regardless
-        // of `MSG_CTRUNC`. The records that did fit are complete, well-formed
-        // cmsg entries describing descriptors the kernel has *already*
-        // installed into this process's descriptor table — installing them
-        // is not conditional on the caller's buffer being big enough to
-        // describe them all. nix's safe `RecvMsg::cmsgs()` refuses to
-        // iterate at all once `MSG_CTRUNC` is set, which is exactly what let
-        // those descriptors leak: this process learned nothing about fds the
-        // kernel had already installed, so it could never close them.
-        let mut fds: Vec<RawFd> = Vec::new();
-        // SAFETY: `msg` was just filled in by a successful `recvmsg`, so
-        // its cmsg chain, if any, lives inside `control`, which is still
-        // alive and unmoved here.
-        unsafe {
-            let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
-            while !cmsg.is_null() {
-                let hdr = &*cmsg;
-                if hdr.cmsg_level == libc::SOL_SOCKET && hdr.cmsg_type == libc::SCM_RIGHTS {
-                    let payload_len = hdr.cmsg_len as usize - libc::CMSG_LEN(0) as usize;
-                    let count = payload_len / mem::size_of::<RawFd>();
-                    let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
-                    for i in 0..count {
-                        fds.push(data.add(i).read_unaligned());
-                    }
-                }
-                cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
-            }
-        }
-
-        let close_all = |fds: &[RawFd]| {
-            for &fd in fds {
-                // SAFETY: each of these descriptors was just installed into
-                // this process by the kernel via `recvmsg` above and has not
-                // been handed to any owner (no `OwnedFd` wraps it yet), so
-                // closing it here cannot double-close or affect anyone else.
-                unsafe {
-                    libc::close(fd);
-                }
-            }
-        };
+        // Owned from here on, so that every way out of this function closes
+        // the ones it does not hand over.
+        // SAFETY: `msg` was just filled in by a successful `recvmsg` and has
+        // not been walked yet; its control data is in `control`, which is
+        // alive and unmoved.
+        let fds = unsafe { attached_descriptors(&msg) };
 
         if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-            close_all(&fds);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "control message truncated: peer attached more descriptors than fit",
@@ -301,25 +329,101 @@ impl Channel {
         if fds.len() > 1 {
             // The protocol never legitimately attaches more than one fd;
             // a peer that does is misbehaving and gets dropped.
-            close_all(&fds);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "peer attached more than one descriptor",
             ));
         }
-
+        if msg.msg_flags & libc::MSG_TRUNC != 0 {
+            // What is in the buffer is the head of a longer datagram; the
+            // kernel has thrown the rest away. Said as what it is, not left
+            // to whatever a parser makes of half a message.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("message truncated: peer sent more than {MAX_MESSAGE_BYTES} bytes"),
+            ));
+        }
         if received == 0 {
-            close_all(&fds);
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
         }
 
-        // SAFETY: this raw fd came straight out of the kernel's cmsg data
-        // for this call and has not been given to anything else yet, so this
-        // `OwnedFd` becomes its sole owner.
-        let fd = fds.into_iter().next().map(|raw| unsafe { OwnedFd::from_raw_fd(raw) });
-        let message = serde_json::from_slice(&buffer[..received])?;
-        Ok((message, fd))
+        buffer.truncate(received);
+        Ok(Datagram { bytes: buffer, fd: fds.into_iter().next() })
     }
+}
+
+/// The longest datagram [`Channel::recv`] takes. Every message of the
+/// protocol is far shorter; a longer one is refused, not cut.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// One datagram as it came off the socket: its bytes, and the descriptor
+/// attached to it.
+struct Datagram {
+    bytes: Vec<u8>,
+    fd: Option<OwnedFd>,
+}
+
+/// How many bytes of control data one `recvmsg` has room for: the
+/// `SCM_RIGHTS` record of [`MAX_CONTROL_FDS`] descriptors.
+const CONTROL_BYTES: usize =
+    // SAFETY: `CMSG_SPACE` is arithmetic on its argument.
+    unsafe { libc::CMSG_SPACE(MAX_CONTROL_FDS * mem::size_of::<RawFd>() as u32) } as usize;
+
+/// The control buffer of one `recvmsg`, aligned as the `cmsghdr`s the kernel
+/// writes into it are: `CMSG_FIRSTHDR` and `CMSG_NXTHDR` hand out pointers
+/// into it that are read as `cmsghdr`, which a plain byte buffer is aligned
+/// for only by its allocator's habit.
+#[repr(C)]
+struct ControlBuffer {
+    _align: [libc::cmsghdr; 0],
+    bytes: [u8; CONTROL_BYTES],
+}
+
+impl ControlBuffer {
+    fn new() -> Self {
+        Self { _align: [], bytes: [0; CONTROL_BYTES] }
+    }
+}
+
+/// Every descriptor the kernel attached to the datagram `msg` describes,
+/// each owned.
+///
+/// Walks whatever control data the kernel actually wrote, regardless of
+/// `MSG_CTRUNC`. The records that did fit are complete, well-formed cmsg
+/// entries describing descriptors the kernel has *already* installed into
+/// this process's descriptor table — installing them is not conditional on
+/// the caller's buffer being big enough to describe them all. nix's safe
+/// `RecvMsg::cmsgs()` refuses to iterate at all once `MSG_CTRUNC` is set,
+/// which is exactly what let those descriptors leak: this process learned
+/// nothing about fds the kernel had already installed, so it could never
+/// close them.
+///
+/// # Safety
+///
+/// `msg` must be a `msghdr` a successful `recvmsg` has just filled in, whose
+/// control data lies in a buffer that is alive, unmoved and aligned for a
+/// `cmsghdr` ([`ControlBuffer`]), and this must be the only walk of it: each
+/// descriptor number in an `SCM_RIGHTS` record is taken as owned, which is
+/// true once, straight after the kernel installed it.
+unsafe fn attached_descriptors(msg: &libc::msghdr) -> Vec<OwnedFd> {
+    let mut fds = Vec::new();
+    // SAFETY: the caller's contract, above.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(msg);
+        while !cmsg.is_null() {
+            let hdr = &*cmsg;
+            if hdr.cmsg_level == libc::SOL_SOCKET && hdr.cmsg_type == libc::SCM_RIGHTS {
+                let payload_len = hdr.cmsg_len as usize - libc::CMSG_LEN(0) as usize;
+                let count = payload_len / mem::size_of::<RawFd>();
+                let data = libc::CMSG_DATA(cmsg).cast::<RawFd>();
+                for i in 0..count {
+                    fds.push(OwnedFd::from_raw_fd(data.add(i).read_unaligned()));
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+        }
+    }
+    fds
 }
 
 #[cfg(test)]

@@ -376,3 +376,28 @@ fn messages_reach_a_peer_that_reads() {
     let (second, _) = peer.recv::<ToDaemon>().unwrap();
     assert!(matches!(second, ToDaemon::HydrateRequest { req_id: 7 }), "{second:?}");
 }
+
+/// A writer thread that panics ends its connection as one that stops does:
+/// the queue is closed, so nothing more is taken for it, and the socket is
+/// shut down, so the thread reading it stops waiting.
+#[test]
+fn a_writer_that_panics_still_ends_its_connection() {
+    let (ours, theirs) = pair();
+    let pending = Arc::new(Pending {
+        queue: Mutex::new(Queue { items: VecDeque::new(), acks: 0, requests: 0, closed: false }),
+        queued: Condvar::new(),
+        room: Condvar::new(),
+    });
+    let end = WriterEnd { pending: Arc::clone(&pending), socket: ours.try_clone().unwrap() };
+    let writer = std::thread::spawn(move || {
+        let _end = end;
+        panic!("deliberate: the writer thread");
+    });
+    assert!(writer.join().is_err());
+
+    assert!(pending.lock().closed, "a panicked writer left its queue open");
+    let mut reader = Channel::new(ours).unwrap();
+    let error = reader.recv::<ToDaemon>().expect_err("the reader would have waited for ever");
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error:?}");
+    drop(theirs);
+}

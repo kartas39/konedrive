@@ -68,10 +68,10 @@ pub enum RegisterError {
 
 /// The path of an open descriptor, for the few APIs that still take one.
 ///
-/// Using `/proc/self/fd/<n>` rather than the caller's path string is the same
-/// idiom the helper uses in `check_filesystem`: whatever is done through it
-/// lands in the exact directory the descriptor was opened on, and cannot be
-/// redirected by swapping a component of the path afterwards.
+/// Using `/proc/self/fd/<n>` rather than the caller's path string means that
+/// whatever is done through it lands in the exact directory the descriptor
+/// was opened on, and cannot be redirected by swapping a component of the
+/// path afterwards.
 pub(crate) fn proc_path(file: &File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
@@ -107,16 +107,15 @@ fn not_a_directory(path: &Path) -> RegisterError {
 
 /// Everything about a candidate folder that can be decided locally.
 ///
-/// The write half of the probe (`probe_dir`, `konedrive_fs::probe`) is
-/// authoritative *here*, not on the helper's side. The helper runs under
-/// `ProtectHome=read-only`, so its own write probe can be
-/// refused (`EROFS`/`EACCES`/`EPERM`) against a perfectly good directory in
-/// the user's own home — that is why `check_filesystem` in
-/// `konedrive-helper/src/registration.rs` treats a refused write probe as "nothing
-/// new learned" and falls back to `fstatfs` alone. The daemon runs
-/// unprivileged, in the user's own home, with no such sandbox, so this is
-/// the one place in the system where the write probe's result actually means
-/// something.
+/// The write probe (`probe_dir`, `konedrive_fs::probe`) runs *here* and
+/// nowhere else. The helper runs under `ProtectSystem=strict` and
+/// `ProtectHome=read-only` and without `CAP_DAC_OVERRIDE`, so a write of its
+/// own into a perfectly good directory in the user's home is normally
+/// refused (`EROFS`, `EACCES`): it checks the filesystem's type with `fstatfs`
+/// (`check_filesystem_type` in `konedrive-helper/src/registration.rs`) and
+/// probes nothing (the limitations log, F234). The daemon runs unprivileged,
+/// in the user's own home, with no such sandbox, so this is the one place in
+/// the system where a write probe's result means something.
 pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
     let dir = open_root_dir(path)?;
     check_root_dir(&dir, path)
@@ -161,8 +160,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// the probe's write is refused there: no such folder came back after a
 /// restart, in either mode — "cannot bring up the sync folder: Permission
 /// denied" — and none could be switched to interception once the helper
-/// arrived. The helper's own re-registration skips its probe for
-/// the same reason. H93 still holds: the id is only *looked
+/// arrived. H93 still holds: the id is only *looked
 /// for* first, and a folder where looking fails is probed, whose answer is
 /// what is reported.
 fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {

@@ -126,10 +126,7 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     };
     // The filesystem check is re-run too — a root can have been
     // moved onto a filesystem that cannot host placeholders since it was
-    // registered. Only the `fstatfs` half: the feature probe writes a file,
-    // and writing into every user's sync folder on every boot is both
-    // unnecessary (it was probed at registration) and, once this root is
-    // marked, exactly the self-interception hazard is about.
+    // registered.
     if let Err(unusable) = check_filesystem_type(&dir, &root.path) {
         tracing::error!(
             "root {} is on a filesystem konedrive cannot use, and is not covered: {} (errno {})",

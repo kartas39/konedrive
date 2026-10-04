@@ -616,8 +616,7 @@ async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
 /// folder: Permission denied". Found by, whose switch to
 /// interception goes through the same check. A folder that already
 /// carries its root id was probed when it was first registered, and is
-/// not probed again — the helper's own re-registration skips its probe
-/// for the same reason. The mode without interception is
+/// not probed again (the helper probes nothing). The mode without interception is
 /// a folder recorded that way before HS2 (`legacy_without_interception`):
 /// no new OneDrive folder is made so.
 #[tokio::test]

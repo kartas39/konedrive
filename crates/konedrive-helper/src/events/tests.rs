@@ -68,3 +68,52 @@ fn an_event_the_kernel_could_not_hand_over_does_not_end_the_helper() {
         );
     }
 }
+
+/// A panic over one event of a batch costs that event and the ones read
+/// with it and not yet handled, which are each given up by name; the ones
+/// before it were handled, and nothing unwinds into the loop.
+#[test]
+fn a_panic_over_one_event_gives_up_the_rest_of_its_batch_and_no_more() {
+    let mut handled = Vec::new();
+    let mut abandoned = Vec::new();
+    let whole = contain_batch(
+        1..=5,
+        |n| {
+            if n == 3 {
+                panic!("deliberate: the third event of the batch");
+            }
+            handled.push(n);
+        },
+        |n| abandoned.push(n),
+    );
+    assert!(!whole);
+    assert_eq!(handled, [1, 2]);
+    assert_eq!(abandoned, [4, 5], "the third is dropped by the unwind, which denies it");
+}
+
+/// A batch with no panic in it is handled whole and nothing is given up.
+#[test]
+fn a_batch_without_a_panic_is_handled_whole() {
+    let mut handled = Vec::new();
+    let whole = contain_batch(1..=3, |n| handled.push(n), |n: i32| panic!("gave up {n}"));
+    assert!(whole);
+    assert_eq!(handled, [1, 2, 3]);
+}
+
+/// Giving one event up cannot stop the others from being given up.
+#[test]
+fn a_panic_while_giving_an_event_up_does_not_spare_the_ones_after_it() {
+    let mut abandoned = Vec::new();
+    let whole = contain_batch(
+        1..=4,
+        |_| panic!("deliberate: the first event of the batch"),
+        |n| {
+            if n == 2 {
+                panic!("deliberate: while giving the second up");
+            }
+            abandoned.push(n);
+        },
+    );
+    assert!(!whole);
+    assert_eq!(abandoned, [3, 4]);
+}

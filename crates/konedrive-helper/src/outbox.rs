@@ -236,6 +236,28 @@ impl Pending {
     }
 }
 
+/// Finishes a connection when its writer thread stops, however it stops:
+/// refuses everything from then on — which is also what releases a reader
+/// thread waiting for room for an `Ack` — and unblocks the reader thread's
+/// `recv` so it can run the disconnect cleanup.
+///
+/// A `Drop` guard and not statements after the loop, so that a panic in the
+/// thread ends the connection too. Without it the reader would go on taking
+/// requests whose `Ack`s nobody sends, and every hydration of the uid would
+/// be queued for a daemon that is never asked.
+struct WriterEnd {
+    pending: Arc<Pending>,
+    /// A duplicate of the connection's socket, kept only to `shutdown()` it.
+    socket: UnixStream,
+}
+
+impl Drop for WriterEnd {
+    fn drop(&mut self) {
+        self.pending.close();
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// The connection is over; nothing more can be sent on it.
 #[derive(Debug)]
 pub struct Closed;
@@ -278,27 +300,21 @@ impl Outbox {
             queued: Condvar::new(),
             room: Condvar::new(),
         });
-        let teardown = shutdown.try_clone()?;
         let liveness = Arc::new(Liveness::new());
         let heard = Arc::clone(&liveness);
-        let draining = Arc::clone(&pending);
+        let end = WriterEnd { pending: Arc::clone(&pending), socket: shutdown.try_clone()? };
         std::thread::Builder::new().name(format!("konedrive-tx-{name}")).spawn(move || {
             // Ends when the queue is closed (the connection is over, or every
             // handle to it is gone), when a send fails outright, or when the
             // daemon has been silent for the whole liveness window with a
-            // send blocked.
-            while let Some(outgoing) = draining.next() {
+            // send blocked. Whatever ends it, `end` finishes the connection
+            // as it is dropped.
+            while let Some(outgoing) = end.pending.next() {
                 if let Err(why) = deliver(&mut channel, &outgoing, &heard, timing) {
                     tracing::warn!("cannot write to a daemon ({why}); ending the connection");
                     break;
                 }
             }
-            // Whatever ended the loop, the connection is finished: refuse
-            // everything from now on — which is also what releases a reader
-            // thread waiting for room for an `Ack` — and unblock the reader
-            // thread's `recv` so it can run the disconnect cleanup.
-            draining.close();
-            let _ = teardown.shutdown(std::net::Shutdown::Both);
         })?;
         Ok(Self { pending, socket: shutdown, liveness })
     }

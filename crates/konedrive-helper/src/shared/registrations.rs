@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use konedrive_helper::roots::{Accepted, Nesting, Refused, Root, Roots};
+use konedrive_helper::roots::{Accepted, Refused, Root, Roots};
 
 use super::lock;
 
@@ -53,10 +53,6 @@ impl Registrations {
 
     pub(crate) fn may_act_on(&self, peer_uid: u32, object_dev: u64, object_uid: u32) -> bool {
         lock(&self.roots).may_act_on(peer_uid, object_dev, object_uid)
-    }
-
-    pub(crate) fn nesting_conflict(&self, path: &str, dev: u64, ino: u64) -> Option<Nesting> {
-        lock(&self.roots).nesting_conflict(path, dev, ino)
     }
 
     /// Begins a registration or an unregistration: nothing else is

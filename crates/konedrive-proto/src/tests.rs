@@ -211,3 +211,77 @@ fn a_root_id_is_a_version_4_uuid_in_its_canonical_text() {
         assert!(!is_root_id(bad), "{bad:?}");
     }
 }
+
+/// A datagram longer than the receive buffer is refused as what it is. The
+/// kernel keeps the head and throws the rest away; the head of this one is a
+/// whole message, so a receiver that did not look at `MSG_TRUNC` would act
+/// on it.
+#[test]
+fn a_datagram_longer_than_the_buffer_is_refused_not_cut() {
+    let _serial = serial();
+    let (client, mut server) = pair();
+    let mut encoded = serde_json::to_vec(&ToHelper::MarkDir).unwrap();
+    encoded.resize(MAX_MESSAGE_BYTES + 1, b' ');
+    nix::sys::socket::send(client.get_ref().as_raw_fd(), &encoded, MsgFlags::empty()).unwrap();
+
+    let error = server.recv::<ToHelper>().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error:?}");
+    assert!(error.to_string().contains("message truncated"), "{error}");
+}
+
+/// A descriptor that arrives is not inherited by a program this process
+/// starts.
+#[test]
+fn a_received_descriptor_is_close_on_exec() {
+    let _serial = serial();
+    let (mut client, mut server) = pair();
+    let file = tempfile::tempfile().unwrap();
+    client.send(&ToHelper::MarkFile, Some(std::os::fd::AsFd::as_fd(&file))).unwrap();
+    let (_, fd) = server.recv::<ToHelper>().unwrap();
+    let fd = fd.expect("descriptor");
+    // SAFETY: `F_GETFD` on an open descriptor reads its flags.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    assert_ne!(flags & libc::FD_CLOEXEC, 0, "flags {flags:#x}");
+}
+
+/// The control buffer is aligned for the records read out of it, and holds
+/// exactly the room of `MAX_CONTROL_FDS` descriptors.
+#[test]
+fn the_control_buffer_is_aligned_as_a_cmsghdr() {
+    assert_eq!(mem::align_of::<ControlBuffer>(), mem::align_of::<libc::cmsghdr>());
+    let control = ControlBuffer::new();
+    assert_eq!(control.bytes.as_ptr() as usize % mem::align_of::<libc::cmsghdr>(), 0);
+    assert_eq!(control.bytes.len(), mem::size_of::<libc::cmsghdr>() + 8 * mem::size_of::<RawFd>());
+}
+
+/// What `validate` refuses, and that it refuses nothing else: the two
+/// fields with a form, at the edges of the form.
+#[test]
+fn validate_refuses_a_root_id_and_a_handle_out_of_form() {
+    let id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    let register = |root_id: &str| ToHelper::RegisterRoot { root_id: root_id.to_owned() };
+    assert_eq!(register(id).validate(), Ok(()));
+    assert_eq!(register("some-root").validate(), Err(Malformed::RootId));
+    assert_eq!(register(&"x".repeat(60_000)).validate(), Err(Malformed::RootId));
+
+    let open = |handle_type, len| ToHelper::OpenByHandle { handle_type, handle: vec![0xab; len] };
+    assert_eq!(open(0, 1).validate(), Ok(()));
+    assert_eq!(open(0x4d, MAX_HANDLE_BYTES).validate(), Ok(()));
+    assert_eq!(open(-1, 8).validate(), Err(Malformed::Handle));
+    assert_eq!(open(1, 0).validate(), Err(Malformed::Handle));
+    assert_eq!(open(1, MAX_HANDLE_BYTES + 1).validate(), Err(Malformed::Handle));
+
+    // Left as they come: an id to unregister is only compared, an errno is
+    // clamped by the helper.
+    for unchecked in [
+        ToHelper::Hello { version: 0 },
+        ToHelper::UnregisterRoot { root_id: "some-root".into() },
+        ToHelper::HydrateDone { req_id: u64::MAX, errno: i32::MIN },
+        ToHelper::MarkDir,
+        ToHelper::UnmarkDir,
+        ToHelper::MarkFile,
+        ToHelper::ClearIgnore,
+    ] {
+        assert_eq!(unchecked.validate(), Ok(()), "{unchecked:?}");
+    }
+}
