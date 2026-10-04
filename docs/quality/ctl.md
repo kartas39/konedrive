@@ -90,6 +90,8 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   repeat one sequence (`:80–138`); sentences inline and repeated (`:59, 180, 191, 289, 351, 358`).
 - **Fix:** split `SyncCmd` into `PathCmd` and `FolderCmd`; one `path_command` helper; sentences
   into `text/`. **Size:** M. **Risk:** low.
+- **Fixed 2026-10-04** in `c7327f9` (#175): `sync` is `status`, `FolderCmd` and `PathCmd` in
+  `commands/sync/`; the path commands run through one helper and the `unreachable!` is gone.
 
 ## CL8. The library's boundary is accidental; "text" functions that do I/O
 
@@ -98,11 +100,15 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   property reads inside a text function; `text/transfers.rs:43–68` shows the right shape.
   `daemon.rs`: `shown()` returns `(Vec, bool, bool)`.
 - **Fix:** named modules; read into a struct, then render purely. **Size:** S to M.
+- **Fixed 2026-10-04** in `c7327f9` (#175): the library holds texts only; the reads are the program's
+  `read.rs`, the waits `wait.rs`. A property the daemon lacks is an absent value.
 
 ## DB1. `konedrive-dbus`
 
 - `lib.rs` exports `pub mod testing` unconditionally (`:19`) and holds user-facing prose
   (`helper_advice`); row types in `accounts.rs` are anonymous tuples up to eight wide.
+- **Fixed 2026-10-04** in `c7327f9` (#175): `testing` is a feature, `HelperState` is one type for the daemon
+  and the CLI, `rows.rs` names the rows. The daemon still sends tuples for the rows `sync/` builds (`F252`).
 
 ## DB2. The tests' private bus can start the installed daemon — **defect?**
 
