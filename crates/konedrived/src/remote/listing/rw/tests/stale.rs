@@ -246,6 +246,32 @@ async fn a_new_file_in_a_folder_that_stops_being_placed_reaches_onedrive_first()
     assert!(w.graph.with(|c| c.item("D").is_some_and(|d| d.name == long) && c.bin.is_empty()));
 }
 
+/// A folder made in a folder that stopped being placed, with a file in it:
+/// the folder is made in the item in OneDrive, and the file goes up into
+/// that folder in the same run of the outbox — its folder's id is its own
+/// from the commit that made it. Nothing is deleted or moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_made_in_a_folder_that_stopped_being_placed_takes_its_file_at_once() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    std::fs::create_dir(w.path("docs/sub")).unwrap();
+    std::fs::write(w.path("docs/sub/new.txt"), b"new").unwrap();
+    let mut batch = crate::local::Batch::new();
+    batch.tree(Path::new("docs"));
+    w.examine(batch).await;
+    w.upload().await;
+    w.graph.with(|c| {
+        let sub = c.items.values().find(|i| i.name == "sub" && i.parent.as_deref() == Some("D")).unwrap_or_else(|| panic!("{:?}", c.paths()));
+        assert!(c.items.values().any(|i| i.name == "new.txt" && i.parent.as_deref() == Some(sub.id.as_str())), "{:?}", c.paths());
+    });
+    let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
+    assert!(rows.is_empty(), "{rows:?}");
+    w.nothing_deleted_or_moved("after the upload").await;
+}
+
 /// Decision 3: a row the outbox cannot finish — a blocked `create`: a new
 /// file whose name OneDrive refuses — keeps a folder that stopped being
 /// placed on disk as long as it stays; renamed, the file goes up into the

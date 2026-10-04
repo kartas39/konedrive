@@ -148,6 +148,7 @@ impl TreeStore {
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_outbox_seq(&tx)?;
         upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
+        crate::reconcile::joins_leaving(&tx, &answer.id, answer.parent_id.as_deref())?;
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],

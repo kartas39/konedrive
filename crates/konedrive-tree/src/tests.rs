@@ -290,6 +290,13 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
         vec![(PathBuf::from("docs/f-long"), SkipReason::NameTooLong), (PathBuf::from("n-longer"), SkipReason::NameTooLong)]
     );
     assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 2 });
+
+    // An outbox commit made after the change of `F` was deferred supersedes
+    // it: OneDrive no longer has the item under that name, and it is off the
+    // list before the next cycle drops what waited.
+    store.conn.execute("UPDATE items SET local_seq = 2 WHERE id = 'F'", []).unwrap();
+    assert_eq!(store.skipped().unwrap(), vec![(PathBuf::from("n-longer"), SkipReason::NameTooLong)]);
+    assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 1 });
 }
 
 /// What a delta changed, read back from the two tables: an upsert, a

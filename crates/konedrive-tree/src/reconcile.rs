@@ -116,6 +116,17 @@ pub(super) fn wait(tx: &rusqlite::Transaction<'_>, id: &str, row: Option<&Row>, 
     Ok(())
 }
 
+/// Item `id`, just committed into the folder `parent`, is remembered with
+/// what is leaving when `parent` is (issue #104): as an item inside it, of the
+/// same leaving object, from this commit on and not only from the next cycle
+/// ([`TreeStore::leaving_refresh_items`]). A folder made there gives its id
+/// to what is made in it at once.
+pub(super) fn joins_leaving(tx: &rusqlite::Transaction<'_>, id: &str, parent: Option<&str>) -> Result<(), TreeError> {
+    let Some(parent) = parent else { return Ok(()) };
+    tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) SELECT ?1, leaving FROM leaving_items WHERE id = ?2")?.execute(params![id, parent])?;
+    Ok(())
+}
+
 /// What a deferred change's query selects: the tree's row, read as every
 /// row is ([`row_from`]), then the change's own columns.
 fn deferred_columns() -> String {

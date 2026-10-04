@@ -269,6 +269,22 @@ fn a_row_the_base_does_not_place_keeps_no_local_object() {
     s.apply_deferred().unwrap();
     forgotten(&s, "what waited, applied");
 
+    // A row that was not placed already and kept an object (what an
+    // earlier build left in an installed store) loses it when next written.
+    for page in [false, true] {
+        let mut s = base();
+        s.set_local_handle("V", Some(&handle(8))).unwrap();
+        let renamed = [Change::Upsert(unplaced(folder("V", "R", "renamed")))];
+        if page {
+            s.commit_page(&renamed, "next").unwrap();
+        } else {
+            s.begin_staging(crate::NewTree::Delta).unwrap();
+            s.stage(&renamed).unwrap();
+            s.commit_staging("L2").unwrap();
+        }
+        assert_eq!(s.local_handle("V").unwrap(), None, "page={page}");
+    }
+
     // Renamed, and placed as before: its object is its own.
     let mut s = base();
     s.begin_staging(crate::NewTree::Delta).unwrap();

@@ -37,7 +37,7 @@ use crate::meta::next_outbox_seq;
 use crate::model::Kind;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::query::get_row;
-use crate::reconcile::wait;
+use crate::reconcile::{joins_leaving, wait};
 use crate::source::Source;
 use crate::staging::apply;
 use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT};
@@ -560,6 +560,7 @@ impl TreeStore {
                     }
                     None => {
                         upsert(&tx, Table::Items, row)?;
+                        joins_leaving(&tx, &row.id, row.parent_id.as_deref())?;
                     }
                 }
                 tx.execute(

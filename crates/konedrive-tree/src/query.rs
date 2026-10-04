@@ -156,14 +156,21 @@ impl TreeStore {
 
 /// The rows of what OneDrive has and the folder cannot hold, as `id,
 /// parent_id, name, placement`: each as its deferred change has it, where one
-/// waits that says so, and as the base has it otherwise.
+/// waits that says so, and as the base has it otherwise. A deferred change
+/// an outbox commit made after it supersedes does not count: it is dropped
+/// when the next cycle stages what waits ([`TreeStore::live_deferred`]).
 fn not_in_the_folder() -> String {
+    let waits = format!(
+        "d.gone = 0 AND {out}
+           AND d.seq >= COALESCE((SELECT i.local_seq FROM items i WHERE i.id = d.id), 0)
+           AND d.seq >= COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = d.id), 0)",
+        out = skipped("d.placement"),
+    );
     format!(
-        "SELECT id, parent_id, name, placement FROM deferred WHERE gone = 0 AND {waits}
+        "SELECT d.id, d.parent_id, d.name, d.placement FROM deferred d WHERE {waits}
          UNION ALL
          SELECT id, parent_id, name, placement FROM items
-          WHERE {out} AND id NOT IN (SELECT id FROM deferred WHERE gone = 0 AND {waits})",
-        waits = skipped("placement"),
+          WHERE {out} AND id NOT IN (SELECT d.id FROM deferred d WHERE {waits})",
         out = skipped("placement"),
     )
 }
