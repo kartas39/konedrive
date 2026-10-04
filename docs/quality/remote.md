@@ -138,6 +138,8 @@ the #104 test gaps filled first. `RE4` waits for these.
 - **Where:** `materialize.rs:411, 412, 423, 438, 449, 450`; `materialize/rw.rs:508, 509, 530, 535`.
 - **What:** about seven `call_blocking` hops per id, several repeated, for up to 5,000 ids.
 - **Fix:** one store call that returns the plan of every item. **Size:** M. **Risk:** low.
+- **Fixed 2026-10-04** in `2e21d56` (#171): `TreeStore::plan(ids)` is read once per Changed pass, and
+  `where_it_was` is a pure function of it. Not timed (`F244`).
 
 ## RE9. The forget, remove, settle protocol is kept by convention
 
