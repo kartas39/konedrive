@@ -20,11 +20,19 @@ the rest 4.
   `reqwest` type in the public API (`mod.rs:90`).
 - **Fix:** one `send` taking the auth mode and a throttle policy; one `classify(status, code)`;
   errors that carry the status and the code. **Size:** M. **Risk:** medium; retry timing changes.
+- **Fixed 2026-10-04** in `ddaee60` (#148): one `send(auth, throttle, request)` (`drive/send.rs`), one
+  `classify(status, code)` (`drive/error.rs`), errors that carry the status and the code, a
+  `Status` of the crate's own in `Thumbnail::Refused`. Waits, counts and texts are as before.
+  **Left open, a defect to fix apart:** `remote/listing.rs` `refused()` still takes any
+  `DriveError::Failed(_)` as "Graph refused the link": a 400, a 403, a token rejected twice, an
+  unparsable or foreign-host link and a page with neither link all drop the delta link. Known
+  by reading only. The rest is in `docs/limitations/D33.md`.
 
 ## GR2. `GraphClient` duplicates `DriveClient`
 
 - **Where:** `graph.rs:51–97`; `drive/mod.rs:146–171, 215–224`.
 - **Fix:** `DriveClient::drive()` and `profile()`; delete `graph.rs`. **Size:** S.
+- **Fixed 2026-10-04** in `ddaee60` (#148).
 
 ## GR5. `TokenManager`: a network refresh under the cache lock — **defect?**
 
@@ -56,3 +64,5 @@ the rest 4.
   (`drive/upload.rs:135`); `upload_chunk` (`:196–257`) with seven exits; `SESSION_EXPIRED` and
   `WALLET_LOCKED` are user-facing sentences in this crate; `lib.rs` has nine `pub mod` lines and
   no curated surface.
+- **Fixed 2026-10-04** in `ddaee60` (#148), except `SESSION_EXPIRED` and `WALLET_LOCKED`, which stay in
+  the crate (`docs/limitations/D33.md`).
