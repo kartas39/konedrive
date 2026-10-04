@@ -113,6 +113,8 @@ hour-sized.
   bare `Arc<Mutex<Option<HelperLink>>>` used from three areas.
 - **Fix:** `link.rs`, `clearance.rs`, `presence.rs`; `LinkCell` as a small type; log every drop.
 - **Size:** M. **Risk:** low.
+- **Fixed 2026-10-04** in `e4e2717` (#183): `helper/` is `link.rs`, `clearance.rs`, `presence.rs`; `LinkCell`
+  is a type; every message the reader passes over is logged.
 
 ## HY7. `pin.rs` is four modules in one, with a slip in the worker — **defect?**
 
@@ -169,6 +171,8 @@ hour-sized.
   prevents it (`remote/materialize/holding.rs:107–112`).
 - **Fix:** a lock per `Disk`; one error policy per walk; `release` refuses a placeholder at any
   depth. **Size:** M. **Risk:** medium; `disk/tests.rs` is 170 lines.
+- **Fixed 2026-10-04** in `e4e2717` (#183): a lock per sync folder on its directories' modes (`F271`); one
+  error rule per walk; a directory that cannot be listed fails the scan and is named (`F272`).
 
 ## HY10. `root.rs`: error types that do not say what happened
 
@@ -177,6 +181,8 @@ hour-sized.
   `HelperError::Timeout`); `:273–298` (`drive_allows`, a predicate that removes an attribute).
 - **Fix:** `OpenError` and `DehydrateError`; `RegisterError::Helper(HelperError)`. **Size:** S to
   M. D-Bus error names must stay.
+- **Fixed 2026-10-04** in `e4e2717` (#183): `OpenError` apart from `DehydrateError`; `RegisterError::Helper`
+  keeps the `HelperError`; `drive_of` and `forget_drive`.
 
 ## HY11. Cut artifacts and test code in `source.rs` and `fill.rs`
 
