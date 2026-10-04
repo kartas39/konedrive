@@ -81,6 +81,9 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   `status/activity.rs:279, 432, 643`, `konedrive-graph/src/pool.rs:268`, `config/mod.rs:688`,
   the helper's `lock()`.
 - **Fix:** one `lock()` helper per crate and one policy. **Size:** S. **Risk:** none.
+- **Fixed in part 2026-10-05** in `0d59ccd` (#191): one policy (recover) through `panic::lock`, `read`, `write`,
+  kept by rule 7 of `scripts/check-structure.sh`; `clock::unix_now`. Left: `local/` and the helper
+  (`docs/limitations/D58.md`).
 
 ## X5. Test hooks and test doubles in production code
 
