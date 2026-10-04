@@ -1,18 +1,20 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::placeholder;
+use konedrive_fs::placeholder::{self, State};
+use crate::folder::locks::InodeKey;
 use crate::local::batch::Batch;
-use crate::local::entry::{Entry, StateAttr, Type};
+use crate::local::entry::{proc_path, Entry, StateAttr, Type};
 use crate::local::names;
 use konedrive_fs::RESERVED_PREFIX;
 use konedrive_tree::outbox::{Base, Detection, LocalSkip, OutboxKind, OutboxOp, OutboxState, Snapshot};
-use konedrive_tree::{Kind, Row, Table};
+use konedrive_tree::{ActivityRow, Kind, Row, Table};
 
-use super::{daemon_owned, depth, ExamineError, Expect, lossy, object, Place, Run, Settle};
+use super::{daemon_owned, depth, ExamineError, Expect, lossy, Run};
 
 impl Run<'_, '_> {
     pub(super) fn classify(&mut self, batch: &Batch) -> Result<(), ExamineError> {
@@ -163,8 +165,19 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    /// Decides which of the entries carrying `id` is the item, and what the
-    /// others are. Returns the item's entry, if one is.
+    /// Which of the entries carrying `id` is the item — the one rule of it
+    /// (invariant I2). An object is the item only if the base places the
+    /// item and the object is the one the base records. When the recorded
+    /// object is not among those seen, or none is recorded (a rebuilt store,
+    /// a placement that never reached its record), it is the object standing
+    /// where the item is expected — at its base place, when a row says the
+    /// item was removed: such an object takes the removal back. Every other
+    /// object carrying the id is a copy, the user's own
+    /// ([`stranger`](Self::stranger)), wherever the item's object is and
+    /// whatever became of it: nothing is asked, and no row of the item is
+    /// made from a copy. Returns the item's entry, if one is; an item with
+    /// none is left to [`missing`](Self::missing), if its place was looked
+    /// at.
     fn resolve(&mut self, id: &str, entries: &[usize]) -> Result<Option<usize>, ExamineError> {
         let Some(base) = self.base_row(id)? else {
             // Unknown to the base.
@@ -178,7 +191,9 @@ impl Run<'_, '_> {
                     // A create or mkdir between its two commit steps (§5): its
                     // replay adopts it.
                 } else {
-                    self.stranger(i)?;
+                    // Not surely nobody's: another account's folder may
+                    // have it, and wait to download it where it went.
+                    self.stranger(i, false)?;
                 }
             }
             return Ok(None);
@@ -190,7 +205,7 @@ impl Run<'_, '_> {
                 same.push(i);
             } else {
                 // Its own id with the other kind: not the item.
-                self.stranger(i)?;
+                self.stranger(i, false)?;
             }
         }
         if same.is_empty() {
@@ -207,14 +222,33 @@ impl Run<'_, '_> {
         for group in &mut groups {
             group.sort_by(|&a, &b| self.entries[a].rel.cmp(&self.entries[b].rel));
         }
-        let recorded = self.local_handle(id)?;
-        let expect = self.expected(id)?;
-        let expected_rel = match &expect {
-            Expect::At(rel) => Some(rel.clone()),
-            _ => None,
-        };
-        let base_rel = self.located(id)?.filter(|l| l.placed).map(|l| l.rel);
         let is_at = |run: &Self, g: &[usize], rel: &Option<PathBuf>| rel.as_ref().is_some_and(|r| g.iter().any(|&i| &run.entries[i].rel == r));
+        if !self.located(id)?.is_some_and(|l| l.placed) {
+            // The base does not place the item: nothing on disk is it. Placed
+            // right here by the new tree, a reconcile is placing it now, and
+            // its swap follows.
+            let placing = self.store({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.filter(|l| l.placed).map(|l| l.rel);
+            for group in &groups {
+                let waits = is_at(self, group, &placing);
+                for &i in group {
+                    if waits {
+                        let e = self.entries[i].clone();
+                        self.recheck(&e);
+                    } else {
+                        self.stranger(i, false)?;
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        let recorded = self.local_handle(id)?;
+        // Where the item is expected. With a row that says it was removed
+        // (its own, or of a folder above it), where the base has it: an
+        // object there takes the removal back, and makes no move.
+        let expected_rel = match self.expected(id)? {
+            Expect::At(rel) => Some(rel),
+            _ => self.located(id)?.map(|l| l.rel),
+        };
         let original = recorded.as_ref().and_then(|h| groups.iter().position(|g| self.entries[g[0]].handle.as_ref() == Some(h)));
 
         // Rename to a backup, write new (vim's `file~`): the recorded inode
@@ -238,48 +272,14 @@ impl Run<'_, '_> {
             }
         }
 
-        let at_place = groups.iter().position(|g| is_at(self, g, &expected_rel)).or_else(|| groups.iter().position(|g| is_at(self, g, &base_rel)));
-        let pick = match (original, at_place, recorded) {
-            (Some(o), _, _) => o,
-            // The one where the item is: an editor's new inode that copied
-            // its attributes.
-            (None, Some(p), _) => p,
-            (None, None, None) => {
-                tracing::warn!("{id} is on {} inodes, none of them where it was: the first by path is taken", groups.len());
-                0
+        // The recorded object; not seen, the one where the item is expected:
+        // the object a placement or a replacement left before its record, an
+        // editor's new inode that copied the attributes.
+        let Some(pick) = original.or_else(|| groups.iter().position(|g| is_at(self, g, &expected_rel))) else {
+            for &i in &same {
+                self.stranger(i, false)?;
             }
-            // None of these is the inode the base records, and none stands
-            // where the item is: where is the recorded one (§3.4)?
-            (None, None, Some(handle)) => match self.place_of(&handle) {
-                Place::Gone => {
-                    tracing::warn!("{id} is on {} inodes, none of them where it was: the first by path is taken", groups.len());
-                    0
-                }
-                Place::Outside(to) => {
-                    // It left the folder: these are copies it left behind.
-                    for &i in &same {
-                        self.stranger(i)?;
-                    }
-                    if let Some(rel) = &expected_rel {
-                        self.removal(OutboxKind::MoveOut, id, &base, rel, Some(object(handle)), Some(to.as_path()))?;
-                    }
-                    self.decided.insert(id.to_owned());
-                    return Ok(None);
-                }
-                Place::Inside(now) => {
-                    self.recheck_at(&now);
-                    self.hold_back(id, Settle::Wait, false);
-                    return Ok(None);
-                }
-                Place::Unknown => {
-                    for &i in &same {
-                        let e = self.entries[i].clone();
-                        self.recheck(&e);
-                    }
-                    self.hold_back(id, Settle::Wait, true);
-                    return Ok(None);
-                }
-            },
+            return Ok(None);
         };
         let group = groups[pick].clone();
         let chosen = group
@@ -298,10 +298,12 @@ impl Run<'_, '_> {
             }
         }
         // Other objects with its id: copies that kept its attributes.
+        // With the recorded object seen, they are certainly not the item.
+        let certain = original == Some(pick);
         for (n, other) in groups.iter().enumerate() {
             if n != pick {
                 for &i in other {
-                    self.stranger(i)?;
+                    self.stranger(i, certain)?;
                 }
             }
         }
@@ -311,10 +313,16 @@ impl Run<'_, '_> {
     /// An entry with an item id that is not the item's (a copy, a file from
     /// another folder or account, the wrong kind): downloaded, it is the
     /// user's own file, stripped and uploaded as new; a directory likewise,
-    /// with its contents. A placeholder cannot be read here and is listed; so
-    /// is a file with other links, whose other names stripping would change
-    /// too.
-    fn stranger(&mut self, i: usize) -> Result<(), ExamineError> {
+    /// with its contents. A file that is not downloaded cannot be read here
+    /// and is listed; so is a file with other links, whose other names
+    /// stripping would change too. Only when it is `certain` that the entry
+    /// is nobody's file — the item's recorded object was seen in this run —
+    /// is a file not downloaded that holds no data removed
+    /// ([`remove_empty`](Self::remove_empty)): "not seen" is not "gone", and
+    /// the entry may be the item's own file, moved where this run did not
+    /// look; and an id this store does not know may be another account's,
+    /// whose move-out waits to download the file where it went.
+    fn stranger(&mut self, i: usize, certain: bool) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
         let listed = |run: &mut Self, reason: LocalSkip| {
             if !run.ex.ignore.matches(&e.name) {
@@ -332,7 +340,11 @@ impl Run<'_, '_> {
             }
             Type::File if e.hydrated() => strip(dir.and_then(|dir| self.ex.disk.open_file(&dir, &e.name))),
             _ => {
-                listed(self, LocalSkip::NotDownloaded);
+                if certain && self.remove_empty(&e) {
+                    self.consumed.insert(i);
+                } else {
+                    listed(self, LocalSkip::NotDownloaded);
+                }
                 return Ok(());
             }
         };
@@ -354,6 +366,59 @@ impl Run<'_, '_> {
         self.entries[i].state = StateAttr::Absent;
         self.fresh.push(i);
         Ok(())
+    }
+
+    /// A copy marked as not downloaded that holds no data — a regular file
+    /// with one name and no data region (`SEEK_DATA` finds none): a
+    /// placeholder of nothing, restored from a snapshot or copied beside its
+    /// original — is removed, and `true` returned: nothing is lost with it,
+    /// and listed it would stay a dead file for good. Said in the activity
+    /// log. One that holds any data, has another name, is being filled, or
+    /// cannot be checked is kept (`false`): no file with data is deleted on
+    /// the strength of an attribute. Checked through its own descriptor,
+    /// under the lock a fill holds, and the name against that descriptor
+    /// right before the unlink. Only for an entry that is certainly not the
+    /// item ([`stranger`](Self::stranger)).
+    fn remove_empty(&mut self, e: &Entry) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        if e.state != StateAttr::Known(State::OnlineOnly) {
+            return false;
+        }
+        let Ok(dir) = self.ex.disk.dir(e.dir_rel()) else { return false };
+        let Ok(file) = self.ex.disk.open_file(&dir, &e.name) else { return false };
+        let Some(_guard) = InodeKey::of(&file).ok().and_then(|key| self.ex.locks.try_lock(key)) else { return false };
+        let empty = |file: &File| {
+            file.metadata().is_ok_and(|m| m.file_type().is_file() && m.nlink() == 1 && (m.dev(), m.ino()) == (e.dev, e.ino))
+                && matches!(placeholder::read_state(file), Ok(Some(State::OnlineOnly)))
+                // One hole from its start to its end. Never the block
+                // count: the marks alone take a block on ext4. Where holes
+                // are not reported the whole file reads as data: kept.
+                && nix::unistd::lseek(file.as_fd(), 0, nix::unistd::Whence::SeekData) == Err(nix::errno::Errno::ENXIO)
+        };
+        let named = |dir: &File| std::fs::symlink_metadata(proc_path(dir).join(&e.name)).is_ok_and(|m| (m.dev(), m.ino()) == (e.dev, e.ino));
+        if !empty(&file) || !named(&dir) || !empty(&file) {
+            return false;
+        }
+        match self.ex.disk.remove(&dir, &e.name, false) {
+            Ok(()) => {
+                tracing::info!("{} was marked as not downloaded, is not its item's file and held no data; it is removed", e.rel.display());
+                let path = self.root_path.as_deref().map_or_else(|| e.rel.clone(), |root| root.join(&e.rel));
+                let event = ActivityRow {
+                    at: self.ex.now,
+                    kind: crate::status::activity::Kind::Removed.as_str().to_owned(),
+                    path: path.display().to_string(),
+                    detail: format!("removed an empty copy of {}: it held no content", lossy(&e.name)),
+                };
+                if let Err(err) = self.store(move |s| s.add_activity(std::slice::from_ref(&event))) {
+                    tracing::warn!("cannot record an activity event: {err}");
+                }
+                true
+            }
+            Err(err) => {
+                tracing::warn!("cannot remove the empty copy {}: {err}", e.rel.display());
+                false
+            }
+        }
     }
 
     /// Save-by-rename with a backup: item `id`'s inode (`group`) now sits

@@ -26,6 +26,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
+mod identity;
 mod passed_over;
 
 const TIME: i64 = 1_700_000_000;
@@ -192,14 +193,6 @@ fn copy_keeping_attributes(from: &Path, to: &Path) {
         if let Some(value) = xattr::get(from, &name).unwrap() {
             xattr::set(to, &name, &value).unwrap();
         }
-    }
-}
-
-#[test]
-fn placement_records_each_items_inode() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "D", "a.txt", b"abc")]);
-    for (id, rel) in [("D", "docs"), ("A", "docs/a.txt")] {
-        assert_eq!(fx.store.call_blocking(move |s| s.local_handle(id)).unwrap(), Some(fx.handle(rel)), "{id}");
     }
 }
 
@@ -575,15 +568,16 @@ fn the_mass_delete_guard_holds_a_large_delete() {
 }
 
 /// Rule 6, an id the base does not know: a downloaded file from elsewhere
-/// becomes the user's own and is uploaded; one that is not downloaded
-/// cannot be read here, and is listed with its attributes left alone.
+/// becomes the user's own and is uploaded; one marked as not downloaded
+/// that holds data cannot be read here, and is listed with its attributes
+/// left alone, never removed.
 #[test]
 fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
     let fx = Fx::new(&[]);
     fx.write("foreign.txt", b"content");
     xattr::set(fx.path("foreign.txt"), XATTR_ITEM_ID, b"OTHER").unwrap();
     xattr::set(fx.path("foreign.txt"), placeholder::XATTR_STATE, b"hydrated").unwrap();
-    File::create(fx.path("ghost.bin")).unwrap().set_len(4096).unwrap();
+    fx.write("ghost.bin", &[7u8; 8192]);
     xattr::set(fx.path("ghost.bin"), XATTR_ITEM_ID, b"GHOST").unwrap();
     xattr::set(fx.path("ghost.bin"), placeholder::XATTR_STATE, b"online-only").unwrap();
     fx.write("linked.txt", b"two names");
@@ -936,25 +930,6 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
     commit(&fx).unwrap();
     assert!(commit(&fx).is_err(), "a row that is gone commits nothing");
     assert_eq!(fx.store.call_blocking(move |s| s.outbox_row(n_delete.seq)).unwrap().and_then(|r| r.item_id).as_deref(), Some("N"));
-}
-
-/// I4: a copy that kept the attributes does not take the item when the
-/// inode the base records is still alive outside the folder: the copy is a
-/// new file, and the item moved out.
-#[test]
-fn a_copy_does_not_take_the_item_when_its_original_left_the_folder() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc")]);
-    fx.hydrate("a.txt", b"abc");
-    let original = fx.handle("a.txt");
-    copy_keeping_attributes(&fx.path("a.txt"), &fx.path("b.txt"));
-    std::fs::rename(fx.path("a.txt"), fx.outside.join("a.txt")).unwrap();
-    fx.liveness.alive(original.clone(), fx.outside.join("a.txt"));
-    fx.examine(&names(&[("", "a.txt"), ("", "b.txt")]));
-    let mut rows = fx.summary();
-    rows.sort();
-    assert_eq!(rows, vec![(Create, "b.txt".into(), None), (MoveOut, "a.txt".into(), Some("A".into()))]);
-    assert_eq!(id_of(&fx.path("b.txt")), None);
-    assert_eq!(fx.store.call_blocking(move |s| s.local_handle("A")).unwrap(), Some(original), "the item is still the original");
 }
 
 /// I5: nothing is examined in a root that was deleted, or that no longer

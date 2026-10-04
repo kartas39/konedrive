@@ -12,25 +12,16 @@ use crate::local::names;
 use crate::local::RECHECK;
 use crate::folder::locks::InodeKey;
 use konedrive_tree::outbox::{LocalSkip, OutboxKind, OutboxOp, OutboxState, Reason, Snapshot};
-use konedrive_tree::{Row, Table};
+use konedrive_tree::Row;
 
 use super::{Content, denied, ExamineError, Expect, gone, Run};
 
 impl Run<'_, '_> {
-    /// Item `id` found as entry `i`: where it is, and its content.
+    /// Item `id` found as entry `i`, its object ([`resolve`](Self::resolve)):
+    /// where it is, and its content.
     pub(super) fn found(&mut self, id: &str, i: usize, batch: &Batch) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
         let Some(base) = self.base_row(id)? else { return Ok(()) };
-        if !self.located(id)?.is_some_and(|l| l.placed) {
-            // Not placed by the base, and placed right here by the new tree:
-            // a reconcile is placing it now, and its swap follows — never a
-            // move of the user's (issue #104).
-            let placing = self.store({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == e.rel);
-            if placing {
-                self.recheck(&e);
-                return Ok(());
-            }
-        }
         let recorded = self.local_handle(id)?;
         if e.handle.is_some() && e.handle != recorded {
             self.ops.push(OutboxOp::SetHandle { item_id: id.to_owned(), handle: e.handle.clone() });
