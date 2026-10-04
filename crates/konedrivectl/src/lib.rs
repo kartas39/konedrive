@@ -35,27 +35,16 @@ pub fn opens_browser(no_browser: Option<&std::ffi::OsStr>, terminal: bool) -> bo
 }
 
 /// Whether `error` says that the object called is not there: an account removed while the
-/// command ran.
+/// command ran ([`Refusal::is_gone`](konedrive_dbus::Refusal::is_gone)).
 pub fn is_gone(error: &zbus::Error) -> bool {
+    use konedrive_dbus::Refusal;
     match error {
-        zbus::Error::MethodError(name, _, _) => is_gone_name(name.as_str()),
         zbus::Error::FDO(error) => {
             use zbus::DBusError;
-            is_gone_name(error.name().as_str())
+            Refusal::parse(error.name().as_str()).is_gone()
         }
-        _ => false,
+        other => Refusal::from_error(other).is_some_and(|refusal| refusal.is_gone()),
     }
-}
-
-/// Whether `name` is the bus's answer for an object, interface or method that
-/// is not there ([`is_gone`]).
-pub(crate) fn is_gone_name(name: &str) -> bool {
-    matches!(
-        name,
-        "org.freedesktop.DBus.Error.UnknownObject"
-            | "org.freedesktop.DBus.Error.UnknownMethod"
-            | "org.freedesktop.DBus.Error.UnknownInterface"
-    )
 }
 
 /// Writes `data` to `path` as a brand-new file, atomically and privately.

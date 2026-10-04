@@ -457,7 +457,7 @@ async fn explained_paths<T>(
     };
     let (folders, accounts) = daemon.folders().await.unwrap_or_default();
     let refused = konedrivectl::refused_path(&error).map(str::to_owned).or_else(|| {
-        let outside = konedrive_dbus::error_name(&error) == Some("org.konedrive.Error.OutsideRoot");
+        let outside = konedrive_dbus::Refusal::from_error(&error) == Some(konedrive_dbus::Refusal::OutsideRoot);
         paths.iter().find(|path| outside && holder(&folders, path).is_none()).cloned()
     });
     let named = refused.clone().unwrap_or_else(|| paths.join(", "));

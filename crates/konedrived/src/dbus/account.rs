@@ -3,11 +3,11 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use zbus::object_server::InterfaceRef;
 use zbus::zvariant::ObjectPath;
-use zbus::{fdo, interface, Connection};
+use zbus::{interface, Connection};
 
-use crate::account::{AccountError, AccountService};
+use crate::account::AccountService;
 use crate::account::state::AccountSnapshot;
-use crate::dbus::fault::SetModeFault;
+use crate::dbus::fault::{Fault, Result};
 #[cfg(feature = "dev-tools")]
 use crate::dbus::token_export::TokenExport;
 
@@ -17,16 +17,16 @@ pub struct Account {
 
 #[interface(name = "org.konedrive.Account")]
 impl Account {
-    async fn begin_sign_in(&self) -> fdo::Result<String> {
-        self.service.begin_sign_in().await.map_err(to_fdo)
+    async fn begin_sign_in(&self) -> Result<String> {
+        self.service.begin_sign_in().await.map_err(Fault::from)
     }
 
     async fn cancel_sign_in(&self) {
         self.service.cancel_sign_in().await;
     }
 
-    async fn sign_out(&self) -> fdo::Result<()> {
-        self.service.sign_out().await.map_err(to_fdo)
+    async fn sign_out(&self) -> Result<()> {
+        self.service.sign_out().await.map_err(Fault::from)
     }
 
     async fn refresh_info(&self) {
@@ -35,15 +35,15 @@ impl Account {
     }
 
     /// The rules of `Accounts.Add`; `InvalidArgs` otherwise.
-    async fn set_label(&self, label: &str) -> fdo::Result<()> {
-        self.service.set_label(label).map_err(to_fdo)
+    async fn set_label(&self, label: &str) -> Result<()> {
+        self.service.set_label(label).map_err(Fault::from)
     }
 
     /// Switches the account's mode (`docs/design/writes.md` §2); the URL of the sign-in the switch
     /// needs, empty when it needs none.
     #[zbus(out_args("sign_in_url"))]
-    async fn set_mode(&self, mode: &str, force: bool) -> Result<String, SetModeFault> {
-        self.service.set_mode(mode, force).await.map_err(SetModeFault::from)
+    async fn set_mode(&self, mode: &str, force: bool) -> Result<String> {
+        self.service.set_mode(mode, force).await.map_err(Fault::from)
     }
 
     #[zbus(property)]
@@ -70,7 +70,7 @@ impl Account {
 
     #[zbus(property)]
     async fn last_error(&self) -> String {
-        self.service.state().get().last_error
+        self.service.state().get().published_error()
     }
 
     #[zbus(property)]
@@ -103,13 +103,6 @@ impl Account {
     #[zbus(property)]
     async fn quota_state(&self) -> String {
         self.service.state().get().quota_state
-    }
-}
-
-fn to_fdo(error: AccountError) -> fdo::Error {
-    match error {
-        AccountError::InvalidClientId | AccountError::InvalidLabel(_) => fdo::Error::InvalidArgs(error.to_string()),
-        other => fdo::Error::Failed(other.to_string()),
     }
 }
 
@@ -161,7 +154,7 @@ async fn emit_changes(
     if old.state != new.state {
         account.state_changed(emitter).await?;
     }
-    if old.last_error != new.last_error {
+    if old.published_error() != new.published_error() {
         account.last_error_changed(emitter).await?;
     }
     if old.label != new.label {

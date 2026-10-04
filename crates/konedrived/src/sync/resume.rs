@@ -4,7 +4,7 @@ use crate::sync::SyncService;
 use crate::helper::{Clearance, HelperError, HelperLink};
 use crate::folder::root::SyncRoot;
 use crate::sync::{Persisted, Registration, RootSource, SyncError};
-use crate::status::snapshot::RootState;
+use crate::status::snapshot::{RootState, SwitchNote};
 use crate::folder::root;
 use crate::sync::hub;
 
@@ -16,11 +16,6 @@ enum NotSwitched {
     /// Intercepted, waiting for the next connect: the helper may hold it.
     Held,
 }
-
-/// What `LastError` adds when a folder registered without the helper could
-/// not be switched to interception once the helper connected.
-const SWITCH_FAILED: &str =
-    "the konedrive helper is connected, but switching this folder to interception failed";
 
 impl SyncService {
     /// Brings the sync folder up, or back up: re-registers the root with the
@@ -150,7 +145,7 @@ impl SyncService {
             self.state.update(|s| {
                 s.root_path = path.display().to_string();
                 s.root_state = RootState::Error;
-                s.last_error = message;
+                s.set_error(message);
             });
         }
     }
@@ -278,22 +273,17 @@ impl SyncService {
                 });
                 self.state.update(|s| {
                     s.root_state = RootState::Error;
-                    s.last_error = message;
+                    s.set_error(message);
                 });
                 NotSwitched::Held
             }
         }
     }
 
-    /// Adds why a switch failed to `LastError`, in place of what an earlier
-    /// failed switch said there.
+    /// Says why a switch failed behind what `LastError` says of the registration, in place
+    /// of what an earlier failed switch said there.
     fn note_switch_failed(&self, why: &str) {
-        let note = format!("{SWITCH_FAILED}: {why}; it is tried again the next time the helper connects");
-        self.state.update(|s| {
-            let before = s.last_error.split(SWITCH_FAILED).next().unwrap_or_default();
-            let before = before.trim_end_matches(". ");
-            s.last_error = if before.is_empty() { note } else { format!("{before}. {note}") };
-        });
+        self.state.update(|s| s.switch_note = Some(SwitchNote { why: why.to_owned() }));
     }
 
     /// Takes an intercepted root restored from `config.toml` as this
@@ -326,7 +316,7 @@ impl SyncService {
             self.state.update(|s| {
                 s.root_path = persisted.path.display().to_string();
                 s.root_state = RootState::Error;
-                s.last_error = message;
+                s.set_error(message);
             });
             return;
         };
@@ -351,7 +341,7 @@ impl SyncService {
         self.state.update(|s| {
             s.root_path = shown;
             s.root_state = RootState::Error;
-            s.last_error = unread.unwrap_or_default();
+            s.set_error(unread.unwrap_or_default());
             s.waits_for_helper = true;
         });
     }

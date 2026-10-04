@@ -354,6 +354,7 @@ application must never read zeros where real content should be.
 - [D32](D32.md) — The tests' private bus has a configuration of its own, and only a test's own connection gives up on a call.
 - [D33](D33.md) — What the one `send` of `konedrive-graph` left as it was, and what it rests on
 - [D34](D34.md) — Outbox reasons and local skips are types over the strings they were.
+- [D35](D35.md) — Refusals and the notes of `LastError` are types over the strings they were.
 
 ---
 

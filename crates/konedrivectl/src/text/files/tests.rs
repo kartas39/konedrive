@@ -62,3 +62,23 @@ fn a_free_up_refused_not_uploaded_names_the_one_path() {
     assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", detail), Some("/f/B/y"));
     assert_eq!(super::refused_path_of("org.konedrive.Error.Failed", detail), None);
 }
+
+/// The path refused and what pins it travel inside the daemon's sentences (limitations
+/// log D35): what the daemon writes today is read back here, so a sentence reworded on
+/// one side fails this test.
+#[test]
+fn the_daemons_sentences_are_read_back() {
+    use std::path::Path;
+
+    use konedrived::sync::SyncError;
+
+    let pinned = konedrived::hydration::pin::refusal(Path::new("/f/Docs/a b.txt"), Path::new("/f/Docs"));
+    assert_eq!(pinned, "/f/Docs/a b.txt is pinned by /f/Docs: unpin it first");
+    assert_eq!(super::pinned_parts(&pinned), Some(("/f/Docs/a b.txt", "/f/Docs")));
+    assert_eq!(super::refused_path_of("org.konedrive.Error.NotAllowed", &pinned), Some("/f/Docs/a b.txt"));
+
+    let waiting = SyncError::NotUploaded("/f/B/y".into()).to_string();
+    assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", &waiting), Some("/f/B/y"));
+    let no_page = SyncError::NotInOneDrive("/f/B/y".into()).to_string();
+    assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", &no_page), Some("/f/B/y"));
+}

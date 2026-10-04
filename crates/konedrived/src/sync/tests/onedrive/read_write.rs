@@ -645,7 +645,7 @@ async fn a_folder_whose_changes_wait_is_not_forgotten() {
 
     let refused = service.unregister_root().await.unwrap_err();
     assert!(matches!(&refused, SyncError::PendingUploads(why) if why.starts_with("1 change")), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::SyncFault::PendingUploads(_)));
+    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::PendingUploads, _)));
     assert!(matches!(service.retire().await, Err(SyncError::PendingUploads(_))), "Remove's first step too");
     assert!(service.registration().is_some(), "still registered");
     assert_eq!(service.pending_uploads().await, 1, "the change still waits");

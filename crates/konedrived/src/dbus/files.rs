@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use zbus::interface;
 
-use crate::dbus::fault::{to_fault, SyncFault};
+use konedrive_dbus::Refusal;
+
+use crate::dbus::fault::{to_fault, Fault};
 use crate::daemon::manager::{AccountManager, Outside};
 
-pub(crate) fn outside(path: &str) -> SyncFault {
-    SyncFault::OutsideRoot(format!("{path} is in no account's folder"))
+pub(crate) fn outside(path: &str) -> Fault {
+    Fault::refused(Refusal::OutsideRoot, format!("{path} is in no account's folder"))
 }
 
-impl From<Outside> for SyncFault {
+impl From<Outside> for Fault {
     fn from(Outside(path): Outside) -> Self {
         outside(&path)
     }
@@ -25,12 +27,12 @@ pub struct Files {
 
 #[interface(name = "org.konedrive.Files")]
 impl Files {
-    async fn hydrate(&self, path: &str) -> Result<(), SyncFault> {
+    async fn hydrate(&self, path: &str) -> Result<(), Fault> {
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
         account.sync.hydrate_now(Path::new(path)).await.map_err(to_fault)
     }
 
-    async fn dehydrate(&self, path: &str) -> Result<(), SyncFault> {
+    async fn dehydrate(&self, path: &str) -> Result<(), Fault> {
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
         account.sync.dehydrate(Path::new(path)).await.map_err(to_fault)
     }
@@ -45,7 +47,7 @@ impl Files {
     /// "Always keep on this device" for each path; how many files were queued for
     /// download, over every account.
     #[zbus(out_args("queued"))]
-    async fn pin(&self, paths: Vec<String>) -> Result<u32, SyncFault> {
+    async fn pin(&self, paths: Vec<String>) -> Result<u32, Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
             account.sync.check_pinnable(paths).await.map_err(to_fault)?;
@@ -60,7 +62,7 @@ impl Files {
     /// Unchecking "Always keep on this device": each path's own pin comes off, and its
     /// files stay; how many pins came off. Every account's paths are checked first.
     #[zbus(out_args("unpinned"))]
-    async fn unpin(&self, paths: Vec<String>) -> Result<u32, SyncFault> {
+    async fn unpin(&self, paths: Vec<String>) -> Result<u32, Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
             account.sync.check_unpinnable(paths).await.map_err(to_fault)?;
@@ -76,7 +78,7 @@ impl Files {
     /// files kept because they were in use or changed here. Every account's paths are
     /// checked first.
     #[zbus(out_args("files", "bytes", "busy", "skipped_pinned"))]
-    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32), SyncFault> {
+    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32), Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
             account.sync.check_free_up(paths).await.map_err(to_fault)?;
@@ -96,7 +98,7 @@ impl Files {
     /// `path`; of the drive's root for an account's folder itself. Asks OneDrive, and
     /// changes nothing.
     #[zbus(out_args("url"))]
-    async fn web_url(&self, path: &str) -> Result<String, SyncFault> {
+    async fn web_url(&self, path: &str) -> Result<String, Fault> {
         if let Some(account) = self.manager.folder_itself(Path::new(path)).await {
             return account.sync.root_web_url().await.map_err(to_fault);
         }

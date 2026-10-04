@@ -102,7 +102,7 @@ impl SyncService {
         self.state.update(|s| {
             s.root_path = path;
             s.root_state = RootState::Error;
-            s.last_error = message;
+            s.set_error(message);
         });
     }
 
@@ -122,7 +122,7 @@ impl SyncService {
         if let Some(message) = self.held.lock().unwrap().clone() {
             self.state.update(|s| {
                 s.root_state = RootState::Error;
-                s.last_error = message;
+                s.set_error(message);
             });
         }
     }
@@ -377,7 +377,7 @@ impl SyncService {
             tracing::error!("startup recovery on {}: {message}", root.path.display());
             self.state.update(|s| {
                 s.root_state = RootState::Error;
-                s.last_error = message.clone();
+                s.set_error(message.clone());
             });
             SyncError::Io(message)
         })
@@ -500,12 +500,12 @@ impl SyncService {
             } else {
                 RootState::NoInterception
             };
-            s.last_error = match (intercepted, &trouble) {
+            s.set_error(match (intercepted, &trouble) {
                 (true, None) => String::new(),
                 (true, Some(trouble)) => trouble.clone(),
                 (false, None) => NO_INTERCEPTION_WARNING.to_owned(),
                 (false, Some(trouble)) => format!("{NO_INTERCEPTION_WARNING}. {trouble}"),
-            };
+            });
             // HS2: a folder that shows OneDrive is kept in step only with
             // interception; one registered without it before HS waits for
             // the helper, and switches when it connects (`resume`).
@@ -581,7 +581,7 @@ impl SyncService {
                 self.state.update(|s| {
                     s.root_path = path;
                     s.root_state = RootState::Error;
-                    s.last_error = message;
+                    s.set_error(message);
                 });
             }
         }

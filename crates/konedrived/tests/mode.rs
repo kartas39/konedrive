@@ -426,7 +426,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
         svc.startup().await;
         let case = format!("granted {granted:?}, seen {seen:?}, allowed {allowed}");
         assert_eq!(svc.mode(), mode, "{case}");
-        let last_error = svc.state().get().last_error;
+        let last_error = svc.state().get().published_error();
         assert!(if error.is_empty() { last_error.is_empty() } else { last_error.contains(error) }, "{case}: {last_error}");
         svc.tokens().invalidate().await;
         svc.tokens().access_token().await.unwrap();

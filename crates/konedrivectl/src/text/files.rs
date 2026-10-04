@@ -1,4 +1,4 @@
-use konedrive_dbus::ERROR_PREFIX;
+use konedrive_dbus::Refusal;
 
 use super::formats::{human_bytes, local_time};
 
@@ -117,10 +117,10 @@ pub fn refused_path(error: &zbus::Error) -> Option<&str> {
 
 /// [`refused_path`], on the error's name and message.
 fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
-    match name.strip_prefix(ERROR_PREFIX) {
-        Some(".NotAllowed") => pinned_parts(detail).map(|(path, _)| path),
+    match Refusal::parse(name) {
+        Refusal::NotAllowed => pinned_parts(detail).map(|(path, _)| path),
         // "<path> is not uploaded yet, so freeing it up would lose …"
-        Some(".NotUploaded") => detail.split_once(" is not uploaded yet").map(|(path, _)| path),
+        Refusal::NotUploaded => detail.split_once(" is not uploaded yet").map(|(path, _)| path),
         _ => None,
     }
 }

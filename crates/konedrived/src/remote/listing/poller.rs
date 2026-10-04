@@ -6,6 +6,7 @@ use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::{CycleError, Listing};
+use crate::status::snapshot::OutboxNote;
 
 /// How often the poller runs a cycle, and how soon after a failure.
 #[derive(Debug, Clone)]
@@ -127,13 +128,9 @@ async fn held_back(listing: &Listing) -> bool {
     let store = listing.ctx.store.clone();
     let waiting = tokio::task::spawn_blocking(move || store.call_blocking(move |s| s.outbox_len())).await.ok().and_then(Result::ok);
     let note = match waiting {
-        Some(0) => String::new(),
-        Some(n) => format!(
-            "{n} change(s) made here wait to be uploaded, so the folder is not kept in step with \
-             OneDrive: they go once the account is read-write again, or are dropped by a forced \
-             switch to read-only"
-        ),
-        None => "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive".into(),
+        Some(0) => None,
+        Some(n) => Some(OutboxNote::HeldBack(n)),
+        None => Some(OutboxNote::Unreadable),
     };
     if listing.ctx.state.get().outbox_note != note {
         listing.ctx.state.update(|s| s.outbox_note = note);

@@ -71,7 +71,7 @@ impl SyncService {
             service.state.update(|s| {
                 if gone {
                     s.root_state = RootState::Error;
-                    s.last_error = note;
+                    s.set_error(note);
                     s.watch_note.clear();
                 } else {
                     s.watch_note = note;
