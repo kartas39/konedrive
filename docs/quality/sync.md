@@ -195,6 +195,8 @@ risky one.
 - **Fixed in part 2026-10-04** in `8a4a9a6` (#153), the blocking calls: `by_moved_out`, `by_path`,
   `overlapping` and `device_of` are blocking sections. The split of the registry from the link,
   the two setters and the two account lists are `B5`'s.
+- **Fixed 2026-10-04** in `b55039e` (#180): `helper/hub.rs` is the link only; `sync/registry.rs` is the list
+  of folders with one writer, the account manager. Registry entries are weak (`D47`).
 
 ## SY9. The traits for calling upward
 
