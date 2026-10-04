@@ -104,6 +104,8 @@ inside it. `LO5` after these.
   (`:541, 648, 675, 729`).
 - **Fix:** split `Reader` into walk state, mark bookkeeping and timers; a small policy struct per
   `Walk`. **Size:** M to L. **Risk:** medium; the `MarkDir` paths are covered only by the VM suite.
+- **Fixed 2026-10-04** in `0d0d059` (#179): `Reader` is `Tree`, `Marks` and `Timers`; one `WalkPolicy`; one
+  `Tree::place_or_rewalk` in place of four copies.
 
 ## LO7. `removal` and its callers: invariants by convention, recursion by side effect
 
@@ -146,6 +148,8 @@ inside it. `LO5` after these.
 - `watcher/mod.rs:216–217, 252–256, 314–319, 520–530`; `watcher/reader.rs:150–152, 206, 311–315,
   781–785`; `desktop/thumbs.rs:273–309`; `liveness.rs:274–326` (`FakeLiveness`);
   `examine.rs:229`.
+- **Fixed in part 2026-10-04** in `0d0d059` (#179): the examiner loop is `Schedule`, tested with `now` as a
+  parameter; the watcher's test hooks are gone. The `desktop/` lines are left to B14.
 
 ## LO12. Stale comments and double export paths
 
