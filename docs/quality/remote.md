@@ -71,6 +71,7 @@ the #104 test gaps filled first. `RE4` waits for these.
   failed first pass is silently dropped there.
 - **Fix:** split `Applied` into `Counts`, `OnDisk` and `Pending`; one `OnDisk::absorb`.
 - **Size:** S to M. **Risk:** low.
+- **Fixed 2026-10-04** in `df8c5a1` (#162): `Applied` is three parts with one merge.
 
 ## RE4. The read-only and read-write passes are forked by copy; the mode is passed twice
 
@@ -144,6 +145,9 @@ the #104 test gaps filled first. `RE4` waits for these.
   The same-device and link-count checks are written several times.
 - **Fix:** one `removing(dir, name, by_id, f)` that owns the protocol; move `Survey` and these
   functions out of `rw/` into `materialize/removal.rs`. **Size:** S to M. **Risk:** low.
+- **Fixed in part 2026-10-04** in `df8c5a1` (#162): one `Materializer::take_off(dir, name, policy)`
+  removes every managed object; under policy `Removed` local work stays and goes up as new (`F238`,
+  `F243`). The leaving code still has its own path until the later parts of B4.
 
 ## RE10. Replacement bookkeeping: four mutexes, a tuple, string comparison — **defect?** in part
 
