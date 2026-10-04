@@ -84,9 +84,6 @@ fn every_key_has_the_group_it_had() {
                 "name-not-utf8",
                 "too-large",
                 "refused",
-                "unknown-state",
-                "mounted-inside",
-                "leaving-not-found",
                 "no-name",
                 "no-item",
                 "no-guard",
@@ -143,4 +140,27 @@ fn every_key_has_the_group_it_had() {
     }
     // Every key of the two tables is above: `not-downloaded` is in both, `something-new` in neither.
     assert_eq!(keys, Reason::ALL.len() + LocalSkip::ALL.len());
+}
+
+/// What an item still waits for is stored and sent as one string, and read
+/// back as it was written; a word nobody knows is kept.
+#[test]
+fn what_an_item_waits_for_is_read_as_it_was_written() {
+    let all = [
+        WaitsFor::Cycle,
+        WaitsFor::Uploads(3),
+        WaitsFor::Changes("docs/new: file.txt".into()),
+        WaitsFor::OpenForWriting("a".into()),
+        WaitsFor::UnknownState("b".into()),
+        WaitsFor::NotDownloaded("c".into()),
+        WaitsFor::LocalOnly("d~".into()),
+        WaitsFor::MountedInside("e".into()),
+    ];
+    for waits in all {
+        assert_eq!(WaitsFor::parse(&waits.to_string()), waits);
+    }
+    assert_eq!(WaitsFor::Uploads(2).to_string(), "uploads:2");
+    assert_eq!(WaitsFor::Changes("docs/a.txt".into()).under("/home/u/OneDrive").to_string(), "changes:/home/u/OneDrive/docs/a.txt");
+    assert_eq!(WaitsFor::parse("something-new:x"), WaitsFor::Other("something-new:x".into()));
+    assert_eq!(WaitsFor::parse("something-new:x").key(), "something-new");
 }

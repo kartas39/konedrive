@@ -1,3 +1,6 @@
+use std::ffi::OsStr;
+use std::path::PathBuf;
+
 use super::*;
 use crate::Placement;
 
@@ -209,29 +212,6 @@ fn rows_follow_a_directory_that_moved() {
     assert_eq!(rels, vec!["a", "b/a/f", "ab/g"], "the directory's own row is its detection's to move, and ab is not under a");
 }
 
-/// RE1: a directory kept aside under another name (the daemon's `copy_aside`, which applies
-/// this `Rebase`) takes what is leaving in it along, as it takes its outbox rows. What is
-/// leaving elsewhere stays where it is.
-#[test]
-fn a_directory_kept_aside_takes_what_is_leaving_in_it_along() {
-    let mut s = store(&[]);
-    s.leaving_add("G", Path::new("docs/deep/g.txt"), None).unwrap();
-    s.leaving_add("E", Path::new("docs/deep"), None).unwrap();
-    s.leaving_add("T", Path::new("top.txt"), None).unwrap();
-    s.outbox_record(&detect(OutboxKind::Create, None, Some(inode(1)), "docs/f.txt", None)).unwrap();
-    s.outbox_apply(&[OutboxOp::Rebase { from: "docs".into(), to: "docs-fedora".into() }], 0).unwrap();
-    assert_eq!(
-        s.leaving().unwrap(),
-        vec![
-            ("E".to_owned(), PathBuf::from("docs-fedora/deep")),
-            ("G".to_owned(), PathBuf::from("docs-fedora/deep/g.txt")),
-            ("T".to_owned(), PathBuf::from("top.txt")),
-        ]
-    );
-    let rows: Vec<PathBuf> = s.outbox_rows().unwrap().into_iter().map(|r| r.rel).collect();
-    assert_eq!(rows, vec![PathBuf::from("docs-fedora/f.txt")], "its rows follow it too");
-}
-
 /// The mass-delete guard's rows wait until confirmed; restoring drops them.
 #[test]
 fn held_deletes_wait_for_a_decision() {
@@ -307,7 +287,7 @@ fn dropping_a_row_forgets_its_item_and_what_either_tree_has_below_it() {
         if restore {
             assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
         } else {
-            s.outbox_drop(seq, None, Some("D"), None).unwrap();
+            s.outbox_drop(seq, Some("D"), None).unwrap();
         }
         s.commit_staging("link-2").unwrap();
         for id in ["D", "A", "T", "N"] {
@@ -340,17 +320,49 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
     // The next cycle stages what waits, and takes it: nothing is placed here.
     let staged = s.stage_rw(&[], at, false).unwrap().unwrap();
     assert!(staged.ids.contains(&"X".to_owned()));
-    s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at }).unwrap();
+    s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at, waits: &[] }).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), answer);
     assert_eq!(s.local_handle("X").unwrap(), None);
 
-    // Not placed by the base already (it is leaving): the answer is its row.
+    // Not placed by the base already: it has no place to keep, and the
+    // answer is its row.
     let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&answer), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
     let again = Row { ctag: Some("c3".into()), ..answer.clone() };
     s.outbox_commit(seq, Committed::Item { row: &again, handle: Some(&handle) }, None).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), again);
     assert_eq!(s.local_handle("X").unwrap(), None, "no object for a row the base does not place");
     assert!(s.deferred_ids().unwrap().is_empty());
+}
+
+/// The same for an answer that names a folder the base does not place (the
+/// item moved in OneDrive into the Personal Vault while its content went
+/// up), and for a row behind the one committed: it was detected against the
+/// place the disk has, and carries that place as its base, so that it sends
+/// no name and no folder of OneDrive's side back. A move the user made into
+/// a folder the base places is the base's row as before.
+#[test]
+fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_the_place() {
+    use OutboxKind::*;
+    let d = base_row("D", "R", "d", Kind::Folder);
+    let vault = Row { placement: Placement::Skipped(crate::SkipReason::PersonalVault), ..base_row("V", "R", "Personal Vault", Kind::Folder) };
+    let x = base_row("X", "R", "x", Kind::File);
+    let mut s = store(&[d.clone(), vault, x.clone()]);
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    s.outbox_claim(seq, OutboxState::Ready).unwrap();
+    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let handle = inode(7).handle.unwrap();
+    let answer = Row { parent_id: Some("V".into()), ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() };
+    s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() });
+    assert_eq!(s.local_handle("X").unwrap(), Some(handle.clone()), "still the item's object, where the disk has it");
+    assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(answer)]);
+    let follower = s.outbox_row(behind).unwrap().unwrap();
+    assert_eq!(follower.base, Some(Base { etag: Some("e2".into()), ctag: Some("c2".into()), parent: Some("R".into()), name: Some("x".into()) }));
+
+    let moved = Row { parent_id: Some("D".into()), ..x.clone() };
+    s.outbox_commit(behind, Committed::Item { row: &moved, handle: Some(&handle) }, None).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), moved, "a folder the base places is a place");
+    assert!(s.live_deferred().unwrap().is_empty(), "and the commit supersedes what waited");
 }
 
 /// The item a bad upload left in OneDrive (quality finding `UP2`) is kept
@@ -503,5 +515,7 @@ fn no_statement_but_removes_deletes_an_outbox_row() {
             }
         }
     }
-    assert_eq!(deleting, [Path::new("outbox/stored.rs")], "the one delete is `remove`'s");
+    deleting.sort();
+    // And the step to version 8, which keeps the opening the same way.
+    assert_eq!(deleting, [Path::new("outbox/stored.rs"), Path::new("schema/migrations.rs")], "the one delete is `remove`'s");
 }

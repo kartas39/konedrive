@@ -21,7 +21,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "7";
+pub const SCHEMA_VERSION: &str = "8";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -31,8 +31,9 @@ pub const SCHEMA_VERSION: &str = "7";
 ///   adopted as, `local_seq` the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
 ///   while it is staged (issue #39).
-/// - `deferred`, `outbox_gone`, `leaving`, `leaving_items`: what a
-///   read-write cycle keeps between cycles ([`crate::reconcile`]).
+/// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
+///   cycles ([`crate::reconcile`]). `deferred.waits`: what keeps an item
+///   that is to leave the folder, as the last cycle found it.
 /// - `outbox`, `local_skipped`: the write phase ([`crate::outbox`]).
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
 ///   at commit can never be mistaken for a new one by a worker still
@@ -85,10 +86,8 @@ fn schema() -> String {
          CREATE TABLE deferred (
              id TEXT PRIMARY KEY, seq INTEGER NOT NULL, gone INTEGER NOT NULL,
              parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
-             quickxor TEXT, mime TEXT, placement TEXT);
+             quickxor TEXT, mime TEXT, placement TEXT, waits TEXT);
          CREATE TABLE outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-         CREATE TABLE leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL, handle BLOB);
-         CREATE TABLE leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);
          CREATE TABLE outbox (
              seq INTEGER PRIMARY KEY AUTOINCREMENT,
              kind TEXT NOT NULL,

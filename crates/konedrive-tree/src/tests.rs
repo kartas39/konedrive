@@ -263,7 +263,7 @@ fn counts_and_the_skipped_list_see_only_what_is_reachable() {
     ]);
     assert_eq!(store.counts().unwrap(), Counts { listed: 5, placed: 2, skipped: 2 });
     assert_eq!(
-        store.skipped().unwrap(),
+        store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(),
         vec![(PathBuf::from("Personal Vault"), SkipReason::PersonalVault), (PathBuf::from("docs/n"), SkipReason::NameTooLong)],
         "what is inside a skipped folder is not listed item by item"
     );
@@ -283,19 +283,26 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[long(file("F", "D", "f.txt"), "f-long"), long(file("N", "R", "n"), "n-longer"), Change::Delete("G".into())]).unwrap();
     let whole: Vec<String> = ["F", "N", "G"].map(str::to_owned).to_vec();
-    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1 }).unwrap();
+    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1, waits: &[] }).unwrap();
     assert_eq!(store.locate(Table::Items, "F").unwrap().unwrap(), Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }, "still here");
     assert_eq!(
-        store.skipped().unwrap(),
+        store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(),
         vec![(PathBuf::from("docs/f-long"), SkipReason::NameTooLong), (PathBuf::from("n-longer"), SkipReason::NameTooLong)]
     );
     assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 2 });
+    // One still here, with nothing said of it yet, and one that never was.
+    assert_eq!(store.skipped().unwrap().into_iter().map(|s| s.waits).collect::<Vec<_>>(), [Some(WaitsFor::Cycle), None]);
+    // The next cycle stages it again, and says what keeps it.
+    let staged = store.stage_rw(&[], 0, false).unwrap().unwrap();
+    let waits = [("F".to_owned(), WaitsFor::Uploads(2).to_string())];
+    store.commit_staging_deferring("link-3", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &whole, content: &[], fetched_at: 1, waits: &waits }).unwrap();
+    assert_eq!(store.skipped().unwrap()[0], Skipped { rel: "docs/f-long".into(), reason: SkipReason::NameTooLong, waits: Some(WaitsFor::Uploads(2)) });
 
     // An outbox commit made after the change of `F` was deferred supersedes
     // it: OneDrive no longer has the item under that name, and it is off the
     // list before the next cycle drops what waited.
     store.conn.execute("UPDATE items SET local_seq = 2 WHERE id = 'F'", []).unwrap();
-    assert_eq!(store.skipped().unwrap(), vec![(PathBuf::from("n-longer"), SkipReason::NameTooLong)]);
+    assert_eq!(store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(), vec![(PathBuf::from("n-longer"), SkipReason::NameTooLong)]);
     assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 1 });
 }
 

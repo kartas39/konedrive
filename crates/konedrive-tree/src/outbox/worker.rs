@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
-use crate::forget::{forget_subtrees, forget_unplaced};
+use crate::forget::forget_subtrees;
 use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
@@ -148,7 +148,6 @@ impl TreeStore {
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_outbox_seq(&tx)?;
         upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
-        crate::reconcile::joins_leaving(&tx, &answer.id, answer.parent_id.as_deref())?;
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],
@@ -361,16 +360,12 @@ impl TreeStore {
     }
 
     /// Row `seq` goes without a commit: OneDrive decided otherwise (§6: a
-    /// delete of something changed there). In one transaction: the base takes
-    /// `base` if given; `forget` (an item) and what is inside it lose their
-    /// local object, so that what is missing here is placed again rather
-    /// than deleted in OneDrive; the activity is written.
-    pub fn outbox_drop(&mut self, seq: i64, base: Option<&Row>, forget: Option<&str>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
+    /// delete of something changed there). In one transaction: `forget` (an
+    /// item) and what is inside it lose their local object, so that what is
+    /// missing here is placed again rather than deleted in OneDrive; the
+    /// activity is written.
+    pub fn outbox_drop(&mut self, seq: i64, forget: Option<&str>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        if let Some(row) = base {
-            upsert(&tx, Table::Items, row)?;
-            forget_unplaced(&tx, [row.id.as_str()])?;
-        }
         if let Some(id) = forget {
             forget_local(&tx, id)?;
         }

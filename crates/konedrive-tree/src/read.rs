@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::conflicts::ConflictRow;
-use crate::model::SkipReason;
 use crate::outbox::{LocalSkip, LocalSkipped, OutboxGroup, OutboxRow, SkippedGroup};
 use crate::{TreeError, TreeStore};
 
@@ -30,7 +29,7 @@ impl<'a> ReadStore<'a> {
     }
 
     /// [`TreeStore::skipped`].
-    pub fn skipped(&self) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
+    pub fn skipped(&self) -> Result<Vec<crate::Skipped>, TreeError> {
         self.store.skipped()
     }
 
