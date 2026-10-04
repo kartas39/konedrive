@@ -94,7 +94,10 @@ impl Space {
         if converted > 0 {
             tracing::info!("{converted} change(s) blocked on a full OneDrive wait for space now");
         }
-        let groups = store.call(move |s| s.outbox_groups()).await.unwrap_or_default();
+        let groups = store.call(move |s| s.outbox_groups()).await.unwrap_or_else(|e| {
+            tracing::debug!("cannot read what the outbox holds, to see what waits for space: {e}");
+            Vec::new()
+        });
         let full = groups.iter().any(|g| g.reason() == Some(Reason::WaitingForSpace));
         let wanted = full || groups.iter().any(|g| waits(g.reason().as_ref()));
         Self { full, wanted, started: true, ..Self::default() }
@@ -191,7 +194,7 @@ impl Engine {
         }
     }
 
-    /// OneDrive refused row `seq`'s content for lack of space: the quota is
+    /// OneDrive refused a row's content for lack of space: the quota is
     /// read at once and decides whether the account is full or only this
     /// file, of `size` bytes, too big. A quota that cannot be read counts as
     /// full: OneDrive just said so, and the next read decides.

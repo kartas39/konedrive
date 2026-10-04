@@ -15,6 +15,12 @@ pub mod sync;
 pub mod daemon;
 pub mod dbus;
 
+/// A fake OneDrive on wiremock: the tests of every area that talks to OneDrive, and the VM
+/// suite's write scenarios (`fault-injection`).
+#[cfg(any(test, feature = "fault-injection"))]
+#[path = "tests/fake_onedrive/mod.rs"]
+pub mod fake_onedrive;
+
 /// The outbox at scale (issue #38): ignored tests, run by hand in release.
 #[cfg(test)]
 #[path = "tests/bench.rs"]

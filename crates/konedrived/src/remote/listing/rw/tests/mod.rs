@@ -33,7 +33,7 @@ use crate::helper::HelperLink;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
-use crate::upload::fake::{FakeGraph, FakeItem, ROOT};
+use crate::fake_onedrive::{FakeGraph, FakeItem, ROOT};
 use crate::upload::{Engine, Limits, NoHost, OutboxWorker, WorkerConfig};
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};

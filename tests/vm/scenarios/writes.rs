@@ -1,7 +1,7 @@
 //! The write phase end to end (`docs/design/writes.md` §12, "VM, `quick` (Btrfs), with a fake Graph server
 //! in the guest"): a read-write folder brought up by the daemon's own `SyncService` —
 //! the real helper, the watcher, the examination and the outbox worker — against the fake
-//! OneDrive the worker's host tests use (`konedrived::upload::fake`, on wiremock, listening
+//! OneDrive the worker's host tests use (`konedrived::fake_onedrive`, on wiremock, listening
 //! on the guest's loopback; `fault-injection` builds it).
 //!
 //! The folder shares the suite's helper connection: an intercepted open in it is filled by the
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use konedrive_fs::placeholder::{read_state, State};
 use konedrived::config::{ConfigError, Mode};
 use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
-use konedrived::upload::fake::{FakeGraph, FakeItem, ROOT};
+use konedrived::fake_onedrive::{FakeGraph, FakeItem, ROOT};
 use konedrived::sync::{testing, SyncPaths, SyncService};
 
 use crate::harness::{dir_mark_present, Checks, Ctx};

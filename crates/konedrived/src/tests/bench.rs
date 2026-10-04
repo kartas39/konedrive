@@ -24,7 +24,7 @@ use crate::folder::disk::Disk;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::remote::materialize::{Materializer, Scope};
 use crate::folder::root::SyncRoot;
-use crate::upload::fake::Harness;
+use crate::upload::tests::harness::Harness;
 use crate::folder::locks::InodeLocks;
 use konedrive_tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};

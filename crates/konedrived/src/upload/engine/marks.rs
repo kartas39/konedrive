@@ -111,7 +111,10 @@ impl Engine {
                 again.into_iter().filter(|seq| !present.contains(seq)).collect()
             };
             if !again.is_empty() {
-                rows.extend(store.call_blocking(move |s| s.outbox_rows_of(&again)).unwrap_or_default());
+                match store.call_blocking(move |s| s.outbox_rows_of(&again)) {
+                    Ok(behind) => rows.extend(behind),
+                    Err(e) => tracing::debug!("the rows behind one that went keep no upload mark for now: {e}"),
+                }
             }
         }
         let wanted: Vec<(PathBuf, &'static str)> = {

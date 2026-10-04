@@ -189,7 +189,7 @@ fn a_new_file_moved_out_mid_upload_stops_after_the_fragment_in_flight() {
     w.examine(&[("d", "big.bin")]);
     let engine = w.h.engine();
     drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || {
-        std::fs::rename(w.path("d/big.bin"), w._dir.path().join("big.bin")).unwrap();
+        std::fs::rename(w.path("d/big.bin"), w.dir.path().join("big.bin")).unwrap();
         w.examine(&[("d", "big.bin")]);
     });
     assert!(w.rows().is_empty(), "{:?}", w.summary());

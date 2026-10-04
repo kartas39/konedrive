@@ -77,6 +77,8 @@ pub(crate) struct Engine {
     /// ([`publish`](Self::publish)).
     published: Mutex<Published>,
     wake: Notify,
+    /// The fault points a test armed ([`arm`](Self::arm)).
+    #[cfg(test)]
     faults: Mutex<Vec<Fault>>,
     /// What the pending `move-out` rows name, re-marked on this helper
     /// connection.
@@ -121,6 +123,7 @@ impl Engine {
             space: Mutex::new(space::Space::default()),
             published: Mutex::new(Published::default()),
             wake: Notify::new(),
+            #[cfg(test)]
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
             sections: super::steps::Sections::default(),
@@ -221,6 +224,15 @@ impl Engine {
         }
     }
 
+    /// A fault point of a step: nothing, in the daemon.
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(super) fn fault(&self, _fault: Fault) -> Result<(), Fail> {
+        Ok(())
+    }
+
+    /// A fault point of a step: the step stops here if a test armed it.
+    #[cfg(test)]
     pub(super) fn fault(&self, fault: Fault) -> Result<(), Fail> {
         let mut armed = self.faults.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(i) = armed.iter().position(|f| *f == fault) {
@@ -231,7 +243,7 @@ impl Engine {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "fault-injection"))]
+    #[cfg(test)]
     pub(crate) fn arm(&self, fault: Fault) {
         self.faults.lock().unwrap_or_else(|p| p.into_inner()).push(fault);
     }

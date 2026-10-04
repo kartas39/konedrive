@@ -12,7 +12,7 @@
 //! - the watcher: [`Watchers`], the real one until the test makes it fail;
 //! - the clock: [`ManualClock`], moved by hand.
 //!
-//! OneDrive itself is wiremock, or the fake OneDrive (`upload::fake`), behind the drive a
+//! OneDrive itself is wiremock, or the fake OneDrive (`crate::fake_onedrive`), behind the drive a
 //! test gives [`Builder::onedrive`].
 //!
 //! Built for the crate's tests and, with the `fault-injection` feature, for the VM suite.

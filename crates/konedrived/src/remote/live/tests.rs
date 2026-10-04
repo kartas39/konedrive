@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
 use crate::conditions::running::Conditions;
-use crate::upload::fake::{Early, FakeGraph, ROOT};
+use crate::fake_onedrive::{Early, FakeGraph, ROOT};
 use crate::status::snapshot::SyncSnapshot;
 use konedrive_tree::TreeStore;
 
@@ -25,11 +25,11 @@ async fn world() -> World {
     world_with(|_| {}).await
 }
 
-async fn world_with(setup: impl FnOnce(&mut crate::upload::fake::Cloud)) -> World {
+async fn world_with(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud)) -> World {
     world_timed(setup, |_| {}).await
 }
 
-async fn world_timed(setup: impl FnOnce(&mut crate::upload::fake::Cloud), adjust: impl FnOnce(&mut Timing)) -> World {
+async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjust: impl FnOnce(&mut Timing)) -> World {
     let graph = FakeGraph::start().await;
     graph.with(setup);
     let store = Store::new(TreeStore::in_memory().unwrap());

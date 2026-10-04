@@ -1208,7 +1208,7 @@ fn a_folder_with_an_item_that_has_no_handle_is_unproven_not_rechecked() {
 /// still taken.
 #[test]
 fn w5_fixture_folder_replaced_offline_keeping_one_file() {
-    use crate::upload::fake::Harness;
+    use crate::upload::tests::harness::Harness;
     use crate::upload::SWAP_PREFIX;
     use konedrive_tree::outbox::{frees, takes};
     let variants = [

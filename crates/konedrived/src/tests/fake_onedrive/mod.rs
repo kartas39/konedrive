@@ -1,5 +1,5 @@
-//! A fake OneDrive for the worker's tests and the VM suite's write scenarios (built with
-//! `fault-injection`): an in-memory drive behind a
+//! A fake OneDrive for the daemon's tests (`remote/`, `local/`, `sync/`, `upload/`) and the VM
+//! suite's write scenarios (built with `fault-injection`): an in-memory drive behind a
 //! wiremock server, answering the requests `DriveClient` makes as Graph
 //! documents them — `If-Match` on eTag or cTag, `409` on a name taken
 //! (without case), a folder's cTag changing with anything below it, deletes
@@ -9,8 +9,6 @@
 //! endpoint and a local Engine.IO / Socket.IO websocket that sends a `notification` event
 //! whenever the drive changes (issue #54). Never a real network.
 
-#[cfg(test)]
-mod harness;
 mod sockets;
 
 use std::collections::{BTreeMap, HashMap};
@@ -29,8 +27,6 @@ use konedrive_graph::token::StaticToken;
 #[cfg(test)]
 use konedrive_tree::{Kind, Store};
 
-#[cfg(test)]
-pub(crate) use harness::Harness;
 pub use sockets::{Early, FakeSockets, PING_INTERVAL};
 
 pub const ROOT: &str = "R";
