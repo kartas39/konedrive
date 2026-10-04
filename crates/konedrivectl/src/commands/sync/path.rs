@@ -1,7 +1,8 @@
 //! The `sync` commands that take a path: `Files` finds the account by it.
 
 use konedrive_dbus::accounts::FilesProxy;
-use konedrivectl::text::files::{free_text, pin_text, unpin_text, DOWNLOADED, FREED_UP};
+use konedrivectl::text::files::{folders_unread_text, free_text, pin_text, unpin_text, DOWNLOADED, FREED_UP, PLAIN_PREFIX};
+use konedrivectl::text::formats::warning_text;
 
 use super::explain::{absolute_str, explained_paths, fail_if_holders_unhealthy, PathAction};
 use crate::cli::PathCmd;
@@ -54,7 +55,8 @@ pub(super) async fn path_command(daemon: &Daemon, command: PathCmd) -> anyhow::R
 /// are made absolute, `call` is made with them, a refusal is explained against the folder
 /// that holds the path it is about, what was done is said (`said`, which is given how a
 /// command suggested about these paths starts), and the command fails after all when a
-/// folder that holds one of the paths needs attention.
+/// folder that holds one of the paths needs attention. Once the call went through, what was
+/// done is always said.
 async fn change<T>(
     daemon: &Daemon,
     action: PathAction,
@@ -67,7 +69,17 @@ async fn change<T>(
     let files = FilesProxy::new(&daemon.connection).await?;
     let result = call(&files, &refs).await;
     let done = explained_paths(daemon, action, &paths, result).await?;
-    let folders = daemon.folders().await?;
+    // The call went through: what was done is said whatever happens next. The folders are
+    // read only for the account a suggested command names and for the check afterwards; if
+    // they cannot be read, the command still succeeded, and says so with a warning.
+    let folders = match daemon.folders().await {
+        Ok(folders) => folders,
+        Err(error) => {
+            println!("{}", said(done, PLAIN_PREFIX));
+            eprintln!("{}", warning_text(&folders_unread_text(&error.to_string())));
+            return Ok(());
+        }
+    };
     // A command suggested about the paths (`sync transfers`) is one account's: the one the
     // paths are in, if they are in one.
     let mut holders: Vec<_> = paths.iter().filter_map(|path| folders.holder(path)).collect();

@@ -83,5 +83,16 @@ pub fn error_name(error: &zbus::Error) -> Option<&str> {
     }
 }
 
+/// Whether a failed read of a property failed because the daemon has no such property: a
+/// daemon of an older build, not restarted since a newer client was installed. A client
+/// treats the value as absent.
+pub fn is_unknown_property(error: &zbus::Error) -> bool {
+    const NAME: &str = "org.freedesktop.DBus.Error.UnknownProperty";
+    match error {
+        zbus::Error::FDO(inner) => matches!(inner.as_ref(), zbus::fdo::Error::UnknownProperty(_)),
+        other => error_name(other) == Some(NAME),
+    }
+}
+
 #[cfg(test)]
 mod tests;

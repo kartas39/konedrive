@@ -33,17 +33,18 @@ pub fn account_block(label: &str, block: &str) -> String {
     format!("\n{label}\n{}", super::formats::indented(block))
 }
 
-/// One account as `Account`'s properties say it: what `status` shows.
+/// One account as `Account`'s properties say it: what `status` shows. A value is `None`
+/// when the daemon has no such property (an older build, not restarted): its line is left out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccountStatus {
-    pub label: String,
+    pub label: Option<String>,
     /// `signed-out`, `signing-in` or `signed-in`.
-    pub state: String,
-    pub mode: String,
-    pub display_name: String,
+    pub state: Option<String>,
+    pub mode: Option<String>,
+    pub display_name: Option<String>,
     pub email: String,
-    pub quota_used: u64,
-    pub quota_total: u64,
+    /// Bytes used and in all.
+    pub quota: Option<(u64, u64)>,
     pub last_error: String,
 }
 
@@ -51,27 +52,30 @@ pub struct AccountStatus {
 /// its label and the client ID are printed with it. When `status` shows several, the client
 /// ID is printed once above them and each block is headed by its label: `None`.
 pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
-    let state = &status.state;
     let mut out = String::new();
-    if let Some(client_id) = client_id {
-        out.push_str(&format!("{:<12}{}\n", "Label:", status.label));
-        out.push_str(&format!("{:<12}{state}\n", "State:"));
-        out.push_str(&client_id_line(client_id));
-    } else {
-        out.push_str(&format!("{:<12}{state}\n", "State:"));
+    let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<12}{value}\n"));
+    if let (Some(_), Some(label)) = (client_id, &status.label) {
+        line("Label:", label);
     }
-    out.push_str(&format!("{:<12}{}\n", "Mode:", status.mode));
-    if state == "signed-in" {
-        out.push_str(&format!("{:<12}{} <{}>\n", "Account:", status.display_name, status.email));
-        out.push_str(&format!(
-            "{:<12}{} of {} used\n",
-            "Storage:",
-            human_bytes(status.quota_used),
-            human_bytes(status.quota_total)
-        ));
+    if let Some(state) = &status.state {
+        line("State:", state);
+    }
+    if let Some(client_id) = client_id {
+        line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
+    }
+    if let Some(mode) = &status.mode {
+        line("Mode:", mode);
+    }
+    if status.state.as_deref() == Some("signed-in") {
+        if let Some(name) = &status.display_name {
+            line("Account:", &format!("{name} <{}>", status.email));
+        }
+        if let Some((used, total)) = status.quota {
+            line("Storage:", &format!("{} of {} used", human_bytes(used), human_bytes(total)));
+        }
     }
     if !status.last_error.is_empty() {
-        out.push_str(&format!("{:<12}{}\n", "Last error:", status.last_error));
+        line("Last error:", &status.last_error);
     }
     out
 }
@@ -86,32 +90,33 @@ pub fn mode_shown_text(tag: &str, mode: &str, last_error: &str) -> String {
     out
 }
 
-/// One account's folder as its interfaces' properties say it: what `sync status` shows.
+/// One account's folder as its interfaces' properties say it: what `sync status` shows. A
+/// value is `None` when the daemon has no such property (an older build, not restarted): its
+/// line is left out. The values whose line is printed only when they say something are read
+/// as nothing then.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FolderStatus {
     /// `Folder.Path`: empty with no folder.
     pub path: String,
     /// `Folder.State`.
-    pub state: String,
+    pub state: Option<String>,
     pub last_error: String,
     /// `Folder.Source`: `onedrive`, `local`, or empty.
     pub source: String,
-    pub items_listed: u64,
-    pub items_placed: u64,
+    /// Items in OneDrive, and items in the folder.
+    pub items: Option<(u64, u64)>,
     pub skipped: u64,
     /// Unix seconds of the last check with OneDrive; 0 for never.
-    pub last_checked: i64,
+    pub last_checked: Option<i64>,
     /// `Folder.LiveChanges`.
     pub live_changes: String,
     /// `Account.Mode` of the folder's account.
-    pub mode: String,
+    pub mode: Option<String>,
     /// Files left to download, and their size.
-    pub download_left: u32,
-    pub download_left_bytes: u64,
-    pub scan: LocalScan,
+    pub download_left: Option<(u32, u64)>,
+    pub scan: Option<LocalScan>,
     /// Changes waiting to be uploaded, and the size of what they send.
-    pub pending: u32,
-    pub pending_bytes: u64,
+    pub pending: Option<(u32, u64)>,
     /// Changes that need the user.
     pub blocked: u32,
     /// OneDrive is full; then the changes that wait for space, and their size.
@@ -128,9 +133,9 @@ pub struct FolderStatus {
     /// `Folder.HeldBack`: why the account holds back by itself, or empty.
     pub held_back: String,
     /// What the folder's files take on this disk.
-    pub local_bytes: u64,
+    pub local_bytes: Option<u64>,
     /// Files and folders with a pin of their own.
-    pub pinned: u32,
+    pub pinned: Option<u32>,
     pub conflicts: u32,
 }
 
@@ -157,9 +162,11 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
     const W: usize = SYNC_STATUS_WIDTH;
     let mut out = String::new();
     let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<W$}{value}\n"));
-    let state = status.state.as_str();
+    let state = status.state.as_deref().unwrap_or_default();
     line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
-    line("State:", state);
+    if status.state.is_some() {
+        line("State:", state);
+    }
     if let Some(opens) = opens_line(state) {
         line("Opens:", opens);
     }
@@ -170,19 +177,31 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
         line("Last error:", &status.last_error);
     }
     if status.source == "onedrive" {
-        line("Items:", &format!("{} in OneDrive, {} in the folder", status.items_listed, status.items_placed));
+        if let Some((listed, placed)) = status.items {
+            line("Items:", &format!("{listed} in OneDrive, {placed} in the folder"));
+        }
         if status.skipped > 0 {
             line("Skipped:", &format!("{} (see `{prefix} sync skipped`)", status.skipped));
         }
-        line("Last checked:", &checked_text(status.last_checked, now));
+        if let Some(last_checked) = status.last_checked {
+            line("Last checked:", &checked_text(last_checked, now));
+        }
         if let Some(live) = live_text(&status.live_changes) {
             line("Changes from OneDrive:", live);
         }
-        line("Mode:", &mode_text(&status.mode));
-        line("Waiting to download:", &waiting_download_text(status.download_left, status.download_left_bytes));
-        line("Local scan:", &local_scan_text(&status.scan, now));
-        if status.mode == "read-write" || status.pending > 0 || status.blocked > 0 {
-            line("Waiting to upload:", &waiting_text(status.pending, status.pending_bytes));
+        if let Some(mode) = &status.mode {
+            line("Mode:", &mode_text(mode));
+        }
+        if let Some((count, bytes)) = status.download_left {
+            line("Waiting to download:", &waiting_download_text(count, bytes));
+        }
+        if let Some(scan) = &status.scan {
+            line("Local scan:", &local_scan_text(scan, now));
+        }
+        if let Some((pending, bytes)) = status.pending {
+            if status.mode.as_deref() == Some("read-write") || pending > 0 || status.blocked > 0 {
+                line("Waiting to upload:", &waiting_text(pending, bytes));
+            }
         }
         if status.blocked > 0 {
             line("Blocked:", &format!("{} (see `{prefix} sync not-uploaded`)", status.blocked));
@@ -211,8 +230,12 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
     }
     // A folder not brought up yet has its path and the state `waiting`: nothing has measured it.
     if !status.path.is_empty() && state != "none" && state != "waiting" {
-        line("On this computer:", &human_bytes(status.local_bytes));
-        line("Always on this device:", &status.pinned.to_string());
+        if let Some(bytes) = status.local_bytes {
+            line("On this computer:", &human_bytes(bytes));
+        }
+        if let Some(pinned) = status.pinned {
+            line("Always on this device:", &pinned.to_string());
+        }
     }
     if status.conflicts > 0 {
         line("Conflicts:", &format!("{} (see `{prefix} sync conflicts`)", status.conflicts));

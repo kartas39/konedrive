@@ -5,7 +5,7 @@ use anyhow::{bail, Context as _};
 use konedrive_dbus::accounts::FolderProxies;
 use konedrivectl::text::files::{conflicts_text, free_up_text};
 use konedrivectl::text::folder as said;
-use konedrivectl::text::formats::parse_duration;
+use konedrivectl::text::formats::{parse_duration, warning_text, NOT_ABSOLUTE, NOT_UTF8_PATH};
 use konedrivectl::text::refusals::SyncAction;
 use konedrivectl::text::transfers::{transfers_text, uploading_line};
 use konedrivectl::text::uploads::{not_uploaded_text, outbox_text, quota_text, PER_FILE_SHOWN};
@@ -44,7 +44,7 @@ pub(super) async fn folder_command(
             // never left to be inferred.
             let last_error = proxy.folder.last_error().await?;
             if !last_error.is_empty() {
-                eprintln!("warning: {last_error}");
+                eprintln!("{}", warning_text(&last_error));
             }
         }
         FolderCmd::Forget => {
@@ -105,7 +105,7 @@ pub(super) async fn folder_command(
                 Some(text) => parse_duration(text).ok_or_else(|| Usage(said::not_a_duration_text(text)))?,
             };
             explained(daemon, chosen, proxy, SyncAction::Pause, proxy.folder.pause(seconds).await).await?;
-            let until = if seconds == 0 { 0 } else { proxy.folder.paused_until().await? };
+            let until = if seconds == 0 { None } else { Some(proxy.folder.paused_until().await?) };
             println!("{tag}{}", said::paused_now_text(until, &prefix));
         }
         FolderCmd::Resume => {
@@ -155,8 +155,8 @@ pub(super) async fn folder_command(
         FolderCmd::Dismiss { path } => {
             // As the daemon recorded it: made absolute, never resolved. The file may be gone,
             // and a link on the way to it must not change which conflict this names.
-            let absolute = std::path::absolute(&path).context("cannot make the path absolute")?;
-            let absolute = absolute.to_str().context("non-UTF-8 path")?;
+            let absolute = std::path::absolute(&path).context(NOT_ABSOLUTE)?;
+            let absolute = absolute.to_str().context(NOT_UTF8_PATH)?;
             let result = proxy.conflicts.dismiss(absolute).await;
             explained(daemon, chosen, proxy, SyncAction::Dismiss(absolute), result).await?;
             println!("{tag}{}", said::DISMISSED);

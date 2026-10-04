@@ -256,7 +256,7 @@ application must never read zeros where real content should be.
 - [F246](F246.md) — An item that cannot stay in the folder and has not left it yet is on the skipped list, with nothing that says it is still here
 - [F247](F247.md) — An activity event of a kind this version does not name is left out of the log
 - [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
-- [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two.
+- [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
 
 ---
 
@@ -375,7 +375,7 @@ application must never read zeros where real content should be.
 - [D38](D38.md) — The running parts of a folder's sync are beside its state, not in it.
 - [D39](D39.md) — An upload's answer that the folder cannot hold waits only when the item's own row says so.
 - [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
-- [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus.
+- [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
 
 ---
 

@@ -35,3 +35,33 @@ async fn status_reports_state_and_client_id() {
     assert!(out.status.success(), "{out:?}");
     assert!(common::out_text(&out).contains(CLIENT_ID), "{}", common::out_text(&out));
 }
+
+/// What `status` and `sync status` take for "the daemon has no such property" is what the
+/// daemon answers for one: a daemon of an older build then leaves a line out, and no more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_property_the_daemon_does_not_have_is_known_as_such() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let _daemon = common::start_daemon(&bus, dir.path()).await;
+    let client = bus.connect().await;
+    let manager = AccountsProxy::new(&client).await.unwrap();
+    let path = manager.add("Personal").await.unwrap();
+
+    for interface in [konedrive_dbus::ACCOUNT_INTERFACE_NAME, konedrive_dbus::FOLDER_INTERFACE_NAME] {
+        for cache in [zbus::proxy::CacheProperties::Lazily, zbus::proxy::CacheProperties::No] {
+            let proxy = zbus::proxy::Builder::<zbus::Proxy>::new(&client)
+                .destination(konedrive_dbus::SERVICE_NAME)
+                .unwrap()
+                .path(path.clone())
+                .unwrap()
+                .interface(interface)
+                .unwrap()
+                .cache_properties(cache)
+                .build()
+                .await
+                .unwrap();
+            let error = proxy.get_property::<String>("NotInThisBuild").await.unwrap_err();
+            assert!(konedrive_dbus::is_unknown_property(&error), "{interface}: {error:?}");
+        }
+    }
+}

@@ -8,18 +8,42 @@ use zbus::zvariant::OwnedObjectPath;
 
 use crate::daemon::Daemon;
 
+/// What a read of a property gave, or `None` when the daemon has no such property: a daemon
+/// of an older build, not restarted, must not make a command of this build fail. Every other
+/// failure is the read's.
+async fn served<T>(read: impl std::future::Future<Output = zbus::Result<T>>) -> zbus::Result<Option<T>> {
+    match read.await {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if konedrive_dbus::is_unknown_property(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// [`served`], for a value whose line is printed only when it says something: nothing when
+/// the daemon has no such property.
+async fn said<T: Default>(read: impl std::future::Future<Output = zbus::Result<T>>) -> zbus::Result<T> {
+    Ok(served(read).await?.unwrap_or_default())
+}
+
+/// [`served`], for two values of one line.
+async fn both<A, B>(
+    first: impl std::future::Future<Output = zbus::Result<A>>,
+    second: impl std::future::Future<Output = zbus::Result<B>>,
+) -> zbus::Result<Option<(A, B)>> {
+    Ok(served(first).await?.zip(served(second).await?))
+}
+
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
     Ok(AccountStatus {
-        label: account.label().await?,
-        state: account.state().await?,
-        mode: account.mode().await?,
-        display_name: account.display_name().await?,
-        email: account.email().await?,
-        quota_used: account.quota_used().await?,
-        quota_total: account.quota_total().await?,
-        last_error: account.last_error().await?,
+        label: served(account.label()).await?,
+        state: served(account.state()).await?,
+        mode: served(account.mode()).await?,
+        display_name: served(account.display_name()).await?,
+        email: said(account.email()).await?,
+        quota: both(account.quota_used(), account.quota_total()).await?,
+        last_error: said(account.last_error()).await?,
     })
 }
 
@@ -40,43 +64,45 @@ pub(crate) async fn account_row(daemon: &Daemon, path: &OwnedObjectPath) -> zbus
 /// The folder of the account at `path`, as `sync status` shows it.
 pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<FolderStatus> {
     let FolderProxies { folder, transfers, queue, conflicts, scan, .. } = daemon.sync(path).await?;
+    let account = daemon.account(path).await?;
+    let scan = match served(scan.state()).await? {
+        None => None,
+        Some(state) => Some(LocalScan {
+            state,
+            reason: said(scan.reason()).await?,
+            started: said(scan.started()).await?,
+            directories: said(scan.directories()).await?,
+            files: said(scan.files()).await?,
+            expected: said(scan.expected()).await?,
+            finished: said(scan.finished()).await?,
+            took: said(scan.took()).await?,
+        }),
+    };
     Ok(FolderStatus {
-        path: folder.path().await?,
-        state: folder.state().await?,
-        last_error: folder.last_error().await?,
-        source: folder.source().await?,
-        items_listed: folder.items_listed().await?,
-        items_placed: folder.items_placed().await?,
-        skipped: folder.skipped_count().await?,
-        last_checked: folder.last_checked().await?,
-        live_changes: folder.live_changes().await?,
-        mode: daemon.account(path).await?.mode().await?,
-        download_left: transfers.download_left_count().await?,
-        download_left_bytes: transfers.download_left_bytes().await?,
-        scan: LocalScan {
-            state: scan.state().await?,
-            reason: scan.reason().await?,
-            started: scan.started().await?,
-            directories: scan.directories().await?,
-            files: scan.files().await?,
-            expected: scan.expected().await?,
-            finished: scan.finished().await?,
-            took: scan.took().await?,
-        },
-        pending: queue.pending_count().await?,
-        pending_bytes: queue.pending_bytes().await?,
-        blocked: queue.blocked_count().await?,
-        quota_full: queue.quota_full().await?,
-        quota_waiting: queue.quota_waiting_count().await?,
-        quota_waiting_bytes: queue.quota_waiting_bytes().await?,
-        too_big: queue.too_big_count().await?,
-        held_deletes: queue.held_count().await?,
-        paused: folder.paused().await?,
-        paused_until: folder.paused_until().await?,
-        held_back: folder.held_back().await?,
-        local_bytes: folder.local_bytes().await?,
-        pinned: folder.pinned_count().await?,
-        conflicts: conflicts.count().await?,
+        path: said(folder.path()).await?,
+        state: served(folder.state()).await?,
+        last_error: said(folder.last_error()).await?,
+        source: said(folder.source()).await?,
+        items: both(folder.items_listed(), folder.items_placed()).await?,
+        skipped: said(folder.skipped_count()).await?,
+        last_checked: served(folder.last_checked()).await?,
+        live_changes: said(folder.live_changes()).await?,
+        mode: served(account.mode()).await?,
+        download_left: both(transfers.download_left_count(), transfers.download_left_bytes()).await?,
+        scan,
+        pending: both(queue.pending_count(), queue.pending_bytes()).await?,
+        blocked: said(queue.blocked_count()).await?,
+        quota_full: said(queue.quota_full()).await?,
+        quota_waiting: said(queue.quota_waiting_count()).await?,
+        quota_waiting_bytes: said(queue.quota_waiting_bytes()).await?,
+        too_big: said(queue.too_big_count()).await?,
+        held_deletes: said(queue.held_count()).await?,
+        paused: said(folder.paused()).await?,
+        paused_until: said(folder.paused_until()).await?,
+        held_back: said(folder.held_back()).await?,
+        local_bytes: served(folder.local_bytes()).await?,
+        pinned: served(folder.pinned_count()).await?,
+        conflicts: said(conflicts.count()).await?,
     })
 }
 

@@ -5,7 +5,7 @@ use konedrive_dbus::accounts::AccountProxy;
 use konedrive_dbus::Refusal;
 use konedrivectl::choice::{choose, Source};
 use konedrivectl::text::accounts::{account_list_text, removed_text};
-use konedrivectl::text::formats::shell_word;
+use konedrivectl::text::formats::{shell_word, warning_text};
 use konedrivectl::text::refusals::{explain_account_error, explain_sync_error_in, AccountAction, Context, SyncAction};
 use konedrivectl::text::status::mode_shown_text;
 
@@ -30,7 +30,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             print!("{}", account_list_text(&rows));
             let trouble = daemon.manager.last_error().await?;
             if !trouble.is_empty() {
-                eprintln!("warning: {trouble}");
+                eprintln!("{}", warning_text(&trouble));
             }
         }
         AccountCmd::Add { label } => {

@@ -38,20 +38,17 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
     let now = 1_000_000;
     let status = super::FolderStatus {
         path: "/home/u/OneDrive".into(),
-        state: "ready".into(),
+        state: Some("ready".into()),
         last_error: "one file could not be placed".into(),
         source: "onedrive".into(),
-        items_listed: 120,
-        items_placed: 118,
+        items: Some((120, 118)),
         skipped: 2,
-        last_checked: now - 20,
+        last_checked: Some(now - 20),
         live_changes: "connected".into(),
-        mode: "read-write".into(),
-        download_left: 3,
-        download_left_bytes: 3 << 20,
-        scan: super::LocalScan { state: "idle".into(), finished: now - 300, took: 40, ..Default::default() },
-        pending: 2,
-        pending_bytes: 2048,
+        mode: Some("read-write".into()),
+        download_left: Some((3, 3 << 20)),
+        scan: Some(super::LocalScan { state: "idle".into(), finished: now - 300, took: 40, ..Default::default() }),
+        pending: Some((2, 2048)),
         blocked: 1,
         quota_full: true,
         quota_waiting: 4,
@@ -61,8 +58,8 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         paused: true,
         paused_until: 0,
         held_back: "metered".into(),
-        local_bytes: 5 << 20,
-        pinned: 7,
+        local_bytes: Some(5 << 20),
+        pinned: Some(7),
         conflicts: 1,
     };
     let p = "konedrivectl --account Work";
@@ -94,7 +91,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
     );
     assert_eq!(super::sync_status_text(&status, Some("connected"), p, now), expected);
 
-    let none = super::FolderStatus { state: "none".into(), ..Default::default() };
+    let none = super::FolderStatus { state: Some("none".into()), ..Default::default() };
     assert_eq!(
         super::sync_status_text(&none, None, p, now),
         "Folder:                 (none)\nState:                  none\n",
@@ -104,4 +101,26 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         super::helper_text("stopped"),
         "stopped — the konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`"
     );
+}
+
+/// A daemon of an older build has not every property this build reads: a value it does not
+/// have is absent, its line is left out, and the rest is printed.
+#[test]
+fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
+    let folder = super::FolderStatus {
+        path: "/home/u/OneDrive".into(),
+        state: Some("ready".into()),
+        source: "onedrive".into(),
+        items: Some((3, 3)),
+        ..Default::default()
+    };
+    assert_eq!(
+        super::sync_status_text(&folder, None, "konedrivectl", 1_000),
+        "Folder:                 /home/u/OneDrive\n\
+         State:                  ready\n\
+         Opens:                  intercepted: a file is downloaded when something opens it\n\
+         Items:                  3 in OneDrive, 3 in the folder\n"
+    );
+    let account = super::AccountStatus { state: Some("signed-in".into()), email: "ann@outlook.com".into(), ..Default::default() };
+    assert_eq!(super::status_text(&account, Some("id")), "State:      signed-in\nClient ID:  id\n");
 }

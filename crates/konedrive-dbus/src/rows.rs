@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use zbus::zvariant::{OwnedValue, Type, Value};
 
 /// A download or an upload under way (`Transfers.Downloads`, `Transfers.Uploads`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type, Value, OwnedValue)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, Value, OwnedValue)]
 pub struct Transfer {
     /// The file's full path.
     pub path: String,

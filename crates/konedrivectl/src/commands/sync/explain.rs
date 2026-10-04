@@ -6,6 +6,7 @@ use konedrive_dbus::accounts::FolderProxies;
 use konedrive_dbus::Refusal;
 use konedrivectl::text::files::refused_path;
 use konedrivectl::text::folder::needs_attention_text;
+use konedrivectl::text::formats::{no_such_path_text, NOT_UTF8_PATH};
 use konedrivectl::text::refusals::{explain_sync_error_in, Context, SyncAction};
 
 use crate::daemon::{Chosen, Daemon, Folders};
@@ -156,14 +157,14 @@ pub(super) async fn fail_if_holders_unhealthy(folders: &Folders, paths: &[String
 /// register the link's target instead.
 pub(super) fn absolute_str(path: &str) -> anyhow::Result<String> {
     let given = std::path::Path::new(path);
-    std::fs::symlink_metadata(given).with_context(|| format!("no such path: {path}"))?;
+    std::fs::symlink_metadata(given).with_context(|| no_such_path_text(path))?;
     let absolute = match (given.parent(), given.file_name()) {
         (Some(parent), Some(name)) => {
             let parent = if parent.as_os_str().is_empty() { std::path::Path::new(".") } else { parent };
-            std::fs::canonicalize(parent).with_context(|| format!("no such path: {path}"))?.join(name)
+            std::fs::canonicalize(parent).with_context(|| no_such_path_text(path))?.join(name)
         }
         // `/`, `.`, `..` and the like: no last name to keep.
-        _ => std::fs::canonicalize(given).with_context(|| format!("no such path: {path}"))?,
+        _ => std::fs::canonicalize(given).with_context(|| no_such_path_text(path))?,
     };
-    absolute.to_str().map(str::to_owned).context("non-UTF-8 path")
+    absolute.to_str().map(str::to_owned).context(NOT_UTF8_PATH)
 }

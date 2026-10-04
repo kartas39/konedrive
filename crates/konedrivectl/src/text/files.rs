@@ -91,6 +91,16 @@ pub const DOWNLOADED: &str = "Downloaded.";
 /// `sync dehydrate`, done.
 pub const FREED_UP: &str = "Freed up.";
 
+/// How a suggested command starts when the accounts could not be read to name one.
+pub const PLAIN_PREFIX: &str = "konedrivectl";
+
+/// After a path command did what it was asked: the folders could not be read (`error` says
+/// why), so the account of a suggested command is not named and whether a folder needs
+/// attention was not checked.
+pub fn folders_unread_text(error: &str) -> String {
+    format!("done, but the sync folders could not be read afterwards, so whether one needs attention was not checked: {error}")
+}
+
 /// `sync pin`: that the paths are kept on this device, and how many of their
 /// files are downloading now.
 pub fn pin_text(queued: u32, prefix: &str) -> String {

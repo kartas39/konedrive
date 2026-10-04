@@ -70,11 +70,12 @@ pub fn not_a_duration_text(text: &str) -> String {
     format!("`{text}` is not a duration: write it as 30m, 2h, 1d or 1h30m")
 }
 
-/// `sync pause`, done: until `until` (unix seconds), or until resumed when 0.
-pub fn paused_now_text(until: i64, prefix: &str) -> String {
+/// `sync pause`, done: until `until` (unix seconds) for a pause with a duration, or until
+/// resumed for one without.
+pub fn paused_now_text(until: Option<i64>, prefix: &str) -> String {
     match until {
-        0 => format!("Paused until `{prefix} sync resume`."),
-        until => format!("Paused until {}.", local_time(until)),
+        None => format!("Paused until `{prefix} sync resume`."),
+        Some(until) => format!("Paused until {}.", local_time(until)),
     }
 }
 
@@ -161,3 +162,6 @@ pub fn activity_text(events: &[Event]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests;

@@ -14,6 +14,22 @@ pub fn indented(text: &str) -> String {
     text.lines().map(|line| if line.is_empty() { "\n".to_owned() } else { format!("  {line}\n") }).collect()
 }
 
+/// A line of the error output that is no failure: the command did what it was asked.
+pub fn warning_text(text: &str) -> String {
+    format!("warning: {text}")
+}
+
+/// A path given to a command that is not there.
+pub fn no_such_path_text(path: &str) -> String {
+    format!("no such path: {path}")
+}
+
+/// A path given to a command that is not UTF-8: the daemon takes paths as text.
+pub const NOT_UTF8_PATH: &str = "non-UTF-8 path";
+
+/// A relative path given with no current directory to make it absolute from.
+pub const NOT_ABSOLUTE: &str = "cannot make the path absolute";
+
 /// `40 s`, `2 min`, `3 h 5 min`.
 pub(crate) fn seconds_text(seconds: u64) -> String {
     match seconds {

@@ -457,7 +457,7 @@ What is printed, by topic. Pure: each function is given what was read and return
 
 - `mod.rs` — the list of the topics.
 - `status.rs` — `status` and `sync status`: what was read, and its lines. `[tests]`
-- `folder.rs` — what the commands on a folder say when they are done; `sync activity`.
+- `folder.rs` — what the commands on a folder say when they are done; `sync activity`. `[tests]`
 - `settings.rs` — `settings`.
 - `version.rs` — `--version`.
 - `uploads.rs` — the upload queue and what is not uploaded. `[tests]`
