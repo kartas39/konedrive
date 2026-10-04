@@ -24,12 +24,13 @@
 //! - **keeps both where the read phase rescued** (§6): a local version in the
 //!   way is renamed beside the cloud's, `name-<machine>.ext`, and uploaded
 //!   as new ([`Materializer::copy_aside`]);
-//! - **removes what OneDrive removed, whole, in the cycle** (issue #104):
-//!   whatever is there — a changed file, a new one, a file open in a
-//!   program, an ignored name, a symlink, an object from elsewhere — goes,
-//!   a download into it stopped; nothing is rescued, uploaded again or made
-//!   again in OneDrive (`resyncChangesUploadDifferences` alone keeps
-//!   downloads and local work, §3.7);
+//! - **removes what OneDrive removed, in the cycle, and keeps what it never
+//!   had**: what OneDrive had and the daemon placed goes — a file not
+//!   downloaded, a download unchanged since, a download into it stopped, a
+//!   folder once nothing is left in it. A file made here and a download
+//!   changed here stay, with their folders, their attributes off, and go up
+//!   as new; nothing is rescued out of the folder
+//!   (`resyncChangesUploadDifferences` keeps every download too, §3.7);
 //! - **lets what is no longer placed leave once its uploads are done**
 //!   (issue #104): its placement is the base's at once, its object stays
 //!   and is examined, and goes once nothing in it waits for the outbox
@@ -191,14 +192,23 @@ impl Rw {
         self.pending.contains(rel)
     }
 
-    /// How what OneDrive removed is taken off the disk: whole, but for a
-    /// `resyncChangesUploadDifferences` listing, which does not mean
-    /// removed (§3.7, F116).
+    /// How what OneDrive removed is taken off the disk: what was changed
+    /// or made here stays, and after a `resyncChangesUploadDifferences`
+    /// listing, which does not mean removed, every download too (§3.7).
     pub(super) fn removed(&self) -> Policy {
         if self.upload_differences {
             Policy::Resync
         } else {
             Policy::Removed
+        }
+    }
+
+    /// [`Self::removed`] for what is leaving, or is inside it.
+    pub(super) fn removed_leaving(&self) -> Policy {
+        if self.upload_differences {
+            Policy::Resync
+        } else {
+            Policy::RemovedLeaving
         }
     }
 

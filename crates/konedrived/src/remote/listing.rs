@@ -725,7 +725,7 @@ fn record_drive(record: &DriveRecord, id: &str) {
 /// item, at most [`activity::PER_KIND`] of each kind plus one "and N more",
 /// or nothing but the conflicts for a page of a first listing.
 fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Applied, said: Said) {
-    if said == Said::Nothing && applied.on_disk.rescued.is_empty() && applied.on_disk.copies.is_empty() {
+    if said == Said::Nothing && applied.on_disk.rescued.is_empty() && applied.on_disk.copies.is_empty() && applied.on_disk.kept.is_empty() {
         return;
     }
     let shown = |rel: &std::path::Path| root.join(rel).display().to_string();
@@ -754,6 +754,10 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
         }
         Said::Nothing => Vec::new(),
     };
+    // What was removed in OneDrive and stays here in part, whatever is said
+    // of the rest: the folder is gone there, and these files go up as new.
+    let kept = applied.on_disk.kept.iter().map(|(rel, files)| activity::event(Kind::Removed, shown(rel), kept_detail(*files))).collect();
+    events.extend(activity::capped(kept, activity::PER_KIND, &folder));
     let at = activity::unix_now();
     let conflicts: Vec<ConflictRow> = applied
         .on_disk
@@ -770,6 +774,14 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     events.extend(activity::capped(each, activity::PER_KIND, &folder));
     report.activity.add_conflicts(conflicts);
     report.activity.record_blocking(events);
+}
+
+/// The detail of a `removed` event for something that stays here in part.
+fn kept_detail(files: u64) -> String {
+    match files {
+        1 => "1 file changed or new on this computer was kept and is uploaded as new".to_owned(),
+        n => format!("{n} files changed or new on this computer were kept and are uploaded as new"),
+    }
 }
 
 #[cfg(test)]

@@ -99,7 +99,7 @@ impl Materializer {
                 continue;
             }
             if staged.is_none() {
-                self.take_off(&dir, &name, &rel, rw.removed(), run)?;
+                self.take_off(&dir, &name, &rel, rw.removed_leaving(), run)?;
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             }
@@ -237,9 +237,9 @@ impl Materializer {
                 Probe::Managed { id, is_dir } => {
                     let gone = self.store.call_blocking({ let id = id.clone(); move |s| Ok(s.get(Table::Staging, &id)?.is_none() && s.leaving_had(&id)?) })?;
                     if gone {
-                        // `resyncChangesUploadDifferences` does not mean removed: what
-                        // was downloaded or changed here is kept, as anywhere (F116).
-                        let ids = self.take_off(&sub, &child, &at, rw.removed(), run)?.ids;
+                        // Whole; `resyncChangesUploadDifferences` does not mean
+                        // removed: what was downloaded or changed here is kept.
+                        let ids = self.take_off(&sub, &child, &at, rw.removed_leaving(), run)?.ids;
                         // And the rows of the items its objects were, wherever they stand.
                         let dropped = self.store.call_blocking(move |s| s.outbox_drop_items(&ids))?;
                         tracing::info!("{} was removed from OneDrive while its folder was leaving: removed here, {} more change(s) dropped", at.display(), dropped.len());

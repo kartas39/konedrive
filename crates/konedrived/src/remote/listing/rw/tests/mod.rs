@@ -604,13 +604,15 @@ async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
     assert!(w.deferred("F").is_none());
 }
 
-/// Issue #104, decision 2: a folder removed in OneDrive while a new file
-/// waits in it to be uploaded, and a download in it was changed here, goes
-/// whole: the rows that would upload them go with it, and nothing is made
-/// again in OneDrive.
+/// A folder removed in OneDrive while a new file waits in it to be uploaded,
+/// and a download in it was changed here (the owner's ruling of 2026-10-04):
+/// those two stay and reach OneDrive as new files in a new folder; the rest
+/// of the folder goes, the Activity says what was kept, and nothing is
+/// deleted in OneDrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_folder_removed_in_onedrive_with_local_work_in_it_is_not_made_again() {
+async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it_goes_up_as_new() {
     let w = world().await;
+    w.graph.with(|c| c.add_file("G", "D", "g.txt", b"theirs"));
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(Duration::from_millis(10));
@@ -620,19 +622,54 @@ async fn a_folder_removed_in_onedrive_with_local_work_in_it_is_not_made_again() 
     batch.name(Path::new("docs"), OsStr::new("mine.txt"));
     batch.written(Path::new("docs"), OsStr::new("f.txt"), None);
     assert_eq!(w.examine(batch).await.applied.queued.len(), 2);
+    assert!(w.path("docs/g.txt").exists());
     w.graph.with(|c| c.trash("D"));
     let report = w.cycle(&listing).await;
-    assert!(report.applied.on_disk.recreated.is_empty());
-    assert!(!w.path("docs").exists(), "removed whole");
-    assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().is_empty(), "nothing left to upload there");
+    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs"), 2)]);
+    assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine", "the change made here stays");
+    assert_eq!(std::fs::read(w.path("docs/mine.txt")).unwrap(), b"mine", "and so does the new file");
+    assert!(!w.path("docs/g.txt").exists(), "what OneDrive had went");
+    assert_eq!((id_at(&w.path("docs")), id_at(&w.path("docs/f.txt"))), (None, None), "the user's own now");
+    let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
+    assert!(
+        said.iter().any(|e| e.kind == "removed" && e.path == w.path("docs").display().to_string() && e.detail.starts_with("2 files")),
+        "the Activity says what was kept: {said:?}"
+    );
 
-    let handed = std::mem::take(&mut *w.examined.lock().unwrap());
-    for batch in handed {
-        w.examine(batch).await;
-    }
-    w.upload().await;
-    assert_eq!(w.graph.with(|c| c.paths()), vec!["top.txt".to_owned()], "nothing made again in OneDrive");
+    w.scan_and_upload().await;
+    w.cycle(&listing).await;
+    w.scan_and_upload().await;
+    assert_eq!(w.graph.with(|c| c.paths()), ["docs", "docs/f.txt", "docs/mine.txt", "top.txt"], "made again in OneDrive, as new");
+    assert!(w.graph.with(|c| c.item("D").is_none() && c.item("F").is_none()), "new items, not the removed ones");
+    assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "f.txt" && i.content == b"one and mine")));
     assert_eq!(w.deletes(), 0);
+}
+
+/// One file changed here and removed in OneDrive: whichever comes first, the
+/// cycle or the upload, it is kept and goes up as a new file. Here the cycle
+/// is first; the upload first is `upload::tests` (`gone_or_new`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new() {
+    let w = world().await;
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    std::thread::sleep(Duration::from_millis(10));
+    std::fs::OpenOptions::new().append(true).open(w.path("docs/f.txt")).unwrap().write_all(b" and mine").unwrap();
+    let mut batch = Batch::new();
+    batch.written(Path::new("docs"), OsStr::new("f.txt"), None);
+    assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
+    w.graph.with(|c| c.trash("F"));
+    let report = w.cycle(&listing).await;
+    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs/f.txt"), 1)]);
+    assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine");
+    assert!(w.base("F").is_none(), "the base took the removal");
+
+    w.scan_and_upload().await;
+    let new = w.graph.with(|c| c.items.values().find(|i| i.name == "f.txt").cloned()).expect("uploaded");
+    assert!(new.id != "F" && new.parent.as_deref() == Some("D") && new.content == b"one and mine", "{new:?}");
+    assert_eq!(w.deletes(), 0);
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some(new.id.as_str()), "and it is the new item here");
 }
 
 /// Where the object `handle` names is, found by walking `bases` as the

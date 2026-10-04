@@ -105,6 +105,10 @@ pub struct OnDisk {
     /// change holds — removed in OneDrive and taken off the disk, or, in
     /// read-write mode, no longer placed here (issue #104). Never deferred.
     pub taken: HashSet<String>,
+    /// Read-write mode: what was removed in OneDrive and stays here in
+    /// part, relative to the root, with how many files stay — changed or
+    /// new on this computer, to be uploaded as new.
+    pub kept: Vec<(PathBuf, u64)>,
 }
 
 impl OnDisk {
@@ -112,7 +116,8 @@ impl OnDisk {
     // Every field named: one added to `OnDisk` does not compile here until
     // it is handled.
     pub fn absorb(&mut self, later: OnDisk) {
-        let OnDisk { rescued, copies, examine, recreated, taken } = later;
+        let OnDisk { rescued, copies, examine, recreated, taken, kept } = later;
+        self.kept.extend(kept);
         self.rescued.extend(rescued);
         self.copies.extend(copies);
         self.examine.extend(examine);
@@ -284,6 +289,8 @@ struct Run {
     /// The inodes items were placed as, not recorded yet: written
     /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
+    /// Files a removal left in place so far, as the user's own.
+    kept: u64,
     /// Read-write mode: items this run found no longer placed (issue #104):
     /// examined first, and removed by a later cycle at the earliest.
     unplaced: HashSet<String>,

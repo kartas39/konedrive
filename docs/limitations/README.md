@@ -161,7 +161,7 @@ application must never read zeros where real content should be.
 - [F113](F113.md) — The stale-delta guard reads again, under the tree lock, what the outbox committed during a fetch
 - [F114](F114.md) — The reconcile's conflict copies go up through the examination
 - [F115](F115.md) — A missing item is placed again only with something to place
-- [F116](F116.md) — What OneDrive removed goes from the disk whole, in the cycle
+- [F116](F116.md) — What OneDrive removed goes from the disk in the cycle, but for what it never had
 - [F117](F117.md) — The order of a read-write folder's cycle, and what it cannot close
 - [F120](F120.md) — A placeholder moved out of the folder reads zeros until the daemon marks it again
 - [F121](F121.md) — Moves out of the folder: downloaded first, and only then deleted in OneDrive

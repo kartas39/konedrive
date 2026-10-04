@@ -15,6 +15,7 @@ use std::path::Path;
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, read_state, State};
 use konedrive_fs::RESERVED_PREFIX;
+use konedrive_tree::outbox::OutboxKind;
 
 use super::{holds_local_work, ApplyError, Materializer, Run, Rw};
 use crate::folder::disk::Probe;
@@ -25,15 +26,25 @@ use crate::status::activity::Kind as EventKind;
 /// Why an object is taken off the disk, and so what of it may stay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Policy {
-    /// Its item was removed in OneDrive. Read-write mode: it goes whole,
-    /// whatever is in it (issue #104, decision 2). Read-only mode: what
-    /// holds local work is rescued out of the folder, and another
-    /// account's object is set aside.
+    /// Its item was removed in OneDrive. Read-write mode: what OneDrive
+    /// had and the daemon placed goes — a file not downloaded, a download
+    /// unchanged since, a folder once nothing is left in it. What OneDrive
+    /// never had stays, as the user's own, with the folders above it, to be
+    /// uploaded as new: a new file, and a download changed here (its stamp
+    /// differs, it is open for writing, or an `update` waits for it).
+    /// Read-only mode: what holds local work is rescued out of the folder,
+    /// and another account's object is set aside.
     Removed,
     /// Read-write mode, a `resyncChangesUploadDifferences` listing that
-    /// left its item out (§3.7): a download, a file with local work and a
-    /// new file stay, their attributes off, to be uploaded again as new.
+    /// left its item out (§3.7): as [`Policy::Removed`], and every download
+    /// stays too, changed or not: the listing may have lost the item.
     Resync,
+    /// Read-write mode: its item was removed in OneDrive while it, or the
+    /// folder it is in, was leaving. It goes whole, whatever is in it, as
+    /// decision 2 of issue #104 had it for everything: what stays in a
+    /// leaving folder would be examined by that folder's own rules. Goes
+    /// with the leaving rows.
+    RemovedLeaving,
     /// Read-write mode: it stopped being placed and nothing in it waits any
     /// more (`rw::leaving`, which decides that; until the leaving rows go,
     /// this stands where a policy for what is no longer placed will).
@@ -54,7 +65,7 @@ pub(super) struct TakenOff {
 pub(super) enum Removal {
     /// Gone from the place, whole.
     Gone,
-    /// [`Policy::Resync`] only: something in it stays, as the user's own.
+    /// Something in it stays, as the user's own.
     Kept,
 }
 
@@ -77,19 +88,47 @@ struct Survey {
     linked: Vec<FileHandle>,
 }
 
-/// Whether an object the examination meets without an item id would be
-/// uploaded: a file or a directory whose name is neither ignored, nor the
-/// daemon's, nor one OneDrive refuses.
-fn uploadable(rw: &Rw, dir: &File, name: &OsStr) -> std::io::Result<bool> {
-    if rw.ignore.matches(name) || name.as_encoded_bytes().starts_with(RESERVED_PREFIX.as_bytes()) || names::refused(name).is_some() {
-        return Ok(false);
+/// Which managed files a read-write removal keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// None: everything goes ([`Policy::Leaving`]).
+    Nothing,
+    /// Downloads changed here ([`Policy::Removed`]).
+    Changed,
+    /// Every download ([`Policy::Resync`]).
+    Downloaded,
+}
+
+/// What an object with no item id is to a removal that keeps local work.
+#[derive(PartialEq, Eq)]
+enum Unmanaged {
+    /// A file of the user's: it stays, and its folder with it. One whose
+    /// name OneDrive refuses too: it is not uploaded, and is still the
+    /// only copy of what is in it.
+    Theirs,
+    /// An ignored name, a symlink, a socket: it stays where its folder
+    /// stays, and keeps no folder by itself.
+    Beside,
+    /// The daemon's own (a temporary name): it goes.
+    Ours,
+}
+
+fn unmanaged(rw: &Rw, dir: &File, name: &OsStr) -> std::io::Result<Unmanaged> {
+    if name.as_encoded_bytes().starts_with(RESERVED_PREFIX.as_bytes()) {
+        return Ok(Unmanaged::Ours);
     }
     let stat = match nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
-        Err(nix::errno::Errno::ENOENT) => return Ok(false),
+        Err(nix::errno::Errno::ENOENT) => return Ok(Unmanaged::Ours),
         Err(e) => return Err(e.into()),
     };
-    Ok(matches!(stat.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR))
+    if rw.ignore.matches(name) || stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Ok(Unmanaged::Beside);
+    }
+    if let Some(why) = names::refused(name) {
+        tracing::debug!("{} stays though OneDrive would refuse its name ({why:?})", name.to_string_lossy());
+    }
+    Ok(Unmanaged::Theirs)
 }
 
 fn device(dir: &File) -> std::io::Result<libc::dev_t> {
@@ -120,8 +159,16 @@ impl Materializer {
             return Ok(TakenOff { removal: Removal::Gone, ids: Vec::new() });
         }
         let stopped = self.forget(&survey, policy, run)?;
+        let kept = run.kept;
         let removed = match &self.rw {
-            Some(rw) => self.remove_whole((policy == Policy::Resync).then_some(rw), dir, name, rel, run),
+            Some(rw) => {
+                let keep = match policy {
+                    Policy::Removed => Keep::Changed,
+                    Policy::Resync => Keep::Downloaded,
+                    Policy::RemovedLeaving | Policy::Leaving { .. } => Keep::Nothing,
+                };
+                self.remove_whole(rw, keep, dir, name, rel, run)
+            }
             None => self.remove_rescuing(dir, name, rel, &stopped, run).map(|()| Removal::Gone),
         };
         let removal = match removed {
@@ -131,6 +178,13 @@ impl Materializer {
                 return Err(e);
             }
         };
+        if run.kept > kept {
+            tracing::info!("{} is gone from OneDrive: {} file(s) changed or new here stay, and are uploaded as new", rel.display(), run.kept - kept);
+            // Said once: for the outermost thing removed, not again for
+            // what was taken off below it before.
+            run.out.on_disk.kept.retain(|(below, _)| !below.starts_with(rel));
+            run.out.on_disk.kept.push((rel.to_path_buf(), run.kept - kept));
+        }
         if self.rw.is_some() {
             let dropped = self.store.call_blocking({ let rel = rel.to_path_buf(); move |s| s.outbox_drop_under(&rel) })?;
             if !dropped.is_empty() {
@@ -209,12 +263,12 @@ impl Materializer {
         Ok(stopped)
     }
 
-    /// Read-write mode's step 3: `dir/name` (at `rel`) goes with everything
-    /// below it — copies of OneDrive's content, files changed here, new
-    /// files, files open in a program, ignored names, symlinks, objects
-    /// from elsewhere; nothing is rescued. `keep` is the plan of a
-    /// [`Policy::Resync`] removal, which keeps downloads and local work.
-    fn remove_whole(&self, keep: Option<&Rw>, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<Removal, ApplyError> {
+    /// Read-write mode's step 3: `dir/name` (at `rel`) goes, with what is
+    /// below it, but for what `keep` and [`Unmanaged`] say stays. What
+    /// stays loses konedrive's attributes and is handed to the examination,
+    /// which records it as new; a folder that stays is made again in
+    /// OneDrive. Nothing is rescued out of the folder.
+    fn remove_whole(&self, rw: &Rw, keep: Keep, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<Removal, ApplyError> {
         self.check_cancel()?;
         let probed = self.disk.probe(dir, name)?;
         let id = match &probed {
@@ -226,27 +280,38 @@ impl Materializer {
         if is_dir {
             let sub = self.disk.open_subdir(dir, name)?;
             let mut outcome = Removal::Gone;
+            // What stays only where its folder stays.
+            let mut beside = Vec::new();
             if device(&sub)? == device(dir)? {
                 for child in self.disk.list(&sub)? {
-                    outcome = outcome.max(self.remove_whole(keep, &sub, &child, &rel.join(&child), run)?);
+                    let stays_beside = keep != Keep::Nothing
+                        && matches!(self.disk.probe(&sub, &child)?, Probe::Unmanaged { is_dir: false })
+                        && unmanaged(rw, &sub, &child)? == Unmanaged::Beside;
+                    if stays_beside {
+                        beside.push(child);
+                    } else {
+                        outcome = outcome.max(self.remove_whole(rw, keep, &sub, &child, &rel.join(&child), run)?);
+                    }
                 }
             }
             if outcome == Removal::Kept {
                 if let Some(id) = id {
                     placeholder::strip_konedrive_xattrs(&sub)?;
-                    tracing::info!("{} is not in OneDrive's new listing but holds local work: it stays, and is made again there", rel.display());
+                    tracing::info!("{} is gone from OneDrive but holds local work: it stays, and is made again there", rel.display());
                     run.out.on_disk.recreated.push(id);
                 }
                 run.out.on_disk.examine.push((rel.to_path_buf(), true));
                 return Ok(Removal::Kept);
             }
+            for child in beside {
+                self.disk.remove(&sub, &child, false)?;
+            }
             self.disk.remove(dir, name, true)?;
         } else {
-            if let Some(rw) = keep {
-                if self.kept_by_resync(rw, dir, name, id.is_some())? {
-                    run.out.on_disk.examine.push((rel.to_path_buf(), false));
-                    return Ok(Removal::Kept);
-                }
+            if keep != Keep::Nothing && self.stays(rw, keep, dir, name, id.as_deref())? {
+                run.kept += 1;
+                run.out.on_disk.examine.push((rel.to_path_buf(), false));
+                return Ok(Removal::Kept);
             }
             let other_names = if id.is_some() { self.with_other_names(dir, name)? } else { None };
             self.disk.remove(dir, name, false)?;
@@ -282,19 +347,30 @@ impl Materializer {
         Ok(Some(file).filter(|file| file.metadata().is_ok_and(|m| m.ino() == stat.st_ino as u64 && m.dev() == stat.st_dev as u64)))
     }
 
-    /// `resyncChangesUploadDifferences` (§3.7): a download, a file with local
-    /// work, or a new file the new listing left out stays, to be uploaded
-    /// again as new — its konedrive attributes off.
-    fn kept_by_resync(&self, rw: &Rw, dir: &File, name: &OsStr, managed: bool) -> Result<bool, ApplyError> {
-        if !managed {
-            return Ok(uploadable(rw, dir, name)?);
-        }
+    /// Whether the file at `dir/name` stays when its place is taken off.
+    ///
+    /// With no item id: a file of the user's. With one (`id`): a download
+    /// that holds what OneDrive never had — changed here, open for writing,
+    /// or with an `update` waiting — or, for [`Keep::Downloaded`], any
+    /// download. Its konedrive attributes come off: it is uploaded as new.
+    /// A file that is not downloaded never stays: without its attributes
+    /// it would be read as zeros.
+    fn stays(&self, rw: &Rw, keep: Keep, dir: &File, name: &OsStr, id: Option<&str>) -> Result<bool, ApplyError> {
+        let Some(id) = id else {
+            return Ok(unmanaged(rw, dir, name)? != Unmanaged::Ours);
+        };
         let file = self.disk.open_file(dir, name)?;
-        if !(matches!(read_state(&file), Ok(Some(State::Hydrated))) || self.local_work(&file)) {
+        let downloaded = matches!(read_state(&file), Ok(Some(State::Hydrated)));
+        let stays = self.local_work(&file)
+            || downloaded
+                && (keep == Keep::Downloaded
+                    || konedrive_fs::lease::open_for_writing(&file).unwrap_or(true)
+                    || self.store.call_blocking({ let id = id.to_owned(); move |s| s.outbox_for_item(&id) })?.iter().any(|row| row.kind == OutboxKind::Update));
+        if !stays {
             return Ok(false);
         }
         placeholder::strip_konedrive_xattrs(&file)?;
-        tracing::info!("{} is not in OneDrive's new listing and was downloaded here: it stays, and is uploaded again", name.to_string_lossy());
+        tracing::info!("{} is gone from OneDrive and was changed or downloaded here: it stays, and is uploaded again", name.to_string_lossy());
         Ok(true)
     }
 
