@@ -590,9 +590,9 @@ async fn a_read_write_folder_gets_a_watcher_and_a_folder_moved_away_says_so() {
     xattr::set(&path, XATTR_ROOT, root.root_id.as_bytes()).unwrap();
     let service = SyncService::new(None, None, None);
     let store = Store::new(TreeStore::in_memory().unwrap());
-    assert!(service.start_watcher(&root, &store).is_none(), "a read-only folder is not watched");
+    assert!(service.start_watcher(&root, &store, None).is_none(), "a read-only folder is not watched");
     service.start_in_mode(Mode::ReadWrite);
-    let watcher = service.start_watcher(&root, &store).expect("a watcher");
+    let watcher = service.start_watcher(&root, &store, None).expect("a watcher");
     assert_eq!(*watcher.walked().wait_for(|state| *state != WalkState::Walking).await.unwrap(), WalkState::Done);
 
     std::fs::rename(&path, dir.path().join("moved")).unwrap();

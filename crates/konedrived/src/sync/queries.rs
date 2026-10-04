@@ -129,7 +129,7 @@ impl SyncService {
 
     /// The file's own state, or `not-managed` for anything that is not a
     /// plain file this daemon actually manages inside the current root —
-    /// including a file outside the root altogether, per.
+    /// including a file outside the root altogether.
     ///
     /// # A query never opens the file
     ///

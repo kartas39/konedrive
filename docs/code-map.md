@@ -281,10 +281,12 @@ Baloo and thumbnails. Design: `desktop.md`.
 - `pins.rs` — putting pins on and taking them off.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
 - `write_mode.rs` — the folder's side of the account's mode.
-- `outbox_api.rs` — the outbox as `org.konedrive.UploadQueue` shows it. `[tests]`
+- `outbox.rs` — the outbox worker started, woken and stopped; the rows dropped; the outbox as
+  `org.konedrive.UploadQueue` shows it. `[tests]`
+- `pause.rs` — the pause, the hold, Sync Anyway, and `PauseClock`, which ends a timed pause. `[tests]`
 - `move_outs.rs` — the fills of moved-out objects.
-- `run_settings.rs` — the settings that decide what runs; Sync Anyway.
-- `watching.rs` — the watcher of a read-write folder.
+- `settings.rs` — the account's settings in `config.toml`: thumbnails, the ignore list, the machine name.
+- `watcher.rs` — the watcher of a read-write folder: started, stopped, flushed, and what it tells.
 
 ### `crates/konedrived/src/sync/tests/`
 

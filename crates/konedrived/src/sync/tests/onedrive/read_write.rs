@@ -194,7 +194,7 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     wait_for_deltas(&w, before).await;
     assert_eq!(restarted.state().get().paused_until, None);
 
-    restarted.pause_syncing(1).await.unwrap();
+    restarted.pause_syncing(2).await.unwrap();
     assert!(restarted.state().get().paused_until.is_some_and(|until| until > 0));
     wait_until("the timed pause ends by itself", || restarted.state().get().paused_until.is_none()).await;
     restarted.stop_sync().await;
@@ -480,25 +480,6 @@ async fn a_missing_folder_asks_for_a_cycle_that_leaves_waiting_renames_alone() {
     service.stop_sync().await;
 }
 
-/// the outbox on the bus: a `Pause` that lands after the timer read the
-/// store's pause as over is not undone on the bus: the timer looks
-/// again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pause_that_lands_as_the_last_one_ends_stands() {
-    let w = world().await;
-    let service = connected(&w, true).await;
-    service.register_root(w.folder.path()).await.unwrap();
-    listed(&service).await;
-    service.pause_syncing(3600).await.unwrap();
-    // The timer has read the store's pause as over…
-    let seen = service.pause_shown.load(std::sync::atomic::Ordering::SeqCst);
-    // …when a new `Pause` lands.
-    service.pause_syncing(7200).await.unwrap();
-    assert!(!service.pause_timer_done(seen, true), "the timer looks again");
-    assert!(service.state().get().paused_until.is_some_and(|until| until > 0), "still paused on the bus");
-    service.stop_sync().await;
-}
-
 /// The outbox worker asks the write gate before each row. A drive
 /// taken off `write_test_drive_ids` while it runs sends nothing more: the change waits,
 /// and the folder's `LastError` says why.
@@ -679,9 +660,9 @@ async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    write_mode::FAIL_WATCHER.with(|fail| fail.set(true));
+    watcher::FAIL_WATCHER.with(|fail| fail.set(true));
     service.follow_mode(Mode::ReadWrite).await;
-    write_mode::FAIL_WATCHER.with(|fail| fail.set(false));
+    watcher::FAIL_WATCHER.with(|fail| fail.set(false));
     assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
     assert!(service.last_error().contains("stays read-only"), "{}", service.last_error());
     service.stop_sync().await;

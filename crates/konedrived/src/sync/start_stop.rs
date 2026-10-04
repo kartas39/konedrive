@@ -13,7 +13,6 @@ use crate::status::snapshot::SyncTrouble;
 use crate::desktop::thumbs;
 use crate::hydration::graph_source;
 use crate::remote::listing;
-use crate::sync::write_mode;
 
 impl SyncService {
     /// Starts — or, when it runs already, nudges — the sync of the OneDrive
@@ -87,7 +86,7 @@ impl SyncService {
         // Its first examination is the Full local scan, which the folder's first delta cycle
         // waits for (`docs/design/writes.md` §3).
         let (scanned, first_scan) = tokio::sync::watch::channel(false);
-        let watcher = if writable { self.start_watcher_scanned(&reg.root, &store, Some(scanned)) } else { None };
+        let watcher = if writable { self.start_watcher(&reg.root, &store, Some(scanned)) } else { None };
         if writable && watcher.is_none() {
             writable = false;
             self.ensure_locked(&reg.root).await;
@@ -156,7 +155,7 @@ impl SyncService {
                         .spawn(kick, cancel.clone());
                     (task, cancel)
                 });
-                let walked = watcher.as_ref().map(write_mode::Watcher::walked);
+                let walked = watcher.as_ref().map(crate::local::watcher::Watcher::walked);
                 *syncing = Some(Syncing { poller, sign_in_watch, thumbnails, watcher, outbox });
                 Ok(walked)
             }
@@ -191,13 +190,6 @@ impl SyncService {
     fn sync_cannot_start(&self, text: String) {
         tracing::error!("{text}");
         self.state.update(|s| s.sync_trouble = Some(SyncTrouble { text, blocking: true }));
-    }
-
-    /// The daemon is stopping (issue #84): the outbox worker, if one runs,
-    /// takes nothing more and lets the requests in flight return. The future
-    /// ends when it has; the caller bounds the wait (`crate::daemon::stop`).
-    pub fn close_outbox(&self) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
-        self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()).map(|outbox| outbox.close())
     }
 
     /// Stops the sync and waits for it: a Forget's, and tests'. (At the
@@ -304,6 +296,23 @@ impl SyncService {
         }
         let why = self.state.get().sync_trouble.map(|t| t.text);
         Err(SyncError::Io(why.unwrap_or_else(|| "the sync could not be started".into())))
+    }
+
+    /// `Refresh()`'s part for the quota (issue #2): read now, one request, into the account's
+    /// one quota (`Account.QuotaRemaining`, `QuotaState`, …), and handed to the outbox, which
+    /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
+    /// changes nothing.
+    async fn refresh_quota(&self) {
+        let drive = self.drive.lock().unwrap().clone();
+        let Some(drive) = drive else { return };
+        match drive.quota().await {
+            Ok(quota) if crate::upload::space::known(&quota) => {
+                self.quota().read(&quota);
+                self.quota_seen(&quota);
+            }
+            Ok(_) => tracing::warn!("OneDrive gave no quota"),
+            Err(e) => tracing::warn!("cannot read the OneDrive quota: {e}"),
+        }
     }
 
     /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write

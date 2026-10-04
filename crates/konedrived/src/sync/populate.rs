@@ -80,32 +80,6 @@ impl SyncService {
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// The recursive half of `populate_from_directory`: mirrors `source` into
-/// `dest` as placeholders, marking every newly-created directory before
-/// anything is created inside it (invariant M1) and skipping any name that
-/// already exists. `relative` accumulates the `item_id` — the entry's path
-/// relative to the original `source_dir` — as the walk descends.
-///
-/// This is explicitly the offline test path (own description),
-/// not production-hardened infrastructure: unlike `root::recover`, it walks
-/// by path rather than by directory descriptor, because its threat model is
-/// "a local directory the same user built for a test", not an adversarial
-/// or racing filesystem. It still walks a directory the user names, though,
-/// and a symlink is never treated as one to recurse into — `entry.file_type`
-/// is `lstat`-based and already reports a symlink as a symlink rather than
-/// as whatever it points at, but that is std's own default, not a decision
-/// this function makes, so it is spelled out below rather than leaned on
-/// implicitly: a symlink back at one of its own ancestors is exactly the
-/// shape that turns "walk the tree" into recursion with no base case, and
-/// nothing here may ever decide to recurse on the strength of what a
-/// symlink's target happens to be. A symlink to a regular file is still
-/// picked up as one, through the same follow `std::fs::metadata` performs
-/// for a plain file's own size and mtime — that follows the link exactly
-/// once (the kernel bounds the rest of any chain on its own), and is a
-/// read, never a walk decision — unless it leads into the sync folder, or
-/// to one of konedrive's own files anywhere (a hardlink to a placeholder):
-/// then the whole populate is refused, since a file filled
-/// from it would be filled with a placeholder's zeros.
 /// What every level of [`populate_walk`] needs besides where it is: the
 /// link to mark new directories through, if any, and the resolved sync
 /// folder that no source file may lead into.
@@ -128,6 +102,32 @@ impl std::fmt::Display for RefusedSource {
 
 impl std::error::Error for RefusedSource {}
 
+/// The recursive half of `populate_from_directory`: mirrors `source` into
+/// `dest` as placeholders, marking every newly-created directory before
+/// anything is created inside it (invariant M1) and skipping any name that
+/// already exists. `relative` accumulates the `item_id` — the entry's path
+/// relative to the original `source_dir` — as the walk descends.
+///
+/// This is the offline test path, not production-hardened infrastructure:
+/// unlike `root::recover`, it walks
+/// by path rather than by directory descriptor, because its threat model is
+/// "a local directory the same user built for a test", not an adversarial
+/// or racing filesystem. It still walks a directory the user names, though,
+/// and a symlink is never treated as one to recurse into — `entry.file_type`
+/// is `lstat`-based and already reports a symlink as a symlink rather than
+/// as whatever it points at, but that is std's own default, not a decision
+/// this function makes, so it is spelled out below rather than leaned on
+/// implicitly: a symlink back at one of its own ancestors is exactly the
+/// shape that turns "walk the tree" into recursion with no base case, and
+/// nothing here may ever decide to recurse on the strength of what a
+/// symlink's target happens to be. A symlink to a regular file is still
+/// picked up as one, through the same follow `std::fs::metadata` performs
+/// for a plain file's own size and mtime — that follows the link exactly
+/// once (the kernel bounds the rest of any chain on its own), and is a
+/// read, never a walk decision — unless it leads into the sync folder, or
+/// to one of konedrive's own files anywhere (a hardlink to a placeholder):
+/// then the whole populate is refused, since a file filled
+/// from it would be filled with a placeholder's zeros.
 fn populate_walk<'a>(
     walk: Walk<'a>,
     source: &'a Path,
