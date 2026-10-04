@@ -102,7 +102,7 @@ impl InodeLocks {
         // same file takes, which has no time limit.
         let row = Row { table: Arc::clone(&self.inner), key };
         let guard = mutex.lock_owned().await;
-        InodeGuard { _guard: guard, cancel, _row: row }
+        InodeGuard { held: Arc::new(Held { _guard: guard, _row: row }), cancel }
     }
 
     /// Exclusive use of `key` if nobody holds or awaits it now, and `None`
@@ -126,7 +126,7 @@ impl InodeLocks {
         // one, the row out of the table.
         let row = Row { table: Arc::clone(&self.inner), key };
         let guard = mutex.try_lock_owned().ok()?;
-        Some(InodeGuard { _guard: guard, cancel, _row: row })
+        Some(InodeGuard { held: Arc::new(Held { _guard: guard, _row: row }), cancel })
     }
 
     /// The inode `key` is being taken off the disk because OneDrive removed
@@ -185,31 +185,70 @@ impl Drop for Row {
 }
 
 /// Holds one inode's slot in [`InodeLocks`]. Releases the lock, then leaves
-/// the count, when dropped.
+/// the count, when dropped — and when every [`InodeHold`] taken from it is
+/// dropped too.
 pub struct InodeGuard {
+    held: Arc<Held>,
+    cancel: CancellationToken,
+}
+
+/// The lock itself and its place in the count, let go of together.
+struct Held {
     // Never read: its entire job is to stay alive, and locked, until this
-    // guard drops. Declared first so the mutex is released before `_row`
+    // drops. Declared first so the mutex is released before `_row`
     // leaves the count — a waiter woken by that release has already counted
     // itself, so its row cannot be removed from under it either way.
     _guard: tokio::sync::OwnedMutexGuard<()>,
-    cancel: CancellationToken,
     _row: Row,
 }
+
+/// A share in an [`InodeGuard`]: the inode stays locked until this is dropped
+/// as well. A blocking section of a fill carries one (`hydration::source`):
+/// the section runs to its end on its own thread even when the fill is
+/// dropped, and whoever takes the lock next must not find it still writing.
+#[derive(Clone)]
+pub struct InodeHold(#[allow(dead_code)] Arc<Held>);
 
 impl InodeGuard {
     /// Done when the inode is being taken off the disk ([`InodeLocks::cancel`]).
     pub async fn cancelled(&self) {
         self.cancel.cancelled().await
     }
+
+    fn hold(&self) -> InodeHold {
+        InodeHold(Arc::clone(&self.held))
+    }
+}
+
+tokio::task_local! {
+    /// The lock the work running now was started under ([`holding`]).
+    static HELD: InodeHold;
+}
+
+/// Runs `work` as work done under `guard`: a blocking section that `work`
+/// starts takes a share in the lock ([`hold_in_force`]) and keeps the inode
+/// locked until it ends, whether `work` is still there by then or was
+/// dropped.
+pub(crate) async fn holding<T>(guard: &InodeGuard, work: impl std::future::Future<Output = T>) -> T {
+    HELD.scope(guard.hold(), work).await
+}
+
+/// A share in the lock the calling work runs under, if it was started under
+/// one ([`holding`], [`unless_removed`]).
+pub(crate) fn hold_in_force() -> Option<InodeHold> {
+    HELD.try_with(InodeHold::clone).ok()
 }
 
 /// Runs `fill` — a download into a file — unless the file is taken off the
 /// disk meanwhile because OneDrive removed its item: then it is dropped where
 /// it is, and `None` says so (issue #104). Without a guard it runs to its end.
+///
+/// The fill runs as work under the guard ([`holding`]): a blocking section it
+/// had begun when it was dropped ends before the lock is free.
 pub(crate) async fn unless_removed<T>(guard: Option<&InodeGuard>, fill: impl std::future::Future<Output = T>) -> Option<T> {
     match guard {
         Some(guard) => tokio::select! {
-            done = fill => Some(done),
+            done = holding(guard, fill) => Some(done),
             () = guard.cancelled() => None,
         },
         None => Some(fill.await),

@@ -236,7 +236,7 @@ impl Engine {
             })
             .await
         };
-        let _inode = self.cfg.locks.lock(InodeKey::of(object)?).await;
+        let inode = self.cfg.locks.lock(InodeKey::of(object)?).await;
         let state = placeholder::read_state(object).map_err(|e| Fail::Io(io::Error::other(e.to_string())))?;
         let clearance = match state {
             Some(State::Hydrated) => return Ok(Local::Yes),
@@ -256,7 +256,8 @@ impl Engine {
             Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(format!("{}: {err}", reason::NOT_OPENED)))),
             Err(other) => return Err(other),
         };
-        match mo.filler.fill(writable, shown, clearance.as_ref()).await {
+        // Under the lock: a section of the fill that outlives it keeps the inode locked.
+        match crate::folder::locks::holding(&inode, mo.filler.fill(writable, shown, clearance.as_ref())).await {
             Ok(()) if matches!(placeholder::read_state(object), Ok(Some(State::Hydrated))) => Ok(Local::Yes),
             Ok(()) => Ok(Local::No(Outcome::backoff(reason::NOT_LOCAL))),
             Err(e) => {

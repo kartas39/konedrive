@@ -557,6 +557,30 @@ async fn a_post_data_failure_never_leaves_the_file_observably_hydrated() {
     assert_eq!(read_stamp(&opened).unwrap(), None, "a failed fill leaves no stamp");
 }
 
+/// The fill's tail — the `fsync`s, the stamp and the commit write — runs on
+/// a blocking thread, not on the thread that drives the fill (finding HY4).
+/// The fault's hook fires inside `commit`, so it says where `commit` runs.
+#[tokio::test]
+async fn the_commit_runs_off_the_thread_that_drives_the_fill() {
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM13"), vec![5u8; 65536]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let file = placeholder(local.path(), "ITEM13", 65536);
+
+    let ran_on = std::sync::Arc::new(Mutex::new(None));
+    let seen = std::sync::Arc::clone(&ran_on);
+    set_post_data_fault(move || {
+        *seen.lock().unwrap() = Some(std::thread::current().id());
+        None
+    });
+    let errno = hydrate_file(&file, &LocalDir::new(remote.path())).await;
+    clear_post_data_fault();
+
+    assert_eq!(errno, 0);
+    let ran_on = ran_on.lock().unwrap().expect("the commit ran");
+    assert_ne!(ran_on, std::thread::current().id());
+}
+
 /// A roll-back never punches a file that is no longer in the
 /// state its fill put it in. Under the per-inode lock only something
 /// outside the daemon can have changed it — and whatever did, the file is
