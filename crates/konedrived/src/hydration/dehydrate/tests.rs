@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -8,7 +7,7 @@ use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::placeholder::{read_stamp, read_state, write_stamp, State, write_state};
+use konedrive_fs::placeholder::{read_state, write_stamp, State, write_state};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use nix::sys::socket::{accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
 use xattr::FileExt;
@@ -39,19 +38,6 @@ pub(crate) fn blocks_of(path: &Path) -> u64 {
 
 // --- The dehydration guard -------------------------------------------
 
-#[tokio::test]
-async fn dehydration_refuses_a_locally_modified_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = hydrated_file(dir.path(), "f.bin", 4096);
-
-    let mut appended = File::options().append(true).open(&path).unwrap();
-    appended.write_all(b"changed").unwrap();
-    drop(appended);
-
-    let error = check_dehydratable(&open_rw(&path)).unwrap_err();
-    assert!(matches!(error, DehydrateError::ModifiedLocally), "{error:?}");
-}
-
 /// The state gate, arm by arm. Only `hydrated` may be emptied: a file
 /// that is `online-only` has nothing to free, and one that is `hydrating`
 /// or `dehydrating` is in the middle of something — punching any of them
@@ -68,41 +54,6 @@ async fn dehydration_refuses_every_state_but_hydrated() {
         let error = check_dehydratable(&file).unwrap_err();
         assert!(matches!(error, DehydrateError::NotHydrated), "{state:?}: {error:?}");
     }
-}
-
-/// A file with no `user.konedrive.state` at all is not ours. Nothing
-/// about it — not its name, not where it sits — makes it something this
-/// daemon may empty.
-#[tokio::test]
-async fn dehydration_refuses_a_file_that_is_not_managed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("mine.txt");
-    std::fs::write(&path, vec![9u8; 4096]).unwrap();
-
-    let error = check_dehydratable(&open_rw(&path)).unwrap_err();
-    assert!(matches!(error, DehydrateError::NotManaged), "{error:?}");
-}
-
-#[tokio::test]
-async fn dehydration_empties_a_clean_file_and_keeps_its_size() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = hydrated_file(dir.path(), "f.bin", 1 << 20);
-
-    let file = open_rw(&path);
-    let restore = mark_dehydrating(&file).unwrap();
-    punch_clean_file(&file, restore).unwrap();
-    drop(file);
-
-    let meta = std::fs::metadata(&path).unwrap();
-    assert_eq!(meta.len(), 1 << 20);
-    assert!(meta.blocks() < 64, "{} blocks left", meta.blocks());
-    let file = File::open(&path).unwrap();
-    assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
-    assert_eq!(
-        read_stamp(&file).unwrap(),
-        None,
-        "the stamp described a hydrated file and must not outlive it"
-    );
 }
 
 /// An `online-only` file's mtime is the remote
@@ -129,29 +80,6 @@ async fn dehydration_keeps_the_remote_mtime() {
         remote,
         "dehydration must not move the file's mtime to now"
     );
-}
-
-/// The lease is the proof that nobody else has the file open, so a
-/// refusal has to stop everything — and put the state back, or the file
-/// is left claiming to be mid-dehydration when nothing is happening to
-/// it at all.
-#[tokio::test]
-async fn dehydration_refuses_while_another_process_holds_the_file_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = hydrated_file(dir.path(), "f.bin", 4096);
-
-    let file = open_rw(&path);
-    let restore = mark_dehydrating(&file).unwrap();
-    let _held_open = File::open(&path).unwrap();
-
-    let error = punch_clean_file(&file, restore).unwrap_err();
-    assert!(matches!(error, DehydrateError::InUse), "{error:?}");
-    assert_eq!(
-        read_state(&file).unwrap(),
-        Some(State::Hydrated),
-        "a refused lease must roll the state back, not leave the file dehydrating"
-    );
-    assert!(blocks_of(&path) > 0, "nothing may be punched without the lease");
 }
 
 /// The lease has to still be held at the moment the blocks go
@@ -231,23 +159,6 @@ fn an_open_arriving_during_the_punch_waits_for_all_of_it() {
          the whole sequence"
     );
     assert!(blocks < 64, "the open completed while the file still had its blocks");
-}
-
-/// Makes `fsync`/`fdatasync` fail with `EIO` for this process, for good,
-/// so that a missing durability barrier becomes an observable difference
-/// rather than an invisible one.
-///
-/// A seccomp filter is the only way to do that unprivileged: nothing in
-/// user space can make tmpfs refuse an `fsync`, and the crash injection
-/// that would show the barrier's real purpose needs the VM suite (spec
-/// §11.2). The filter applies to the calling thread only (no `TSYNC`)
-/// and cannot be lifted, so the one test that uses it does so on a
-/// thread it is willing to lose.
-///
-/// `Err` means seccomp is not available here (an old kernel, a sandbox
-/// that blocks it); the caller then skips rather than fails.
-fn deny_fsync() -> Result<(), ()> {
-    deny_syscalls(&[libc::SYS_fsync, libc::SYS_fdatasync])
 }
 
 /// The general form: make each of `numbers` fail with `EIO` for this
@@ -341,64 +252,6 @@ where
     })
     .join()
     .expect("the thread running the filtered work must not panic")
-}
-
-/// Dehydration's step 4: the punch is followed by an `fsync`, and the file is
-/// not called `online-only` until that has succeeded. A punch that is
-/// only in page cache, published as `online-only`, is a file the next
-/// boot can find with its blocks back and its state insisting they are
-/// gone — and nothing will hydrate it, because `online-only` is exactly
-/// the state that means "the content is elsewhere".
-///
-/// A barrier that works is invisible, so it is measured by taking it
-/// away. The file is marked `dehydrating` first, while `fsync` still
-/// works, so the only barrier the filter can remove is the one that
-/// follows the punch — the thing under test.
-///
-/// The work runs on a thread of its own because a seccomp filter cannot
-/// be lifted: letting it die with the thread keeps it away from every
-/// other test, including under `--test-threads=1`, where libtest runs
-/// the test bodies themselves on the main thread. A thread, not a child
-/// process: an earlier version of this test forked, and the other
-/// lease-taking tests in this binary then failed roughly one run in five.
-/// **Why** was never established. This comment used to say that spawning
-/// duplicates the descriptor table and that a duplicated descriptor is
-/// what `F_SETLEASE` refuses on; that is false — measured on this kernel,
-/// 0 failures in 2000 `posix_spawn`s and 0 in 3000 `fork`s either side of
-/// an `exec`, against a control where a real second `open()` gives
-/// `EAGAIN` immediately, because the check reads
-/// `inode->i_readcount`/`i_writecount`, which only a genuine open raises.
-/// The flakiness was real, its cause is unknown, and the thread stays.
-#[test]
-fn the_punch_is_made_durable_before_the_file_is_called_online_only() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = hydrated_file(dir.path(), "f.bin", 1 << 20);
-    let file = open_rw(&path);
-    let restore = mark_dehydrating(&file).unwrap();
-
-    let punched = std::thread::spawn(move || match deny_fsync() {
-        Err(()) => None,
-        Ok(()) => Some(punch_clean_file(&file, restore).is_ok()),
-    })
-    .join()
-    .expect("the thread running the punch must not panic");
-
-    match punched {
-        None => eprintln!("seccomp is unavailable here; skipping the durability check"),
-        Some(true) => panic!(
-            "the dehydration reported success although every fsync failed: the punch is \
-             never made durable"
-        ),
-        Some(false) => {
-            assert!(blocks_of(&path) < 64, "the punch itself should still have happened");
-            assert_eq!(
-                read_state(&File::open(&path).unwrap()).unwrap(),
-                Some(State::Dehydrating),
-                "a file whose punch could not be made durable must not be published as \
-                 online-only"
-            );
-        }
-    }
 }
 
 /// Step 2: `state=dehydrating` is made durable

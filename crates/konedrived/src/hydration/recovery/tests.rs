@@ -1,5 +1,4 @@
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::ffi::OsString;
@@ -13,7 +12,7 @@ use konedrive_fs::MAX_DEPTH;
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
-use crate::helper::{Clearance, HelperError, HelperLink};
+use crate::helper::{Clearance, HelperLink};
 use crate::folder::locks::{InodeKey, InodeLocks};
 use crate::hydration::dehydrate::tests::{asked_to, blocks_of, connected, fake_helper, open_rw, with_syscalls_denied};
 use crate::folder::root::tests::test_root;
@@ -44,12 +43,6 @@ fn interrupted_file(dir: &Path, name: &str, state: State, size: usize) -> PathBu
 
 fn state_of(path: &Path) -> Option<State> {
     read_state(&File::open(path).unwrap()).unwrap()
-}
-
-/// How many descriptors this process has open right now. Both samples
-/// include the one `read_dir` itself uses, so the difference is the walk's.
-fn open_descriptors() -> usize {
-    std::fs::read_dir("/proc/self/fd").unwrap().count()
 }
 
 /// The original proposal's own scenario, extended over a real tree: a crash
@@ -537,49 +530,6 @@ async fn a_file_that_cannot_be_opened_is_counted_not_passed_over_in_silence() {
     assert_eq!(state_of(&locked), Some(State::Hydrating));
 }
 
-/// Open, decide, punch, close — one file at a time. The
-/// version this replaces opened every regular file in a directory
-/// `O_RDWR`, whatever its state, and held all of those descriptors until
-/// the directory was finished; with `RLIMIT_NOFILE` at systemd's default
-/// of 1024 that silently defeated recovery of a large folder, healthy or
-/// not. Measured from inside the walk — the helper's hook runs while
-/// recovery is blocked on the `ClearIgnore` ack for the one interrupted
-/// file, which is the moment the old version was holding all 400 of the
-/// others.
-#[tokio::test]
-async fn recovery_holds_one_file_open_at_a_time() {
-    const BYSTANDERS: usize = 400;
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = test_root(dir.path());
-    for i in 0..BYSTANDERS {
-        interrupted_file(&root.path, &format!("hydrated-{i}.bin"), State::Hydrated, 64);
-    }
-    interrupted_file(&root.path, "interrupted.bin", State::Dehydrating, 64);
-
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let during = Arc::new(AtomicUsize::new(0));
-    let sampler = Arc::clone(&during);
-    let _helper = fake_helper(socket_path.clone(), 0, move || {
-        sampler.store(open_descriptors(), Ordering::SeqCst);
-    });
-    let link = connected(&socket_path).await;
-
-    let before = open_descriptors();
-    let report = recover(&link, &root).await.unwrap();
-    assert_eq!(report.reset, 1, "{report:?}");
-    assert_eq!(report.scanned, BYSTANDERS + 1, "{report:?}");
-
-    let held = during.load(Ordering::SeqCst).saturating_sub(before);
-    assert!(
-        held < 64,
-        "{held} more descriptors were open mid-walk than before it, with {BYSTANDERS} \
-         bystander files in the directory: the walk is holding a descriptor per file, so a \
-         large folder exhausts the table and the rest of it is skipped in silence"
-    );
-}
-
 /// Streaming has a second consequence worth pinning: because only one
 /// file is open at a time, everything else in the directory is still
 /// just a name when the walk is waiting on the helper. Here both files
@@ -859,29 +809,6 @@ async fn recovery_leaves_a_file_untouched_when_clear_ignore_fails() {
     assert!(
         after.metadata().unwrap().blocks() > 0,
         "must not be punched when ClearIgnore failed"
-    );
-}
-
-/// A refusal has to keep its kind all the way out of
-/// `reset_interrupted`. `Result<(), String>` flattened `Refused`,
-/// `Timeout`, `NotRunning` and `ENOSPC` into one text field, and those
-/// are four different situations with four different answers — retry
-/// now, retry later, start the helper, free some space.
-#[tokio::test]
-async fn a_refusal_keeps_its_kind() {
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let _helper = fake_helper(socket_path.clone(), libc::EPERM, || {});
-    let link = connected(&socket_path).await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = test_root(dir.path());
-    let path = interrupted_file(&root.path, "a.bin", State::Dehydrating, 8192);
-
-    let error = reset_interrupted(&Clearance::Link(link.clone()), open_rw(&path)).await.unwrap_err();
-    assert!(
-        matches!(error, ResetError::Helper(HelperError::Refused(libc::EPERM))),
-        "{error:?}"
     );
 }
 

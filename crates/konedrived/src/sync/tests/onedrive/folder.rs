@@ -820,7 +820,7 @@ async fn a_forgotten_read_write_folder_leaves_no_tree_store_open() {
     // Forget returns, before its files are removed.
     let content = tempfile::tempdir().unwrap();
     std::fs::write(content.path().join("F"), b"abc").unwrap();
-    let slow = Arc::new(crate::hydration::source::LocalDir::new(content.path()).delay(Duration::from_millis(1500)));
+    let slow = Arc::new(crate::hydration::testing::Faulty::new(crate::hydration::source::LocalDir::new(content.path())).delay(Duration::from_millis(1500)));
     super::super::install_source(&service, Arc::clone(&slow) as Arc<dyn crate::hydration::source::ContentSource>);
     let file = w.folder.path().join("docs/f.txt");
     let (filling, target) = (Arc::clone(&service), file.clone());

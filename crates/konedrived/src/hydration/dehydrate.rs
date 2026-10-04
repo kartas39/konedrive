@@ -1,47 +1,29 @@
-//! Root registration, dehydration and startup recovery: the daemon's side of
-//! binding an empty local folder to the signed-in drive, of freeing a
-//! hydrated file's space again, and of cleaning up after a crash
-//! that caught a file mid-operation.
+//! Freeing a downloaded file's space again (`docs/design/hydration.md` §8).
 //!
 //! # One descriptor, from the first open to the last write
 //!
-//! Dehydration and recovery are the only things in this project that destroy
-//! a file's contents on purpose, so everything they decide and everything
-//! they do must be about the same inode. Dehydration opens the file
-//! **once**, `O_RDWR`, and every
-//! step after that — reading the state, checking the stamp, marking it
-//! `dehydrating`, handing the descriptor to the helper for `ClearIgnore`,
-//! taking the write lease, punching, restoring the mtime — goes through that
-//! one descriptor. `konedrive_fs`'s API is descriptor-based throughout;
-//! nothing here needs a path once the file is open.
+//! A free-up destroys a file's contents on purpose, so everything it decides
+//! and everything it does must be about the same inode. The file is opened
+//! **once**, and every step after that — reading the state, checking the
+//! stamp, marking it `dehydrating`, handing the descriptor to the helper for
+//! `ClearIgnore`, taking the write lease, emptying it — goes through that one
+//! descriptor. A descriptor cannot be renamed out from under its holder: a
+//! version that opened the path once per step emptied the file an editor's
+//! save had put in the old one's place.
 //!
-//! The version this replaces opened the path four times and punched the
-//! fourth, having checked the third. A rename landing in that gap — an
-//! editor's save-and-replace, `mv`, anything — meant the guard passed on the
-//! old inode while `fallocate` emptied the *new* one: measured, 300 KiB of a
-//! freshly written file zeroed and stamped `online-only`, three runs out of
-//! three, with `dehydrate` returning `Ok(())`. A descriptor cannot be
-//! renamed out from under its holder, which is the whole of the fix.
-//!
-//! [`recover`] walks a whole tree instead of taking one path, so it extends
-//! the same rule to directories: every name it looks at is opened with
-//! `openat` from a directory descriptor it already holds, and the descriptor
-//! it classified is the descriptor it punches. Its own version of the defect
-//! above was measured too — a `sub/` swapped for a symlink out of the root
-//! while recovery awaited an ack, and a file elsewhere on the filesystem
-//! emptied and counted as a success.
+//! The emptying itself is [`demote`], shared with a failed fill and with
+//! startup recovery.
 
 use std::fs::File;
-use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use konedrive_fs::lease::WriteLease;
-use konedrive_fs::placeholder::{punch_all, read_stamp, read_state, remove_stamp, stamp_matches, write_state, State};
+use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, write_state, State};
 
 use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::{io_error, DehydrateError, SyncRoot};
+
+use super::demote::{demote, Demoted, FileTimes, Held, Keep, Shape};
 
 /// The guard: only a clean, fully downloaded file may be emptied
 /// (dehydration's step 1). It runs on the very descriptor the punch will
@@ -74,38 +56,6 @@ fn nothing_to_free(file: &File) -> Result<bool, DehydrateError> {
     }
     let empty = file.metadata().map_err(io_error)?.len() == 0;
     Ok(empty && read_stamp(file).map_err(io_error)?.is_none())
-}
-
-/// The timestamps a punch would destroy, kept so they can be put back
-///.
-#[derive(Clone, Copy)]
-pub(crate) struct FileTimes {
-    atime: libc::timespec,
-    mtime: libc::timespec,
-}
-
-impl FileTimes {
-    pub(crate) fn of(file: &File) -> io::Result<Self> {
-        let meta = file.metadata()?;
-        Ok(Self {
-            atime: libc::timespec { tv_sec: meta.atime(), tv_nsec: meta.atime_nsec() },
-            mtime: libc::timespec { tv_sec: meta.mtime(), tv_nsec: meta.mtime_nsec() },
-        })
-    }
-
-    /// Puts both back on the same descriptor. `futimens` takes the two raw
-    /// `timespec`s the file was carrying, so a pre-epoch or
-    /// nanosecond-precise mtime survives the round trip exactly.
-    pub(crate) fn restore(self, file: &File) -> io::Result<()> {
-        let times = [self.atime, self.mtime];
-        // SAFETY: `file` is an open descriptor and `times` is a live array of
-        // exactly the two `timespec`s `futimens` reads.
-        let rc = unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
 }
 
 /// Dehydration's (`docs/design/hydration.md` §8) steps 1–2, first half:
@@ -182,9 +132,9 @@ fn roll_back(file: &File, cause: DehydrateError) -> DehydrateError {
 /// lease that is refused, or that cannot be asked for. Once
 /// `fallocate` has run there is nothing to roll back to — the blocks are
 /// gone and the file is not `hydrated` any more — so a failure from there on
-/// leaves it `dehydrating` deliberately: startup recovery punches
-/// whatever is left, sets `online-only` and removes the stamp, which is the
-/// correct end state, and the next open hydrates it again.
+/// leaves it `dehydrating` deliberately ([`demote`]): startup recovery
+/// empties whatever is left and calls it `online-only`, and the next open
+/// hydrates it again.
 fn punch_clean_file(file: &File, restore: FileTimes) -> Result<(), DehydrateError> {
     punch_clean_file_watched(file, restore, |_, _| {})
 }
@@ -233,38 +183,23 @@ fn punch_clean_file_watched(
     // below, so every open arriving from here on waits for the break instead
     // of reading a file mid-punch or a file that is empty but still says
     // `dehydrating`.
-    punch_and_publish(file, restore).map_err(io_error)?;
+    let shape = Shape { size: None, times: restore };
+    match demote(file, Keep::Nothing, shape, Held::Lease(&lease)).map_err(io_error)? {
+        Demoted::Done { .. } => {}
+        // Under the per-inode lock only something outside the daemon can have
+        // changed the state since `mark_dehydrating`. A file that reads
+        // `hydrated`, `online-only` or nothing by now is not this free-up's
+        // to empty, and is refused. One that reads `hydrating` is emptied all
+        // the same (`demote` under a lease takes both interrupted states):
+        // its mark was cleared a moment ago and its content is not trusted.
+        Demoted::Left(now) => {
+            let now = now.map_or("no state", State::as_str);
+            return Err(DehydrateError::Io(format!("the file's state changed to {now} while it was freed up; it was left as it is")));
+        }
+    }
     watch(Watch::BeforeRelease, file);
     drop(lease);
     Ok(())
-}
-
-/// Dehydration's steps 4–5 on their own: empty the file, put the mtime back, make
-/// that durable, and only then say it is `online-only`.
-///
-/// **The caller must hold the write lease across this call** and must have
-/// confirmed the helper's `ClearIgnore` (invariant M3) before it. Both
-/// [`punch_clean_file_watched`] and startup recovery's `reset_interrupted`
-/// run it, because the sequence a crash left half-finished is the same
-/// sequence a dehydration runs — what differs is only how the two arrive
-/// here and what a refusal means to each of them, which is why the lease is
-/// taken by the caller rather than in here.
-pub(crate) fn punch_and_publish(file: &File, restore: FileTimes) -> io::Result<()> {
-    punch_all(file)?;
-    // Before the fsync, so the restored mtime is covered by it.
-    restore.restore(file)?;
-    file.sync_all()?;
-
-    // The stamp described a hydrated file; leaving it behind would describe
-    // this one wrongly, so its removal is reported rather than swallowed —
-    // even though by now the file really is online-only.
-    write_state(file, State::OnlineOnly)?;
-    remove_stamp(file).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("the file is now online-only, but its stamp could not be removed: {e}"),
-        )
-    })
 }
 
 /// The full sequence, including the helper round trip.

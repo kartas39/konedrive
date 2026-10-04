@@ -264,6 +264,9 @@ application must never read zeros where real content should be.
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
 - [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
 - [F267](F267.md) — A notification group that cannot be read is tried again without a pause
+- [F268](F268.md) — A roll-back that fails leaves the file `hydrating`, not `online-only`
+- [F269](F269.md) — What must hold before a file is emptied is the caller's word, for all but the lease
+- [F270](F270.md) — The two downloads share their checks, not their loop
 
 ---
 
@@ -387,6 +390,7 @@ application must never read zeros where real content should be.
 - [D46](D46.md) — No test has the real helper hang while the examination asks it
 - [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
 - [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
+- [D49](D49.md) — Test support that is still in the code of `hydration/`
 
 ---
 

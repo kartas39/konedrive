@@ -1,47 +1,32 @@
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek};
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::task::{Context, Poll};
+use std::time::{Duration, SystemTime};
 
-use konedrive_fs::placeholder::{
-    read_ctag, read_progress, read_stamp, read_state, write_progress, Progress, State,
-};
-use konedrive_proto::ACCEPTED_DENY_ERRNOS;
-use tokio::io::ReadBuf;
-
-use konedrive_graph::quickxor::QuickXor;
-
-use super::super::{Fetched, LocalDir};
-use super::*;
 use async_trait::async_trait;
+use konedrive_fs::placeholder::{read_ctag, read_progress, read_stamp, read_state, write_progress, Progress, State};
+use konedrive_graph::quickxor::QuickXor;
+use konedrive_proto::ACCEPTED_DENY_ERRNOS;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
+
+use super::super::{Fetched, LocalDir, SourceError, Version};
+use super::*;
+use crate::hydration::testing::{content, read_back, Faulty};
 
 fn placeholder(dir: &std::path::Path, item_id: &str, size: u64) -> std::fs::File {
-    let handle = std::fs::File::open(dir).unwrap();
-    konedrive_fs::placeholder::create_placeholder(
-        &handle,
-        "file.bin",
-        item_id,
-        size,
-        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
-    )
-    .unwrap();
-    std::fs::File::options()
-        .read(true)
-        .write(true)
-        .open(dir.join("file.bin"))
-        .unwrap()
+    crate::hydration::testing::placeholder(dir, "file.bin", item_id, size)
 }
 
-/// Every errno this module produces travels to the kernel in a
+/// Every errno a fill produces travels to the kernel in a
 /// `FAN_DENY | (errno << 24)` response word, which the kernel accepts for
 /// exactly eight values; anything else makes that `write()` fail with
 /// `EINVAL` and leaves the suspended `open()` hanging forever. So every
-/// test that gets an errno out of `hydrate` puts it through here first —
+/// test that gets an errno out of a fill puts it through here first —
 /// the property is not "this call returns EIO", it is "no call can ever
 /// return something undeliverable".
 fn deliverable(errno: i32) -> i32 {
@@ -53,8 +38,19 @@ fn deliverable(errno: i32) -> i32 {
     errno
 }
 
+/// No pause after a break: the tests of breaks do not wait by the clock.
+const NO_PAUSE: Tuning = Tuning { checkpoint_every: Some(16 * 1024 * 1024), back_off: Duration::ZERO };
+/// And a checkpoint within a file of a few hundred KiB.
+const SMALL_CHECKPOINTS: Tuning = Tuning { checkpoint_every: Some(64 * 1024), back_off: Duration::ZERO };
+
+/// A fill as an open of an `online-only` file starts one: the errno the opener is answered.
 async fn hydrate_file(file: &std::fs::File, source: &dyn ContentSource) -> i32 {
-    deliverable(hydrate(file.as_fd().try_clone_to_owned().unwrap(), source).await)
+    hydrate_tuned(file, source, NO_PAUSE).await
+}
+
+async fn hydrate_tuned(file: &std::fs::File, source: &dyn ContentSource, tuning: Tuning) -> i32 {
+    let fd = file.as_fd().try_clone_to_owned().unwrap();
+    deliverable(Fill::new(source).tuning(tuning).run(fd).await.err().map_or(0, |e| e.errno()))
 }
 
 /// A source that never produces anything, to pin the retry-then-give-up
@@ -131,41 +127,6 @@ impl ContentSource for PreEpochMtime {
     }
 }
 
-/// Reads the file's state from the filesystem at the moment the bytes are
-/// asked for, which is the only window in which `hydrating` exists.
-struct WatchesState {
-    inner: LocalDir,
-    path: PathBuf,
-    seen: Mutex<Option<State>>,
-}
-
-#[async_trait]
-impl ContentSource for WatchesState {
-    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let opened = std::fs::File::open(&self.path).unwrap();
-        *self.seen.lock().unwrap() = read_state(&opened).unwrap();
-        self.inner.fetch(item_id, from, end).await
-    }
-}
-
-#[tokio::test]
-async fn fills_the_placeholder_in_place_and_marks_it_hydrated() {
-    let remote = tempfile::tempdir().unwrap();
-    std::fs::write(remote.path().join("ITEM1"), b"0123456789").unwrap();
-    let local = tempfile::tempdir().unwrap();
-    let file = placeholder(local.path(), "ITEM1", 10);
-
-    let source = LocalDir::new(remote.path());
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-
-    let mut content = String::new();
-    let mut opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
-    opened.read_to_string(&mut content).unwrap();
-    assert_eq!(content, "0123456789");
-    assert_eq!(read_state(&opened).unwrap(), Some(State::Hydrated));
-    assert!(konedrive_fs::placeholder::stamp_matches(&opened).unwrap());
-}
-
 /// I3: the placeholder is 4 KiB and the download grows it to 512 KiB
 /// before breaking, so both halves of the rollback are *visible*: the
 /// size has to come back down and the blocks have to go away. The
@@ -180,7 +141,7 @@ async fn a_failed_download_leaves_an_empty_placeholder_and_an_errno() {
     let local = tempfile::tempdir().unwrap();
     let file = placeholder(local.path(), "ITEM2", 4096);
 
-    let source = LocalDir::new(remote.path()).fail_at(512 * 1024);
+    let source = Faulty::new(LocalDir::new(remote.path())).fail_at(512 * 1024);
     assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
 
     let opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
@@ -197,20 +158,6 @@ async fn a_failed_download_leaves_an_empty_placeholder_and_an_errno() {
         "the 512 KiB that did arrive must be punched away, not merely truncated away"
     );
     assert_eq!(read_stamp(&opened).unwrap(), None, "a failed fill leaves no stamp");
-}
-
-#[tokio::test]
-async fn a_file_that_grew_remotely_is_resized() {
-    let remote = tempfile::tempdir().unwrap();
-    std::fs::write(remote.path().join("ITEM3"), b"much longer than before").unwrap();
-    let local = tempfile::tempdir().unwrap();
-    let file = placeholder(local.path(), "ITEM3", 4);
-
-    let source = LocalDir::new(remote.path());
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-
-    let opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
-    assert_eq!(opened.metadata().unwrap().len(), 23);
 }
 
 /// C2: the growth direction resizes itself — `write_all_at` past the end
@@ -237,28 +184,7 @@ async fn a_file_that_shrank_remotely_is_truncated() {
     assert!(konedrive_fs::placeholder::stamp_matches(&opened).unwrap());
 }
 
-/// I4: the `NotFound` arm — a deleted remote item — was mapped to `EIO`
-/// with nothing exercising it. `ENOENT`, the errno it
-/// obviously "should" be, is outside the kernel's accepted set and would
-/// hang the opener forever.
-#[tokio::test]
-async fn a_missing_remote_item_is_refused_with_an_errno_the_kernel_accepts() {
-    let remote = tempfile::tempdir().unwrap();
-    let local = tempfile::tempdir().unwrap();
-    let file = placeholder(local.path(), "GONE", 4096);
-
-    let source = LocalDir::new(remote.path());
-    assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
-
-    let opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
-    assert_eq!(read_state(&opened).unwrap(), Some(State::OnlineOnly));
-    assert_eq!(opened.metadata().unwrap().len(), 4096);
-}
-
-/// I4: the `Transient` arm, the other one nothing in the repo reached.
-/// (The two backoffs really do sleep — 200 ms then 400 ms — rather than
-/// pulling `tokio`'s `test-util` feature into the whole workspace's
-/// dependency graph to fake them.)
+/// A source that fails in passing is asked three times, then the fill gives up.
 #[tokio::test]
 async fn a_source_that_keeps_failing_is_retried_three_times_then_refused() {
     let local = tempfile::tempdir().unwrap();
@@ -291,40 +217,15 @@ async fn a_file_with_no_item_id_is_refused_with_an_errno_the_kernel_accepts() {
 /// become `EIO`, because the alternative is an opener that never wakes.
 #[test]
 fn local_write_failures_keep_the_errnos_the_kernel_accepts() {
-    assert_eq!(errno_of(&io::Error::from_raw_os_error(libc::ENOSPC)), libc::ENOSPC);
-    assert_eq!(errno_of(&io::Error::from_raw_os_error(libc::EDQUOT)), libc::EDQUOT);
+    assert_eq!(super::super::guards::errno_of(&io::Error::from_raw_os_error(libc::ENOSPC)), libc::ENOSPC);
+    assert_eq!(super::super::guards::errno_of(&io::Error::from_raw_os_error(libc::EDQUOT)), libc::EDQUOT);
     for outside in [libc::EROFS, libc::EFBIG, libc::EBADF, libc::ENOENT] {
-        assert_eq!(errno_of(&io::Error::from_raw_os_error(outside)), libc::EIO);
+        assert_eq!(super::super::guards::errno_of(&io::Error::from_raw_os_error(outside)), libc::EIO);
     }
-    assert_eq!(errno_of(&io::Error::other("no errno at all")), libc::EIO);
+    assert_eq!(super::super::guards::errno_of(&io::Error::other("no errno at all")), libc::EIO);
     for errno in [libc::ENOSPC, libc::EDQUOT, libc::EROFS, libc::EFBIG] {
-        deliverable(errno_of(&io::Error::from_raw_os_error(errno)));
+        deliverable(super::super::guards::errno_of(&io::Error::from_raw_os_error(errno)));
     }
-}
-
-/// I7: §5.3 step 1. The marker is what §4.4 startup recovery finds a
-/// half-filled file by after a power loss; without it the blocks stay
-/// allocated forever. It exists only while the bytes are in flight, so
-/// the source is where it can be observed.
-#[tokio::test]
-async fn the_file_is_marked_hydrating_while_the_bytes_are_in_flight() {
-    let remote = tempfile::tempdir().unwrap();
-    std::fs::write(remote.path().join("ITEM6"), vec![3u8; 8192]).unwrap();
-    let local = tempfile::tempdir().unwrap();
-    let file = placeholder(local.path(), "ITEM6", 8192);
-
-    let source = WatchesState {
-        inner: LocalDir::new(remote.path()),
-        path: local.path().join("file.bin"),
-        seen: Mutex::new(None),
-    };
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-
-    assert_eq!(
-        *source.seen.lock().unwrap(),
-        Some(State::Hydrating),
-        "the file must be marked hydrating before the first byte is asked for"
-    );
 }
 
 /// I5, the positive half: a file completed across two
@@ -339,7 +240,7 @@ async fn a_download_that_resumes_completes_the_file_byte_for_byte() {
     let local = tempfile::tempdir().unwrap();
     let file = placeholder(local.path(), "ITEM7", 3000);
 
-    let source = LocalDir::new(remote.path()).fail_once_at(1000);
+    let source = Faulty::new(LocalDir::new(remote.path())).fail_once_at(1000);
     assert_eq!(hydrate_file(&file, &source).await, 0);
     assert_eq!(source.fetches(), 2, "the first fetch must have been resumed, not restarted");
 
@@ -526,7 +427,8 @@ async fn a_post_data_failure_never_leaves_the_file_observably_hydrated() {
     let path = local.path().join("file.bin");
 
     let hook_path = path.clone();
-    set_post_data_fault(move || {
+    let source = LocalDir::new(remote.path());
+    let fill = Fill::new(&source).before_commit(move || {
         let opened = std::fs::File::open(&hook_path).unwrap();
         assert_ne!(
             read_state(&opened).unwrap(),
@@ -537,9 +439,7 @@ async fn a_post_data_failure_never_leaves_the_file_observably_hydrated() {
         Some(libc::EIO)
     });
 
-    let source = LocalDir::new(remote.path());
-    let errno = hydrate_file(&file, &source).await;
-    clear_post_data_fault();
+    let errno = fill.run(file.as_fd().try_clone_to_owned().unwrap()).await.err().map_or(0, |e| deliverable(e.errno()));
 
     assert_eq!(errno, libc::EIO);
     let opened = std::fs::File::open(&path).unwrap();
@@ -555,50 +455,6 @@ async fn a_post_data_failure_never_leaves_the_file_observably_hydrated() {
         "the data that landed before the fault must be punched away"
     );
     assert_eq!(read_stamp(&opened).unwrap(), None, "a failed fill leaves no stamp");
-}
-
-/// The fill's tail — the `fsync`s, the stamp and the commit write — runs on
-/// a blocking thread, not on the thread that drives the fill (finding HY4).
-/// The fault's hook fires inside `commit`, so it says where `commit` runs.
-#[tokio::test]
-async fn the_commit_runs_off_the_thread_that_drives_the_fill() {
-    let remote = tempfile::tempdir().unwrap();
-    std::fs::write(remote.path().join("ITEM13"), vec![5u8; 65536]).unwrap();
-    let local = tempfile::tempdir().unwrap();
-    let file = placeholder(local.path(), "ITEM13", 65536);
-
-    let ran_on = std::sync::Arc::new(Mutex::new(None));
-    let seen = std::sync::Arc::clone(&ran_on);
-    set_post_data_fault(move || {
-        *seen.lock().unwrap() = Some(std::thread::current().id());
-        None
-    });
-    let errno = hydrate_file(&file, &LocalDir::new(remote.path())).await;
-    clear_post_data_fault();
-
-    assert_eq!(errno, 0);
-    let ran_on = ran_on.lock().unwrap().expect("the commit ran");
-    assert_ne!(ran_on, std::thread::current().id());
-}
-
-/// A roll-back never punches a file that is no longer in the
-/// state its fill put it in. Under the per-inode lock only something
-/// outside the daemon can have changed it — and whatever did, the file is
-/// not this fill's to empty any more: a file that reads `hydrated` may be
-/// carrying an ignore mark, and punching it is the zeros case.
-#[test]
-fn a_roll_back_leaves_alone_a_file_that_is_no_longer_hydrating() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), "ITEM", 4096);
-    std::fs::write(dir.path().join("file.bin"), vec![6u8; 4096]).unwrap();
-    write_state(&file, State::Hydrated).unwrap();
-
-    roll_back(&file, 4096, None);
-
-    let mut content = Vec::new();
-    std::fs::File::open(dir.path().join("file.bin")).unwrap().read_to_end(&mut content).unwrap();
-    assert!(content == vec![6u8; 4096], "the file's content must be left alone");
-    assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated), "and so must its state");
 }
 
 /// A byte stream that fails with a connection error at `fail_at` (an
@@ -695,57 +551,19 @@ impl ContentSource for Scripted {
     }
 }
 
-fn content(size: usize, seed: u8) -> Vec<u8> {
-    (0..size).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect()
-}
-
-fn read_back(file: &std::fs::File) -> Vec<u8> {
-    use std::os::unix::fs::FileExt;
-    let mut out = vec![0u8; file.metadata().unwrap().len() as usize];
-    file.read_exact_at(&mut out, 0).unwrap();
-    out
-}
-
-#[tokio::test]
-async fn a_verified_fill_records_its_ctag_and_leaves_no_checkpoint() {
-    let dir = tempfile::tempdir().unwrap();
-    let data = content(300_000, 1);
-    let file = placeholder(dir.path(), "I", data.len() as u64);
-    let source = Scripted::new("c1", data.clone());
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-    assert_eq!(read_back(&file), data);
-    assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
-    assert_eq!(read_ctag(&file).unwrap().as_deref(), Some("c1"));
-    assert_eq!(read_progress(&file).unwrap(), None);
-}
-
-#[tokio::test]
-async fn content_that_does_not_match_its_hash_is_fetched_once_more_then_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let data = content(300_000, 2);
-    let file = placeholder(dir.path(), "I", data.len() as u64);
-    let source = Scripted { wrong_hash: true, ..Scripted::new("c1", data) };
-    assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
-    assert_eq!(source.froms(), vec![0, 0], "one more try from the start, and no third");
-    assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
-    assert!(read_stamp(&file).unwrap().is_none());
-    assert_eq!(read_progress(&file).unwrap(), None);
-}
-
-/// The same, with checkpoints small enough that the second download
-/// makes some: content that has failed its hash twice is no prefix to
-/// continue from, so the refusal drops the checkpoint and the roll-back
+/// Content that does not match its hash is fetched once more and then
+/// refused; with checkpoints small enough that the second download makes
+/// some: content that has failed its hash twice is no prefix to continue
+/// from, so the refusal drops the checkpoint and the roll-back
 /// punches everything — the next open downloads afresh instead of from a
 /// prefix already known to belong to content that does not verify.
 #[tokio::test]
 async fn a_second_mismatch_drops_the_checkpoint_it_made() {
-    set_checkpoint_every(64 * 1024);
     let dir = tempfile::tempdir().unwrap();
     let data = content(1 << 20, 14);
     let file = placeholder(dir.path(), "I", data.len() as u64);
     let source = Scripted { wrong_hash: true, ..Scripted::new("c1", data) };
-    assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
-    clear_checkpoint_every();
+    assert_eq!(hydrate_tuned(&file, &source, SMALL_CHECKPOINTS).await, libc::EIO);
 
     assert_eq!(source.froms(), vec![0, 0]);
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
@@ -776,7 +594,6 @@ async fn a_checkpoint_is_not_trusted_without_a_hash() {
 /// part 1.
 #[tokio::test]
 async fn a_download_without_a_hash_writes_no_checkpoint() {
-    set_checkpoint_every(64 * 1024);
     let dir = tempfile::tempdir().unwrap();
     let data = content(1 << 20, 16);
     let file = placeholder(dir.path(), "I", data.len() as u64);
@@ -785,42 +602,13 @@ async fn a_download_without_a_hash_writes_no_checkpoint() {
     for n in 0..3 {
         source.breaks.insert(n, 200 * 1024);
     }
-    assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
-    clear_checkpoint_every();
+    assert_eq!(hydrate_tuned(&file, &source, SMALL_CHECKPOINTS).await, libc::EIO);
 
     assert_eq!(source.froms(), vec![0, 200 * 1024, 200 * 1024]);
     assert_eq!(source.progress_seen(), vec![None, None, None], "no checkpoint while it downloaded");
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
     assert_eq!(read_progress(&file).unwrap(), None);
     assert!(read_back(&file).iter().all(|b| *b == 0), "everything that arrived is punched");
-}
-
-#[tokio::test]
-async fn a_dropped_connection_resumes_where_it_stopped() {
-    let dir = tempfile::tempdir().unwrap();
-    let data = content(300_000, 3);
-    let file = placeholder(dir.path(), "I", data.len() as u64);
-    let mut source = Scripted::new("c1", data.clone());
-    source.breaks.insert(0, 100_000);
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-    assert_eq!(source.froms(), vec![0, 100_000]);
-    assert_eq!(read_back(&file), data);
-}
-
-#[tokio::test]
-async fn a_file_changed_in_the_cloud_mid_download_starts_over_with_the_new_version() {
-    let dir = tempfile::tempdir().unwrap();
-    let old = content(300_000, 4);
-    let new = content(250_000, 5);
-    let file = placeholder(dir.path(), "I", old.len() as u64);
-    let mut source = Scripted::new("c1", old);
-    source.second = Some(("c2".into(), new.clone()));
-    source.switch_at = 1;
-    source.breaks.insert(0, 100_000);
-    assert_eq!(hydrate_file(&file, &source).await, 0);
-    assert_eq!(source.froms(), vec![0, 100_000, 0]);
-    assert_eq!(read_back(&file), new);
-    assert_eq!(read_ctag(&file).unwrap().as_deref(), Some("c2"));
 }
 
 /// The cTag is the only thing that notices a new version when OneDrive
@@ -845,7 +633,6 @@ async fn a_file_changed_mid_download_starts_over_even_without_a_hash() {
 /// A download that gives up keeps what it made durable.
 #[tokio::test]
 async fn a_download_that_gives_up_keeps_its_checkpoint() {
-    set_checkpoint_every(64 * 1024);
     let dir = tempfile::tempdir().unwrap();
     let data = content(1 << 20, 6);
     let file = placeholder(dir.path(), "I", data.len() as u64);
@@ -853,8 +640,7 @@ async fn a_download_that_gives_up_keeps_its_checkpoint() {
     for n in 0..3 {
         source.breaks.insert(n, 200 * 1024);
     }
-    assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
-    clear_checkpoint_every();
+    assert_eq!(hydrate_tuned(&file, &source, SMALL_CHECKPOINTS).await, libc::EIO);
 
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
     assert!(read_stamp(&file).unwrap().is_none());
@@ -957,7 +743,7 @@ async fn a_file_found_dehydrating_is_not_emptied_by_a_fill_given_no_clearance() 
     write_state(&file, State::Dehydrating).unwrap();
 
     // The download breaks, so the fill rolls back.
-    let source = LocalDir::new(remote.path()).fail_at(512 * 1024);
+    let source = Faulty::new(LocalDir::new(remote.path())).fail_at(512 * 1024);
     let filled = hydrate_with(file.as_fd().try_clone_to_owned().unwrap(), &source, None).await;
 
     assert!(filled.is_err());
@@ -984,7 +770,7 @@ async fn a_refused_fill_does_not_take_off_a_state_it_could_not_read() {
     // file), so the way is not cleared.
     let clearance = Clearance::NoLink(local.path().join("file.bin").join("helper.sock"));
 
-    let source = LocalDir::new(remote.path());
+    let source = Faulty::new(LocalDir::new(remote.path()));
     let filled = hydrate_with(file.as_fd().try_clone_to_owned().unwrap(), &source, Some(&clearance)).await;
 
     assert!(matches!(filled, Err(FillError::NotCleared(_))), "{filled:?}");

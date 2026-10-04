@@ -166,12 +166,22 @@ pins. Design: `hydration.md`, `pinning.md`.
 - `server.rs` — takes hydration requests off the helper's queue and fills them; the trait
   `Router`. `[tests]`
 - `source.rs` — `ContentSource`: where hydration gets its bytes from.
-- `source/fill.rs` — the loop that fills a placeholder in place from a content source.
-  `[tests]`
+- `source/fill.rs` — a fill of a placeholder in place: the state it is found in, the clearing
+  of its ignore mark, the commit, and the roll-back of a fill that failed. `[tests]`
+- `source/download.rs` — a download in one stream; `download_into` for a replacement.
 - `source/parts.rs` — a large pinned download in parallel parts. `[tests]`
+- `source/guards.rs` — what both downloads check: the source's answer, the breaks, the
+  checkpoint a download continues from, the hash, the one start over; `Tuning`.
+- `source/target.rs` — the file a fill writes, and its blocking sections. `[tests]`
+- `source/local_dir.rs` — `LocalDir`: the content source of a folder filled from a directory.
+- `demote.rs` — turning a file back into a placeholder: the one function a failed fill, a
+  stopped download, a free-up and startup recovery empty a file with. `[tests]`
+- `testing.rs` — test support: `Faulty` (a source that counts, waits and breaks) and the
+  area's fixture.
 - `graph_source.rs` — the content source of a folder that shows OneDrive. `[tests]`
 - `tracked.rs` — `Tracked`: a content source that reports what it fetches to `Transfers`.
-- `dehydrate.rs` — freeing up a file: back to a placeholder. `[tests]`
+- `dehydrate.rs` — freeing up a file: the checks, `dehydrating`, the clearing, the lease.
+  `[tests]`
 - `recovery.rs` — startup recovery: what an interrupted fill or free-up left behind. `[tests]`
 - `pin.rs` — "Always keep on this device": which items are pinned, and their downloads.
   `[tests]`

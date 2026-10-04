@@ -79,7 +79,7 @@ pub(crate) fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) ->
     ctx.set_source_delay(Duration::from_millis(0));
 
     // X filled directly, as `SyncService::hydrate_now` does it: an exempt
-    // open, the per-inode lock, `source::hydrate`.
+    // open, the per-inode lock, `source::hydrate_with`.
     {
         let file = File::options().read(true).write(true).open(&x).map_err(|e| e.to_string())?;
         let key = InodeKey::of(&file).map_err(|e| e.to_string())?;
@@ -87,7 +87,8 @@ pub(crate) fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) ->
         let source = Arc::clone(&ctx.source) as Arc<dyn ContentSource>;
         let errno = ctx.runtime.block_on(async move {
             let _guard = locks.lock(key).await;
-            konedrived::hydration::source::hydrate(file.into(), source.as_ref()).await
+            let filled = konedrived::hydration::source::hydrate_with(file.into(), source.as_ref(), None).await;
+            filled.err().map_or(0, |e| e.errno())
         });
         trace.push(format!("X filled directly (errno {errno}), state {:?}", ctx.state_of(&x)?));
     }

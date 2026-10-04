@@ -100,7 +100,7 @@ async fn losing_the_helper_is_published_and_reconnected_while_a_fill_still_runs(
 
     let remote = tempfile::tempdir().unwrap();
     std::fs::write(remote.path().join("ITEM"), [1u8; 64]).unwrap();
-    let slow = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_secs(3600)));
+    let slow = Arc::new(crate::hydration::testing::Faulty::new(LocalDir::new(remote.path())).delay(Duration::from_secs(3600)));
     let files = tempfile::tempdir().unwrap();
     // The folder has a source, from a directory with nothing in it; the fill is served
     // by the slow one.
@@ -143,7 +143,7 @@ async fn a_fill_on_open_ends_as_a_download_though_its_folder_is_forgotten_meanwh
 
     let remote = tempfile::tempdir().unwrap();
     std::fs::write(remote.path().join("ITEM"), [7u8; 64]).unwrap();
-    let slow = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_millis(600)));
+    let slow = Arc::new(crate::hydration::testing::Faulty::new(LocalDir::new(remote.path())).delay(Duration::from_millis(600)));
     let nothing = tempfile::tempdir().unwrap();
     service.populate_from_directory(nothing.path()).await.unwrap();
     install_source(&service, Arc::clone(&slow) as Arc<dyn ContentSource>);
