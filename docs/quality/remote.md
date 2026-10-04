@@ -90,6 +90,7 @@ the #104 test gaps filled first. `RE4` waits for these.
 - **Fix:** a policy (trait or enum) with the few decisions that differ, and one skeleton for
   `changed` and for `full`.
 - **Size:** L. **Risk:** high for behaviour; both modes have tests. After `RE1`–`RE3`.
+- **Fixed 2026-10-04** in `981e7cb` (#185): one `Mode<W>` carried at every level; `locked` beside `writes` is gone.
 
 ## RE5. Blocking file I/O in replacements
 
@@ -135,6 +136,9 @@ the #104 test gaps filled first. `RE4` waits for these.
   `Fetched::Placed` is handled at `:453` and again, unreachably, at `rw.rs:129`.
 - **Fix:** `fetch`, `reconcile_fetched(mode)`, `after_cycle`. **Size:** M. **Risk:** low to
   medium.
+- **Fixed 2026-10-04** in `981e7cb` (#185): `full` and `changed` are written once for both modes
+  (`materialize/answers.rs`, one `after_placement`); a cycle is `fetch`, `stage`, `reconcile_fetched`;
+  the fixture calls the production staging (`F190` is gone).
 
 ## RE8. Store traffic per item in the Changed scope
 
