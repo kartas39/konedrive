@@ -171,7 +171,7 @@ impl Run<'_, '_> {
         };
         let same = match (FileHandle::of(&file).ok(), &e.handle) {
             (Some(a), Some(b)) => &a == b,
-            _ => stat.st_dev as u64 == e.dev && stat.st_ino as u64 == e.ino,
+            _ => stat.st_dev == e.dev && stat.st_ino == e.ino,
         };
         Ok(if same { Opened::Same(file) } else { Opened::Gone })
     }

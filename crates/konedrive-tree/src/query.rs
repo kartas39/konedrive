@@ -158,7 +158,9 @@ impl TreeStore {
         );
         let mut statement = self.conn.prepare_cached(&sql)?;
         let mut out = Vec::new();
-        let rows: Vec<(String, String, Option<String>, Option<String>, String)> =
+        /// The item's path, its placement, its id if it is still here, what it waits for, its id.
+        type Line = (String, String, Option<String>, Option<String>, String);
+        let rows: Vec<Line> =
             statement.query_map([&root], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
         let inside = self.inside_what_waits()?;
         for (path, placement, here, waits, id) in rows {
