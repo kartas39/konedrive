@@ -22,10 +22,11 @@ pub(super) struct Step {
     pub(super) run: fn(&Connection) -> Result<(), TreeError>,
 }
 
-const STEPS: [Step; 3] = [
+const STEPS: [Step; 4] = [
     Step { from: "3", to: "4", what: "what was below a folder not placed forgot its local objects", run: forget_below_unplaced },
     Step { from: "4", to: "5", what: "the tables, columns and indexes added to version 4 without a number are part of it", run: unnumbered_additions },
     Step { from: "5", to: "6", what: "a row's snapshot is in columns of its own, and an opening is left behind without a trigger", run: snapshot_columns },
+    Step { from: "6", to: "7", what: "the indexes of placed and skipped rows read a placement as the decoder does", run: placement_indexes },
 ];
 
 /// The step that starts from `version`.
@@ -190,5 +191,20 @@ fn snapshot_columns(conn: &Connection) -> Result<(), TreeError> {
         };
     }
     conn.execute_batch("ALTER TABLE outbox DROP COLUMN snapshot;")?;
+    Ok(())
+}
+
+/// Version 6 to 7 (quality finding `TR6`): the two partial indexes of
+/// `items` asked `placement = 'placed'`, which takes a word nobody can read
+/// for a row that is not placed, where the decoder reads it as placed. They
+/// ask what the decoder asks: a placement that does not begin as a skipped
+/// one is placed. No row changes.
+fn placement_indexes(conn: &Connection) -> Result<(), TreeError> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS items_unplaced;
+         DROP INDEX IF EXISTS items_skipped;
+         CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND substr(placement, 1, 8) != 'skipped:';
+         CREATE INDEX items_skipped ON items(id) WHERE substr(placement, 1, 8) = 'skipped:';",
+    )?;
     Ok(())
 }

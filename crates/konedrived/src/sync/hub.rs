@@ -133,7 +133,7 @@ impl HelperHub {
             store
                 .call_blocking(move |s| {
                     let known = s.get(konedrive_tree::Table::Items, &id)?.is_some() || s.get(konedrive_tree::Table::Staging, &id)?.is_some();
-                    let ours = drive.as_deref().is_some_and(|d| s.meta("drive_id").ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
+                    let ours = drive.as_deref().is_some_and(|d| s.drive_id().ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
                     Ok(known || ours)
                 })
                 .unwrap_or(true)

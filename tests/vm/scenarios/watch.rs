@@ -226,7 +226,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     };
     store
         .call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&[Change::Root(top)])?;
             s.commit_staging("w4-link")
         })

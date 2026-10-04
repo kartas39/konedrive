@@ -53,7 +53,7 @@ fn a_file_removed_mid_upload_leaves_the_outbox_with_the_delete_behind_it() {
         let from = w.cloud(|c| c.log.len());
         w.run();
         assert!(w.rows().is_empty(), "stuck {stuck}: {:?}", w.summary());
-        let sid = session.rsplit('/').next().unwrap();
+        let sid = session.as_str().rsplit('/').next().unwrap();
         assert_eq!(requests_since(&w, from), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "stuck {stuck}");
         assert_eq!(w.cloud(|c| c.paths()), vec!["d"]);
         assert_eq!(not_uploaded(&w), vec!["removed here before its upload finished"]);
@@ -244,7 +244,7 @@ fn an_update_whose_file_is_gone_at_its_start_ends_and_the_delete_behind_it_runs(
         let from = w.cloud(|c| c.log.len());
         w.run();
         assert!(w.rows().is_empty(), "stuck {stuck}: {:?}", w.summary());
-        let sid = session.rsplit('/').next().unwrap();
+        let sid = session.as_str().rsplit('/').next().unwrap();
         assert_eq!(
             requests_since(&w, from),
             vec![("DELETE".to_owned(), format!("upload/{sid}")), ("DELETE".to_owned(), "me/drive/items/A".to_owned())],

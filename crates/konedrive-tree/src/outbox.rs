@@ -31,6 +31,7 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Table};
 #[cfg(test)]
 use crate::model::{Kind, Row};
@@ -62,9 +63,10 @@ pub use encoded::{place_name, Snapshot};
 use handles::set_local_handle;
 pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
-pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
+pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded, SessionUrl};
 use stored::{all_rows, insert, path_from, path_value, remove, rewrite, rows_where, set_snapshot};
 pub use sums::{OutboxGroup, SkippedGroup};
+pub use worker::ConflictCopy;
 
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
@@ -77,12 +79,6 @@ pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
 /// The rows the partial index `outbox_frees` holds: those with a base place
 /// they leave. [`frees`] decides among them.
 pub(crate) const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
-
-/// The `meta` key counting outbox commits: `items.local_seq` of the row a
-/// commit writes (the stale-delta guard, §3.7).
-pub const OUTBOX_SEQ: &str = "outbox_seq";
-/// The `meta` key of a pause's end, unix seconds; `0` until resumed (§9).
-pub const PAUSED_UNTIL: &str = "paused_until";
 
 /// The sets of rows that wait on one another (strongly connected, more than
 /// one row): Tarjan's algorithm, without recursion.
@@ -306,6 +302,7 @@ impl TreeStore {
     }
 
     /// Records one detection (see [`OutboxOp::Record`]).
+    #[cfg(any(test, feature = "testing"))]
     pub fn outbox_record(&mut self, d: &Detection) -> Result<Recorded, TreeError> {
         let tx = self.conn.transaction()?;
         let recorded = record(&tx, d)?;
@@ -340,6 +337,7 @@ impl TreeStore {
     }
 
     /// Rows strictly below `rel`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn outbox_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
         rows_under(&self.conn, rel)
     }
@@ -463,10 +461,10 @@ impl TreeStore {
 
     /// An upload session's progress, persisted before the first byte and
     /// after each fragment (§4.8).
-    pub fn outbox_set_session(&self, seq: i64, url: Option<&str>, expires: Option<i64>, next: Option<u64>) -> Result<(), TreeError> {
+    pub fn outbox_set_session(&self, seq: i64, url: Option<&SessionUrl>, expires: Option<i64>, next: Option<u64>) -> Result<(), TreeError> {
         self.conn.execute(
             "UPDATE outbox SET session_url = ?2, session_expires = ?3, session_next = ?4 WHERE seq = ?1",
-            params![seq, url, expires, next.map(|n| n as i64)],
+            params![seq, url.map(SessionUrl::as_str), expires, next.map(|n| n as i64)],
         )?;
         Ok(())
     }
@@ -532,11 +530,6 @@ impl TreeStore {
         Ok(gone)
     }
 
-    /// The outbox commits so far (`meta` [`OUTBOX_SEQ`]).
-    pub fn outbox_seq(&self) -> Result<i64, TreeError> {
-        Ok(self.meta(OUTBOX_SEQ)?.and_then(|v| v.parse().ok()).unwrap_or(0))
-    }
-
     /// Commit step 2 (§3.5), after the attributes are on the file: in one
     /// transaction, the base takes Graph's answer and the local object, with
     /// `local_seq = ++outbox_seq`; follow-ups behind a create learn its item
@@ -544,17 +537,7 @@ impl TreeStore {
     /// commit's `local_seq`.
     pub fn outbox_commit(&mut self, seq: i64, committed: Committed<'_>, activity: Option<&ActivityRow>) -> Result<i64, TreeError> {
         let tx = self.conn.transaction()?;
-        let local_seq = tx
-            .query_row("SELECT value FROM meta WHERE key = ?1", [OUTBOX_SEQ], |r| r.get::<_, Option<String>>(0))
-            .optional()?
-            .flatten()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0)
-            + 1;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![OUTBOX_SEQ, local_seq.to_string()],
-        )?;
+        let local_seq = next_outbox_seq(&tx)?;
         let Some(committed_row) = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next() else {
             return Err(TreeError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

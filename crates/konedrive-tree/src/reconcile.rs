@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
-use crate::model::{at, row_from, Change, Table, COLUMNS, PLACED, ROW_COLUMNS, ROW_WIDTH};
+use crate::model::{at, placed, row_from, Change, NewTree, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
 #[cfg(test)]
 use crate::model::{Kind, Placement, Row};
 use crate::query::get_row;
@@ -31,9 +31,42 @@ use crate::source::{Source, UNTOUCHED};
 use crate::staging::{apply, swap};
 use crate::{TreeError, TreeStore};
 
-/// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
-/// to reconcile, and the deferred changes consumed.
-pub type RwStaged = (Vec<String>, Vec<String>);
+/// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RwStaged {
+    /// The ids to reconcile: what the new tree changes, what the outbox
+    /// committed since, and what has no local object on record.
+    pub ids: Vec<String>,
+    /// The deferred changes staged again, which the cycle's commit is done
+    /// with ([`Deferrals::consumed`]).
+    pub consumed: Vec<String>,
+}
+
+/// What a read-write cycle's commit does with the deferred changes
+/// ([`TreeStore::commit_staging_deferring`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Deferrals<'a> {
+    /// The deferred changes staged at the start of the cycle: done with.
+    pub consumed: &'a [String],
+    /// Ids left alone whole: what `staging` holds for each waits as
+    /// deferred, and the base keeps what it has.
+    pub whole: &'a [String],
+    /// Ids whose content is left alone: likewise, but for the place, which
+    /// the disk took.
+    pub content: &'a [String],
+    /// The outbox commit count the cycle's fetch started at.
+    pub fetched_at: i64,
+}
+
+/// Something leaving ([`TreeStore::leaving_with_handles`]): the item, where
+/// its object stays, and that object's file handle (none in a store from
+/// before the handle was kept).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leaving {
+    pub id: String,
+    pub rel: std::path::PathBuf,
+    pub handle: Option<FileHandle>,
+}
 
 /// What the outbox committed for an item after some commit count: Graph's
 /// answer (its eTag), or a delete.
@@ -94,7 +127,7 @@ impl TreeStore {
 
     /// The deferred changes still worth staging, oldest first by id: those an
     /// outbox commit made after their fetch supersedes are dropped here.
-    pub fn live_deferred(&mut self) -> Result<Vec<Change>, TreeError> {
+    pub(crate) fn live_deferred(&mut self) -> Result<Vec<Change>, TreeError> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "DELETE FROM deferred
@@ -150,14 +183,15 @@ impl TreeStore {
     /// what a delta staged), each placed or not by one query for the lot
     /// (issue #39): no walk of the whole tree.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
+        let own = placed("placement");
         let start = match self.source(table) {
-            Source::Items => format!("SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = '{PLACED}'"),
-            Source::Whole => format!("SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = '{PLACED}'"),
+            Source::Items => format!("SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND {own}"),
+            Source::Whole => format!("SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND {own}"),
             Source::Overlay => format!(
-                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = '{PLACED}'
+                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND {own}
                  UNION ALL
                  SELECT id, parent_id, name, placement FROM items p
-                  WHERE local_handle IS NULL AND placement = '{PLACED}' AND {UNTOUCHED}"
+                  WHERE local_handle IS NULL AND {own} AND {UNTOUCHED}"
             ),
         };
         Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
@@ -166,25 +200,27 @@ impl TreeStore {
     /// Items the outbox wrote after commit count `seq` (`local_seq`): a read-write
     /// cycle looks at them again, so that the disk follows what the outbox
     /// committed (F82 (7): a move adopted with a newer cTag).
-    pub fn committed_items_since(&self, seq: i64) -> Result<Vec<String>, TreeError> {
+    pub(crate) fn committed_items_since(&self, seq: i64) -> Result<Vec<String>, TreeError> {
         let mut statement = self.conn.prepare_cached("SELECT id FROM items WHERE local_seq > ?1")?;
         let ids = statement.query_map([seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
 
     /// [`commit_staging`](Self::commit_staging) for a read-write folder, in
-    /// one transaction with its deferrals: the deferred changes staged at the
-    /// start of the cycle (`consumed`) are done with; each id of `defer` has
-    /// what `staging` holds for it kept as deferred, and `staging` takes back
-    /// what `items` has, so the base keeps the version the disk holds; each
-    /// id of `content` likewise, but for its place, which the disk took.
-    /// A deferral is dated `seq`, the fetch's start, or the item's last
+    /// one transaction with its deferrals ([`Deferrals`]): the deferred
+    /// changes staged at the start of the cycle are done with; each id left
+    /// alone whole has what `staging` holds for it kept as deferred, and
+    /// `staging` takes back what `items` has, so the base keeps the version
+    /// the disk holds; each id whose content is left alone likewise, but for
+    /// its place, which the disk took.
+    /// A deferral is dated the fetch's start, or the item's last
     /// outbox commit when that is later: whatever is staged under the tree
     /// lock is at least as new as every commit on record (the stale-delta
     /// guard read the later ones again), so only a later commit supersedes it.
-    /// Tombstones up to `seq` are dropped: a fetch that started after
+    /// Tombstones up to the fetch's start are dropped: a fetch that started after
     /// them already carries the deletes.
-    pub fn commit_staging_deferring(&mut self, delta_link: &str, consumed: &[String], defer: &[String], content: &[String], seq: i64) -> Result<(), TreeError> {
+    pub fn commit_staging_deferring(&mut self, delta_link: &str, deferrals: &Deferrals<'_>) -> Result<(), TreeError> {
+        let Deferrals { consumed, whole: defer, content, fetched_at: seq } = *deferrals;
         let source = self.source(Table::Staging);
         let whole = self.whole;
         {
@@ -294,8 +330,8 @@ impl TreeStore {
     /// is staged again before `changes`. The ids to reconcile — what the new
     /// tree changes, what the outbox committed after commit count `since`,
     /// and what has no local object on record — and the deferred changes
-    /// consumed; `None`, with nothing staged, when there is nothing to do and
-    /// no `full` reconcile is asked for.
+    /// consumed ([`RwStaged`]); `None`, with nothing staged, when there is
+    /// nothing to do and no `full` reconcile is asked for.
     ///
     /// An idle cycle reads nothing whole (issue #39): the deferred changes,
     /// the outbox by item id, `items` by `local_seq` and by what has no
@@ -320,13 +356,13 @@ impl TreeStore {
             return Ok(None);
         }
         let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
-        self.begin_staging(true)?;
+        self.begin_staging(NewTree::Delta)?;
         self.stage(&deferred)?;
         self.stage(changes)?;
         let mut ids: std::collections::BTreeSet<String> = self.changed_ids()?.into_iter().collect();
         ids.extend(revisit);
         ids.extend(self.unplaced(Table::Staging)?);
-        Ok(Some((ids.into_iter().collect(), consumed)))
+        Ok(Some(RwStaged { ids: ids.into_iter().collect(), consumed }))
     }
 
     /// Item `id` stopped being placed, and its object stays at `rel` for now
@@ -356,16 +392,15 @@ impl TreeStore {
         Ok(())
     }
 
-    /// What is leaving, each item id with its object's place and file handle
-    /// (none in a store from before the handle was kept).
-    pub fn leaving_with_handles(&self) -> Result<Vec<(String, std::path::PathBuf, Option<FileHandle>)>, TreeError> {
+    /// What is leaving, each with its object's place and file handle.
+    pub fn leaving_with_handles(&self) -> Result<Vec<Leaving>, TreeError> {
         use std::os::unix::ffi::OsStrExt;
         let mut statement = self.conn.prepare_cached("SELECT id, rel, handle FROM leaving ORDER BY id")?;
         let rows = statement
             .query_map([], |r| {
                 let rel: Vec<u8> = r.get(1)?;
                 let handle: Option<Vec<u8>> = r.get(2)?;
-                Ok((r.get::<_, String>(0)?, std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel)), handle.as_deref().and_then(FileHandle::decode)))
+                Ok(Leaving { id: r.get(0)?, rel: std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel)), handle: handle.as_deref().and_then(FileHandle::decode) })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)

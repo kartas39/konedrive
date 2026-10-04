@@ -69,7 +69,7 @@ pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) 
 use konedrive_graph::drive::DriveClient;
 use crate::folder::root::SyncRoot;
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::outbox::Reason;
+use konedrive_tree::outbox::{Reason, SessionUrl};
 use konedrive_tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
@@ -138,10 +138,10 @@ pub trait OutboxHost: Send + Sync {
 /// Cancels upload session `url`, given up (issue #47): cancelled, or gone
 /// already, it leaves the store's list of sessions; a cancel that fails keeps
 /// it there, for a later look ([`cancel_given_up`]). Whether it was cancelled.
-pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &str) -> Result<bool, TreeError> {
-    match drive.cancel_upload(url).await {
+pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &SessionUrl) -> Result<bool, TreeError> {
+    match drive.cancel_upload(url.as_str()).await {
         Ok(()) => {
-            let url = url.to_owned();
+            let url = url.clone();
             store.call(move |s| s.upload_session_closed(&url)).await?;
             Ok(true)
         }

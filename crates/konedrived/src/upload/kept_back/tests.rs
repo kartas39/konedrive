@@ -43,6 +43,8 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     store.outbox_apply(&ops, 1).unwrap();
     let (skipped, rows) = (store.skipped_groups().unwrap(), store.outbox_groups().unwrap());
     let root = Path::new("/nowhere/OneDrive");
+    // The lists are read as the bus reads them: through the store's reader.
+    let store = konedrive_tree::Store::new(store);
 
     let got = summary(&skipped, &rows, false);
     let shown: Vec<(&str, &str, u32)> = got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect();
@@ -60,19 +62,19 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
         ]
     );
 
-    let (items, total) = files(&store, root, false, Reason::WaitingForSpace.key(), 20).unwrap();
+    let (items, total) = store.read_blocking(move |s| files(s, root, false, Reason::WaitingForSpace.key(), 20)).unwrap();
     assert_eq!((items.len(), total), (20, 5000));
     assert_eq!(items[0], ("/nowhere/OneDrive/big/00000.bin".to_owned(), Reason::WaitingForSpace.key().to_owned()));
-    let (items, _) = files(&store, root, false, "too-big", 0).unwrap();
+    let (items, _) = store.read_blocking(move |s| files(s, root, false, "too-big", 0)).unwrap();
     assert_eq!(items[0], ("/nowhere/OneDrive/huge1.iso".to_owned(), "too-big:300:20".to_owned()));
     let waiting = |full| summary(&skipped, &rows, full).into_iter().find(|(_, r, _, _)| r == Reason::WaitingForSpace.key()).map(|(_, _, n, _)| n);
     assert_eq!((waiting(false), waiting(true)), (Some(5000), Some(5001)), "queued.txt waits for space while full");
-    let (items, total) = files(&store, root, false, "name-characters", 0).unwrap();
+    let (items, total) = store.read_blocking(move |s| files(s, root, false, "name-characters", 0)).unwrap();
     assert_eq!(total, 2);
     assert_eq!(items.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec!["/nowhere/OneDrive/a:b.txt", "/nowhere/OneDrive/c?d.txt"]);
-    let (items, _) = files(&store, root, false, "refused", 20).unwrap();
+    let (items, _) = store.read_blocking(move |s| files(s, root, false, "refused", 20)).unwrap();
     assert_eq!(items, vec![("/nowhere/OneDrive/odd.txt".to_owned(), "refused: The name is not allowed".to_owned())]);
-    assert_eq!(files(&store, root, false, "no-such", 20).unwrap(), (vec![], 0));
+    assert_eq!(store.read_blocking(move |s| files(s, root, false, "no-such", 20)).unwrap(), (vec![], 0));
 }
 
 /// Issue #104: what keeps a folder no longer synced here on disk needs

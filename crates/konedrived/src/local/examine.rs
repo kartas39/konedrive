@@ -174,9 +174,9 @@ impl Examiner<'_> {
         let handles_current = super::liveness::handles_current(self.store, &root);
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
-        let leaving = leaving_items.iter().map(|(_, rel, _)| rel.clone()).collect();
-        let leaving_index: HashMap<String, usize> = leaving_items.iter().enumerate().map(|(n, (id, _, _))| (id.clone(), n)).collect();
-        let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, (id, _, handle))| Some((id, (n, handle?)))).collect();
+        let leaving = leaving_items.iter().map(|left| left.rel.clone()).collect();
+        let leaving_index: HashMap<String, usize> = leaving_items.iter().enumerate().map(|(n, left)| (left.id.clone(), n)).collect();
+        let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, left)| Some((left.id, (n, left.handle?)))).collect();
         if let Some(progress) = progress {
             progress.started();
         }

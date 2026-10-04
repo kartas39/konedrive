@@ -95,7 +95,7 @@ impl Fx {
         let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
         all.extend_from_slice(changes);
         fx.store.call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&all)
         })
         .unwrap();
@@ -781,7 +781,7 @@ fn an_unfinished_listing_is_no_base_to_examine_against() {
     fx.store
         .call_blocking(move |s| {
             *s = TreeStore::in_memory()?;
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder, b""))])
         })
         .unwrap();
@@ -790,7 +790,7 @@ fn an_unfinished_listing_is_no_base_to_examine_against() {
     // A first listing placed page by page, part-way: rows in `items`, and
     // still no base.
     fx.store.call_blocking(move |s| s.commit_page(&[Change::Root(row("R", None, "", Kind::Folder, b""))], "next-2")).unwrap();
-    fx.store.call_blocking(move |s| s.set_meta("delta_link", Some("an old link"))).unwrap();
+    fx.store.call_blocking(move |s| s.set_delta_link("an old link")).unwrap();
     let err = fx.try_examine(&fx.disk(), &Batch::full(), &fx.liveness).unwrap_err();
     assert!(matches!(err, ExamineError::NoBase), "{err:?}");
     assert_eq!(id_of(&fx.path("a.txt")).as_deref(), Some("A"), "nothing stripped");

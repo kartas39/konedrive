@@ -6,9 +6,11 @@ license.workspace = true
 publish = false
 
 [features]
-# What the daemon's tests use of the store beside its own: `off_runtime`, `all_items` and the
-# bench's `bench_sql` and `bench_insert`. Only a crate's tests turn it on (as a
-# dev-dependency); nothing that ships is built with it.
+# What the daemon's tests and the VM suite use of the store that nothing shipped does: a store
+# in memory, `off_runtime`, `all_items`, the bench's `bench_sql` and `bench_insert`, and the
+# questions only a test asks (`outbox_record`, `outbox_under`, `outbox_blockers`,
+# `outbox_runnable`, `upload_opening_at`, `conflict_kind`). Only tests turn it on (the
+# daemon's as a dev-dependency); nothing that ships is built with it.
 testing = []
 
 [dependencies]

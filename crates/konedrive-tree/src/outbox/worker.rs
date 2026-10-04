@@ -6,26 +6,29 @@
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, Snapshot, OUTBOX_SEQ, SWAP_PREFIX};
+use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
+use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
 use crate::staging::apply;
 use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
-fn gone(seq: i64) -> TreeError {
-    TreeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("outbox row {seq} is gone")))
+/// A conflict copy, as [`TreeStore::outbox_copied`] records it.
+#[derive(Debug, Clone, Copy)]
+pub struct ConflictCopy<'a> {
+    /// The item the copy came from, if it has one.
+    pub forget: Option<&'a str>,
+    /// When, unix seconds.
+    pub at: i64,
+    /// The full path the cloud's version keeps.
+    pub original: &'a str,
+    /// The full path the local version was renamed to.
+    pub copy: &'a str,
 }
 
-/// `++outbox_seq`, inside `tx`.
-fn next_local_seq(tx: &rusqlite::Transaction<'_>) -> Result<i64, TreeError> {
-    let current: Option<Option<String>> = tx.query_row("SELECT value FROM meta WHERE key = ?1", [OUTBOX_SEQ], |r| r.get(0)).optional()?;
-    let next = current.flatten().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0) + 1;
-    tx.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![OUTBOX_SEQ, next.to_string()],
-    )?;
-    Ok(next)
+fn gone(seq: i64) -> TreeError {
+    TreeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("outbox row {seq} is gone")))
 }
 
 fn add_activity(tx: &rusqlite::Transaction<'_>, event: Option<&ActivityRow>) -> Result<(), TreeError> {
@@ -94,7 +97,7 @@ impl TreeStore {
     /// opened for other content goes with it, in the same transaction, so a
     /// session is never resumed with other bytes. Returns the session
     /// URL it dropped, to be cancelled.
-    pub fn outbox_take_snapshot(&mut self, seq: i64, snapshot: Snapshot) -> Result<Option<String>, TreeError> {
+    pub fn outbox_take_snapshot(&mut self, seq: i64, snapshot: Snapshot) -> Result<Option<SessionUrl>, TreeError> {
         let tx = self.conn.transaction()?;
         let Some(row) = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next() else { return Ok(None) };
         if row.snapshot_is(snapshot) {
@@ -154,7 +157,7 @@ impl TreeStore {
     ) -> Result<i64, TreeError> {
         let tx = self.conn.transaction()?;
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
-        let local_seq = next_local_seq(&tx)?;
+        let local_seq = next_outbox_seq(&tx)?;
         upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
@@ -207,7 +210,8 @@ impl TreeStore {
     /// row's session from now on, at offset 0 — in one transaction, before
     /// any byte is sent. A row gone meanwhile leaves the session listed and
     /// pointed at by nothing: given up, and cancelled.
-    pub fn outbox_open_session(&mut self, seq: i64, url: &str, expires: Option<i64>, place: Option<(&str, &str)>, now: i64) -> Result<(), TreeError> {
+    pub fn outbox_open_session(&mut self, seq: i64, url: &SessionUrl, expires: Option<i64>, place: Option<(&str, &str)>, now: i64) -> Result<(), TreeError> {
+        let url = url.as_str();
         let tx = self.conn.transaction()?;
         let (parent, name) = place.unzip();
         tx.execute(
@@ -314,6 +318,7 @@ impl TreeStore {
 
     /// The earliest time of the openings recorded at `name` (without case)
     /// in `parent`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
         Ok(self.upload_opening_windows(parent, name)?.into_iter().map(|(at, _)| at).min())
     }
@@ -332,28 +337,28 @@ impl TreeStore {
     }
 
     /// Session `url` was cancelled, or found gone: off the list.
-    pub fn upload_session_closed(&self, url: &str) -> Result<(), TreeError> {
-        self.conn.execute("DELETE FROM upload_sessions WHERE url = ?1", [url])?;
+    pub fn upload_session_closed(&self, url: &SessionUrl) -> Result<(), TreeError> {
+        self.conn.execute("DELETE FROM upload_sessions WHERE url = ?1", [url.as_str()])?;
         Ok(())
     }
 
     /// Up to `limit` listed sessions no row points at any more: given up —
     /// the content changed, the file went, the row left the outbox, or a
     /// cancel failed — and so to be cancelled.
-    pub fn upload_sessions_given_up(&self, limit: usize) -> Result<Vec<String>, TreeError> {
+    pub fn upload_sessions_given_up(&self, limit: usize) -> Result<Vec<SessionUrl>, TreeError> {
         let mut statement = self.conn.prepare(
             "SELECT url FROM upload_sessions u
                WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.session_url = u.url)
                ORDER BY opened LIMIT ?1",
         )?;
         let urls = statement.query_map([limit as i64], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
-        Ok(urls)
+        Ok(urls.into_iter().map(SessionUrl::new).collect())
     }
 
     /// The listed sessions of a new file named `name` (without case) in
     /// `parent`, each with the row that points at it, if any: what holds
     /// that name in OneDrive with an empty placeholder.
-    pub fn upload_sessions_at(&self, parent: &str, name: &str) -> Result<Vec<(String, Option<i64>)>, TreeError> {
+    pub fn upload_sessions_at(&self, parent: &str, name: &str) -> Result<Vec<(SessionUrl, Option<i64>)>, TreeError> {
         let mut statement = self.conn.prepare(
             "SELECT url, name, (SELECT seq FROM outbox o WHERE o.session_url = u.url LIMIT 1)
                FROM upload_sessions u WHERE parent = ?1",
@@ -362,7 +367,7 @@ impl TreeStore {
         let rows = statement
             .query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?)))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().filter(|(_, n, _)| n.as_deref().is_some_and(|n| n.to_lowercase() == lower)).map(|(url, _, seq)| (url, seq)).collect())
+        Ok(rows.into_iter().filter(|(_, n, _)| n.as_deref().is_some_and(|n| n.to_lowercase() == lower)).map(|(url, _, seq)| (SessionUrl::new(url), seq)).collect())
     }
 
     /// Row `seq` goes without a commit: OneDrive decided otherwise (§6: a
@@ -426,7 +431,7 @@ impl TreeStore {
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         apply(&tx, Source::Items, &[Change::Delete(id.to_owned())])?;
-        let local_seq = next_local_seq(&tx)?;
+        let local_seq = next_outbox_seq(&tx)?;
         crate::reconcile::tombstone(&tx, &[id], local_seq)?;
         amend_in(&tx, seq, amend)?;
         add_activity(&tx, activity)?;
@@ -435,24 +440,14 @@ impl TreeStore {
     }
 
     /// A conflict copy (§6): the local version renamed beside the cloud's,
-    /// recorded as a conflict of kind `copy` (full paths). The row becomes,
-    /// through `amend`, the copy's create; `forget`, the item the copy came from,
-    /// loses its local object, so that its name is placed again from the
-    /// cloud rather than deleted there — in one transaction.
-    #[allow(clippy::too_many_arguments)]
-    pub fn outbox_copied(
-        &mut self,
-        seq: i64,
-        amend: impl FnOnce(&mut OutboxRow),
-        forget: Option<&str>,
-        at: i64,
-        original: &str,
-        copy: &str,
-        activity: Option<&ActivityRow>,
-    ) -> Result<(), TreeError> {
+    /// recorded as a conflict of kind `copy` ([`ConflictCopy`]). The row
+    /// becomes, through `amend`, the copy's create; the item the copy came
+    /// from loses its local object, so that its name is placed again from
+    /// the cloud rather than deleted there — in one transaction.
+    pub fn outbox_copied(&mut self, seq: i64, amend: impl FnOnce(&mut OutboxRow), copied: &ConflictCopy<'_>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         amend_in(&tx, seq, amend)?;
-        if let Some(id) = forget {
+        if let Some(id) = copied.forget {
             forget_local(&tx, id)?;
         }
         tx.execute(
@@ -461,7 +456,7 @@ impl TreeStore {
              ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = '{kind}'",
                 kind = ConflictKind::Copy.as_str()
             ),
-            params![copy, at, original],
+            params![copied.copy, copied.at, copied.original],
         )?;
         add_activity(&tx, activity)?;
         tx.commit()?;
@@ -470,6 +465,7 @@ impl TreeStore {
 
     /// The kind of the conflict whose copy (or rescued file) is at `rescued`,
     /// a full path: `rescued` or `copy`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn conflict_kind(&self, rescued: &str) -> Result<Option<String>, TreeError> {
         Ok(self.conn.query_row("SELECT kind FROM conflicts WHERE rescued = ?1", [rescued], |r| r.get(0)).optional()?)
     }

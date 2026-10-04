@@ -181,7 +181,7 @@ impl World {
         }
         store
             .call_blocking(move |s| {
-                s.begin_staging(false)?;
+                s.begin_staging(konedrive_tree::NewTree::Whole)?;
                 s.stage(&all)
             })
             .unwrap();
@@ -421,7 +421,7 @@ fn eperm_keeps_the_row_and_estale_deletes() {
 /// of what stands where it went — and the row then runs as any other.
 #[test]
 fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
-    use crate::local::liveness::{handle_namespace, HANDLES_ON};
+    use crate::local::liveness::handle_namespace;
     let w = World::new(&[("P", None, "p.txt", b"moved"), ("Q", None, "q.txt", b"q")]);
     let p = w.base().join("outside/p.txt");
     let p_handle = w.move_out("p.txt", &p);
@@ -429,12 +429,12 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     let row = w.rows()[0].clone();
     assert_eq!(row.target_name.as_deref(), p.to_str(), "where it went is kept");
     let root = File::open(&w.root.path).unwrap();
-    let recorded = w.store.call_blocking(move |s| s.meta(HANDLES_ON)).unwrap().unwrap();
+    let recorded = w.store.call_blocking(move |s| s.handles_filesystem()).unwrap().unwrap();
     assert_eq!(recorded, handle_namespace(&root).unwrap());
     assert!(recorded.starts_with("root:"), "keyed on the root's handle: {recorded}");
 
     // The filesystem changed: P's recorded handle is from the old one and no longer found.
-    w.store.call_blocking(move |s| s.set_meta(HANDLES_ON, Some("root:0102"))).unwrap();
+    w.store.call_blocking(move |s| s.set_handles_filesystem("root:0102")).unwrap();
     let stale = FileHandle { kind: p_handle.kind, bytes: vec![0; p_handle.bytes.len()] };
     w.store.call_blocking(move |s| s.outbox_amend(row.seq, |r| r.inode.as_mut().unwrap().handle = Some(stale.clone()))).unwrap();
     for _ in 0..2 {
@@ -449,7 +449,7 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     let examined = w.examine(&[("", "q.txt")]);
     assert!(examined.renewed);
     assert_eq!(examined.unproven, vec!["Q".to_owned()]);
-    assert_eq!(w.store.call_blocking(move |s| s.meta(HANDLES_ON)).unwrap(), Some(recorded));
+    assert_eq!(w.store.call_blocking(move |s| s.handles_filesystem()).unwrap(), Some(recorded));
     assert_eq!(w.rows().len(), 1);
     assert_eq!(w.rows()[0].inode.as_ref().unwrap().handle.as_ref(), Some(&p_handle), "found again where it went");
 
@@ -915,7 +915,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     };
     b_store
         .call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&b_items)
         })
         .unwrap();
@@ -929,7 +929,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     assert_eq!(w.rows()[0].kind, OutboxKind::MoveOut);
 
     // B is read-only now: its Full reconcile does not know P, and A claims it.
-    b_store.call_blocking(move |s| s.begin_staging(true)).unwrap();
+    b_store.call_blocking(move |s| s.begin_staging(konedrive_tree::NewTree::Delta)).unwrap();
     let applied = reconcile_b(true);
     assert!(!in_b.exists(), "out of B's folder");
     let aside = applied.rescued.iter().find(|r| r.original == Path::new("p.txt")).map(|r| r.rescued.clone()).expect("set aside");

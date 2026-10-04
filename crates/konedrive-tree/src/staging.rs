@@ -1,29 +1,25 @@
 //! The new tree a cycle builds, and its swap into `items`.
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::OptionalExtension;
 
 use crate::forget::forget_subtrees;
-use crate::model::{upsert, Change, Placement, Row, Table, COLUMNS, PLACED, ROW_COLUMNS};
+use crate::model::{placed, skipped, upsert, Change, NewTree, Placement, Row, Table, COLUMNS, ROW_COLUMNS};
 use crate::query::descendants_in;
-use crate::schema::{LISTING_NEXT, STAGING_WHOLE};
+use crate::meta::{self, DELTA_LINK, LISTING_NEXT, ROOT_ITEM_ID, STAGING_WHOLE};
 use crate::source::Source;
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 impl TreeStore {
-    /// Starts building a new tree: a full listing's from nothing
-    /// (`copy_items` false), or a delta's over `items`, which it leaves as it
-    /// is until the swap.
-    pub fn begin_staging(&mut self, copy_items: bool) -> Result<(), TreeError> {
+    /// Starts building a new tree: a full listing's from nothing, or a
+    /// delta's over `items`, which it leaves as it is until the swap.
+    pub fn begin_staging(&mut self, tree: NewTree) -> Result<(), TreeError> {
+        let whole = tree == NewTree::Whole;
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM staging", [])?;
         tx.execute("DELETE FROM staging_gone", [])?;
-        if copy_items {
-            tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
-        } else {
-            tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')", [STAGING_WHOLE])?;
-        }
+        meta::set(&tx, STAGING_WHOLE, whole.then_some("1"))?;
         tx.commit()?;
-        self.whole = !copy_items;
+        self.whole = whole;
         Ok(())
     }
 
@@ -76,10 +72,7 @@ impl TreeStore {
             tx.execute("DELETE FROM staging", [])?;
             tx.execute("DELETE FROM staging_gone", [])?;
         }
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![LISTING_NEXT, next],
-        )?;
+        meta::set(&tx, LISTING_NEXT, Some(next))?;
         tx.commit()?;
         Ok(())
     }
@@ -125,8 +118,10 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
         // (issue #104).
         tx.execute(
             &format!(
-                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = '{PLACED}' OR staging.placement != '{PLACED}'))
-              WHERE local_handle IS NULL"
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND ({was} OR {now}))
+              WHERE local_handle IS NULL",
+                was = placed("i.placement"),
+                now = skipped("staging.placement"),
             ),
             [],
         )?;
@@ -141,14 +136,16 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
             &format!(
                 "INSERT INTO items ({COLUMNS})
                  SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = '{PLACED}' OR s.placement != '{PLACED}' THEN i.local_handle END),
+                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN {was} OR {now} THEN i.local_handle END),
                         MAX(s.local_seq, COALESCE(i.local_seq, 0))
                    FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
                  ON CONFLICT(id) DO UPDATE SET
                    parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind,
                    size = excluded.size, mtime = excluded.mtime, etag = excluded.etag, ctag = excluded.ctag,
                    quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement,
-                   thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq"
+                   thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq",
+                was = placed("i.placement"),
+                now = skipped("s.placement"),
             ),
             [],
         )?;
@@ -156,14 +153,10 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
     }
     tx.execute("DELETE FROM staging", [])?;
     tx.execute("DELETE FROM staging_gone", [])?;
-    tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
-    tx.execute(
-        "INSERT INTO meta (key, value) VALUES ('delta_link', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [delta_link],
-    )?;
+    meta::set(tx, STAGING_WHOLE, None)?;
+    meta::set(tx, DELTA_LINK, Some(delta_link))?;
     // A first listing placed page by page ends here too.
-    tx.execute("DELETE FROM meta WHERE key = ?1", [LISTING_NEXT])?;
+    meta::set(tx, LISTING_NEXT, None)?;
     Ok(())
 }
 
@@ -181,11 +174,7 @@ pub(crate) fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[C
                 // reconciles `staging` against the folder before the
                 // commit and needs the drive's root id then, and a
                 // drive's root id never changes. Do not move this.
-                tx.execute(
-                    "INSERT INTO meta (key, value) VALUES ('root_item_id', ?1)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    [&row.id],
-                )?;
+                meta::set(tx, ROOT_ITEM_ID, Some(&row.id))?;
             }
             Change::Upsert(row) => write(tx, source, row)?,
             Change::Delete(id) => match source {

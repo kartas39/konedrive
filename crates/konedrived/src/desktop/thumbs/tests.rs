@@ -34,7 +34,7 @@ async fn world(items: &[Change]) -> World {
     let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
     let mut changes = vec![root];
     changes.extend_from_slice(items);
-    store.call(move |s| { s.begin_staging(false)?; s.stage(&changes)?; s.commit_staging("L") }).await.unwrap();
+    store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&changes)?; s.commit_staging("L") }).await.unwrap();
     for item in items {
         if let Change::Upsert(row) = item {
             let path = folder.path().join(&row.name);
@@ -124,7 +124,7 @@ async fn a_renamed_image_gets_a_thumbnail_under_its_new_name() {
     let filler = w.filler();
     filler.run_once(&CancellationToken::new(), 100).await;
     std::fs::rename(w.folder.path().join("p.jpg"), w.folder.path().join("q.jpg")).unwrap();
-    w.store.call(|s| { s.begin_staging(true)?; s.stage(&[photo("P", "q.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
+    w.store.call(|s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[photo("P", "q.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
     assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
     assert!(w.cached("normal", &w.folder.path().join("q.jpg")).is_file());
 }
@@ -143,7 +143,7 @@ async fn a_commit_keeps_what_the_thumbnails_were_made_for() {
     // A full listing builds `staging` from nothing: only the commit's own
     // update can carry the thumbnail's key across.
     let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
-    w.store.call(move |s| { s.begin_staging(false)?; s.stage(&[root, photo("P", "p.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
+    w.store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&[root, photo("P", "p.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
     assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0);
 }
 
@@ -384,7 +384,7 @@ async fn a_refused_item_is_asked_again_once_it_changes() {
     assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
     let Change::Upsert(mut row) = photo("P", "p.jpg", "image/jpeg") else { unreachable!() };
     row.ctag = Some("c2".into());
-    w.store.call(move |s| { s.begin_staging(true)?; s.stage(&[Change::Upsert(row)])?; s.commit_staging("L2") }).await.unwrap();
+    w.store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[Change::Upsert(row)])?; s.commit_staging("L2") }).await.unwrap();
     assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 1, "a new version is asked for");
 }
 

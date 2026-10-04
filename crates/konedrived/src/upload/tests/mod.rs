@@ -77,7 +77,7 @@ impl World {
         all.extend_from_slice(changes);
         store
             .call_blocking(move |s| {
-                s.begin_staging(false)?;
+                s.begin_staging(konedrive_tree::NewTree::Whole)?;
                 s.stage(&all)
             })
             .unwrap();
@@ -286,7 +286,7 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
             base.ctag = Some(newer.ctag.clone());
             base.quickxor = newer.hash.clone();
             base.size = newer.size;
-            s.begin_staging(true)?;
+            s.begin_staging(konedrive_tree::NewTree::Delta)?;
             s.stage(&[Change::Upsert(base)])?;
             s.commit_staging("link-2")
         })
@@ -871,7 +871,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
     w.h.drain(&engine);
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert!(engine.space_full(), "still full: only a quota read ends it");
-    let sid = session.rsplit('/').next().unwrap();
+    let sid = session.as_str().rsplit('/').next().unwrap();
     assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
     assert!(w.h.host.kinds().iter().any(|k| k == kind::NOT_UPLOADED), "{:?}", w.h.host.kinds());
 }
@@ -1203,7 +1203,7 @@ fn delete_commits_wait_for_the_cycles_swap() {
     w.examine(&[("", "a.txt")]);
     w.cloud(|c| c.edit("A", b"theirs"));
     let lock = w.h.runtime.block_on(Arc::clone(&w.h.tree_lock).lock_owned());
-    w.store.call_blocking(move |s| s.begin_staging(true)).unwrap();
+    w.store.call_blocking(move |s| s.begin_staging(konedrive_tree::NewTree::Delta)).unwrap();
     let engine = w.h.engine();
     let task = w.h.runtime.spawn({
         let engine = Arc::clone(&engine);

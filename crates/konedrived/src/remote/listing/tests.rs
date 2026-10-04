@@ -564,7 +564,7 @@ async fn a_new_listing_starts_with_a_full_reconcile() {
 #[tokio::test]
 async fn another_account_blocks_the_folder_and_touches_nothing() {
     let s = setup().await;
-    s.store.call(|t| t.set_meta("drive_id", Some("D0"))).await.unwrap();
+    s.store.call(|t| t.set_drive_id("D0")).await.unwrap();
     s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
     // The account hears which drive its token reaches.
     let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
@@ -802,7 +802,7 @@ async fn last_checked_moves_only_when_a_cycle_succeeds() {
     let listing = listed(&s).await;
     let checked = s.state.get().last_checked;
     assert!(checked >= before, "{checked} < {before}");
-    assert_eq!(s.store.call(move |x| x.meta("last_checked")).await.unwrap(), Some(checked.to_string()));
+    assert_eq!(s.store.call(move |x| x.last_checked()).await.unwrap(), Some(checked));
 
     // Marked, so that a failed cycle writing the time it ran — the same
     // second, most likely — could not pass for leaving it alone.

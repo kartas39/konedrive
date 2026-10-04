@@ -15,7 +15,7 @@
 //! `staging` first and `items` for the rest; the swap writes those rows and
 //! removes those ids, nothing else. A full listing, which may leave out
 //! anything, is staged whole instead: `staging` is then the new tree by
-//! itself (`meta` [`STAGING_WHOLE`]), and the swap replaces every row.
+//! itself (`meta` `staging_whole`), and the swap replaces every row.
 //!
 //! A folder's first listing is the one exception: each page goes
 //! into `items` as soon as it is placed, with the link to the next page
@@ -30,9 +30,11 @@ use rusqlite::Connection;
 mod activity;
 mod conflicts;
 mod forget;
+mod meta;
 mod model;
 pub mod outbox;
 mod query;
+mod read;
 pub mod reconcile;
 mod schema;
 mod shared;
@@ -44,10 +46,11 @@ mod thumbs;
 use forget::forget_subtrees;
 pub use activity::{ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
-pub use model::{usable_id, Chain, Change, Counts, Kind, Located, Placement, Row, SkipReason, Table};
-pub use schema::{LISTING_NEXT, SCHEMA_VERSION, STAGING_WHOLE};
+pub use model::{usable_id, Chain, Change, Counts, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
+pub use read::ReadStore;
+pub use schema::SCHEMA_VERSION;
 pub use shared::{Store, QUEUE};
-pub use thumbs::{ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};
+pub use thumbs::{Thumbnail, ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};
 
 /// A chain of parents longer than this is a cycle or corruption, not a drive.
 const MAX_CHAIN: usize = konedrive_fs::MAX_DEPTH + 2;
@@ -66,7 +69,7 @@ pub struct TreeStore {
     conn: Connection,
     /// Where it is on disk; `None` in memory.
     path: Option<PathBuf>,
-    /// `staging` holds a whole new tree ([`STAGING_WHOLE`]), not a delta.
+    /// `staging` holds a whole new tree ([`NewTree::Whole`]), not a delta.
     whole: bool,
     /// What changed in the outbox since it was last asked (issue #38).
     changes: std::sync::Arc<outbox::OutboxChanges>,

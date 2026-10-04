@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use konedrive_fs::handle::FileHandle;
 use rusqlite::Connection;
 
-use crate::outbox::{BadItem, OutboxKind, OutboxState, Reason, Snapshot, OUTBOX_SEQ};
+use crate::outbox::{BadItem, OutboxKind, OutboxState, Reason, SessionUrl, Snapshot};
 use crate::reconcile::Committed;
 use crate::*;
 
@@ -79,7 +79,7 @@ fn an_installed_versions_store_opens_with_what_it_held() {
     assert_eq!(s.get(Table::Items, "A").unwrap().map(|row| (row.name, row.kind, row.placement)), Some(("a.txt".into(), Kind::File, Placement::Placed)));
     assert_eq!(s.get(Table::Items, "L").unwrap().unwrap().placement, Placement::Skipped(SkipReason::NameTooLong));
     assert_eq!(s.local_handle("B").unwrap(), Some(handle(3)));
-    assert_eq!(s.meta(OUTBOX_SEQ).unwrap().as_deref(), Some("12"));
+    assert_eq!(s.outbox_seq().unwrap(), 12);
     assert_eq!(s.committed_since(10).unwrap().get("GONE"), Some(&Committed { etag: None, gone: true }));
     assert_eq!(s.deferred_ids().unwrap(), ["B", "DG"]);
     assert_eq!(s.leaving().unwrap(), [("L".to_owned(), PathBuf::from("long"))]);
@@ -99,9 +99,9 @@ fn an_installed_versions_store_opens_with_what_it_held() {
     ]);
     let sending = &rows[0];
     assert_eq!(sending.snapshot(), Some(Snapshot::content(1000, 1_700_000_000, 123_456_789)));
-    assert_eq!((sending.session_url.as_deref(), sending.session_expires, sending.session_next), (Some("https://up.example/session-1"), Some(2000), Some(640)));
+    assert_eq!((sending.session_url.as_ref().map(SessionUrl::as_str), sending.session_expires, sending.session_next), (Some("https://up.example/session-1"), Some(2000), Some(640)));
     assert_eq!((sending.rel.as_path(), sending.target_parent.as_deref(), sending.size), (Path::new("d/new.bin"), Some("D"), Some(900)));
-    assert_eq!(s.upload_sessions_at("D", "new.bin").unwrap(), [("https://up.example/session-1".to_owned(), Some(1))]);
+    assert_eq!(s.upload_sessions_at("D", "new.bin").unwrap(), [(SessionUrl::new("https://up.example/session-1"), Some(1))]);
     let retried = &rows[2];
     assert_eq!((retried.item_id.as_deref(), retried.reason.clone(), retried.attempts, retried.next_try), (Some("B"), Some(Reason::Hash), 1, Some(1500)));
     assert_eq!(retried.base.as_ref().and_then(|base| base.etag.as_deref()), Some("e-B"));
@@ -142,13 +142,13 @@ fn the_oldest_store_that_is_upgraded_keeps_what_waits_in_it() {
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
     assert_eq!(rows[0].snapshot(), Some(Snapshot::content(5, 1_700_000_000, 1)));
-    assert_eq!(s.upload_sessions_given_up(10).unwrap(), Vec::<String>::new(), "listed, and its row still points at it");
+    assert_eq!(s.upload_sessions_given_up(10).unwrap(), [], "listed, and its row still points at it");
     assert_eq!((rows[1].reason.clone(), rows[1].state, rows[1].attempts), (Some(Reason::Hash), OutboxState::Retry, 2));
     assert_eq!(s.outbox_bad_item(2).unwrap(), Some(BadItem { id: "OLD!1".into(), ctag: None, etag: None }), "an older row has no tag");
     assert_eq!(rows[2].snapshot(), Some(Snapshot::Trashed));
     assert_eq!((rows[3].snapshot(), rows[3].state), (None, OutboxState::Ready), "a text no build wrote is no snapshot, and the row stays");
-    assert_eq!(s.outbox_take_snapshot(4, Snapshot::content(12, 7, 0)).unwrap().as_deref(), Some("https://up.example/odd"), "its session is given up");
-    assert_eq!(s.upload_sessions_given_up(10).unwrap(), ["https://up.example/odd"]);
+    assert_eq!(s.outbox_take_snapshot(4, Snapshot::content(12, 7, 0)).unwrap(), Some(SessionUrl::new("https://up.example/odd")), "its session is given up");
+    assert_eq!(s.upload_sessions_given_up(10).unwrap(), [SessionUrl::new("https://up.example/odd")]);
 
     assert_eq!(s.upload_opening_windows("R", "a.txt").unwrap(), [(100, 100)], "a record without `last` reads as its first time");
     s.outbox_drop(5, None, None, None).unwrap();

@@ -69,7 +69,7 @@ impl SyncService {
         let (report, attached, folder) = (self.report.clone(), store.clone(), reg.root.path.clone());
         let last_checked = tokio::task::spawn_blocking(move || {
             report.activity.attach(attached.clone(), &folder);
-            attached.call_blocking(move |s| s.meta("last_checked")).ok().flatten().and_then(|v| v.parse::<i64>().ok())
+            attached.call_blocking(move |s| s.last_checked()).ok().flatten()
         })
         .await
         .ok()

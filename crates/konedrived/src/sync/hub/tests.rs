@@ -137,7 +137,7 @@ async fn another_accounts_item_ids_are_claimed() {
     store
         .call(move |s| {
             s.commit_page(&[Change::Upsert(row)], "next")?;
-            s.set_meta("drive_id", Some("abc123"))
+            s.set_drive_id("abc123")
         }).await
         .unwrap();
     *a.store.lock().unwrap() = Some(store);

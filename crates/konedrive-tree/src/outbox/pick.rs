@@ -337,17 +337,17 @@ fn name_edges(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>, TreeError> {
 
 impl TreeStore {
     /// The rows `row` waits for (the module's four rules).
-    pub fn outbox_blockers_of(&self, row: &OutboxRow) -> Result<Vec<i64>, TreeError> {
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn outbox_blockers_of(&self, row: &OutboxRow) -> Result<Vec<i64>, TreeError> {
         let mut out = structural(&self.conn, row, None)?;
         out.extend(name_edges(&self.conn)?.remove(&row.seq).unwrap_or_default());
         out.sort_unstable();
         out.dedup();
-        #[cfg(test)]
-        assert_eq!(out, self.outbox_dependencies()?.remove(&row.seq).unwrap_or_default(), "the point queries and the whole graph differ for row {}", row.seq);
         Ok(out)
     }
 
     /// The rows `seq` waits for.
+    #[cfg(any(test, feature = "testing"))]
     pub fn outbox_blockers(&self, seq: i64) -> Result<Vec<i64>, TreeError> {
         match one(&self.conn, seq)? {
             Some(row) => self.outbox_blockers_of(&row),
@@ -358,6 +358,7 @@ impl TreeStore {
     /// The rows that can run now, in `seq` order: `ready`, or `retry` whose
     /// time has come, with nothing to wait for. Which of them run at once is
     /// the worker's (metadata rows one at a time, §3.5).
+    #[cfg(any(test, feature = "testing"))]
     pub fn outbox_runnable(&self, now: i64) -> Result<Vec<OutboxRow>, TreeError> {
         let names = name_edges(&self.conn)?;
         let mut out = Vec::new();

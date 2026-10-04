@@ -11,6 +11,20 @@ pub(crate) const PLACED: &str = "placed";
 /// What a row's `placement` begins with while the item is not: a
 /// [`SkipReason`]'s word follows.
 const SKIPPED: &str = "skipped:";
+
+/// SQL for "the row whose placement is `column` is placed", as
+/// [`Placement::decode`] reads it: anything that does not begin as a
+/// skipped one. A query, an index and the decoder all ask it this way, so
+/// a word none of them knows is read the same by each.
+pub(crate) fn placed(column: &str) -> String {
+    format!("substr({column}, 1, {}) != '{SKIPPED}'", SKIPPED.len())
+}
+
+/// SQL for "the row whose placement is `column` is skipped": what
+/// [`placed`] is not.
+pub(crate) fn skipped(column: &str) -> String {
+    format!("substr({column}, 1, {}) = '{SKIPPED}'", SKIPPED.len())
+}
 /// A row's `kind`, as stored.
 pub(crate) const FILE: &str = "file";
 const FOLDER: &str = "folder";
@@ -114,6 +128,16 @@ impl Table {
     }
 }
 
+/// What a cycle builds its new tree from
+/// ([`TreeStore::begin_staging`](crate::TreeStore::begin_staging)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTree {
+    /// A delta's: only what it changes is staged, laid over `items`.
+    Delta,
+    /// A full listing's: staged whole, from nothing.
+    Whole,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     File,
@@ -128,7 +152,8 @@ impl Kind {
         }
     }
 
-    /// What a stored kind says. Any word but a folder's reads as a file.
+    /// What a stored kind says. Any word but a folder's reads as a file
+    /// (`docs/limitations/D36.md`).
     fn decode(value: &str) -> Self {
         if value == FOLDER {
             Kind::Folder
@@ -183,8 +208,10 @@ impl Placement {
     }
 
     /// What a stored placement says. Anything that does not begin as a
-    /// skipped one reads as placed, and a skip with a reason nobody knows
-    /// as [`SkipReason::Unsupported`].
+    /// skipped one reads as placed — a word that cannot be read never
+    /// takes an object out of the folder — and a skip with a reason nobody
+    /// knows as [`SkipReason::Unsupported`]. SQL reads it the same way
+    /// ([`placed`]).
     pub(crate) fn decode(value: &str) -> Self {
         match value.strip_prefix(SKIPPED) {
             None => Placement::Placed,

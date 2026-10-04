@@ -1,4 +1,4 @@
-use crate::outbox::{Detection, OutboxKind, OutboxOp, OutboxState, Snapshot};
+use crate::outbox::{Detection, OutboxKind, OutboxOp, OutboxState, SessionUrl, Snapshot};
 use crate::TreeStore;
 
 /// A row's snapshot comes back as it was written, whatever the time (one
@@ -31,13 +31,15 @@ fn a_rows_snapshot_and_target_name_are_read_as_written() {
     let row = s.outbox_row(seq).unwrap().unwrap();
     assert_eq!((row.snapshot(), row.snapshot_size(), row.snapshot_sent()), (Some(content), Some(100), Some((100, 2))));
     assert!(row.snapshot_is(content) && !row.snapshot_is(Snapshot::content(100, 2, 6)));
-    s.outbox_open_session(seq, "https://up.example/s", Some(50), None, 10).unwrap();
+    s.outbox_open_session(seq, &SessionUrl::new("https://up.example/s"), Some(50), None, 10).unwrap();
     assert_eq!(s.outbox_take_snapshot(seq, content).unwrap(), None, "the same content keeps its session");
-    assert_eq!(s.outbox_row(seq).unwrap().unwrap().session_url.as_deref(), Some("https://up.example/s"));
+    let sending = s.outbox_row(seq).unwrap().unwrap();
+    assert_eq!(sending.session_url.as_ref().map(SessionUrl::as_str), Some("https://up.example/s"));
+    assert!(!format!("{sending:?}").contains("up.example"), "a session's URL is a credential: a row printed for the journal does not show it");
     for other in [Snapshot::content(1, -1, 5), Snapshot::content(1, i64::MAX, 999_999_999), Snapshot::content(1, i64::MIN, 0)] {
         let dropped = s.outbox_take_snapshot(seq, other).unwrap();
         let row = s.outbox_row(seq).unwrap().unwrap();
-        assert_eq!((row.snapshot(), row.session_url.as_deref()), (Some(other), None));
+        assert_eq!((row.snapshot(), row.session_url.as_ref().map(SessionUrl::as_str)), (Some(other), None));
         assert_eq!(dropped.is_some(), other == Snapshot::content(1, -1, 5), "the session of the content before goes, once");
     }
 

@@ -38,6 +38,7 @@ use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::local::Batch;
 use crate::remote::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
 use konedrive_tree::outbox::OutboxRow;
+use konedrive_tree::reconcile::{Deferrals, RwStaged};
 use crate::folder::classify::classify;
 use konedrive_tree::Change;
 
@@ -182,8 +183,8 @@ impl Listing {
                 let since = self.revisit_from.load(Ordering::SeqCst);
                 let brought: Vec<String> = changes.iter().map(|c| c.id().to_owned()).collect();
                 let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
-                let Some((ids, consumed)) = staged else {
-                    self.on_store(turn, move |s| s.set_meta("delta_link", Some(&link))).await?;
+                let Some(RwStaged { ids, consumed }) = staged else {
+                    self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                     return Ok((Reconciled::default(), count));
                 };
                 let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
@@ -341,7 +342,7 @@ impl Listing {
                         Ok((gone, again)) => tracing::info!("of the changes a 404 blocked, {gone} went with their item and {again} are tried again"),
                         Err(e) => tracing::warn!("cannot settle the changes a 404 blocked: {e}"),
                     }
-                    store.call_blocking(move |s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
+                    store.call_blocking(move |s| s.commit_staging_deferring(&link, &Deferrals { consumed: &consumed, whole: &defer, content: &content, fetched_at: fetch_seq }))?;
                     if listing || full {
                         Said::Listed
                     } else {

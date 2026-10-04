@@ -81,7 +81,7 @@ impl Fx {
             locks: InodeLocks::new(),
         };
         fx.store.call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&tree())
         })
         .unwrap();
@@ -114,7 +114,7 @@ impl Fx {
         let (ids, plan) = self
             .store
             .call_blocking(move |s| {
-                s.begin_staging(true)?;
+                s.begin_staging(konedrive_tree::NewTree::Delta)?;
                 s.stage(&staged)?;
                 let mut ids = s.changed_ids()?;
                 ids.extend(s.unplaced(Table::Staging)?);
@@ -134,7 +134,7 @@ impl Fx {
             .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
             .cloned()
             .collect();
-        self.store.call_blocking(move |s| s.commit_staging_deferring("link-2", &[], &defer, &content, 0)).unwrap();
+        self.store.call_blocking(move |s| s.commit_staging_deferring("link-2", &konedrive_tree::reconcile::Deferrals { consumed: &[], whole: &defer, content: &content, fetched_at: 0 })).unwrap();
         Ok(applied)
     }
 
@@ -496,7 +496,7 @@ fn a_directory_the_walk_cannot_list_keeps_the_leaving_row() {
     fx.store.call_blocking(move |s| s.leaving_add("E", Path::new("docs/deep"), Some(&handle))).unwrap();
     std::fs::rename(fx.path("docs/deep"), fx.path("docs/deeper")).unwrap();
     let plan = fx.store.call_blocking(|s| {
-        s.begin_staging(true)?;
+        s.begin_staging(konedrive_tree::NewTree::Delta)?;
         Rw::read(s, "fedora".into(), false, IgnoreList::default())
     }).unwrap();
     let materializer = fx.materializer(Some(plan));
@@ -525,7 +525,7 @@ fn a_directory_kept_aside_takes_what_is_leaving_in_it_along() {
         .unwrap();
     fx.row(OutboxKind::Update, Some("F"), "docs/f.txt");
     let plan = fx.store.call_blocking(|s| {
-        s.begin_staging(true)?;
+        s.begin_staging(konedrive_tree::NewTree::Delta)?;
         Rw::read(s, "fedora".into(), false, IgnoreList::default())
     }).unwrap();
     let materializer = fx.materializer(Some(plan.clone()));

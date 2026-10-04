@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use super::{outbox, TreeError, TreeStore};
+use super::{outbox, ReadStore, TreeError, TreeStore};
 
 /// A job for a store's owner thread: a closure over the store, which sends
 /// its own answer.
@@ -112,7 +112,7 @@ pub struct Store {
     /// first used; `None` inside when it cannot be opened.
     reader: std::sync::Arc<std::sync::OnceLock<Option<Owner>>>,
     path: Option<PathBuf>,
-    /// The pause as `meta` last had it (`outbox::PAUSED_UNTIL`): [`NOT_PAUSED`],
+    /// The pause as the store last had it: [`NOT_PAUSED`],
     /// or paused until then, 0 for until resumed. Kept here so that it is
     /// read without a job, from anywhere.
     pause: std::sync::Arc<std::sync::atomic::AtomicI64>,
@@ -125,7 +125,7 @@ impl Store {
     pub fn new(store: TreeStore) -> Self {
         let changes = std::sync::Arc::clone(&store.changes);
         let path = store.path.clone();
-        let pause = store.meta(outbox::PAUSED_UNTIL).ok().flatten().map_or(NOT_PAUSED, |v| v.parse::<i64>().unwrap_or(0).max(0));
+        let pause = store.paused_until().ok().flatten().unwrap_or(NOT_PAUSED);
         let owner = Owner::spawn(store, "konedrive-store", Some(std::sync::Arc::clone(&changes)));
         Self {
             owner: std::sync::Arc::new(owner),
@@ -145,14 +145,14 @@ impl Store {
 
     /// Writes the pause (`None`: resumed), and remembers it.
     pub async fn set_pause(&self, until: Option<i64>) -> Result<(), TreeError> {
-        self.call(move |s| s.set_meta(outbox::PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref())).await?;
+        self.call(move |s| s.set_paused_until(until)).await?;
         self.pause.store(until.map_or(NOT_PAUSED, |u| u.max(0)), std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
     /// [`set_pause`](Self::set_pause) for plain threads.
     pub fn set_pause_blocking(&self, until: Option<i64>) -> Result<(), TreeError> {
-        self.call_blocking(move |s| s.set_meta(outbox::PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref()))?;
+        self.call_blocking(move |s| s.set_paused_until(until))?;
         self.pause.store(until.map_or(NOT_PAUSED, |u| u.max(0)), std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
@@ -165,8 +165,8 @@ impl Store {
             return;
         }
         let (job, _) = Owner::job(move |s| {
-            if s.meta(outbox::PAUSED_UNTIL)?.and_then(|v| v.parse::<i64>().ok()) == Some(until) {
-                s.set_meta(outbox::PAUSED_UNTIL, None)?;
+            if s.paused_until()? == Some(until) {
+                s.set_paused_until(None)?;
             }
             Ok(())
         });
@@ -212,11 +212,10 @@ impl Store {
     /// Runs `f` on the store's read-only connection, which never waits for a
     /// writer and sees what was last committed (issue #38): the bus's lists and
     /// sums. A store in memory, or one whose second connection cannot be
-    /// opened, is read through its own thread.
-    pub async fn read<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
-    ) -> Result<T, TreeError> {
+    /// opened, is read through its own thread; `f` is handed the same
+    /// [`ReadStore`] either way.
+    pub async fn read<T: Send + 'static>(&self, f: impl FnOnce(&ReadStore<'_>) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        let f = move |store: &mut TreeStore| f(&ReadStore::of(store));
         match self.reader() {
             Some(reader) => reader.call(f).await,
             None => self.call(f).await,
@@ -224,10 +223,8 @@ impl Store {
     }
 
     /// [`read`](Self::read) for plain threads.
-    pub fn read_blocking<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
-    ) -> Result<T, TreeError> {
+    pub fn read_blocking<T: Send + 'static>(&self, f: impl FnOnce(&ReadStore<'_>) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        let f = move |store: &mut TreeStore| f(&ReadStore::of(store));
         match self.reader() {
             Some(reader) => reader.call_blocking(f),
             None => self.call_blocking(f),

@@ -126,10 +126,6 @@ pub fn same_place(path: &Path, object: &File) -> bool {
     (a.st_dev, a.st_ino) == (b.dev(), b.ino())
 }
 
-/// The `meta` key naming the filesystem the folder's file handles were taken
-/// on ([`handle_namespace`]).
-pub const HANDLES_ON: &str = "handles_root";
-
 /// The filesystem the folder's handles belong to: the root directory's own
 /// handle, and the filesystem's UUID where the kernel gives one
 /// (`FS_IOC_GETFSUUID`). Both survive a reboot, a remount and a renumbered
@@ -173,7 +169,7 @@ pub enum Handles {
 
 pub fn handles(store: &Store, root: &File) -> Handles {
     let Ok(now) = handle_namespace(root) else { return Handles::Unknown };
-    match store.call_blocking(move |s| s.meta(HANDLES_ON)) {
+    match store.call_blocking(move |s| s.handles_filesystem()) {
         Ok(Some(recorded)) if recorded == now => Handles::Current,
         Ok(Some(_)) => Handles::Changed(now),
         Ok(None) => Handles::Unrecorded(now),
@@ -189,7 +185,7 @@ pub fn handles(store: &Store, root: &File) -> Handles {
 pub fn handles_current(store: &Store, root: &File) -> bool {
     match handles(store, root) {
         Handles::Current => true,
-        Handles::Unrecorded(now) => store.call_blocking(move |s| s.set_meta(HANDLES_ON, Some(&now))).is_ok(),
+        Handles::Unrecorded(now) => store.call_blocking(move |s| s.set_handles_filesystem(&now)).is_ok(),
         Handles::Changed(_) | Handles::Unknown => false,
     }
 }
@@ -197,10 +193,10 @@ pub fn handles_current(store: &Store, root: &File) -> bool {
 /// [`handles_current`] for async code.
 pub async fn handles_current_async(store: &Store, root: &File) -> bool {
     let Ok(now) = handle_namespace(root) else { return false };
-    let recorded = store.call(|s| s.meta(HANDLES_ON)).await;
+    let recorded = store.call(|s| s.handles_filesystem()).await;
     match recorded {
         Ok(Some(recorded)) => recorded == now,
-        Ok(None) => store.call(move |s| s.set_meta(HANDLES_ON, Some(&now))).await.is_ok(),
+        Ok(None) => store.call(move |s| s.set_handles_filesystem(&now)).await.is_ok(),
         Err(_) => false,
     }
 }
@@ -238,7 +234,7 @@ pub fn renew_handles(store: &Store, now: &str) -> Result<usize, konedrive_tree::
     let now = now.to_owned();
     store.call_blocking(move |s| {
         s.forget_local_handles()?;
-        s.set_meta(HANDLES_ON, Some(&now))
+        s.set_handles_filesystem(&now)
     })?;
     Ok(dropped)
 }
