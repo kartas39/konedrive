@@ -258,3 +258,26 @@ async fn a_cancelled_waiter_leaves_no_row_behind() {
          cancelled call, forever"
     );
 }
+
+/// A fill run through `unless_removed` runs under the guard's hold: what it
+/// takes there (`hold_in_force`, as a blocking section of the fill does)
+/// keeps the inode locked after the guard is gone, until it is dropped too.
+/// A fill run with no guard, or outside it, has no hold.
+#[tokio::test]
+async fn a_fill_run_unless_removed_holds_the_lock_it_runs_under() {
+    let locks = InodeLocks::new();
+    let key = InodeKey { dev: 3, ino: 4 };
+    assert!(hold_in_force().is_none(), "nothing is held outside a guard's work");
+    assert!(unless_removed(None, async { hold_in_force() }).await.unwrap().is_none(), "no guard, no hold");
+
+    let guard = locks.lock(key).await;
+    let hold = unless_removed(Some(&guard), async { hold_in_force() })
+        .await
+        .expect("nothing stopped it")
+        .expect("the fill runs under the guard's hold");
+    drop(guard);
+    assert!(locks.try_lock(key).is_none(), "the hold outlives the guard: the inode is still locked");
+    drop(hold);
+    assert!(locks.try_lock(key).is_some(), "free once the hold is gone");
+    assert_eq!(locks.tracked(), 0, "and no row is left behind");
+}
