@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::status::activity::{self, Kind, Report};
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
-use super::materialize::{Applied, ApplyError, Claimed, Materializer, Replacement, Scope};
+use super::materialize::{Applied, ApplyError, Claimed, Failed, Kept, Materializer, OnDisk, Replacement, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
@@ -653,7 +653,15 @@ impl Listing {
             // What a Changed pass rescued before it handed over is rescued
             // all the same: the Full pass finds nothing left to rescue there,
             // so these are the conflicts.
-            let (applied, full) = materializer.apply_with_handover(scope).map_err(applying)?;
+            let (applied, full) = match materializer.apply_with_handover(scope) {
+                Ok(applied) => applied,
+                Err(failed) => {
+                    // What it rescued is out of the folder all the same.
+                    let Failed { error, done } = *failed;
+                    record_failed(&report, &store, &root.path, done);
+                    return Err(applying(error));
+                }
+            };
             // Where each rescued file went is a conflict: a row
             // in `Conflicts.List()`, `Conflicts.Count` and a `conflict` event, which
             // `record` below writes. It is not a problem, so `LastError` no
@@ -755,8 +763,8 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
         Said::Nothing => Vec::new(),
     };
     // What was removed in OneDrive and stays here in part, whatever is said
-    // of the rest: the folder is gone there, and these files go up as new.
-    let kept = applied.on_disk.kept.iter().map(|(rel, files)| activity::event(Kind::Removed, shown(rel), kept_detail(*files))).collect();
+    // of the rest: it is gone there, and what stays is the user's own.
+    let kept = applied.on_disk.kept.iter().map(|(rel, kept)| activity::event(Kind::Removed, shown(rel), kept_detail(*kept))).collect();
     events.extend(activity::capped(kept, activity::PER_KIND, &folder));
     let at = activity::unix_now();
     let conflicts: Vec<ConflictRow> = applied
@@ -776,12 +784,29 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     report.activity.record_blocking(events);
 }
 
-/// The detail of a `removed` event for something that stays here in part.
-fn kept_detail(files: u64) -> String {
-    match files {
-        1 => "1 file changed or new on this computer was kept and is uploaded as new".to_owned(),
-        n => format!("{n} files changed or new on this computer were kept and are uploaded as new"),
-    }
+/// What a reconcile that failed did on disk before it did, recorded all the
+/// same: its rescues and copies as conflicts, and what it kept of something
+/// removed in OneDrive — only where it took konedrive's attributes off now,
+/// so that a cycle failing again and again says it once.
+fn record_failed(report: &Report, store: &Store, root: &std::path::Path, mut done: OnDisk) {
+    done.kept.retain(|(_, kept)| kept.stripped > 0);
+    record(report, store, root, &Applied { on_disk: done, ..Applied::default() }, Said::Nothing);
+}
+
+/// The detail of a `removed` event for something that stays here in part:
+/// what goes up as new, and what stays on this computer only.
+fn kept_detail(kept: Kept) -> String {
+    let uploaded = match kept.uploaded {
+        0 => None,
+        1 => Some("1 file changed or new on this computer was kept and is uploaded as new".to_owned()),
+        n => Some(format!("{n} files changed or new on this computer were kept and are uploaded as new")),
+    };
+    let local = match kept.local {
+        0 => None,
+        1 => Some("1 item with an ignored or refused name was kept on this computer only".to_owned()),
+        n => Some(format!("{n} items with ignored or refused names were kept on this computer only")),
+    };
+    [uploaded, local].into_iter().flatten().collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]

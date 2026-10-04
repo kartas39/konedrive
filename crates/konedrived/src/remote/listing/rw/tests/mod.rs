@@ -26,6 +26,7 @@ use wiremock::ResponseTemplate;
 
 use super::super::{CycleReport, Listing, ListingContext, FULL_THRESHOLD};
 use super::Writes;
+use crate::remote::materialize::Kept;
 use crate::status::activity::Report;
 use crate::folder::disk::Disk;
 use crate::hydration::graph_source::GraphSource;
@@ -213,6 +214,16 @@ impl World {
 
     pub(super) fn path(&self, rel: &str) -> PathBuf {
         self.root.path.join(rel)
+    }
+
+    /// Examines what the cycles handed to the watcher, and nothing else,
+    /// then lets the outbox worker run.
+    pub(super) async fn examine_handed_and_upload(&self) {
+        let handed = std::mem::take(&mut *self.examined.lock().unwrap());
+        for batch in handed {
+            self.examine(batch).await;
+        }
+        self.upload().await;
     }
 
     pub(super) fn config(&self) -> WorkerConfig {
@@ -625,7 +636,7 @@ async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it
     assert!(w.path("docs/g.txt").exists());
     w.graph.with(|c| c.trash("D"));
     let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs"), 2)]);
+    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs"), Kept { uploaded: 2, local: 0, stripped: 1 })]);
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine", "the change made here stays");
     assert_eq!(std::fs::read(w.path("docs/mine.txt")).unwrap(), b"mine", "and so does the new file");
     assert!(!w.path("docs/g.txt").exists(), "what OneDrive had went");
@@ -636,9 +647,8 @@ async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it
         "the Activity says what was kept: {said:?}"
     );
 
-    w.scan_and_upload().await;
-    w.cycle(&listing).await;
-    w.scan_and_upload().await;
+    // What the cycle handed to the watcher is all that is examined.
+    w.examine_handed_and_upload().await;
     assert_eq!(w.graph.with(|c| c.paths()), ["docs", "docs/f.txt", "docs/mine.txt", "top.txt"], "made again in OneDrive, as new");
     assert!(w.graph.with(|c| c.item("D").is_none() && c.item("F").is_none()), "new items, not the removed ones");
     assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "f.txt" && i.content == b"one and mine")));
@@ -660,16 +670,70 @@ async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new
     assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
     w.graph.with(|c| c.trash("F"));
     let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs/f.txt"), 1)]);
+    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs/f.txt"), Kept { uploaded: 1, local: 0, stripped: 1 })]);
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine");
     assert!(w.base("F").is_none(), "the base took the removal");
 
-    w.scan_and_upload().await;
+    w.examine_handed_and_upload().await;
     let new = w.graph.with(|c| c.items.values().find(|i| i.name == "f.txt").cloned()).expect("uploaded");
     assert!(new.id != "F" && new.parent.as_deref() == Some("D") && new.content == b"one and mine", "{new:?}");
     assert_eq!(w.deletes(), 0);
     w.cycle(&listing).await;
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some(new.id.as_str()), "and it is the new item here");
+}
+
+/// What stays under a name nothing uploads — here an ignored one — is said to
+/// stay on this computer, never to be uploaded: the Activity is true, and
+/// OneDrive gets only the folder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_stays_under_an_ignored_name_is_said_to_stay_on_this_computer_only() {
+    let w = world().await;
+    let listing = w.listed().await;
+    std::fs::write(w.path("docs/notes.tmp"), b"mine").unwrap();
+    w.graph.with(|c| c.trash("D"));
+    w.cycle(&listing).await;
+    assert_eq!(std::fs::read(w.path("docs/notes.tmp")).unwrap(), b"mine");
+    let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
+    let entry = said.iter().find(|e| e.kind == "removed" && e.path == w.path("docs").display().to_string()).unwrap_or_else(|| panic!("{said:?}"));
+    assert_eq!(entry.detail, "1 item with an ignored or refused name was kept on this computer only");
+
+    w.examine_handed_and_upload().await;
+    assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "notes.tmp")), "not uploaded: {:?}", w.graph.with(|c| c.paths()));
+}
+
+/// A cycle that fails after it took konedrive's attributes off what it keeps
+/// (here a changed file, in a removed folder holding an object that will
+/// not go) still hands the watcher what to examine and says what it kept:
+/// nothing else would, and the file would stay unseen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cycle_that_fails_still_hands_over_what_it_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world().await;
+    w.graph.with(|c| {
+        c.add(FakeItem { id: "E".into(), parent: Some("D".into()), name: "deep".into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: "e-E".into(), ctag: "c-E".into(), mtime: 0 });
+        c.add_file("G", "E", "g.txt", b"one");
+    });
+    let listing = w.listed().await;
+    write_version(&w.path("docs/deep/g.txt"), b"one", &w.cloud_ctag("G"));
+    std::thread::sleep(Duration::from_millis(10));
+    std::fs::OpenOptions::new().append(true).open(w.path("docs/deep/g.txt")).unwrap().write_all(b" and mine").unwrap();
+    w.graph.with(|c| c.trash("D"));
+    // `docs/f.txt` will not go; `docs/deep/g.txt`, deeper, is looked at first.
+    std::fs::set_permissions(w.path("docs"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = listing.cycle(&CancellationToken::new()).await;
+    std::fs::set_permissions(w.path("docs"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(id_at(&w.path("docs/deep/g.txt")), None, "its attributes are off already");
+    let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
+    assert!(said.iter().any(|e| e.kind == "removed" && e.detail.starts_with("1 file changed or new")), "the Activity says what was kept: {said:?}");
+
+    let handed = std::mem::take(&mut *w.examined.lock().unwrap());
+    assert!(!handed.is_empty(), "the watcher was told");
+    for batch in handed {
+        w.examine(batch).await;
+    }
+    let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
+    assert!(rows.iter().any(|r| r.rel == Path::new("docs/deep/g.txt") && r.item_id.is_none()), "recorded as new: {rows:?}");
 }
 
 /// Where the object `handle` names is, found by walking `bases` as the

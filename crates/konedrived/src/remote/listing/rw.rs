@@ -31,12 +31,12 @@ use std::time::SystemTime;
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
-use super::{applying, cancellable, drive_error, record, record_drive, CycleError, Commit, Fetched, Listing, Reconciled, Said, Turn};
+use super::{applying, cancellable, drive_error, record, record_drive, record_failed, CycleError, Commit, Fetched, Listing, Reconciled, Said, Turn};
 use konedrive_graph::drive::DriveError;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::local::Batch;
-use crate::remote::materialize::{Materializer, Rw, Scope};
+use crate::remote::materialize::{Failed, Materializer, OnDisk, Rw, Scope};
 use konedrive_tree::outbox::OutboxRow;
 use konedrive_tree::reconcile::{Deferrals, RwStaged};
 use crate::folder::classify::classify;
@@ -284,8 +284,42 @@ impl Listing {
                 // know is left alone (F115), or goes with what OneDrive removed (F116).
                 claimed: None,
             };
-            let (applied, full) = materializer.apply_with_handover(scope).map_err(applying)?;
-            let said = match commit {
+            // What a reconcile did on disk stands whether or not its cycle
+            // goes through: rows wait for the folders it made the user's own
+            // (their `mkdir`), and the watcher is told what to examine — the
+            // attributes are off already, and nothing else says so.
+            let hand_over = {
+                let store = store.clone();
+                move |done: &OnDisk| {
+                    if !done.recreated.is_empty() {
+                        let recreated = done.recreated.clone();
+                        if let Err(e) = store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
+                            tracing::warn!("cannot let the outbox wait for folders made again: {e}");
+                        }
+                    }
+                    if !done.examine.is_empty() {
+                        let mut batch = Batch::new();
+                        for (rel, below) in &done.examine {
+                            match (below, rel.parent(), rel.file_name()) {
+                                (true, _, _) => batch.tree(rel),
+                                (false, Some(parent), Some(name)) => batch.name(parent, name),
+                                _ => {}
+                            }
+                        }
+                        examine(batch);
+                    }
+                }
+            };
+            let (mut applied, full) = match materializer.apply_with_handover(scope) {
+                Ok(applied) => applied,
+                Err(failed) => {
+                    let Failed { error, done } = *failed;
+                    hand_over(&done);
+                    record_failed(&report, &store, &root.path, done);
+                    return Err(applying(error));
+                }
+            };
+            let committed = (|| -> Result<Said, CycleError> { Ok(match commit {
                 Commit::Swap { link, listing } => {
                     // What the disk does not show yet keeps its base; its
                     // change waits (the read-write reconcile must, items 3 and 4).
@@ -332,15 +366,16 @@ impl Listing {
                     store.call_blocking(move |s| s.commit_page(&changes, &next))?;
                     Said::Nothing
                 }
-            };
-            if !applied.on_disk.recreated.is_empty() {
-                // Rows into a folder made again (`resyncChangesUploadDifferences`
-                // only, F116) wait for its `mkdir`.
-                let recreated = applied.on_disk.recreated.clone();
-                if let Err(e) = store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
-                    tracing::warn!("cannot let the outbox wait for folders made again: {e}");
+            }) })();
+            let said = match committed {
+                Ok(said) => said,
+                Err(e) => {
+                    let done = std::mem::take(&mut applied.on_disk);
+                    hand_over(&done);
+                    record_failed(&report, &store, &root.path, done);
+                    return Err(e);
                 }
-            }
+            };
             // `items` just took this cycle's answer: a held or pending
             // `delete`/`move-out` row whose item is not in it any more has
             // nothing left to send (the fix for a held delete outliving the
@@ -358,17 +393,7 @@ impl Listing {
                 Err(e) => tracing::warn!("cannot drop held or pending removals of items already gone from OneDrive: {e}"),
             }
             record(&report, &store, &root.path, &applied, said);
-            if !applied.on_disk.examine.is_empty() {
-                let mut batch = Batch::new();
-                for (rel, below) in &applied.on_disk.examine {
-                    match (below, rel.parent(), rel.file_name()) {
-                        (true, _, _) => batch.tree(rel),
-                        (false, Some(parent), Some(name)) => batch.name(parent, name),
-                        _ => {}
-                    }
-                }
-                examine(batch);
-            }
+            hand_over(&applied.on_disk);
             Ok(Reconciled { applied, full })
         })
         .await

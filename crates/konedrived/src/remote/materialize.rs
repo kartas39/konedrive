@@ -98,17 +98,40 @@ pub struct OnDisk {
     /// watcher keeps says (the daemon's own changes are dropped by pid).
     pub examine: Vec<(PathBuf, bool)>,
     /// Read-write mode: folders gone from OneDrive whose directory stays
-    /// here, holding local work, to be made again there: a
-    /// `resyncChangesUploadDifferences` listing only (F116).
+    /// here, holding local work, to be made again there (F116).
     pub recreated: Vec<String>,
     /// Items whose change the base takes in this cycle whatever a local
     /// change holds — removed in OneDrive and taken off the disk, or, in
     /// read-write mode, no longer placed here (issue #104). Never deferred.
     pub taken: HashSet<String>,
     /// Read-write mode: what was removed in OneDrive and stays here in
-    /// part, relative to the root, with how many files stay — changed or
-    /// new on this computer, to be uploaded as new.
-    pub kept: Vec<(PathBuf, u64)>,
+    /// part, relative to the root, with what stays. One entry for the
+    /// outermost thing removed ([`OnDisk::note_kept`]).
+    pub kept: Vec<(PathBuf, Kept)>,
+}
+
+/// What stays on this computer of something removed in OneDrive.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Kept {
+    /// Files changed or made here, which the examination records as new.
+    pub uploaded: u64,
+    /// Files and folders that stay on this computer only: their name is
+    /// ignored or refused by OneDrive, or a folder above them has such a
+    /// name, so nothing uploads them.
+    pub local: u64,
+    /// How many of them were the daemon's until this pass took konedrive's
+    /// attributes off them: a later pass finds them as the user's own.
+    pub stripped: u64,
+}
+
+impl Kept {
+    pub(super) fn since(self, before: Kept) -> Kept {
+        Kept { uploaded: self.uploaded - before.uploaded, local: self.local - before.local, stripped: self.stripped - before.stripped }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.uploaded + self.local == 0
+    }
 }
 
 impl OnDisk {
@@ -117,13 +140,39 @@ impl OnDisk {
     // it is handled.
     pub fn absorb(&mut self, later: OnDisk) {
         let OnDisk { rescued, copies, examine, recreated, taken, kept } = later;
-        self.kept.extend(kept);
+        for (rel, kept) in kept {
+            self.note_kept(&rel, kept);
+        }
         self.rescued.extend(rescued);
         self.copies.extend(copies);
         self.examine.extend(examine);
         self.recreated.extend(recreated);
         self.taken.extend(taken);
     }
+}
+
+impl OnDisk {
+    /// `kept` stays of what was removed at `rel`. Said once, for the
+    /// outermost thing removed: an entry at or below `rel` is replaced, and
+    /// nothing is added below an entry there is.
+    pub(super) fn note_kept(&mut self, rel: &Path, kept: Kept) {
+        if self.kept.iter().any(|(above, _)| rel != above && rel.starts_with(above)) {
+            return;
+        }
+        // What an earlier pass took the attributes off is counted as that
+        // still, though this pass found it the user's own.
+        let stripped = self.kept.iter().filter(|(below, _)| below.starts_with(rel)).map(|(_, k)| k.stripped).sum::<u64>();
+        self.kept.retain(|(below, _)| !below.starts_with(rel));
+        self.kept.push((rel.to_path_buf(), Kept { stripped: kept.stripped + stripped, ..kept }));
+    }
+}
+
+/// A reconcile that failed, and what it did on disk before it did
+/// ([`OnDisk`]): that stands, and is still to be said and handed on.
+#[derive(Debug)]
+pub struct Failed {
+    pub error: ApplyError,
+    pub done: OnDisk,
 }
 
 /// What a pass left for later. A pass that fails hands none of it over: the
@@ -289,8 +338,8 @@ struct Run {
     /// The inodes items were placed as, not recorded yet: written
     /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
-    /// Files a removal left in place so far, as the user's own.
-    kept: u64,
+    /// What removals left in place so far, as the user's own.
+    kept: Kept,
     /// Read-write mode: items this run found no longer placed (issue #104):
     /// examined first, and removed by a later cycle at the earliest.
     unplaced: HashSet<String>,
@@ -323,15 +372,19 @@ impl Materializer {
     /// ([`OnDisk`]): its rescues, conflict copies, places to examine,
     /// folders made local, and what it forgot and took off. What it left
     /// unsettled is not carried: the Full pass decides that again.
-    pub fn apply_with_handover(&self, scope: Scope) -> Result<(Applied, bool), ApplyError> {
+    pub fn apply_with_handover(&self, scope: Scope) -> Result<(Applied, bool), Box<Failed>> {
         let changed = matches!(scope, Scope::Changed(_));
         let mut over = Handover::default();
-        let (mut applied, full) = match self.pass(scope, &mut over) {
+        let passed = match self.pass(scope, &mut over) {
             Err(ApplyError::NeedFull(why) | ApplyError::Io(why)) if changed => {
                 tracing::info!("{why}; reconciling the whole folder");
-                (self.pass(Scope::Full, &mut over)?, true)
+                self.pass(Scope::Full, &mut over).map(|applied| (applied, true))
             }
-            other => (other?, !changed),
+            other => other.map(|applied| (applied, !changed)),
+        };
+        let (mut applied, full) = match passed {
+            Ok(passed) => passed,
+            Err(error) => return Err(Box::new(Failed { error, done: over.on_disk })),
         };
         let mut on_disk = over.on_disk;
         on_disk.absorb(std::mem::take(&mut applied.on_disk));

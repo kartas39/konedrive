@@ -315,9 +315,9 @@ impl TreeStore {
     }
 
     /// Rows that were to go into one of `folders` — folders gone from
-    /// OneDrive, whose local directory is made again (a
-    /// `resyncChangesUploadDifferences` listing only, F116) — wait for
-    /// that directory's `mkdir` instead, and find its new id by their place.
+    /// OneDrive, whose local directory stays, holding local work, and is
+    /// made again there (F116) — wait for that directory's `mkdir`
+    /// instead, and find its new id by their place.
     pub fn outbox_detach_parents(&self, folders: &[String]) -> Result<usize, TreeError> {
         let mut n = 0;
         for id in folders {

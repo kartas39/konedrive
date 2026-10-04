@@ -38,8 +38,17 @@ impl Materializer {
                 }
                 None => false,
             };
-            if !placed && removed && self.take_off(&holding, &name, &Path::new(HOLDING).join(&name), rw.removed(), run)?.removal == Removal::Gone {
-                continue;
+            let held = Path::new(HOLDING).join(&name);
+            if !placed && removed {
+                if self.take_off(&holding, &name, &held, rw.removed(), run)?.removal == Removal::Gone {
+                    continue;
+                }
+                // What stays of it goes back where it was: said under that path.
+                if let Some(was) = id.as_deref().and_then(|id| run.moved_from.get(id).cloned()) {
+                    for (rel, _) in run.out.on_disk.kept.iter_mut().filter(|(rel, _)| *rel == held) {
+                        *rel = was.clone();
+                    }
+                }
             }
             if let Some(id) = &id {
                 if placed {

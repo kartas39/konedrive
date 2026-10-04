@@ -855,15 +855,18 @@ delete or a move not examined yet (F114, F115).
 and what OneDrive never had is kept (§7; decided on 2026-10-04, in place of "deleted there means
 deleted, whole"). In the same cycle goes what OneDrive had and the daemon placed: a file not
 downloaded, a download unchanged since, a download in progress (stopped first), a folder once
-nothing is left in it. What stays is what only this computer has: a file made here, and a download
-changed here — its stamp differs, it is open for writing, or an `update` waits for it — with the
+nothing is left in it. What stays is what only this computer has: a file made here, whatever its name, a
+download changed here — its stamp differs, it is open for writing, or an `update` waits for it — and
+a download that is not of the removed item at all (moved in from another folder), with the
 folders above them. Their konedrive attributes come off, so they are the user's own: the files go
 up as new, the folders are made again in OneDrive, and the rows that waited there are dropped, the
 examination recording new ones (an `update` of the removed item ends as a `create`, as it does when
-the upload meets the `404` first, §7). An ignored name, a symlink and the like stay where their
-folder stays, and keep no folder by themselves. Nothing is rescued out of the folder. The activity
-log has one `removed` entry for what OneDrive removed, saying how many files were kept (F116,
-F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). Inside a
+the upload meets the `404` first, §7). A symlink, a socket and an empty file or directory with an
+ignored name stay where their folder stays, and keep no folder by themselves. What is kept under an
+ignored or refused name stays on this computer only (F243). Nothing is rescued out of the folder.
+What is kept is handed to the examination, and said, also when the cycle then fails. The activity
+log has one `removed` entry for what OneDrive removed, saying how many files go up as new and how
+many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). Inside a
 folder that is leaving the older rule still holds: there such an item goes whole (F188).
 
 **What stops being placed** while OneDrive still has it (a name too long, a reserved name, the
