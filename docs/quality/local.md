@@ -123,6 +123,9 @@ inside it. `LO5` after these.
   `classify.rs:397, 430, 471`; `missing.rs:95, 226`. `record_replaced` and its async twin
   (`local/mod.rs:91–120`); `handles_current` and its async twin (`liveness.rs:189–206`).
 - **Fix:** `Detection::new`, a `Readiness` type, `Entry::snapshot()`. **Size:** S each.
+- **Fixed 2026-10-04** in `1eee48d` (#184): `Inode::same_object` everywhere, the `Detection` constructors in
+  `examine/detect.rs`, one `handles::record_replaced`, `daemon_owned` and `gone` once in `folder/disk.rs`.
+  A copy is stripped through the descriptor compared with what was listed (`F275`).
 
 ## LO9. Leaving objects are four parallel structures
 
@@ -157,6 +160,8 @@ inside it. `LO5` after these.
 - `local/mod.rs:16–17` ("Nothing here runs from the daemon yet"), `:90–112`;
   `desktop/baloo.rs:17, 24, 73`; `desktop/thumbs.rs:97–98`; `examine.rs:9–26`. Items reachable
   by two paths (`local/mod.rs:35–40`).
+- **Fixed 2026-10-04** in `1eee48d` (#184) for `local/`: stale comments and module paths. The `desktop/` lines
+  are left to B14.
 
 ## LO13. A mount without user attributes inside the folder aborts every examination — **defect?**
 
