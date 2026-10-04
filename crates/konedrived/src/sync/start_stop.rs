@@ -224,7 +224,7 @@ impl SyncService {
             cancel.cancel();
         }
         // The poller first (the read-write reconcile): a cycle may hold the tree lock while it waits for
-        // `lifecycle`, which the caller may hold for writing, and the watcher's examination
+        // the folder's state, which the caller may hold for writing, and the watcher's examination
         // waits for that tree lock — stopping the poller ends that cycle, and its lock with it.
         syncing.poller.stop().await;
         // Its outbox worker next: a request under way is cut off, and its row replayed when

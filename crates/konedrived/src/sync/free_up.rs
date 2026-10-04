@@ -235,11 +235,11 @@ impl SyncService {
     /// # Open, wait for the file, and only then decide
     ///
     /// The mode decides what the punch may go by, and it must not change
-    /// between that decision and the punch (see `lifecycle`). The version
-    /// this replaces took the lifecycle lock first and then waited for a
+    /// between that decision and the punch (see `folder`). The version
+    /// this replaces took the state lock first and then waited for a
     /// fill of the same inode — a download of any length — holding up every
     /// registration and Forget meanwhile. Now the file is opened and its
-    /// inode lock taken first, and the lifecycle lock after: the
+    /// inode lock taken first, and the state lock after: the
     /// registration is looked at again under it, and a folder forgotten or
     /// registered anew meanwhile is refused, with nothing punched.
     async fn free_one(&self, path: &Path, wait: Wait) -> Result<(u64, String), SyncError> {
