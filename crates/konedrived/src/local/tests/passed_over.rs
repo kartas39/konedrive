@@ -88,8 +88,8 @@ fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
     assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None)], "the new file goes up, and a.txt is neither changed nor deleted");
     assert_eq!((listed_by_names, listed_by_scan), (cannot_be_read(&["a.txt"]), cannot_be_read(&["a.txt"])));
 
-    // Readable again: the look its change of mode asks for takes the line off.
-    fx.examine(&names(&[("", "a.txt")]));
+    // Readable again: the recheck the run asked for takes the line off.
+    fx.examine(&full.passed);
     assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
 }
 
@@ -208,7 +208,8 @@ fn what_was_listed_in_a_copied_folder_that_went_gets_no_row() {
 
 /// A directory that cannot be read is listed, and a line of the "not uploaded" list
 /// inside it stays: what could not be looked at is not known to be gone. The directory's
-/// line goes when it can be read again, the line inside when the thing is no longer there.
+/// line goes when it can be read again; what is inside it is examined then, and the line
+/// inside goes when the thing is no longer there.
 #[test]
 fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     if root() {
@@ -229,12 +230,14 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     assert_eq!(out.unreadable, [PathBuf::from("photos")]);
     assert_eq!(closed, [("photos".to_owned(), "unreadable".to_owned()), link.clone()], "the link is still there, only not seen");
 
-    fx.examine(&names(&[("", "photos")]));
-    assert_eq!(listed(&fx), [link], "the directory can be read; nothing looked inside it yet");
-
+    // Readable again: the recheck takes the directory's line off and looks inside it, at
+    // what came while it was closed too.
+    fx.write("photos/new.txt", b"n");
     std::fs::remove_file(fx.path("photos/link")).unwrap();
-    fx.examine(&Batch::full());
-    assert!(listed(&fx).is_empty());
+    let again = fx.examine(&out.passed);
+    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(again.passed.is_empty() && again.unreadable.is_empty());
+    assert_eq!(fx.summary(), vec![(Create, "photos/new.txt".into(), None)]);
 }
 
 /// A file of an item whose state mark is gone, or says nothing konedrive writes, is left

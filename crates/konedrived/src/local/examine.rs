@@ -147,8 +147,9 @@ pub struct Examined {
     /// entries it was refused to open, strip or read (`Run::entry_io`): not
     /// examined, so nothing in or at them counts as missing.
     pub unreadable: Vec<PathBuf>,
-    /// The entries passed over, to examine again: kept apart from `recheck`,
-    /// since their cause may last, and the watcher backs their recheck off.
+    /// The entries passed over and the places the listing could not read, to
+    /// examine again: kept apart from `recheck`, since their cause may last,
+    /// and the watcher backs their recheck off.
     pub passed: Batch,
     /// The folder's filesystem had changed: its file handles were taken again
     /// (a Full scan), and nothing was decided by the old ones.
@@ -335,13 +336,21 @@ impl<'l> Run<'_, '_, 'l> {
         for (ix, reason) in &sorted.listed {
             self.skip(&listing[*ix].rel, reason.clone());
         }
-        // What the listing could not read is said, as what is passed over
-        // later is ([`pass_over`](Self::pass_over)): only its name is known,
-        // so one the ignore list names, which would stay local, is left out.
+        // What the listing could not read is said and asked for again, as
+        // what is passed over later is ([`pass_over`](Self::pass_over)): its
+        // own name, and, should it be a directory that can be read by then,
+        // everything below it, which no run has looked at. Only its name is
+        // known, so one the ignore list names, which would stay local, is
+        // left out.
         for rel in listing.unread() {
-            if !rel.file_name().is_some_and(|name| daemon_owned(name) || self.ex.ignore.matches(name)) {
-                self.skip(rel, LocalSkip::Unreadable);
+            if rel.file_name().is_some_and(|name| daemon_owned(name) || self.ex.ignore.matches(name)) {
+                continue;
             }
+            self.skip(rel, LocalSkip::Unreadable);
+            if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+                self.outcome.out.passed.name(parent, name);
+            }
+            self.outcome.out.passed.tree(rel);
         }
         // 6. Who is who, before anything is decided by place: a directory's
         // id says what its entries' parent is. Every id is decided first,
