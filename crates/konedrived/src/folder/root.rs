@@ -1,17 +1,21 @@
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::{read_state, XATTR_DRIVE, XATTR_ROOT};
 use konedrive_fs::probe::{probe_dir, ProbeError};
+use konedrive_fs::proc_path;
 use nix::errno::Errno;
-use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
+use nix::fcntl::{openat2, OFlag, OpenHow};
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
 use crate::helper::{HelperError, HelperLink};
+
+use super::disk::beneath;
+use super::walk::reserved;
 
 /// Why a file or a folder of the root was not opened ([`SyncRoot::open_inside`],
 /// [`SyncRoot::open_item`]).
@@ -56,16 +60,6 @@ pub enum RegisterError {
     /// which the helper may hold the registration all the same.
     #[error("{0}")]
     Helper(#[from] HelperError),
-}
-
-/// The path of an open descriptor, for the few APIs that still take one.
-///
-/// Using `/proc/self/fd/<n>` rather than the caller's path string means that
-/// whatever is done through it lands in the exact directory the descriptor
-/// was opened on, and cannot be redirected by swapping a component of the
-/// path afterwards.
-pub(crate) fn proc_path(file: &File) -> PathBuf {
-    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 /// Opens a candidate sync root, and nothing else: `O_DIRECTORY` so a file
@@ -493,11 +487,7 @@ impl SyncRoot {
         let relative = self.relative(path)?;
         let how = OpenHow::new()
             .flags(OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(
-                ResolveFlag::RESOLVE_BENEATH
-                    | ResolveFlag::RESOLVE_NO_SYMLINKS
-                    | ResolveFlag::RESOLVE_NO_MAGICLINKS,
-            );
+            .resolve(beneath());
         match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => Ok(File::from(fd)),
             Err(Errno::EACCES) => self.open_locked(&dir, &relative, path),
@@ -518,9 +508,7 @@ impl SyncRoot {
     fn open_locked(&self, dir: &File, relative: &Path, shown: &Path) -> Result<File, OpenError> {
         let how = OpenHow::new()
             .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(
-                ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS,
-            );
+            .resolve(beneath());
         let read_only = match openat2(dir.as_fd(), relative, how) {
             Ok(fd) => File::from(fd),
             Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => return Err(OpenError::OutsideRoot),
@@ -571,15 +559,12 @@ impl SyncRoot {
         // `.konedrive-*` is the daemon's own — the holding directory, a new
         // folder before its label, a replacement before its swap — and
         // nothing in or under it is anyone's to pin or free up.
-        let reserved = konedrive_fs::RESERVED_PREFIX.as_bytes();
-        if relative.components().any(|part| part.as_os_str().as_encoded_bytes().starts_with(reserved)) {
+        if relative.components().any(|part| reserved(part.as_os_str())) {
             return Err(OpenError::NotManaged);
         }
         let how = OpenHow::new()
             .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(
-                ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS,
-            );
+            .resolve(beneath());
         let item = match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => File::from(fd),
             Err(Errno::EXDEV | Errno::ELOOP) => return Err(OpenError::OutsideRoot),

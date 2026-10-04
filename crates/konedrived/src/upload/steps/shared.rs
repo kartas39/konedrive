@@ -12,11 +12,11 @@ use konedrive_fs::handle::FileHandle;
 use super::sections::{blocking, blocking_under, tree, Tree};
 use crate::folder::classify::classify;
 use crate::folder::disk::{Disk, Probe};
+use crate::folder::walk::reserved;
 use crate::local::{names, RECHECK};
 use crate::upload::engine::{now, Engine, Fail, Outcome};
 use crate::upload::local::{self, Found};
 use crate::upload::SWAP_PREFIX;
-use konedrive_fs::RESERVED_PREFIX;
 use konedrive_graph::drive::{DriveError, DriveItem, WriteError};
 use konedrive_tree::outbox::{frees, Base, Committed, ConflictCopy, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason, SessionUrl};
 use konedrive_tree::{ActivityRow, Change, Kind, Placement, Row, Table};
@@ -451,7 +451,7 @@ pub(in crate::upload) async fn cancel_session(e: &Engine, url: &SessionUrl) -> R
 pub(in crate::upload) async fn holds(e: &Engine, remote: &DriveItem) -> Result<bool, Fail> {
     let (Some(parent), name) = place(remote) else { return Ok(false) };
     // The daemon's own temporary name is a step of a row, not a place.
-    if name.starts_with(RESERVED_PREFIX) {
+    if reserved(OsStr::new(&name)) {
         return Ok(true);
     }
     if !matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed) {
@@ -490,7 +490,7 @@ pub(in crate::upload) fn base_after_a_change(base: &Base, parent: &str, name: &s
 pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
     let (Some(parent), name) = place(remote) else { return Ok(None) };
     let placeable = matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed);
-    if !placeable || name.starts_with(RESERVED_PREFIX) || names::refused(OsStr::new(&name)).is_some() {
+    if !placeable || reserved(OsStr::new(&name)) || names::refused(OsStr::new(&name)).is_some() {
         return Ok(None);
     }
     let Some(dir_rel) = e.store().call(move |s| s.locate(Table::Items, &parent)).await?.filter(|l| l.placed).map(|l| l.rel) else {

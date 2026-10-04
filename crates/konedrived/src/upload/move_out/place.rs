@@ -1,10 +1,11 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
+use konedrive_fs::proc_path;
 use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, ResolveFlag};
 use crate::folder::disk::Disk;
 use crate::local::liveness::same_place;
@@ -15,10 +16,6 @@ use super::MoveOuts;
 // ---------------------------------------------------------------------------
 // where an object is
 // ---------------------------------------------------------------------------
-
-pub(super) fn proc_path(fd: &impl AsRawFd) -> PathBuf {
-    PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-}
 
 /// Where the object behind `fd` is, proved: `/proc/self/fd` read, and that path opened again
 /// by the user's own lookups names the same inode. A file whose dentry the kernel could not

@@ -2,7 +2,6 @@
 //! machine, one file for each item id.
 
 use std::io;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -86,7 +85,7 @@ impl ContentSource for LocalDir {
         if let Some(root) = &self.refusing {
             let names = xattr::FileExt::list_xattr(&opened)
                 .map_err(|e| SourceError::NotFound(format!("{}: {e}", path.display())))?;
-            let resolved = std::fs::read_link(format!("/proc/self/fd/{}", opened.as_raw_fd()))
+            let resolved = std::fs::read_link(konedrive_fs::proc_path(&opened))
                 .map_err(|e| SourceError::NotFound(format!("{}: {e}", path.display())))?;
             if let Some(why) = refused_source(names, &resolved, root) {
                 tracing::error!("refusing to fill a file from {}: {why}", path.display());

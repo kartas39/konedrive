@@ -6,10 +6,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
-use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, ResolveFlag};
+use konedrive_fs::proc_path;
+use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow};
 use xattr::FileExt;
 
-use super::place::{proc_path, reopen_parent};
+use crate::folder::disk::beneath;
+
+use super::place::reopen_parent;
 
 // ---------------------------------------------------------------------------
 // walking a moved-out folder
@@ -30,7 +33,7 @@ fn open_below(top: &File, rel: &Path, is_dir: bool) -> io::Result<File> {
     let flags = if is_dir { OFlag::O_RDONLY | OFlag::O_DIRECTORY } else { OFlag::O_RDONLY | OFlag::O_NONBLOCK };
     let how = OpenHow::new()
         .flags(flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-        .resolve(ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS);
+        .resolve(beneath());
     Ok(File::from(openat2(top.as_fd(), rel, how)?))
 }
 

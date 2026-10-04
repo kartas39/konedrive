@@ -1,4 +1,4 @@
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
@@ -293,8 +293,8 @@ pub(crate) async fn serve(
 
 /// The name the kernel has for an open file, for showing it:
 /// `/proc/self/fd/<n>`, read, never followed. Empty if it cannot be read.
-fn fd_path(fd: &impl AsRawFd) -> String {
-    std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+fn fd_path(fd: &impl AsFd) -> String {
+    std::fs::read_link(konedrive_fs::proc_path(fd))
         .map(|path| path.display().to_string())
         .unwrap_or_default()
 }

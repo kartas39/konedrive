@@ -6,13 +6,14 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
+use konedrive_fs::proc_path;
 use konedrive_fs::placeholder::{self, LOCKED_DIR_MODE, LOCKED_FILE_MODE, OPEN_DIR_MODE, OPEN_FILE_MODE, XATTR_ITEM_ID};
 use nix::errno::Errno;
 use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, RenameFlags, ResolveFlag};
@@ -132,12 +133,10 @@ fn passed_over(failed: usize, what: &str) -> io::Result<()> {
     }
 }
 
-fn beneath() -> ResolveFlag {
+/// How every open below a directory of the folder resolves its path: never out of that
+/// directory, never through a symbolic link, never through a `/proc` magic link.
+pub(crate) fn beneath() -> ResolveFlag {
     ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS
-}
-
-fn proc_path(file: &File) -> PathBuf {
-    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 /// The user attribute `name` of what is at `path`, read by name (`lgetxattr`).

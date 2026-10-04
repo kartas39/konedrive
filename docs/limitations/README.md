@@ -410,6 +410,7 @@ application must never read zeros where real content should be.
 - [D51](D51.md) — The helper's stand-in is one accept loop for `helper/`, `hydration/` and `folder/`, not for the daemon
 - [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 - [D53](D53.md) — The enumeration of local acts reads what the store knows from the store; what the examination's four parts left as it was
+- [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but `local/` and the helper keep their own
 
 ---
 

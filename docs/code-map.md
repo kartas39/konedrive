@@ -634,8 +634,8 @@ Design: `hydration.md`.
 
 ### `crates/konedrive-fs/src/`
 
-- `lib.rs` — the list of the modules, and the limits the crates share: `MAX_DEPTH`, `NAME_MAX`,
-  `RESERVED_PREFIX`.
+- `lib.rs` — the list of the modules, the limits the crates share (`MAX_DEPTH`, `NAME_MAX`,
+  `RESERVED_PREFIX`), and `proc_path`, the path of an open descriptor.
 - `placeholder.rs` — a placeholder: a sparse file whose state is in its extended attributes.
   `[tests]`
 - `lease.rs` — a write lease: proof that no other process has the file open. `[tests]`

@@ -433,7 +433,7 @@ pub fn reopen_for_writing(object: &OwnedFd) -> io::Result<File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(format!("/proc/self/fd/{}", object.as_raw_fd()))?;
+        .open(konedrive_fs::proc_path(object))?;
     let after = file.metadata()?;
     if (after.dev(), after.ino()) != (before.dev(), before.ino()) {
         return Err(io::Error::other("the reopened descriptor is not the same file"));

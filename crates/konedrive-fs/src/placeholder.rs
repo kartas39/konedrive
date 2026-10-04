@@ -471,13 +471,12 @@ pub fn create_dir_item(parent: &File, temp_name: &str, item_id: &str) -> io::Res
 /// Drop `file` afterwards: a second descriptor of one's own makes a write
 /// lease on the file impossible to take.
 pub fn reopen_writable(file: &File) -> io::Result<File> {
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
     let flags = OFlag::from_bits_truncate(nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_GETFL)?);
     if flags & OFlag::O_ACCMODE == OFlag::O_RDWR {
         return file.try_clone();
     }
-    let path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let path = crate::proc_path(file);
     with_owner_write(file, || {
         std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_CLOEXEC).open(&path)
     })
