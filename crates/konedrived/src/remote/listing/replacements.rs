@@ -331,8 +331,12 @@ impl Listing {
         let leased = self.ctx.writes.as_ref().map(|writes| Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store });
         let outcome = replace_until(&disk, &self.ctx.locks, source, replacement, leased.as_ref(), stop).await?;
         if matches!(outcome, ReplaceOutcome::Replaced) {
-            // A new version is a new inode: the item's recorded one now.
-            crate::local::record_replaced_async(&disk, &self.ctx.store, &replacement.id, &replacement.rel).await;
+            // A new version is a new inode: the item's recorded one now. Recorded in a
+            // blocking section of its own, like the replacement's other file calls.
+            let (store, id, rel) = (self.ctx.store.clone(), replacement.id.clone(), replacement.rel.clone());
+            if let Err(e) = tokio::task::spawn_blocking(move || crate::local::handles::record_replaced(&disk, &store, &id, &rel)).await {
+                tracing::warn!("cannot record the object {} was replaced by: {e}", replacement.id);
+            }
             slot.succeeded();
         }
         Some(outcome)

@@ -4,7 +4,10 @@
 //! on the filesystem the folder is on now. The store keeps the name of that filesystem
 //! ([`namespace`]). The examination makes the record right before it decides anything
 //! ([`prepare`]: this is the one place that writes it); the move out only asks
-//! ([`current_async`]).
+//! ([`current`]).
+//!
+//! Which object is an item's is recorded here too, for the one writer outside the
+//! examination and the reconcile's placement: a replacement ([`record_replaced`]).
 
 use std::fs::File;
 use std::io;
@@ -19,6 +22,7 @@ use konedrive_tree::{ActivityKind, ActivityRow, Store, TreeError};
 use nix::fcntl::OFlag;
 
 use super::entry::proc_path;
+use crate::folder::disk::Disk;
 use super::liveness::open_no_symlinks;
 
 /// The filesystem the folder's handles belong to: the root directory's own
@@ -92,12 +96,39 @@ pub fn prepare(store: &Store, root: &File, now: i64) -> Result<Prepared, TreeErr
     }
 }
 
-/// Whether the handles `store` records were taken on the filesystem `root` is on now, for
-/// async code. Only a question: with nothing recorded, or nothing that can be read, the
-/// answer is no, and stays no until an examination has run ([`prepare`]).
-pub async fn current_async(store: &Store, root: &File) -> bool {
+/// Whether the handles `store` records were taken on the filesystem `root` is on now. Only
+/// a question: with nothing recorded, or nothing that can be read, the answer is no, and
+/// stays no until an examination has run ([`prepare`]). It reads the root's handle and
+/// waits for the store: for a blocking thread, never a runtime's.
+pub fn current(store: &Store, root: &File) -> bool {
     let Ok(now) = namespace(root) else { return false };
-    matches!(store.call(|s| s.handles_filesystem()).await, Ok(Some(recorded)) if recorded == now)
+    matches!(store.call_blocking(|s| s.handles_filesystem()), Ok(Some(recorded)) if recorded == now)
+}
+
+/// Records the inode a replacement swapped in for item `id` at `rel`
+/// (`items.local_handle`): a new version is a new inode, and the recorded handle must
+/// name it, or a move out of the folder would be taken for a delete (its old inode is
+/// gone). Only if what stands there now still carries the item's id; by name, opening
+/// nothing. A filesystem that gives no handles leaves it unrecorded: such an item is
+/// never deleted in OneDrive for being missing (the examination cannot prove it gone).
+/// It opens the directory, reads an attribute and waits for the store: for a blocking
+/// thread, never a runtime's.
+pub fn record_replaced(disk: &Disk, store: &Store, id: &str, rel: &Path) {
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return };
+    let Ok(dir) = disk.dir(parent) else { return };
+    let there = xattr::get(proc_path(&dir).join(name), XATTR_ITEM_ID).ok().flatten();
+    if there.as_deref() != Some(id.as_bytes()) {
+        return;
+    }
+    match FileHandle::at(&dir, name) {
+        Ok(handle) => {
+            let item = id.to_owned();
+            if let Err(e) = store.call_blocking(move |s| s.set_local_handle(&item, Some(&handle))) {
+                tracing::warn!("cannot record the object {id} was replaced by: {e}");
+            }
+        }
+        Err(e) => tracing::debug!("no file handle for {}: {e}", name.to_string_lossy()),
+    }
 }
 
 /// The folder's filesystem changed: its recorded handles say nothing any more. Every

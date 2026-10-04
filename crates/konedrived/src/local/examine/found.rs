@@ -9,11 +9,11 @@ use konedrive_fs::placeholder::{self, State};
 use crate::local::batch::Batch;
 use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
-use crate::local::RECHECK;
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState, Reason, Snapshot};
+use konedrive_tree::outbox::{Inode, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::Row;
 
+use super::detect::Readiness;
 use super::{Content, denied, ExamineError, Expect, gone, Run};
 
 impl Run<'_, '_> {
@@ -37,14 +37,12 @@ impl Run<'_, '_> {
             }
         }
         let content = if e.ty == Type::File { self.content(id, &base, &e, batch)? } else { Content::Same };
-        let mut d = self.detection(OutboxKind::Move, id, &base, &e, e.ctag.as_deref());
+        let mut d = self.of_item(OutboxKind::Move, id, &base, &e, e.ctag.as_deref());
         match content {
             Content::Changed => d.kind = OutboxKind::Update,
             Content::Waiting => {
                 d.kind = OutboxKind::Update;
-                d.state = OutboxState::Waiting;
-                d.reason = Some(Reason::OpenForWriting);
-                d.next_try = Some(self.ex.now + RECHECK.as_secs() as i64);
+                self.waiting().onto(&mut d);
             }
             Content::Same => d.same_content = true,
             Content::Unknown => {}
@@ -92,8 +90,7 @@ impl Run<'_, '_> {
     }
 
     fn hydrated(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
-        let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
-        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(now)) {
+        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(e.snapshot())) {
             // Being uploaded as it is now.
             return Ok(Content::Unknown);
         }
@@ -157,10 +154,17 @@ impl Run<'_, '_> {
         Ok(Content::Same)
     }
 
-    /// `e`, opened read-only, if it is still the same object, by the policy
-    /// of [`entry_io`](Self::entry_io).
-    fn open_same(&mut self, e: &Entry) -> Result<Opened, ExamineError> {
-        let opened = self.ex.disk.dir(e.dir_rel()).and_then(|dir| self.ex.disk.open_file(&dir, &e.name)).and_then(|file| {
+    /// The object `e` was listed as, opened read-only: the way a listed
+    /// entry is opened (the removal of an empty copy alone makes its own
+    /// checks, `remove_empty`). The name is opened and the descriptor compared with
+    /// what was listed, so everything done through it afterwards — a read, a
+    /// strip, a restore — is done to the object the run decided about. A
+    /// name that holds another object by now is [`Opened::Gone`], like one
+    /// that holds nothing. By the policy of [`entry_io`](Self::entry_io).
+    pub(super) fn open_same(&mut self, e: &Entry) -> Result<Opened, ExamineError> {
+        let disk = self.ex.disk;
+        let open = |dir| if e.ty == Type::Dir { disk.open_subdir(&dir, &e.name) } else { disk.open_file(&dir, &e.name) };
+        let opened = disk.dir(e.dir_rel()).and_then(open).and_then(|file| {
             let stat = nix::sys::stat::fstat(&file).map_err(io::Error::from)?;
             Ok((file, stat))
         });
@@ -173,11 +177,8 @@ impl Run<'_, '_> {
             }
             Err(err) => return Err(err.into()),
         };
-        let same = match (FileHandle::of(&file).ok(), &e.handle) {
-            (Some(a), Some(b)) => &a == b,
-            _ => stat.st_dev == e.dev && stat.st_ino == e.ino,
-        };
-        Ok(if same { Opened::Same(file) } else { Opened::Gone })
+        let there = Inode { dev: stat.st_dev, ino: stat.st_ino, handle: FileHandle::of(&file).ok() };
+        Ok(if there.same_object(&e.inode()) { Opened::Same(file) } else { Opened::Gone })
     }
 
     /// A placeholder whose size a `truncate(2)` changed gets the cloud's
@@ -216,31 +217,34 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    /// Whether a writer holds the new file `e`: `waiting` then, `ready`
-    /// otherwise. `None` for a file this daemon is refused to open: it is
-    /// passed over, and gets no row.
-    pub(super) fn probe_writer(&mut self, e: &Entry) -> Result<Option<Probed>, ExamineError> {
-        let busy = match self.open_same(e)? {
-            Opened::Same(file) => lease::open_for_writing(&file).unwrap_or_else(|err| {
-                tracing::warn!("cannot tell whether {} is open for writing ({err})", e.rel.display());
-                false
-            }),
-            Opened::Gone => false,
+    /// Whether a writer holds the new file `e`. `None` for a file that gets
+    /// no row in this run: one this daemon is refused to open is passed
+    /// over; one that went since it was listed, or whose name holds another
+    /// object by now, is not there to upload, and its name is looked at
+    /// again.
+    pub(super) fn probe_writer(&mut self, e: &Entry) -> Result<Option<Readiness>, ExamineError> {
+        let file = match self.open_same(e)? {
+            Opened::Same(file) => file,
+            Opened::Gone => {
+                self.recheck(e);
+                return Ok(None);
+            }
             Opened::Passed => return Ok(None),
         };
+        let busy = lease::open_for_writing(&file).unwrap_or_else(|err| {
+            tracing::warn!("cannot tell whether {} is open for writing ({err})", e.rel.display());
+            false
+        });
         if busy {
             self.recheck(e);
-            return Ok(Some((OutboxState::Waiting, Some(Reason::OpenForWriting), Some(self.ex.now + RECHECK.as_secs() as i64))));
+            return Ok(Some(self.waiting()));
         }
-        Ok(Some((OutboxState::Ready, None, None)))
+        Ok(Some(Readiness::Ready))
     }
 }
 
-/// A new file's row as [`Run::probe_writer`] decides it: its state, reason and next try.
-pub(super) type Probed = (OutboxState, Option<Reason>, Option<i64>);
-
 /// What [`Run::open_same`] found.
-enum Opened {
+pub(super) enum Opened {
     Same(File),
     /// Gone, or another object by now.
     Gone,

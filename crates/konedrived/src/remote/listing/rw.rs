@@ -50,7 +50,7 @@ pub struct Writes {
     pub machine_name: String,
     /// The account's ignore list: what a removal keeps under an ignored
     /// name stays on this computer only.
-    pub ignore: crate::local::ignore::SharedIgnore,
+    pub ignore: crate::local::SharedIgnore,
     /// Says when the watcher has examined the folder once (its Full local
     /// scan): the folder's first cycle waits for it (§3.3). `None`, or a
     /// watcher that stopped first, holds nothing back.

@@ -460,7 +460,7 @@ async fn a_stop_after_the_unlink_leaves_the_other_name_to_the_user() {
         konedrive_tree::off_runtime(|| {
             let disk = Disk::open(&fx.root, false).unwrap();
             let now = crate::remote::testing::now();
-            crate::local::Examiner { disk: &disk, store: &fx.store, liveness: &crate::local::NoLiveness, ignore: &IgnoreList::default(), locks: &fx.locks, now }
+            crate::local::Examiner { disk: &disk, store: &fx.store, liveness: &crate::local::liveness::NoLiveness, ignore: &IgnoreList::default(), locks: &fx.locks, now }
                 .examine(&crate::local::Batch::full())
                 .unwrap();
             let rows = fx.store.call_blocking(|s| s.outbox_rows()).unwrap();

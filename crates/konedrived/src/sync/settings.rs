@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::{Persist, SyncError, SyncService};
 use crate::conditions::running::Settings;
 use crate::config::ConfigError;
-use crate::local::ignore::{IgnoreList, SharedIgnore};
+use crate::local::{IgnoreList, SharedIgnore};
 
 /// The ignore list `config.toml` gives the account, or the defaults.
 pub(super) fn configured_ignore(persist: &Persist) -> SharedIgnore {

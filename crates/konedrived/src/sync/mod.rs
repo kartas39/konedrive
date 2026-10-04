@@ -295,7 +295,7 @@ pub struct SyncService {
     me: std::sync::Weak<SyncService>,
     /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
     /// watcher's examination reads it, `SetIgnorePatterns` changes it.
-    ignore: local::ignore::SharedIgnore,
+    ignore: local::SharedIgnore,
     /// The pause as it is shown, and the timer that ends a timed one (`pause`).
     clock: pause::PauseClock,
     /// The account's transfer pool (`konedrive_graph::pool`): every download, upload and change of

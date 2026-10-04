@@ -152,7 +152,7 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootConfig>,
     /// Names of local files that are never uploaded (`docs/design/writes.md` §4.4), shell globs;
-    /// `None` for the defaults (`local::ignore::DEFAULT_PATTERNS`).
+    /// `None` for the defaults (`local::DEFAULT_PATTERNS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore: Option<Vec<String>>,
     /// The name a conflict copy carries (`docs/design/writes.md` §7); empty for the host's

@@ -13,39 +13,36 @@
 //!
 //! Events are hints, never the truth: every decision is made from the disk,
 //! by item id, file handle and content, so a lost or merged event costs a
-//! scan, never a wrong upload. Nothing here runs from the daemon yet; the watcher and
-//! the outbox worker wire it in.
+//! scan, never a wrong upload.
+//!
+//! The daemon runs it from `sync/watcher.rs`: the watcher ([`watcher`]) hands each
+//! batch to the examination under the folder's tree lock (`watcher/service.rs`).
+//! One path leads to each thing here: what an examination is made of and gives back
+//! is named at this level ([`Batch`], [`Examiner`], [`Examined`], [`IgnoreList`]);
+//! the rest is in its own public module ([`handles`], [`liveness`], [`names`],
+//! [`scan`], [`watcher`]).
 
-pub mod batch;
+mod batch;
 mod entry;
-pub mod examine;
+mod examine;
 pub mod handles;
-pub mod ignore;
+mod ignore;
 pub mod liveness;
 pub mod names;
-#[cfg(test)]
-mod tests;
 pub mod scan;
 #[cfg(test)]
-pub mod testing;
+mod testing;
+#[cfg(test)]
+mod tests;
 pub mod watcher;
 
-use std::ffi::OsStr;
-use std::fs::File;
-use std::path::Path;
 use std::time::Duration;
 
 pub use batch::{Batch, ScanReason};
 pub use examine::{ExamineError, Examined, Examiner, ScanProgress};
-pub use ignore::IgnoreList;
+pub use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
 #[cfg(test)]
 pub use testing::FakeLiveness;
-pub use liveness::{HelperLiveness, Liveness, NoLiveness, Whereabouts};
-
-use konedrive_fs::handle::FileHandle;
-
-use crate::folder::disk::Disk;
-use konedrive_tree::Store;
 
 /// A batch is examined when no event came for this long (provisional).
 pub const QUIET: Duration = Duration::from_secs(2);
@@ -65,52 +62,3 @@ pub const MASS_DELETE_PERCENT: u64 = 20;
 /// ... counted only from this many items up, so that removing one file of a
 /// folder of four is not a mass delete (provisional; the design is silent).
 pub const MASS_DELETE_FLOOR: u64 = 10;
-
-/// Records the inode item `id` was just placed as (`items.local_handle`),
-/// by name, opening nothing. A filesystem that gives no handles leaves it
-/// unrecorded: such an item is never deleted in OneDrive for being missing
-/// (the examination cannot prove it gone), and the folder's watcher, which
-/// needs handles, cannot run there anyway.
-pub fn record_placed(store: &Store, dir: &File, name: &OsStr, id: &str) {
-    match FileHandle::at(dir, name) {
-        Ok(handle) => {
-            let item = id.to_owned();
-            if let Err(e) = store.call_blocking(move |s| s.set_local_handle(&item, Some(&handle))) {
-                tracing::warn!("cannot record where {id} was placed: {e}");
-            }
-        }
-        Err(e) => tracing::debug!("no file handle for {}: {e}", name.to_string_lossy()),
-    }
-}
-
-/// [`record_replaced`] for async code.
-pub async fn record_replaced_async(disk: &Disk, store: &Store, id: &str, rel: &Path) {
-    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return };
-    let Ok(dir) = disk.dir(parent) else { return };
-    let there = xattr::get(entry::proc_path(&dir).join(name), konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();
-    if there.as_deref() != Some(id.as_bytes()) {
-        return;
-    }
-    match FileHandle::at(&dir, name) {
-        Ok(handle) => {
-            let item = id.to_owned();
-            if let Err(e) = store.call(move |s| s.set_local_handle(&item, Some(&handle))).await {
-                tracing::warn!("cannot record where {id} was placed: {e}");
-            }
-        }
-        Err(e) => tracing::debug!("no file handle for {}: {e}", name.to_string_lossy()),
-    }
-}
-
-/// Records the inode a replacement swapped in for item `id` at `rel`: a new
-/// version is a new inode, and the recorded handle must name it, or a move
-/// out of the folder would be taken for a delete (its old inode is gone).
-/// Only if what stands there now is still the item.
-pub fn record_replaced(disk: &Disk, store: &Store, id: &str, rel: &Path) {
-    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return };
-    let Ok(dir) = disk.dir(parent) else { return };
-    let there = xattr::get(entry::proc_path(&dir).join(name), konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();
-    if there.as_deref() == Some(id.as_bytes()) {
-        record_placed(store, &dir, name, id);
-    }
-}

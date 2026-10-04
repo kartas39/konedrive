@@ -16,6 +16,8 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
 use tokio_util::sync::CancellationToken;
 
+use super::handles::record_replaced;
+use super::liveness::{Liveness, NoLiveness};
 use super::*;
 use crate::folder::disk::Disk;
 use crate::remote::materialize::{Materializer, Scope};
@@ -26,9 +28,11 @@ use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
+mod copies;
 mod identity;
 mod liveness;
 mod passed_over;
+mod since_listed;
 
 const TIME: i64 = 1_700_000_000;
 

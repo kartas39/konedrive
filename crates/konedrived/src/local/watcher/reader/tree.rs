@@ -7,7 +7,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
@@ -16,7 +15,7 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use super::super::fan::Fid;
 use super::super::map::DirMap;
 use super::timers::Timers;
-use crate::folder::disk::{open_subdir, HOLDING, NEW_PREFIX};
+use crate::folder::disk::{daemon_owned, gone, open_subdir};
 
 /// Directories that left the folder, remembered so that their events are
 /// passed over. Past this many the memory starts again: an event from a
@@ -78,14 +77,6 @@ pub(super) struct Tree {
     /// (only the kernel takes it off, when they go).
     left: HashSet<Fid>,
     deferred: Vec<Pending>,
-}
-
-fn daemon_owned(name: &OsStr) -> bool {
-    name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
-}
-
-fn gone(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP))
 }
 
 fn beneath() -> ResolveFlag {
