@@ -78,8 +78,8 @@ use crate::dehydrate::{
     clear_ignore_after_reclaim, dehydrate_in_use, dehydrate_then_open, unregistered_ignore_mark,
 };
 use crate::faults::{
-    connection_panic_contained, cross_device_recovery, disk_full, emfile_survived,
-    worker_panic_contained,
+    accept_panic_contained, connection_panic_contained, cross_device_recovery, disk_full,
+    emfile_survived, event_loop_panic_contained, worker_panic_contained,
 };
 use crate::fills::{
     copy_sees_content, failure_rolls_back, instant_reply, killed_reader, mmap_sees_content,
@@ -711,6 +711,8 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             "a panic on a connection denies its openers and keeps the helper",
             connection_panic_contained,
         ),
+        ("a panic in the event loop denies the open in hand and keeps the helper", event_loop_panic_contained),
+        ("a panic on the accept thread closes one connection and the next is served", accept_panic_contained),
         ("disk full denies with ENOSPC or EIO and never commits", disk_full),
         ("a subtree on another filesystem is counted, not silently skipped", cross_device_recovery),
         ("the waiter caps bound how many opens may wait for a daemon", waiter_caps),

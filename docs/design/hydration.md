@@ -749,7 +749,11 @@ requirement is that the helper does not exit. What defends it, each item proven 
 
 - a bounded worker pool, so running out of threads is `EAGAIN`, not a panic in the event loop;
 - a panic on a worker is caught, its opener denied `EIO`, and the pool kept at strength; a panic on
-  a connection runs that connection's clean-up, which denies its openers `EIO`;
+  a connection, or on the thread that writes to it, runs that connection's clean-up, which denies
+  its openers `EIO`;
+- a panic in the event loop is caught: the open in hand and the events read with it are denied
+  `EIO`, and the loop reads on; a panic on the thread that accepts connections closes the
+  connection in hand, and the thread accepts again a second later;
 - running out of descriptors is survivable: the event loop keeps the group and retries every 50 ms,
   the accept loop backs off, and openers the kernel could not hand over are denied (`EPERM` by the
   kernel, `EIO` by the helper), never allowed;

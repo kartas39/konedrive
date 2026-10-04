@@ -3,6 +3,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use konedrive_fs::handle::FileHandle;
@@ -17,10 +18,19 @@ use konedrive_helper::outbox::{Outbox, Outgoing};
 use crate::events::{dispatch, settle, Finish};
 use crate::registration::{errno_of, refuse_malformed_id, register_root, unregister_root};
 use crate::shared::{
-    fault, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF, MAX_CONNECTIONS_PER_UID,
+    fault, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF, ACCEPT_RESTART,
+    MAX_CONNECTIONS_PER_UID,
 };
 
 /// Accepts connections for as long as the helper runs.
+///
+/// A panic on this thread is contained: it used to end the thread, and a
+/// helper with no accept thread answers the opens of the daemons it has and
+/// never takes another, so after a daemon's next restart every open of its
+/// user's placeholders was denied until the helper itself was restarted.
+/// The connection in hand when it panicked is closed by the unwind; the
+/// listener and the count of connections are kept, and accepting starts
+/// again after [`ACCEPT_RESTART`].
 pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     // Connections are numbered here, on the one thread that
     // accepts them, in the order they were accepted — never on the
@@ -28,9 +38,19 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     // moment apart could draw their numbers in either order, and "newer"
     // would mean "whose thread the scheduler ran first". `Registry::register`
     // relies on this order being the accept order. A local counter rather
-    // than a shared one, so that nothing else can ever hand one out.
+    // than a shared one, so that nothing else can ever hand one out; it
+    // outlives a panic of the loop below, so no number is given twice.
     let mut next_conn: u64 = 0;
-    accept_connections(&shared, &listener, &mut next_conn)
+    loop {
+        // `accept_connections` returns only by unwinding.
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            accept_connections(&shared, &listener, &mut next_conn)
+        }));
+        tracing::error!(
+            "the thread that accepts daemon connections panicked; the connection it had in hand              is closed, and it accepts again in {ACCEPT_RESTART:?}"
+        );
+        std::thread::sleep(ACCEPT_RESTART);
+    }
 }
 
 fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut u64) -> ! {
@@ -67,6 +87,8 @@ fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut 
         };
         // SAFETY: `accept` returned a freshly opened descriptor we now own.
         let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        // `fault-injection` builds only.
+        fault::panic_on_accept();
         // A bounded number of connections per uid,
         // counted here, before a thread is spent on one. A peer whose
         // credentials cannot be read is not served at all — `serve_one`

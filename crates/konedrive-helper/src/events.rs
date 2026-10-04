@@ -6,6 +6,7 @@ mod decision;
 mod hydration;
 
 use std::os::fd::AsFd;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use konedrive_helper::pending::PendingOpen;
@@ -18,7 +19,7 @@ pub(crate) use hydration::{dispatch, settle, Finish};
 
 use crate::pool;
 use crate::shared::{
-    Refusal, Shared, Throttle, EVENT_FD_FAILED, EVENT_QUEUE_DEPTH, EVENT_WORKERS,
+    fault, Refusal, Shared, Throttle, EVENT_FD_FAILED, EVENT_QUEUE_DEPTH, EVENT_WORKERS,
     EXHAUSTION_BACKOFF, UNOPENABLE,
 };
 
@@ -201,11 +202,52 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                     ReadFailure::Fatal => return Err(e.into()),
                 },
             };
-            for event in events {
-                hand_over(shared, pool, own_pid, since, event);
+            let read = events.len();
+            let handed_over = contain_batch(
+                events,
+                |event| hand_over(shared, pool, own_pid, since, event),
+                |event| deny_unhandled(shared, event),
+            );
+            if !handed_over {
+                tracing::error!(
+                    "the event loop panicked while handing over an intercepted open; that open \
+                     and what was left of the {read} event(s) read with it are denied EIO, and \
+                     the loop carries on"
+                );
             }
         }
     }
+}
+
+/// Runs `handle` on each item of one batch, and contains a panic in it: the
+/// items the panic left unhandled are given to `abandon`, each contained in
+/// its turn, and nothing unwinds past here. Returns whether every item was
+/// handled.
+///
+/// The event loop's use of it is what keeps the helper alive through a panic
+/// on its own thread, which used to end the process: the kernel then allows
+/// every open suspended at that moment, and each reads zeros (the
+/// limitations log, Z1). The item in hand when the panic came is dropped by
+/// the unwind, and an intercepted open that is dropped denies `EIO`
+/// (`PendingOpen`).
+fn contain_batch<T>(
+    batch: impl IntoIterator<Item = T>,
+    mut handle: impl FnMut(T),
+    mut abandon: impl FnMut(T),
+) -> bool {
+    let mut batch = batch.into_iter();
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        for item in batch.by_ref() {
+            handle(item);
+        }
+    }));
+    if outcome.is_ok() {
+        return true;
+    }
+    for item in batch {
+        let _ = catch_unwind(AssertUnwindSafe(|| abandon(item)));
+    }
+    false
 }
 
 /// Hands one event of a batch to a worker, or answers it here.
@@ -232,6 +274,8 @@ fn hand_over(
         tracing::warn!("a permission event arrived with no descriptor");
         return;
     };
+    // `fault-injection` builds only.
+    fault::panic_in_event_loop();
     // The helper's own opens: an `OpenByHandle` object in a
     // marked directory, or with a mark of its own, raises
     // an event aimed at this very group, while the connection
@@ -263,6 +307,19 @@ fn hand_over(
             )
         });
         rejected.open.deny(libc::EAGAIN);
+    }
+}
+
+/// Answers an event the loop read and, having panicked over one before it,
+/// will not hand over: an intercepted open is denied `EIO`. Closing its
+/// descriptor with no answer would leave its opener suspended for as long as
+/// the helper runs.
+fn deny_unhandled(shared: &Arc<Shared>, event: FanotifyEvent) {
+    if !event.mask().contains(MaskFlags::FAN_OPEN_PERM) {
+        return;
+    }
+    if let Some(open) = PendingOpen::take(event, &shared.marks) {
+        open.deny(libc::EIO);
     }
 }
 

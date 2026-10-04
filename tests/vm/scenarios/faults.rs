@@ -8,10 +8,12 @@ use std::time::{Duration, SystemTime};
 use konedrive_fs::placeholder::{
     create_placeholder, read_stamp, write_state, State,
 };
+use konedrive_proto::ToDaemon;
 use konedrived::helper::Clearance;
 use konedrived::folder::root::{self};
 
 use crate::burst::run_burst;
+use crate::child::raw_connect;
 use crate::harness::{Checks, Ctx, Reader, count_in_log};
 
 /// Review item 12, first half. Running out of descriptors is the one failure
@@ -126,6 +128,75 @@ pub(crate) fn connection_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Res
     let after = ctx.place("after-conn-panic.bin", "ITEM_AFTERCONN", b"RECONNECTED")?;
     if ctx.read(&after)? != b"RECONNECTED" {
         return Err("a new connection does not work after one panicked".into());
+    }
+    Ok(())
+}
+
+/// Where the two faults below are armed: a file the scenario creates when
+/// the panic is to come. Under `/run`, which no root covers.
+const EVENT_LOOP_TRIGGER: &str = "/run/konedrive-fault-event-loop";
+const ACCEPT_TRIGGER: &str = "/run/konedrive-fault-accept";
+
+/// `HE8`. A panic on the event loop's own thread used to end the process,
+/// and the kernel then allows every open suspended at that moment. It is
+/// contained: the open in hand is denied `EIO`, and the loop reads on.
+pub(crate) fn event_loop_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
+    let _ = std::fs::remove_file(EVENT_LOOP_TRIGGER);
+    ctx.restart_helper_with(None, Some(("KONEDRIVE_FAULT_PANIC_IN_EVENT_LOOP", EVENT_LOOP_TRIGGER)))?;
+    let path = ctx.place("loop-panic.bin", "ITEM_LOOPPANIC", b"LOOP")?;
+    let ordinary = ctx.place("after-loop-panic.bin", "ITEM_AFTERLOOP", b"AFTER LOOP PANIC")?;
+
+    // Armed for the next intercepted open, which is the reader's.
+    File::create(EVENT_LOOP_TRIGGER).map_err(|e| format!("cannot arm the fault: {e}"))?;
+    let errno = ctx.open_errno(&path);
+    ctx.fault_fired("KONEDRIVE_FAULT_PANIC_IN_EVENT_LOOP")?;
+    let errno = errno.map_err(|e| format!("a panicking event loop left the opener unanswered: {e}"))?;
+    if errno != libc::EIO {
+        return Err(format!("a panicking event loop answered errno {errno}, not EIO"));
+    }
+    if !ctx.helper_alive() {
+        return Err("a panic in the event loop killed the helper".into());
+    }
+    // And the loop still reads: the next open is intercepted and filled.
+    if ctx.read(&ordinary)? != b"AFTER LOOP PANIC" {
+        return Err("the event loop did not survive its panic".into());
+    }
+    ctx.restart_helper_with(None, None)?;
+    Ok(())
+}
+
+/// `HE8`. A panic on the thread that accepts connections used to leave a
+/// helper that never took another daemon. The thread starts again: the
+/// connection in hand is closed, and the next one is served.
+pub(crate) fn accept_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
+    let _ = std::fs::remove_file(ACCEPT_TRIGGER);
+    ctx.restart_helper_with(None, Some(("KONEDRIVE_FAULT_PANIC_ON_ACCEPT", ACCEPT_TRIGGER)))?;
+
+    File::create(ACCEPT_TRIGGER).map_err(|e| format!("cannot arm the fault: {e}"))?;
+    let mut lost = raw_connect().map_err(|e| format!("cannot connect: {e}"))?;
+    lost.get_ref().set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    match lost.recv::<ToDaemon>() {
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+        other => return Err(format!("the connection accepted as the thread panicked got {other:?}")),
+    }
+    ctx.fault_fired("KONEDRIVE_FAULT_PANIC_ON_ACCEPT")?;
+    if !ctx.helper_alive() {
+        return Err("a panic on the accept thread killed the helper".into());
+    }
+
+    // A connection made now waits in the backlog until the thread accepts
+    // again, and is then greeted.
+    let mut next = raw_connect().map_err(|e| format!("cannot connect after the panic: {e}"))?;
+    next.get_ref().set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+    match next.recv::<ToDaemon>() {
+        Ok((ToDaemon::Welcome { .. }, _)) => {}
+        other => return Err(format!("no connection is accepted after the panic: {other:?}")),
+    }
+    drop(next);
+    ctx.restart_helper_with(None, None)?;
+    let after = ctx.place("after-accept-panic.bin", "ITEM_AFTERACCEPT", b"ACCEPTED")?;
+    if ctx.read(&after)? != b"ACCEPTED" {
+        return Err("hydration does not work after the accept thread panicked".into());
     }
     Ok(())
 }
