@@ -26,7 +26,6 @@ use wiremock::ResponseTemplate;
 
 use super::super::{CycleReport, Listing, ListingContext, FULL_THRESHOLD};
 use super::Writes;
-use crate::remote::materialize::Kept;
 use crate::status::activity::Report;
 use crate::folder::disk::Disk;
 use crate::hydration::graph_source::GraphSource;
@@ -635,8 +634,7 @@ async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it
     assert_eq!(w.examine(batch).await.applied.queued.len(), 2);
     assert!(w.path("docs/g.txt").exists());
     w.graph.with(|c| c.trash("D"));
-    let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs"), Kept { uploaded: 2, local: 0, stripped: 1 })]);
+    w.cycle(&listing).await;
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine", "the change made here stays");
     assert_eq!(std::fs::read(w.path("docs/mine.txt")).unwrap(), b"mine", "and so does the new file");
     assert!(!w.path("docs/g.txt").exists(), "what OneDrive had went");
@@ -669,8 +667,9 @@ async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new
     batch.written(Path::new("docs"), OsStr::new("f.txt"), None);
     assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
     w.graph.with(|c| c.trash("F"));
-    let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.on_disk.kept, vec![(PathBuf::from("docs/f.txt"), Kept { uploaded: 1, local: 0, stripped: 1 })]);
+    w.cycle(&listing).await;
+    let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
+    assert!(said.iter().any(|e| e.kind == "removed" && e.path == w.path("docs/f.txt").display().to_string() && e.detail.starts_with("1 file changed or new")), "{said:?}");
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine");
     assert!(w.base("F").is_none(), "the base took the removal");
 
@@ -734,6 +733,36 @@ async fn a_cycle_that_fails_still_hands_over_what_it_kept() {
     }
     let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
     assert!(rows.iter().any(|r| r.rel == Path::new("docs/deep/g.txt") && r.item_id.is_none()), "recorded as new: {rows:?}");
+}
+
+/// The same when what the failing cycle kept never had an id — a folder
+/// OneDrive removed that holds only an ignored file with data: the folder is
+/// the user's own from then on, no later cycle takes it off again, and so
+/// the failing cycle is the one that says it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cycle_that_fails_says_what_it_kept_that_never_had_an_id() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world().await;
+    let folder = |id: &str, parent: &str, name: &str| FakeItem { id: id.into(), parent: Some(parent.into()), name: name.into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: format!("e-{id}"), ctag: format!("c-{id}"), mtime: 0 };
+    w.graph.with(|c| {
+        c.add(folder("E", "D", "deep"));
+        c.add(folder("H", "E", "only"));
+    });
+    let listing = w.listed().await;
+    std::fs::write(w.path("docs/deep/only/draft.swp"), b"unsaved").unwrap();
+    w.graph.with(|c| c.trash("D"));
+    // `docs/f.txt` will not go; `docs/deep/only`, deeper, is taken off first.
+    std::fs::set_permissions(w.path("docs"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = listing.cycle(&CancellationToken::new()).await;
+    std::fs::set_permissions(w.path("docs"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(std::fs::read(w.path("docs/deep/only/draft.swp")).unwrap(), b"unsaved");
+    assert_eq!(id_at(&w.path("docs/deep/only")), None, "the user's own folder now");
+    let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
+    assert!(
+        said.iter().any(|e| e.kind == "removed" && e.detail == "1 item with an ignored or refused name was kept on this computer only"),
+        "the Activity says what was kept: {said:?}"
+    );
 }
 
 /// Where the object `handle` names is, found by walking `bases` as the

@@ -29,11 +29,16 @@ use crate::status::activity::Kind as EventKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Policy {
     /// Its item was removed in OneDrive. Read-write mode: what OneDrive
-    /// had and the daemon placed goes — a file not downloaded, a download
-    /// unchanged since, a folder once nothing is left in it. What OneDrive
-    /// never had stays, as the user's own, with the folders above it, to be
-    /// uploaded as new: a new file, and a download changed here (its stamp
-    /// differs, it is open for writing, or an `update` waits for it).
+    /// had and the daemon placed goes — a file not downloaded, the removed
+    /// items' own downloads unchanged since, a folder once nothing is left
+    /// in it. What OneDrive never had stays, as the user's own, with the
+    /// folders above it: a file with no item id, whatever its name (but an
+    /// empty one with an ignored name); a directory with no id and an
+    /// ignored name that holds anything; a download changed here (its
+    /// stamp differs, it is open for writing, or an `update` waits for
+    /// it); a download whose id is not of what was removed. It goes up as
+    /// new, unless its name, or a folder's above it, is one nothing
+    /// uploads (F243).
     /// Read-only mode: what holds local work is rescued out of the folder,
     /// and another account's object is set aside.
     Removed,
@@ -344,6 +349,9 @@ impl Materializer {
                     placeholder::strip_konedrive_xattrs(&sub)?;
                     tracing::info!("{} is gone from OneDrive but holds local work: it stays, and is made again there", rel.display());
                     run.out.on_disk.recreated.push(id);
+                    // The user's own from now on: no later cycle takes it
+                    // off again, so what stays in it is said by this one.
+                    run.kept.stripped += 1;
                 }
                 run.out.on_disk.examine.push((rel.to_path_buf(), true));
                 return Ok(Removal::Kept);

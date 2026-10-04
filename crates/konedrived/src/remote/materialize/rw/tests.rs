@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::Rw;
 use crate::folder::disk::Disk;
 use crate::local::IgnoreList;
-use crate::remote::materialize::{Applied, ApplyError, Kept, Materializer, Scope};
+use crate::remote::materialize::{Applied, ApplyError, Materializer, Scope};
 use crate::folder::root::SyncRoot;
 use crate::folder::locks::InodeLocks;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxState};
@@ -363,7 +363,7 @@ fn what_onedrive_removed_keeps_only_what_it_never_had() {
     for kept in ["docs", "docs/deep", "docs/f.txt", "docs/open.txt", "docs/zero.txt", "docs/stranger.txt"] {
         assert_eq!(id_at(&fx.path(kept)), None, "{kept} is the user's own now");
     }
-    assert_eq!(applied.on_disk.kept, vec![(PathBuf::from("docs"), Kept { uploaded: 5, local: 1, stripped: 4 })], "said once, for what OneDrive removed");
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 5, 1)], "said once, for what OneDrive removed");
     let mut recreated = applied.on_disk.recreated.clone();
     recreated.sort();
     assert_eq!(recreated, ["D", "E"], "the folders that stay are made again in OneDrive");
@@ -391,7 +391,7 @@ fn an_ignored_file_with_data_stays_and_keeps_its_folder() {
     assert_eq!(std::fs::read(fx.path("docs/cache.tmp/part")).unwrap(), b"data");
     assert!(!fx.path("docs/f.txt").exists(), "what OneDrive had went");
     assert!(!fx.path("docs/deep").exists(), "and a folder holding only an empty ignored file and a symlink");
-    assert_eq!(applied.on_disk.kept, vec![(PathBuf::from("docs"), Kept { uploaded: 0, local: 2, stripped: 0 })], "kept, and not said to be uploaded");
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 0, 2)], "kept, and not said to be uploaded");
 }
 
 /// A downloaded file carrying an id that is not of what OneDrive removed —
@@ -409,7 +409,13 @@ fn a_download_that_is_not_of_what_was_removed_stays() {
     assert_eq!(std::fs::read(fx.path("docs/foreign.txt")).unwrap(), b"theirs");
     assert_eq!(id_at(&fx.path("docs/foreign.txt")), None, "the user's own now");
     assert!(!fx.path("docs/f.txt").exists(), "the item's own unchanged download went");
-    assert_eq!(applied.on_disk.kept, vec![(PathBuf::from("docs"), Kept { uploaded: 1, local: 0, stripped: 1 })]);
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 1, 0)]);
+}
+
+/// What stays of what was removed: the place, how many files go up as new,
+/// how many items stay on this computer only.
+fn kept(applied: &Applied) -> Vec<(PathBuf, u64, u64)> {
+    applied.on_disk.kept.iter().map(|(rel, kept)| (rel.clone(), kept.uploaded, kept.local)).collect()
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

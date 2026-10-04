@@ -45,8 +45,9 @@ impl Materializer {
                 }
                 // What stays of it goes back where it was: said under that path.
                 if let Some(was) = id.as_deref().and_then(|id| run.moved_from.get(id).cloned()) {
-                    for (rel, _) in run.out.on_disk.kept.iter_mut().filter(|(rel, _)| *rel == held) {
-                        *rel = was.clone();
+                    if let Some(at) = run.out.on_disk.kept.iter().position(|(rel, _)| *rel == held) {
+                        let (_, kept) = run.out.on_disk.kept.remove(at);
+                        run.out.on_disk.note_kept(&was, kept);
                     }
                 }
             }
