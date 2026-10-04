@@ -45,6 +45,11 @@ impl TreeStore {
     /// its parent never arrived, or the chain is a cycle.
     pub fn locate(&self, table: Table, id: &str) -> Result<Option<Located>, TreeError> {
         let root = self.root_item_id()?;
+        self.locate_below(root.as_deref(), table, id)
+    }
+
+    /// [`Self::locate`] for one who has read the drive's root id already.
+    pub(crate) fn locate_below(&self, root: Option<&str>, table: Table, id: &str) -> Result<Option<Located>, TreeError> {
         let source = self.source(table);
         let sql = format!(
             "WITH RECURSIVE chain(id, parent_id, name, placement, depth) AS (
@@ -62,7 +67,7 @@ impl TreeStore {
         let Some((top, top_parent, _, _)) = chain.first() else {
             return Ok(None);
         };
-        if top_parent.is_some() || Some(top.as_str()) != root.as_deref() {
+        if top_parent.is_some() || Some(top.as_str()) != root {
             return Ok(None);
         }
         let below = &chain[1..];

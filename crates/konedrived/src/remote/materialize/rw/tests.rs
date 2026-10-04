@@ -478,3 +478,39 @@ async fn a_new_folder_a_stop_left_under_its_temporary_name_is_finished_when_oned
         assert!(applied.on_disk.examine.iter().all(|(rel, _)| rel == Path::new("docs/mine.txt")), "{:?}", applied.on_disk.examine);
     }
 }
+
+/// Where a misplaced object was, by its item's plan alone: each of the six
+/// answers, for a file found at `docs/a.txt` in the folder `D`, or away
+/// from there.
+#[test]
+fn where_a_misplaced_object_was_is_read_off_its_plan() {
+    use super::{where_it_was, Was};
+    use crate::folder::disk::Scanned;
+    use konedrive_tree::outbox::SWAP_PREFIX;
+    use konedrive_tree::{Located, Planned, Side, SkipReason};
+
+    let side = |row: Row, rel: &str, placed: bool| Some(Side { row, at: Some(Located { rel: rel.into(), placed, depth: rel.split('/').count() }) });
+    let at_base = Scanned { rel: "docs/a.txt".into(), id: Some("A".into()), is_dir: false, depth: 2, parent_id: Some("D".into()) };
+    let away = Scanned { rel: "other/a.txt".into(), id: Some("A".into()), is_dir: false, depth: 2, parent_id: Some("O".into()) };
+    let base = || side(row("A", "D", "a.txt", Kind::File, "c1"), "docs/a.txt", true);
+    let skipped = || Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..row("A", "D", "a.txt", Kind::File, "c1") };
+    let moved = || side(row("A", "R", "a.txt", Kind::File, "c1"), "a.txt", true);
+
+    let cases = [
+        ("moved in OneDrive", &at_base, Planned { base: base(), new: moved() }, Was::Moved),
+        ("left by a placement stopped before its swap", &at_base, Planned { base: None, new: moved() }, Was::Moved),
+        ("removed in OneDrive", &at_base, Planned { base: base(), new: None }, Was::Removed),
+        ("removed in OneDrive, not placed by the base", &away, Planned { base: side(skipped(), "docs/a.txt", false), new: None }, Was::Removed),
+        ("no longer placed", &at_base, Planned { base: base(), new: side(skipped(), "docs/a.txt", false) }, Was::Unplaced),
+        ("still not placed, where the base has it", &at_base, Planned { base: side(skipped(), "docs/a.txt", false), new: side(skipped(), "docs/a.txt", false) }, Was::Unplaced),
+        ("moved here, and moved in OneDrive", &away, Planned { base: base(), new: moved() }, Was::Elsewhere),
+        ("moved here, and removed in OneDrive", &away, Planned { base: base(), new: None }, Was::Elsewhere),
+        ("moved out of what is not placed", &away, Planned { base: side(skipped(), "docs/a.txt", false), new: side(skipped(), "docs/a.txt", false) }, Was::Elsewhere),
+        ("under the outbox's temporary name", &at_base, Planned { base: base(), new: side(row("A", "D", &format!("{SWAP_PREFIX}a.txt"), Kind::File, "c1"), "docs/swap", true) }, Was::Swapped),
+        ("an id nobody has", &at_base, Planned { base: None, new: None }, Was::Stranger),
+        ("new in OneDrive and not placed", &at_base, Planned { base: None, new: side(skipped(), "docs/a.txt", false) }, Was::Stranger),
+    ];
+    for (what, entry, planned, was) in cases {
+        assert_eq!(where_it_was(entry, &planned), was, "{what}");
+    }
+}

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -6,9 +7,10 @@ use std::os::fd::AsFd;
 
 use crate::remote::materialize::removal::Policy;
 use crate::remote::materialize::{ApplyError, Materializer, Run};
-use crate::folder::disk::Probe;
-use konedrive_tree::Table;
-use super::Rw;
+use crate::folder::disk::{Probe, Scanned};
+use konedrive_tree::reconcile::Leaving;
+use konedrive_tree::{Planned, Table};
+use super::{swapped, Rw};
 
 impl Materializer {
     /// Item `id`, at `rel`, stays in OneDrive but is no longer placed here —
@@ -33,6 +35,74 @@ impl Materializer {
         run.out.on_disk.taken.insert(id.to_owned());
         run.unplaced.insert(id.to_owned());
         Ok(())
+    }
+
+    /// What is leaving, by item: read once for a Full scan, and again after
+    /// [`Self::unplace`] adds to it.
+    pub(super) fn leaving_objects(&self) -> Result<HashMap<String, Leaving>, ApplyError> {
+        let leaving = self.store.call_blocking(|s| s.leaving_with_handles())?;
+        Ok(leaving.into_iter().map(|left| (left.id.clone(), left)).collect())
+    }
+
+    /// Whether the misplaced `entry` of a Full scan is the object of its
+    /// item `id` that stays while it leaves, whether or not the item is
+    /// placed again elsewhere since. Its place is followed, in the store
+    /// and in `leaving`: a parent renamed in OneDrive or here took it along.
+    ///
+    /// Only the object itself: at its recorded place, or carrying its
+    /// recorded file handle — never another object with its id (the copy
+    /// placed again, a copy, a hard link) — and not the object the new tree
+    /// places right there, nor one of an item the new tree does not have,
+    /// which goes as anything removed in OneDrive.
+    pub(super) fn is_leaving_object(&self, leaving: &mut HashMap<String, Leaving>, entry: &Scanned, id: &str, planned: &Planned) -> Result<bool, ApplyError> {
+        if planned.base.is_none() || swapped(planned) {
+            return Ok(false);
+        }
+        let Some(left) = leaving.get_mut(id) else { return Ok(false) };
+        // At its recorded place, an object with its id is it — after an
+        // editor's save by rename too, its handle then taken anew — unless the
+        // item is placed elsewhere, where the copy placed again may stand
+        // here by the user's move: then only its handle tells.
+        let elsewhere = [planned.base_place(), planned.new_place()].into_iter().flatten().any(|placed| placed.rel != entry.rel);
+        let mut renewed = None;
+        let itself = match &left.handle {
+            None => left.rel == entry.rel,
+            // Where a handle is kept, the recorded place counts only for the
+            // object carrying it; elsewhere, only an object with one link (a
+            // hard link carries the same handle, and is the user's name).
+            Some(kept) => {
+                let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
+                let dir = self.disk.dir(parent).ok();
+                let here = name.zip(dir.as_ref()).and_then(|(name, dir)| konedrive_fs::handle::FileHandle::at(dir, name).ok());
+                let single = name.zip(dir.as_ref()).is_some_and(|(name, dir)| {
+                    nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).is_ok_and(|s| entry.is_dir || s.st_nlink <= 1)
+                });
+                if here.as_ref() == Some(kept) {
+                    left.rel == entry.rel || single
+                } else if left.rel == entry.rel && !elsewhere {
+                    renewed = here;
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if !itself {
+            return Ok(false);
+        }
+        if let Some(handle) = renewed {
+            self.store.call_blocking({ let (id, handle) = (id.to_owned(), handle.clone()); move |s| s.leaving_set_handle(&id, &handle) })?;
+            left.handle = Some(handle);
+        }
+        let placed_here = planned.new_place().is_some_and(|placed| placed.rel == entry.rel);
+        if planned.new.is_none() || placed_here {
+            return Ok(false);
+        }
+        if left.rel != entry.rel {
+            self.store.call_blocking({ let (id, rel) = (id.to_owned(), entry.rel.clone()); move |s| s.leaving_set_rel(&id, &rel) })?;
+            left.rel = entry.rel.clone();
+        }
+        Ok(true)
     }
 
     /// What stopped being placed and stays on disk for now ([`Self::unplace`]):

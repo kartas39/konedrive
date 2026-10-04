@@ -517,6 +517,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `schema/migrations.rs` — the numbered steps that bring an older store to today's schema.
 - `meta.rs` — what the store keeps one of: every key of `meta`, and its typed accessors.
 - `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
+- `plan.rs` — the plan of a reconcile, item by item: the base's row and place, the new tree's.
+  `[tests]`
 - `read.rs` — `ReadStore`: the store as its read-only connection gives it.
 - `forget.rs` — forgetting the local objects of a subtree.
 - `shared.rs` — the store shared by the tasks of one folder.
