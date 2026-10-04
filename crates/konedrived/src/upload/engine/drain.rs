@@ -138,6 +138,8 @@ impl Engine {
                 _ = self.wake.notified() => {}
                 _ = cancel.cancelled() => {
                     set.shutdown().await;
+                    // A row cut off at the write gate leaves its asking running.
+                    self.gate_idle().await;
                     self.shared().in_flight.clear();
                     break;
                 }

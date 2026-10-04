@@ -22,7 +22,6 @@ pub(crate) struct Recorder {
 }
 
 #[cfg(test)]
-#[async_trait::async_trait]
 impl OutboxHost for Recorder {
     fn activity(&self, event: &ActivityRow) {
         self.events.lock().unwrap().push(event.clone());
@@ -36,7 +35,7 @@ impl OutboxHost for Recorder {
         self.fulls.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn may_write(&self) -> Result<(), String> {
+    fn may_write(&self) -> Result<(), String> {
         self.gate.lock().unwrap().clone().map_or(Ok(()), Err)
     }
 }

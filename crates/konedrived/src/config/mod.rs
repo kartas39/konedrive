@@ -602,7 +602,7 @@ impl From<ConfigError> for String {
 ///
 /// The calls do blocking file I/O on a small file, as the single-account code did. The one
 /// caller that asks before every outbox row, the write gate, calls from a blocking thread
-/// (`OutboxHost::may_write` of `sync/outbox_api.rs`); the others are in limitations log F231.
+/// (`Engine::may_write` of `upload/engine.rs`); the others are in limitations log F231.
 pub struct ConfigStore {
     file: PathBuf,
     inner: Mutex<Inner>,

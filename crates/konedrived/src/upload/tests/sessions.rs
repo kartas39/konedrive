@@ -675,3 +675,35 @@ fn a_certain_answer_keeps_a_carried_records_last_unknown_time() {
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
     assert_eq!(conflicts(&w), 0);
 }
+
+/// The write gate is asked on a blocking thread, and a row is asked it between two
+/// fragments, where a stop cuts the row off. The asking then goes on by itself: the stop
+/// waits until it has ended (`Engine::gate_idle`), so that nothing of the worker's still
+/// runs when the stop returns.
+#[test]
+fn a_stop_waits_for_the_gate_a_cut_off_row_was_asking() {
+    use std::time::Duration;
+    let w = World::new(&[]);
+    let engine = w.h.engine();
+    // The host's answer waits for this lock: the asking stays on its blocking thread.
+    let held = w.h.host.gate.lock().unwrap();
+    let row = w.h.runtime.spawn({
+        let engine = Arc::clone(&engine);
+        async move { engine.may_write().await }
+    });
+    w.h.block_on(async {
+        // Until the asking is under way.
+        while tokio::time::timeout(Duration::from_millis(5), engine.gate_idle()).await.is_ok() {
+            tokio::task::yield_now().await;
+        }
+        row.abort();
+        assert!(row.await.is_err_and(|e| e.is_cancelled()), "the row is cut off");
+        let idle = tokio::time::timeout(Duration::from_millis(200), engine.gate_idle()).await;
+        assert!(idle.is_err(), "the asking still runs: the stop waits");
+    });
+    drop(held);
+    w.h.block_on(async {
+        tokio::time::timeout(Duration::from_secs(30), engine.gate_idle()).await.expect("the asking ended");
+        assert_eq!(engine.may_write().await, Ok(()), "and the gate is asked again as before");
+    });
+}
