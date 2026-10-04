@@ -69,5 +69,41 @@ fn the_plan_gives_each_items_base_and_new_side() {
     assert!(untouched.stays(), "the new tree of a delta is the base where the delta says nothing");
 
     assert!(plan.of("nobody's").base.is_none() && plan.of("nobody's").new.is_none());
-    assert!(plan.of("not asked").base.is_none() && plan.of("not asked").new.is_none());
+    assert!(plan.has("nobody's") && !plan.has("not asked"));
+
+    let rows = s.new_rows(&ids).unwrap();
+    assert_eq!(rows.len(), 5, "the rows the new tree has: not the removed one, not the unknown one");
+    assert_eq!(rows["F"].name, "renamed.txt");
+    assert_eq!(rows["D"].name, "docs", "the base's row, where the delta says nothing");
+}
+
+/// The root is planned as placed at the folder itself; an item whose
+/// folder never arrived has a row and no place; and after a whole listing
+/// the new tree is the listing alone, so what it leaves out has no new side.
+#[test]
+fn the_plan_of_the_root_of_an_orphan_and_of_a_whole_listing() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(NewTree::Whole).unwrap();
+    s.stage(&[root(), Change::Upsert(row("D", "R", "docs", Kind::Folder)), Change::Upsert(row("F", "D", "f.txt", Kind::File)), Change::Upsert(row("O", "missing", "o.txt", Kind::File))]).unwrap();
+    s.commit_staging("L1").unwrap();
+    s.begin_staging(NewTree::Whole).unwrap();
+    s.stage(&[root(), Change::Upsert(row("D", "R", "papers", Kind::Folder)), Change::Upsert(row("O", "missing", "o.txt", Kind::File))]).unwrap();
+
+    let ids: Vec<String> = ["R", "D", "F", "O"].iter().map(|id| id.to_string()).collect();
+    let plan = s.plan(&ids).unwrap();
+
+    let top = plan.of("R");
+    assert_eq!(top.base_place().unwrap().depth, 0);
+    assert_eq!(top.new_place().unwrap().rel, Path::new(""));
+
+    let orphan = plan.of("O");
+    assert!(orphan.base.as_ref().is_some_and(|base| base.at.is_none() && !base.placed()), "a row, and nowhere");
+    assert!(orphan.new.as_ref().is_some_and(|new| new.at.is_none()));
+    assert!(!orphan.comes_into_view());
+
+    assert_eq!(plan.of("D").new_place().unwrap().rel, Path::new("papers"));
+    let left_out = plan.of("F");
+    assert_eq!(left_out.base_place().unwrap().rel, Path::new("docs/f.txt"));
+    assert!(left_out.new.is_none(), "a whole listing that leaves it out does not have it");
+    assert!(!s.new_rows(&ids).unwrap().contains_key("F"));
 }

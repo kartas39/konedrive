@@ -22,7 +22,7 @@ use crate::folder::disk::{Disk, Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::status::activity::Kind as EventKind;
 use crate::helper::HelperLink;
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::{Kind, Located, Placement, Plan, Planned, Row, Store, Table, TreeError};
+use konedrive_tree::{Kind, Located, Placement, Plan, Row, Store, Table, TreeError};
 
 /// Read-write mode's rules (`docs/design/writes.md` §9).
 mod rw;
@@ -348,8 +348,8 @@ struct Run {
 /// Placed items recorded in one transaction (issue #39; a guess).
 pub const PLACED_BATCH: usize = 500;
 
-/// Items whose plan is read in one store call (a guess): the store's thread
-/// serves others between two calls.
+/// Items whose plan, or whose rows, are read in one store call (a guess):
+/// the store's thread serves others between two calls.
 const PLAN_BATCH: usize = 500;
 
 impl Run {
@@ -492,9 +492,17 @@ impl Materializer {
         Ok(plan)
     }
 
-    /// The plan of what the Full scan found in `entries`.
-    fn plan_scanned(&self, entries: &[Scanned]) -> Result<Plan, ApplyError> {
+    /// The new tree's rows of what the Full scan found in `entries`, in one
+    /// store call: enough to tell what is misplaced.
+    fn new_rows_of(&self, entries: &[Scanned]) -> Result<HashMap<String, Row>, ApplyError> {
         let ids: Vec<String> = entries.iter().filter_map(|entry| entry.id.clone()).collect();
+        Ok(self.store.call_blocking(move |s| s.new_rows(&ids))?)
+    }
+
+    /// The plan of the entries of `entries` that are misplaced by `rows`
+    /// ([`Self::new_rows_of`]): the only ones a Full scan asks it of.
+    fn plan_misplaced(&self, entries: &[Scanned], rows: &HashMap<String, Row>) -> Result<Plan, ApplyError> {
+        let ids: Vec<String> = entries.iter().filter(|entry| entry.id.as_ref().is_some_and(|id| is_misplaced(entry, rows.get(id)))).filter_map(|entry| entry.id.clone()).collect();
         self.plan(&ids)
     }
 
@@ -511,6 +519,8 @@ impl Materializer {
                 }
                 Ok(below)
             })?;
+            // One below another that comes into view is planned already.
+            let below: Vec<String> = below.into_iter().filter(|id| !plan.has(id)).collect();
             plan.absorb(self.plan(&below)?);
         }
         Ok(plan)
@@ -534,7 +544,7 @@ impl Materializer {
         }
         let mut misplaced: Vec<&Scanned> = Vec::new();
         for entries in scanned.chunks(PLAN_BATCH) {
-            let plan = self.plan_scanned(entries)?;
+            let rows = self.new_rows_of(entries)?;
             for entry in entries {
                 let Some(id) = &entry.id else { continue };
                 if is_leftover_replacement(entry, id, &id_counts) {
@@ -542,7 +552,7 @@ impl Materializer {
                     self.discard_leftover_replacement(entry, run)?;
                     continue;
                 }
-                if is_misplaced(entry, plan.of(id)) {
+                if is_misplaced(entry, rows.get(id)) {
                     misplaced.push(entry);
                 }
             }
@@ -825,15 +835,15 @@ impl Materializer {
     }
 }
 
-/// Whether a scanned entry is not where the new tree has its item: the
-/// tree does not have the item, does not place it, or has it in another
-/// folder, under another name, or as the other kind.
-fn is_misplaced(entry: &Scanned, planned: &Planned) -> bool {
-    let Some(new) = &planned.new else { return true };
-    new.row.placement != Placement::Placed
-        || new.row.parent_id != entry.parent_id
-        || entry.rel.file_name() != Some(OsStr::new(&new.row.name))
-        || (new.row.kind == Kind::Folder) != entry.is_dir
+/// Whether a scanned entry is not where the new tree has its item, whose
+/// row there is `new`: the tree does not have the item, does not place it,
+/// or has it in another folder, under another name, or as the other kind.
+fn is_misplaced(entry: &Scanned, new: Option<&Row>) -> bool {
+    let Some(new) = new else { return true };
+    new.placement != Placement::Placed
+        || new.parent_id != entry.parent_id
+        || entry.rel.file_name() != Some(OsStr::new(&new.name))
+        || (new.kind == Kind::Folder) != entry.is_dir
 }
 
 /// The items of `scope` the new tree places, each with its row and place.

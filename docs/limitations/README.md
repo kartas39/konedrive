@@ -251,6 +251,7 @@ application must never read zeros where real content should be.
 - [F241](F241.md) — An intercepted folder whose root id is recorded nowhere is forgotten on the daemon's side alone
 - [F242](F242.md) — Every change of a folder stops its sync, and a helper's reconnect starts it again with a Full reconcile
 - [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
+- [F244](F244.md) — The plan of a reconcile is four queries for each item, inside one store job
 
 ---
 
@@ -293,6 +294,7 @@ application must never read zeros where real content should be.
 | Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrive-tree/src/thumbs.rs`, issue #39) |
 | Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/remote/listing/replacements.rs`, issue #39) |
 | Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/remote/materialize.rs`, issue #39) |
+| Items whose plan, or whose rows, a reconcile reads in one store call (`PLAN_BATCH`) | 500 | **guess** (`crates/konedrived/src/remote/materialize.rs`, F244) |
 | Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/status/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |

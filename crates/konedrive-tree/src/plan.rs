@@ -68,14 +68,21 @@ pub struct Plan {
     items: HashMap<String, Planned>,
 }
 
-/// What the plan says of an id it was not asked for.
+/// What a release build says of an id the plan was not asked for.
 static UNKNOWN: Planned = Planned { base: None, new: None };
 
 impl Plan {
-    /// The plan of item `id`; of an id it was not asked for, that neither
-    /// tree has it.
+    /// The plan of item `id`, which it was asked for. Of an id it was not
+    /// asked for it says that neither tree has it, which is not known: a
+    /// caller's mistake, caught in a debug build.
     pub fn of(&self, id: &str) -> &Planned {
+        debug_assert!(self.items.contains_key(id), "the plan was not asked for {id}");
         self.items.get(id).unwrap_or(&UNKNOWN)
+    }
+
+    /// Whether it was asked for item `id`.
+    pub fn has(&self, id: &str) -> bool {
+        self.items.contains_key(id)
     }
 
     /// The ids it was asked for.
@@ -91,22 +98,38 @@ impl Plan {
 
 impl TreeStore {
     /// The plan of every item of `ids`: its base row and place, its new row
-    /// and place.
+    /// and place. Four queries an item (F244).
     pub fn plan(&self, ids: &[String]) -> Result<Plan, TreeError> {
+        let root = self.root_item_id()?;
         let mut items = HashMap::with_capacity(ids.len());
         for id in ids {
             if items.contains_key(id) {
                 continue;
             }
-            let planned = Planned { base: self.side(Table::Items, id)?, new: self.side(Table::Staging, id)? };
+            let planned = Planned { base: self.side(root.as_deref(), Table::Items, id)?, new: self.side(root.as_deref(), Table::Staging, id)? };
             items.insert(id.clone(), planned);
         }
         Ok(Plan { items })
     }
 
-    fn side(&self, table: Table, id: &str) -> Result<Option<Side>, TreeError> {
+    fn side(&self, root: Option<&str>, table: Table, id: &str) -> Result<Option<Side>, TreeError> {
         let Some(row) = self.get(table, id)? else { return Ok(None) };
-        Ok(Some(Side { row, at: self.locate(table, id)? }))
+        Ok(Some(Side { row, at: self.locate_below(root, table, id)? }))
+    }
+
+    /// The new tree's row of every item of `ids` it has, by id: what a scan
+    /// needs to tell whether an object is where its item belongs.
+    pub fn new_rows(&self, ids: &[String]) -> Result<HashMap<String, Row>, TreeError> {
+        let mut rows = HashMap::with_capacity(ids.len());
+        for id in ids {
+            if rows.contains_key(id) {
+                continue;
+            }
+            if let Some(row) = self.get(Table::Staging, id)? {
+                rows.insert(id.clone(), row);
+            }
+        }
+        Ok(rows)
     }
 }
 

@@ -317,7 +317,8 @@ impl Materializer {
         let mut misplaced: Vec<(&Scanned, bool)> = Vec::new();
         let mut leaving = self.leaving_objects()?;
         for entries in scanned.chunks(PLAN_BATCH) {
-            let plan = self.plan_scanned(entries)?;
+            let rows = self.new_rows_of(entries)?;
+            let plan = self.plan_misplaced(entries, &rows)?;
             for entry in entries {
                 let Some(id) = &entry.id else { continue };
                 // Left where it is, and so is what is below it. The item is left
@@ -366,14 +367,14 @@ impl Materializer {
                 if !entry.is_dir && is_new_name(&entry.rel) {
                     continue;
                 }
-                let planned = plan.of(id);
                 let held = rw.held.contains(id) || rw.removing.contains(id);
-                if !is_misplaced(entry, planned) {
+                if !is_misplaced(entry, rows.get(id)) {
                     if held {
                         leave(run, &mut left_dirs);
                     }
                     continue;
                 }
+                let planned = plan.of(id);
                 // What is below it stays with it, as it is: the leaving pass
                 // decides.
                 if self.is_leaving_object(&mut leaving, entry, id, planned)? {
