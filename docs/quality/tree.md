@@ -86,6 +86,13 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
 - **Fix:** an ordered list of migrations by version, each in a transaction, in one `schema.rs`;
   the trigger's work into the Rust functions that delete outbox rows.
 - **Size:** M. **Risk:** medium; needs fixture stores of the old shapes.
+- **Fixed 2026-10-04** in `af28052` (#160): the store is at schema 6; steps 3→4, 4→5 and 5→6 are a
+  list in `schema/migrations.rs`, each in one transaction with its version; a new store is made
+  from one description in `schema.rs`; the trigger's work is `remove` in `outbox/stored.rs`,
+  which every delete of an outbox row goes through. A step that fails leaves the store as it
+  was and the folder in blocking trouble. A build older than schema 6 rebuilds the store. Left
+  (`docs/limitations/D36.md`): the two path encodings; nothing checks that no delete is written
+  outside `remove`; an unknown stored word is still read as `Placed` or `File`.
 
 ## TR4. Outbox row writes are duplicated; `reason` and `snapshot` are strings with meaning
 
@@ -96,6 +103,8 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
 - **Fixed in part 2026-10-04** in `695fe1a` (#150): the `Reason` enum, and typed accessors for the
   snapshot and the target name over today's encoding (`outbox/encoded.rs`). The one `bind(row)`
   and the two columns are `B6`'s.
+- **Fixed 2026-10-04** in `af28052` (#160): one `bind(row)` for `insert` and `rewrite`; the columns
+  `snapshot_size`, `snapshot_mtime`, `snapshot_mtime_nsec` and `moved_out` replace the text.
 
 ## TR5. The public API is the whole `TreeStore`
 
