@@ -14,24 +14,21 @@ use crate::remote::listing::tests::*;
 use crate::remote::testing::feed::{file, folder, root_item};
 use crate::remote::testing::*;
 use crate::remote::listing::*;
-#[tokio::test]
-async fn a_file_changed_in_the_cloud_is_replaced_after_the_cycle() {
-    let s = World::read_only().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    write_version(&f_txt, b"old conten", "c1");
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.version("c2", &new)).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-}
+use crate::remote::materialize::{Failure, FailureReason, ReplaceOutcome, Replacement};
+use crate::status::snapshot::{published_error, ReplacementNote, SyncStateHandle};
 
-/// A pinned file replaced by its new version — another inode — is still
-/// pinned.
+/// A listing of `s`, and the transfer pool its replacements wait for a slot of: paused, it
+/// hands none out, and a replacement waits.
+fn with_pool(s: &World) -> (Arc<Listing>, Arc<konedrive_graph::pool::TransferPool>) {
+    let drive = s.drive();
+    let pool = Arc::clone(drive.pool());
+    let source = Arc::new(crate::hydration::graph_source::GraphSource::new(drive.clone()));
+    (Listing::new(ListingContext { drive, source, ..s.context() }), pool)
+}
+/// A downloaded file that changed in OneDrive is replaced after the cycle by
+/// its new version — another inode — and a pinned one is still pinned.
 #[tokio::test]
-async fn a_replacement_keeps_the_files_own_pin() {
+async fn a_file_changed_in_the_cloud_is_replaced_after_the_cycle_and_keeps_its_pin() {
     let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
@@ -50,8 +47,10 @@ async fn a_replacement_keeps_the_files_own_pin() {
     assert_eq!(File::open(&f_txt).unwrap().get_xattr(placeholder::XATTR_PIN).unwrap(), Some(b"1".to_vec()));
 }
 
-/// When the new version cannot be had, the old one stays, the
-/// status says why, and it is tried again.
+/// When the new version cannot be had, the old one stays, the status says
+/// why, the activity log has an `update-failed` event — not `failed`, which
+/// is a download's — and it is tried again as it is; once it goes through,
+/// the note is gone and the log says `updated`.
 #[tokio::test]
 async fn a_replacement_that_fails_is_said_and_tried_again() {
     let s = World::read_only().await;
@@ -66,7 +65,12 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
-    assert!(s.state.get().replacement_note.contains("could not be updated"), "{:?}", s.state.get().replacement_note);
+    let note = s.state.get().cycle.replacement_note.expect("the status says it");
+    assert_eq!(note.files, 1);
+    assert!(published_error(&s.state.get()).contains("could not be updated"), "{note:?}");
+    let (kind, at, why) = s.activity().pop().unwrap();
+    assert_eq!((kind.as_str(), at.as_str()), ("update-failed", s.full("docs/f.txt").as_str()));
+    assert!(why.contains("could not be downloaded"), "{why}");
 
     let new = b"new content".to_vec();
     s.serve_new_version(&new, s.version("c2", &new)).await;
@@ -75,7 +79,9 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
     assert!(!report.full, "a failed replacement is retried as it is, with no Full reconcile");
     listing.join_replacements().await;
     assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-    assert_eq!(s.state.get().replacement_note, "");
+    assert_eq!(s.state.get().cycle.replacement_note, None);
+    assert_eq!(s.activity().pop().unwrap(), ("updated".into(), s.full("docs/f.txt"), "11 B".into()));
+    assert!(s.report.transfers.list().is_empty(), "no download is left showing");
 }
 
 /// A replacement the disk has no room for is an
@@ -97,37 +103,9 @@ async fn a_replacement_with_no_room_on_the_disk_says_exactly_that() {
         s.activity().pop().unwrap(),
         ("update-failed".to_owned(), s.full("docs/f.txt"), activity::NO_DISK_SPACE.to_owned())
     );
-    assert!(s.state.get().replacement_note.contains("not enough space"), "{:?}", s.state.get().replacement_note);
+    let note = s.state.get().cycle.replacement_note.expect("the status says it");
+    assert!(note.why.contains("not enough space"), "{note:?}");
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
-}
-
-/// A replacement that goes through is an `updated` event,
-/// one that fails an `update-failed` event saying why — not `failed`,
-/// which is a download's.
-#[tokio::test]
-async fn a_replacement_is_recorded_as_updated_or_failed() {
-    let s = World::read_only().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    write_version(&f_txt, b"old conten", "c1");
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(ResponseTemplate::new(404))
-        .up_to_n_times(1).with_priority(1)
-        .mount(&s.graph.server).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    let (kind, at, why) = s.activity().pop().unwrap();
-    assert_eq!((kind.as_str(), at.as_str()), ("update-failed", s.full("docs/f.txt").as_str()));
-    assert!(why.contains("could not be downloaded"), "{why}");
-
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.version("c2", &new)).await;
-    s.feed(Some("L2"), json!([]), "L3").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(s.activity().pop().unwrap(), ("updated".into(), s.full("docs/f.txt"), "11 B".into()));
-    assert!(s.report.transfers.list().is_empty(), "no download is left showing");
 }
 
 /// A replacement retried after every cycle and failing
@@ -154,22 +132,49 @@ async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
     assert_eq!(asked, 2, "it was tried again");
     let recorded = s.activity().into_iter().filter(|(kind, _, _)| kind == "update-failed").count();
     assert_eq!(recorded, 1, "the same failure again is not news: {:?}", s.activity());
-    assert!(s.state.get().replacement_note.contains("could not be updated"), "the status still says it");
+    assert!(s.state.get().cycle.replacement_note.is_some(), "the status still says it");
 }
 
-/// I1's other half: a failure is news again when its reason changes,
-/// when it is for a newer version, and when the file was replaced since.
-#[tokio::test]
-async fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
-    let s = World::read_only().await;
-    let listing = s.listing();
+/// I1's other half: a failure is news again when its reason changes — not
+/// its words — when it is for a newer version, and when the file was replaced
+/// since. The note counts the files and quotes the newest failure.
+#[test]
+fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
+    let state = SyncStateHandle::new(Default::default());
+    let replacements = Replacements::new(state.clone());
     let r = |ctag: &str| Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: ctag.into(), size: 10 };
-    assert!(listing.record_replacement(&r("c2"), ReplaceOutcome::Failed("a".into())));
-    assert!(!listing.record_replacement(&r("c2"), ReplaceOutcome::Failed("a".into())), "the same again");
-    assert!(listing.record_replacement(&r("c2"), ReplaceOutcome::NoSpace("b".into())), "another reason");
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::NoSpace("b".into())), "a newer version");
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::Replaced));
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::NoSpace("b".into())), "failing after it went through");
+    let failed = |reason, text: &str| ReplaceOutcome::Failed(Failure { reason, text: text.into() });
+    let news = |ctag: &str, outcome: ReplaceOutcome| replacements.record(&r(ctag), &outcome).news;
+    assert!(news("c2", failed(FailureReason::Download(libc::EIO), "a")));
+    assert!(!news("c2", failed(FailureReason::Download(libc::EIO), "a")), "the same again");
+    assert!(!news("c2", failed(FailureReason::Download(libc::EIO), "other words")), "the same reason in other words");
+    assert!(news("c2", failed(FailureReason::NoSpace, "b")), "another reason");
+    assert!(news("c3", failed(FailureReason::NoSpace, "b")), "a newer version");
+    assert_eq!(state.get().cycle.replacement_note, Some(ReplacementNote { files: 1, why: "b".into() }));
+    assert!(news("c3", ReplaceOutcome::Replaced));
+    assert_eq!(state.get().cycle.replacement_note, None);
+    assert!(news("c3", failed(FailureReason::NoSpace, "b")), "failing after it went through");
+}
+
+/// A wait for the workers that is cut short stops none of them and loses none:
+/// the next wait returns only when the worker has ended.
+#[tokio::test]
+async fn a_wait_for_the_workers_that_is_cut_short_is_taken_up_by_the_next() {
+    let replacements = Arc::new(Replacements::new(SyncStateHandle::new(Default::default())));
+    let (go_on, ended) = (Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicBool::new(false)));
+    let worker = || {
+        let (replacements, go_on, ended) = (Arc::clone(&replacements), Arc::clone(&go_on), Arc::clone(&ended));
+        async move {
+            go_on.notified().await;
+            while replacements.next().is_some() {}
+            ended.store(true, Ordering::SeqCst);
+        }
+    };
+    replacements.admit(vec![Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 10 }], worker);
+    assert!(tokio::time::timeout(Duration::from_millis(100), replacements.join()).await.is_err(), "the worker is still at work");
+    go_on.notify_one();
+    tokio::time::timeout(PATIENCE, replacements.join()).await.expect("the worker ends");
+    assert!(ended.load(Ordering::SeqCst), "the second wait waited for the worker the first one left");
 }
 
 /// A replacement that ends with nothing to do (here: the folder above the
@@ -226,7 +231,7 @@ async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
     assert!(asked, "the replacement is under way");
     tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("the stop cuts the download short");
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten");
-    assert_eq!(s.state.get().replacement_note, "");
+    assert_eq!(s.state.get().cycle.replacement_note, None);
     s.feed(Some("L2"), json!([]), "L3").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(!report.full, "a replacement the stop cut short is no reason for a Full reconcile");
@@ -281,13 +286,9 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
         poller.stop().await;
         was_released.load(Ordering::SeqCst)
     });
-    for _ in 0..500 {
-        if listing.cancel_replacements.is_cancelled() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(listing.cancel_replacements.is_cancelled(), "the stop is asked");
+    // Time for the stop to be asked: it cannot return while the swap is held.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!stop.is_finished(), "the stop waits for the swap");
     released.store(true, Ordering::SeqCst);
     drop(windows);
 
@@ -307,7 +308,7 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
 async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_full() {
     let s = World::read_only().await;
     let (reached, release) = s.helper.stall_on("/.konedrive-new-N");
-    let listing = Listing::new(ListingContext { ..s.context() });
+    let (listing, pool) = with_pool(&s);
     s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1")]), "L1").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     write_version(&s.root.path.join("docs/f.txt"), b"old conten", "c1");
@@ -323,7 +324,7 @@ async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_ful
 
     // The replacement is issued, and waits for a slot.
     // A paused pool hands no background slot out: the replacement waits.
-    listing.ctx.drive.pool().set_paused(true);
+    pool.set_paused(true);
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     // The next cycle starts, and is stuck marking the folder it makes.
@@ -334,7 +335,7 @@ async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_ful
     });
     tokio::task::spawn_blocking(move || reached.recv().unwrap()).await.unwrap();
     // Meanwhile the replacement runs, and ends with nothing to do.
-    listing.ctx.drive.pool().set_paused(false);
+    pool.set_paused(false);
     listing.join_replacements().await;
     assert!(!running.is_finished());
     release.send(()).unwrap();
@@ -353,7 +354,9 @@ async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_ful
 #[tokio::test]
 async fn a_newer_version_that_arrives_while_a_replacement_runs_is_fetched_after_it() {
     let s = World::read_only().await;
-    let listing = listed(&s).await;
+    let (listing, pool) = with_pool(&s);
+    s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1")]), "L1").await;
+    listing.cycle(&CancellationToken::new()).await.unwrap();
     let f_txt = s.root.path.join("docs/f.txt");
     write_version(&f_txt, b"old conten", "c1");
     let (two, three) = (b"version two".to_vec(), b"version three".to_vec());
@@ -370,12 +373,12 @@ async fn a_newer_version_that_arrives_while_a_replacement_runs_is_fetched_after_
     s.serve_download("c3", &three).await;
 
     // A paused pool hands no background slot out: the replacement waits.
-    listing.ctx.drive.pool().set_paused(true);
+    pool.set_paused(true);
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     s.feed(Some("L2"), json!([file("F", "D", "f.txt", "c3")]), "L3").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.ctx.drive.pool().set_paused(false);
+    pool.set_paused(false);
     listing.join_replacements().await;
     assert_eq!(std::fs::read(&f_txt).unwrap(), three);
     assert_eq!(placeholder::read_ctag(&File::open(&f_txt).unwrap()).unwrap().as_deref(), Some("c3"));

@@ -10,7 +10,7 @@ use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::ObjectPath;
 use zbus::Connection;
 
-use crate::status::activity::Transfer;
+use crate::status::transfers::Transfer;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::sync::SyncService;
 use crate::dbus::{ActivityLog, Folder, UploadQueue};
@@ -74,7 +74,7 @@ pub(crate) async fn start_signals(
         loop {
             match added.recv().await {
                 Ok(e) => {
-                    if let Err(err) = ActivityLog::added(&activity_emitter, e.at, &e.kind, &e.path, &e.detail).await {
+                    if let Err(err) = ActivityLog::added(&activity_emitter, e.at, e.kind.as_str(), &e.path, &e.detail).await {
                         tracing::warn!("cannot emit ActivityLog.Added: {err}");
                     }
                 }
@@ -124,28 +124,28 @@ pub(crate) type Changed = BTreeMap<&'static str, HashMap<&'static str, zbus::zva
 impl Coalesced {
     fn of(s: &SyncSnapshot, transfers: &BTreeMap<u64, Transfer>) -> Self {
         Self {
-            items_listed: s.items_listed,
-            items_placed: s.items_placed,
-            skipped_count: s.skipped_count,
-            last_checked: s.last_checked,
-            local_bytes: s.local_bytes,
-            conflict_count: s.conflict_count,
-            pinned_count: s.pinned_count,
+            items_listed: s.cycle.items_listed,
+            items_placed: s.cycle.items_placed,
+            skipped_count: s.cycle.skipped_count,
+            last_checked: s.cycle.last_checked,
+            local_bytes: s.local.local_bytes,
+            conflict_count: s.local.conflict_count,
+            pinned_count: s.local.pinned_count,
             downloads: transfers.values().map(|t| (t.path.clone(), t.done, t.total)).collect(),
-            pending_count: s.pending_count,
-            pending_bytes: s.pending_bytes,
-            blocked_count: s.blocked_count,
-            held_count: s.held_count,
-            uploads: s.uploads.clone(),
+            pending_count: s.outbox.pending_count,
+            pending_bytes: s.outbox.pending_bytes,
+            blocked_count: s.outbox.blocked_count,
+            held_count: s.outbox.held_count,
+            uploads: s.outbox.uploads.clone(),
             active_downloads: u32::try_from(transfers.len()).unwrap_or(u32::MAX),
-            active_uploads: u32::try_from(s.uploads.len()).unwrap_or(u32::MAX),
-            large_files: crate::status::activity::large_files(transfers, &s.uploads),
-            space_waiting_count: s.space_waiting_count,
-            space_waiting_bytes: s.space_waiting_bytes,
-            too_big_count: s.too_big_count,
-            throughput: s.throughput,
-            queue: s.queue,
-            scan: s.scan.clone(),
+            active_uploads: u32::try_from(s.outbox.uploads.len()).unwrap_or(u32::MAX),
+            large_files: crate::status::transfers::large_files(transfers, &s.outbox.uploads),
+            space_waiting_count: s.outbox.space_waiting_count,
+            space_waiting_bytes: s.outbox.space_waiting_bytes,
+            too_big_count: s.outbox.too_big_count,
+            throughput: s.transfers.throughput,
+            queue: s.transfers.queue,
+            scan: s.local.scan.clone(),
         }
     }
 
@@ -315,7 +315,7 @@ async fn emit_changes(
 ) -> zbus::Result<()> {
     let emitter = folder.signal_emitter();
     let folder = folder.get().await;
-    if old.root_path != new.root_path {
+    if old.folder.root_path != new.folder.root_path {
         folder.path_changed(emitter).await?;
         // The source is decided when a folder is registered and
         // kept with it for good, so it only ever changes alongside the path.
@@ -331,18 +331,18 @@ async fn emit_changes(
     }
     // Not coalesced: a pause and a resume within one coalescing window would
     // leave a client that read in between with the pause for good.
-    if old.paused_until != new.paused_until {
+    if old.pause.paused_until != new.pause.paused_until {
         folder.paused_changed(emitter).await?;
         folder.paused_until_changed(emitter).await?;
     }
-    if old.held_back != new.held_back {
+    if old.pause.held_back != new.pause.held_back {
         folder.held_back_changed(emitter).await?;
     }
-    if old.live_changes != new.live_changes {
+    if old.cycle.live_changes != new.cycle.live_changes {
         folder.live_changes_changed(emitter).await?;
     }
     // Not coalesced either: the tray says once that OneDrive is full.
-    if old.quota_full != new.quota_full {
+    if old.outbox.quota_full != new.outbox.quota_full {
         queue.get().await.quota_full_changed(queue.signal_emitter()).await?;
     }
     // `HelperState` itself is `Accounts`'s; a change of it shows here

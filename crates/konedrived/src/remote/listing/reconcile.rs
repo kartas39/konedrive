@@ -29,14 +29,15 @@ use std::time::SystemTime;
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
-use super::{applying, cancellable, CycleError, DriveRecord, Listing, Turn};
+use super::{applying, cancellable, CycleError, DriveRecord, Listing, Turn, Writes};
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::folder::locks::InodeLocks;
 use crate::folder::root::SyncRoot;
 use crate::helper::HelperLink;
 use crate::local::{Batch, IgnoreList};
 use crate::remote::materialize::{Applied, Changed, Claimed, Failed, Kept, Materializer, OnDisk, Rw, Scope};
-use crate::status::activity::{self, Kind, Report};
+use crate::status::activity::{self, Kind};
+use crate::status::report::Report;
 use konedrive_tree::outbox::OutboxRow;
 use konedrive_tree::reconcile::Deferrals;
 use konedrive_tree::{Change, ConflictKind, ConflictRow, Store};
@@ -83,16 +84,18 @@ pub(crate) enum Said {
 }
 
 /// How a folder is reconciled.
-pub(crate) enum Mode {
+pub(crate) enum Mode<'a> {
     /// The read phase's way: the folder shows OneDrive, and a local version
     /// in the way is rescued.
     ReadOnly,
     /// A read-write folder's: what the disk does not show yet waits.
-    ReadWrite(RwCycle),
+    ReadWrite(RwCycle<'a>),
 }
 
 /// What a read-write reconcile carries from its staging to its swap.
-pub(crate) struct RwCycle {
+pub(crate) struct RwCycle<'a> {
+    /// What the cycle shares with the folder's outbox worker and watcher.
+    pub writes: &'a Writes,
     /// The tree lock, taken before `staging` was begun.
     pub tree: OwnedMutexGuard<()>,
     /// `resyncChangesUploadDifferences`: what the listing left out and was
@@ -186,7 +189,7 @@ impl Listing {
     /// materializer sees `cancel` itself between steps; the commit follows
     /// the change to the folder in the same task, so a page placed is a page
     /// committed unless the daemon dies in between.
-    pub(super) async fn reconcile(&self, turn: &Turn, mode: Mode, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
+    pub(super) async fn reconcile(&self, turn: &Turn, mode: Mode<'_>, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
         let (reconcile, held) = self.begin_reconcile(turn, mode, cancel).await?;
         tokio::task::spawn_blocking(move || {
             let _held = held;
@@ -199,7 +202,7 @@ impl Listing {
     /// A reconcile in `mode`, with the locks it holds while it runs. Waits
     /// for the folder's lease; a folder with no helper is not reconciled
     /// (HS2).
-    pub(crate) async fn begin_reconcile(&self, turn: &Turn, mode: Mode, cancel: &CancellationToken) -> Result<(Reconcile, Held), CycleError> {
+    pub(crate) async fn begin_reconcile(&self, turn: &Turn, mode: Mode<'_>, cancel: &CancellationToken) -> Result<(Reconcile, Held), CycleError> {
         let lease = cancellable(cancel, self.ctx.lease.hold()).await?;
         // The link as it is now. A helper's reconnect sets it before `resume`
         // takes the lock to re-register the root, so this may be a new link
@@ -211,8 +214,7 @@ impl Listing {
         }
         let (tree, claimed, writing) = match mode {
             Mode::ReadOnly => (None, self.ctx.neighbours.as_ref().map(|n| Arc::clone(&n.claimed)), None),
-            Mode::ReadWrite(RwCycle { tree, upload_differences, waiting }) => {
-                let writes = self.writes();
+            Mode::ReadWrite(RwCycle { writes, tree, upload_differences, waiting }) => {
                 let writing = Writing {
                     machine: writes.machine_name.clone(),
                     ignore: writes.ignore.read().unwrap_or_else(|p| p.into_inner()).clone(),

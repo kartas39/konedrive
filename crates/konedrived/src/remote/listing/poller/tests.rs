@@ -29,7 +29,8 @@ async fn the_poller_runs_again_on_refresh_and_stops() {
 }
 
 /// Issue #54: while the notification socket is up the poll waits `live_interval`; once it
-/// goes down, the next cycle is due `interval` after the last one.
+/// goes down, the next cycle is due `interval` after the last one. The poller's task is run
+/// with the test's own "socket is up" channel, in the live task's place.
 #[tokio::test]
 async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
     let s = World::read_only().await;
@@ -38,9 +39,9 @@ async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": s.link_to("L1")})))
         .mount(&s.graph.server).await;
     let schedule = Schedule { live_interval: Duration::from_secs(3600), ..Schedule::polled(Duration::from_millis(400), vec![]) };
-    let poller = Poller::start(s.listing(), schedule);
-    let up = poller.live_up();
-    up.send_replace(true);
+    let (up, seen) = watch::channel(true);
+    let cancel = CancellationToken::new();
+    let task = tokio::spawn(run(s.listing(), schedule, Arc::new(Notify::new()), cancel.clone(), seen));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(s.delta_requests().await, 1, "the first cycle, then the live interval");
     up.send_replace(false);
@@ -48,7 +49,8 @@ async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
     assert_eq!(s.delta_requests().await, 2, "overdue by the normal interval: a cycle at once");
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(s.delta_requests().await, 3, "and every normal interval after");
-    tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(5), task).await.expect("the task ends").unwrap();
 }
 
 /// Forget stops the sync before it takes the lifecycle lock for writing,
@@ -86,7 +88,7 @@ async fn stopping_does_not_wait_for_a_slow_answer_from_graph() {
     let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(s.delta_requests().await, 1, "the listing has asked");
-    assert!(s.state.get().listing);
+    assert!(s.state.get().cycle.listing);
     tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("stop does not wait for the answer");
-    assert!(!s.state.get().listing, "a stopped listing is not said to run");
+    assert!(!s.state.get().cycle.listing, "a stopped listing is not said to run");
 }

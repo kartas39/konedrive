@@ -187,16 +187,16 @@ impl SyncService {
         *self.source.lock().unwrap() = None;
         self.persist_or_log(None);
         stopped.publish_with(|s| {
-            s.listing = false;
-            s.items_listed = 0;
-            s.items_placed = 0;
-            s.skipped_count = 0;
-            s.sync_trouble = None;
-            s.replacement_note.clear();
-            s.outbox_note = None;
-            s.last_checked = 0;
-            s.local_bytes = 0;
-            s.conflict_count = 0;
+            s.cycle.listing = false;
+            s.cycle.items_listed = 0;
+            s.cycle.items_placed = 0;
+            s.cycle.skipped_count = 0;
+            s.cycle.sync_trouble = None;
+            s.cycle.replacement_note = None;
+            s.outbox.note = None;
+            s.cycle.last_checked = 0;
+            s.local.local_bytes = 0;
+            s.local.conflict_count = 0;
         });
         // The pins stay on the files; what they queued is dropped, and
         // `PinnedCount` reads 0.

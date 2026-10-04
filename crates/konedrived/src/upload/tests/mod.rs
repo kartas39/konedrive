@@ -4,6 +4,7 @@
 //! Crashes are fault points: the worker stops at the step, and a new one is
 //! built on the same store and folder.
 
+use konedrive_tree::ActivityKind;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
@@ -231,7 +232,7 @@ fn new_folders_and_files_go_up_and_are_committed() {
     for (rel, path) in [("docs", "docs"), ("docs/deep", "docs/deep"), ("docs/deep/a.txt", "docs/deep/a.txt"), ("docs/empty", "docs/empty"), ("top.txt", "top.txt")] {
         assert_committed(&w, rel, path);
     }
-    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOADED).count(), 5);
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Uploaded).count(), 5);
     assert_eq!(w.store.call_blocking(move |s| s.outbox_seq()).unwrap(), 5);
     // Echo, locally: the next examination of everything finds nothing to send.
     w.examine_batch(&Batch::full());
@@ -259,7 +260,7 @@ fn edits_and_renames_go_up_guarded() {
     assert!(w.rows().is_empty());
     assert_eq!(w.cloud(|c| c.paths()), vec!["docs", "docs/b.txt"]);
     assert_eq!(w.base("A").map(|r| (r.parent_id, r.name)), Some((Some("D".into()), "b.txt".into())));
-    assert!(w.h.host.kinds().contains(&kind::CLOUD_MOVED.to_owned()));
+    assert!(w.h.host.kinds().contains(&ActivityKind::CloudMoved));
 
     // Moved and changed at once: one row, the move first, then the content
     // against the eTag the move answered with (§3.5).
@@ -362,7 +363,7 @@ fn every_crash_point_is_replayed_to_the_same_end() {
 
         w.run();
         assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
-        assert!(!w.h.host.kinds().contains(&kind::CONFLICT.to_owned()), "{what} {fault:?}: no conflict copy");
+        assert!(!w.h.host.kinds().contains(&ActivityKind::Conflict), "{what} {fault:?}: no conflict copy");
         assert!(w.cloud(|c| c.placeholders()).is_empty(), "{what} {fault:?}: no placeholder left");
         assert_eq!(w.cloud(|c| c.paths()), expect, "{what} {fault:?}");
         if !rel.is_empty() {
@@ -391,7 +392,7 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     let copy = w.path("a-fedora.txt").display().to_string();
     assert_eq!(w.store.call_blocking(move |s| s.conflict_kind(&copy)).unwrap().as_deref(), Some("copy"));
     assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "never taken for a delete");
-    assert!(w.h.host.kinds().contains(&kind::CONFLICT.to_owned()));
+    assert!(w.h.host.kinds().contains(&ActivityKind::Conflict));
     assert!(w.h.host.cycles.load(Ordering::SeqCst) > 0);
     // the outbox on the bus: the delta carries OneDrive's version; no Full
     // reconcile, which until the read-write reconcile puts waiting renames back.
@@ -423,7 +424,7 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     assert_ne!(w.id_at("a.txt").as_deref(), Some("A"), "a new item");
     assert_committed(&w, "a.txt", "a.txt");
     assert!(w.base("A").is_none());
-    assert!(w.h.host.kinds().contains(&kind::RESTORED.to_owned()));
+    assert!(w.h.host.kinds().contains(&ActivityKind::Restored));
 
     // rename × edit there: the rename goes again with the fresh eTag.
     let w = World::new(&[file("A", "R", "a.txt", b"old")]);
@@ -486,7 +487,7 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"]);
     assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None);
     assert!(w.base("A").is_some() && w.base("B").is_none() && w.base("C").is_none());
-    assert!(w.h.host.kinds().contains(&kind::RESTORED.to_owned()));
+    assert!(w.h.host.kinds().contains(&ActivityKind::Restored));
     assert!(w.h.host.fulls.load(Ordering::SeqCst) > 0, "placed again by a Full reconcile");
 
     // create × create: the same content is adopted, other content copied.
@@ -643,7 +644,7 @@ fn pause_and_blocked_rows() {
     let counts = restarted.status().counts;
     assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (2, 1, 2));
     assert_eq!((counts.space_waiting, restarted.status().quota_full), (2, true));
-    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 2, "forbidden, refused: once each; full: none per file");
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::UploadFailed).count(), 2, "forbidden, refused: once each; full: none per file");
     drop(writer);
     w.cloud(|c| c.free = Some(10 << 20));
     refresh(&w, &restarted);
@@ -837,7 +838,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
     assert!(engine.space_full(), "still full: only a quota read ends it");
     let sid = session.as_str().rsplit('/').next().unwrap();
     assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
-    assert!(w.h.host.kinds().iter().any(|k| k == kind::NOT_UPLOADED), "{:?}", w.h.host.kinds());
+    assert!(w.h.host.kinds().contains(&ActivityKind::NotUploaded), "{:?}", w.h.host.kinds());
 }
 
 /// Drains `engine` in the background, pauses it while the first request of
@@ -937,7 +938,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         assert_eq!(sent, wanted, "expired: {expire}");
         assert_eq!(w.content("big.bin").unwrap(), content);
         assert_committed(&w, "big.bin", "big.bin");
-        assert!(!w.h.host.kinds().iter().any(|k| k == kind::UPLOAD_FAILED), "a pause is no failure: {:?}", w.h.host.kinds());
+        assert!(!w.h.host.kinds().contains(&ActivityKind::UploadFailed), "a pause is no failure: {:?}", w.h.host.kinds());
     }
 }
 
@@ -991,7 +992,7 @@ fn a_stop_while_a_session_opens_waits_for_it_and_persists_it() {
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not opened again");
     assert_eq!(w.content("big.bin").unwrap(), content);
-    assert!(!w.h.host.kinds().contains(&kind::CONFLICT.to_owned()));
+    assert!(!w.h.host.kinds().contains(&ActivityKind::Conflict));
 }
 
 /// Four independent small files run at once, and a child waits for its
@@ -1186,24 +1187,6 @@ fn delete_commits_wait_for_the_cycles_swap() {
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "forgotten after the swap, not before");
     assert!(w.cloud(|c| c.item("A").is_some() && c.bin.is_empty()));
-}
-
-/// The activity words the worker writes are the ones the daemon's list of
-/// kinds names, so the window and the CLI can rely on them.
-#[test]
-fn the_workers_activity_words_are_the_daemons_kinds() {
-    use crate::status::activity::Kind;
-    for (word, kind) in [
-        (kind::UPLOADED, Kind::Uploaded),
-        (kind::CLOUD_MOVED, Kind::CloudMoved),
-        (kind::CLOUD_DELETED, Kind::CloudDeleted),
-        (kind::UPLOAD_FAILED, Kind::UploadFailed),
-        (kind::RESTORED, Kind::Restored),
-        (kind::CONFLICT, Kind::Conflict),
-        (kind::NOT_UPLOADED, Kind::NotUploaded),
-    ] {
-        assert_eq!(word, kind.as_str());
-    }
 }
 
 // Lost deletes (the stress tool's soak, seed 1745610129): a local delete must

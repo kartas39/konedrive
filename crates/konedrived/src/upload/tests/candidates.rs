@@ -1,6 +1,7 @@
 //! Defects the review of 2026-10-03 found (`docs/quality/upload.md`), each shown by a test
 //! that says what the worker should do.
 
+use konedrive_tree::ActivityKind;
 use super::*;
 
 /// UP1. A `403` blocks its own row (`forbidden`) and nothing else: the other
@@ -16,7 +17,7 @@ fn a_row_blocked_by_403_goes_again_with_the_worker_a_sign_in_builds() {
     let engine = w.h.engine();
     w.h.drain(&engine);
     assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Forbidden.key()));
-    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 1, "the refusal is said");
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::UploadFailed).count(), 1, "the refusal is said");
 
     // The same worker goes on with the other rows, and leaves the blocked one.
     w.write("b.txt", b"b");
@@ -102,7 +103,7 @@ fn a_bad_upload_whose_delete_fails_twice_is_still_deleted_before_the_file_goes_a
     // OneDrive answers again.
     w.h.block_on(engine.retry_now()).unwrap();
     w.h.drain(&engine);
-    let conflicts = w.h.host.kinds().iter().filter(|k| *k == kind::CONFLICT).count();
+    let conflicts = w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Conflict).count();
     assert_eq!(
         (w.cloud(|c| c.paths()), conflicts, w.path("a.txt").exists()),
         (vec!["a.txt".to_owned()], 0, true),
@@ -151,7 +152,7 @@ fn a_bad_upload_changed_in_onedrive_since_is_left_there() {
     assert_eq!(w.cloud(|c| c.item("BAD").map(|i| i.content.clone())), Some(b"edited elsewhere".to_vec()), "what was edited elsewhere stays");
     assert_eq!(w.cloud(|c| c.at("a.txt").map(|i| i.id.clone())).as_deref(), Some("BAD"));
     assert!(w.rows().iter().all(|r| bad_item_of(&w, &r.rel.display().to_string()).is_none()), "forgotten: {:?}", w.summary());
-    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::CONFLICT).count(), 1, "the file goes up as a copy beside it: {:?}", w.summary());
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Conflict).count(), 1, "the file goes up as a copy beside it: {:?}", w.summary());
 }
 
 /// UP2. OneDrive moves an item's eTag by itself, with its content as it
@@ -187,7 +188,7 @@ fn a_bad_upload_whose_etag_moved_by_itself_is_still_deleted() {
 
     w.h.block_on(engine.retry_now()).unwrap();
     w.h.drain(&engine);
-    let conflicts = w.h.host.kinds().iter().filter(|k| *k == kind::CONFLICT).count();
+    let conflicts = w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Conflict).count();
     assert_eq!((w.cloud(|c| c.paths()), conflicts), (vec!["a.txt".to_owned()], 0), "{:?}", w.rows());
     assert!(w.cloud(|c| c.item("BAD").is_none()), "the bad upload is gone");
     assert!(w.rows().is_empty(), "{:?}", w.rows());

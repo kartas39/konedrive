@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::hydration::source::{ContentSource, Fetched, SourceError};
-use crate::status::activity::{TransferEntry, TransferHandle, Transfers};
+use crate::status::transfers::{TransferEntry, TransferHandle, Transfers};
 
 /// A [`ContentSource`] whose downloads show in [`Transfers`] as `path`.
 ///

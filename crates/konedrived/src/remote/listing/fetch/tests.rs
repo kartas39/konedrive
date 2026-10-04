@@ -31,8 +31,8 @@ async fn a_first_listing_shows_each_page_while_the_next_is_asked_for() {
     assert_eq!(mode(&s.root.path.join("docs")), placeholder::LOCKED_DIR_MODE, "the folder is under the read-only lock between pages");
     assert_eq!(mode(&s.root.path), placeholder::LOCKED_DIR_MODE);
     let snapshot = s.state.get();
-    assert!(snapshot.listing, "the listing is still said to run");
-    assert_eq!((snapshot.items_listed, snapshot.items_placed), (3, 3));
+    assert!(snapshot.cycle.listing, "the listing is still said to run");
+    assert_eq!((snapshot.cycle.items_listed, snapshot.cycle.items_placed), (3, 3));
     assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link_to("P2")));
     assert_eq!(s.store.call(move |t| t.delta_link()).await.unwrap(), None);
     assert!(s.activity().is_empty(), "the one `listed` event comes at the end: {:?}", s.activity());
@@ -62,7 +62,7 @@ async fn an_item_whose_folder_comes_on_a_later_page_waits_for_it() {
     assert_eq!(seen.lock().unwrap().take().expect("page 2 was asked for"), ["q"], "c.txt waited for its folder");
     assert_eq!(tree_of(&s.root.path), ["papers", "papers/c.txt", "q"]);
     let snapshot = s.state.get();
-    assert_eq!((snapshot.items_listed, snapshot.items_placed), (4, 3), "o.txt is listed, and nowhere");
+    assert_eq!((snapshot.cycle.items_listed, snapshot.cycle.items_placed), (4, 3), "o.txt is listed, and nowhere");
 }
 
 /// The riskiest case of across pages: an entry whose folder has
@@ -101,7 +101,7 @@ async fn a_listing_stopped_part_way_resumes_where_it_stopped() {
     within(asked.recv()).await.unwrap();
     cancel.cancel();
     assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert!(!s.state.get().listing);
+    assert!(!s.state.get().cycle.listing);
 
     s.feed(Some("P3"), json!([folder("E", "R", "extra")]), "L1").await;
     let report = within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
@@ -113,7 +113,7 @@ async fn a_listing_stopped_part_way_resumes_where_it_stopped() {
     let folder = s.root.path.display().to_string();
     assert_eq!(s.activity(), vec![("listed".to_owned(), folder, "3 items".to_owned())]);
     let snapshot = s.state.get();
-    assert_eq!((snapshot.listing, snapshot.items_listed, snapshot.items_placed), (false, 3, 3));
+    assert_eq!((snapshot.cycle.listing, snapshot.cycle.items_listed, snapshot.cycle.items_placed), (false, 3, 3));
 }
 
 /// A stopped listing whose resume link Graph refuses — expired (`410`),

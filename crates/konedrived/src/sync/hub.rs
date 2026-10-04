@@ -232,7 +232,7 @@ impl HelperHub {
     fn publish(&self, now: HelperState) {
         self.state.send_if_modified(|state| std::mem::replace(state, now) != now);
         for account in self.accounts() {
-            account.state().update(|s| s.helper_state = now);
+            account.state().update(|s| s.folder.helper_state = now);
         }
     }
 

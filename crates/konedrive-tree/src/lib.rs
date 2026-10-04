@@ -45,7 +45,7 @@ mod thumbs;
 
 #[cfg(test)]
 use forget::forget_subtrees;
-pub use activity::{ActivityRow, ACTIVITY_KEPT};
+pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
 pub use model::{usable_id, Chain, Change, Counts, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
 pub use plan::{Plan, Planned, Side};

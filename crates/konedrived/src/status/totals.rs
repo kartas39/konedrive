@@ -6,7 +6,7 @@
 //! - **Left.** Uploads, in changes: the outbox rows not uploaded yet (`PendingCount`,
 //!   `PendingBytes`; a move, a delete or a new folder is a change of no bytes), less the bytes
 //!   already sent of the uploads under way. Downloads, in files: the pinned files waiting
-//!   ([`super::pin::Pins`]) and every download under way (`Transfers`: opens, `Hydrate`,
+//!   ([`Pins`](crate::hydration::pin::Pins)) and every download under way (`Transfers`: opens, `Hydrate`,
 //!   replacements, pinned files), less the bytes already received of those under way. A file
 //!   being opened and a replacement are not queued ahead: they count only while they run.
 //!   What is kept back — blocked, held, waiting for space while OneDrive is full, too big for
@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use super::activity::{Transfer, Transfers};
+use super::transfers::{Transfer, Transfers};
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 
 /// One direction's totals, as `Transfers` publishes them.
@@ -54,17 +54,17 @@ pub struct Counter {
 impl Counter {
     /// The totals now, from the published state `s` and the downloads under way.
     pub fn count(&mut self, s: &SyncSnapshot, transfers: &BTreeMap<u64, Transfer>) -> QueueTotals {
-        let pool = s.throughput;
+        let pool = s.transfers.throughput;
         let received: u64 = transfers.values().map(|t| t.total.saturating_sub(t.done)).sum();
         let running = u32::try_from(transfers.len()).unwrap_or(u32::MAX);
-        let (pinned, pinned_bytes) = s.pinned_waiting;
+        let (pinned, pinned_bytes) = s.local.pinned_waiting;
         let down = (pinned.saturating_add(running), pinned_bytes.saturating_add(received));
         // `PendingCount` takes in the changes that wait for space and those too big for it:
         // kept back, not left.
-        let sent: u64 = s.uploads.iter().map(|(_, sent, _)| sent).sum();
-        let kept = s.space_waiting_count.saturating_add(s.too_big_count);
-        let kept_bytes = s.space_waiting_bytes.saturating_add(s.too_big_bytes);
-        let up = (s.pending_count.saturating_sub(kept), s.pending_bytes.saturating_sub(kept_bytes).saturating_sub(sent));
+        let sent: u64 = s.outbox.uploads.iter().map(|(_, sent, _)| sent).sum();
+        let kept = s.outbox.space_waiting_count.saturating_add(s.outbox.too_big_count);
+        let kept_bytes = s.outbox.space_waiting_bytes.saturating_add(s.outbox.too_big_bytes);
+        let up = (s.outbox.pending_count.saturating_sub(kept), s.outbox.pending_bytes.saturating_sub(kept_bytes).saturating_sub(sent));
         let throttled = pool.retry_after > 0;
         QueueTotals {
             down: self.direction(0, down, pool.down_moved, pool.down_average, throttled),

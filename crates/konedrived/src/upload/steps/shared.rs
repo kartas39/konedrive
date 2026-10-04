@@ -2,6 +2,7 @@
 //! into, a name that is taken, the guard of a request, the commit, the
 //! conflict copy, and the end of a row whose object is gone.
 
+use konedrive_tree::ActivityKind;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use crate::folder::disk::{Disk, Probe};
 use crate::local::{names, RECHECK};
 use crate::upload::engine::{now, Engine, Fail, Outcome};
 use crate::upload::local::{self, Found};
-use crate::upload::{kind, SWAP_PREFIX};
+use crate::upload::SWAP_PREFIX;
 use konedrive_fs::RESERVED_PREFIX;
 use konedrive_graph::drive::{DriveError, DriveItem, WriteError};
 use konedrive_tree::outbox::{frees, Base, Committed, ConflictCopy, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason, SessionUrl};
@@ -389,7 +390,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
             }
             let original = engine.root().path.join(&object.rel).display().to_string();
             let copy_path = engine.root().path.join(&copy_rel).display().to_string();
-            let event = engine.event(kind::CONFLICT, &object.rel, copy_path.clone());
+            let event = engine.event(ActivityKind::Conflict, &object.rel, copy_path.clone());
             let (inode, is_dir, rel, name) = (object.inode.clone(), object.is_dir, copy_rel.clone(), copy_name);
             let amend = move |next: &mut OutboxRow| {
                 next.rel = rel;
@@ -506,7 +507,7 @@ pub(in crate::upload) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, f
     let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
     let event = blocking_under(Arc::clone(&tree), move || {
         local::strip_found(&object)?;
-        let event = engine.event(kind::RESTORED, &object.rel, "deleted in OneDrive while it was changed here: uploaded again");
+        let event = engine.event(ActivityKind::Restored, &object.rel, "deleted in OneDrive while it was changed here: uploaded again");
         #[cfg(test)]
         engine.before_record(row_dropped);
         let stored = event.clone();
@@ -544,7 +545,7 @@ pub(in crate::upload) async fn never_uploaded(e: &Engine, disk: &Arc<Disk>, row:
         "removed here before its upload finished"
     };
     tracing::info!("{} is not uploaded: {detail}", row.rel.display());
-    let event = e.event(kind::NOT_UPLOADED, &row.rel, detail);
+    let event = e.event(ActivityKind::NotUploaded, &row.rel, detail);
     let (seq, stored) = (row.seq, event.clone());
     e.store().call(move |s| s.outbox_drop_unsent(seq, &behind, Some(&stored))).await?;
     e.host().activity(&event);

@@ -30,7 +30,7 @@ use crate::local::{Batch, Examined, Examiner, IgnoreList};
 use crate::remote::testing::{id_at, now, state_at, write_version, World};
 use crate::upload::{Engine, OutboxWorker};
 use konedrive_tree::outbox::{Committed, OutboxKind, OutboxState};
-use konedrive_tree::Change;
+use konedrive_tree::{ActivityKind, Change};
 
 pub(super) fn names(batch: &Batch) -> String {
     format!("{batch:?}")
@@ -149,8 +149,8 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     assert!(w.graph.with(|c| c.bin.contains_key(&id)));
     let report = w.cycle(&listing).await;
     assert!(report.applied.changes.is_empty() && !new.exists() && w.base(&id).is_none());
-    let said: Vec<String> = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
-    assert!(said.iter().all(|kind| kind != "added" && kind != "updated" && kind != "removed"), "{said:?}");
+    let said: Vec<ActivityKind> = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
+    assert!(!said.iter().any(|kind| matches!(kind, ActivityKind::Added | ActivityKind::Updated | ActivityKind::Removed)), "{said:?}");
 }
 
 /// §3.7 `410`: `resyncChangesUploadDifferences` keeps what the new listing
@@ -344,7 +344,7 @@ async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it
     assert_eq!((id_at(&w.path("docs")), id_at(&w.path("docs/f.txt"))), (None, None), "the user's own now");
     let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
     assert!(
-        said.iter().any(|e| e.kind == "removed" && e.path == w.path("docs").display().to_string() && e.detail.starts_with("2 files")),
+        said.iter().any(|e| e.kind == ActivityKind::Removed && e.path == w.path("docs").display().to_string() && e.detail.starts_with("2 files")),
         "the Activity says what was kept: {said:?}"
     );
 
@@ -372,7 +372,7 @@ async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new
     w.graph.with(|c| c.trash("F"));
     w.cycle(&listing).await;
     let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
-    assert!(said.iter().any(|e| e.kind == "removed" && e.path == w.path("docs/f.txt").display().to_string() && e.detail.starts_with("1 file changed or new")), "{said:?}");
+    assert!(said.iter().any(|e| e.kind == ActivityKind::Removed && e.path == w.path("docs/f.txt").display().to_string() && e.detail.starts_with("1 file changed or new")), "{said:?}");
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine");
     assert!(w.base("F").is_none(), "the base took the removal");
 
@@ -396,7 +396,7 @@ async fn what_stays_under_an_ignored_name_is_said_to_stay_on_this_computer_only(
     w.cycle(&listing).await;
     assert_eq!(std::fs::read(w.path("docs/notes.tmp")).unwrap(), b"mine");
     let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
-    let entry = said.iter().find(|e| e.kind == "removed" && e.path == w.path("docs").display().to_string()).unwrap_or_else(|| panic!("{said:?}"));
+    let entry = said.iter().find(|e| e.kind == ActivityKind::Removed && e.path == w.path("docs").display().to_string()).unwrap_or_else(|| panic!("{said:?}"));
     assert_eq!(entry.detail, "1 item with an ignored or refused name was kept on this computer only");
 
     w.examine_handed_and_upload().await;
@@ -427,7 +427,7 @@ async fn a_cycle_that_fails_still_hands_over_what_it_kept() {
     assert!(failed.is_err(), "{failed:?}");
     assert_eq!(id_at(&w.path("docs/deep/g.txt")), None, "its attributes are off already");
     let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
-    assert!(said.iter().any(|e| e.kind == "removed" && e.detail.starts_with("1 file changed or new")), "the Activity says what was kept: {said:?}");
+    assert!(said.iter().any(|e| e.kind == ActivityKind::Removed && e.detail.starts_with("1 file changed or new")), "the Activity says what was kept: {said:?}");
 
     let handed = std::mem::take(&mut *w.examined.lock().unwrap());
     assert!(!handed.is_empty(), "the watcher was told");
@@ -463,7 +463,7 @@ async fn a_cycle_that_fails_says_what_it_kept_that_never_had_an_id() {
     assert_eq!(id_at(&w.path("docs/deep/only")), None, "the user's own folder now");
     let said = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap();
     assert!(
-        said.iter().any(|e| e.kind == "removed" && e.detail == "1 item with an ignored or refused name was kept on this computer only"),
+        said.iter().any(|e| e.kind == ActivityKind::Removed && e.detail == "1 item with an ignored or refused name was kept on this computer only"),
         "the Activity says what was kept: {said:?}"
     );
 }
@@ -810,7 +810,7 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
         reopened: Arc::new({
             let (reopened, state) = (Arc::clone(&reopened), w.state.clone());
             // What the worker would find at its wake.
-            move || reopened.lock().unwrap().push(state.get().sync_trouble)
+            move || reopened.lock().unwrap().push(state.get().cycle.sync_trouble)
         }),
         ..w.writes(None)
     };
@@ -818,15 +818,15 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "trouble that closes no gate");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
     w.cycle(&listing).await;
     assert_eq!(*reopened.lock().unwrap(), vec![None], "woken once, with the trouble already cleared");
 
-    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
     w.graph.with(|c| c.script("GET", "root/delta", ResponseTemplate::new(503), 10));
     let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
     assert!(!err.blocking(), "{err:?}");

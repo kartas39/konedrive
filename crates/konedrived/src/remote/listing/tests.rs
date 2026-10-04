@@ -36,7 +36,7 @@ async fn an_initial_listing_fills_the_folder_and_stores_the_link() {
     let mut states = s.state.subscribe();
     let seen_listing = tokio::spawn(async move {
         loop {
-            if states.borrow_and_update().listing {
+            if states.borrow_and_update().cycle.listing {
                 return true;
             }
             if states.changed().await.is_err() {
@@ -57,9 +57,9 @@ async fn an_initial_listing_fills_the_folder_and_stores_the_link() {
     assert!(s.root.path.join("docs/f.txt").is_file());
     assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link_to("L1")));
     let snapshot = s.state.get();
-    assert!(!snapshot.listing);
-    assert_eq!((snapshot.items_listed, snapshot.items_placed, snapshot.skipped_count), (3, 2, 1));
-    assert_eq!(snapshot.sync_trouble, None);
+    assert!(!snapshot.cycle.listing);
+    assert_eq!((snapshot.cycle.items_listed, snapshot.cycle.items_placed, snapshot.cycle.skipped_count), (3, 2, 1));
+    assert_eq!(snapshot.cycle.sync_trouble, None);
     assert!(tokio::time::timeout(Duration::from_secs(1), seen_listing).await.unwrap().unwrap(), "`listing` was published while it ran");
 }
 
@@ -156,7 +156,7 @@ async fn the_sweep_after_a_restart_queues_a_pinned_file_not_downloaded_yet() {
 
     assert!(report.full);
     assert_eq!(s.pins.queued(), vec![s.root.path.join("docs/f.txt")]);
-    assert_eq!(s.state.get().pinned_count, 1);
+    assert_eq!(s.state.get().local.pinned_count, 1);
 }
 
 #[tokio::test]
@@ -178,7 +178,7 @@ async fn another_account_blocks_the_folder_and_touches_nothing() {
     assert!(matches!(err, CycleError::OtherAccount(_)), "{err:?}");
     assert!(err.blocking());
     assert!(!s.root.path.join("docs").exists());
-    assert_eq!(s.state.get().sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: true }));
+    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: true }));
     assert_eq!(*seen.lock().unwrap(), vec!["D".to_owned()]);
 }
 
@@ -194,11 +194,11 @@ async fn no_network_is_said_and_is_not_blocking() {
     let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
     assert!(matches!(err, CycleError::Offline(_)), "{err:?}");
     assert!(!err.blocking());
-    assert_eq!(s.state.get().sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: false }));
+    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: false }));
     s.feed(Some("L1"), json!([]), "L2").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(report.full, "a cycle after a failed one reconciles in full (Ruling R7)");
-    assert_eq!(s.state.get().sync_trouble, None);
+    assert_eq!(s.state.get().cycle.sync_trouble, None);
 }
 
 #[tokio::test]
@@ -306,7 +306,7 @@ async fn a_rescue_made_before_a_full_hand_over_is_still_a_conflict() {
     assert_eq!(std::fs::read(rescued("top.txt")).unwrap(), b"mine");
     assert_eq!(std::fs::read(rescued("kept.txt")).unwrap(), b"downloadedand mine");
     assert!(s.activity().contains(&("conflict".to_owned(), s.full("top.txt"), rescued("top.txt"))), "{:?}", s.activity());
-    assert_eq!(s.state.get().conflict_count, 2);
+    assert_eq!(s.state.get().local.conflict_count, 2);
 }
 
 /// A first listing, and any Full reconcile, is ONE summary
@@ -365,7 +365,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
     let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
     let rows: Vec<_> = conflicts.iter().map(|c| (c.original.clone(), c.rescued.clone())).collect();
     assert_eq!(rows, vec![(original.clone(), rescued.clone())]);
-    assert_eq!(s.state.get().conflict_count, 1);
+    assert_eq!(s.state.get().local.conflict_count, 1);
     assert_eq!(
         crate::status::snapshot::published_error(&s.state.get()),
         "",
@@ -376,7 +376,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
     std::fs::remove_file(&rescued).unwrap();
     s.feed(Some("L2"), json!([]), "L3").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert_eq!(s.state.get().conflict_count, 0, "a conflict whose file is gone drops off by the next cycle");
+    assert_eq!(s.state.get().local.conflict_count, 0, "a conflict whose file is gone drops off by the next cycle");
     assert!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty());
 }
 
@@ -387,23 +387,23 @@ async fn last_checked_moves_only_when_a_cycle_succeeds() {
     let s = World::read_only().await;
     let before = activity::unix_now();
     let listing = listed(&s).await;
-    let checked = s.state.get().last_checked;
+    let checked = s.state.get().cycle.last_checked;
     assert!(checked >= before, "{checked} < {before}");
     assert_eq!(s.store.call(move |x| x.last_checked()).await.unwrap(), Some(checked));
 
     // Marked, so that a failed cycle writing the time it ran — the same
     // second, most likely — could not pass for leaving it alone.
-    s.state.update(|x| x.last_checked = 7);
+    s.state.update(|x| x.cycle.last_checked = 7);
     Mock::given(method("GET")).and(path("/me/drive"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D2"})))
         .up_to_n_times(1).with_priority(1)
         .mount(&s.graph.server).await;
     assert!(matches!(listing.cycle(&CancellationToken::new()).await, Err(CycleError::OtherAccount(_))));
-    assert_eq!(s.state.get().last_checked, 7, "a failed cycle checked nothing");
+    assert_eq!(s.state.get().cycle.last_checked, 7, "a failed cycle checked nothing");
 
     s.feed(Some("L1"), json!([]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert!(s.state.get().last_checked >= before);
+    assert!(s.state.get().cycle.last_checked >= before);
 }
 
 /// A file being filled when its change arrives is left for later
@@ -503,7 +503,7 @@ async fn a_dropped_cycle_leaves_a_full_reconcile_and_no_listing_behind() {
     s.feed_after(None, json!([root_item()]), "L9", Duration::from_secs(30)).await;
     let dropped = tokio::time::timeout(Duration::from_millis(500), restarted.cycle(&CancellationToken::new())).await;
     assert!(dropped.is_err(), "still listing when dropped");
-    assert!(!s.state.get().listing, "a dropped listing is not said to run");
+    assert!(!s.state.get().cycle.listing, "a dropped listing is not said to run");
     s.feed(Some("L1"), json!([]), "L2").await;
     let report = restarted.cycle(&CancellationToken::new()).await.unwrap();
     assert!(report.full, "the Full reconcile the dropped cycle had taken is asked for again");
@@ -617,6 +617,6 @@ async fn a_store_failure_is_the_same_trouble_wherever_a_reconcile_meets_it() {
     let listing = Listing::new(s.context());
     listing.publish_outcome(&Err(reading_the_root));
     let published = s.state.get();
-    assert_eq!(published.sync_trouble, Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
-    assert_eq!(crate::status::snapshot::published_state(&SyncSnapshot { root_state: crate::status::snapshot::RootState::Ready, ..published }), "error");
+    assert_eq!(published.cycle.sync_trouble, Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    assert_eq!(crate::status::snapshot::published_state(&SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_state: crate::status::snapshot::RootState::Ready, ..published.folder.clone() }, ..published }), "error");
 }

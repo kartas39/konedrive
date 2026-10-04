@@ -3,6 +3,7 @@
 //! refused fragment sent again to the same session, a session given up
 //! always cancelled — so our own placeholder never becomes a conflict.
 
+use konedrive_tree::ActivityKind;
 use super::*;
 
 /// Larger than one request: four fragments of 320 KiB.
@@ -11,7 +12,7 @@ fn large() -> Vec<u8> {
 }
 
 fn conflicts(w: &World) -> usize {
-    w.h.host.kinds().iter().filter(|k| *k == kind::CONFLICT).count()
+    w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Conflict).count()
 }
 
 fn given_up(w: &World) -> Vec<String> {
@@ -252,7 +253,7 @@ fn a_refusal_in_the_middle_of_a_session_gives_it_up_and_is_decided_as_at_the_ope
     assert_eq!(w.cloud(|c| c.paths()), vec!["a.bin"]);
     assert_ne!(w.id_at("a.bin").as_deref(), Some("A"), "a new item");
     assert_eq!(w.content("a.bin").unwrap(), large());
-    assert!(w.h.host.kinds().contains(&kind::RESTORED.to_owned()));
+    assert!(w.h.host.kinds().contains(&ActivityKind::Restored));
     assert_eq!(conflicts(&w), 0);
 
     let w = four_fragments(true);

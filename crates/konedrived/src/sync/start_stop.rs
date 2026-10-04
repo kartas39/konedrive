@@ -79,7 +79,7 @@ impl SyncService {
         .ok()
         .flatten()
         .unwrap_or(0);
-        self.state.update(|s| s.last_checked = last_checked);
+        self.state.update(|s| s.cycle.last_checked = last_checked);
         // Local changes are looked for in a read-write folder only (`docs/design/writes.md` §3.1): from
         // now on by the watcher, and once in full, for what changed while nothing watched —
         // at every bring-up, and after a switch to read-write; the watcher's walk ends in that
@@ -177,7 +177,7 @@ impl SyncService {
 
     fn sync_cannot_start(&self, text: String) {
         tracing::error!("{text}");
-        self.state.update(|s| s.sync_trouble = Some(SyncTrouble { text, blocking: true }));
+        self.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true }));
     }
 
     /// Stops the sync and waits for it: a Forget's, and tests'. (At the

@@ -33,7 +33,7 @@ async fn binary_status_says_plainly_that_nothing_intercepts_opens() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
     let f = harness_with_helper(false).await;
-    f.service.state().update(|s| s.root_path = "/home/u/OneDrive".into());
+    f.service.state().update(|s| s.folder.root_path = "/home/u/OneDrive".into());
 
     let out = run(f._bus.address(), &["sync", "status"]);
     assert!(out.status.success(), "{out:?}");

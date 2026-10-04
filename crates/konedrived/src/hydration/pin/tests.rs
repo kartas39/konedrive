@@ -62,7 +62,7 @@ fn pins_for(held: &Arc<Held>) -> Arc<Pins> {
 }
 
 fn pins_in(held: &Arc<Held>, pool: Arc<TransferPool>) -> Arc<Pins> {
-    let state = SyncStateHandle::new(SyncSnapshot { root_path: "/r".into(), ..SyncSnapshot::default() });
+    let state = SyncStateHandle::new(SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_path: "/r".into(), ..Default::default() }, ..SyncSnapshot::default() });
     let filler: Weak<dyn PinFill> = Arc::downgrade(held) as Weak<Held>;
     Pins::new(state, filler, pool)
 }

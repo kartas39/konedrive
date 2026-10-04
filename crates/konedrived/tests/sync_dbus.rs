@@ -647,7 +647,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.sync.state().update(|s| {
-        s.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true })
+        s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true })
     });
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
@@ -656,7 +656,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     assert_eq!(f.folder.state().await.unwrap(), "error");
     assert!(f.folder.last_error().await.unwrap().ends_with(". signed out"));
 
-    f.sync.state().update(|s| s.replacement_note = "1 file(s) changed in OneDrive could not be updated here yet".into());
+    f.sync.state().update(|s| s.cycle.replacement_note = Some(konedrived::status::snapshot::ReplacementNote { files: 1, why: "no space".into() }));
     assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError"]);
 }
 
@@ -686,9 +686,9 @@ async fn the_counters_travel_in_one_properties_changed_message() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.sync.state().update(|s| {
-        s.items_listed = 10;
-        s.items_placed = 5;
-        s.skipped_count = 2;
+        s.cycle.items_listed = 10;
+        s.cycle.items_placed = 5;
+        s.cycle.skipped_count = 2;
     });
 
     // Only the messages that carry a counter: what the registration itself changed (`Path`,
@@ -724,11 +724,11 @@ async fn each_property_changes_under_its_own_interface() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.sync.state().update(|s| {
-        s.items_listed = 3;
-        s.throughput.size = 7;
-        s.pending_count = 2;
-        s.conflict_count = 1;
-        s.scan.directories = 5;
+        s.cycle.items_listed = 3;
+        s.transfers.throughput.size = 7;
+        s.outbox.pending_count = 2;
+        s.local.conflict_count = 1;
+        s.local.scan.directories = 5;
     });
 
     let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
@@ -814,9 +814,9 @@ async fn the_local_scan_is_on_the_bus() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.sync.state().update(|s| {
-        s.scan.state = ScanState::Running;
-        s.scan.reason = "overflow".into();
-        s.scan.files = 7;
+        s.local.scan.state = ScanState::Running;
+        s.local.scan.reason = "overflow".into();
+        s.local.scan.files = 7;
     });
 
     assert_eq!(

@@ -220,7 +220,7 @@ async fn a_failed_fill_on_open_is_recorded_as_failed() {
     let source_dir = tempfile::tempdir().unwrap();
     let fd = placeholder(&folder, "gone.bin", "GONE", 4096);
     let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        root_path: folder.display().to_string(),
+        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
         ..SyncSnapshot::default()
     }));
     let mut added = report.activity.subscribe();

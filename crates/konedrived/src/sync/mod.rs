@@ -32,13 +32,13 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::Report;
+use crate::status::report::Report;
 use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
-use crate::status::snapshot::{SyncSnapshot, SyncStateHandle, published_error, published_state};
+use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle, published_error, published_state};
 use crate::conditions::running;
 use crate::hydration::pin;
 use crate::hydration::source;
@@ -353,7 +353,7 @@ impl SyncService {
     pub fn new(mut wiring: Wiring) -> Arc<Self> {
         let hub = Arc::clone(&wiring.hub);
         hub.join(|helper_state| {
-            let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
+            let state = SyncStateHandle::new(SyncSnapshot { folder: FolderStatus { helper_state, ..FolderStatus::default() }, ..SyncSnapshot::default() });
             let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
             let shown = state.clone();
             pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
@@ -544,7 +544,7 @@ impl SyncService {
         if let Some(why) = self.view().down {
             return SyncError::not_up(&why);
         }
-        match self.state.get().sync_trouble {
+        match self.state.get().cycle.sync_trouble {
             Some(trouble) => SyncError::NotUp(format!("the folder's sync is not running: {}", trouble.text)),
             None => SyncError::NotUp("the folder's sync has not started yet".into()),
         }

@@ -143,7 +143,7 @@ async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold()
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let addr = f._bus.address();
     let line = |status: &str| status.lines().find(|l| l.starts_with("Changes from OneDrive:")).map(str::to_owned);
-    let live = || f.service.state().get().live_changes;
+    let live = || f.service.state().get().cycle.live_changes;
 
     wait_for(|| live() == LiveChanges::Connecting).await;
     let status = out_text(&run(addr, &["sync", "status"]));
@@ -166,7 +166,7 @@ async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold()
     let out = run(addr, &["sync", "anyway", "--all"]);
     assert!(out.status.success(), "{out:?}");
     assert!(out_text(&out).starts_with("Syncing anyway (metered connection)"), "{}", out_text(&out));
-    assert_eq!(f.service.state().get().held_back, "");
+    assert_eq!(f.service.state().get().pause.held_back, "");
     wait_for(|| live() == LiveChanges::Connecting).await;
 }
 

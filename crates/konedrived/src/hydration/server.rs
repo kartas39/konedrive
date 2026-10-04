@@ -5,7 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::FutureExt;
 
-use crate::status::activity::{Kind, Report};
+use crate::status::activity::Kind;
+use crate::status::report::Report;
 use crate::hydration::tracked::Tracked;
 use crate::helper::{HelperLink, HydrateRequest};
 use crate::hydration::source::{Answered, ContentSource, FillError};

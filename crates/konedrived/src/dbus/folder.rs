@@ -84,7 +84,7 @@ impl Folder {
     /// empty.
     #[zbus(property)]
     async fn held_back(&self) -> String {
-        self.service.state().get().held_back
+        self.service.state().get().pause.held_back
     }
 
     /// How changes made in OneDrive reach this computer: `connected` (at once, through the
@@ -92,7 +92,7 @@ impl Folder {
     /// (stopped, or not a OneDrive folder).
     #[zbus(property)]
     async fn live_changes(&self) -> String {
-        self.service.state().get().live_changes.as_str().to_owned()
+        self.service.state().get().cycle.live_changes.as_str().to_owned()
     }
 
     #[zbus(property)]
@@ -105,7 +105,7 @@ impl Folder {
     /// folder that could not be brought up reads
     /// `error` and still says which folder it is.
     async fn path(&self) -> String {
-        self.service.state().get().root_path
+        self.service.state().get().folder.root_path
     }
 
     #[zbus(property)]
@@ -161,12 +161,12 @@ impl Folder {
 
     #[zbus(property)]
     async fn paused(&self) -> bool {
-        self.service.state().get().paused_until.is_some()
+        self.service.state().get().pause.paused_until.is_some()
     }
 
     /// Unix seconds; 0 while paused until resumed, and while not paused.
     #[zbus(property)]
     async fn paused_until(&self) -> i64 {
-        self.service.state().get().paused_until.unwrap_or(0)
+        self.service.state().get().pause.paused_until.unwrap_or(0)
     }
 }

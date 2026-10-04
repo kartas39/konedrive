@@ -12,6 +12,7 @@
 //!
 //! [`Limits::chunk`]: super::Limits::chunk
 
+use konedrive_tree::ActivityKind;
 use std::fs::File;
 use std::io;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use konedrive_fs::placeholder::{self, State};
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Opened, Read, Snap};
 use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, local_name, locate, name_taken, never_uploaded, parent_of, tree, upload_as_new, wanted_name, Guard, Named, Ours};
-use super::{kind, Fault};
+use super::Fault;
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use konedrive_graph::quickxor::QuickXor;
@@ -971,7 +972,7 @@ impl Job<'_> {
         }
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
-        let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::status::activity::human_size(self.snap.size));
+        let event = self.e.event(ActivityKind::Uploaded, &self.found.rel, crate::status::activity::human_size(self.snap.size));
         // An item not placed here records no local object (issue #104).
         let handle = self.found.inode.handle.as_ref().filter(|_| !self.content_only);
         commit_row(self.e, self.row, &answer, handle, self.parent, event).await?;

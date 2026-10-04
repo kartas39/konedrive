@@ -232,7 +232,7 @@ async fn a_folder_not_brought_up_yet_reads_waiting_under_its_path() {
     let restarted = testing::service(None, None, Some(persist(&config_file)));
     restarted.restore().await;
     assert_eq!((restarted.root_state().as_str(), restarted.last_error().as_str()), ("waiting", ""));
-    assert_eq!(restarted.state().get().root_path, folder);
+    assert_eq!(restarted.state().get().folder.root_path, folder);
     let elsewhere = tempfile::tempdir().unwrap();
     let refused = restarted.register_root_without_interception(elsewhere.path()).await;
     assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
@@ -240,7 +240,7 @@ async fn a_folder_not_brought_up_yet_reads_waiting_under_its_path() {
     let other = tempfile::tempdir().unwrap();
     let empty = testing::service(None, None, Some(persist(&other.path().join("config.toml"))));
     empty.restore().await;
-    assert_eq!(empty.state().get().root_path, "");
+    assert_eq!(empty.state().get().folder.root_path, "");
 }
 
 /// A folder registered without interception because no helper was

@@ -1,6 +1,7 @@
 //! A file or folder removed here before its upload finished (issue #27): its
 //! rows leave the outbox, with no retry, and nothing of it stays in OneDrive.
 
+use konedrive_tree::ActivityKind;
 use super::*;
 use konedrive_tree::outbox::{Detection, Inode};
 
@@ -29,7 +30,7 @@ fn requests_since(w: &World, from: usize) -> Vec<(String, String)> {
 }
 
 fn not_uploaded(w: &World) -> Vec<String> {
-    w.h.host.events.lock().unwrap().iter().filter(|e| e.kind == kind::NOT_UPLOADED).map(|e| e.detail.clone()).collect()
+    w.h.host.events.lock().unwrap().iter().filter(|e| e.kind == ActivityKind::NotUploaded).map(|e| e.detail.clone()).collect()
 }
 
 /// A file removed while its fragments go up, the removal examined (a
@@ -217,7 +218,7 @@ fn an_update_removed_mid_upload_ends_and_the_delete_behind_it_runs() {
     assert_eq!(w.cloud(|c| (c.count("PUT", "upload/"), c.count("DELETE", "upload/"))), (1, 1), "no fragment after the one in flight; the session cancelled");
     assert_eq!(w.cloud(|c| c.paths()), vec!["d"]);
     assert_eq!(w.cloud(|c| c.bin.get("A").and_then(|i| i.hash.clone())), Some(qx(b"old")), "the old version, to the recycle bin");
-    assert_eq!(w.h.host.kinds(), vec![kind::CLOUD_DELETED.to_owned()]);
+    assert_eq!(w.h.host.kinds(), vec![ActivityKind::CloudDeleted]);
 }
 
 /// An `update` whose file is gone when its run starts — its first run
@@ -251,7 +252,7 @@ fn an_update_whose_file_is_gone_at_its_start_ends_and_the_delete_behind_it_runs(
             "stuck {stuck}"
         );
         assert!(w.cloud(|c| c.bin.contains_key("A")), "stuck {stuck}");
-        assert_eq!(w.h.host.kinds(), vec![kind::CLOUD_DELETED.to_owned()], "stuck {stuck}");
+        assert_eq!(w.h.host.kinds(), vec![ActivityKind::CloudDeleted], "stuck {stuck}");
     }
 }
 

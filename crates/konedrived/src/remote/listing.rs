@@ -23,17 +23,16 @@
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 
 use crate::helper::LinkCell;
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Notify, OwnedMutexGuard};
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::{self, Report};
-use super::materialize::{Applied, ApplyError, Claimed, Replacement, Scope};
+use crate::status::activity;
+use crate::status::report::Report;
+use super::materialize::{Applied, ApplyError, Claimed, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
@@ -58,7 +57,7 @@ mod poller;
 /// Downloaded files that changed in OneDrive, replaced after the cycle.
 mod replacements;
 pub use poller::{Poller, Schedule};
-use replacements::InFlight;
+use replacements::Replacements;
 pub use replacements::REPLACE_WORKERS;
 
 /// A delta with more changes than this is reconciled in full.
@@ -229,9 +228,25 @@ pub struct CycleReport {
 /// runs, even when this cycle's future has been dropped.
 pub(crate) type Turn = Arc<OwnedMutexGuard<()>>;
 
+/// Whether the next cycle's reconcile is Full. Asked for through
+/// [`Listing::request_full`], and taken by the cycle that then runs it.
+struct FullRequest(AtomicBool);
+
+impl FullRequest {
+    fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether one was asked for; none is from now on.
+    fn take(&self) -> bool {
+        self.0.swap(false, Ordering::SeqCst)
+    }
+}
+
 pub struct Listing {
     ctx: ListingContext,
-    needs_full: AtomicBool,
+    /// Asked for from the start: a `Listing`'s first cycle is Full.
+    full: FullRequest,
     /// The drive has been written into `config.toml` (A-M5), or is being:
     /// once per `Listing`.
     drive_recorded: AtomicBool,
@@ -239,16 +254,8 @@ pub struct Listing {
     pending_drive: std::sync::Mutex<Option<(DriveRecord, String)>>,
     /// Whose turn it is (see [`Turn`]).
     turns: Arc<tokio::sync::Mutex<()>>,
-    /// The replacements under way, by item id.
-    replacing: std::sync::Mutex<HashMap<String, InFlight>>,
-    /// Replacements that failed ("the status says why"), tried
-    /// again after every cycle until they succeed or are no longer needed.
-    failed_replacements: std::sync::Mutex<HashMap<String, (Replacement, String)>>,
-    /// The replacement workers ([`REPLACE_WORKERS`] at most, issue #39).
-    replacements: std::sync::Mutex<JoinSet<()>>,
-    /// The replacements waiting for a worker, and how many workers run.
-    queued_replacements: std::sync::Mutex<(VecDeque<Replacement>, usize)>,
-    cancel_replacements: CancellationToken,
+    /// Downloaded files that changed in OneDrive: replaced after the cycle.
+    replacements: Replacements,
     /// Read-write mode: the outbox commit count the last cycle's fetch
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
@@ -303,21 +310,24 @@ fn refused(e: &DriveError) -> bool {
 
 impl Listing {
     pub fn new(ctx: ListingContext) -> Arc<Self> {
+        let replacements = Replacements::new(ctx.state.clone());
         Arc::new(Self {
             ctx,
-            needs_full: AtomicBool::new(true),
+            full: FullRequest(AtomicBool::new(true)),
             drive_recorded: AtomicBool::new(false),
             pending_drive: std::sync::Mutex::new(None),
             turns: Arc::new(tokio::sync::Mutex::new(())),
-            replacing: std::sync::Mutex::new(HashMap::new()),
-            failed_replacements: std::sync::Mutex::new(HashMap::new()),
-            replacements: std::sync::Mutex::new(JoinSet::new()),
-            queued_replacements: std::sync::Mutex::new((VecDeque::new(), 0)),
-            cancel_replacements: CancellationToken::new(),
+            replacements,
             revisit_from: std::sync::atomic::AtomicI64::new(0),
             #[cfg(test)]
             waits_for_tree: AtomicBool::new(false),
         })
+    }
+
+    /// Asks for the next cycle's reconcile to be Full: it looks at the whole
+    /// folder, not only at what the delta names. The one way to ask.
+    fn request_full(&self) {
+        self.full.request();
     }
 
     /// One cycle, and what came of it published.
@@ -327,12 +337,12 @@ impl Listing {
     /// part-way, leaves the next one a Full reconcile.
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
-        let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        let was_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
         self.publish_outcome(&result);
         // The trouble that closed the write gate is gone only now, after the cycle's own
         // word to the outbox (`Writes::cycled`): the worker is told again. Whatever the
         // cycle came to: one that failed with trouble that is only said opens the gate too.
-        let is_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        let is_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
         if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped && !is_stopped) {
             (writes.reopened)();
         }
@@ -353,10 +363,10 @@ impl Listing {
         let turn: Turn = Arc::new(cancellable(cancel, Arc::clone(&self.turns).lock_owned()).await?);
         // Taken, not read: a replacement that ends while this cycle runs asks
         // for a Full reconcile, and that request must outlive this cycle.
-        let full_requested = self.needs_full.swap(false, Ordering::SeqCst);
+        let full_requested = self.full.take();
         // Unless this cycle succeeds, the next one is Full — also
         // when its future is dropped part-way.
-        let mut unless_done = OnDrop(Some(|| self.needs_full.store(true, Ordering::SeqCst)));
+        let mut unless_done = OnDrop(Some(|| self.request_full()));
         let result = self.sync_once(&turn, full_requested, cancel).await;
         if result.is_ok() {
             unless_done.disarm();
@@ -375,10 +385,10 @@ impl Listing {
         self.check_account(turn, cancel).await?;
         // Read-write mode: the first cycle waits for the watcher's Full local scan (write
         // design §3.3), and the stale-delta guard starts from the outbox's commits so far.
-        let fetch_seq = match &self.ctx.writes {
+        let fetch_seq = match self.writes() {
             Some(writes) => {
                 writes.scanned(cancel).await?;
-                Some(self.on_store(turn, |s| s.outbox_seq()).await?)
+                Some((writes, self.on_store(turn, |s| s.outbox_seq()).await?))
             }
             None => None,
         };
@@ -401,8 +411,8 @@ impl Listing {
         let listed = matches!(fetched, Fetched::Listed { .. } | Fetched::Placed(_));
         let (reconciled, changes) = match (fetched, fetch_seq) {
             (Fetched::Placed(placed), _) => (placed, 0),
-            (fetched, Some(seq)) => {
-                let done = self.reconcile_rw_fetched(turn, fetched, seq, full_requested, cancel).await?;
+            (fetched, Some((writes, seq))) => {
+                let done = self.reconcile_rw_fetched(turn, writes, fetched, seq, full_requested, cancel).await?;
                 self.revisit_from.store(seq, Ordering::SeqCst);
                 done
             }
@@ -438,7 +448,7 @@ impl Listing {
         if reconciled.applied.counts.deferred > 0 {
             // Files being filled or freed up right now: a Changed scope would
             // never look at them again.
-            self.needs_full.store(true, Ordering::SeqCst);
+            self.request_full();
         }
         let Reconciled { applied, full } = reconciled;
         if listed || full || full_requested || changes > 0 {
@@ -448,7 +458,7 @@ impl Listing {
         // so a restart still knows when the folder was last in step.
         let now = activity::unix_now();
         self.on_store(turn, move |s| s.set_last_checked(now)).await?;
-        self.ctx.state.update(|s| s.last_checked = now);
+        self.ctx.state.update(|s| s.cycle.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
         // §16.1), whether or not anyone asks for the list: a batch of them
         // looked over each cycle (issue #39). Not through `on_store`: the
@@ -480,7 +490,7 @@ impl Listing {
         // the pause is Full, and finds them again.
         let paused = self.ctx.running.stopped(&self.ctx.store);
         if paused && !applied.pending.replacements.is_empty() {
-            self.needs_full.store(true, Ordering::SeqCst);
+            self.request_full();
         } else {
             self.spawn_replacements(applied.pending.replacements.clone());
         }
@@ -550,9 +560,9 @@ impl Listing {
     async fn publish_counts(&self, turn: &Turn) -> Result<(), CycleError> {
         let counts = self.on_store(turn, |s| s.counts()).await?;
         self.ctx.state.update(|s| {
-            s.items_listed = counts.listed;
-            s.items_placed = counts.placed;
-            s.skipped_count = counts.skipped;
+            s.cycle.items_listed = counts.listed;
+            s.cycle.items_placed = counts.placed;
+            s.cycle.skipped_count = counts.skipped;
         });
         Ok(())
     }
@@ -560,16 +570,16 @@ impl Listing {
     fn publish_outcome(&self, result: &Result<CycleReport, CycleError>) {
         self.ctx.state.update(|s| match result {
             Ok(_) => {
-                s.sync_trouble = None;
-                s.waits_for_helper = false;
+                s.cycle.sync_trouble = None;
+                s.folder.waits_for_helper = false;
             }
             Err(CycleError::Cancelled) => {}
             // The folder waits for the helper (HS2, HS3): `LastError` says so
             // in the helper's own words (`HelperState`), and `RootState`
             // reads `error`. `SyncService` publishes the same the moment the
             // link drops; this only makes sure of it.
-            Err(CycleError::NoHelper) => s.waits_for_helper = true,
-            Err(e) => s.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
+            Err(CycleError::NoHelper) => s.folder.waits_for_helper = true,
+            Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
         });
     }
 }

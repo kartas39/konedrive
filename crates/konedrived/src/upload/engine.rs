@@ -7,6 +7,7 @@ mod outcome;
 mod settle;
 mod state;
 
+use konedrive_tree::ActivityKind;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -357,8 +358,8 @@ impl Engine {
         self.cfg.host.activity(&event);
     }
 
-    pub(super) fn event(&self, kind: &str, rel: &std::path::Path, detail: impl Into<String>) -> ActivityRow {
-        ActivityRow { at: now(), kind: kind.into(), path: self.cfg.root.path.join(rel).display().to_string(), detail: detail.into() }
+    pub(super) fn event(&self, kind: ActivityKind, rel: &std::path::Path, detail: impl Into<String>) -> ActivityRow {
+        ActivityRow { at: now(), kind, path: self.cfg.root.path.join(rel).display().to_string(), detail: detail.into() }
     }
 
     /// Whether the worker itself keeps from sending now: it is closing, the account's

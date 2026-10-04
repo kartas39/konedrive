@@ -1,5 +1,6 @@
 //! The rows that send no content: `mkdir`, `move` and `delete`.
 
+use konedrive_tree::ActivityKind;
 use std::sync::Arc;
 
 use konedrive_fs::placeholder::State;
@@ -10,7 +11,7 @@ use crate::folder::disk::Disk;
 use crate::local::RECHECK;
 use crate::upload::engine::{Engine, Fail, Outcome};
 use crate::upload::local::{self, Found};
-use crate::upload::{kind, Fault};
+use crate::upload::Fault;
 use konedrive_graph::drive::{DriveError, DriveItem, ItemChange, WriteError};
 use konedrive_tree::outbox::{Base, Committed, OutboxRow, Reason};
 use konedrive_tree::{Kind, Table};
@@ -54,7 +55,7 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
     let id = item.id.clone();
     blocking_under(Arc::clone(&tree), move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;
-    let event = e.event(kind::UPLOADED, &found.rel, "folder");
+    let event = e.event(ActivityKind::Uploaded, &found.rel, "folder");
     commit_row(e, row, &answer, found.inode.handle.as_ref(), parent, event).await?;
     Ok(Outcome::Done)
 }
@@ -116,7 +117,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                             Ok(())
                         })
                         .await?;
-                        let event = e.event("moved", &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
+                        let event = e.event(ActivityKind::Moved, &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
                         let (seq, stored) = (row.seq, event.clone());
                         e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
                         e.host().activity(&event);
@@ -156,7 +157,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         })
         .await?;
     }
-    let event = e.event(kind::CLOUD_MOVED, rel, was);
+    let event = e.event(ActivityKind::CloudMoved, rel, was);
     commit_row(e, row, &answer, handle.as_ref(), parent, event).await?;
     Ok(Outcome::Done)
 }
@@ -182,7 +183,7 @@ async fn move_gone(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: Op
             if !blocking_under(Arc::clone(&tree), move || local::remove_placeholder(&on, &object)).await? {
                 return Ok(Outcome::later(Reason::NotLocal, RECHECK));
             }
-            let event = e.event(kind::CLOUD_DELETED, &found.rel, "deleted in OneDrive; the placeholder here went too");
+            let event = e.event(ActivityKind::CloudDeleted, &found.rel, "deleted in OneDrive; the placeholder here went too");
             let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
             e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
             e.host().activity(&event);
@@ -222,7 +223,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
 
 /// Commit step 2 of a delete, under the tree lock.
 async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
-    let event = e.event(kind::CLOUD_DELETED, &row.rel, why);
+    let event = e.event(ActivityKind::CloudDeleted, &row.rel, why);
     let _tree = e.tree_lock().lock().await;
     let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
     e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
@@ -235,7 +236,7 @@ async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcom
 /// tree lock, so that a cycle's swap cannot give the item its old local
 /// object back.
 async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
-    let event = e.event(kind::RESTORED, &row.rel, why);
+    let event = e.event(ActivityKind::Restored, &row.rel, why);
     {
         let _tree = e.tree_lock().lock().await;
         let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());

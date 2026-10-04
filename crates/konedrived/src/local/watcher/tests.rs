@@ -691,8 +691,8 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
     let state = SyncStateHandle::new(SyncSnapshot::default());
     state.update(|s| {
-        s.items_placed = 2;
-        s.scan.follow(Mode::ReadWrite);
+        s.cycle.items_placed = 2;
+        s.local.scan.follow(Mode::ReadWrite);
     });
     let mut sink = ExamineSink {
         root: fx.root.clone(),
@@ -707,13 +707,13 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
         tree_lock: None,
         scan: Some(ScanReport { state: state.clone(), every: Duration::ZERO }),
     };
-    let idle = state.get().scan;
+    let idle = state.get().local.scan;
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::NotYet));
-    assert_eq!(state.get().scan, idle, "no base yet: no scan ran");
+    assert_eq!(state.get().local.scan, idle, "no base yet: no scan ran");
 
     store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::Done { .. }));
-    let scan = state.get().scan;
+    let scan = state.get().local.scan;
     assert_eq!((scan.state, scan.reason.as_str(), scan.expected), (ScanState::Idle, "read-write", 2));
     assert_eq!((scan.directories, scan.files), (1, 1), "docs, and docs/new.txt");
     assert!(scan.started > 0 && scan.finished >= scan.started, "{scan:?}");
@@ -721,5 +721,5 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     let mut one = Batch::new();
     one.name(Path::new("docs"), OsStr::new("new.txt"));
     assert!(matches!(sink.handle(&one), Handled::Done { .. }));
-    assert_eq!(state.get().scan, scan, "a single place examined is not a scan");
+    assert_eq!(state.get().local.scan, scan, "a single place examined is not a scan");
 }

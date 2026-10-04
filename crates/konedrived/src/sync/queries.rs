@@ -37,7 +37,7 @@ impl SyncService {
     /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`.
     pub fn items(&self) -> (u64, u64, u64) {
         let s = self.state.get();
-        (s.items_listed, s.items_placed, s.skipped_count)
+        (s.cycle.items_listed, s.cycle.items_placed, s.cycle.skipped_count)
     }
 
     /// `ActivityLog.Recent(limit)`: the newest `limit` events, newest first.
@@ -78,7 +78,7 @@ impl SyncService {
     /// `LastChecked`, `LocalBytes`, `Conflicts.Count`.
     pub fn status(&self) -> (i64, u64, u32) {
         let s = self.state.get();
-        (s.last_checked, s.local_bytes, s.conflict_count)
+        (s.cycle.last_checked, s.local.local_bytes, s.local.conflict_count)
     }
 
     /// `Transfers`: every download under way, as (path, bytes done, total).
@@ -87,10 +87,10 @@ impl SyncService {
     }
 
     /// `Transfers.LargeFiles` (issue #50): the large files the sync moves now, each once, the
-    /// files being opened left out ([`activity::large_files`]).
+    /// files being opened left out ([`large_files`](crate::status::transfers::large_files)).
     pub fn large_files(&self) -> u32 {
         let downloads = self.report.transfers.subscribe().borrow().clone();
-        activity::large_files(&downloads, &self.state.get().uploads)
+        crate::status::transfers::large_files(&downloads, &self.state.get().outbox.uploads)
     }
 
     /// `Files.WebUrl`: the address of the page OneDrive's web interface has for

@@ -76,7 +76,7 @@ async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjus
 
 impl Lived {
     fn live(&self) -> LiveChanges {
-        self.state.get().live_changes
+        self.state.get().cycle.live_changes
     }
 
     fn cycles(&self) -> usize {

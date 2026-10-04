@@ -45,7 +45,7 @@ impl SyncService {
             Err(why) => {
                 tracing::warn!("{why}; the folder stays locked");
                 self.state.update(|s| {
-                    s.watch_note = format!("the folder stays read-only and nothing is uploaded: local changes cannot be watched ({why})")
+                    s.local.watch_note = format!("the folder stays read-only and nothing is uploaded: local changes cannot be watched ({why})")
                 });
                 None
             }
@@ -92,7 +92,7 @@ impl SyncService {
         if let Err(e) = tokio::task::spawn_blocking(move || watcher.stop()).await {
             tracing::warn!("the task stopping the watcher failed: {e}");
         }
-        self.state.update(|s| s.watch_note.clear());
+        self.state.update(|s| s.local.watch_note.clear());
     }
 
     /// The running watcher, if any, hands over and has examined what it holds (the watcher),
@@ -146,10 +146,10 @@ impl SyncService {
             let Some(service) = me.upgrade() else { return };
             let note = status.note().unwrap_or_default();
             if status.root_gone {
-                service.state.update(|s| s.watch_note.clear());
+                service.state.update(|s| s.local.watch_note.clear());
                 runtime.spawn(async move { service.root_gone(note).await });
             } else {
-                service.state.update(|s| s.watch_note = note);
+                service.state.update(|s| s.local.watch_note = note);
             }
         })
     }
