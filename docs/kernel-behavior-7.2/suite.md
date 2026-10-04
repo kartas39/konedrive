@@ -25,7 +25,7 @@ and both passed:
 - **A permission response is matched by descriptor number** (§5.1). Answering
   with a `dup()` of the event fd fails with **`ENOENT`** and the opener stays
   blocked; answering with the original *number* succeeds **after that number has
-  been closed**. This is what makes `take_fd`'s ownership rule load-bearing
+  been closed**. This is what makes `PendingOpen`'s ownership of the fd load-bearing
   rather than tidy: a closed number is immediately reusable, so a response
   naming a remembered number can answer somebody else's event.
 - **An ignore mark without `FAN_MARK_IGNORED_SURV_MODIFY` is silently refused

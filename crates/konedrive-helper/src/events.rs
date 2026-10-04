@@ -1,7 +1,5 @@
-use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::MetadataExt;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,6 +12,7 @@ use nix::sys::fanotify::MaskFlags;
 
 use jobs::{Enrolled, Owner, MAX_SUSPENDED_OPENS_PER_UID};
 use konedrive_helper::outbox::{Outbox, Outgoing};
+use konedrive_helper::pending::PendingOpen;
 
 use crate::pool;
 use crate::shared::{
@@ -21,31 +20,6 @@ use crate::shared::{
     EVENT_QUEUE_DEPTH, EVENT_WORKERS, EXHAUSTION_BACKOFF, GLOBAL_MAX_DAEMON_WAITERS,
     MAX_DAEMON_WAITERS, UNOPENABLE,
 };
-
-/// Takes ownership of a permission event's fd, preserving its exact number.
-///
-/// `fanotify_write()` matches a permission response against the fd number
-/// `read_events()` handed out for that event (`fanotify(7)`: "fd — This is
-/// the file descriptor from the structure fanotify_event_metadata"). A
-/// duplicate has a different number, so anything we may answer only after
-/// this event's iteration of the read loop ends — the "ask the daemon and
-/// wait" path in `handle_open` — must keep using this exact descriptor, not
-/// a dup of it, and must not let it close before the response is written: a
-/// permission event that is read but never answered leaves its opener
-/// blocked until the whole fanotify group fd is closed (`fanotify(7)`),
-/// which in practice means until the helper exits.
-///
-/// `FanotifyEvent::drop` would close this fd when the event goes out of
-/// scope at the end of the read loop's iteration; `mem::forget` disarms that
-/// so the `OwnedFd` we build from the same raw number is the sole owner.
-fn take_fd(event: nix::sys::fanotify::FanotifyEvent) -> Option<OwnedFd> {
-    let raw = event.fd()?.as_raw_fd();
-    std::mem::forget(event);
-    // SAFETY: `event.fd()` returned a valid, open descriptor owned by
-    // `event`; forgetting `event` just above means nothing else will close
-    // it, so this `OwnedFd` becomes its sole owner.
-    Some(unsafe { OwnedFd::from_raw_fd(raw) })
-}
 
 /// What the event loop does about an errno from `read_events`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +209,7 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                     continue;
                 }
                 let pid = event.pid();
-                let Some(fd) = take_fd(event) else {
+                let Some(open) = PendingOpen::take(event, &shared.marks) else {
                     tracing::warn!("a permission event arrived with no descriptor");
                     continue;
                 };
@@ -254,10 +228,10 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                 // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
                 // docs/kernel-behavior-7.2/open-by-handle.md §15.
                 if pid == own_pid {
-                    respond_allow(shared, fd);
+                    open.allow();
                     continue;
                 }
-                if let Err(rejected) = pool.submit(pool::OpenEvent { fd, pid, since }) {
+                if let Err(rejected) = pool.submit(pool::OpenEvent { open, pid, since }) {
                     // Saturation, not failure: EAGAIN tells the application to
                     // try the open again, which is true and is an answer. The
                     // alternative — spawning without bound — ends with the
@@ -269,68 +243,51 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                              already queued; denying an open with EAGAIN"
                         )
                     });
-                    respond_deny(shared, rejected.fd, libc::EAGAIN);
+                    rejected.open.deny(libc::EAGAIN);
                 }
             }
         }
     }
 }
 
-/// Takes the event fd out of the slot the worker holds it in.
-///
-/// The slot exists for. The worker keeps ownership of the
-/// descriptor *outside* the `catch_unwind` boundary and lends this function a
-/// `&mut Option<OwnedFd>`, so a panic anywhere below does not drop the fd
-/// while unwinding — the worker still has it and can deny `EIO` with the
-/// original descriptor. That matters because a response is matched by fd
-/// *number* (`docs/kernel-behavior-7.2/interception.md` §5.1): once the number is closed
-/// it can be recycled, and answering a recycled number would answer somebody
-/// else's event. Taking it here, at the exact moment it is consumed, is also
-/// what makes "every path answers exactly once" checkable by reading.
-fn claim(slot: &mut Option<OwnedFd>) -> OwnedFd {
-    slot.take().expect("an intercepted open is answered exactly once")
-}
-
 /// Decides one intercepted open and always answers it — allow, deny, or a
 /// move into a hydration job that guarantees a later answer from `finish` —
-/// before returning. No path may leave `slot` full without one of those
-/// three; doing so would leave the opener blocked forever (see `take_fd`).
+/// before returning. `open` is consumed by whichever of the three it is; a
+/// path that took none, or a panic, drops it, and that denies `EIO`
+/// (`PendingOpen`).
 ///
 /// `since` is the count of root unregistrations when the event was read (see
 /// [`mark_while_hydrated`]).
 ///
-/// # No duplicate outlives the answer
+/// # Nothing of the file outlives the answer
 ///
-/// The file is inspected through duplicates of the event fd — kernel fact 1
-/// rules out opening it ourselves, but not `dup()`ing one we did not open —
-/// and each is closed as soon as it has been read, never held across an
-/// answer. A duplicate shares the event's `O_RDWR` open file, so while one
-/// is open the file counts as open for writing: the daemon's registration
-/// probe, which creates a file in an already-marked root and at once takes a
-/// write lease on it, found the lease refused when this function still held
-/// one after it had allowed the probe's open.
-pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, since: u64) {
-    let meta = match metadata_of(slot.as_ref().expect("the event fd is still here").as_fd()) {
-        Ok(meta) => meta,
+/// The file is inspected through the event fd itself — kernel fact 1 rules
+/// out opening it ourselves — and no duplicate of it is made here: the only
+/// one is the daemon's (`jobs::Dispatch`). A duplicate shares the event's
+/// `O_RDWR` open file, so while one is open the file counts as open for
+/// writing: the daemon's registration probe, which creates a file in an
+/// already-marked root and at once takes a write lease on it, found the
+/// lease refused when this function still held one after it had allowed the
+/// probe's open.
+pub(crate) fn handle_open(shared: &Shared, open: PendingOpen, opener_pid: i32, since: u64) {
+    let seen = match stat_of(open.as_fd()) {
+        Ok(seen) => seen,
         Err(e) => {
             tracing::error!("cannot stat an intercepted open: {e}");
-            respond_deny(shared, claim(slot), libc::EIO);
+            open.deny(libc::EIO);
             return;
         }
     };
-    if !meta.is_file() {
-        respond_allow(shared, claim(slot));
+    if !seen.regular {
+        open.allow();
         return;
     }
-    let owner = meta.uid();
-    let dev = meta.dev();
-    let ino = meta.ino();
+    let Seen { owner, dev, ino, .. } = seen;
     // Compiled in only with `fault-injection`, armed only by the VM suite
-    //; an empty function otherwise. Placed after the
-    // descriptor has been taken out of `slot`'s reach and before any
-    // decision, so the unwind it causes is exactly the one
-    // describes: the worker still owns the event fd and can answer `EIO`.
-    fault::panic_on_size(meta.len());
+    //; an empty function otherwise. Placed before any decision, so the
+    // unwind it causes drops an open nothing has answered yet, and the
+    // opener gets `EIO`.
+    fault::panic_on_size(seen.len);
 
     // The owning daemon's own opens bypass everything
     // else: it must be able to re-open files it left `hydrating` or
@@ -354,11 +311,11 @@ pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pi
     // should acquire such a dependency: what the exemption covers is startup
     // recovery, not a way to open a file the state check would have handled.
     if daemon_is_exempt(shared, opener_pid, owner) {
-        respond_allow(shared, claim(slot));
+        open.allow();
         return;
     }
 
-    let mut state = state_of(slot.as_ref().expect("the event fd is still here").as_fd());
+    let mut state = read_state(&open);
     // At most two turns: the second only when the file stopped reading
     // `hydrated` between the first read and the mark, and then it is not
     // `hydrated` any more.
@@ -388,9 +345,9 @@ pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pi
             Ok(Some(State::Hydrated)) => {
                 // `fault-injection` builds only: the VM suite's I1 scenario.
                 fault::delay_before_ignore_mark();
-                let fd = slot.as_ref().expect("the event fd is still here").as_fd();
-                match mark_while_hydrated(shared, fd, FileId { owner: Some(owner), dev, ino }, since) {
-                    Ok(()) => respond_allow(shared, claim(slot)),
+                let file = FileId { owner: Some(owner), dev, ino };
+                match mark_while_hydrated(shared, open.as_fd(), file, since) {
+                    Ok(()) => open.allow(),
                     Err(now) => {
                         tracing::info!(
                             "dev={dev} ino={ino} stopped reading hydrated while its open was \
@@ -406,32 +363,32 @@ pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pi
                 // carries an item id, in which case it is one of ours with its
                 // state missing, and we have no idea whether its body is there.
                 // §5.2's last rule applies: never allow zeros.
-                match item_id_of(slot.as_ref().expect("the event fd is still here").as_fd()) {
-                    Ok(None) => respond_allow(shared, claim(slot)),
+                match read_item_id(&open) {
+                    Ok(None) => open.allow(),
                     Ok(Some(item)) => {
                         tracing::error!(
                             "dev={dev} ino={ino} carries item id {item} but no state attribute; \
                              denying rather than risk serving an unfilled placeholder"
                         );
-                        respond_deny(shared, claim(slot), libc::EIO);
+                        open.deny(libc::EIO);
                     }
                     Err(e) => {
                         tracing::error!("cannot read the item id on dev={dev} ino={ino}: {e}");
-                        respond_deny(shared, claim(slot), libc::EIO);
+                        open.deny(libc::EIO);
                     }
                 }
             }
-            Ok(Some(_)) => hydrate(shared, slot, owner, dev, ino, since),
+            Ok(Some(_)) => hydrate(shared, open, owner, dev, ino, since),
             Err(StateError::Corrupt(value)) => {
                 tracing::error!(
                     "dev={dev} ino={ino} has an unrecognised state {value:?}; denying rather than \
                      risk serving an unfilled placeholder"
                 );
-                respond_deny(shared, claim(slot), libc::EIO);
+                open.deny(libc::EIO);
             }
             Err(StateError::Io(e)) => {
                 tracing::error!("unreadable xattrs on dev={dev} ino={ino}: {e}");
-                respond_deny(shared, claim(slot), libc::EIO);
+                open.deny(libc::EIO);
             }
         }
         return;
@@ -488,7 +445,7 @@ fn mark_while_hydrated(
 ) -> Result<(), Result<Option<State>, StateError>> {
     let FileId { owner, dev, ino } = file;
     place_ignore_mark(shared, fd, dev, ino);
-    let now = state_of(fd);
+    let now = read_state(&fd);
     let hydrated = matches!(now, Ok(Some(State::Hydrated)));
     let unregistered = shared.unregistrations.since(since, owner);
     if hydrated && !unregistered {
@@ -520,17 +477,7 @@ fn mark_while_hydrated(
 /// send. Registering before sending is the whole point — a daemon that
 /// answers immediately would otherwise find an empty job, finish it, and
 /// leave this opener suspended with nothing left to answer it.
-fn hydrate(
-    shared: &Shared,
-    slot: &mut Option<OwnedFd>,
-    owner_uid: u32,
-    dev: u64,
-    ino: u64,
-    since: u64,
-) {
-    // The descriptor stays in `slot` across the wait — the step here that
-    // takes locks and sleeps, and could therefore panic on somebody else's
-    // bug — so guarantee still holds over it.
+fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u64, ino: u64, since: u64) {
     let daemon = match wait_for_daemon(shared, owner_uid) {
         Ok(daemon) => daemon,
         Err(why) => {
@@ -563,7 +510,7 @@ fn hydrate(
                     )
                 }),
             }
-            respond_deny(shared, claim(slot), libc::EIO);
+            open.deny(libc::EIO);
             return;
         }
     };
@@ -573,7 +520,7 @@ fn hydrate(
     // daemon is sent a duplicate, made under the jobs lock (see
     // `jobs::Dispatch`). A `SCM_RIGHTS` copy of either is the same open file
     // description.
-    let enrollment = lock(&shared.jobs).enroll((dev, ino), owner, claim(slot), since);
+    let enrollment = lock(&shared.jobs).enroll((dev, ino), owner, open, since);
     for stranded in enrollment.evicted {
         let errno = match enrollment.outcome {
             Enrolled::ConnectionGone => {
@@ -602,7 +549,7 @@ fn hydrate(
                 libc::EIO
             }
         };
-        respond_deny(shared, stranded, errno);
+        stranded.deny(errno);
     }
     // `New` comes with its request to send. `Queued` has none yet: the
     // opener is enrolled and stays suspended until a returning credit sends
@@ -677,18 +624,6 @@ fn place_ignore_mark(shared: &Shared, fd: BorrowedFd<'_>, dev: u64, ino: u64) {
             "cannot place the ignore mark on dev={dev} ino={ino}: {e}; every open of this file \
              will keep raising a permission event"
         );
-    }
-}
-
-fn respond_allow(shared: &Shared, fd: OwnedFd) {
-    if let Err(e) = shared.marks.allow(fd.as_fd()) {
-        tracing::error!("cannot allow an intercepted open: {e}");
-    }
-}
-
-pub(crate) fn respond_deny(shared: &Shared, fd: OwnedFd, errno: i32) {
-    if let Err(e) = shared.marks.deny(fd.as_fd(), errno) {
-        tracing::error!("cannot deny an intercepted open: {e}");
     }
 }
 
@@ -813,7 +748,7 @@ pub(crate) fn settle(
 
 /// Answers the openers of one hydration with its outcome. `since` is the
 /// count of root unregistrations when the open that started it was read.
-fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since: u64) {
+fn answer(shared: &Shared, req_id: u64, waiters: Vec<PendingOpen>, errno: i32, since: u64) {
     if errno != 0 {
         let delivered = marks::clamp_deny_errno(errno);
         if delivered != errno {
@@ -822,8 +757,8 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
                  not deliver; denying with {delivered} instead"
             );
         }
-        for fd in waiters {
-            respond_deny(shared, fd, delivered);
+        for open in waiters {
+            open.deny(delivered);
         }
         return;
     }
@@ -840,7 +775,7 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
     // takes it off again here, and a hydration that began before a root was
     // unregistered leaves no mark behind it.
     let Some(first) = waiters.first() else { return };
-    let verdict = state_of(first.as_fd());
+    let verdict = read_state(first);
     let verdict = match verdict {
         Ok(Some(State::Hydrated)) => {
             let file = file_of(first.as_fd());
@@ -856,8 +791,8 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
     };
     match verdict {
         Ok(()) => {
-            for fd in waiters {
-                respond_allow(shared, fd);
+            for open in waiters {
+                open.allow();
             }
         }
         Err(other) => {
@@ -865,29 +800,34 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
                 "request {req_id} was reported successful but the file does not read as \
                  hydrated ({other:?}); denying EIO rather than risk serving zeros"
             );
-            for fd in waiters {
-                respond_deny(shared, fd, libc::EIO);
+            for open in waiters {
+                open.deny(libc::EIO);
             }
         }
     }
 }
 
-/// Reads the state of the inode behind an event fd, through a duplicate so
-/// that nothing here can close the descriptor that still owes a response.
-/// The duplicate is closed before this returns (see `handle_open` on m1).
-fn state_of(fd: BorrowedFd<'_>) -> Result<Option<State>, StateError> {
-    let probe = File::from(fd.try_clone_to_owned()?);
-    read_state(&probe)
+/// What `fstat` says of the file behind an event fd.
+struct Seen {
+    /// A regular file: the only kind that can be a placeholder.
+    regular: bool,
+    owner: u32,
+    dev: u64,
+    ino: u64,
+    len: u64,
 }
 
-/// [`state_of`] for the item id.
-fn item_id_of(fd: BorrowedFd<'_>) -> io::Result<Option<String>> {
-    read_item_id(&File::from(fd.try_clone_to_owned()?))
-}
-
-/// [`state_of`] for `fstat`.
-fn metadata_of(fd: BorrowedFd<'_>) -> io::Result<std::fs::Metadata> {
-    File::from(fd.try_clone_to_owned()?).metadata()
+/// `fstat` on the event fd itself: nothing is opened and nothing duplicated,
+/// so it cannot fail for want of a descriptor.
+fn stat_of(fd: BorrowedFd<'_>) -> io::Result<Seen> {
+    let stat = nix::sys::stat::fstat(fd)?;
+    Ok(Seen {
+        regular: stat.st_mode & libc::S_IFMT == libc::S_IFREG,
+        owner: stat.st_uid,
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+        len: u64::try_from(stat.st_size).unwrap_or(0),
+    })
 }
 
 /// Who owns the file behind a descriptor, and which inode it is.
@@ -903,8 +843,8 @@ struct FileId {
 /// [`FileId`] behind an event fd. The inode is for log lines only, and is
 /// zeros if it cannot be read.
 fn file_of(fd: BorrowedFd<'_>) -> FileId {
-    match metadata_of(fd) {
-        Ok(meta) => FileId { owner: Some(meta.uid()), dev: meta.dev(), ino: meta.ino() },
+    match stat_of(fd) {
+        Ok(seen) => FileId { owner: Some(seen.owner), dev: seen.dev, ino: seen.ino },
         Err(_) => FileId { owner: None, dev: 0, ino: 0 },
     }
 }

@@ -14,7 +14,7 @@ use nix::sys::socket::{accept, getsockopt, sockopt::PeerCredentials};
 use konedrive_helper::jobs::Owner;
 use konedrive_helper::outbox::{Outbox, Outgoing};
 
-use crate::events::{dispatch, respond_deny, settle, Finish};
+use crate::events::{dispatch, settle, Finish};
 use crate::registration::{errno_of, register_root, unregister_root};
 use crate::shared::{
     fault, lock, ConnectionSlot, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF,
@@ -154,8 +154,8 @@ impl Drop for Disconnect<'_> {
             );
         }
         for waiters in stranded {
-            for fd in waiters {
-                respond_deny(self.shared, fd, libc::EIO);
+            for open in waiters {
+                open.deny(libc::EIO);
             }
         }
     }

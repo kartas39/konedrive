@@ -30,7 +30,7 @@ use shared::{
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
     let shared = Arc::new(Shared {
-        marks: marks::Marks::new()?,
+        marks: Arc::new(marks::Marks::new()?),
         roots: Mutex::new(load_roots()),
         roots_saving: Mutex::new(()),
         jobs: Mutex::new(jobs::Jobs::default()),
