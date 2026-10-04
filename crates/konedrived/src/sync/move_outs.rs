@@ -52,7 +52,7 @@ impl SyncService {
     /// What this account's outbox worker needs for `move-out` rows: the helper over the account's
     /// link, fills through the account's source, the hub's router told which item ids are this
     /// account's wherever they are (`docs/design/writes.md` §8, §8.3), and every account's folder.
-    pub(in crate::sync) fn move_outs(&self) -> MoveOuts {
+    pub(super) fn move_outs(&self) -> MoveOuts {
         let (hub, me) = (Arc::downgrade(&self.hub), self.me.clone());
         let every = Arc::downgrade(&self.hub);
         MoveOuts {
@@ -70,7 +70,7 @@ impl SyncService {
 
     /// What the examination says of the folder's file handles: taken again on a
     /// changed filesystem, which `LastError` says until a Full local scan finds them current.
-    pub(in crate::sync) fn handles_hook(&self) -> Arc<dyn Fn(Option<String>) + Send + Sync> {
+    pub(super) fn handles_hook(&self) -> Arc<dyn Fn(Option<String>) + Send + Sync> {
         let me = self.me.clone();
         Arc::new(move |note| {
             if let Some(service) = me.upgrade() {
@@ -81,7 +81,7 @@ impl SyncService {
 
     /// The helper is back (`docs/design/writes.md` §10): what the pending `move-out` rows name is marked again
     /// before anything else the worker runs.
-    pub(in crate::sync) fn outbox_helper_back(&self) {
+    pub(super) fn outbox_helper_back(&self) {
         if let Some(outbox) = self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()) {
             outbox.helper_back();
         }
@@ -89,7 +89,7 @@ impl SyncService {
 
     /// `rows` of the folder at `root` were dropped: what their `move-out`s left outside the
     /// folder is tidied ([`Tidy::dropped`]), whether or not a worker runs.
-    pub(in crate::sync) async fn tidy_dropped(&self, root: &SyncRoot, store: &Store, rows: &[OutboxRow]) {
+    pub(super) async fn tidy_dropped(&self, root: &SyncRoot, store: &Store, rows: &[OutboxRow]) {
         if !rows.iter().any(|r| r.kind == OutboxKind::MoveOut) {
             return;
         }
@@ -99,7 +99,7 @@ impl SyncService {
 
     /// The hub routes none of this account's item ids to it any more: its `move-out` rows are
     /// dropped. A worker started later routes its own again.
-    pub(in crate::sync) fn forget_moved_out(&self) {
+    pub(super) fn forget_moved_out(&self) {
         self.hub.set_moved_out(&self.me, HashSet::new());
     }
 
@@ -108,7 +108,7 @@ impl SyncService {
     /// outside the folder is tidied while the helper still holds the folder; the hub stops
     /// routing their ids. Dropped before they are tidied: a row kept over a placeholder already
     /// removed would read as the user's delete.
-    pub(in crate::sync) async fn drop_moved_out(&self, root: &SyncRoot) {
+    pub(super) async fn drop_moved_out(&self, root: &SyncRoot) {
         let store = self.store.lock().unwrap().clone();
         if let Some(store) = store {
             match store.call(drop_rows).await {
@@ -123,7 +123,7 @@ impl SyncService {
     /// account's reconcile: an object carrying it is never removed ([`HelperHub::claimed_elsewhere`]).
     ///
     /// [`HelperHub::claimed_elsewhere`]: crate::sync::hub::HelperHub::claimed_elsewhere
-    pub(in crate::sync) fn claims(&self) -> crate::remote::materialize::Claimed {
+    pub(super) fn claims(&self) -> crate::remote::materialize::Claimed {
         let (hub, me) = (Arc::downgrade(&self.hub), self.me.clone());
         Arc::new(move |id| hub.upgrade().is_some_and(|hub| hub.claimed_elsewhere(&me, id)))
     }

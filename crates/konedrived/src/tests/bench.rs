@@ -391,7 +391,7 @@ fn the_first_rows_and_files_of_a_reason() {
     let root = Path::new("/nowhere/OneDrive");
     let (entries, first) = timed("Changes(21) of 30 000", || {
         let rows = store.read_blocking(|s| s.outbox_first(21)).unwrap();
-        crate::sync::outbox_api::entries(rows, root, &[], false, false)
+        crate::sync::outbox::entries(rows, root, &[], false, false)
     });
     assert_eq!(entries.len(), 21);
     let ((files, total), second) = timed("NotUploadedFiles(name-characters, 20) of 30 000", || {

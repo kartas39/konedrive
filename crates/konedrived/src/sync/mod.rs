@@ -10,15 +10,16 @@ pub mod free_up;
 pub mod hub;
 pub mod hydrate;
 pub mod move_outs;
-pub mod outbox_api;
+pub mod outbox;
+pub mod pause;
 pub mod pins;
 pub mod populate;
 pub mod queries;
 pub mod registration;
 pub mod resume;
-pub mod run_settings;
+pub mod settings;
 pub mod start_stop;
-pub mod watching;
+pub mod watcher;
 pub mod write_mode;
 
 use std::path::PathBuf;
@@ -324,11 +325,8 @@ pub struct SyncService {
     /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
     /// watcher's examination reads it, `SetIgnorePatterns` changes it.
     ignore: local::ignore::SharedIgnore,
-    /// The one timer that ends a timed pause on the bus (`outbox_api`).
-    pause_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// How many times the pause was shown: the timer ends it on the bus only
-    /// if no `Pause` or `Resume` came after it read the store (the outbox on the bus).
-    pause_shown: std::sync::atomic::AtomicU64,
+    /// The pause as it is shown, and the timer that ends a timed one (`pause`).
+    clock: pause::PauseClock,
     /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38):
     /// answered from memory while the worker runs.
     kept_back: Mutex<Option<Vec<kept_back::SummaryRow>>>,
@@ -366,7 +364,7 @@ struct Syncing {
     /// section that publishes this `Syncing`, and stopped by whoever takes it,
     /// so it lives exactly as long as the sync. `None` for a
     /// read-only folder.
-    watcher: Option<write_mode::Watcher>,
+    watcher: Option<local::watcher::Watcher>,
     /// A read-write folder's outbox worker, which sends the rows the
     /// watcher's examination records: started and stopped with the watcher,
     /// in the same places. `None` for a read-only folder.
@@ -524,12 +522,19 @@ impl SyncService {
                     None => crate::account::quota::Quota::detached(),
                 }),
                 account,
-                ignore: outbox_api::configured_ignore(persist.as_ref()),
+                ignore: settings::configured_ignore(persist.as_ref()),
                 running: Arc::new(running::Running::new(
                     persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| running::Settings::of(&a)).unwrap_or_default(),
                 )),
-                pause_timer: Mutex::new(None),
-                pause_shown: std::sync::atomic::AtomicU64::new(0),
+                clock: pause::PauseClock::new(Arc::new(crate::status::activity::unix_now), {
+                    // The timed pause has run out: shown again, as the store has it now.
+                    let me = me.clone();
+                    move || {
+                        if let Some(service) = me.upgrade() {
+                            service.show_pause();
+                        }
+                    }
+                }),
                 kept_back: Mutex::new(None),
                 switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
                 mode_check: Mutex::new(None),

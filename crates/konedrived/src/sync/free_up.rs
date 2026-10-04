@@ -3,6 +3,10 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use konedrive_fs::handle::FileHandle;
+use konedrive_fs::placeholder;
+use konedrive_tree::outbox::Inode;
+
 use crate::sync::SyncService;
 use crate::status::activity::Kind;
 use crate::helper::Clearance;
@@ -284,6 +288,48 @@ impl SyncService {
         let before = blocks(&probe);
         crate::hydration::dehydrate::dehydrate_opened(&clearance, file).await.map_err(SyncError::from)?;
         Ok((before.saturating_sub(blocks(&probe)) * 512, shown))
+    }
+
+    /// Refuses a free-up of the file open as `file` (shown as `shown`) while a
+    /// change of it waits to be uploaded: freeing it up would lose that change
+    /// (`NotUploaded`). Fails closed (the outbox on the bus): a OneDrive folder's
+    /// outbox that cannot be read — its sync not started yet, a store error —
+    /// refuses. Only a downloaded file is asked about: one that is not has
+    /// nothing to lose, and its own refusal says so (`NotHydrated`, M5).
+    async fn refuse_unuploaded(&self, file: &File, shown: &str) -> Result<(), SyncError> {
+        let Some(reg) = self.registration() else { return Ok(()) };
+        if reg.source != crate::sync::RootSource::OneDrive {
+            return Ok(());
+        }
+        let cannot_tell = |why: String| {
+            SyncError::Io(format!("{shown} is not freed up: cannot tell whether a change of it waits to be uploaded ({why}); try again in a moment"))
+        };
+        // A state that cannot be read cannot tell either (the outbox on the bus re-review).
+        match placeholder::read_state(file) {
+            Ok(Some(placeholder::State::Hydrated)) => {}
+            Ok(_) => return Ok(()),
+            Err(e) => return Err(cannot_tell(e.to_string())),
+        }
+        let Some(store) = self.store.lock().unwrap().clone() else { return Err(cannot_tell("the folder's sync has not started".into())) };
+        let id = placeholder::read_item_id(file).map_err(|e| cannot_tell(e.to_string()))?;
+        let meta = file.metadata().map_err(|e| cannot_tell(e.to_string()))?;
+        let inode = Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() };
+        // Through the shared connection, off the async runtime: a change an
+        // examination is recording now is waited for, not missed.
+        let waiting = store
+            .call(move |s| {
+                let by_item = match &id {
+                    Some(id) => !s.outbox_for_item(id)?.is_empty(),
+                    None => false,
+                };
+                Ok(by_item || !s.outbox_for_inode(&inode)?.is_empty())
+            })
+            .await
+            .map_err(|e| cannot_tell(e.to_string()))?;
+        if waiting {
+            return Err(SyncError::NotUploaded(shown.to_owned()));
+        }
+        Ok(())
     }
 }
 

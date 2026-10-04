@@ -177,7 +177,7 @@ pub struct SyncSnapshot {
     /// or `RestoreDeletes` (the outbox on the bus).
     pub held_count: u32,
     /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
-    /// 0 meaning until resumed (`outbox_api`).
+    /// 0 meaning until resumed (`sync::pause`).
     pub paused_until: Option<i64>,
     /// `HeldBack`: why the account holds its background work back by itself
     /// (`running::Hold`), empty when it does not.
