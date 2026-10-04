@@ -36,7 +36,7 @@ use konedrive_graph::drive::DriveError;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::local::Batch;
-use crate::remote::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
+use crate::remote::materialize::{Materializer, Rw, Scope};
 use konedrive_tree::outbox::OutboxRow;
 use konedrive_tree::reconcile::{Deferrals, RwStaged};
 use crate::folder::classify::classify;
@@ -284,28 +284,7 @@ impl Listing {
                 // know is left alone (F115), or goes with what OneDrive removed (F116).
                 claimed: None,
             };
-            let changed = matches!(scope, Scope::Changed(_));
-            let mut first = Applied::default();
-            // Where what the first pass moved to the holding directory came
-            // from: the second pass puts back there what it does not place.
-            let mut moved_from = std::collections::HashMap::new();
-            let (mut applied, full) = match materializer.apply_handing_over(scope, &mut first, &mut moved_from) {
-                Err(ApplyError::NeedFull(why) | ApplyError::Io(why)) if changed => {
-                    tracing::info!("{why}; reconciling the whole folder");
-                    (materializer.apply_handing_over(Scope::Full, &mut first, &mut moved_from).map_err(applying)?, true)
-                }
-                other => (other.map_err(applying)?, !changed),
-            };
-            // What the first pass did on disk stands whatever the second did.
-            first.rescued.append(&mut applied.rescued);
-            applied.rescued = first.rescued;
-            first.copies.append(&mut applied.copies);
-            applied.copies = first.copies;
-            first.examine.append(&mut applied.examine);
-            applied.examine = first.examine;
-            first.recreated.append(&mut applied.recreated);
-            applied.recreated = first.recreated;
-            applied.taken.extend(first.taken);
+            let (applied, full) = materializer.apply_with_handover(scope).map_err(applying)?;
             let said = match commit {
                 Commit::Swap { link, listing } => {
                     // What the disk does not show yet keeps its base; its
@@ -313,14 +292,14 @@ impl Listing {
                     let changed = store.call_blocking(move |s| s.changed_ids())?;
                     let defer: Vec<String> = changed
                         .iter()
-                        .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
+                        .filter(|id| !plan.removing.contains(*id) && !applied.on_disk.taken.contains(*id) && (plan.held.contains(*id) || applied.pending.unsettled.contains(*id)))
                         .cloned()
                         .collect();
                     let deferred: std::collections::HashSet<&String> = defer.iter().collect();
                     // Only the content waits where the disk took the rest.
                     let content: Vec<String> = changed
                         .iter()
-                        .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && !deferred.contains(id) && applied.content_waits.contains(*id))
+                        .filter(|id| !plan.removing.contains(*id) && !applied.on_disk.taken.contains(*id) && !deferred.contains(id) && applied.pending.content_waits.contains(*id))
                         .cloned()
                         .collect();
                     drop(deferred);
@@ -354,10 +333,10 @@ impl Listing {
                     Said::Nothing
                 }
             };
-            if !applied.recreated.is_empty() {
+            if !applied.on_disk.recreated.is_empty() {
                 // Rows into a folder made again (`resyncChangesUploadDifferences`
                 // only, F116) wait for its `mkdir`.
-                let recreated = applied.recreated.clone();
+                let recreated = applied.on_disk.recreated.clone();
                 if let Err(e) = store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
                     tracing::warn!("cannot let the outbox wait for folders made again: {e}");
                 }
@@ -379,9 +358,9 @@ impl Listing {
                 Err(e) => tracing::warn!("cannot drop held or pending removals of items already gone from OneDrive: {e}"),
             }
             record(&report, &store, &root.path, &applied, said);
-            if !applied.examine.is_empty() {
+            if !applied.on_disk.examine.is_empty() {
                 let mut batch = Batch::new();
-                for (rel, below) in &applied.examine {
+                for (rel, below) in &applied.on_disk.examine {
                     match (below, rel.parent(), rel.file_name()) {
                         (true, _, _) => batch.tree(rel),
                         (false, Some(parent), Some(name)) => batch.name(parent, name),

@@ -9,7 +9,7 @@
 //!   a folder such a row moves — not moved, replaced or removed. Nor what it
 //!   finds away from where the base has it, a local move or copy not
 //!   examined yet, with everything below it. Their changes wait
-//!   ([`Applied::unsettled`](super::Applied::unsettled)): the base keeps the
+//!   ([`Pending::unsettled`](super::Pending::unsettled)): the base keeps the
 //!   version the disk holds;
 //! - **places nothing below a folder being removed** ([`Rw::removing`]):
 //!   below a live `delete` or `move-out` row the delta's changes go to the
@@ -36,7 +36,8 @@
 //!   ([`Materializer::leaving_rw`]);
 //! - **forgets before it removes**: the local objects of everything it takes
 //!   off the disk are forgotten in the store first, so that no examination
-//!   can prove one gone and delete it in OneDrive;
+//!   can prove one gone and delete it in OneDrive
+//!   ([`Materializer::take_off`], the only way anything is taken off);
 //! - **never moves anything out of the folder**: what it moved to the holding
 //!   directory — this run, or one a stop cut short — is placed from there or
 //!   put back where it was, never rescued outside, where it would be taken
@@ -51,6 +52,7 @@ use konedrive_fs::placeholder;
 
 use std::os::fd::AsFd;
 
+use super::removal::Policy;
 use super::{is_leftover_replacement, ApplyError, Copied, Materializer, Run};
 use crate::folder::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::local::IgnoreList;
@@ -63,9 +65,6 @@ use konedrive_tree::{Kind, Placement, Table, TreeError, TreeStore};
 mod holding;
 /// What is no longer placed and stays on disk until its uploads are done (issue #104).
 mod leaving;
-/// What OneDrive removed, removed whole, its local objects forgotten first.
-mod removal;
-pub(super) use removal::{Removal, Survey};
 
 /// What a read-write folder's reconcile needs to know besides the tree.
 #[derive(Debug, Default, Clone)]
@@ -192,6 +191,17 @@ impl Rw {
         self.pending.contains(rel)
     }
 
+    /// How what OneDrive removed is taken off the disk: whole, but for a
+    /// `resyncChangesUploadDifferences` listing, which does not mean
+    /// removed (§3.7, F116).
+    pub(super) fn removed(&self) -> Policy {
+        if self.upload_differences {
+            Policy::Resync
+        } else {
+            Policy::Removed
+        }
+    }
+
     /// Whether the cloud has something to put at item `id`'s name that the
     /// disk does not show: the new tree changes it, or no local object of it
     /// is on record. Otherwise an object of the user's there — a save by
@@ -268,7 +278,7 @@ impl Materializer {
                     // Its change waits too, whatever the tree does with it:
                     // the examination takes the local move on, and the
                     // outbox meets OneDrive's side (§6).
-                    run.out.unsettled.insert(id.clone());
+                    run.out.pending.unsettled.insert(id.clone());
                 }
                 if entry.is_dir {
                     left_dirs.insert(entry.rel.clone());
@@ -350,7 +360,7 @@ impl Materializer {
             if removed {
                 let parent = entry.rel.parent().unwrap_or(Path::new(""));
                 let name = entry.rel.file_name().expect("a scanned entry has a name");
-                self.remove_in_place(rw, parent, name, run)?;
+                self.take_off(&self.disk.dir(parent)?, name, &entry.rel, rw.removed(), run)?;
             } else {
                 self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
             }
@@ -519,7 +529,7 @@ impl Materializer {
             // no longer placed, and its object is where the base has it: that
             // goes, or is the base's, whatever holds it (issue #104).
             if rw.held.contains(id) && (placed_now || !at_place) {
-                run.out.unsettled.insert(id.clone());
+                run.out.pending.unsettled.insert(id.clone());
                 continue;
             }
             if !at_place {
@@ -529,7 +539,7 @@ impl Materializer {
                 // on, and the outbox meets OneDrive's side (§6).
                 run.missing.insert(id.clone());
                 if !self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed) {
-                    run.out.unsettled.insert(id.clone());
+                    run.out.pending.unsettled.insert(id.clone());
                 }
                 continue;
             }
@@ -543,7 +553,7 @@ impl Materializer {
                 (Some(_), true) => self.to_holding(&old.rel, id, run)?,
                 (Some(_), false) => self.unplace(&old.rel, id, matches!(found, Probe::Managed { is_dir: true, .. }), run)?,
                 (None, _) => {
-                    self.remove_in_place(rw, parent, name, run)?;
+                    self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?;
                 }
             }
         }
@@ -566,7 +576,7 @@ impl Materializer {
             if rw.removing.contains(&row.id) {
                 continue;
             }
-            if rw.held.contains(&row.id) || run.out.unsettled.contains(&row.id) {
+            if rw.held.contains(&row.id) || run.out.pending.unsettled.contains(&row.id) {
                 self.unsettle_tree(&row.id, run)?;
                 continue;
             }
@@ -619,7 +629,7 @@ impl Materializer {
         }
         if self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.local_handle(&row_id) })?.is_some() {
             let base = self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.locate(Table::Items, &row_id) })?.filter(|l| l.placed).map(|l| l.rel);
-            run.out.examine.push((base.unwrap_or_else(|| rel.to_path_buf()), false));
+            run.out.on_disk.examine.push((base.unwrap_or_else(|| rel.to_path_buf()), false));
             return Ok(false);
         }
         Ok(true)
@@ -627,14 +637,14 @@ impl Materializer {
 
     /// `id` and everything the base or the new tree has below it wait.
     fn unsettle_tree(&self, id: &str, run: &mut Run) -> Result<(), ApplyError> {
-        run.out.unsettled.insert(id.to_owned());
+        run.out.pending.unsettled.insert(id.to_owned());
         let folder = id.to_owned();
         let below = self.store.call_blocking(move |s| {
             let mut ids = s.descendants(Table::Staging, &folder)?;
             ids.extend(s.descendants(Table::Items, &folder)?);
             Ok(ids)
         })?;
-        run.out.unsettled.extend(below);
+        run.out.pending.unsettled.extend(below);
         Ok(())
     }
 
@@ -671,8 +681,8 @@ impl Materializer {
             self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
         }
         tracing::info!("{} changed here and in OneDrive: the local version is kept as {}", rel.display(), copy_rel.display());
-        run.out.copies.push(Copied { original: rel.to_path_buf(), copy: copy_rel.clone() });
-        run.out.examine.push((copy_rel, is_dir));
+        run.out.on_disk.copies.push(Copied { original: rel.to_path_buf(), copy: copy_rel.clone() });
+        run.out.on_disk.examine.push((copy_rel, is_dir));
         Ok(())
     }
 }

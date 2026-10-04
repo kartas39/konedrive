@@ -253,12 +253,13 @@ reconcile in read-write mode).
 - `listing/rw.rs` — a read-write folder's cycle. `[tests]`
 - `materialize.rs` — `Materializer`: makes the folder match the tree. `[tests]`
 - `materialize/file.rs` — a file already in place, and what its content needs.
-- `materialize/holding.rs` — deleting what OneDrive no longer has; rescues.
+- `materialize/holding.rs` — the holding directory; rescues.
+- `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
+  (survey, forget, remove, settle), and what is kept of it.
 - `materialize/replace.rs` — replacing one changed file. `[tests]`
 - `materialize/rw.rs` — the reconcile in read-write mode. `[tests]`
 - `materialize/rw/leaving.rs` — what is leaving: an item that stays in OneDrive but is no
   longer placed here.
-- `materialize/rw/removal.rs` — what OneDrive removed, and what is kept of it.
 - `materialize/rw/holding.rs` — putting back what was held.
 
 ### `crates/konedrived/src/remote/listing/rw/tests/`

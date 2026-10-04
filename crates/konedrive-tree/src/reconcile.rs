@@ -429,6 +429,22 @@ impl TreeStore {
         Ok(())
     }
 
+    /// The inodes `handles` are no longer followed as leaving objects: a
+    /// file with other names that is about to lose the name it leaves
+    /// under, whose other names are the user's own and must never be taken
+    /// for it. Its row stays, followed by its path only.
+    pub fn leaving_forget_handles(&mut self, handles: &[FileHandle]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut forget = tx.prepare_cached("UPDATE leaving SET handle = NULL WHERE handle = ?1")?;
+            for handle in handles {
+                forget.execute([handle.encode()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Whether item `id` is placed — by the base or by the new tree — at
     /// another place than `rel`: then an object carrying its id at `rel` may
     /// be the user's (the copy placed again, moved there), and only the

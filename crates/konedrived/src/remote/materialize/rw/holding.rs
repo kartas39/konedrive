@@ -6,13 +6,14 @@ use crate::remote::materialize::{ApplyError, Materializer, Run};
 use crate::folder::disk::{Probe, HOLDING};
 use crate::local::names::copy_name;
 use konedrive_tree::Table;
-use super::{is_new_name, Removal, Rw};
+use crate::remote::materialize::removal::Removal;
+use super::{is_new_name, Rw};
 
 impl Materializer {
     /// What is left in the holding directory — what this run moved there and
     /// could not place (a local change holds its new folder), or what a stop
     /// or a crash left: what OneDrive removed goes as
-    /// [`Self::remove_in_place`] says; the rest goes back into the folder
+    /// [`Self::take_off`] says; the rest goes back into the folder
     /// ([`Self::put_back`]). Nothing leaves the folder.
     pub(in crate::remote::materialize) fn drain_holding_rw(&self, rw: &Rw, run: &mut Run) -> Result<(), ApplyError> {
         let Some(holding) = self.holding_if_any()? else {
@@ -37,12 +38,12 @@ impl Materializer {
                 }
                 None => false,
             };
-            if !placed && removed && self.remove_in_place(rw, Path::new(HOLDING), &name, run)? == Removal::Gone {
+            if !placed && removed && self.take_off(&holding, &name, &Path::new(HOLDING).join(&name), rw.removed(), run)?.removal == Removal::Gone {
                 continue;
             }
             if let Some(id) = &id {
                 if placed {
-                    run.out.unsettled.insert(id.clone());
+                    run.out.pending.unsettled.insert(id.clone());
                 }
             }
             let back = id.as_deref().and_then(|id| run.moved_from.get(id).cloned());
@@ -123,7 +124,7 @@ impl Materializer {
                     let (from, to) = (PathBuf::from(HOLDING).join(name), parent.join(&candidate));
                     self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
                     let is_dir = matches!(self.disk.probe(&dir, &candidate)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
-                    run.out.examine.push((parent.join(&candidate), is_dir));
+                    run.out.on_disk.examine.push((parent.join(&candidate), is_dir));
                     return Ok(true);
                 }
                 Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,

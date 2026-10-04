@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use std::os::fd::AsFd;
 
+use crate::remote::materialize::removal::Policy;
 use crate::remote::materialize::{ApplyError, Materializer, Run};
 use crate::folder::disk::Probe;
 use konedrive_tree::Table;
@@ -28,15 +29,15 @@ impl Materializer {
             s.leaving_add(&ids[0], &at, handles.first())
         })?;
         tracing::info!("{} is no longer placed here; it goes once nothing in it waits to be uploaded", rel.display());
-        run.out.examine.push((rel.to_path_buf(), is_dir));
-        run.out.taken.insert(id.to_owned());
+        run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
+        run.out.on_disk.taken.insert(id.to_owned());
         run.unplaced.insert(id.to_owned());
         Ok(())
     }
 
     /// What stopped being placed and stays on disk for now ([`Self::unplace`]):
     /// placed again where it is, it is the item's again; removed in OneDrive
-    /// since, it goes as [`Self::remove_in_place`] says; otherwise it goes
+    /// since, it goes as anything removed there ([`Self::take_off`]); otherwise it goes
     /// whole once no outbox row has a place at or below it and nothing in it
     /// waits to be examined and uploaded (a new file, a changed download).
     /// Until then it is examined again.
@@ -88,7 +89,6 @@ impl Materializer {
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             };
-            let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
             let name = rel.file_name().map(OsStr::to_os_string).expect("a found object has a name");
             let there = id.clone();
             debug_assert_eq!(there, id);
@@ -99,7 +99,7 @@ impl Materializer {
                 continue;
             }
             if staged.is_none() {
-                self.remove_in_place(rw, &parent, &name, run)?;
+                self.take_off(&dir, &name, &rel, rw.removed(), run)?;
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             }
@@ -121,12 +121,7 @@ impl Materializer {
             // Placed elsewhere now, the item's own object is the new one: only
             // what is here is forgotten.
             let placed_elsewhere = located.is_some_and(|l| l.placed);
-            let survey = self.forget_before_removing(&dir, &name, !placed_elsewhere)?;
-            let removed = self.remove_whole(None, &dir, &name, &rel, run);
-            if removed.is_err() {
-                self.settle_stopped(&dir, &name, &survey);
-            }
-            removed?;
+            self.take_off(&dir, &name, &rel, Policy::Leaving { placed_elsewhere }, run)?;
             tracing::info!("{} is no longer placed here, and nothing in it waits to be uploaded: removed", rel.display());
             self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
         }
@@ -242,21 +237,12 @@ impl Materializer {
                 Probe::Managed { id, is_dir } => {
                     let gone = self.store.call_blocking({ let id = id.clone(); move |s| Ok(s.get(Table::Staging, &id)?.is_none() && s.leaving_had(&id)?) })?;
                     if gone {
-                        let survey = self.forget_before_removing(&sub, &child, true)?;
                         // `resyncChangesUploadDifferences` does not mean removed: what
                         // was downloaded or changed here is kept, as anywhere (F116).
-                        let removed = self.remove_whole(rw.upload_differences.then_some(rw), &sub, &child, &at, run);
-                        if removed.is_err() {
-                            self.settle_stopped(&sub, &child, &survey);
-                        }
-                        removed?;
-                        let ids = survey.ids.clone();
-                        let dropped = self.store.call_blocking({ let at = at.clone(); move |s| {
-                            let mut dropped = s.outbox_drop_under(&at)?;
-                            dropped.extend(s.outbox_drop_items(&ids)?);
-                            Ok(dropped)
-                        } })?;
-                        tracing::info!("{} was removed from OneDrive while its folder was leaving: removed here, {} change(s) dropped", at.display(), dropped.len());
+                        let ids = self.take_off(&sub, &child, &at, rw.removed(), run)?.ids;
+                        // And the rows of the items its objects were, wherever they stand.
+                        let dropped = self.store.call_blocking(move |s| s.outbox_drop_items(&ids))?;
+                        tracing::info!("{} was removed from OneDrive while its folder was leaving: removed here, {} more change(s) dropped", at.display(), dropped.len());
                     } else if is_dir {
                         self.remove_gone_inside(rw, &sub, &child, &at, run)?;
                     }

@@ -860,7 +860,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     b_store.call_blocking(move |s| s.begin_staging(konedrive_tree::NewTree::Delta)).unwrap();
     let applied = reconcile_b(true);
     assert!(!in_b.exists(), "out of B's folder");
-    let aside = applied.rescued.iter().find(|r| r.original == Path::new("p.txt")).map(|r| r.rescued.clone()).expect("set aside");
+    let aside = applied.on_disk.rescued.iter().find(|r| r.original == Path::new("p.txt")).map(|r| r.rescued.clone()).expect("set aside");
     assert_eq!(state(&aside), Some(State::OnlineOnly), "alive, attributes and all");
     assert_eq!(w.deletes(), 0);
 

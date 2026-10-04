@@ -245,6 +245,7 @@ application must never read zeros where real content should be.
 - [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
 - [F236](F236.md) — What the upload worker's waits leave: the throttle's rules are reasoned, its note is not said again after a closed gate, and two looks wait for a wake
 - [F237](F237.md) — What the one shape of the move out leaves: a file in the Trash whose free-up was cut short goes without a second look, and the Trash rule was not run against the real helper again
+- [F238](F238.md) — A file with other names that is taken off the disk: what a stop between its unlink and the removal of its id leaves
 - [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
 - [F240](F240.md) — What the outbox worker is told without waiting is done only on the daemon's runtime, and its fault points are in the tests' build alone
 

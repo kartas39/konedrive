@@ -21,7 +21,7 @@ use xattr::FileExt;
 use super::*;
 use konedrive_graph::drive::RetryPolicy;
 use crate::hydration::graph_source::GraphSource;
-use crate::remote::materialize::Rescued;
+use crate::remote::materialize::{OnDisk, Rescued};
 use crate::status::snapshot::SyncSnapshot;
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::TreeStore;
@@ -665,8 +665,8 @@ async fn the_conflict_names_the_directory_the_files_really_went_to() {
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
 
     let beside = s.root.path.parent().unwrap().join(".konedrive-rescued-OneDrive");
-    assert_eq!(report.applied.rescued.len(), 1);
-    let kept = &report.applied.rescued[0].rescued;
+    assert_eq!(report.applied.on_disk.rescued.len(), 1);
+    let kept = &report.applied.on_disk.rescued[0].rescued;
     assert!(kept.starts_with(&beside), "{}", kept.display());
     assert_eq!(std::fs::read(kept).unwrap(), b"mine");
     let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
@@ -688,7 +688,7 @@ async fn conflict_events_are_capped_like_the_other_kinds() {
             Rescued { original: format!("docs/f{n:02}.txt").into(), rescued: at }
         })
         .collect();
-    konedrive_tree::off_runtime(|| record(&s.report, &s.store, &s.root.path, &Applied { rescued, ..Applied::default() }, Said::EachChange));
+    konedrive_tree::off_runtime(|| record(&s.report, &s.store, &s.root.path, &Applied { on_disk: OnDisk { rescued, ..OnDisk::default() }, ..Applied::default() }, Said::EachChange));
 
     let folder = s.root.path.display().to_string();
     let events = s.activity();
@@ -700,26 +700,43 @@ async fn conflict_events_are_capped_like_the_other_kinds() {
 /// A Changed pass that moves a local file out of
 /// the way and then hands over to a Full reconcile. The Full pass finds
 /// nothing left to rescue, so what the first pass rescued must be the
-/// conflict — a row and an event — or it is lost.
+/// conflict — a row and an event — or it is lost. And what the first pass
+/// only moved to the holding directory, which the Full pass then rescues
+/// from there, is a conflict under the path it had in the folder.
 #[tokio::test]
 async fn a_rescue_made_before_a_full_hand_over_is_still_a_conflict() {
     let s = setup().await;
     let listing = listed(&s).await;
+    s.feed(Some("L1"), json!([file("K", "R", "kept.txt", "c1")]), "L2").await;
+    listing.cycle(&CancellationToken::new()).await.unwrap();
+    // Downloaded and changed here; then removed in OneDrive.
+    let kept = s.root.path.join("kept.txt");
+    hydrate_by_hand(&kept, b"downloaded");
+    std::thread::sleep(Duration::from_millis(10));
+    {
+        use std::os::unix::fs::FileExt as _;
+        placeholder::reopen_writable(&File::open(&kept).unwrap()).unwrap().write_all_at(b"and mine", 10).unwrap();
+    }
     let root = File::open(&s.root.path).unwrap();
     placeholder::with_owner_write(&root, || std::fs::write(s.root.path.join("top.txt"), b"mine")).unwrap();
     // A new file for `docs`, which is not where the tree has it: the
-    // Changed pass rescues `top.txt` first (shallower), then hands over.
+    // Changed pass moves `kept.txt` to the holding directory, rescues
+    // `top.txt` (shallower than the new file), then hands over.
     move_docs_away(&s.root.path);
-    s.feed(Some("L1"), json!([file("T", "R", "top.txt", "c1"), file("M", "D", "m.txt", "c1")]), "L2").await;
+    let delta = json!([{"id": "K", "deleted": {"state": "deleted"}}, file("T", "R", "top.txt", "c1"), file("M", "D", "m.txt", "c1")]);
+    s.feed(Some("L2"), delta, "L3").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(report.full, "the Changed pass handed over to a Full one");
 
-    let original = s.full("top.txt");
     let rows = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
-    assert_eq!(rows.iter().map(|c| c.original.as_str()).collect::<Vec<_>>(), vec![original.as_str()]);
-    assert_eq!(std::fs::read(&rows[0].rescued).unwrap(), b"mine");
-    assert!(s.activity().contains(&("conflict".to_owned(), original, rows[0].rescued.clone())), "{:?}", s.activity());
-    assert_eq!(s.state.get().conflict_count, 1);
+    let mut originals: Vec<_> = rows.iter().map(|c| c.original.clone()).collect();
+    originals.sort();
+    assert_eq!(originals, vec![s.full("kept.txt"), s.full("top.txt")], "each under the path it had in the folder");
+    let rescued = |original: &str| rows.iter().find(|c| c.original == s.full(original)).unwrap().rescued.clone();
+    assert_eq!(std::fs::read(rescued("top.txt")).unwrap(), b"mine");
+    assert_eq!(std::fs::read(rescued("kept.txt")).unwrap(), b"downloadedand mine");
+    assert!(s.activity().contains(&("conflict".to_owned(), s.full("top.txt"), rescued("top.txt"))), "{:?}", s.activity());
+    assert_eq!(s.state.get().conflict_count, 2);
 }
 
 /// A first listing, and any Full reconcile, is ONE summary
@@ -772,7 +789,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
     placeholder::with_owner_write(&docs, || std::fs::write(s.root.path.join("docs/new.txt"), b"mine")).unwrap();
     s.feed(Some("L1"), json!([file("N", "D", "new.txt", "c1")]), "L2").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    let rescued = report.applied.rescued[0].rescued.display().to_string();
+    let rescued = report.applied.on_disk.rescued[0].rescued.display().to_string();
     let original = s.full("docs/new.txt");
 
     let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
@@ -820,7 +837,7 @@ async fn last_checked_moves_only_when_a_cycle_succeeds() {
 }
 
 /// A file being filled when its change arrives is left for later
-/// (`Applied::deferred`); a Changed scope never looks at it again, so the
+/// (`Counts::deferred`); a Changed scope never looks at it again, so the
 /// next cycle is a Full one.
 #[tokio::test]
 async fn a_cycle_that_leaves_a_file_for_later_makes_the_next_one_full() {
@@ -830,7 +847,7 @@ async fn a_cycle_that_leaves_a_file_for_later_makes_the_next_one_full() {
     placeholder::write_state(&File::open(&f_txt).unwrap(), State::Hydrating).unwrap();
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert_eq!(report.applied.deferred, 1);
+    assert_eq!(report.applied.counts.deferred, 1);
     // The fill ends without the file: it is online-only again.
     placeholder::write_state(&File::open(&f_txt).unwrap(), State::OnlineOnly).unwrap();
     s.feed(Some("L2"), json!([]), "L3").await;

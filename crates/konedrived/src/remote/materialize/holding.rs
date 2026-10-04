@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::folder::disk::{Probe, Scanned, HOLDING};
 use crate::status::activity::Kind as EventKind;
 use konedrive_tree::Table;
-use super::{holds_local_work, rw, survey_stopped, ApplyError, Materializer, Rescued, Run};
+use super::removal::Policy;
+use super::{holds_local_work, ApplyError, Materializer, Rescued, Run};
 
 impl Materializer {
     pub(super) fn holding_if_any(&self) -> Result<Option<File>, ApplyError> {
@@ -60,62 +61,18 @@ impl Materializer {
                 .to_str()
                 .and_then(|id| run.moved_from.get(id).cloned())
                 .unwrap_or_else(|| PathBuf::from(HOLDING).join(&name));
-            // What goes is forgotten first, and its downloads stop (issue
-            // #104); what is rescued keeps its content, out of the folder.
-            let survey = self.forget_before_removing(&holding, &name, true)?;
-            let deleted = run.out.deleted;
-            run.stopped = survey_stopped(&survey);
-            let result = self.delete_tree(&holding, &name, &shown, run);
-            if result.is_err() {
-                self.settle_stopped(&holding, &name, &survey);
-            }
-            result?;
+            // What is rescued instead keeps its content, out of the folder.
+            let deleted = run.out.counts.deleted;
+            self.take_off(&holding, &name, &shown, Policy::Removed, run)?;
             // One event for what went, however much was inside it; what was
             // rescued instead is a conflict, not a removal.
-            if run.out.deleted > deleted {
+            if run.out.counts.deleted > deleted {
                 run.note(EventKind::Removed, &shown, None);
             }
         }
         let root = self.disk.dir(Path::new(""))?;
         self.disk.remove(&root, OsStr::new(HOLDING), true)?;
         Ok(())
-    }
-
-    /// Deletes what the cloud no longer has, rescuing anything that would
-    /// lose a local byte.
-    fn delete_tree(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
-        match self.disk.probe(dir, name)? {
-            Probe::Absent => Ok(()),
-            Probe::Unmanaged { .. } => self.rescue(dir, name, shown, run),
-            Probe::Managed { id, .. } if self.claimed_elsewhere(&id)? => {
-                // It survives, out of the folder: a download stopped in it is
-                // a placeholder again first (issue #104).
-                if !run.stopped.is_empty() {
-                    let survey = rw::Survey::stopped_only(run.stopped.clone());
-                    self.settle_stopped(dir, name, &survey);
-                }
-                self.set_aside(dir, name, shown, run)
-            }
-            Probe::Managed { is_dir: true, .. } => {
-                let sub = self.disk.open_subdir(dir, name)?;
-                for child in self.disk.list(&sub)? {
-                    self.delete_tree(&sub, &child, &shown.join(&child), run)?;
-                }
-                self.disk.remove(dir, name, true)?;
-                run.out.deleted += 1;
-                Ok(())
-            }
-            Probe::Managed { is_dir: false, .. } => {
-                let file = self.disk.open_file(dir, name)?;
-                if holds_local_work(&file) {
-                    self.rescue(dir, name, shown, run)
-                } else {
-                    self.disk.remove(dir, name, false)?;
-                    run.out.deleted += 1;
-                    Ok(())
-                }
-            }
-        }
     }
 
     pub(super) fn rescue(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
@@ -125,13 +82,13 @@ impl Materializer {
             shown.display(),
             dest.display()
         );
-        run.out.rescued.push(Rescued { original: shown.to_path_buf(), rescued: dest });
+        run.out.on_disk.rescued.push(Rescued { original: shown.to_path_buf(), rescued: dest });
         Ok(())
     }
 
     /// Whether `id`, which is about to be removed, is another account's: one
     /// this folder's tree does not know, and another account claims.
-    fn claimed_elsewhere(&self, id: &str) -> Result<bool, ApplyError> {
+    pub(super) fn claimed_elsewhere(&self, id: &str) -> Result<bool, ApplyError> {
         let Some(claimed) = &self.claimed else { return Ok(false) };
         let known = self.store.call_blocking({ let id = id.to_owned(); move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some()) })?;
         Ok(!known && claimed(id))
@@ -142,14 +99,14 @@ impl Materializer {
     /// and all, so that the other account's move out finds it by its handle
     /// and downloads it where it is now. Never removed: that account's
     /// OneDrive may be the only other place its content is.
-    fn set_aside(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
+    pub(super) fn set_aside(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
         let dest = self.disk.set_aside(dir, name, shown, &self.rescue_into)?;
         tracing::warn!(
             "{} is another account's, moved here from its folder; it is kept at {}, where that account downloads it",
             shown.display(),
             dest.display()
         );
-        run.out.rescued.push(Rescued { original: shown.to_path_buf(), rescued: dest });
+        run.out.on_disk.rescued.push(Rescued { original: shown.to_path_buf(), rescued: dest });
         Ok(())
     }
 

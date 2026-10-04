@@ -370,7 +370,7 @@ async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
     listing.join_replacements().await;
     assert_eq!(w.base("F").unwrap().etag, committed.etag, "the stale delta did not undo the commit");
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"mine");
-    assert!(report.applied.replacements.is_empty(), "{:?}", report.applied.replacements);
+    assert!(report.applied.pending.replacements.is_empty(), "{:?}", report.applied.pending.replacements);
     assert!(w.graph.with(|c| c.count("GET", "items/F")) >= 1, "read again from OneDrive");
 
     // Now OneDrive changes it again right after an upload, within one fetch.
@@ -384,7 +384,7 @@ async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
     w.commit_upload("F", "docs/f.txt", b"mine again").await;
     w.graph.with(|c| c.edit("F", b"theirs"));
     let report = cycle.await.unwrap().unwrap();
-    assert_eq!(report.applied.replacements.len(), 1, "OneDrive's newer version is fetched");
+    assert_eq!(report.applied.pending.replacements.len(), 1, "OneDrive's newer version is fetched");
     listing.join_replacements().await;
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"theirs");
     assert_eq!(w.base("F").unwrap().ctag.as_deref(), Some(w.cloud_ctag("F").as_str()), "the base took it as it landed");
@@ -410,8 +410,8 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     let inode = std::fs::metadata(&new).unwrap().ino();
 
     let report = w.cycle(&listing).await;
-    assert_eq!((report.applied.created, report.applied.updated, report.applied.deleted), (0, 0, 0));
-    assert!(report.applied.replacements.is_empty() && report.applied.changes.is_empty() && report.applied.unsettled.is_empty());
+    assert_eq!((report.applied.counts.created, report.applied.counts.updated, report.applied.counts.deleted), (0, 0, 0));
+    assert!(report.applied.pending.replacements.is_empty() && report.applied.changes.is_empty() && report.applied.pending.unsettled.is_empty());
     assert_eq!(std::fs::metadata(&new).unwrap().ino(), inode);
     assert_eq!(state_at(&new), Some(State::Hydrated));
 
@@ -423,7 +423,7 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
     w.upload().await;
     let report = w.cycle(&listing).await;
-    assert!(report.applied.replacements.is_empty() && report.applied.changes.is_empty());
+    assert!(report.applied.pending.replacements.is_empty() && report.applied.changes.is_empty());
     assert_eq!(std::fs::read(&new).unwrap(), b"hello again");
     assert_eq!(std::fs::metadata(&new).unwrap().ino(), inode);
 
@@ -493,7 +493,7 @@ async fn a_replacement_waits_for_a_file_open_for_writing() {
     w.graph.with(|c| c.edit("F", b"two"));
     let writer = std::fs::OpenOptions::new().write(true).open(w.path("docs/f.txt")).unwrap();
     let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.replacements.len(), 1);
+    assert_eq!(report.applied.pending.replacements.len(), 1);
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one");
     assert_eq!(w.graph.with(|c| c.count("GET", "dl/F")), 0, "nothing downloaded for nothing");
     assert_eq!(w.base("F").unwrap().ctag.as_deref(), Some(old.as_str()), "the base keeps the version on disk");
@@ -525,7 +525,7 @@ async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
         w.store.call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: None }, None)).await.unwrap();
     }
     let report = w.cycle(&listing).await;
-    assert_eq!(report.applied.replacements.len(), 1, "{report:?}");
+    assert_eq!(report.applied.pending.replacements.len(), 1, "{report:?}");
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"two");
 }
 
@@ -622,7 +622,7 @@ async fn a_folder_removed_in_onedrive_with_local_work_in_it_is_not_made_again() 
     assert_eq!(w.examine(batch).await.applied.queued.len(), 2);
     w.graph.with(|c| c.trash("D"));
     let report = w.cycle(&listing).await;
-    assert!(report.applied.recreated.is_empty());
+    assert!(report.applied.on_disk.recreated.is_empty());
     assert!(!w.path("docs").exists(), "removed whole");
     assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().is_empty(), "nothing left to upload there");
 
@@ -759,7 +759,7 @@ async fn a_changed_pass_handing_over_with_something_in_holding_keeps_it_in_the_f
     });
     let report = w.cycle(&listing).await;
     assert!(report.full, "handed over to the Full scan");
-    assert!(report.applied.rescued.is_empty(), "moved out of the folder: {:?}", report.applied.rescued);
+    assert!(report.applied.on_disk.rescued.is_empty(), "moved out of the folder: {:?}", report.applied.on_disk.rescued);
     assert_eq!(id_at(&w.path("top2.txt")).as_deref(), Some("T"), "placed from the holding directory");
     assert!(!w.path(".konedrive-holding").exists());
     assert_eq!(id_at(&w.path("papers")).as_deref(), Some("D"), "the local rename is left to the examination");
@@ -788,7 +788,7 @@ async fn a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_
     w.graph.with(|c| c.edit("T", b"top, changed"));
     let report = w.cycle(&listing).await;
     assert!(!w.path("top.txt").exists(), "not placed while its object is alive outside");
-    assert!(report.applied.unsettled.contains("T"));
+    assert!(report.applied.pending.unsettled.contains("T"));
     assert!(w.examined.lock().unwrap().iter().map(names).collect::<String>().contains("top.txt"), "handed to the examination");
 
     w.scan_and_upload().await;
@@ -818,7 +818,7 @@ async fn what_a_stop_left_in_the_holding_directory_goes_back_into_the_folder() {
     // A restart: the first cycle is Full.
     let report = w.cycle(&w.listing_with(None)).await;
     assert!(report.full);
-    assert!(report.applied.rescued.is_empty(), "moved out of the folder: {:?}", report.applied.rescued);
+    assert!(report.applied.on_disk.rescued.is_empty(), "moved out of the folder: {:?}", report.applied.on_disk.rescued);
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"), "placed from the holding directory");
     assert_eq!(id_at(&w.path("top.txt")).as_deref(), Some("T"), "put back where the base has it");
     assert!(!w.path(".konedrive-holding").exists());
@@ -947,14 +947,14 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
     assert!(rows.iter().all(|r| r.state == OutboxState::Running), "{rows:?}");
 
     let report = w.cycle(&listing).await;
-    assert!(report.applied.replacements.is_empty() && report.applied.copies.is_empty(), "{report:?}");
+    assert!(report.applied.pending.replacements.is_empty() && report.applied.on_disk.copies.is_empty(), "{report:?}");
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one and mine");
     assert_eq!(id_at(&w.path("docs/new.txt")), None, "still the outbox's to commit");
 
     w.upload().await;
     assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().is_empty());
     let report = w.cycle(&listing).await;
-    assert!(report.applied.replacements.is_empty() && report.applied.copies.is_empty() && report.applied.changes.is_empty(), "{report:?}");
+    assert!(report.applied.pending.replacements.is_empty() && report.applied.on_disk.copies.is_empty() && report.applied.changes.is_empty(), "{report:?}");
     assert_eq!(std::fs::metadata(w.path("docs/f.txt")).unwrap().ino(), f_ino);
     assert_eq!(std::fs::metadata(w.path("docs/new.txt")).unwrap().ino(), new_ino);
     assert!(id_at(&w.path("docs/new.txt")).is_some());
