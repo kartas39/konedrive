@@ -96,8 +96,9 @@ pub async fn start_on(
 /// waits for ever. A connection built with an interface is the one case in which zbus has
 /// the server listening before it starts reading. The `ObjectManager` of
 /// `/org/konedrive/Accounts` is that interface: it is the first object [`serve`] used to
-/// put there, and needs nothing the daemon has yet to load. Until the rest is exported, a
-/// call for it gets D-Bus's own "unknown" error, as a reply.
+/// put there, and needs nothing the daemon has yet to load. Until [`serve`] has exported
+/// the daemon's other interfaces and objects, a call for one of those is answered with
+/// D-Bus's own "unknown" error.
 async fn connect(builder: zbus::connection::Builder<'_>) -> zbus::Result<Connection> {
     builder.serve_at(ACCOUNTS_PATH, fdo::ObjectManager)?.build().await
 }

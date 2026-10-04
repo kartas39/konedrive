@@ -2,7 +2,6 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 /// How long a call on [`TestBus::connect`]'s connection waits for its reply. A call that gets
@@ -11,10 +10,12 @@ use std::time::Duration;
 pub const METHOD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The bus's configuration: the session bus's own (`/usr/share/dbus-1/session.conf`) without
-/// its service directories and without the machine's additions (`session.d`,
-/// `session-local.conf`). A bus that reads no service directory can start no program: not
-/// an installed `konedrived`, which would run on the real `~/.config` (quality finding
-/// `DB2`).
+/// its service directories, without what it includes (the legacy `/etc/dbus-1/session.conf`,
+/// `session.d`, `/etc/dbus-1/session.d`, `/etc/dbus-1/session-local.conf`, the SELinux
+/// contexts) and without the two limits on starting services (`service_start_timeout`,
+/// `max_pending_service_starts`). A bus that reads no service directory can start no
+/// program: not an installed `konedrived`, which would run on the real `~/.config` (quality
+/// finding `DB2`).
 const CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
@@ -43,18 +44,25 @@ const CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bu
 </busconfig>
 "#;
 
-/// Writes [`CONFIG`] to a file of this bus's own in the temporary directory.
+/// Writes [`CONFIG`] to a file of this bus's own in the temporary directory: one that was
+/// not there (never a file somebody else made, nor a link), readable by its owner only,
+/// under a name nobody can foresee. A name that is taken is passed over for another.
 fn write_config() -> std::path::PathBuf {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let name = format!("konedrive-test-bus-{}-{}.conf", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-    let path = std::env::temp_dir().join(name);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .unwrap_or_else(|e| panic!("cannot write the test bus's configuration {}: {e}", path.display()));
-    file.write_all(CONFIG.as_bytes()).expect("cannot write the test bus's configuration");
-    path
+    use std::hash::{BuildHasher, Hasher};
+    use std::os::unix::fs::OpenOptionsExt;
+    loop {
+        // A new `RandomState` has keys the system's random source seeded.
+        let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let path = std::env::temp_dir().join(format!("konedrive-test-bus-{random:016x}.conf"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+            Ok(mut file) => {
+                file.write_all(CONFIG.as_bytes()).expect("cannot write the test bus's configuration");
+                return path;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("cannot write the test bus's configuration {}: {e}", path.display()),
+        }
+    }
 }
 
 pub struct TestBus {

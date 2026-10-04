@@ -900,10 +900,16 @@ impl konedrived::daemon::manager::Bus for HeldServe {
     }
 }
 
-/// SY13: the daemon's connection answers from the moment it is on the bus. A call that
-/// reaches it while its start still stands before the first export — sent to its unique
-/// name, the bus name being claimed last — gets a reply: it is not read from the socket and
-/// dropped because nothing listened for calls yet, which left its caller waiting for ever.
+/// SY13: the daemon's connection answers calls before the daemon's first export. A call
+/// sent to its unique name while its start stands at `Bus::serve` — the bus name being
+/// claimed last — gets a reply; before the fix it was read from the socket and dropped,
+/// because the object server started only at that export, and its caller waited for ever.
+///
+/// What this does not prove: that the server listens before the socket is read at all. The
+/// test's call comes long after the connection is made, so a server started any time before
+/// `Bus::serve` would pass it too. That stronger order rests on zbus: a connection built
+/// with an interface (`Builder::serve_at`) has its object server subscribed before `build`
+/// starts the socket's reader (zbus 5.19, `connection/builder.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_that_reaches_the_daemon_before_its_objects_is_answered() {
     let config = tempfile::tempdir().unwrap();

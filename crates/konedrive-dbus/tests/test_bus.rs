@@ -1,5 +1,5 @@
 //! The tests' private bus (`konedrive_dbus::testing::TestBus`): what it must never do, and
-//! what a test's connection to it gives up on.
+//! the timeout a test's connection to it has.
 
 use konedrive_dbus::testing::{TestBus, METHOD_TIMEOUT};
 
@@ -25,9 +25,10 @@ async fn the_bus_can_start_no_program() {
     );
 }
 
-/// A call on a test's connection that gets no reply fails, and does not wait for ever.
+/// A test's connection is made with the method timeout. That a call with no reply then
+/// fails is zbus's to keep: no test here waits the timeout out.
 #[tokio::test]
-async fn a_tests_connection_gives_up_on_a_call() {
+async fn a_tests_connection_has_the_method_timeout() {
     let bus = TestBus::start();
     assert_eq!(bus.connect().await.method_timeout(), Some(METHOD_TIMEOUT));
 }
