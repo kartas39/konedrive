@@ -10,8 +10,10 @@ use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_ctag, read_progress, read_state, State};
 use tokio::io::{AsyncRead, ReadBuf};
 
-use super::super::{clear_checkpoint_every, hydrate_in_parts, set_checkpoint_every};
+use super::super::fill::Fill;
+use super::super::{SourceError, Version};
 use super::*;
+use crate::hydration::testing::{content, placeholder, read_back, until};
 
 const KIB: u64 = 1024;
 
@@ -129,25 +131,12 @@ impl Drop for Slow {
     }
 }
 
-fn content(size: u64, seed: u8) -> Vec<u8> {
-    (0..size).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed).wrapping_add((i >> 12) as u8)).collect()
-}
-
-fn placeholder(dir: &std::path::Path, name: &str, size: u64) -> std::fs::File {
-    let handle = std::fs::File::open(dir).unwrap();
-    konedrive_fs::placeholder::create_placeholder(&handle, name, "I", size, SystemTime::UNIX_EPOCH).unwrap();
-    std::fs::File::options().read(true).write(true).open(dir.join(name)).unwrap()
-}
-
-fn read_back(file: &std::fs::File) -> Vec<u8> {
-    let mut out = vec![0u8; file.metadata().unwrap().len() as usize];
-    file.read_exact_at(&mut out, 0).unwrap();
-    out
-}
+/// A checkpoint within a file of a megabyte, and no pause after a break.
+const TUNING: Tuning = Tuning { checkpoint_every: Some(64 * KIB), back_off: Duration::ZERO };
 
 async fn fill(file: &std::fs::File, source: &dyn ContentSource, split: &Split) -> i32 {
     let fd = file.as_fd().try_clone_to_owned().unwrap();
-    hydrate_in_parts(fd, source, None, split).await.err().map_or(0, |e| e.errno())
+    Fill::new(source).in_parts(split).tuning(TUNING).run(fd).await.err().map_or(0, |e| e.errno())
 }
 
 /// A pool of four slots, all of which may be large, and a first stream's slot taken from
@@ -158,23 +147,13 @@ fn pool_of_four() -> (Arc<TransferPool>, Slot) {
     (pool, first)
 }
 
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..5000 {
-        if done() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("{what} never happened");
-}
-
 /// One large file alone: four streams at once, each asking for a bounded range, and the
 /// file complete, verified and committed; the extra slots go back.
 #[tokio::test]
 async fn one_large_file_downloads_in_four_streams() {
     let dir = tempfile::tempdir().unwrap();
-    let data = content(2 * 1024 * KIB, 1);
-    let file = placeholder(dir.path(), "f.bin", data.len() as u64);
+    let data = content((2 * 1024 * KIB) as usize, 1);
+    let file = placeholder(dir.path(), "f.bin", "I", data.len() as u64);
     let source = Ranged::new("c1", data.clone());
     let (pool, _first) = pool_of_four();
     let split = Split::with_piece(Arc::clone(&pool), Share::new(), 64 * KIB);
@@ -195,8 +174,8 @@ async fn one_large_file_downloads_in_four_streams() {
 #[tokio::test]
 async fn a_download_in_parts_is_one_file_and_its_streams() {
     let dir = tempfile::tempdir().unwrap();
-    let data = content(4 * 1024 * KIB, 5);
-    let file = placeholder(dir.path(), "f.bin", data.len() as u64);
+    let data = content((4 * 1024 * KIB) as usize, 5);
+    let file = placeholder(dir.path(), "f.bin", "I", data.len() as u64);
     let source: Arc<dyn ContentSource> = Arc::new(Ranged { delay: Duration::from_millis(2), ..Ranged::new("c1", data.clone()) });
     let transfers = crate::status::transfers::Transfers::default();
     let tracked = Arc::new(crate::hydration::tracked::Tracked::new(source, transfers.clone(), "/r/f.bin"));
@@ -221,9 +200,9 @@ async fn a_download_in_parts_is_one_file_and_its_streams() {
 #[tokio::test]
 async fn two_large_files_share_the_slots_and_a_waiting_transfer_gets_one() {
     let dir = tempfile::tempdir().unwrap();
-    let (a_data, b_data) = (content(16 * 1024 * KIB, 2), content(16 * 1024 * KIB, 3));
-    let a_file = placeholder(dir.path(), "a.bin", a_data.len() as u64);
-    let b_file = placeholder(dir.path(), "b.bin", b_data.len() as u64);
+    let (a_data, b_data) = (content((16 * 1024 * KIB) as usize, 2), content((16 * 1024 * KIB) as usize, 3));
+    let a_file = placeholder(dir.path(), "a.bin", "I", a_data.len() as u64);
+    let b_file = placeholder(dir.path(), "b.bin", "I", b_data.len() as u64);
     let a_source = Arc::new(Ranged { delay: Duration::from_millis(2), ..Ranged::new("a1", a_data.clone()) });
     let b_source = Arc::new(Ranged { delay: Duration::from_millis(2), ..Ranged::new("b1", b_data.clone()) });
     let (pool, a_first) = pool_of_four();
@@ -269,10 +248,9 @@ async fn two_large_files_share_the_slots_and_a_waiting_transfer_gets_one() {
 /// beyond it.
 #[tokio::test]
 async fn a_failed_download_is_continued_from_its_gap_free_start() {
-    set_checkpoint_every(64 * KIB);
     let dir = tempfile::tempdir().unwrap();
-    let data = content(1024 * KIB, 4);
-    let file = placeholder(dir.path(), "f.bin", data.len() as u64);
+    let data = content((1024 * KIB) as usize, 4);
+    let file = placeholder(dir.path(), "f.bin", "I", data.len() as u64);
     let (pool, _first) = pool_of_four();
     let split = Split::with_piece(Arc::clone(&pool), Share::new(), 128 * KIB);
 
@@ -289,7 +267,6 @@ async fn a_failed_download_is_continued_from_its_gap_free_start() {
 
     let source = Ranged::new("c1", data.clone());
     assert_eq!(fill(&file, &source, &split).await, 0);
-    clear_checkpoint_every();
 
     let asked = source.asked();
     assert_eq!(asked[0].0, kept, "it continues from the checkpoint");
@@ -303,8 +280,8 @@ async fn a_failed_download_is_continued_from_its_gap_free_start() {
 #[tokio::test]
 async fn a_new_version_mid_way_starts_the_file_over() {
     let dir = tempfile::tempdir().unwrap();
-    let (old, new) = (content(1024 * KIB, 5), content(900 * KIB, 6));
-    let file = placeholder(dir.path(), "f.bin", old.len() as u64);
+    let (old, new) = (content((1024 * KIB) as usize, 5), content((900 * KIB) as usize, 6));
+    let file = placeholder(dir.path(), "f.bin", "I", old.len() as u64);
     let source = Ranged { second: Some(("c2".into(), new.clone())), switch_at: 5, ..Ranged::new("c1", old) };
     let (pool, _first) = pool_of_four();
     let split = Split::with_piece(Arc::clone(&pool), Share::new(), 64 * KIB);

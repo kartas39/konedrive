@@ -498,7 +498,7 @@ impl Materializer {
             // The fill lets go of the lock once it has stopped.
             let guard = self.runtime.block_on(async { tokio::time::timeout(left, self.locks.lock(key)).await });
             match guard {
-                Ok(_guard) => crate::hydration::source::back_to_placeholder(&file),
+                Ok(_guard) => crate::hydration::demote::back_to_placeholder(&file),
                 Err(_) => tracing::warn!("a stopped download did not let go of its file in time; it is left as it is"),
             }
         }

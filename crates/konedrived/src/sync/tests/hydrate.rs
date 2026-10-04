@@ -448,7 +448,7 @@ async fn hydrate_now_does_nothing_to_a_file_that_is_already_there() {
     let file = root_dir.path().join("f.bin");
     service.hydrate_now(&file).await.unwrap();
 
-    let counted = Arc::new(LocalDir::new(source_dir.path()));
+    let counted = Arc::new(crate::hydration::testing::Faulty::new(LocalDir::new(source_dir.path())));
     install_source(&service, Arc::clone(&counted) as Arc<dyn ContentSource>);
     service.hydrate_now(&file).await.unwrap();
     assert_eq!(counted.fetches(), 0, "a complete file must not be fetched again");

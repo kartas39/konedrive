@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use konedrive_fs::placeholder::{read_state, State};
 
 use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
+use crate::hydration::testing::Faulty;
 use crate::helper::{HelperLink, HydrateRequest};
 use crate::sync::tests::{CountingSource, FakeHelper, Seen, placeholder, wait_until};
 use crate::status::report::Report;
@@ -119,7 +120,7 @@ async fn the_request_loop_stops_taking_work_once_the_admission_is_full() {
         .collect();
 
     // Every fill parks in `fetch` and holds its permit there.
-    let source = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_secs(3600)));
+    let source = Arc::new(Faulty::new(LocalDir::new(remote.path())).delay(Duration::from_secs(3600)));
     let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
     tokio::spawn(serve_hydrations(link, rx, source, InodeLocks::new()));
 
@@ -248,8 +249,8 @@ async fn a_request_for_a_file_filled_meanwhile_is_answered_without_touching_it()
     let local = tempfile::tempdir().unwrap();
     let fd = placeholder(local.path(), "file.bin", "ITEM", 4096);
     let waiting = fd.try_clone().unwrap();
-    let source = Arc::new(LocalDir::new(remote.path()));
-    assert_eq!(source::hydrate(fd, source.as_ref()).await, 0, "filled directly");
+    let source = Arc::new(Faulty::new(LocalDir::new(remote.path())));
+    assert!(source::hydrate_with(fd, source.as_ref(), None).await.is_ok(), "filled directly");
     std::fs::remove_file(remote.path().join("ITEM")).unwrap();
     let fetched = source.fetches();
 
@@ -278,8 +279,8 @@ async fn a_request_never_overwrites_a_hydrated_file_edited_in_place() {
     let local = tempfile::tempdir().unwrap();
     let fd = placeholder(local.path(), "file.bin", "ITEM", 4096);
     let waiting = fd.try_clone().unwrap();
-    let source = Arc::new(LocalDir::new(remote.path()));
-    assert_eq!(source::hydrate(fd, source.as_ref()).await, 0);
+    let source = Arc::new(Faulty::new(LocalDir::new(remote.path())));
+    assert!(source::hydrate_with(fd, source.as_ref(), None).await.is_ok());
     let path = local.path().join("file.bin");
     std::fs::File::options().write(true).open(&path).unwrap().write_all_at(b"EDITED", 0).unwrap();
     let fetched = source.fetches();
@@ -365,7 +366,7 @@ async fn a_refill_whose_ignore_mark_cannot_be_cleared_touches_nothing() {
     std::fs::write(&path, vec![3u8; 4096]).unwrap();
     konedrive_fs::placeholder::write_state(&std::fs::File::open(&path).unwrap(), State::Dehydrating)
         .unwrap();
-    let source = Arc::new(LocalDir::new(remote.path()));
+    let source = Arc::new(Faulty::new(LocalDir::new(remote.path())));
 
     let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
     tokio::spawn(serve_hydrations(link, rx, Arc::clone(&source) as Arc<dyn ContentSource>, InodeLocks::new()));
@@ -492,7 +493,7 @@ async fn a_fill_stopped_by_a_removal_answers_an_errno_the_kernel_delivers() {
     let key = InodeKey::of_fd(&fd).unwrap();
 
     // The fill parks in `fetch`, holding the inode's lock.
-    let source = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_secs(3600)));
+    let source = Arc::new(Faulty::new(LocalDir::new(remote.path())).delay(Duration::from_secs(3600)));
     let locks = InodeLocks::new();
     let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
     tokio::spawn(serve_hydrations(link, rx, Arc::clone(&source) as Arc<dyn ContentSource>, locks.clone()));

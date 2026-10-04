@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use konedrive_fs::lease::WriteLease;
-use konedrive_fs::placeholder::{punch_from, read_progress, read_state, remove_progress, remove_stamp, write_state, State, StateError};
+use konedrive_fs::placeholder::{read_state, State, StateError};
 use konedrive_fs::MAX_DEPTH;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -15,7 +15,7 @@ use nix::sys::stat::Mode;
 
 use crate::helper::{Clearance, HelperError, NotCleared};
 use crate::folder::locks::{InodeKey, InodeLocks};
-use crate::hydration::dehydrate::{FileTimes, punch_and_publish};
+use crate::hydration::demote::{demote, Demoted, FileTimes, Held, Keep, Shape};
 use crate::folder::root::{SyncRoot, proc_path};
 
 /// How much of a registered root a startup [`recover`] found, fixed, and
@@ -535,10 +535,9 @@ async fn recover_file(
 /// Clears the ignore mark and punches one crash-interrupted file, both on
 /// the inode the walk opened — through one writable reopen of the
 /// descriptor the walk opened read-only (`/proc/self/fd/<n>`),
-/// made before either — the identical sequence `dehydrate`'s
-/// `mark_dehydrating`/`punch_clean_file` pair runs on a file this process is
-/// actively working on, applied here to one a crash left mid-sequence
-/// instead. Nothing here re-opens anything by path: the inode
+/// made before either — the sequence a free-up runs on a file this process
+/// is working on ([`demote`] under the lease), applied here to one a crash
+/// left mid-sequence. Nothing here re-opens anything by path: the inode
 /// that was classified is the inode that is punched, whatever the name points
 /// at by the time the helper answers.
 ///
@@ -551,7 +550,7 @@ async fn recover_file(
 ///
 /// # The lease, and why recovery needs it more than `dehydrate`
 ///
-/// `punch_clean_file` takes an `F_SETLEASE` before it empties a file, so
+/// A free-up takes an `F_SETLEASE` before it empties a file, so
 /// that an application which opens it mid-punch is suspended by the kernel
 /// instead of reading a file with its blocks going away underneath. The
 /// window is *wider* at startup, not narrower: the helper's own
@@ -618,36 +617,17 @@ async fn reset_interrupted(clearance: &Clearance, file: File) -> Result<(), Rese
         let Some(lease) = lease_retrying_briefly(&file)? else {
             return Err(ResetError::InUse);
         };
-        // Look again, now that nothing else has the file open.
-        let state = match read_state(&file) {
-            Ok(Some(state @ (State::Hydrating | State::Dehydrating))) => state,
-            Ok(now) => return Err(ResetError::Finished(now)),
-            Err(e) => return Err(ResetError::Io(io::Error::other(e.to_string()))),
-        };
-        let restore = FileTimes::of(&file)?;
-        // A download's checkpoint is kept with its bytes. Only a
-        // `hydrating` file can have one; the bytes it counts were made
-        // durable before it was written, and the fill that continues from it
-        // checks them against the quickXorHash along with the rest.
-        let checkpoint = match state {
-            State::Hydrating => read_progress(&file)
-                .ok()
-                .flatten()
-                .filter(|p| p.bytes > 0 && p.bytes <= file.metadata().map(|m| m.len()).unwrap_or(0)),
-            _ => None,
-        };
-        match checkpoint {
-            Some(progress) => keep_checkpoint(&file, restore, progress.bytes)?,
-            None => {
-                // The attribute before the punch: a count of bytes must
-                // never outlive the bytes it counts, not even across a
-                // failure or a crash between the two.
-                remove_progress(&file)?;
-                punch_and_publish(&file, restore)?;
-            }
-        }
+        // Looked at again inside, now that nothing else has the file open. A
+        // download's checkpoint is kept with its bytes: they were made durable
+        // before it was written, and the fill that continues from it checks
+        // them against the quickXorHash along with the rest.
+        let shape = Shape { size: None, times: FileTimes::of(&file)? };
+        let demoted = demote(&file, Keep::Checkpoint, shape, Held::Lease(&lease))?;
         drop(lease);
-        Ok(())
+        match demoted {
+            Demoted::Done { .. } => Ok(()),
+            Demoted::Left(now) => Err(ResetError::Finished(now)),
+        }
     })
     .await?
 }
@@ -673,18 +653,6 @@ fn lease_retrying_briefly(file: &File) -> io::Result<Option<WriteLease<'_>>> {
         std::thread::sleep(std::time::Duration::from_millis(pause));
     }
     WriteLease::take(file)
-}
-
-/// [`punch_and_publish`] for an interrupted download with a checkpoint: only
-/// what lies past the checkpoint is punched, and the checkpoint stays
-///. The order is otherwise the same — the punch and the mtime
-/// made durable before the file is called `online-only`.
-fn keep_checkpoint(file: &File, restore: FileTimes, bytes: u64) -> io::Result<()> {
-    punch_from(file, bytes)?;
-    restore.restore(file)?;
-    file.sync_all()?;
-    write_state(file, State::OnlineOnly)?;
-    remove_stamp(file)
 }
 
 /// A deliberate stall for a race window too narrow to hit by chance —

@@ -18,6 +18,7 @@ use konedrive_proto::{ToDaemon, ToHelper, PROTOCOL_VERSION, SOCKET_PATH};
 use konedrived::helper::HelperLink;
 use konedrived::folder::root::SyncRoot;
 use konedrived::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
+use konedrived::hydration::testing::Faulty;
 use konedrived::hydration::server::serve_hydrations;
 use konedrived::folder::locks::InodeLocks;
 
@@ -318,9 +319,9 @@ pub(crate) fn tail(log: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// `LocalDir` wrapped in a counting source whose fault injection can be
-/// changed between scenarios. `LocalDir`'s own knobs are builder methods that
-/// consume it, so a fresh one is built per fetch from the current settings and
-/// the counting is done here.
+/// changed between scenarios: a fresh `Faulty` is built per fetch from the
+/// current settings (its knobs are builder methods that consume it), and the
+/// counting is done here.
 pub(crate) struct TestSource {
     pub(crate) dir: PathBuf,
     fetches: AtomicU64,
@@ -357,7 +358,7 @@ impl TestSource {
 impl ContentSource for TestSource {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         self.fetches.fetch_add(1, Ordering::SeqCst);
-        let mut local = LocalDir::new(self.dir.clone());
+        let mut local = Faulty::new(LocalDir::new(self.dir.clone()));
         let delay = self.delay_ms.load(Ordering::SeqCst);
         if delay > 0 {
             local = local.delay(Duration::from_millis(delay));
@@ -375,7 +376,7 @@ impl ContentSource for TestSource {
 
 /// A second daemon connection from this uid that answers every hydration
 /// request with one errno, for as long as it lives. This is how the errno
-/// space is swept: `source::hydrate` clamps every value it produces, so the
+/// space is swept: a fill clamps every value it produces, so the
 /// only way to hand the helper an arbitrary one is to bypass the fill.
 ///
 /// A connection of its own, and not an override in front of the real

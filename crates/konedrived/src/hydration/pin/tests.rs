@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use super::*;
+use crate::hydration::testing::until;
 use crate::status::snapshot::SyncSnapshot;
 
 /// The pool the tests' pins download in: four slots, never more.
@@ -69,16 +70,6 @@ fn pins_in(held: &Arc<Held>, pool: Arc<TransferPool>) -> Arc<Pins> {
 
 fn files(n: usize) -> Vec<Wanted> {
     (0..n).map(|i| (PathBuf::from(format!("/r/{i}.bin")), 1024)).collect()
-}
-
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..500 {
-        if done() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("{what} never happened");
 }
 
 /// A full disk drops everything still waiting, rather than failing it

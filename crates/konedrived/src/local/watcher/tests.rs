@@ -275,7 +275,7 @@ fn the_daemons_own_changes_and_a_fill_raise_nothing_to_examine() {
 
     // A fill, as the daemon makes it: data, size, time and attributes (§3.2).
     let fd = OwnedFd::from(File::options().read(true).write(true).open(fx.path("doc.txt")).unwrap());
-    assert_eq!(fx.runtime.block_on(crate::hydration::source::hydrate(fd, &LocalDir::new(&source))), 0);
+    assert!(fx.runtime.block_on(crate::hydration::source::hydrate_with(fd, &LocalDir::new(&source), None)).is_ok());
     assert_eq!(std::fs::read(fx.path("doc.txt")).unwrap(), b"the content");
     // A directory the daemon makes is watched, and is not a change of its
     // own; what is inside it is looked at once (someone else may

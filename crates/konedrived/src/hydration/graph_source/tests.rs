@@ -1,4 +1,3 @@
-use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,9 +8,9 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::hydration::testing::{fill, placeholder};
 use konedrive_graph::drive::RetryPolicy;
 use konedrive_graph::quickxor::QuickXor;
-use crate::hydration::source::hydrate;
 use konedrive_graph::token::StaticToken;
 
 fn data(size: usize) -> Vec<u8> {
@@ -48,16 +47,6 @@ async fn mock_item(server: &MockServer, content: &[u8], url: Option<&str>) {
         .mount(server).await;
 }
 
-fn placeholder(dir: &std::path::Path, size: u64) -> std::fs::File {
-    let handle = std::fs::File::open(dir).unwrap();
-    konedrive_fs::placeholder::create_placeholder(&handle, "f.bin", "I", size, std::time::SystemTime::UNIX_EPOCH).unwrap();
-    std::fs::File::options().read(true).write(true).open(dir.join("f.bin")).unwrap()
-}
-
-async fn fill(file: &std::fs::File, source: &GraphSource) -> i32 {
-    hydrate(file.as_fd().try_clone_to_owned().unwrap(), source).await
-}
-
 #[tokio::test]
 async fn a_placeholder_is_filled_from_graph_and_verified() {
     let server = MockServer::start().await;
@@ -67,7 +56,7 @@ async fn a_placeholder_is_filled_from_graph_and_verified() {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(content.clone()))
         .mount(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), content.len() as u64);
+    let file = placeholder(dir.path(), "f.bin", "I", content.len() as u64);
     assert_eq!(fill(&file, &source(&server)).await, 0);
     assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
     assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
@@ -92,7 +81,7 @@ async fn a_short_answer_is_resumed_with_a_range() {
         .with_priority(2)
         .mount(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), content.len() as u64);
+    let file = placeholder(dir.path(), "f.bin", "I", content.len() as u64);
     assert_eq!(fill(&file, &source(&server)).await, 0);
     assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
 }
@@ -120,25 +109,6 @@ async fn an_expired_download_link_succeeds_with_retry_in_fetch() {
 }
 
 #[tokio::test]
-async fn an_expired_link_recovered_through_the_outer_retry_loop() {
-    let server = MockServer::start().await;
-    let content = data(50_000);
-    mock_item(&server, &content, Some("/dl/1")).await;
-    Mock::given(method("GET")).and(path("/dl/1"))
-        .respond_with(ResponseTemplate::new(403))
-        .up_to_n_times(1).with_priority(1)
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path("/dl/1"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(content.clone()))
-        .with_priority(2)
-        .mount(&server).await;
-    let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), content.len() as u64);
-    assert_eq!(fill(&file, &source(&server)).await, 0);
-    assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
-}
-
-#[tokio::test]
 async fn without_a_download_url_the_content_redirect_is_used() {
     let server = MockServer::start().await;
     let content = data(50_000);
@@ -150,7 +120,7 @@ async fn without_a_download_url_the_content_redirect_is_used() {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(content.clone()))
         .mount(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), content.len() as u64);
+    let file = placeholder(dir.path(), "f.bin", "I", content.len() as u64);
     assert_eq!(fill(&file, &source(&server)).await, 0);
     assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
 }
@@ -162,7 +132,7 @@ async fn an_item_gone_from_onedrive_fails_at_once() {
         .respond_with(ResponseTemplate::new(404))
         .mount(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), 10);
+    let file = placeholder(dir.path(), "f.bin", "I", 10);
     assert_eq!(fill(&file, &source(&server)).await, libc::EIO);
     assert_eq!(server.received_requests().await.unwrap().len(), 1, "no retries for a missing item");
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
@@ -179,7 +149,7 @@ async fn content_that_does_not_match_its_hash_never_becomes_hydrated() {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(damaged))
         .mount(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let file = placeholder(dir.path(), content.len() as u64);
+    let file = placeholder(dir.path(), "f.bin", "I", content.len() as u64);
     assert_eq!(fill(&file, &source(&server)).await, libc::EIO);
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
 }
