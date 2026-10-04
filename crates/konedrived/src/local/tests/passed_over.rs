@@ -218,7 +218,7 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     std::os::unix::fs::symlink("/etc/hostname", fx.path("photos/link")).unwrap();
     fx.examine(&Batch::full());
     let link = ("photos/link".to_owned(), "symlink".to_owned());
-    assert_eq!(listed(&fx), [link.clone()]);
+    assert_eq!(listed(&fx), std::slice::from_ref(&link));
 
     set_mode(&fx.path("photos"), 0o000);
     let out = fx.examine(&Batch::full());
