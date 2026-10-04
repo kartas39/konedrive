@@ -106,3 +106,7 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   `konedrivectl/tests/version_cli.rs` asks `NameHasOwner`).
 - **Fix:** give `TestBus` a `--config-file` with no service directories. **Size:** S.
 - **Found 2026-10-04, by reading; not run.** **Status: open.**
+- **Fixed 2026-10-04** in `8fb6ac2` (#146): `TestBus` gives `dbus-daemon` a configuration of its
+  own with no service directories; the test `the_bus_can_start_no_program` holds it.
+  `tests/kio/run.sh` still starts its bus with the stock configuration
+  (`docs/limitations/D32.md`).

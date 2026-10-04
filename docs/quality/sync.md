@@ -227,3 +227,11 @@ risky one.
   calls `Accounts.Add` with no timeout). **Status: open; suspected, not reproduced.** Which wait
   was pending is not known. What would settle it: a method timeout on the tests' connection
   (`konedrive-dbus/src/testing.rs`, `TestBus::connect`), so that a lost reply fails by name.
+- **Fixed 2026-10-04** in `8fb6ac2` (#146): the connection is built with the `ObjectManager` of
+  `/org/konedrive/Accounts`, so the object server listens before the socket is read. What was
+  reproduced is a call that arrives before the first export: it was dropped with no reply
+  (the test `a_call_that_reaches_the_daemon_before_its_objects_is_answered` failed on `dev`
+  with `TimedOut`). The window named above, after the name is claimed, was not reproduced, and
+  by the code of zbus 5.19 it should not exist; whether a lost call is what hung the test is
+  still only supposed (`docs/limitations/D31.md`). The tests' connection has a method timeout
+  of 120 s now; `konedrivectl` and the window still have none (`docs/limitations/D32.md`).
