@@ -23,18 +23,16 @@
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 
 use crate::helper::LinkCell;
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Notify, OwnedMutexGuard};
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::status::activity;
 use crate::status::report::Report;
-use super::materialize::{Applied, ApplyError, Claimed, Replacement, Scope};
+use super::materialize::{Applied, ApplyError, Claimed, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
@@ -59,7 +57,7 @@ mod poller;
 /// Downloaded files that changed in OneDrive, replaced after the cycle.
 mod replacements;
 pub use poller::{Poller, Schedule};
-use replacements::InFlight;
+use replacements::Replacements;
 pub use replacements::REPLACE_WORKERS;
 
 /// A delta with more changes than this is reconciled in full.
@@ -230,9 +228,25 @@ pub struct CycleReport {
 /// runs, even when this cycle's future has been dropped.
 pub(crate) type Turn = Arc<OwnedMutexGuard<()>>;
 
+/// Whether the next cycle's reconcile is Full. Asked for through
+/// [`Listing::request_full`], and taken by the cycle that then runs it.
+struct FullRequest(AtomicBool);
+
+impl FullRequest {
+    fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether one was asked for; none is from now on.
+    fn take(&self) -> bool {
+        self.0.swap(false, Ordering::SeqCst)
+    }
+}
+
 pub struct Listing {
     ctx: ListingContext,
-    needs_full: AtomicBool,
+    /// Asked for from the start: a `Listing`'s first cycle is Full.
+    full: FullRequest,
     /// The drive has been written into `config.toml` (A-M5), or is being:
     /// once per `Listing`.
     drive_recorded: AtomicBool,
@@ -240,16 +254,8 @@ pub struct Listing {
     pending_drive: std::sync::Mutex<Option<(DriveRecord, String)>>,
     /// Whose turn it is (see [`Turn`]).
     turns: Arc<tokio::sync::Mutex<()>>,
-    /// The replacements under way, by item id.
-    replacing: std::sync::Mutex<HashMap<String, InFlight>>,
-    /// Replacements that failed ("the status says why"), tried
-    /// again after every cycle until they succeed or are no longer needed.
-    failed_replacements: std::sync::Mutex<HashMap<String, (Replacement, String)>>,
-    /// The replacement workers ([`REPLACE_WORKERS`] at most, issue #39).
-    replacements: std::sync::Mutex<JoinSet<()>>,
-    /// The replacements waiting for a worker, and how many workers run.
-    queued_replacements: std::sync::Mutex<(VecDeque<Replacement>, usize)>,
-    cancel_replacements: CancellationToken,
+    /// Downloaded files that changed in OneDrive: replaced after the cycle.
+    replacements: Replacements,
     /// Read-write mode: the outbox commit count the last cycle's fetch
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
@@ -304,17 +310,14 @@ fn refused(e: &DriveError) -> bool {
 
 impl Listing {
     pub fn new(ctx: ListingContext) -> Arc<Self> {
+        let replacements = Replacements::new(ctx.state.clone());
         Arc::new(Self {
             ctx,
-            needs_full: AtomicBool::new(true),
+            full: FullRequest(AtomicBool::new(true)),
             drive_recorded: AtomicBool::new(false),
             pending_drive: std::sync::Mutex::new(None),
             turns: Arc::new(tokio::sync::Mutex::new(())),
-            replacing: std::sync::Mutex::new(HashMap::new()),
-            failed_replacements: std::sync::Mutex::new(HashMap::new()),
-            replacements: std::sync::Mutex::new(JoinSet::new()),
-            queued_replacements: std::sync::Mutex::new((VecDeque::new(), 0)),
-            cancel_replacements: CancellationToken::new(),
+            replacements,
             revisit_from: std::sync::atomic::AtomicI64::new(0),
             #[cfg(test)]
             waits_for_tree: AtomicBool::new(false),
@@ -326,6 +329,12 @@ impl Listing {
     /// Cycles of one `Listing` run one at a time (a `refresh` and the
     /// poller's own, say). One that fails, or whose future is dropped
     /// part-way, leaves the next one a Full reconcile.
+    /// Asks for the next cycle's reconcile to be Full: it looks at the whole
+    /// folder, not only at what the delta names. The one way to ask.
+    fn request_full(&self) {
+        self.full.request();
+    }
+
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
         let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
@@ -354,10 +363,10 @@ impl Listing {
         let turn: Turn = Arc::new(cancellable(cancel, Arc::clone(&self.turns).lock_owned()).await?);
         // Taken, not read: a replacement that ends while this cycle runs asks
         // for a Full reconcile, and that request must outlive this cycle.
-        let full_requested = self.needs_full.swap(false, Ordering::SeqCst);
+        let full_requested = self.full.take();
         // Unless this cycle succeeds, the next one is Full — also
         // when its future is dropped part-way.
-        let mut unless_done = OnDrop(Some(|| self.needs_full.store(true, Ordering::SeqCst)));
+        let mut unless_done = OnDrop(Some(|| self.request_full()));
         let result = self.sync_once(&turn, full_requested, cancel).await;
         if result.is_ok() {
             unless_done.disarm();
@@ -439,7 +448,7 @@ impl Listing {
         if reconciled.applied.counts.deferred > 0 {
             // Files being filled or freed up right now: a Changed scope would
             // never look at them again.
-            self.needs_full.store(true, Ordering::SeqCst);
+            self.request_full();
         }
         let Reconciled { applied, full } = reconciled;
         if listed || full || full_requested || changes > 0 {
@@ -481,7 +490,7 @@ impl Listing {
         // the pause is Full, and finds them again.
         let paused = self.ctx.running.stopped(&self.ctx.store);
         if paused && !applied.pending.replacements.is_empty() {
-            self.needs_full.store(true, Ordering::SeqCst);
+            self.request_full();
         } else {
             self.spawn_replacements(applied.pending.replacements.clone());
         }

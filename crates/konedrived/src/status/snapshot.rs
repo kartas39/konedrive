@@ -140,8 +140,9 @@ pub struct SyncSnapshot {
     pub skipped_count: u64,
     /// What the folder's sync last ran into; `None` once a cycle succeeds.
     pub sync_trouble: Option<SyncTrouble>,
-    /// Why files changed in the cloud are not updated here yet.
-    pub replacement_note: String,
+    /// Why files changed in the cloud are not updated here yet; `None` when
+    /// none waits.
+    pub replacement_note: Option<ReplacementNote>,
     /// `LastChecked`: unix seconds of the last cycle that
     /// succeeded, 0 for never.
     pub last_checked: i64,
@@ -238,7 +239,7 @@ impl Default for SyncSnapshot {
             items_placed: 0,
             skipped_count: 0,
             sync_trouble: None,
-            replacement_note: String::new(),
+            replacement_note: None,
             last_checked: 0,
             local_bytes: 0,
             conflict_count: 0,
@@ -276,6 +277,24 @@ impl Default for SyncSnapshot {
 pub struct SyncTrouble {
     pub text: String,
     pub blocking: bool,
+}
+
+/// Why files that changed in OneDrive are not updated here yet: their
+/// replacements failed, and are tried again after every cycle
+/// (`remote::listing::replacements`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementNote {
+    /// How many files wait.
+    pub files: usize,
+    /// What the newest of the failures said.
+    pub why: String,
+}
+
+impl ReplacementNote {
+    /// The note as `LastError` says it.
+    pub fn text(&self) -> String {
+        format!("{} file(s) changed in OneDrive could not be updated here yet: {}", self.files, self.why)
+    }
 }
 
 /// Why a switch to interception did not go through (`SyncService::upgrade`); the folder
@@ -426,11 +445,12 @@ pub fn published_error(s: &SyncSnapshot) -> String {
     let helper = if s.waits_for_helper && !calm { s.helper_state.advice().unwrap_or("") } else { "" };
     let registration = registration_error(s);
     let outbox = s.outbox_note.as_ref().map(OutboxNote::text).unwrap_or_default();
+    let replacement = s.replacement_note.as_ref().map(ReplacementNote::text).unwrap_or_default();
     [
         helper,
         registration.as_str(),
         s.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
-        s.replacement_note.as_str(),
+        replacement.as_str(),
         s.watch_note.as_str(),
         s.handles_note.as_str(),
         outbox.as_str(),

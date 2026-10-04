@@ -192,7 +192,7 @@ impl SyncService {
             s.items_placed = 0;
             s.skipped_count = 0;
             s.sync_trouble = None;
-            s.replacement_note.clear();
+            s.replacement_note = None;
             s.outbox_note = None;
             s.last_checked = 0;
             s.local_bytes = 0;

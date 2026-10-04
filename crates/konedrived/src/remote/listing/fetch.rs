@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -197,7 +196,7 @@ impl Listing {
                     if handed_over {
                         // The listing's end is reconciled once more, whole,
                         // at the next cycle.
-                        self.needs_full.store(true, Ordering::SeqCst);
+                        self.request_full();
                     }
                     return Ok(Fetched::Placed(placed));
                 }

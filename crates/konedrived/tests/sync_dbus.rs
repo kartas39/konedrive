@@ -656,7 +656,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     assert_eq!(f.folder.state().await.unwrap(), "error");
     assert!(f.folder.last_error().await.unwrap().ends_with(". signed out"));
 
-    f.sync.state().update(|s| s.replacement_note = "1 file(s) changed in OneDrive could not be updated here yet".into());
+    f.sync.state().update(|s| s.replacement_note = Some(konedrived::status::snapshot::ReplacementNote { files: 1, why: "no space".into() }));
     assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError"]);
 }
 

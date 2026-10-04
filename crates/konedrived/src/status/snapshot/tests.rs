@@ -13,7 +13,7 @@ fn the_published_state_is_computed_from_the_registration_and_the_sync() {
     assert_eq!(published_state(&s), "error");
     s.root_state = RootState::Error;
     s.last_error = "the helper is not connected".into();
-    s.replacement_note = "1 file(s) changed in OneDrive could not be updated here yet: no space".into();
+    s.replacement_note = Some(ReplacementNote { files: 1, why: "no space".into() });
     s.conflict_count = 1;
     assert_eq!(
         published_error(&s),

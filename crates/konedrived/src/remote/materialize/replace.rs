@@ -21,16 +21,49 @@ pub enum ReplaceOutcome {
     /// Nothing to do any more: the file moved, changed, was freed up or is
     /// already this version. The next cycle looks again.
     Current,
-    Failed(String),
-    /// Failed for want of disk space: the disk cannot hold both versions, or
-    /// filled up while the new one downloaded. Said and retried as `Failed`
-    /// is; told apart so that the activity log can say exactly "not enough
-    /// disk space".
-    NoSpace(String),
+    /// The old version stays; said, and tried again after every cycle.
+    Failed(Failure),
     /// Read-write mode: someone has the file open, so no write lease (write
     /// design §3.7). The old version stays, and so does its base; the next
     /// cycle tries again. Not a failure.
     Busy,
+}
+
+/// Why a replacement failed: the [reason](FailureReason), which is what tells
+/// one failure from another, and the words the status says it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub reason: FailureReason,
+    pub text: String,
+}
+
+/// What a replacement failed for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureReason {
+    /// Want of disk space: the disk cannot hold both versions, or filled up
+    /// while the new one downloaded. The activity log says exactly "not
+    /// enough disk space" for it.
+    NoSpace,
+    /// The new version could not be had from OneDrive: the errno the
+    /// download ended with.
+    Download(i32),
+    /// A file call of the replacement failed.
+    Io(std::io::ErrorKind),
+    /// The folder could not be opened: it no longer carries its root id, or
+    /// is not there.
+    Folder,
+    /// The task the replacement ran on failed.
+    Task,
+}
+
+impl Failure {
+    fn no_space(text: String) -> ReplaceOutcome {
+        ReplaceOutcome::Failed(Failure { reason: FailureReason::NoSpace, text })
+    }
+
+    fn io(e: &std::io::Error) -> ReplaceOutcome {
+        ReplaceOutcome::Failed(Failure { reason: FailureReason::Io(e.kind()), text: e.to_string() })
+    }
 }
 
 /// Read-write mode's replacement (`docs/design/writes.md` §9): the swap runs
@@ -129,11 +162,11 @@ pub async fn replace_until(
 ) -> Option<ReplaceOutcome> {
     match replace_inner(disk, locks, source, r, leased, stop).await {
         Ok(outcome) => outcome,
-        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT)) => Some(ReplaceOutcome::NoSpace(format!(
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT)) => Some(Failure::no_space(format!(
             "not enough space to finish the new version of {}; the old version stays",
             r.rel.display()
         ))),
-        Err(e) => Some(ReplaceOutcome::Failed(e.to_string())),
+        Err(e) => Some(Failure::io(&e)),
     }
 }
 
@@ -171,17 +204,20 @@ async fn replace_inner(
     let downloaded = match downloaded {
         Ok(downloaded) => downloaded,
         Err(errno) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
-            return Ok(Some(ReplaceOutcome::NoSpace(format!(
+            return Ok(Some(Failure::no_space(format!(
                 "not enough space to download the new version of {}; the old version stays",
                 r.rel.display()
             ))))
         }
         Err(errno) => {
-            return Ok(Some(ReplaceOutcome::Failed(format!(
-                "the new version of {} could not be downloaded ({}); the old version stays",
-                r.rel.display(),
-                std::io::Error::from_raw_os_error(errno)
-            ))))
+            return Ok(Some(ReplaceOutcome::Failed(Failure {
+                reason: FailureReason::Download(errno),
+                text: format!(
+                    "the new version of {} could not be downloaded ({}); the old version stays",
+                    r.rel.display(),
+                    std::io::Error::from_raw_os_error(errno)
+                ),
+            })))
         }
     };
     let sealed = section({
@@ -294,7 +330,7 @@ impl Work {
         let fs = nix::sys::statvfs::fstatvfs(&dir)?;
         let free = fs.blocks_available() as u64 * fs.fragment_size() as u64;
         if free < r.size.saturating_add(REPLACE_SPACE_MARGIN) {
-            return Ok(Err(ReplaceOutcome::NoSpace(format!(
+            return Ok(Err(Failure::no_space(format!(
                 "not enough space to download the new version of {} beside the old one; the old version stays",
                 r.rel.display()
             ))));

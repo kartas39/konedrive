@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,8 +49,6 @@ pub struct Poller {
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
     listing: Arc<Listing>,
-    /// Whether the notification socket is up: the live task says, the poller reads.
-    up: Arc<watch::Sender<bool>>,
     live: Option<crate::remote::live::Live>,
 }
 
@@ -59,6 +56,7 @@ impl Poller {
     pub fn start(listing: Arc<Listing>, schedule: Schedule) -> Self {
         let refresh = Arc::new(Notify::new());
         let cancel = CancellationToken::new();
+        // Whether the notification socket is up: the live task says, the poller's task reads.
         let up = Arc::new(watch::channel(false).0);
         let live = schedule.live.clone().map(|timing| {
             let ctx = crate::remote::live::LiveContext {
@@ -72,7 +70,7 @@ impl Poller {
             crate::remote::live::Live::start(ctx, timing, cancel.clone())
         });
         let task = tokio::spawn(run(Arc::clone(&listing), schedule, Arc::clone(&refresh), cancel.clone(), up.subscribe()));
-        Self { refresh, cancel, task, listing, up, live }
+        Self { refresh, cancel, task, listing, live }
     }
 
     pub fn refresh(&self) {
@@ -92,23 +90,18 @@ impl Poller {
         &self.listing
     }
 
-    /// Whether the notification socket is up, as the poller reads it.
-    pub fn live_up(&self) -> Arc<watch::Sender<bool>> {
-        Arc::clone(&self.up)
-    }
-
     /// A cycle now whose reconcile is Full: it places again what is missing
     /// here though OneDrive did not change it (`RestoreDeletes`, an item whose
     /// local object was forgotten).
     pub fn refresh_full(&self) {
-        self.listing.needs_full.store(true, Ordering::SeqCst);
+        self.listing.request_full();
         self.refresh.notify_one();
     }
 
     /// Stops the poller, the live task and every replacement under way, and waits for them.
     pub async fn stop(self) {
         self.cancel.cancel();
-        self.listing.cancel_replacements.cancel();
+        self.listing.stop_replacements();
         let _ = self.task.await;
         if let Some(live) = self.live {
             live.join().await;
