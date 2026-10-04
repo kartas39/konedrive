@@ -101,12 +101,18 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
 - **Where:** `event_loop` (`:146–277`), `handle_open` (`:312–439`), `:488`, `:523–530`.
 - **Fix:** three files (the loop, the decision, hydration); the decision as a pure function to a
   `Decision` enum. **Size:** M. **Risk:** the most critical path; after `HE3` and `HE4`.
+- **Fixed 2026-10-04** in `a4391d6` (#151): `events.rs` keeps the loop; `events/decision.rs` has the
+  decision as a pure function over a `Facts` trait, with tests that need no fanotify;
+  `events/hydration.rs` has the hydration.
 
 ## HE6. `Shared` is one bag of ten fields
 
 - **Where:** `shared.rs:284–312`; `degraded_roots` is written in six places and never read
   (F10); `ConnectionSlot` and `WaiterSlot` (`:378–447`) are one guard twice.
 - **Fix:** split by subject; methods instead of exposed mutexes. **Size:** M. **Risk:** low.
+- **Fixed 2026-10-04** in `a4391d6` (#151): `Registrations`, `Daemons`, `Hydrations`, `UidSlots` and
+  `Refusals` under `shared/`, each with methods and its own lock; `degraded_roots` is gone
+  (`docs/limitations/F10.md`); one guard, `UidSlot`, for what were two.
 
 ## HE7. The helper's write probe is privileged code the shipped unit always refuses
 
