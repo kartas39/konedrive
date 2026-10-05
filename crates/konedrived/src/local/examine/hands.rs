@@ -29,7 +29,7 @@ use konedrive_tree::outbox::Inode;
 use super::gone;
 use crate::folder::disk::Disk;
 use crate::folder::locks::{InodeKey, InodeLocks};
-use crate::local::entry::{proc_path, Entry, StateAttr, Type};
+use crate::local::entry::{Entry, StateAttr, Type};
 
 /// What [`Hands::open`] found at a listed entry's name.
 pub(super) enum Opened {
@@ -122,7 +122,7 @@ impl Hands<'_> {
                 // are not reported the whole file reads as data: kept.
                 && nix::unistd::lseek(file.as_fd(), 0, nix::unistd::Whence::SeekData) == Err(nix::errno::Errno::ENXIO)
         };
-        let named = |dir: &File| std::fs::symlink_metadata(proc_path(dir).join(&e.name)).is_ok_and(|m| (m.dev(), m.ino()) == (e.dev, e.ino));
+        let named = |dir: &File| std::fs::symlink_metadata(konedrive_fs::proc_path(dir).join(&e.name)).is_ok_and(|m| (m.dev(), m.ino()) == (e.dev, e.ino));
         if !empty(&file) || !named(&dir) || !empty(&file) {
             return false;
         }

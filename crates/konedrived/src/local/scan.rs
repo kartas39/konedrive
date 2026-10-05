@@ -7,17 +7,13 @@
 //! A single place examined after a change is never told (`local::Examiner`).
 
 use std::cell::Cell;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::local::{ScanProgress, ScanReason};
 use crate::status::snapshot::{ScanState, SyncStateHandle};
 
 /// A running scan's counts reach the state at most this often.
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);
-
-fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
-}
 
 /// Where a folder's scans are told: the folder's published state. Kept by the
 /// watcher's sink (`watcher::ExamineSink`).
@@ -57,7 +53,7 @@ impl ScanProgress for ScanRun<'_> {
         self.began.set(Some(now));
         self.last.set(Some(now));
         self.seen.set((0, 0));
-        let (reason, started) = (self.reason.as_str().to_owned(), unix_now());
+        let (reason, started) = (self.reason.as_str().to_owned(), crate::clock::unix_now());
         self.report.state.update(|s| {
             let expected = s.cycle.items_placed;
             let scan = &mut s.local.scan;
@@ -91,7 +87,7 @@ impl ScanRun<'_> {
         let Some(began) = self.began.get() else { return };
         let (directories, files) = self.seen.get();
         let took = u32::try_from(began.elapsed().as_secs()).unwrap_or(u32::MAX);
-        let finished = unix_now();
+        let finished = crate::clock::unix_now();
         self.report.state.update(|s| {
             let scan = &mut s.local.scan;
             // A switch to read-only meanwhile has the last word.

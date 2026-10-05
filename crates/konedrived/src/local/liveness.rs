@@ -14,7 +14,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -103,7 +103,7 @@ pub fn answered(answer: Result<OwnedFd, HelperError>) -> io::Result<Whereabouts>
     match answer {
         Ok(object) => {
             let object = File::from(object);
-            let path = std::fs::read_link(format!("/proc/self/fd/{}", object.as_raw_fd()))?;
+            let path = std::fs::read_link(konedrive_fs::proc_path(&object))?;
             if !same_place(&path, &object) {
                 return Err(io::Error::other(format!("{} is not where the object is", path.display())));
             }

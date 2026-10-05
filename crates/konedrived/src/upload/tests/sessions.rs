@@ -395,7 +395,7 @@ fn a_409_to_a_fresh_opening_from_a_listed_file_is_still_a_conflict() {
         w.cloud(|c| {
             c.edit("X", theirs);
             c.rename("X", fake::ROOT, "a.txt");
-            c.created.insert("X".into(), crate::status::activity::unix_now() - age);
+            c.created.insert("X".into(), crate::clock::unix_now() - age);
         });
         w.run();
         assert!(w.rows().is_empty(), "{age}: {:?}", w.summary());
@@ -638,7 +638,7 @@ fn a_carried_record_and_a_holder_with_content_is_a_copy() {
     w.cloud(|c| {
         c.expire_sessions();
         c.add_file("X", fake::ROOT, "a.txt", b"theirs");
-        c.created.insert("X".into(), crate::status::activity::unix_now());
+        c.created.insert("X".into(), crate::clock::unix_now());
     });
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
@@ -759,7 +759,7 @@ fn a_carried_record_never_takes_a_listed_file_for_ours() {
     w.cloud(|c| {
         c.expire_sessions();
         c.rename("X", fake::ROOT, "a.txt");
-        c.created.insert("X".into(), crate::status::activity::unix_now());
+        c.created.insert("X".into(), crate::clock::unix_now());
     });
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
@@ -776,7 +776,7 @@ fn a_carried_record_never_takes_a_listed_file_for_ours() {
 #[test]
 fn a_placeholder_between_two_records_windows_is_not_ours() {
     let w = World::new(&[]);
-    let long_ago = crate::status::activity::unix_now() - 7200;
+    let long_ago = crate::clock::unix_now() - 7200;
     // Row 900's record at `a.txt`, left behind when it moves elsewhere.
     w.store
         .call_blocking(move |s| {
@@ -805,7 +805,7 @@ fn a_certain_answer_keeps_a_carried_records_last_unknown_time() {
     w.write("a.txt", b"mine");
     w.examine(&[("", "a.txt")]);
     let seq = w.rows()[0].seq;
-    let then = crate::status::activity::unix_now() - 3600;
+    let then = crate::clock::unix_now() - 3600;
     w.store.call_blocking(move |s| s.outbox_record_opening(seq, fake::ROOT, "a.txt", then)).unwrap();
     w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 1800));
     w.run();

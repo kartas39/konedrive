@@ -319,7 +319,7 @@ impl Shared {
     }
 
     fn take_flushes(&self) -> Vec<mpsc::Sender<bool>> {
-        std::mem::take(&mut *self.flushes.lock().unwrap())
+        std::mem::take(&mut *crate::panic::lock(&self.flushes))
     }
 
     fn take_helper_back(&self) -> bool {
@@ -327,16 +327,16 @@ impl Shared {
     }
 
     fn status(&self) -> WatchStatus {
-        self.status.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        crate::panic::lock(&self.status).clone()
     }
 
     fn degraded(&self) -> bool {
-        self.status.lock().unwrap_or_else(|p| p.into_inner()).degraded.is_some()
+        crate::panic::lock(&self.status).degraded.is_some()
     }
 
     fn update(&self, change: impl FnOnce(&mut WatchStatus)) {
         let (before, after) = {
-            let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            let mut status = crate::panic::lock(&self.status);
             let before = status.note();
             change(&mut status);
             (before, status.clone())
@@ -409,11 +409,11 @@ impl WatchHandle {
             return false;
         }
         let (ack, answer) = mpsc::channel();
-        self.shared.flushes.lock().unwrap().push(ack);
+        crate::panic::lock(&self.shared.flushes).push(ack);
         // A reader that ended meanwhile drops what is left in `flushes`, and
         // so the ack: the wait ends at once (the watcher).
         if self.shared.reader_done.load(Ordering::SeqCst) {
-            self.shared.flushes.lock().unwrap().clear();
+            crate::panic::lock(&self.shared.flushes).clear();
             return false;
         }
         self.shared.wake();

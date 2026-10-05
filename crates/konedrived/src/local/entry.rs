@@ -5,7 +5,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
@@ -91,10 +91,6 @@ impl Entry {
     }
 }
 
-pub(super) fn proc_path(file: &File) -> PathBuf {
-    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
-}
-
 fn attr(path: &Path, name: &str) -> io::Result<Option<String>> {
     Ok(crate::folder::disk::attr_by_name(path, name)?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
 }
@@ -132,7 +128,7 @@ pub(super) fn read(dir: &File, dir_rel: &Path, name: &OsStr) -> io::Result<Optio
     if !matches!(ty, Type::File | Type::Dir) {
         return Ok(Some(entry));
     }
-    let path = proc_path(dir).join(name);
+    let path = konedrive_fs::proc_path(dir).join(name);
     let mut read_attrs = || -> io::Result<()> {
         entry.id = attr(&path, XATTR_ITEM_ID)?.filter(|id| usable_id(id));
         entry.state = match attr(&path, XATTR_STATE)? {

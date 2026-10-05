@@ -91,15 +91,15 @@ function uses(file, number, line, own, top,    text, name) {
 }
 
 # Whether rule 7 is asked of a file: not of the files that hold the one
-# function, not of test doubles (`testing.rs`, `testing/`), not of the helper
-# (it has its own `lock`, and root code is not changed for tidiness), and not
-# yet of local/ (docs/limitations/D58.md).
+# function, not of test doubles (`testing.rs`, `testing/`), and not of the helper
+# (it has its own `lock`, and root code is not changed for tidiness):
+# docs/limitations/D58.md.
 function locks_checked(file) {
     if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
         return 0
     if (file ~ /(^|\/)testing(\.rs$|\/)/)
         return 0
-    return index(file, "crates/konedrive-helper/") != 1 && index(file, DAEMON "local/") != 1
+    return index(file, "crates/konedrive-helper/") != 1
 }
 
 # A lock, a read or a write taken with nothing passed (or as `Mutex::lock(…)`),

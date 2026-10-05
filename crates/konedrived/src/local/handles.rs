@@ -21,7 +21,6 @@ use konedrive_tree::outbox::Inode;
 use konedrive_tree::{ActivityKind, ActivityRow, Store, TreeError};
 use nix::fcntl::OFlag;
 
-use super::entry::proc_path;
 use crate::folder::disk::Disk;
 use super::liveness::open_no_symlinks;
 
@@ -116,7 +115,7 @@ pub fn current(store: &Store, root: &File) -> bool {
 pub fn record_replaced(disk: &Disk, store: &Store, id: &str, rel: &Path) {
     let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return };
     let Ok(dir) = disk.dir(parent) else { return };
-    let there = xattr::get(proc_path(&dir).join(name), XATTR_ITEM_ID).ok().flatten();
+    let there = xattr::get(konedrive_fs::proc_path(&dir).join(name), XATTR_ITEM_ID).ok().flatten();
     if there.as_deref() != Some(id.as_bytes()) {
         return;
     }
@@ -155,7 +154,7 @@ fn renew(store: &Store, root: &File, on: &str, now: i64) -> Result<Option<usize>
         }
         found.push((row, id, standing));
     }
-    let folder = std::fs::read_link(proc_path(root)).ok();
+    let folder = std::fs::read_link(konedrive_fs::proc_path(root)).ok();
     let mut dropped = 0;
     for (row, id, standing) in found {
         match standing {
@@ -224,7 +223,7 @@ fn standing_at(path: &Path, id: &str) -> Standing {
     }
     // By the descriptor's name in `/proc`, followed: an `O_PATH` descriptor reads no attribute
     // itself, and the name is the object, not a path walked again.
-    let carries = xattr::get_deref(proc_path(&object), XATTR_ITEM_ID).ok().flatten();
+    let carries = xattr::get_deref(konedrive_fs::proc_path(&object), XATTR_ITEM_ID).ok().flatten();
     let Ok(handle) = FileHandle::of(&object) else { return Standing::NotThere };
     if carries.as_deref() != Some(id.as_bytes()) {
         return Standing::NotThere;
