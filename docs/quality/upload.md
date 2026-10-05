@@ -169,6 +169,8 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   in listing order at `remote/materialize/rw.rs`, `rw/removal.rs`, `folder/disk.rs` and
   `local/examine/classify.rs`. A crash there can leave an id with no state inside the folder,
   which the helper refuses with `EIO`.
+- **Fixed 2026-10-05** in `c384937e` (#192), what was left: the six sites of the reconcile call
+  `placeholder::strip` too (`docs/limitations/F292.md`, `F293.md`).
 
 ## UP8. The move-out Trash case is written twice
 
