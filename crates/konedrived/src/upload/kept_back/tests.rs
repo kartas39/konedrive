@@ -147,7 +147,7 @@ fn every_reason_the_worker_writes_is_in_the_table() {
         Reason::Paused.key().to_owned(),
         Reason::SessionOpen.key().to_owned(),
         Reason::NameHeld.key().to_owned(),
-        // Sentences (`steps.rs`, `engine/drain.rs`, `content.rs`).
+        // Sentences (`steps.rs`, `engine/drain.rs`, `content.rs`, `content/session.rs`).
         "changed in OneDrive again and again".to_owned(),
         "changing in OneDrive again and again".to_owned(),
         "the upload session ended twice".to_owned(),

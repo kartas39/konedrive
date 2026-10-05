@@ -262,7 +262,8 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `steps/meta.rs` — the rows that send no content: `mkdir`, `move` and `delete`.
 - `steps/shared.rs` — what the steps share: the row's object, a name that is taken, the guard, the conflict copy.
 - `steps/sections.rs` — the blocking sections a step's file calls run in, and the worker's count of them.
-- `content.rs` — a file's content going up, a `create` or an `update`: the one upload session every file with content goes through, step by step.
+- `content.rs` — a file's content going up, a `create` or an `update`: what is decided before it is sent and by its answer.
+- `content/session.rs` — how the content gets there: the read, and the one upload session every file with content goes through, step by step.
 - `local.rs` — the worker's hands on the folder: finding a row's local object.
 - `space.rs` — a full OneDrive: what waits for space. `[tests]`
 - `kept_back.rs` — what is kept back from OneDrive, grouped by what the user can do about it.
