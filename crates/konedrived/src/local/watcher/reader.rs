@@ -143,7 +143,7 @@ impl Reader {
                     walking
                 });
                 shared.reader_done.store(true, Ordering::SeqCst);
-                shared.flushes.lock().unwrap_or_else(|p| p.into_inner()).clear();
+                crate::panic::lock(&shared.flushes).clear();
                 if !shared.stopping() && !shared.status().root_gone {
                     tracing::error!("the watcher of local changes stopped unexpectedly");
                     shared.update(|s| s.stopped = true);

@@ -77,7 +77,7 @@ impl World {
     }
 
     fn examine_batch(&self, batch: &Batch) -> Examined {
-        self.folder.examine_at(batch, crate::status::activity::unix_now())
+        self.folder.examine_at(batch, crate::clock::unix_now())
     }
 
     fn examine(&self, pairs: &[(&str, &str)]) -> Examined {
@@ -520,7 +520,7 @@ fn throttling_pauses_the_whole_worker() {
         let w = World::new(&[]);
         w.write("a.txt", b"a");
         w.examine(&[("", "a.txt")]);
-        let now = crate::status::activity::unix_now();
+        let now = crate::clock::unix_now();
         let value = if header == "date" { http_date(now + 300) } else { header.to_owned() };
         w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(429).insert_header("Retry-After", value.as_str()), 1));
         let engine = w.run();

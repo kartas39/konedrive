@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
 
+use crate::clock::unix_now;
 use crate::status::snapshot::SyncStateHandle;
 use konedrive_tree::{ActivityRow, ConflictRow, Store, TreeError, ACTIVITY_KEPT};
 
@@ -27,9 +28,6 @@ pub type Event = ActivityRow;
 /// An incremental cycle logs at most this many events of each kind (spec
 /// §16.1), plus one "and N more".
 pub const PER_KIND: usize = 50;
-
-/// For the tests that still name it here.
-pub use crate::clock::unix_now;
 
 /// An event that happens now.
 pub fn event(kind: Kind, path: impl Into<String>, detail: impl Into<String>) -> Event {

@@ -417,8 +417,8 @@ application must never read zeros where real content should be.
 - [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 - [D53](D53.md) — The enumeration of local acts is held to a small model of the rule, a second writing of it; what the examination's four parts left as it was
 - [D55](D55.md) — The enumeration of local acts has no act that makes something unreadable, and one act for damaged marks
-- [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but `local/` and the helper keep their own
-- [D58](D58.md) — The rule for locks is not asked of `local/`, of the helper or of test doubles, and the wall clock is still read in `local/` by itself
+- [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but the helper keeps its own
+- [D58](D58.md) — The rule for locks is not asked of the helper or of test doubles
 
 ---
 

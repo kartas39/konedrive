@@ -6,11 +6,11 @@ use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
-use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
+use nix::fcntl::{openat2, OFlag, OpenHow};
 
 use super::super::fan::Fid;
 use super::super::map::DirMap;
@@ -79,10 +79,6 @@ pub(super) struct Tree {
     deferred: Vec<Pending>,
 }
 
-fn beneath() -> ResolveFlag {
-    ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS
-}
-
 fn dev_of(file: &File) -> Option<u64> {
     nix::sys::stat::fstat(file).ok().map(|st| st.st_dev)
 }
@@ -92,7 +88,7 @@ fn dev_of(file: &File) -> Option<u64> {
 /// a directory here.
 pub(super) fn subdirs(dir: &File) -> io::Result<Vec<OsString>> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))? {
+    for entry in std::fs::read_dir(konedrive_fs::proc_path(dir))? {
         let entry = entry?;
         if entry.file_type().is_ok_and(|t| t.is_dir()) && !daemon_owned(&entry.file_name()) {
             out.push(entry.file_name());
@@ -154,7 +150,7 @@ impl Tree {
         let dir = if path.as_os_str().is_empty() {
             self.root.try_clone().ok()?
         } else {
-            let how = OpenHow::new().flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).resolve(beneath());
+            let how = OpenHow::new().flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).resolve(crate::folder::disk::beneath());
             File::from(openat2(self.root.as_fd(), path.as_path(), how).ok()?)
         };
         (Fid::of(&dir).ok()? == *key).then_some(dir)

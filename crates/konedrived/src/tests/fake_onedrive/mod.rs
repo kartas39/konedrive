@@ -317,7 +317,7 @@ impl Cloud {
     /// seconds ago. Its id.
     pub fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
         self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
-        self.created.insert(format!("P{}", self.counter), crate::status::activity::unix_now() - age);
+        self.created.insert(format!("P{}", self.counter), crate::clock::unix_now() - age);
         format!("s{}", self.counter)
     }
 
@@ -524,7 +524,7 @@ impl Cloud {
             ("GET", ["me", "drive", "root", "subscriptions", "socketIo"]) => {
                 let mut body = json!({ "id": "sub", "notificationUrl": self.socket_url });
                 if let Some(lifetime) = self.socket_lifetime {
-                    body["expirationDateTime"] = json!(format_graph_time(crate::status::activity::unix_now() + lifetime));
+                    body["expirationDateTime"] = json!(format_graph_time(crate::clock::unix_now() + lifetime));
                 }
                 ResponseTemplate::new(200).set_body_json(body)
             }
@@ -652,7 +652,7 @@ impl Cloud {
                 ctag: format!("c-{id}"),
                 mtime: 0,
             };
-            self.created.insert(id.clone(), crate::status::activity::unix_now());
+            self.created.insert(id.clone(), crate::clock::unix_now());
             self.placeholders.insert(sid.clone(), placeholder);
         }
         self.sessions.insert(sid.clone(), Session { target, size, data: Vec::new(), mtime });
@@ -699,7 +699,7 @@ impl Cloud {
                 }
                 let id = self.new_id();
                 let (etag, ctag) = (self.tag("e", &id), self.tag("c", &id));
-                self.created.insert(id.clone(), crate::status::activity::unix_now());
+                self.created.insert(id.clone(), crate::clock::unix_now());
                 self.add(FakeItem {
                     id: id.clone(),
                     parent: Some(parent.clone()),

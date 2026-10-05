@@ -79,8 +79,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::XATTR_ROOT;
-use konedrive_fs::RESERVED_PREFIX;
-use std::os::unix::ffi::OsStrExt;
 use xattr::FileExt;
 
 use self::decisions::{Decisions, Settle};
@@ -88,7 +86,7 @@ use self::facts::Facts;
 use self::hands::Hands;
 use self::listing::{EntryIx, Listing, Reader};
 use super::batch::Batch;
-use super::entry::{self, Entry};
+use super::entry::Entry;
 use super::ignore::IgnoreList;
 use super::liveness::Liveness;
 use crate::folder::disk::{daemon_owned, gone, Disk};
@@ -191,7 +189,7 @@ impl Examiner<'_> {
         if stat.st_nlink == 0 || root.get_xattr(XATTR_ROOT)?.is_none() {
             return Err(ExamineError::RootGone);
         }
-        let root_path = std::fs::read_link(entry::proc_path(&root)).ok();
+        let root_path = std::fs::read_link(konedrive_fs::proc_path(&root)).ok();
         // The folder's filesystem changed since its handles were recorded (a new disk, a
         // snapshot rolled back): they are taken again, by a Full scan of everything, before
         // anything is decided by them. Only a Full local scan asked for is told how it goes,
@@ -301,7 +299,7 @@ fn sort(listing: &Listing, ignore: &IgnoreList, root_dev: u64) -> Sorted {
         if daemon_owned(&e.name) {
             continue;
         }
-        if e.name.as_bytes().starts_with(RESERVED_PREFIX.as_bytes()) {
+        if crate::folder::walk::reserved(&e.name) {
             sorted.listed.push((ix, LocalSkip::ReservedName));
             continue;
         }

@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Handled, Sink};
 use crate::folder::disk::Disk;
@@ -57,8 +56,8 @@ impl Sink for ExamineSink {
             Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)) => return Handled::RootGone,
             Err(e) => return Handled::Failed(e.to_string()),
         };
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-        let ignore = self.ignore.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let now = crate::clock::unix_now();
+        let ignore = crate::panic::read(&self.ignore).clone();
         let examiner = Examiner { disk: &disk, store: &self.store, liveness: &*self.liveness, ignore: &ignore, locks: &self.locks, now };
         let run = self.scan.as_ref().filter(|_| batch.is_full()).map(|scan| scan.run(batch.reason().unwrap_or(ScanReason::Start)));
         let examined = {
