@@ -137,7 +137,8 @@ locks, and which item of the drive has a place in it. Design: `hydration.md`, `s
 
 - `mod.rs` — the list of the modules.
 - `root.rs` — `SyncRoot`: opening, checking and registering a root; `OpenError`,
-  `RegisterError`; the drive a folder remembers. `[tests]`
+  `RegisterError`; `Reach`, an item of the root opened or only looked at; the drive a folder
+  remembers. `[tests]`
 - `classify.rs` — what a Graph item becomes in the tree, and whether it has a place in the
   folder. `[tests]`
 - `disk.rs` — every change made to the folder, by descriptor; `Modes`, a folder's lock on
@@ -388,6 +389,8 @@ Baloo and thumbnails. Design: `desktop.md`.
 - `hydrate.rs` — filling a placeholder now.
 - `free_up.rs` — freeing up files and whole folders.
 - `pins.rs` — putting pins on and taking them off.
+- `menu.rs` — what the context menu may offer for a selection: one account's share of it, and
+  the answer of `Files.Menu` put together.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
 - `mode.rs` — the folder's side of the account's mode, and its write gate.
 - `outbox.rs` — the outbox worker built and woken; the rows dropped; the outbox as
@@ -457,6 +460,8 @@ Integration tests: the daemon over a private bus, Microsoft as wiremock.
 - `dbus_api.rs` — `org.konedrive.Account`, and the introspection against the XML.
 - `mode.rs` — the account's mode.
 - `sync_dbus.rs` — the interfaces of an account's folder.
+- `files_menu.rs` — `Files.Menu`: the answer case by case, held against what `Pin`, `Unpin` and
+  `FreeUp` then do.
 
 ## `crates/konedrive-helper`: the privileged helper
 
@@ -797,17 +802,20 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
 - `overlayplugin.cpp` — the overlay plugin: emblems on files.
 - `konedriveoverlay.json` — its description.
 - `overlayengine.h`, `overlayengine.cpp` — its logic: which emblem, and the cache of roots.
-- `actionplugin.cpp` — the context menu plugin: the OneDrive section.
+- `actionplugin.cpp` — the context menu plugin: the OneDrive section, handed over waiting and
+  set from the daemon's answer (`Files.Menu`) when it comes.
 - `konedriveactions.json` — its description.
 - `filestate.h`, `filestate.cpp` — what a file in the folder is, from its extended attributes
-  alone.
-- `syncclient.h`, `syncclient.cpp` — the calls to the daemon.
+  alone: what the emblems show, and whether a selection is in a sync folder at all.
+- `syncclient.h`, `syncclient.cpp` — the calls to the daemon, none of them waited for: the
+  menu's question and the entries' calls.
 - `refusaltext.h`, `refusaltext.cpp` — what to tell a person when the daemon refused.
 
 ### `dolphin/tests/`
 
 - `CMakeLists.txt` — the tests' build, and their private bus.
-- `testsupport.h` — what the tests share: folders built from real files.
+- `testsupport.h` — what the tests share: folders built from real files, and a stand-in for the
+  daemon on a thread of its own.
 - `session-bus.conf.in`, `activating-bus.conf.in`, `failing-daemon.service.in` — the tests'
   buses, and a daemon that fails to start.
 - `overlayenginetest.cpp` — the overlay logic on its own.

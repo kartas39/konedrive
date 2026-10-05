@@ -63,6 +63,11 @@ impl<'a> ReadStore<'a> {
         self.store.outbox_len()
     }
 
+    /// [`TreeStore::outbox_holds_any`].
+    pub fn outbox_holds_any(&self, objects: &[(Option<String>, crate::outbox::Inode)]) -> Result<bool, TreeError> {
+        self.store.outbox_holds_any(objects)
+    }
+
     /// [`TreeStore::outbox_groups`].
     pub fn outbox_groups(&self) -> Result<Vec<OutboxGroup>, TreeError> {
         self.store.outbox_groups()

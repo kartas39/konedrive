@@ -4,7 +4,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::placeholder::{read_state, XATTR_DRIVE, XATTR_ROOT};
+use konedrive_fs::placeholder::{self, read_state, State, StateError, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE};
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_fs::proc_path;
 use nix::errno::Errno;
@@ -445,6 +445,62 @@ pub(crate) fn uuid_v4() -> String {
     format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
 }
 
+/// How [`SyncRoot::item`] reaches an item, and how its marks are then read from the
+/// descriptor it gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Opened read-only and `O_NONBLOCK`: the marks are read, and written, through the
+    /// descriptor. What `Pin`, `Unpin`, `FreeUp` and `WebUrl` do.
+    Open,
+    /// `O_PATH`: the place in the tree and nothing more. The file is not opened, so no
+    /// event is raised and nothing is downloaded, whatever the helper is doing
+    /// (`docs/kernel-behavior-7.2/open-by-handle.md`); the marks are read by the
+    /// descriptor's name in `/proc`. What `Files.Menu` does, which only asks.
+    Look,
+}
+
+impl Reach {
+    fn flags(self) -> OFlag {
+        match self {
+            Reach::Open => OFlag::O_RDONLY | OFlag::O_NONBLOCK,
+            Reach::Look => OFlag::O_PATH,
+        }
+    }
+
+    /// The attribute `name` of an item reached by `Look`: an `O_PATH` descriptor reads no
+    /// attribute itself, and its name in `/proc` is the object, not a path walked again.
+    fn looked(item: &File, name: &str) -> io::Result<Option<String>> {
+        Ok(xattr::get_deref(proc_path(item), name)?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
+    }
+
+    /// The item's state, as `placeholder::read_state` reads it.
+    pub(crate) fn state(self, item: &File) -> Result<Option<State>, StateError> {
+        match self {
+            Reach::Open => read_state(item),
+            Reach::Look => match Self::looked(item, XATTR_STATE)? {
+                None => Ok(None),
+                Some(value) => value.parse().map(Some).map_err(|()| StateError::Corrupt(value)),
+            },
+        }
+    }
+
+    /// The item's id in OneDrive, as `placeholder::read_item_id` reads it.
+    pub(crate) fn item_id(self, item: &File) -> io::Result<Option<String>> {
+        match self {
+            Reach::Open => placeholder::read_item_id(item),
+            Reach::Look => Self::looked(item, XATTR_ITEM_ID),
+        }
+    }
+
+    /// Whether the item carries a pin of its own, as `placeholder::read_pin` reads it.
+    pub(crate) fn pin(self, item: &File) -> io::Result<bool> {
+        match self {
+            Reach::Open => placeholder::read_pin(item),
+            Reach::Look => Ok(Self::looked(item, XATTR_PIN)?.is_some()),
+        }
+    }
+}
+
 impl SyncRoot {
     /// Opens `path` to fill it or free it up: once, `O_RDWR`, and only if it really
     /// is a plain file inside this root. A file the read-only
@@ -539,6 +595,13 @@ impl SyncRoot {
     /// `PopulateFromDirectory` has none. A `.konedrive-*` name anywhere on
     /// the way is `NotManaged`; anything else is refused.
     pub(crate) fn open_item(&self, path: &Path) -> Result<(File, PathBuf), OpenError> {
+        self.item(path, Reach::Open)
+    }
+
+    /// [`open_item`](Self::open_item), reached as `reach` says: the one set of
+    /// rules for what `Pin`, `Unpin`, `FreeUp` and `WebUrl` take, whether the
+    /// item is opened for them or only looked at for `Files.Menu`.
+    pub(crate) fn item(&self, path: &Path, reach: Reach) -> Result<(File, PathBuf), OpenError> {
         let dir = self
             .open_registered()
             .map_err(|e| OpenError::Io(format!("{}: {e}", self.path.display())))?
@@ -562,9 +625,7 @@ impl SyncRoot {
         if relative.components().any(|part| reserved(part.as_os_str())) {
             return Err(OpenError::NotManaged);
         }
-        let how = OpenHow::new()
-            .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(beneath());
+        let how = OpenHow::new().flags(reach.flags() | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).resolve(beneath());
         let item = match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => File::from(fd),
             Err(Errno::EXDEV | Errno::ELOOP) => return Err(OpenError::OutsideRoot),
@@ -572,10 +633,11 @@ impl SyncRoot {
         };
         let meta = item.metadata().map_err(io_error)?;
         if meta.is_file() {
-            if read_state(&item).map_err(io_error)?.is_none() {
+            if reach.state(&item).map_err(io_error)?.is_none() {
                 return Err(OpenError::NotManaged);
             }
         } else if !meta.is_dir() {
+            // A symbolic link too, which `Reach::Look` gets a descriptor of.
             return Err(OpenError::OutsideRoot);
         }
         Ok((item, self.path.join(relative)))

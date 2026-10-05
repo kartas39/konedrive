@@ -84,12 +84,6 @@ bool hasPinMark(const QString &path)
     return ::lgetxattr(native.constData(), PinAttribute, nullptr, 0) >= 0;
 }
 
-bool hasItemId(const QString &path)
-{
-    const QByteArray native = QFile::encodeName(path);
-    return ::lgetxattr(native.constData(), ItemIdAttribute, nullptr, 0) > 0;
-}
-
 std::optional<QString> findRoot(const QString &dir, const RootMarkReader &hasMark)
 {
     for (QString current = dir; !current.isEmpty(); current = parentDirectory(current)) {
@@ -156,8 +150,13 @@ std::optional<QString> rootOf(const QString &dir, const RootMarkReader &hasMark)
     return findRoot(physical, hasMark);
 }
 
-std::optional<QString> pinnedAbove(const QString &path, const QString &root, const PinMarkReader &hasPin)
+std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin)
 {
+    // The item itself, as Dolphin spelled it: a placeholder is never a
+    // symbolic link, so this is also its physical path.
+    if (hasPin(path)) {
+        return path;
+    }
     // Physical from here on -- the same resolution `root` itself was found
     // with (rootOf), so a directory reached through a symbolic link is
     // compared correctly against it.
@@ -172,16 +171,6 @@ std::optional<QString> pinnedAbove(const QString &path, const QString &root, con
         dir = parentDirectory(dir);
     }
     return std::nullopt;
-}
-
-std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin)
-{
-    // The item itself, as Dolphin spelled it: a placeholder is never a
-    // symbolic link, so this is also its physical path.
-    if (hasPin(path)) {
-        return path;
-    }
-    return pinnedAbove(path, root, hasPin);
 }
 
 bool isEffectivelyPinned(const QString &path, const QString &root, const PinMarkReader &hasPin)
@@ -283,14 +272,6 @@ QString joinPath(const QString &dir, const QString &name)
     return dir.endsWith(QLatin1Char('/')) ? QString(dir + name) : QString(dir + QLatin1Char('/') + name);
 }
 
-bool isFileOrDirectory(const QString &path)
-{
-    const QByteArray native = QFile::encodeName(path);
-    struct stat info {
-    };
-    return ::lstat(native.constData(), &info) == 0 && (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode));
-}
-
 bool isDirectory(const QString &path)
 {
     const QByteArray native = QFile::encodeName(path);
@@ -326,109 +307,26 @@ Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader 
     return emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, root, hasPin));
 }
 
-namespace
+bool anyInSyncFolder(const QStringList &paths, const RootMarkReader &hasRoot)
 {
-/// Names konedrive keeps for itself (crates/konedrived/src/folder/walk.rs);
-/// never offered, so one of them can't make Pin/Unpin/FreeUp refuse the
-/// whole batch it is part of.
-bool isReservedName(const QString &path)
-{
-    return fileName(path).startsWith(QLatin1String(".konedrive-"));
-}
-} // namespace
-
-MenuState menuState(const QStringList &paths, const RootMarkReader &hasRoot, const PinMarkReader &hasPin)
-{
-    MenuState result;
-    QHash<QString, std::optional<QString>> rootByDir;
-
-    bool anyConsidered = false;
-    bool allEffectivelyPinned = true;
-    bool anyPinnedAbove = false;
-    bool anyFolder = false;
-    bool anyHydratedOrExplicit = false;
-
+    // A root is looked up once per directory, for the duration of this call
+    // only: a selection is usually many items of one folder.
+    QHash<QString, bool> known;
     for (const QString &path : paths) {
-        const QString dir = parentDirectory(path);
-        if (dir.isEmpty() || !isFileOrDirectory(path) || isReservedName(path)) {
+        // An account's folder itself counts: it is asked about too.
+        const QString dir = isDirectory(path) ? path : parentDirectory(path);
+        if (dir.isEmpty()) {
             continue;
         }
-        auto known = rootByDir.find(dir);
-        if (known == rootByDir.end()) {
-            known = rootByDir.insert(dir, rootOf(dir, hasRoot));
+        auto found = known.find(dir);
+        if (found == known.end()) {
+            found = known.insert(dir, rootOf(dir, hasRoot).has_value());
         }
-        if (!known.value().has_value()) {
-            continue;
-        }
-        const QString &root = *known.value();
-        const bool isDir = isDirectory(path);
-        const FileState state = isDir ? FileState::NotAFile : readFileState(path);
-        // Unmanaged and unrecognised files are not offered anything either:
-        // Pin/Unpin/FreeUp would have nothing to do with them, and sending
-        // one along would only risk refusing the rest of the batch with it.
-        if (!isDir && (state == FileState::Unmanaged || state == FileState::Unrecognised)) {
-            continue;
-        }
-
-        anyConsidered = true;
-        result.inRoot.append(path);
-        anyFolder = anyFolder || isDir;
-
-        // "Pinned above" is independent of the item's own pin: the daemon
-        // still refuses Unpin/FreeUp for it even when it is also explicitly
-        // pinned, since it would stay pinned by that ancestor either way
-        // (pinning.md §5) -- pinnedBy's short-circuit on the item itself
-        // would hide that.
-        const std::optional<QString> above = pinnedAbove(path, root, hasPin);
-        const bool explicitPin = hasPin(path);
-        const bool effectivePinned = explicitPin || above.has_value();
-        const bool hydrated = state == FileState::Hydrated;
-
-        allEffectivelyPinned = allEffectivelyPinned && effectivePinned;
-        if (above) {
-            anyPinnedAbove = true;
-            if (result.blockingFolder.isEmpty()) {
-                result.blockingFolder = fileName(*above);
-            }
-        }
-        if (hydrated || explicitPin) {
-            anyHydratedOrExplicit = true;
+        if (found.value()) {
+            return true;
         }
     }
-
-    // "Open in OneDrive": one path only, an item in a root or an account's
-    // folder itself -- whose parent is in no root, so it is not in `inRoot`.
-    if (paths.size() == 1) {
-        const QString &only = paths.first();
-        if (result.inRoot.size() == 1) {
-            result.showOpenOnline = true;
-            result.openOnlineEnabled = hasItemId(only);
-            result.openOnlinePath = only;
-        } else if (isDirectory(only) && hasRoot(only)) {
-            const QString dir = parentDirectory(only);
-            if (!dir.isEmpty() && !rootOf(dir, hasRoot).has_value()) {
-                result.accountFolder = only;
-                result.showOpenOnline = true;
-                result.openOnlineEnabled = true;
-                result.openOnlinePath = only;
-            }
-        }
-    }
-
-    if (!anyConsidered) {
-        return result;
-    }
-
-    result.showAlwaysKeep = true;
-    result.alwaysKeepChecked = allEffectivelyPinned;
-    // Unchecked, toggling it (Pin()) is always safe; checked, unchecking it
-    // (Unpin()) refuses the whole call if anything is pinned above.
-    result.alwaysKeepEnabled = !allEffectivelyPinned || !anyPinnedAbove;
-    // Windows-like: any folder in the root offers "Free up space", not only
-    // one that is downloaded or pinned.
-    result.showFreeUp = anyHydratedOrExplicit || anyFolder;
-    result.freeUpEnabled = !anyPinnedAbove;
-    return result;
+    return false;
 }
 
 } // namespace konedrive

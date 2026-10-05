@@ -136,6 +136,16 @@ what it keeps is not freed, and each downloaded file it keeps is counted in `ski
 is everything under a path that a folder above it was pinned over between the check and the walk.
 One `freed` event is recorded for each path that freed anything.
 
+**What the menu is told.** `Files.Menu(paths)` answers, without changing anything, what these
+calls would do with a selection ([desktop.md](desktop.md) §2.9): the paths `Pin` takes; whether
+every one of them is pinned, and whether `Unpin` would refuse them (`on-locked`); whether `FreeUp`
+would refuse them (`disabled`), for what (`free-up-why`), and the folder to name. It asks with the
+checks the calls themselves make first — the same look at each path, the same rule about a folder
+above, the exception for a folder in the same call included — so the menu and the calls cannot
+drift apart. One check is asked another way: whether a downloaded file has a change waiting to be
+uploaded goes to the tree store's read-only connection, once for the whole selection, so that the
+answer does not wait for a sync that is writing; `FreeUp` keeps its exact check on the writer.
+
 **Around pins, elsewhere:**
 
 - `FreeUpSpace`, for the whole folder, leaves every file that is pinned — by itself or by a folder
@@ -185,6 +195,7 @@ after that cycle.
 | `Pin(paths)` | `Files` | `as → u queued` | Pins each path (§3); how many files this call queued for download |
 | `Unpin(paths)` | `Files` | `as → u unpinned` | Takes each path's own pin off, and nothing else (§5); how many came off |
 | `FreeUp(paths)` | `Files` | `as → (u files, t bytes, u busy, u skipped_pinned)` | Frees up each path (§5) |
+| `Menu(paths)` | `Files` | `as → a{sv}` | What the three would do with a selection, for a context menu (§5, [desktop.md](desktop.md) §2.9) |
 | `PinnedCount` | `Folder` | `u`, read | How many files and folders in the account's folder carry a pin of their own |
 
 `Pin`, `Unpin` and `FreeUp` are on `org.konedrive.Files` at `/org/konedrive/Accounts`: each path
@@ -209,13 +220,16 @@ they go through `Files`, the paths decide the accounts, and `--account` is refus
   what a pin below kept.
 - A refusal of either names the one path refused and the folder that pins it, and says to unpin or
   free up that folder first.
+- `konedrivectl sync menu <paths…>` — prints what the menu would offer for the paths together,
+  the answer of `Files.Menu`: the command-line path of a right click.
 - `konedrivectl sync status` has a line `Always on this device: N` for each registered folder.
 
 ## 9. The Dolphin plugin
 
-The plugin reads the pin attribute on the item and its ancestors with `lgetxattr`, and never
-opens a file. `inode/directory` is in the action plugin's `MimeTypes`, or Dolphin never calls it
-for a folder at all.
+For the emblems, the plugin reads the pin attribute on the item and its ancestors with
+`lgetxattr`, and never opens a file. For the menu it reads nothing of a pin: it asks the daemon
+(`Files.Menu`, §5). `inode/directory` is in the action plugin's `MimeTypes`, or Dolphin never
+calls it for a folder at all.
 
 **Emblems**, following Windows:
 
@@ -232,17 +246,23 @@ for a folder at all.
 "Free up space". Both work on several items at once and on folders, and call `Pin`, `Unpin` or
 `FreeUp` asynchronously, one call per action chosen for the whole selection.
 
-- "Always keep on this device" is checked when the selection is effectively pinned. Checking it
-  calls `Pin`; unchecking it calls `Unpin`, never `FreeUp` (D-A). While checked, it is disabled
-  when *anything* in the selection is pinned by a folder above it -- even an item that is also
-  explicitly pinned itself, since `Unpin` refuses it either way (§5) -- with a tooltip naming that
-  folder.
+What each entry shows is the daemon's answer to one `Files.Menu` call per menu, which the entries
+wait for and the menu does not; the rule is the daemon's (§5), and the plugin shows it
+([desktop.md](desktop.md) §10.2):
+
+- "Always keep on this device" is checked when every path the daemon takes is pinned, by itself
+  or by a folder above it. Checking it calls `Pin`; unchecking it calls `Unpin`, never `FreeUp`
+  (D-A). While checked, it is disabled when `Unpin` would refuse the selection: something in it is
+  kept by a folder above it -- even an item that is also explicitly pinned itself (§5) -- unless
+  that folder is selected too, with its own pin. The tooltip names the folder.
 - "Free up space" is shown for any folder in the selection, or anything downloaded or explicitly
-  pinned (D-B). It is disabled when anything in the selection is pinned by a folder above it,
-  again regardless of its own pin.
-- One bad path in a selection (unmanaged, unrecognised, or one of konedrive's own
-  `.konedrive-*` names) is left out of what is sent, rather than making the daemon refuse the
-  whole call over it.
+  pinned (D-B). It is disabled when `FreeUp` would refuse the selection: for a folder above, as
+  "Always keep" is, and also when the folder's helper is not connected or a selected file has a
+  change waiting to be uploaded.
+- One path the daemon does not take (a file of the user's own, an unrecognised state, one of
+  konedrive's own `.konedrive-*` names, a link) is not in the answer's `paths`, which is what is
+  sent, rather than making the daemon refuse the whole call over it.
+- With no answer from the daemon there are no entries (limitations log K32).
 - A batch refused `NotAllowed` is explained with the daemon's own words, which name the actual
   refused path and the folder that pins it -- not the first path of the selection, which may be a
   different one.

@@ -301,6 +301,12 @@ pub(crate) enum PathCmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+    /// Print what the file manager's menu would offer for these paths together: the
+    /// daemon's answer, one line per key. The paths decide the accounts
+    Menu {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Open the page of a file or folder in OneDrive's web interface, where it can be
     /// shared and its versions seen; the account's folder itself opens the drive. The
     /// address is printed either way. The path decides the account

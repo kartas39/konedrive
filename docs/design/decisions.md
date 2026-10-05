@@ -1102,9 +1102,10 @@ already recurses into a folder regardless.
 **Why.** Matches what a Windows user already expects of "Always keep on this device", and keeps
 the two actions' jobs separate: one manages the pin, the other frees space.
 
-**Trade-off.** Pin and Unpin are refused as one call for the whole selection if any path in it is
-pinned only by an ancestor, so the checkbox is disabled in that case rather than partly acting on a
-selection (`dolphin/src/filestate.cpp`, `menuState`).
+**Trade-off.** Unpin is refused as one call for the whole selection if any path in it is kept
+pinned by a folder above it, so the checkbox is disabled in that case rather than partly acting on
+a selection. The daemon says so (`Files.Menu`, `crates/konedrived/src/sync/menu.rs`), and the
+plugin shows it.
 
 ## Testing
 

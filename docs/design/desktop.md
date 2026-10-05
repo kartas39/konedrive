@@ -316,9 +316,47 @@ The calls on one file or on chosen paths, each routed by path to the account who
 | `Unpin(as paths) → u unpinned` | takes each path's own pin off ([pinning.md](pinning.md) §5) |
 | `FreeUp(as paths) → (u files, t bytes, u busy, u skipped_pinned)` | "Free up space" ([pinning.md](pinning.md) §5) |
 | `WebUrl(s path) → s url` | "Open in OneDrive": the address of the item's page in OneDrive's web interface, asked from Graph each time (§10.2) |
+| `Menu(as paths) → a{sv} menu` | what a file manager's context menu may offer for a selection (below, and §10.2) |
 
 `WebUrl` alone also answers for an account's folder itself, with the address of the drive's root;
 every other method treats that path as in no account's folder.
+
+**`Menu`** is the one place where it is decided what the menu offers: the rules of `Pin`, `Unpin`,
+`FreeUp` and `WebUrl`, asked without doing anything. It changes nothing and opens no file — each
+path is reached with `O_PATH` under the resolution rules `Pin` opens it with, and its marks are
+read from that — so nothing is downloaded. It is never refused for a path it does not take: such a
+path is not in `paths`.
+
+A menu is waiting for the answer, so it waits for nothing that can take long. The accounts'
+folders are resolved once per call, the selection is looked at in one pass (each path's descriptor
+is closed before the next is opened), and the account's tree store is asked one question for the
+whole selection — whether a downloaded file in it has a change waiting to be uploaded — through
+the store's read-only connection, which does not wait for a sync that is writing. That connection
+sees what was last committed; `FreeUp` itself asks the writer, and is the one that refuses.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `paths` | `as` | the selected paths `Pin` takes, in the order given: what `Pin`, `Unpin` or `FreeUp` is then called with. A path in no account's folder, a symbolic link, a file of the user's own, a `.konedrive-*` name and an account's folder itself are left out |
+| `always-keep` | `s` | `hidden` (no path is taken); `off`; `on` (every path is pinned, by itself or by a folder above it); `on-locked` (the same, and `Unpin` of `paths` would be refused) |
+| `free-up` | `s` | `hidden` (no path is a folder, a downloaded file or one with a pin of its own); `enabled`; `disabled` (`FreeUp` of `paths` would be refused before it changed anything: `free-up-why` says for what) |
+| `free-up-why` | `s` | why `free-up` is `disabled`, empty otherwise: `no-helper` (the folder is intercepted and its helper is not connected); `pinned-above` (a folder above keeps a path pinned: `blocked-by`); `unknown` (the daemon cannot tell now whether a downloaded file among the paths has a change waiting to be uploaded: a mark on a file among them cannot be read, or the account's sync has not started, or its store cannot be read); `not-uploaded` (one has such a change). One reason, the first that holds, in that order; the last two only for a folder that shows OneDrive (below) |
+| `blocked-by` | `s` | the name of the folder above that keeps a path pinned, when that is why `always-keep` is `on-locked` or `free-up-why` is `pinned-above`; empty otherwise |
+| `open-online` | `s` | `hidden` (not exactly one path selected, or one that is neither in `paths` nor an account's folder itself); `enabled`; `disabled` (the item has no id: it is not in OneDrive yet) |
+| `open-online-path` | `s` | the path `WebUrl` is then called with; empty when hidden |
+
+**Which reason `free-up-why` gives.** The helper and a folder above are asked about first, as
+`FreeUp` asks them. Then a mark that cannot be read on a file of the selection answers `unknown`
+before the store is asked at all, so `unknown` comes before `not-uploaded` even when another file
+of the selection has a change waiting; `FreeUp` goes file by file, and refuses for whichever of
+the two it meets first. A sync that has not started and a store that cannot be read answer
+`unknown` in place of `not-uploaded`. So `unknown` covers the marks as well as the store.
+
+A selection may span several accounts' folders: each account answers for its own paths, as `Pin`,
+`Unpin` and `FreeUp` ask each account before anything changes, and one refusal locks the entry for
+the whole selection. Each account finds its own first reason, and `free-up-why` is that of the
+first account that refuses, in the order the accounts' paths first come in the selection — not the
+reason that comes first in the order of the table. The answer is about the moment it was asked (limitations log K23), and covers
+what the calls check before they change anything, not what a free-up finds file by file (K33).
 
 `Pin`, `Unpin` and `FreeUp` route every path before anything changes, and their counts are summed
 over the accounts.
@@ -359,6 +397,7 @@ F51).
 | `sync populate-from <dir>` | chosen | fills a local folder from a directory |
 | `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files` |
 | `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files` |
+| `sync menu <paths…>` | by path | what the file manager's menu would offer for these paths together: the answer of `Files.Menu` (§2.9), one line per key (`always-keep: on-locked`); `paths` is its entries, each quoted |
 | `sync status` | chosen, or all | the folder, the same `Overall:` line as `status`, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; while the account holds back by itself, "Paused by itself: metered connection" (or "on battery", "power-saver mode") with how to `sync anyway`; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
@@ -679,6 +718,11 @@ and any `open()` downloads what is shown. Both are tested to never open a file i
 a test drives every code path under an inotify watch and fails on any open, and the tests run under
 a poisoned allocator so that a use of freed memory cannot hide.
 
+The two get what they show from different places. The emblems are read from the marks on the
+files, by the plugin itself: asking the daemon about every file Dolphin draws would be too slow.
+The menu is the daemon's answer, one call per menu (§10.2), which the menu does not wait for: its
+rules are the daemon's, and the plugin keeps no copy of them.
+
 ### 10.1 Emblems
 
 The overlay plugin gives each file (and, for the pinned case, each folder) an emblem from its
@@ -710,40 +754,79 @@ the pin's ancestor walk is not cached (K5), and a directory's own pin bit is not
 ### 10.2 The context menu
 
 The action plugin adds **Always keep on this device**, a checkable action, and **Free up space**,
-for files and folders and any selection (see [pinning.md](pinning.md)). "Always keep" is checked
-when the selection is effectively pinned; while checked, it is disabled if anything in the
-selection is pinned only by a folder above it (unchecking it then would refuse the whole call).
-Checking it calls `Pin`; unchecking it calls `Unpin`, which only removes the pin -- files stay
-downloaded, as on Windows (D-A). "Free up space" is shown for any folder in the root, or a file
-that is downloaded or explicitly pinned, and disabled for a selection with anything pinned only by
-a folder above it; it calls `FreeUp` (D-B). A selection is one asynchronous D-Bus call (`Pin`,
+for files and folders and any selection (see [pinning.md](pinning.md)), and **Open in OneDrive**.
+
+**What is offered is the daemon's answer.** Each time a menu is built for a selection with
+something in a sync folder, the plugin makes one `Files.Menu(paths)` call (§2.9) with the
+selection, and sets its entries from the answer, value by value:
+
+| Answer | Entry |
+|---|---|
+| `always-keep`: `off`, `on` | "Always keep on this device", unchecked or checked |
+| `always-keep`: `on-locked` | checked and disabled, with the tooltip "Kept on this device because “`blocked-by`” is." |
+| `free-up`: `enabled` | "Free up space" |
+| `free-up`: `disabled` | disabled, with a tooltip for `free-up-why` (below); none for a reason the plugin does not know |
+| `open-online`: `enabled`, `disabled` | "Open in OneDrive"; disabled with the tooltip "Not in OneDrive yet." |
+| `hidden`, or a value the plugin does not know | the entry is hidden |
+
+| `free-up-why` | Tooltip of the disabled "Free up space" |
+|---|---|
+| `pinned-above` | "Kept on this device because “`blocked-by`” is; unpin it first." |
+| `no-helper` | "The konedrive helper is not connected. Try again once it is — it reconnects on its own." |
+| `not-uploaded` | "Not uploaded yet: freeing it up would lose the changes made here." |
+| `unknown` | "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment." |
+
+The plugin decides nothing from the marks: which paths count, what a pin above means and what the
+daemon would refuse are the daemon's rules, in one place (`sync/menu.rs`), beside the calls they
+restate. Two things remain the plugin's:
+
+- **A check before the call**, by the marks alone: at least one selected path lies in a sync
+  folder, or is one (the nearest directory at or above it carries `user.konedrive.root`, resolved
+  as for the emblems, §10.1). A right click anywhere else makes no call.
+- **The wait, which is the entries' and not the menu's.** The host asks for the entries
+  synchronously, and the plugin never blocks it: it hands over the section at once in a waiting
+  state — the heading and the three entries, shown, disabled, unchecked — and sends the call
+  asynchronously. When the answer comes, each entry is set from it: shown or hidden, enabled,
+  checked, its tooltip. An error, no daemon, or no answer within two seconds hides the entries and
+  the section with them (K32). The message carries no auto-start, so building a menu never starts
+  the daemon. The entries may be gone by the time the answer comes — the menu's window closed, the
+  next menu built — and then nothing is touched: the answer belongs to the menu it was asked for
+  and is dropped with it, and each entry is reached through a guarded pointer. A waiting entry
+  cannot be triggered: it is disabled, and has no paths to call the daemon with until the answer
+  gives them.
+
+**What an entry does.** Checking "Always keep" calls `Pin`; unchecking it calls `Unpin`, which
+only removes the pin -- files stay downloaded, as on Windows (D-A). "Free up space" calls `FreeUp`
+(D-B). Each is called with the `paths` of the answer, not with the selection: a path the daemon
+does not take is not sent back to it. A selection is one asynchronous D-Bus call (`Pin`,
 `Unpin` or `FreeUp`, on `Files` at `/org/konedrive/Accounts`) with no reply timeout, since
 downloads can take minutes; the daemon finds each path's account, so a selection may span the
 folders of several accounts ([accounts.md](accounts.md) §3.5). A click starts a
-stopped daemon through D-Bus activation, as any KDE service would, rather than reporting that it is
-not running. A path already waiting (in an earlier call not yet answered, whichever of the three it
-was for) is never sent again, and at most 1000 paths wait at once per window (limitations log K6).
-Refusals are explained by their error name; a batch refused because one path is pinned only by an
-ancestor is explained with the daemon's own words, which name that path and folder, not the first
-path of the selection. The actions can be switched off in Dolphin's context-menu settings.
+daemon that stopped after the menu was built through D-Bus activation, as any KDE service would,
+rather than reporting that it is not running. A path already waiting (in an earlier call not yet
+answered, whichever of the three it was for) is never sent again, and at most 1000 paths wait at
+once per window (limitations log K6). Refusals are explained by their error name; a batch refused
+because one path is pinned only by an ancestor is explained with the daemon's own words, which
+name that path and folder, not the first path of the selection. The actions can be switched off in
+Dolphin's context-menu settings.
 
 **The section.** Whatever the plugin offers is one section of the menu itself, not a submenu: a
 separator whose text is "OneDrive" (`konedrive_section`), the entries, and a closing separator
-(`konedrive_section_end`). With nothing to offer it adds nothing. Whether the heading is drawn is
+(`konedrive_section_end`). For a selection outside every sync folder it adds nothing; when the
+answer offers nothing, the section is hidden with its entries. Whether the heading is drawn is
 the widget style's choice (limitations log K30).
 
-**Open in OneDrive** (`konedrive_open_online`, issue #53) is the section's last entry. It is
-offered for exactly one selected path, never for several:
+**Open in OneDrive** (`konedrive_open_online`, issue #53) is the section's last entry. The
+daemon offers it (`open-online`) for exactly one selected path, never for several:
 
 - an item the other two entries are offered for: enabled when it carries
-  `user.konedrive.item-id` (read with `lgetxattr`; the plugin still opens nothing), otherwise
-  disabled with the tooltip "Not in OneDrive yet.";
-- an account's folder itself — a directory that carries `user.konedrive.root` and lies in no
-  other account's folder: always enabled, and the section's only entry, since the other two are
-  not offered there. It opens the root of the drive.
+  `user.konedrive.item-id`, otherwise disabled with the tooltip "Not in OneDrive yet.";
+- an account's folder itself: always enabled, and the section's only entry, since the other two
+  are not offered there. It opens the root of the drive.
 
-A click is one asynchronous `WebUrl(path)` call on `Files`, under the same rules as the other
-calls: no reply timeout, a stopped daemon is started, a path already waiting is not asked again.
+A click is one asynchronous `WebUrl(path)` call on `Files`, with the answer's `open-online-path`,
+under the same rules as the other calls: no reply timeout, a stopped daemon is started, a path
+already waiting is not asked again.
 The daemon finds the account, reads the item's id from the path (opened as `Pin` opens it, so
 nothing is downloaded) and asks Graph for the item — `GET me/drive/items/{id}`, or
 `GET me/drive/root` for an account's folder itself — and answers its `webUrl`. The address is
