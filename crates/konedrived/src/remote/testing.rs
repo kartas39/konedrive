@@ -10,7 +10,7 @@
 //! - [`World::listed_as`], [`World::changed`] and [`World::step`] say what
 //!   OneDrive says as tree rows, in place of the cycle's fetch, and hand
 //!   them to the cycle's own staging ([`Listing::stage`]) and reconcile
-//!   ([`Reconcile::run`]). A [`Step`] runs the reconcile in its two halves,
+//!   ([`Reconcile::run`](crate::remote::listing::reconcile::Reconcile::run)). A [`Step`] runs the reconcile in its two halves,
 //!   [`Step::apply`] and [`Step::commit`], for what happens between the
 //!   folder and the swap.
 //!

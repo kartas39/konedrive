@@ -270,7 +270,7 @@ pub enum Recorded {
 }
 
 /// One step of an examination's result, applied with the others in one
-/// transaction ([`TreeStore::outbox_apply`]).
+/// transaction ([`TreeStore::outbox_apply`](crate::TreeStore::outbox_apply)).
 // Built once per examination and consumed at once: not worth a box.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -5,7 +5,7 @@
 //! A read-only folder shows OneDrive: whatever is not where the tree has it
 //! goes to the holding directory, a local version in the way is rescued out
 //! of the folder, and nothing waits. A read-write folder also holds the
-//! user's own changes ([`Rw`](super::Rw)): what a local change holds is left
+//! user's own changes ([`Rw`](crate::remote::materialize::Rw)): what a local change holds is left
 //! as it is and its change waits, a local version in the way is kept beside
 //! the cloud's, and nothing leaves the folder.
 

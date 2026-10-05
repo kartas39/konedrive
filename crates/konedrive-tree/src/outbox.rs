@@ -9,15 +9,15 @@
 //! object, by file handle (or inode where there is no handle).
 //!
 //! **Order.** Rows run in `seq` order, the order of first detection, which a
-//! merge keeps. Four rules hold a row back ([`TreeStore::outbox_blockers`]):
+//! merge keeps. Four rules hold a row back ([`pick`]):
 //! an earlier row of the same item; the `mkdir` of the directory it is in,
 //! whose item id it needs; for a folder's `delete` or `move-out`, every row
 //! of an item the base has inside the folder; and a row that frees the name
 //! in OneDrive a row takes. The last three are structural, whatever the
 //! rows' `seq`: a move out of a folder detected after the folder's delete
 //! must still run first, or the cloud deletes it with the folder. Where rule
-//! 4 closes a circle, its edges in the circle are dropped (see
-//! [`TreeStore::outbox_dependencies`]).
+//! 4 closes a circle, its edges in the circle are dropped (`name_edges`
+//! in [`pick`]).
 //!
 //! Also here: `local_skipped` (what is never uploaded, §3.4 rule 2) and the
 //! item's local object (`items.local_handle`).

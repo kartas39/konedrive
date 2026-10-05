@@ -1,6 +1,6 @@
 //! Microsoft Graph's drive API. Reads live here: the delta feed, one item's
 //! metadata, a file's bytes from an offset, and the `/content` redirect.
-//! Writes live in [`write`] (folders, rename, move, delete) and [`upload`]
+//! Writes live in [`mod@write`] (folders, rename, move, delete) and [`upload`]
 //! (upload sessions); nothing calls them until the write phase's outbox
 //! worker does, and the scope stays `Files.Read` until an account is switched
 //! to read-write.

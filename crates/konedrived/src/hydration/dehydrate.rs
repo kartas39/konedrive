@@ -286,7 +286,7 @@ fn punch_clean_file_watched(
 /// `tokio::time::timeout`, a `select!` losing a race) leaves it that way,
 /// with its blocks intact and its ignore mark possibly already cleared.
 /// That is a safe state, not a lost one — the helper treats `dehydrating`
-/// as "hydrate it again", and [`recover`] punches and relabels
+/// as "hydrate it again", and [`recover`](crate::hydration::recovery::recover) punches and relabels
 /// it at the next start — but it is not a *tidy* one, so a caller that can
 /// cancel should prefer to let the sequence finish.
 pub async fn dehydrate(

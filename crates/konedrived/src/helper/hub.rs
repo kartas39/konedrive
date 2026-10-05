@@ -2,7 +2,7 @@
 //!
 //! The helper sends a uid's opens to that uid's newest connection only, so one daemon keeps
 //! one link for all its accounts. [`HelperHub`] holds it, with the helper's socket and
-//! `HelperState`; [`supervise`] keeps it connected and [`watch`] keeps `HelperState` current.
+//! `HelperState`; [`supervise`] keeps it connected and [`watch()`] keeps `HelperState` current.
 //! It knows nothing of accounts or folders: whom the link serves is [`Served`], which the
 //! registry of the daemon's folders implements (`sync::registry`).
 
@@ -49,7 +49,7 @@ pub struct HelperHub {
     /// [`NotAsked`], which asks nothing: only `main` installs
     /// systemd, so no test reaches the system bus.
     unit: Mutex<Arc<dyn HelperUnit>>,
-    /// Told whenever the link comes or goes, so [`watch`] asks again at once.
+    /// Told whenever the link comes or goes, so [`watch()`] asks again at once.
     changed: Arc<Notify>,
     /// `Accounts.HelperState`; whom the link serves is told every change.
     state: watch::Sender<HelperState>,
@@ -118,7 +118,7 @@ impl HelperHub {
     }
 
     /// Publishes a new helper link, or its loss — and so `HelperState`
-    /// (HS1): `connected` at once, or, on a loss, `unknown` until [`watch`]
+    /// (HS1): `connected` at once, or, on a loss, `unknown` until [`watch()`]
     /// has asked systemd. Every account sees the same.
     pub fn set_link(&self, link: Option<HelperLink>) {
         let now = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
@@ -225,7 +225,7 @@ pub async fn watch(hub: Arc<HelperHub>) {
     watch_every(hub, super::status::RECHECK).await
 }
 
-/// [`watch`], asking systemd again every `every` while there is no link
+/// [`watch()`], asking systemd again every `every` while there is no link
 /// (tests: well under a second).
 pub async fn watch_every(hub: Arc<HelperHub>, every: Duration) {
     let changed = Arc::clone(&hub.changed);

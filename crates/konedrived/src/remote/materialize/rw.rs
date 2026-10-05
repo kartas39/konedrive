@@ -9,7 +9,7 @@
 //!   a folder such a row moves — not moved, replaced or removed. Nor what it
 //!   finds away from where the base has it, a local move or copy not
 //!   examined yet, with everything below it. Their changes wait
-//!   ([`Pending::unsettled`](super::Pending::unsettled)): the base keeps the
+//!   ([`Pending::unsettled`](crate::remote::materialize::Pending::unsettled)): the base keeps the
 //!   version the disk holds;
 //! - **places nothing below a folder being removed** ([`Rw::removing`]):
 //!   below a live `delete` or `move-out` row the delta's changes go to the
@@ -35,7 +35,8 @@
 //!   an item OneDrive still has and the folder cannot hold goes from the
 //!   disk whole, in the cycle, when nothing in it waits; while anything
 //!   does it stays an item like any other, placed by the base, and its
-//!   change waits with what it waits for ([`Policy::Unplaced`],
+//!   change waits with what it waits for
+//!   ([`Policy::Unplaced`](crate::remote::materialize::removal::Policy::Unplaced),
 //!   [`Materializer::wait_to_leave`]);
 //! - **forgets before it removes**: the local objects of everything it takes
 //!   off the disk are forgotten in the store first, so that no examination

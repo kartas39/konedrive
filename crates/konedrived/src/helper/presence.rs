@@ -17,7 +17,7 @@ pub enum HelperPresence {
     /// A socket is bound there: a helper is running, or is starting and
     /// about to walk.
     Present,
-    /// The question could not be answered; treated as [`Present`].
+    /// The question could not be answered; treated as [`Self::Present`].
     Unknown(String),
 }
 

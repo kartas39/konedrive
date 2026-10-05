@@ -1,6 +1,6 @@
 //! Phase 1 in a read-write folder: what is done with each object of ours,
 //! by where the base has its item, where the new tree has it, and what a
-//! local change holds ([`Sorted`]).
+//! local change holds ([`Sorted`](crate::remote::materialize::Sorted)).
 
 use std::collections::HashSet;
 use std::ffi::OsStr;

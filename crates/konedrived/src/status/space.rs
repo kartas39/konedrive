@@ -32,7 +32,7 @@ pub struct LocalSpace {
     state: SyncStateHandle,
     measure: Measure,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// False for a report that reports nowhere ([`Report::nowhere`]): no
+    /// False for a report that reports nowhere ([`Report::nowhere`](crate::status::report::Report::nowhere)): no
     /// walker is ever started for it.
     enabled: bool,
 }

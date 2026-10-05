@@ -215,7 +215,7 @@ impl SyncService {
     }
 
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
-    /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
+    /// (group, reason, count, bytes) ([`kept_back::summary`](crate::upload::kept_back::summary)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
         self.outbox_store()?;
         if let Some(kept) = self.running().and_then(|running| crate::panic::lock(&running.kept_back).clone()) {

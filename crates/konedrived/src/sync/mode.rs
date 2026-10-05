@@ -41,7 +41,7 @@ impl SyncService {
     }
 
     /// Follows the account to `mode` (`docs/design/writes.md` §2, §2.2). The folder's sync is stopped as
-    /// a Forget stops it — which stops the watcher too ([`stop_watcher`](Self::stop_watcher))
+    /// a Forget stops it — which stops the watcher too
     /// — and the mode changed inside one change of the folder's state, so no reconcile,
     /// registration or free-up runs meanwhile. Then, for a OneDrive folder that is up:
     ///
@@ -53,10 +53,10 @@ impl SyncService {
     ///
     /// The sync then starts again, if it ran: its first cycle is a Full reconcile, and in
     /// read-write mode it starts the watcher, whose walk ends in the Full local scan
-    /// ([`start_watcher`](Self::start_watcher)).
+    /// ([`spawn_watcher`](Self::spawn_watcher)).
     /// A folder that is not up, and a walk the daemon did not finish, are walked when
     /// the folder's sync next starts, in either mode
-    /// ([`ensure_unlocked`](Self::ensure_unlocked), [`ensure_locked`](Self::ensure_locked)).
+    /// ([`lock_after_walk`](Self::lock_after_walk), [`ensure_locked`](Self::ensure_locked)).
     /// A local folder only takes the mode.
     ///
     /// The accounts manager calls this once before the folder is restored, with the mode

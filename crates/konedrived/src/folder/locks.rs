@@ -53,10 +53,9 @@ struct Slot {
 
 type LockTable = Arc<Mutex<HashMap<InodeKey, Slot>>>;
 
-/// Serializes hydration and dehydration of the same inode: promise
-/// that nothing enforced before this task (see [`serve_hydrations`]'s doc
-/// comment). A file being hydrated and dehydrated at the same time is a torn
-/// file.
+/// Serializes hydration and dehydration of the same inode (see the doc
+/// comment of `serve_hydrations` in `hydration/server.rs`). A file being
+/// hydrated and dehydrated at the same time is a torn file.
 ///
 /// Cheap to hold onto for the life of the daemon: each row is dropped from
 /// the table the moment its last user lets go, so the table never grows past

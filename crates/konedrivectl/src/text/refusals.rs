@@ -25,9 +25,9 @@ pub enum SyncAction<'a> {
     FreeUpSpace,
     /// The paths given, joined with ", ".
     Pin(&'a str),
-    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    /// The path refused ([`refused_path`](crate::text::files::refused_path)), or the paths given, joined with ", ".
     Unpin(&'a str),
-    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    /// The path refused ([`refused_path`](crate::text::files::refused_path)), or the paths given, joined with ", ".
     Free(&'a str),
     /// `sync open`: `Files.WebUrl`, with the path.
     Open(&'a str),

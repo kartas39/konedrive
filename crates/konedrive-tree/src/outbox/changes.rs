@@ -13,7 +13,7 @@ const DIRTY_MAX: usize = 100_000;
 /// What changed in the outbox (issue #38), told by SQLite's update hook on
 /// the store's connection: a count of changes to `outbox` and `local_skipped`,
 /// the `seq` of each outbox row written or removed since last asked, and a
-/// signal once the change is committed ([`Store::with`](super::Store::with)).
+/// signal once the change is committed ([`Store`](crate::Store), whose thread sends it).
 #[derive(Debug)]
 pub struct OutboxChanges {
     generation: std::sync::atomic::AtomicU64,

@@ -1,7 +1,7 @@
 //! Which of the objects carrying an item's id is the item (invariant I2,
 //! `docs/limitations/F53.md`). [`identify`] is the whole rule and touches nothing: what
 //! the store says of the id and what was listed go in, the decision comes out.
-//! [`Run::identities`] asks the store, and [`Run::settle_identity`] carries a decision out.
+//! [`Run::identity`] asks the store, and [`Run::settle_identity`] carries a decision out.
 
 use std::path::Path;
 use std::rc::Rc;

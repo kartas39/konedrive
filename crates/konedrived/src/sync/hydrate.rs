@@ -59,7 +59,7 @@ impl SyncService {
 
     /// [`hydrate_now`](Self::hydrate_now)'s fill, and what came of it —
     /// recorded as any fill is. A pinned download goes through here too
-    /// ([`pin::PinFill`]).
+    /// ([`PinFill`](crate::hydration::pin::PinFill)).
     ///
     /// `class` is the slot of the account's transfer pool it takes, before the per-inode
     /// lock (never waiting for a slot with the lock held); `None` when the caller holds one
