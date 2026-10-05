@@ -35,8 +35,10 @@
 //! reads only downloaded files (WR1), and probes for a writer with a read
 //! lease before trusting what it reads. A row the worker is running is never
 //! taken from under it: what changed since waits behind it. An entry this
-//! daemon is refused to open, strip or read is passed over and examined
-//! again later; its trouble never fails the batch.
+//! daemon is refused to open, strip or read is passed over, listed as not
+//! uploaded (`unreadable`) and examined again later; its trouble never fails
+//! the batch. A file of an item whose state cannot be read is left alone and
+//! listed (`state-unreadable`).
 //!
 //! A run is four parts with one owner each. The [`Listing`] is what was
 //! read of the disk: built first, read-only afterwards. [`Facts`] is the
@@ -145,8 +147,9 @@ pub struct Examined {
     /// entries it was refused to open, strip or read (`Run::entry_io`): not
     /// examined, so nothing in or at them counts as missing.
     pub unreadable: Vec<PathBuf>,
-    /// The entries passed over, to examine again: kept apart from `recheck`,
-    /// since their cause may last, and the watcher backs their recheck off.
+    /// The entries passed over and the places the listing could not read, to
+    /// examine again: kept apart from `recheck`, since their cause may last,
+    /// and the watcher backs their recheck off.
     pub passed: Batch,
     /// The folder's filesystem had changed: its file handles were taken again
     /// (a Full scan), and nothing was decided by the old ones.
@@ -333,6 +336,22 @@ impl<'l> Run<'_, '_, 'l> {
         for (ix, reason) in &sorted.listed {
             self.skip(&listing[*ix].rel, reason.clone());
         }
+        // What the listing could not read is said and asked for again, as
+        // what is passed over later is ([`pass_over`](Self::pass_over)): its
+        // own name, and, should it be a directory that can be read by then,
+        // everything below it, which no run has looked at. Only its name is
+        // known, so one the ignore list names, which would stay local, is
+        // left out.
+        for rel in listing.unread() {
+            if rel.file_name().is_some_and(|name| daemon_owned(name) || self.ex.ignore.matches(name)) {
+                continue;
+            }
+            self.skip(rel, LocalSkip::Unreadable);
+            if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+                self.outcome.out.passed.name(parent, name);
+            }
+            self.outcome.out.passed.tree(rel);
+        }
         // 6. Who is who, before anything is decided by place: a directory's
         // id says what its entries' parent is. Every id is decided first,
         // from what was listed; then each decision is carried out.
@@ -393,14 +412,16 @@ impl<'l> Run<'_, '_, 'l> {
     }
 
     /// `e` is not examined in this run: given up, so that nothing at its
-    /// place counts as missing, reported, and asked for again
-    /// ([`Examined::passed`]).
+    /// place counts as missing, reported, listed as not uploaded, and asked
+    /// for again ([`Examined::passed`]). The line goes in the first run that
+    /// examines the place and does not pass it over.
     fn pass_over(&mut self, e: &Entry, why: &io::Error) {
         if self.decisions.give_up(&e.rel) {
             // One line for the run says how many (`Examiner::examine_reporting`).
             tracing::debug!("{} cannot be read ({why}); it is not examined", e.rel.display());
             self.outcome.out.unreadable.push(e.rel.clone());
         }
+        self.skip(&e.rel, LocalSkip::Unreadable);
         self.outcome.out.passed.name(e.dir_rel(), &e.name);
     }
 
@@ -415,7 +436,12 @@ impl<'l> Run<'_, '_, 'l> {
         (self.decisions.item(id) == Some(ix)).then(|| id.to_owned())
     }
 
+    /// `rel` is listed as not uploaded. Never a place at or inside one of
+    /// the daemon's own names: what is held there is not the user's to see.
     fn skip(&mut self, rel: &Path, reason: LocalSkip) {
+        if rel.components().any(|c| daemon_owned(c.as_os_str())) {
+            return;
+        }
         self.outcome.skipped.insert(rel.to_path_buf(), reason);
     }
 

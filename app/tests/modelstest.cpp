@@ -77,6 +77,8 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
         QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
         QCOMPARE(uploadReasonText(QStringLiteral("moved-out-not-opened: Resource temporarily unavailable")), QStringLiteral("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily unavailable)."));
+        QCOMPARE(uploadReasonText(QStringLiteral("unreadable")), QStringLiteral("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it."));
+        QCOMPARE(uploadReasonText(QStringLiteral("state-unreadable")), QStringLiteral("The file's KOneDrive state cannot be read: it stays here until the file is replaced."));
         QCOMPARE(uploadReasonText(QStringLiteral("paused")), QStringLiteral("Paused with the account: it goes on when the pause ends."));
         QCOMPARE(uploadReasonText(QStringLiteral("no-guard")), QStringLiteral("KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));

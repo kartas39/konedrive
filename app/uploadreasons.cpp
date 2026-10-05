@@ -53,6 +53,9 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("hard-link")) {
         return i18n("A file with other hard links: not uploaded.");
     }
+    if (reason == QLatin1String("unreadable")) {
+        return i18n("Cannot be read: not uploaded, nor anything inside it, until KOneDrive may read it.");
+    }
     if (reason == QLatin1String("locked")) {
         return i18n("Locked in OneDrive (open for co-authoring): tried again later.");
     }

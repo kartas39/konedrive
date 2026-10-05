@@ -48,6 +48,8 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
     assert!(upload_reason_text("too-big").starts_with("too big for the space left"));
     assert_eq!(upload_reason_text("network"), "OneDrive could not be reached: tried again later");
     assert_eq!(upload_reason_text("local-error"), "the local file could not be read: tried again later");
+    assert_eq!(upload_reason_text("unreadable"), "cannot be read: not uploaded, nor anything inside it, until konedrive may read it");
+    assert_eq!(upload_reason_text("state-unreadable"), "the file's konedrive state cannot be read: it stays here until the file is replaced");
     assert_eq!(upload_reason_text("index-error"), "konedrive's local index failed: tried again later");
     assert_eq!(upload_reason_text("upload-error"), "the upload failed: tried again later");
     assert_eq!(quota_text("nearing", 5 << 30, false), "OneDrive: 5.0 GiB free (quota nearing).\n");
@@ -155,6 +157,8 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
         LocalSkip::HardLink => ("hard-link", true),
         LocalSkip::NotDownloaded => ("not-downloaded", true),
         LocalSkip::OtherDevice => ("other-device", true),
+        LocalSkip::Unreadable => ("unreadable", true),
+        LocalSkip::BadState => ("state-unreadable", true),
         LocalSkip::Ignored => ("ignored", false),
         LocalSkip::Other(_) => unreachable!("not a spelling of its own"),
     }
@@ -167,7 +171,7 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
 /// stored where it has no sentence yet. A reworded key fails here.
 #[test]
 fn every_reason_is_stored_under_its_spelling_and_is_worded() {
-    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (48, 9));
+    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (48, 11));
     let mut seen = std::collections::BTreeSet::new();
     for reason in Reason::ALL {
         let (spelling, worded) = spelled(&reason);
@@ -181,8 +185,8 @@ fn every_reason_is_stored_under_its_spelling_and_is_worded() {
         assert_eq!((skip.key(), skip.to_string().as_str()), (spelling, spelling));
         assert_eq!(LocalSkip::parse(spelling), skip, "{spelling}");
         assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
-        // `not-downloaded` is a row's reason too, with the same sentence.
-        assert!(seen.insert(spelling) || skip == LocalSkip::NotDownloaded, "{spelling} is spelled twice");
+        // `not-downloaded` and `state-unreadable` are a row's reasons too, with the same sentence.
+        assert!(seen.insert(spelling) || matches!(skip, LocalSkip::NotDownloaded | LocalSkip::BadState), "{spelling} is spelled twice");
     }
     // The forms with something behind the key, as the daemon writes them.
     let detailed = [

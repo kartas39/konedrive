@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
@@ -238,6 +238,26 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
     Ok(())
 }
 
+/// The lines of `local_skipped` at each first place are at the second now.
+/// All are taken off before any is put back, so two directories that
+/// changed places keep each its lines. A line already at a new place gives
+/// way.
+fn move_skipped(conn: &Connection, moves: &[(PathBuf, PathBuf)]) -> Result<(), TreeError> {
+    let mut taken = Vec::with_capacity(moves.len());
+    for (from, to) in moves {
+        let line = conn
+            .prepare_cached("DELETE FROM local_skipped WHERE rel = ?1 RETURNING reason, at, size")?
+            .query_row([path_value(from)], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?)))
+            .optional()?;
+        taken.extend(line.map(|line| (to, line)));
+    }
+    let mut put = conn.prepare_cached("INSERT OR REPLACE INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)")?;
+    for (to, (reason, at, size)) in taken {
+        put.execute(params![path_value(to), reason, at, size])?;
+    }
+    Ok(())
+}
+
 /// Where the object of the item `base` stands once `committed` is carried
 /// out: the folder the row takes it to, or, where the row names none, the
 /// base's; and the name the object has on disk.
@@ -292,6 +312,7 @@ impl TreeStore {
                         params![seq, reason.to_string()],
                     )?;
                 }
+                OutboxOp::MoveSkipped(moves) => move_skipped(&tx, moves)?,
                 OutboxOp::Unskip(rel) => {
                     tx.execute("DELETE FROM local_skipped WHERE rel = ?1", [path_value(rel)])?;
                 }

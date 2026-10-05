@@ -2,21 +2,54 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::local::entry::Type;
 use crate::local::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
-use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
+use std::path::{Path, PathBuf};
+
+use konedrive_tree::outbox::{Detection, LocalSkip, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Kind, TreeError};
 
 use super::{depth, Examined, ExamineError, Run};
+use crate::folder::disk::daemon_owned;
 
 impl Run<'_, '_, '_> {
     /// `local_skipped` lists what is there now: a line for a place this run
     /// examined ([`examined`](Self::examined)) that no longer qualifies goes.
     /// A line at or inside a place that was not examined stays: what could
-    /// not be looked at is not known to be gone.
+    /// not be looked at is not known to be gone. Unless the nearest place
+    /// above it that was examined holds nothing: what is below a directory
+    /// that is not there (deleted, moved out, taken away by a change from
+    /// OneDrive) is not there either.
+    ///
+    /// A line below a directory this run found renamed follows it
+    /// ([`moved`](Self::moved)): it is judged at its new place, and one that
+    /// says "cannot be read" is asked for again there.
     pub(super) fn tidy_skipped(&mut self) -> Result<(), ExamineError> {
+        let mut follow = Vec::new();
         for s in self.facts.skipped()? {
-            if self.examined(&s.rel) && !self.outcome.skipped.contains_key(&s.rel) {
-                self.outcome.ops.push(OutboxOp::Unskip(s.rel));
+            let new = self.moved(&s.rel);
+            let rel = new.clone().unwrap_or_else(|| s.rel.clone());
+            if self.outcome.skipped.contains_key(&rel) {
+                // Listed again by this run, at the place it is now.
+                self.outcome.ops.extend(new.map(|_| OutboxOp::Unskip(s.rel)));
+                continue;
             }
+            let above_is_gone = || rel.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()).find(|a| self.examined(a)).is_some_and(|a| self.listing.at(a).is_none());
+            if self.examined(&rel) || above_is_gone() {
+                self.outcome.ops.push(OutboxOp::Unskip(s.rel));
+                continue;
+            }
+            if new.is_some() {
+                if s.reason == LocalSkip::Unreadable {
+                    if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+                        self.outcome.out.passed.name(parent, name);
+                    }
+                    self.outcome.out.passed.tree(&rel);
+                }
+                follow.push((s.rel, rel));
+            }
+        }
+        // After the lines taken off above, before the lines written below.
+        if !follow.is_empty() {
+            self.outcome.ops.push(OutboxOp::MoveSkipped(follow));
         }
         let listing = self.listing;
         let skipped = std::mem::take(&mut self.outcome.skipped);
@@ -26,6 +59,20 @@ impl Run<'_, '_, '_> {
             OutboxOp::Skip { rel, reason, size }
         }));
         Ok(())
+    }
+
+    /// Where `rel` is now, if it is below a directory this run found
+    /// renamed (the run's own `Rebase`, by the deepest such directory):
+    /// `None` when it is below none, or when the new place is the daemon's
+    /// own.
+    fn moved(&self, rel: &Path) -> Option<PathBuf> {
+        let below = |from: &Path| rel.strip_prefix(from).ok().filter(|rest| !rest.as_os_str().is_empty());
+        let moves = self.outcome.ops.iter().filter_map(|op| match op {
+            OutboxOp::Rebase { from, to } => below(from).map(|rest| (depth(from), to.join(rest))),
+            _ => None,
+        });
+        let (_, new) = moves.max_by_key(|(deep, _)| *deep)?;
+        (!new.components().any(|c| daemon_owned(c.as_os_str()))).then_some(new)
     }
 
     /// Adds item `id` and, for a folder, everything the base has inside it.

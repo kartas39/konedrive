@@ -285,6 +285,9 @@ pub enum OutboxOp {
     /// with its size when it is a file.
     Skip { rel: PathBuf, reason: LocalSkip, size: u64 },
     Unskip(PathBuf),
+    /// Lines of the skipped list, each at its first place, are at the second
+    /// now: a directory the examination found renamed took them along.
+    MoveSkipped(Vec<(PathBuf, PathBuf)>),
     /// The mass-delete guard holds a removal already waiting (unless it
     /// runs already).
     Hold { seq: i64, reason: Reason },

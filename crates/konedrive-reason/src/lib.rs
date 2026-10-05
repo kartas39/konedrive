@@ -484,6 +484,14 @@ pub enum LocalSkip {
     /// On another device than the folder (a nested Btrfs subvolume, a
     /// mount): never uploaded (F72).
     OtherDevice,
+    /// The daemon is refused to read it (another user's file, a directory
+    /// closed to it), or reading it failed: not examined, so neither it nor
+    /// anything inside it is uploaded until it can be read.
+    Unreadable,
+    /// A file that carries an item id and no state konedrive can read: it
+    /// is left alone. Spelled as a row's [`Reason::BadState`], which the
+    /// worker blocks a row with for the same trouble.
+    BadState,
     /// In the table of groups, written by no code.
     Ignored,
     /// A string no variant spells: kept and written back as it is.
@@ -492,7 +500,7 @@ pub enum LocalSkip {
 
 impl LocalSkip {
     /// Every variant but [`LocalSkip::Other`].
-    pub const ALL: [LocalSkip; 9] = [
+    pub const ALL: [LocalSkip; 11] = [
         Self::Symlink,
         Self::Fifo,
         Self::Socket,
@@ -501,6 +509,8 @@ impl LocalSkip {
         Self::HardLink,
         Self::NotDownloaded,
         Self::OtherDevice,
+        Self::Unreadable,
+        Self::BadState,
         Self::Ignored,
     ];
 
@@ -516,6 +526,8 @@ impl LocalSkip {
             Self::HardLink => "hard-link",
             Self::NotDownloaded => "not-downloaded",
             Self::OtherDevice => "other-device",
+            Self::Unreadable => "unreadable",
+            Self::BadState => "state-unreadable",
             Self::Ignored => "ignored",
             Self::Other(stored) => key_of(stored),
         }
@@ -538,14 +550,16 @@ impl LocalSkip {
     }
 
     /// The group it is listed in; `None` for a string in no table.
-    /// `not-downloaded` is also a row's reason ([`Reason::NotLocal`]), and
-    /// is grouped as that is.
+    /// `not-downloaded` and `state-unreadable` are also a row's reasons
+    /// ([`Reason::NotLocal`], [`Reason::BadState`]), and are grouped as
+    /// those are. What cannot be read needs the user, file by file.
     pub fn group(&self) -> Option<Group> {
         Some(match self {
             Self::Symlink | Self::Fifo | Self::Socket | Self::Device | Self::OtherDevice | Self::ReservedName | Self::HardLink | Self::Ignored => {
                 Group::Never
             }
             Self::NotDownloaded => Group::Waiting,
+            Self::Unreadable | Self::BadState => Group::PerFile,
             Self::Other(stored) => return known_group(key_of(stored)),
         })
     }

@@ -68,6 +68,11 @@ impl<'a> ReadStore<'a> {
         self.store.outbox_groups()
     }
 
+    /// [`TreeStore::outbox_groups_unlisted`].
+    pub fn outbox_groups_unlisted(&self) -> Result<Vec<OutboxGroup>, TreeError> {
+        self.store.outbox_groups_unlisted()
+    }
+
     /// [`TreeStore::outbox_places_of`].
     pub fn outbox_places_of(&self, groups: &[&OutboxGroup], limit: u32) -> Result<Vec<(PathBuf, usize)>, TreeError> {
         self.store.outbox_places_of(groups, limit)

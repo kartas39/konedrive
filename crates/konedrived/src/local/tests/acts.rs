@@ -21,6 +21,8 @@
 //!   it was in, until it is found;
 //! - nothing with data leaves the disk; an empty copy is removed only when the item's own
 //!   recorded object was seen (listed) in the same run, and that is said in Activity;
+//! - a file of an item whose marks are damaged is listed as not uploaded, and its content is
+//!   never sent;
 //! - a second and a third look change nothing.
 //!
 //! The first look may be incomplete (it asks for another look, or the second act came
@@ -63,9 +65,11 @@ enum Act {
     DragOut,
     /// `docs/f.txt` goes into `keep`, and nothing is named.
     LeaveUnseen,
+    /// `a.txt` loses its state mark: no state konedrive can read.
+    DamageMarks,
 }
 
-const ACTS: [Act; 18] = [
+const ACTS: [Act; 19] = [
     Act::Nothing,
     Act::Edit,
     Act::Rename,
@@ -84,6 +88,7 @@ const ACTS: [Act; 18] = [
     Act::MoveOutFolder,
     Act::DragOut,
     Act::LeaveUnseen,
+    Act::DamageMarks,
 ];
 
 /// The second act.
@@ -136,12 +141,14 @@ struct Object {
     /// A file's content; `None` for one not downloaded.
     data: Option<Vec<u8>>,
     edited: bool,
+    /// A file with an id whose state mark cannot be read.
+    damaged: bool,
 }
 
 fn object(name: &str, id: Option<&'static str>, own: bool, data: Option<&[u8]>) -> Object {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Object { names: vec![name.to_owned()], out: false, id, key, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false }
+    Object { names: vec![name.to_owned()], out: false, id, key, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false, damaged: false }
 }
 
 struct Scene<'f> {
@@ -311,6 +318,12 @@ impl<'f> Scene<'f> {
             }
             Act::DragOut => self.move_out("docs/f.txt"),
             Act::LeaveUnseen => self.rename_unseen("docs/f.txt", "keep/f.txt"),
+            Act::DamageMarks => {
+                xattr::remove(self.fx.path("a.txt"), placeholder::XATTR_STATE).unwrap();
+                let a = self.own("A").unwrap();
+                self.objects[a].damaged = true;
+                self.touch("a.txt");
+            }
         }
     }
 
@@ -536,7 +549,10 @@ fn outcome(fx: &Fx, seen: &Seen, known: &Known) -> (Outcome, Known) {
                 let o = &objects[i];
                 let at = if o.names.iter().any(|n| n == place) { place.to_owned() } else { o.names.iter().min().unwrap().clone() };
                 out.list.extend(o.names.iter().filter(|n| **n != at && !ignored(n)).map(|n| (n.clone(), "hard-link".to_owned())));
-                if o.edited {
+                if o.damaged {
+                    // Said in the list; no `update`, whatever its content.
+                    out.list.insert((at.clone(), "state-unreadable".to_owned()));
+                } else if o.edited {
                     out.rows.push((Update, at.clone(), Some(id.into())));
                 } else if at != base {
                     out.rows.push((Move, at.clone(), Some(id.into())));
@@ -764,6 +780,6 @@ fn every_small_combination_of_two_local_acts_the_record_and_the_look_has_the_out
             }
         }
     }
-    assert_eq!(ran, 648);
+    assert_eq!(ran, 684);
     assert!(wrong.is_empty(), "{} wrong:\n{}", wrong.len(), wrong.join("\n"));
 }

@@ -48,7 +48,8 @@ fn what_no_variant_spells_still_has_its_key_and_group() {
 }
 
 /// The key of a variant is the key its stored string is summed under, and
-/// the two tables share no key but `not-downloaded`, which is grouped the same in both.
+/// the two tables share no key but `not-downloaded` and `state-unreadable`, each grouped
+/// the same in both.
 #[test]
 fn a_variants_key_is_the_key_of_its_stored_string() {
     for reason in Reason::ALL {
@@ -61,7 +62,7 @@ fn a_variants_key_is_the_key_of_its_stored_string() {
         assert_eq!(LocalSkip::parse(skip.key()), skip);
         assert_eq!((skip.to_string().as_str(), skip.detail()), (skip.key(), None));
         assert_eq!(known_group(skip.key()), skip.group(), "{skip}");
-        assert_eq!(Reason::from_key(skip.key()).is_some(), skip == LocalSkip::NotDownloaded, "{skip}");
+        assert_eq!(Reason::from_key(skip.key()).is_some(), matches!(skip, LocalSkip::NotDownloaded | LocalSkip::BadState), "{skip}");
     }
     assert_eq!(LocalSkip::parse("something-new"), LocalSkip::Other("something-new".into()));
     for group in Group::ALL {
@@ -92,6 +93,7 @@ fn every_key_has_the_group_it_had() {
                 "another-item",
                 "state-unreadable",
                 "blocked",
+                "unreadable",
             ],
         ),
         (Some(Group::Never), &["symlink", "fifo", "socket", "device", "other-device", "reserved-name", "hard-link", "ignored"]),
@@ -138,8 +140,9 @@ fn every_key_has_the_group_it_had() {
             keys += 1;
         }
     }
-    // Every key of the two tables is above: `not-downloaded` is in both, `something-new` in neither.
-    assert_eq!(keys, Reason::ALL.len() + LocalSkip::ALL.len());
+    // Every key of the two tables is above: `not-downloaded` and `state-unreadable` are in
+    // both, `something-new` in neither.
+    assert_eq!(keys, Reason::ALL.len() + LocalSkip::ALL.len() - 1);
 }
 
 /// What an item still waits for is stored and sent as one string, and read

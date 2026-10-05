@@ -256,6 +256,8 @@ A run's parts, its one identity rule and its writes to the disk while deciding: 
 | `hydrated`, size ≠ stamp | changed: `update` |
 | `hydrated`, same size, another time, or a `FAN_CLOSE_WRITE` seen | hashed (quickXorHash, one read): another hash is an `update`; the same hash only refreshes the stamp, so a `touch` uploads nothing |
 | `hydrated`, same size and time, no event | unchanged |
+| an item id and no state, or a state no version writes | left alone and listed (`state-unreadable`) until the state can be read or the file is replaced (F287); so is a copy with such marks |
+| may not be read by name, or is refused at an open, a strip or a read | not examined: no row, and nothing at or below it counts as missing; listed (`unreadable`) and looked at again (F210, F286) |
 
 The read lease (`F_RDLCK` on a read-only descriptor) is taken and released at once, never held
 across anything slow. Only content that is local is ever read for an upload: a file `online-only`,
@@ -953,22 +955,19 @@ is answered by content hash or by place, never by guessing.
 Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`RestoreDeletes`,
 `NotUploaded`, `NotUploadedSummary`, `NotUploadedFiles` and the properties `PendingCount`,
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
-`TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
-`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, the thumbnail setting
-`SetThumbnails` and `Thumbnails`, the automatic hold's `HeldBack` and `SyncAnyway`, and
-`LiveChanges` (whether changes from OneDrive arrive through the notification socket,
-[sync.md](sync.md) §4.2);
-`Transfers.Uploads`;
+`TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`, `SetIgnorePatterns`, `Paused`,
+`PausedUntil` and `IgnorePatterns`, the thumbnail setting `SetThumbnails` and `Thumbnails`, the
+automatic hold's `HeldBack` and `SyncAnyway`, and `LiveChanges` (whether changes from OneDrive
+arrive through the notification socket, [sync.md](sync.md) §4.2); `Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
-`Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
-the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
-`not-uploaded`; the
+`Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6); the activity kinds
+`uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and `not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
 `Account`: `SetMode`, `Mode`, and the quota (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`,
-`QuotaState`, §6.4). For the whole app, on `org.konedrive.Accounts`: the automatic hold's
-settings `SetPauseOnMetered`, `SetOnBattery`, `PauseOnMetered` and `OnBattery` (below;
-`konedrivectl settings on-metered|on-battery`, the Settings page's "Sync" group).
-[desktop.md](desktop.md) has each member, the commands and the window's pages.
+`QuotaState`, §6.4). For the whole app, on `org.konedrive.Accounts`: the automatic hold's settings
+`SetPauseOnMetered`, `SetOnBattery`, `PauseOnMetered` and `OnBattery` (below; `konedrivectl settings
+on-metered|on-battery`, the Settings page's "Sync" group). [desktop.md](desktop.md) has each member,
+the commands and the window's pages.
 
 **Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,
 the space counts of §6.4, the queue totals) and the Not Uploaded summary are kept in memory by the

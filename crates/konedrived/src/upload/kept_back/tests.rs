@@ -77,6 +77,39 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     assert_eq!(store.read_blocking(move |s| files(s, root, false, "no-such", 20)).unwrap(), (vec![], 0));
 }
 
+/// A row that says what a line of the skipped list says at the same place is not a second
+/// line: a file with damaged marks is counted once, whether the worker has blocked its row
+/// yet or not. A row that says something else at that place is shown beside the line.
+#[test]
+fn a_row_that_repeats_a_line_of_the_skipped_list_is_not_counted_again() {
+    let root = Path::new("/nowhere/OneDrive");
+    let shown = |ops: &[OutboxOp]| {
+        let mut store = TreeStore::in_memory().unwrap();
+        store.outbox_apply(ops, 1).unwrap();
+        let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups_unlisted().unwrap(), false);
+        let store = konedrive_tree::Store::new(store);
+        let mut files_of = Vec::new();
+        for (_, reason, count, _) in &got {
+            let key = reason.clone();
+            let (items, total) = store.read_blocking(move |s| files(s, root, false, &key, 0)).unwrap();
+            assert_eq!((items.len() as u32, total), (*count, *count), "{reason}");
+            files_of.extend(items.into_iter().map(|(path, _)| (reason.clone(), path)));
+        }
+        files_of
+    };
+    let line = |rel: &str, reason: &str| OutboxOp::Skip { rel: PathBuf::from(rel), reason: reason.into(), size: 3 };
+    let at = |reason: &str, name: &str| (reason.to_owned(), format!("/nowhere/OneDrive/{name}"));
+    let damaged = vec![at("state-unreadable", "a.txt"), at("state-unreadable", "other.txt")];
+    for (state, reason) in [(OutboxState::Blocked, Some("state-unreadable")), (OutboxState::Blocked, Some("state-unreadable: Input/output error (os error 5)")), (OutboxState::Ready, None)] {
+        let ops = [create("a.txt", state, reason), create("other.txt", OutboxState::Blocked, Some("state-unreadable")), line("a.txt", "state-unreadable")];
+        assert_eq!(shown(&ops), damaged, "{state:?} {reason:?}");
+    }
+    // Another reason at the same place is another truth: a name OneDrive refuses, where a
+    // symbolic link stands now.
+    let ops = [create("a:b", OutboxState::Blocked, Some("name-characters")), line("a:b", "symlink")];
+    assert_eq!(shown(&ops), vec![at("name-characters", "a:b"), at("symlink", "a:b")]);
+}
+
 /// Issue #87: the four keys a failure is stored under all wait.
 #[test]
 fn failure_keys_wait() {

@@ -466,10 +466,10 @@ impl Engine {
     /// writer — and kept in memory for the bus.
     pub(super) async fn recount(&self) {
         let full = self.space_full();
-        match self.store().read(|s| Ok((s.outbox_groups()?, s.skipped_groups()?))).await {
-            Ok((groups, skipped)) => {
+        match self.store().read(|s| Ok((s.outbox_groups()?, s.outbox_groups_unlisted()?, s.skipped_groups()?))).await {
+            Ok((groups, unlisted, skipped)) => {
                 self.shared().counts = OutboxCounts::of(&groups, full);
-                self.cfg.host.kept_back(&crate::upload::kept_back::summary(&skipped, &groups, full));
+                self.cfg.host.kept_back(&crate::upload::kept_back::summary(&skipped, &unlisted, full));
                 self.publish();
             }
             Err(e) => tracing::warn!("cannot count the outbox: {e}"),

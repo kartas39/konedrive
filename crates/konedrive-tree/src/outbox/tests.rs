@@ -438,8 +438,13 @@ fn a_path_that_is_not_utf8_is_kept_as_it_is() {
     let rel = PathBuf::from(OsStr::from_bytes(b"dir/caf\xe9.txt"));
     s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "fifo".into(), size: 0 }], 5).unwrap();
     s.outbox_record(&Detection { rel: rel.clone(), ..detect(OutboxKind::Create, None, Some(inode(4)), "x", None) }).unwrap();
+    // The row follows its directory; the line stays until it is moved by name.
     s.outbox_apply(&[OutboxOp::Rebase { from: "dir".into(), to: "moved".into() }], 5).unwrap();
-    assert_eq!(s.outbox_rows().unwrap()[0].rel, PathBuf::from(OsStr::from_bytes(b"moved/caf\xe9.txt")));
+    assert_eq!(s.local_skipped().unwrap()[0].rel, rel);
+    let was = rel;
+    let rel = PathBuf::from(OsStr::from_bytes(b"moved/caf\xe9.txt"));
+    assert_eq!(s.outbox_rows().unwrap()[0].rel, rel);
+    s.outbox_apply(&[OutboxOp::MoveSkipped(vec![(was, rel.clone())])], 7).unwrap();
     assert_eq!(s.local_skipped().unwrap(), vec![LocalSkipped { rel: rel.clone(), reason: "fifo".into(), at: 5 }]);
     s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "socket".into(), size: 0 }], 9).unwrap();
     assert_eq!(s.local_skipped().unwrap()[0].at, 5, "listed once, when first seen");
