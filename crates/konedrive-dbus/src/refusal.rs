@@ -62,7 +62,7 @@ pub enum Refusal {
     NotUp,
     /// Everything with no name of its own.
     Failed,
-    /// The development gate: the account's drive may not be read-write.
+    /// `TokenExport.ReadWrite` only: no read-write token is handed out for the account's drive.
     WritesNotAllowed,
     /// The account is read-only, or its token cannot write.
     ModeNotGranted,

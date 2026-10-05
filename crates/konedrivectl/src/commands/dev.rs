@@ -12,7 +12,7 @@ pub(crate) async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) 
             let chosen = daemon.chosen(option).await?;
             let export = TokenExportProxy::new(&daemon.connection, chosen.account.path.clone()).await?;
             // Read-only unless asked; the daemon refuses a read-write token for any account
-            // the development gate does not let through (`docs/design/writes.md` §8.2; SECURITY.md).
+            // whose drive `write_test_drive_ids` does not list (`docs/design/writes.md` §8.2; SECURITY.md).
             let token = if read_write { export.read_write().await } else { export.read_only().await };
             let token = token.map_err(|e| anyhow!("{}", konedrivectl::text::refusals::explain_dev_error(&e, &chosen.prefix())))?;
             // `write_secret_atomically` never opens `out` itself, so a symlink there is

@@ -125,7 +125,6 @@ private Q_SLOTS:
     void aSwitchToReadWriteWaitsForItsSignIn()
     {
         startFake();
-        m_daemon->account->gateOpen = true;
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("LastError"), QStringLiteral("an older trouble")}});
         AccountController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.lastError(), QStringLiteral("an older trouble"));
@@ -169,8 +168,8 @@ private Q_SLOTS:
         QCOMPARE(openSpy.count(), 3);
     }
 
-    /// Refusals are told in the window's words, never the daemon's; the
-    /// development gate does not blame the user.
+    /// Refusals the window knows are told in its own words, never the
+    /// daemon's; no account is refused for what it is.
     void aRefusedSwitchSaysWhyInPlainWords()
     {
         startFake();
@@ -179,14 +178,9 @@ private Q_SLOTS:
         QSignalSpy openSpy(&controller, &AccountController::openUrlRequested);
 
         controller.setMode(QStringLiteral("read-write"));
-        QTRY_VERIFY(!controller.actionError().isEmpty());
-        QVERIFY2(controller.actionError().startsWith(QStringLiteral("Uploading is not available for this account in this version.")), qPrintable(controller.actionError()));
-        QVERIFY(!controller.actionError().contains(QStringLiteral("DAEMON-GATE-WORDS")));
-        QCOMPARE(controller.switchingTo(), QString());
-
-        m_daemon->account->gateOpen = true;
-        controller.setMode(QStringLiteral("read-write"));
         QTRY_VERIFY2(controller.actionError().startsWith(QStringLiteral("This account is not signed in.")), qPrintable(controller.actionError()));
+        QVERIFY(!controller.actionError().contains(QStringLiteral("sign in first; then switch")));
+        QCOMPARE(controller.switchingTo(), QString());
         QCOMPARE(openSpy.count(), 0);
 
         QVERIFY(AccountController::modeRefusalText(QStringLiteral("read-write"), QStringLiteral("org.konedrive.Error.ModeNotGranted"), QStringLiteral("x"))

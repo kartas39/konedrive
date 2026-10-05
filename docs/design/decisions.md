@@ -816,7 +816,7 @@ refresh keeps a read-only account's tokens unable to write even if its grant wer
 token (about an hour of read access), never the refresh token, written atomically to a `0600`
 file. It is read-only whatever the account's mode: a read-write account's comes from a refresh that
 asks for `Files.Read` only. `--read-write` (`TokenExport.ReadWrite()`) hands out one that can
-write, for the test-account harness, and only for an account the write gate lets through.
+write, for the test-account harness, and only for an account whose drive is in `write_test_drive_ids`.
 
 **Why.** A test run in the VM needs to speak to Graph without a sign-in of its own, and the refresh
 token must never leave the Secret Service. Only the tests need it — the VM tests against real Graph,
@@ -900,23 +900,26 @@ both are deleted at sign-out.
 
 **Decision.** Every account has a mode, `read-only` or `read-write`, stored in `config.toml`, a new
 account read-only. `Account.Mode` publishes the mode it *runs* in: read-write only while
-`config.toml` says so, the write gate lets its drive through, and its last token was granted
-`Files.ReadWrite`. `Account.SetMode` switches it, and writes read-write only once a sign-in has
-granted that. While uploads are being developed, the gate — `write_test_drive_ids` in
-`config.toml`, empty by default — refuses read-write for every account but the test account's. It
-refuses `SetMode("read-write")` and the export of a token that can write, and it decides the mode
-an account runs in, so a hand edit of `mode` cannot get past it; the file is read again each time,
-so taking a drive off the list counts at once. Nothing in konedrive writes the list. The OAuth scope
+`config.toml` says so, and its last token was granted `Files.ReadWrite` and was seen to reach the
+drive recorded for the account. `Account.SetMode` switches it, and writes read-write only once a
+sign-in has granted that. The mode is the user's choice, for any signed-in account: no list of
+accounts decides it. The outbox's write gate asks all of the above again before each row, with
+`config.toml` read again each time, so a hand edit of `mode` counts at once.
+`write_test_drive_ids` in `config.toml`, empty by default and written by nothing in konedrive, is
+only the list of drives a development build may export a token that can write for. The OAuth scope
 follows the mode (above), and the folder follows it too: read-write lifts the lock. The window's
 switch is "Upload changes made on this computer" on the Account page.
 
 **Why.** Microsoft, not the client, then decides whether a write can happen: a token can write only
 after a sign-in that asked for it. Publishing the mode run in, not the one asked for, keeps
-"read-write" from meaning anything a token cannot do. The gate makes it impossible for an agent, a
-script or a stray click to make the user's real account writable before uploads have been run
-against a test account and released; the release removes it in a change of its own.
+"read-write" from meaning anything a token cannot do. While uploads were being developed, the
+list also decided which accounts could be read-write at all, so that no script or stray click
+could make the user's real account writable; that gate is gone, and the switch, with its sign-in
+in the browser, is what the user decides with. The list stays for the token export, which hands a
+token that can write to whoever asks on the session bus.
 
-**Trade-off.** Nobody but a developer with a test account can upload in this version. A read-write
+**Trade-off.** Once an account is read-write, nothing but the user's own switch stands between a
+change in its folder and the real OneDrive (limitations log F294). A read-write
 account that loses its grant turns read-only until it signs in for it again, and the first switch
 to read-write takes a sign-in of its own (limitations log F60, F61).
 
@@ -1134,7 +1137,7 @@ far more of a real drive than a test needs.
 
 **Decision.** Uploads are tested against mock servers everywhere, and against a real account only
 in one harness (`tests/write-account/`), only for a separate test account. It refuses to start
-unless the drive both tokens reach is the one named and is on the write gate's list, and looks like
+unless the drive both tokens reach is the one named and is in `write_test_drive_ids`, and looks like
 a test account (under 1 GiB used, under 1000 items). Every request, konedrive's own client's
 included, goes through a proxy whose guard admits a write only inside the run's own folder and
 within fixed caps, and stops the run at its first refusal ([writes.md](writes.md) §12.1).

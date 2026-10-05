@@ -265,10 +265,6 @@ QString AccountController::modeRefusalText(const QString &mode, const QString &e
 {
     const QLatin1String prefix("org.konedrive.Error.");
     const QString name = errorName.startsWith(prefix) ? errorName.mid(prefix.size()) : QString();
-    if (name == QLatin1String("WritesNotAllowed")) {
-        // The development gate (F60): nothing the user did, or can undo.
-        return i18n("Uploading is not available for this account in this version. While uploading is being developed, only test accounts can upload. Nothing was changed.");
-    }
     if (name == QLatin1String("NotSignedIn")) {
         return i18n("This account is not signed in. Sign in first, then turn on uploading.");
     }

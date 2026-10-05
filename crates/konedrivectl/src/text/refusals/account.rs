@@ -32,9 +32,9 @@ fn dev_text(refusal: Option<&Refusal>, detail: &str, prefix: &str) -> String {
              (`{prefix} status` says; `{prefix} login` signs in.)"
         ),
         Refusal::WritesNotAllowed => format!(
-            "cannot get a read-write access token: while uploads are being developed, only the test \
-             accounts listed in write_test_drive_ids in ~/.config/konedrive/config.toml can be \
-             read-write, and this account is not one of them. {WITHOUT_READ_WRITE}"
+            "cannot get a read-write access token: one is handed out only for the test accounts \
+             listed in write_test_drive_ids in ~/.config/konedrive/config.toml, and this account \
+             is not one of them. {WITHOUT_READ_WRITE}"
         ),
         Refusal::ModeNotGranted => format!(
             "cannot get a read-write access token: the account is read-only. Switch it first: \
@@ -150,11 +150,6 @@ fn mode_text(label: &str, mode: &str, prefix: &str, refusal: Option<&Refusal>, d
     let other = || format!("{label} was not switched to {mode}: {detail}");
     let Some(refusal) = refusal else { return other() };
     match refusal {
-        Refusal::WritesNotAllowed => format!(
-            "{label} was not switched to read-write: while uploads are being developed, only the test \
-             accounts listed in write_test_drive_ids in ~/.config/konedrive/config.toml can be, and \
-             this account is not one of them. Nothing was changed"
-        ),
         Refusal::NotSignedIn => format!(
             "{label} was not switched to read-write: it is not signed in. Sign in first: `{prefix} login`"
         ),
@@ -162,7 +157,9 @@ fn mode_text(label: &str, mode: &str, prefix: &str, refusal: Option<&Refusal>, d
             "{label} was not switched to read-only: {detail}. `{prefix} account mode read-only --force` \
              switches anyway"
         ),
-        Refusal::NotEmpty
+        // `SetMode` never answers `WritesNotAllowed`: it is the token export's alone.
+        Refusal::WritesNotAllowed
+        | Refusal::NotEmpty
         | Refusal::Unsupported
         | Refusal::InUse
         | Refusal::NoRoot

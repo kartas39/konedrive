@@ -1,6 +1,7 @@
 //! The per-account mode (`docs/design/writes.md` §2), against a fake Microsoft (wiremock) and
-//! over a private bus. The development gate refuses by default; read-only → read-write is
-//! written only once the grant arrives; a cancelled, refused, narrower or foreign sign-in
+//! over a private bus. Any signed-in account may be switched to read-write, whatever
+//! `write_test_drive_ids` lists: that list limits `TokenExport.ReadWrite` alone. Read-only →
+//! read-write is written only once the grant arrives; a cancelled, refused, narrower or foreign sign-in
 //! changes nothing; read-write → read-only is a subset refresh; `TokenExport`'s token stays
 //! read-only; a read-write account whose token cannot write runs read-only.
 
@@ -16,7 +17,7 @@ use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::{
-    AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_SEEN, GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE,
+    AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
 };
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
@@ -131,7 +132,8 @@ impl Setup {
 }
 
 /// A daemon whose one account, "Test", is signed in read-only to drive D1 (code `good-code`:
-/// AT1/RT1), with `allowed` as `write_test_drive_ids`.
+/// AT1/RT1), with `allowed` as `write_test_drive_ids`: the drives `TokenExport.ReadWrite` is
+/// handed out for, and nothing more.
 async fn signed_in(allowed: &[&str]) -> Setup {
     signed_in_with(allowed, "good-code", false).await
 }
@@ -191,33 +193,43 @@ async fn wait_for_error(account: &AccountProxy<'static>, words: &str) -> String 
     account.last_error().await.unwrap()
 }
 
-/// The gate refuses by default — `write_test_drive_ids` is empty — the switch and the
-/// harness's token alike, and a hand edit of `config.toml` to read-write does not get around
-/// it: the account runs read-only, says why, and keeps refreshing with `Files.Read`.
+/// The mode is the user's choice: with `write_test_drive_ids` empty — the account's drive is
+/// not listed — `SetMode("read-write")` answers a sign-in URL, and the account is read-write
+/// once that sign-in grants `Files.ReadWrite`. The list still refuses the harness's token,
+/// before the switch and after it, and that refusal changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_gate_refuses_read_write_by_default() {
+async fn an_account_whose_drive_is_not_listed_is_read_write_once_its_sign_in_grants_it() {
     let s = signed_in(&[]).await;
-    let refused = s.account.set_mode("read-write", false).await.unwrap_err();
-    assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
+    assert!(s.config().snapshot().write_test_drive_ids.is_empty());
     #[cfg(feature = "dev-tools")]
     {
         let refused = s.export.read_write().await.unwrap_err();
         assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
     }
-    assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"));
-    assert_eq!(s.account.last_error().await.unwrap(), "");
+    let url = s.account.set_mode("read-write", false).await.unwrap();
+    let query: HashMap<String, String> = url::Url::parse(&url).unwrap().query_pairs().into_owned().collect();
+    assert_eq!(query["scope"], READ_WRITE);
+    assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"), "nothing before the grant");
 
-    s.config().update_account(&s.id, |a| {
-        a.mode = Mode::ReadWrite;
-        Ok::<_, ConfigError>(())
-    })
-    .unwrap();
-    s.account.refresh_info().await.unwrap();
-    assert_eq!(wait_for_error(&s.account, "write_test_drive_ids").await, GATE_KEEPS_READ_ONLY);
-    assert_eq!(s.account.mode().await.unwrap(), "read-only");
+    assert_eq!(simulate_browser(&url, "code=rw-code").await.status(), 200);
+    let account = &s.account;
+    eventually("read-write", || async move { account.mode().await.unwrap() == "read-write" }).await;
+    assert_eq!(s.configured(), Mode::ReadWrite);
+    assert_eq!(s.refresh_token().as_deref(), Some("RT2"));
+    assert_eq!(s.account.last_error().await.unwrap(), "");
     s.service.tokens().invalidate().await;
-    assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO");
-    assert_eq!(refreshes(&s.server).await.last().unwrap(), "Files.Read User.Read offline_access");
+    assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RW");
+    assert_eq!(refreshes(&s.server).await.last().unwrap(), READ_WRITE, "every refresh asks for the mode's scope");
+
+    #[cfg(feature = "dev-tools")]
+    {
+        let refused = s.export.read_write().await.unwrap_err();
+        assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "the list is about the token: {refused:?}");
+        assert!(refused.to_string().contains("write_test_drive_ids"), "{refused:?}");
+    }
+    s.account.refresh_info().await.unwrap();
+    assert_eq!(s.account.mode().await.unwrap(), "read-write", "the refused export changes nothing");
+    assert_eq!(s.account.last_error().await.unwrap(), "");
 
     let refused = s.account.set_mode("read-write-please", false).await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.freedesktop.DBus.Error.InvalidArgs"), "{refused:?}");
@@ -273,7 +285,7 @@ async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_su
 /// stays signed in, read-only, with its refresh token; `LastError` says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_switch_that_is_not_granted_changes_nothing() {
-    let s = signed_in(&["D1", "D9"]).await;
+    let s = signed_in(&[]).await;
     let config_before = std::fs::read_to_string(s.config().file()).unwrap();
     let unchanged = |s: &Setup| {
         assert_eq!(std::fs::read_to_string(s.config().file()).unwrap(), config_before);
@@ -368,23 +380,26 @@ async fn a_forced_switch_drops_what_a_read_only_account_kept() {
     assert!(waiting.dropped.load(Ordering::SeqCst), "forced: dropped");
 }
 
-/// The mode an account runs in at start: read-write only when `config.toml` says so, the gate
-/// lets its drive through, and the scopes its last token was granted — kept in
-/// `account.json` — carry `Files.ReadWrite`. Otherwise read-only, `LastError` says why, and
-/// the refresh asks for `Files.Read`, never for more than was granted.
+/// The mode an account runs in at start: read-write only when `config.toml` says so — a hand
+/// edit counts — the scopes its last token was granted, kept in `account.json`, carry
+/// `Files.ReadWrite`, and that token was seen to reach the recorded drive; whether
+/// `write_test_drive_ids` lists the drive (`listed`) changes nothing. Otherwise read-only,
+/// `LastError` says why, and the refresh asks for `Files.Read`, never for more than was
+/// granted.
 #[tokio::test]
-async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate() {
+async fn a_read_write_account_runs_read_write_only_with_the_grant_for_its_own_drive() {
     const READ: &str = "Files.Read User.Read offline_access";
-    // (granted, drive the token was seen to reach, allowed, mode, LastError, next refresh asks)
+    // (granted, drive the token was seen to reach, listed, mode, LastError, next refresh asks)
     let cases = [
         (READ_WRITE, "D1", true, Mode::ReadWrite, "", READ_WRITE),
         (READ, "D1", true, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
         ("", "", true, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
-        (READ_WRITE, "D1", false, Mode::ReadOnly, GATE_KEEPS_READ_ONLY, READ),
+        (READ_WRITE, "D1", false, Mode::ReadWrite, "", READ_WRITE),
+        (READ, "D1", false, Mode::ReadOnly, SIGN_IN_TO_WRITE, READ),
         (READ_WRITE, "", true, Mode::ReadOnly, DRIVE_NOT_SEEN, READ),
         (READ_WRITE, "D2", true, Mode::ReadOnly, "reaches the OneDrive drive D2", READ),
     ];
-    for (granted, seen, allowed, mode, error, asked) in cases {
+    for (granted, seen, listed, mode, error, asked) in cases {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
@@ -408,7 +423,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
         config
             .update(|c| {
                 c.account_mut(&id).unwrap().mode = Mode::ReadWrite;
-                c.write_test_drive_ids = DriveId::new("D1").into_iter().filter(|_| allowed).collect();
+                c.write_test_drive_ids = DriveId::new("D1").into_iter().filter(|_| listed).collect();
                 Ok::<_, ConfigError>(())
             })
             .unwrap();
@@ -425,7 +440,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
             .await
             .unwrap();
         svc.startup().await;
-        let case = format!("granted {granted:?}, seen {seen:?}, allowed {allowed}");
+        let case = format!("granted {granted:?}, seen {seen:?}, listed {listed}");
         assert_eq!(svc.mode(), mode, "{case}");
         let last_error = svc.state().get().published_error();
         assert!(if error.is_empty() { last_error.is_empty() } else { last_error.contains(error) }, "{case}: {last_error}");
@@ -436,9 +451,10 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
 }
 
 /// A read-only request that Microsoft answers with a token that can write —
-/// consent it still holds — for an account `config.toml` sets to read-write by hand and the
-/// gate does not let through. The account stays read-only and says so; neither `TokenExport` token
-/// is handed out; the wide token is used to read only.
+/// consent it still holds — for an account `config.toml` sets to read-write by hand, whose
+/// drive `write_test_drive_ids` does not list. The account stays read-only and says so:
+/// what was asked for was read-only. Neither `TokenExport` token is handed out; the wide
+/// token is used to read only.
 #[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_only_request_answered_with_write_access_stays_read_only() {
@@ -496,16 +512,17 @@ async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_writ
 }
 
 /// The drive taken off `write_test_drive_ids` by hand while the daemon runs counts
-/// at once: the harness's token is refused, the account turns read-only at its next look, and
-/// its next refresh asks for `Files.Read`.
+/// at once, for the one thing the list decides: the harness's token is refused. The account
+/// stays read-write, and its refreshes keep asking for `Files.ReadWrite`.
 #[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_drive_taken_off_the_list_while_running_is_read_only_at_once() {
+async fn a_drive_taken_off_the_list_while_running_loses_the_token_export_only() {
     let s = signed_in(&["D1"]).await;
     let url = s.account.set_mode("read-write", false).await.unwrap();
     simulate_browser(&url, "code=rw-code").await;
     let account = &s.account;
     eventually("read-write", || async move { account.mode().await.unwrap() == "read-write" }).await;
+    assert_eq!(s.export.read_write().await.unwrap(), "AT2", "handed out for a listed drive");
 
     let text = std::fs::read_to_string(s.config().file()).unwrap();
     assert!(text.contains("write_test_drive_ids = [\"D1\"]"), "{text}");
@@ -513,17 +530,18 @@ async fn a_drive_taken_off_the_list_while_running_is_read_only_at_once() {
     let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
     s.account.refresh_info().await.unwrap();
-    assert_eq!(wait_for_error(&s.account, "write_test_drive_ids").await, GATE_KEEPS_READ_ONLY);
-    assert_eq!(s.account.mode().await.unwrap(), "read-only");
-    assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO");
-    assert_eq!(refreshes(&s.server).await.last().unwrap(), "Files.Read User.Read offline_access");
+    assert_eq!(s.account.mode().await.unwrap(), "read-write");
+    assert_eq!(s.account.last_error().await.unwrap(), "");
+    s.service.tokens().invalidate().await;
+    assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RW");
+    assert_eq!(refreshes(&s.server).await.last().unwrap(), READ_WRITE);
 }
 
 /// A sign-out forgets the account's name and email, but a read-write account signing
 /// in again is still pinned to its own email, which `config.toml` keeps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_write_account_signing_in_again_is_pinned_to_its_email() {
-    let s = signed_in(&["D1"]).await;
+    let s = signed_in(&[]).await;
     let url = s.account.set_mode("read-write", false).await.unwrap();
     simulate_browser(&url, "code=rw-code").await;
     let account = &s.account;
@@ -539,13 +557,12 @@ async fn a_read_write_account_signing_in_again_is_pinned_to_its_email() {
     s.account.cancel_sign_in().await.unwrap();
 }
 
-/// The mode and the list it is gated by come from one reading of `config.toml`,
+/// The mode and the recorded drive come from one reading of `config.toml`,
 /// taken again each time. A file that cannot be read fails closed — read-only, and
-/// `LastError` says why — and a hand edit of the mode counts at the next look, as an edit of
-/// the list does.
+/// `LastError` says why — and a hand edit of the mode counts at the next look.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_mode_and_the_gate_are_read_together_and_fail_closed() {
-    let s = signed_in(&["D1"]).await;
+async fn the_mode_and_the_drive_are_read_together_and_fail_closed() {
+    let s = signed_in(&[]).await;
     let url = s.account.set_mode("read-write", false).await.unwrap();
     simulate_browser(&url, "code=rw-code").await;
     let account = &s.account;
@@ -569,7 +586,7 @@ async fn the_mode_and_the_gate_are_read_together_and_fail_closed() {
 /// the account; landing on another Microsoft account stores nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_write_account_signing_in_as_someone_else_stores_nothing() {
-    let s = signed_in(&["D1", "D9"]).await;
+    let s = signed_in(&[]).await;
     let url = s.account.set_mode("read-write", false).await.unwrap();
     simulate_browser(&url, "code=rw-code").await;
     let account = &s.account;

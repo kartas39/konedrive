@@ -7,10 +7,10 @@ differently when the folder holds work of its own. How a placeholder is filled i
 [hydration.md](hydration.md); how the folder follows OneDrive is in [sync.md](sync.md); the mode
 itself is in [accounts.md](accounts.md) §10.
 
-**In this version uploading is gated.** Only an account whose drive is listed in
-`write_test_drive_ids` in `config.toml` can be switched to read-write, and that list is empty
-unless someone puts a test account's drive in it by hand (§2.3). Every other account is read-only,
-exactly as [sync.md](sync.md) describes.
+**Uploading is the user's choice, per account.** Every account starts read-only, exactly as
+[sync.md](sync.md) describes, and any signed-in account can be switched to read-write (§2.2). No
+list decides it: `write_test_drive_ids` in `config.toml` only names the drives a development build
+may export a read-write token for (§2.3, §12.1).
 
 **What always holds.**
 
@@ -99,7 +99,7 @@ writes the mode. Then the folder's sync restarts in read-write mode, in this ord
 dropped and the files stay, as ordinary local changes the read phase's stamp check protects (a
 rename half-done under a temporary name stays). The watcher and the worker stop, the lock walk
 runs, and the next refresh asks for `Files.Read`. No sign-in. Any other way to read-only — a
-sign-out, an expired sign-in, the gate or `config.toml`, a narrower grant — keeps the rows: the
+sign-out, an expired sign-in, the write gate or `config.toml`, a narrower grant — keeps the rows: the
 folder is locked, and its sync runs no cycle while they wait, so the read phase's reconcile never
 puts back what they describe; they go once the account is read-write again, and a forced switch
 drops them then too (limitations log F140). A Forget and removing the account are refused
@@ -107,15 +107,16 @@ drops them then too (limitations log F140). A Forget and removing the account ar
 
 ### 2.3 The write gate
 
-While uploads are being finished, `SetMode("read-write")` and `TokenExport.ReadWrite` are
-refused `WritesNotAllowed` for any account whose drive id is not in `write_test_drive_ids`, a
-top-level list in `config.toml`. The list is empty by default and nothing in konedrive writes it; a
-developer adds a test account's drive by hand. An account whose `mode` was set to read-write by
-hand runs read-only unless its drive is listed, and `LastError` says so. The gate is read from the
-file each time the mode is worked out, and the outbox worker asks it again before each row, so a
-drive taken off the list turns read-only at once and nothing more is sent. The
-release removes the gate in a change of its own ([decisions.md](decisions.md), "The mode, and the
-write gate"; limitations log F60).
+The mode is the user's choice, and no list of accounts decides it. The outbox worker asks the
+write gate before each row and between an upload's fragments. It is open only while the folder and
+the account run read-write, `config.toml`, read again, says read-write and records a drive for the
+account, the token carries `Files.ReadWrite` and was last seen to reach that drive, and the
+folder's sync is not stopped; a file that cannot be read closes it. Closed, nothing more is sent,
+the rows wait, and `LastError` says why. A `mode` set to read-write by hand counts once the token
+grants it. `write_test_drive_ids`, a list in `config.toml` that is empty by default and that
+nothing in konedrive writes, is left for one thing: `TokenExport.ReadWrite` is refused
+`WritesNotAllowed` for a drive not on it (§12.1; [decisions.md](decisions.md), "The mode, and the
+write gate"; limitations log F60, F294).
 
 ## 3. Noticing local changes: the watcher
 
@@ -1182,9 +1183,9 @@ test-account run (§12.1), each handled safely either way:
 
 Recorded in [`../limitations/`](../limitations/):
 
-- the gate (F60), the mode following the grant (F61), the lock walks of a switch (F62), the
-  switch's outcome (F64), file modes lost across a round trip (F65), consent that stays with
-  Microsoft (F66);
+- the token export's list (F60), the user's switch as the one barrier (F294), the mode following
+  the grant (F61), the lock walks of a switch (F62), the switch's outcome (F64), file modes lost
+  across a round trip (F65), consent that stays with Microsoft (F66);
 - an edit that kept size and time while nothing watched is missed (F52); copies and moves told
   apart by the recorded handle (F53); deletes decided only on the helper's word (F54); the
   examination's shortcuts (F55);

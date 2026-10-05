@@ -173,7 +173,8 @@ short-lived (about one hour), read-only access token of that account for test ru
 account's mode, never the refresh token; see `docs/limitations/`, W11. The
 released package has neither that interface nor `konedrivectl dev`, and its build fails if the
 daemon names the interface. A token that can change files (`TokenExport.ReadWrite`) is handed out
-only for a test account listed in `write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its
+only for a test account whose drive is listed in `write_test_drive_ids` in `config.toml`, which is
+all that list decides (F60); whether an account uploads is its user's own choice. Removing an account deletes its
 refresh token. An upload session's URL, which lets anyone holding it write that one file until it
 expires, is kept only in the account's tree store (mode `0600`), never logged and never published
 over D-Bus, and the account's token is never sent to it. No token and no URL reaches a log or an

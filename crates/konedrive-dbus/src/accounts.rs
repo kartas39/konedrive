@@ -125,8 +125,8 @@ pub trait Account {
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
-    /// `WritesNotAllowed` (the development gate), `NotSignedIn`, or
-    /// `PendingUploads` unless `force` (`dbus/org.konedrive.Account.xml`).
+    /// `NotSignedIn`, or `PendingUploads` unless `force`
+    /// (`dbus/org.konedrive.Account.xml`).
     fn set_mode(&self, mode: &str, force: bool) -> zbus::Result<String>;
 
     /// The last element of the object path.
@@ -456,8 +456,8 @@ pub trait TokenExport {
     /// its mode. Refused `NotSignedIn` when there is none.
     fn read_only(&self) -> zbus::Result<String>;
     /// The test-account harness's token, which can change files. Refused
-    /// `WritesNotAllowed` for an account the development gate does not let
-    /// through, `ModeNotGranted` for one that is not read-write.
+    /// `WritesNotAllowed` for an account whose drive `write_test_drive_ids`
+    /// does not list, `ModeNotGranted` for one that is not read-write.
     fn read_write(&self) -> zbus::Result<String>;
 }
 

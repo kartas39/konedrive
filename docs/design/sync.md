@@ -548,7 +548,7 @@ refuses the sign-in if that drive is not this account's, or is already another a
   `0600` file. Any process of the same user on the session bus can obtain that hour of read access, which
   is no more than it has by opening files in the folder (limitations log W11). With `--read-write`
   (`TokenExport.ReadWrite()`) it hands out a token that can write, for the test-account harness
-  only, and only for a read-write account the write gate lets through ([writes.md](writes.md)
+  only, and only for a read-write account whose drive is in `write_test_drive_ids` ([writes.md](writes.md)
   §12.1).
 
 At startup, a refresh token found by attribute search (which does not unlock the wallet) means

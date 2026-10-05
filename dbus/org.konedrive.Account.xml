@@ -21,9 +21,8 @@
     <!-- Switches the mode: "read-only" or "read-write" (InvalidArgs
          otherwise). Answers the URL of the sign-in the switch needs, empty
          when it needs none; the caller opens it, as for BeginSignIn.
-         To read-write: refused WritesNotAllowed unless this account's drive
-         is in write_test_drive_ids in config.toml (the development gate),
-         then NotSignedIn unless it is signed in. The sign-in asks for
+         To read-write: any account may be, it is the user's choice; refused
+         NotSignedIn unless it is signed in. The sign-in asks for
          Files.ReadWrite; only once its token response grants that, for this
          account's own drive, does Mode become "read-write". A cancelled
          (CancelSignIn), refused or failed sign-in changes nothing but
@@ -47,10 +46,10 @@
     <property name="Id" type="s" access="read"/>
     <property name="Label" type="s" access="read"/>
     <!-- The mode the account runs in: "read-only" | "read-write". It is
-         "read-write" only while config.toml says so, the development gate
-         lets the account's drive through, and its token carries
-         Files.ReadWrite; otherwise "read-only", with LastError saying why
-         when config.toml says read-write. -->
+         "read-write" only while config.toml says so, and its token carries
+         Files.ReadWrite and reaches the drive config.toml records for the
+         account; otherwise "read-only", with LastError saying why when
+         config.toml says read-write. -->
     <property name="Mode" type="s" access="read"/>
     <!-- signed-out | signing-in | signed-in -->
     <property name="State" type="s" access="read"/>

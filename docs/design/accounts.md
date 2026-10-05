@@ -13,8 +13,8 @@ account. How one folder follows its drive is in [sync.md](sync.md); how a file i
 - Any number of personal Microsoft accounts, each with its own folder, Places entry, activity,
   conflicts and "Not in the Folder" list. Work or school accounts are not supported yet
   (limitations log F49).
-- Every account is read-only unless it is switched to read-write, which only a test account can be
-  while uploads are being developed (§10).
+- Every account is read-only until the user switches it to read-write, which any signed-in
+  account can be (§10).
 - The window shows one account at a time, chosen in a switcher at the top of its sidebar; the tray
   icon sums them all up ([desktop.md](desktop.md) §4, §5).
 - A Microsoft account can be connected once. An account signed in again as a different Microsoft
@@ -238,11 +238,12 @@ start with the file fixed loads it — or migrates it — then.
   but *held back*: its folder is not brought up, its `Folder.State` is `error`, its `LastError` names
   the collision, and a registration is refused (limitations log F48);
 - a `mode` other than `read-only` or `read-write` loads as `read-only`, is logged, and is written
-  back as `read-only` with the next change; a `read-write` the write gate does not let through
-  loads as written, and the account runs read-only (§10).
+  back as `read-only` with the next change; a `read-write` the account's token does not grant
+  loads as written, and the account runs read-only until it does (§10).
 
-`write_test_drive_ids`, at the top of the file, is the write gate's list (§10): absent, as it is
-unless the developer install writes it by hand, no account can be read-write.
+`write_test_drive_ids`, at the top of the file, lists the drives a development build may export a
+read-write token for (§10): absent, as it is unless the developer install writes it by hand, no
+such token is handed out. It decides no account's mode.
 
 ### 4.2 Where each account's data lives
 
@@ -530,8 +531,8 @@ $ konedrivectl --account family login
 Every account has a mode, `read-only` or `read-write`, stored in `config.toml`; a new account is
 read-only. [writes.md](writes.md) §2 has what the mode changes in the folder; in short:
 
-- **The mode it runs in.** `Account.Mode` is `read-write` only while `config.toml` says so, the
-  write gate lets the account's drive through, the drive its token was last seen to reach is that
+- **The mode it runs in.** `Account.Mode` is `read-write` only while `config.toml` says so and
+  records a drive for the account, the drive its token was last seen to reach is that
   drive, and the scopes its last token response granted — the scopes and the drive kept in
   `account.json` — include `Files.ReadWrite`. Otherwise it is `read-only`, and when `config.toml`
   says read-write, `LastError` says why (limitations log F61).
@@ -548,9 +549,11 @@ read-only. [writes.md](writes.md) §2 has what the mode changes in the folder; i
   uploaded, unless forced.
 - **The folder follows the mode.** A read-write folder is kept without the read-only lock; the
   switch takes it off, or puts it back, with a walk of the folder (limitations log F62, F65).
-- **The write gate.** While uploads are being developed, only an account whose drive id is in
-  `write_test_drive_ids` can be read-write: `SetMode("read-write")` is refused `WritesNotAllowed`
-  for any other (limitations log F60). The release removes the gate.
+- **The mode is the user's choice.** Any signed-in account can be switched to read-write, whatever
+  its drive; once it is, nothing but that switch stands between a change in its folder and
+  OneDrive (limitations log F294). `write_test_drive_ids` only limits a development build's
+  `TokenExport.ReadWrite`, refused `WritesNotAllowed` for a drive not on it (limitations log
+  F60).
 
 `konedrivectl account mode [read-only|read-write] [--force]` shows or switches the mode. In the
 window it is the Account page's switch "Upload changes made on this computer", which explains the
@@ -575,7 +578,8 @@ Recorded in [`../limitations/`](../limitations/):
   by account id, not label (F47);
 - an account that collides with an earlier one in a hand-edited `config.toml` is held back (F48);
 - personal Microsoft accounts only (F49);
-- only a test account can be read-write while uploads are being developed (F60); an account is
+- a read-write token is exported only for a listed test drive (F60), and nothing but the user's
+  switch stands between a read-write folder and the real OneDrive (F294); an account is
   read-write only while its token carries `Files.ReadWrite` (F61); the lock walks of a switch
   (F62), what a read-write folder's cycle keeps waiting for local changes (F112), the switch's
   outcome read from `Mode` and `LastError` (F64), file modes lost across a round trip (F65), and

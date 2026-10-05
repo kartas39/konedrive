@@ -268,12 +268,12 @@ impl Gate {
         match persist.store.write_standing(&persist.account) {
             None => return Some("config.toml cannot be read".into()),
             Some(WriteStanding { mode: Mode::ReadOnly, .. }) => return Some("config.toml says the account is read-only".into()),
-            Some(WriteStanding { writable_drive: None, .. }) => {
-                return Some("write_test_drive_ids in config.toml does not list the account's drive".into())
+            Some(WriteStanding { recorded_drive: None, .. }) => {
+                return Some("config.toml records no drive for the account".into())
             }
-            Some(WriteStanding { writable_drive: Some(drive), .. }) if drive != snapshot.live_drive => {
+            Some(WriteStanding { recorded_drive: Some(drive), .. }) if drive != snapshot.live_drive => {
                 return Some(format!(
-                    "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml lets through",
+                    "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml records",
                     snapshot.live_drive,
                     drive.as_str()
                 ))

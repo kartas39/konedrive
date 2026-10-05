@@ -134,7 +134,7 @@ application must never read zeros where real content should be.
 - [F53](F53.md) — A copy and a move are told apart by the file handle the store recorded
 - [F54](F54.md) — A missing item is deleted in OneDrive only on the helper's word
 - [F55](F55.md) — The examination's shortcuts
-- [F60](F60.md) — The write gate: only test accounts can be read-write, until the release
+- [F60](F60.md) — `write_test_drive_ids` limits the read-write token export, and nothing else
 - [F61](F61.md) — A read-write account is read-write only while its last token carried `Files.ReadWrite`
 - [F62](F62.md) — The lock walks of a mode switch
 - [F64](F64.md) — The switch to read-write ends in `Mode` or `LastError`, and nothing says it is under way
@@ -287,6 +287,7 @@ application must never read zeros where real content should be.
 - [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
 - [F292](F292.md) — What the reconcile makes the user's own waits for the disk once for each object with an id
 - [F293](F293.md) — Three crash windows of a rescue, a conflict copy and a removal that keeps something stay open
+- [F294](F294.md) — Once an account is read-write, nothing but the user's own switch stands between a change in its folder and the user's real OneDrive
 
 ---
 
