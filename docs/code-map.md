@@ -330,8 +330,9 @@ reconcile in read-write mode).
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — the holding directory; rescues.
 - `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
-  (survey, forget, remove, settle), what is kept of it, and what an item that can no longer be
-  placed waits for.
+  (survey, forget, remove, settle), and what is kept of it.
+- `materialize/removal/unplaced.rs` — `take_off` for an item that can no longer be placed: what
+  it waits for, and its removal once nothing waits in it.
 - `materialize/replace.rs` — replacing one changed file. `[tests]`
 - `materialize/rw.rs` — `Rw`: a read-write folder's rules, read once per reconcile, and what
   they say of a name, a missing item and a local version in the way. `[tests]`
