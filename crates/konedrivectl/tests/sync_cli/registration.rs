@@ -42,7 +42,7 @@ async fn binary_drives_registration_populate_hydrate_and_dehydrate() {
     let shown = file.to_str().unwrap();
     assert_eq!(
         out_text(&out),
-        format!("paths: {shown:?}\nalways-keep: off\nfree-up: hidden\nblocked-by:\nopen-online: enabled\nopen-online-path: {shown}\n")
+        format!("paths: {shown:?}\nalways-keep: off\nfree-up: hidden\nfree-up-why:\nblocked-by:\nopen-online: enabled\nopen-online-path: {shown}\n")
     );
 
     let out = run(addr, &["sync", "hydrate", file.to_str().unwrap()]);

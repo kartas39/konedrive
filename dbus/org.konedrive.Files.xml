@@ -92,7 +92,8 @@
          call per menu, so that the rules of Pin, Unpin, FreeUp and WebUrl are
          decided here and nowhere else. Nothing is changed and no file is
          opened (nothing is downloaded): the answer comes from what the
-         daemon knows and the marks on the paths. The keys:
+         daemon knows and the marks on the paths, and does not wait for a
+         sync that is writing to the account's store. The keys:
            paths (as): the selected paths Pin takes, in the order given;
              what Pin, Unpin or FreeUp is then called with. A path in no
              account's folder, a link, a file of the user's own, a reserved
@@ -102,12 +103,18 @@
              (the same, and Unpin of paths would be refused).
            free-up (s): "hidden" (no path is a folder, a downloaded file or
              one with a pin of its own); "enabled"; "disabled" (FreeUp of
-             paths would be refused: a folder above keeps one pinned, the
-             folder's helper is not connected, or a file among them has a
-             change waiting to be uploaded).
+             paths would be refused: free-up-why says for what).
+           free-up-why (s): why free-up is "disabled"; empty otherwise.
+             "no-helper": the folder is intercepted and its helper is not
+             connected. "pinned-above": a folder above keeps a path pinned
+             (blocked-by names it). "not-uploaded": a file among the paths
+             has a change waiting to be uploaded. "unknown": the daemon
+             cannot tell now whether one has (the account's sync has not
+             started, or its store cannot be read). The first that holds, in
+             that order, which is the order of FreeUp's own checks.
            blocked-by (s): the name of the folder above that keeps a path
-             pinned, when that is why always-keep is "on-locked" or free-up
-             is "disabled"; empty otherwise.
+             pinned, when that is why always-keep is "on-locked" or
+             free-up-why is "pinned-above"; empty otherwise.
            open-online (s): "hidden" (not exactly one path selected, or one
              that is neither in paths nor an account's folder itself);
              "enabled"; "disabled" (the item is not in OneDrive yet).

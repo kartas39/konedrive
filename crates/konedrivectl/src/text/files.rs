@@ -183,7 +183,7 @@ pub fn unpin_text(unpinned: u32) -> String {
 }
 
 /// The keys of `Files.Menu`'s answer, in the order `sync menu` prints them.
-const MENU_KEYS: [&str; 6] = ["paths", "always-keep", "free-up", "blocked-by", "open-online", "open-online-path"];
+const MENU_KEYS: [&str; 7] = ["paths", "always-keep", "free-up", "free-up-why", "blocked-by", "open-online", "open-online-path"];
 
 /// `sync menu`: the answer of `Files.Menu`, one line per key, `key: value`. A list is
 /// its entries, each quoted, with a space between; an empty value leaves the line at

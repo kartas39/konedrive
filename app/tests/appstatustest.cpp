@@ -667,6 +667,11 @@ private Q_SLOTS:
         FakeAccountObject *family = addFamily();
         QTRY_COMPARE(m_accounts->count(), 2);
         TrayIcon tray(m_app.get());
+        // The second account's properties load after its row is there, and the
+        // tray passes over an account with no folder loaded yet: its line says
+        // when it has one.
+        QTRY_COMPARE(tray.item()->toolTipSubTitle(),
+                     QStringLiteral("Personal — Up to date · checked 20 s ago\nFamily — Up to date · checked 1 min ago"));
         QVERIFY(!tray.resumeAction()->isVisible());
         QCOMPARE(tray.pauseMenu()->actions().size(), 4);
 

@@ -139,9 +139,12 @@ One `freed` event is recorded for each path that freed anything.
 **What the menu is told.** `Files.Menu(paths)` answers, without changing anything, what these
 calls would do with a selection ([desktop.md](desktop.md) §2.9): the paths `Pin` takes; whether
 every one of them is pinned, and whether `Unpin` would refuse them (`on-locked`); whether `FreeUp`
-would refuse them (`disabled`), and the folder to name. It asks with the checks the calls
-themselves make first — the same look at each path, the same rule about a folder above, the
-exception for a folder in the same call included — so the menu and the calls cannot drift apart.
+would refuse them (`disabled`), for what (`free-up-why`), and the folder to name. It asks with the
+checks the calls themselves make first — the same look at each path, the same rule about a folder
+above, the exception for a folder in the same call included — so the menu and the calls cannot
+drift apart. One check is asked another way: whether a downloaded file has a change waiting to be
+uploaded goes to the tree store's read-only connection, once for the whole selection, so that the
+answer does not wait for a sync that is writing; `FreeUp` keeps its exact check on the writer.
 
 **Around pins, elsewhere:**
 
@@ -243,8 +246,9 @@ calls it for a folder at all.
 "Free up space". Both work on several items at once and on folders, and call `Pin`, `Unpin` or
 `FreeUp` asynchronously, one call per action chosen for the whole selection.
 
-What each entry shows is the daemon's answer to one `Files.Menu` call per menu; the rule is the
-daemon's (§5), and the plugin shows it ([desktop.md](desktop.md) §10.2):
+What each entry shows is the daemon's answer to one `Files.Menu` call per menu, which the entries
+wait for and the menu does not; the rule is the daemon's (§5), and the plugin shows it
+([desktop.md](desktop.md) §10.2):
 
 - "Always keep on this device" is checked when every path the daemon takes is pinned, by itself
   or by a folder above it. Checking it calls `Pin`; unchecking it calls `Unpin`, never `FreeUp`

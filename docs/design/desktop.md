@@ -327,12 +327,20 @@ path is reached with `O_PATH` under the resolution rules `Pin` opens it with, an
 read from that — so nothing is downloaded. It is never refused for a path it does not take: such a
 path is not in `paths`.
 
+A menu is waiting for the answer, so it waits for nothing that can take long. The accounts'
+folders are resolved once per call, the selection is looked at in one pass (each path's descriptor
+is closed before the next is opened), and the account's tree store is asked one question for the
+whole selection — whether a downloaded file in it has a change waiting to be uploaded — through
+the store's read-only connection, which does not wait for a sync that is writing. That connection
+sees what was last committed; `FreeUp` itself asks the writer, and is the one that refuses.
+
 | Key | Type | Meaning |
 |---|---|---|
 | `paths` | `as` | the selected paths `Pin` takes, in the order given: what `Pin`, `Unpin` or `FreeUp` is then called with. A path in no account's folder, a symbolic link, a file of the user's own, a `.konedrive-*` name and an account's folder itself are left out |
 | `always-keep` | `s` | `hidden` (no path is taken); `off`; `on` (every path is pinned, by itself or by a folder above it); `on-locked` (the same, and `Unpin` of `paths` would be refused) |
-| `free-up` | `s` | `hidden` (no path is a folder, a downloaded file or one with a pin of its own); `enabled`; `disabled` (`FreeUp` of `paths` would be refused before it changed anything: a folder above keeps one pinned, the folder's helper is not connected, or a file among them has a change waiting to be uploaded) |
-| `blocked-by` | `s` | the name of the folder above that keeps a path pinned, when that is why `always-keep` is `on-locked` or `free-up` is `disabled`; empty otherwise |
+| `free-up` | `s` | `hidden` (no path is a folder, a downloaded file or one with a pin of its own); `enabled`; `disabled` (`FreeUp` of `paths` would be refused before it changed anything: `free-up-why` says for what) |
+| `free-up-why` | `s` | why `free-up` is `disabled`, empty otherwise: `no-helper` (the folder is intercepted and its helper is not connected); `pinned-above` (a folder above keeps a path pinned: `blocked-by`); `not-uploaded` (a file among the paths has a change waiting to be uploaded); `unknown` (the daemon cannot tell now whether one has: the account's sync has not started, or its store cannot be read). The first that holds, in that order — the order of `FreeUp`'s own checks |
+| `blocked-by` | `s` | the name of the folder above that keeps a path pinned, when that is why `always-keep` is `on-locked` or `free-up-why` is `pinned-above`; empty otherwise |
 | `open-online` | `s` | `hidden` (not exactly one path selected, or one that is neither in `paths` nor an account's folder itself); `enabled`; `disabled` (the item has no id: it is not in OneDrive yet) |
 | `open-online-path` | `s` | the path `WebUrl` is then called with; empty when hidden |
 
@@ -703,8 +711,8 @@ a poisoned allocator so that a use of freed memory cannot hide.
 
 The two get what they show from different places. The emblems are read from the marks on the
 files, by the plugin itself: asking the daemon about every file Dolphin draws would be too slow.
-The menu is the daemon's answer, one call per menu (§10.2): its rules are the daemon's, and the
-plugin keeps no copy of them.
+The menu is the daemon's answer, one call per menu (§10.2), which the menu does not wait for: its
+rules are the daemon's, and the plugin keeps no copy of them.
 
 ### 10.1 Emblems
 
@@ -739,18 +747,25 @@ the pin's ancestor walk is not cached (K5), and a directory's own pin bit is not
 The action plugin adds **Always keep on this device**, a checkable action, and **Free up space**,
 for files and folders and any selection (see [pinning.md](pinning.md)), and **Open in OneDrive**.
 
-**What is offered is the daemon's answer.** Each time Dolphin builds a menu, the plugin makes one
-`Files.Menu(paths)` call (§2.9) with the selection and builds its entries from the answer, value by
-value:
+**What is offered is the daemon's answer.** Each time a menu is built for a selection with
+something in a sync folder, the plugin makes one `Files.Menu(paths)` call (§2.9) with the
+selection, and sets its entries from the answer, value by value:
 
 | Answer | Entry |
 |---|---|
 | `always-keep`: `off`, `on` | "Always keep on this device", unchecked or checked |
 | `always-keep`: `on-locked` | checked and disabled, with the tooltip "Kept on this device because “`blocked-by`” is." |
 | `free-up`: `enabled` | "Free up space" |
-| `free-up`: `disabled` | disabled; with the tooltip "Kept on this device because “`blocked-by`” is; unpin it first." when a folder is named, and with none otherwise (limitations log K33) |
+| `free-up`: `disabled` | disabled, with a tooltip for `free-up-why` (below); none for a reason the plugin does not know |
 | `open-online`: `enabled`, `disabled` | "Open in OneDrive"; disabled with the tooltip "Not in OneDrive yet." |
-| `hidden`, or a value the plugin does not know | no entry |
+| `hidden`, or a value the plugin does not know | the entry is hidden |
+
+| `free-up-why` | Tooltip of the disabled "Free up space" |
+|---|---|
+| `pinned-above` | "Kept on this device because “`blocked-by`” is; unpin it first." |
+| `no-helper` | "The konedrive helper is not connected. Try again once it is — it reconnects on its own." |
+| `not-uploaded` | "Not uploaded yet: freeing it up would lose the changes made here." |
+| `unknown` | "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment." |
 
 The plugin decides nothing from the marks: which paths count, what a pin above means and what the
 daemon would refuse are the daemon's rules, in one place (`sync/menu.rs`), beside the calls they
@@ -759,10 +774,17 @@ restate. Two things remain the plugin's:
 - **A check before the call**, by the marks alone: at least one selected path lies in a sync
   folder, or is one (the nearest directory at or above it carries `user.konedrive.root`, resolved
   as for the emblems, §10.1). A right click anywhere else makes no call.
-- **The wait.** Dolphin asks for the entries synchronously, so the call blocks its UI thread: for
-  300 ms at the most, and the message carries no auto-start, so building a menu never starts the
-  daemon. With no answer in time, no daemon, or an error, KOneDrive has no entries in the menu
-  (K32).
+- **The wait, which is the entries' and not the menu's.** The host asks for the entries
+  synchronously, and the plugin never blocks it: it hands over the section at once in a waiting
+  state — the heading and the three entries, shown, disabled, unchecked — and sends the call
+  asynchronously. When the answer comes, each entry is set from it: shown or hidden, enabled,
+  checked, its tooltip. An error, no daemon, or no answer within two seconds hides the entries and
+  the section with them (K32). The message carries no auto-start, so building a menu never starts
+  the daemon. The entries may be gone by the time the answer comes — the menu's window closed, the
+  next menu built — and then nothing is touched: the answer belongs to the menu it was asked for
+  and is dropped with it, and each entry is reached through a guarded pointer. A waiting entry
+  cannot be triggered: it is disabled, and has no paths to call the daemon with until the answer
+  gives them.
 
 **What an entry does.** Checking "Always keep" calls `Pin`; unchecking it calls `Unpin`, which
 only removes the pin -- files stay downloaded, as on Windows (D-A). "Free up space" calls `FreeUp`
@@ -781,7 +803,8 @@ Dolphin's context-menu settings.
 
 **The section.** Whatever the plugin offers is one section of the menu itself, not a submenu: a
 separator whose text is "OneDrive" (`konedrive_section`), the entries, and a closing separator
-(`konedrive_section_end`). With nothing to offer it adds nothing. Whether the heading is drawn is
+(`konedrive_section_end`). For a selection outside every sync folder it adds nothing; when the
+answer offers nothing, the section is hidden with its entries. Whether the heading is drawn is
 the widget style's choice (limitations log K30).
 
 **Open in OneDrive** (`konedrive_open_online`, issue #53) is the section's last entry. The

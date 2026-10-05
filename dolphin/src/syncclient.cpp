@@ -68,6 +68,18 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
         }
         result.freeUp = offerFrom(answer.value(QStringLiteral("free-up")).toString());
     }
+    if (result.freeUp == MenuAnswer::Offer::Disabled) {
+        const QString why = answer.value(QStringLiteral("free-up-why")).toString();
+        if (why == QLatin1String("pinned-above")) {
+            result.freeUpWhy = MenuAnswer::FreeUpWhy::PinnedAbove;
+        } else if (why == QLatin1String("no-helper")) {
+            result.freeUpWhy = MenuAnswer::FreeUpWhy::NoHelper;
+        } else if (why == QLatin1String("not-uploaded")) {
+            result.freeUpWhy = MenuAnswer::FreeUpWhy::NotUploaded;
+        } else if (why == QLatin1String("unknown")) {
+            result.freeUpWhy = MenuAnswer::FreeUpWhy::Unknown;
+        }
+    }
     result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();
     result.openOnlinePath = answer.value(QStringLiteral("open-online-path")).toString();
     if (!result.openOnlinePath.isEmpty()) {
@@ -76,17 +88,23 @@ MenuAnswer menuAnswerFrom(const QVariantMap &answer)
     return result;
 }
 
-std::optional<MenuAnswer> SyncClient::menu(const QStringList &paths) const
+void SyncClient::askMenu(const QStringList &paths, QObject *context, const std::function<void(const std::optional<MenuAnswer> &)> &answered)
 {
     QDBusMessage call = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("Menu"));
     call << paths;
     // A right click is not a request for the daemon: it is never started for it.
     call.setAutoStartService(false);
-    const QDBusMessage reply = m_bus.call(call, QDBus::Block, MenuTimeoutMs);
-    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().size() != 1) {
-        return std::nullopt;
-    }
-    return menuAnswerFrom(valueOf<QVariantMap>(reply.arguments().constFirst()));
+    // The watcher is the context's: it goes with it, and with it the answer.
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, MenuAnswerTimeoutMs), context);
+    connect(watcher, &QDBusPendingCallWatcher::finished, context, [answered](QDBusPendingCallWatcher *finished) {
+        finished->deleteLater();
+        const QDBusPendingReply<QVariantMap> reply = *finished;
+        if (reply.isError()) {
+            answered(std::nullopt);
+        } else {
+            answered(menuAnswerFrom(reply.value()));
+        }
+    });
 }
 
 void SyncClient::start(Operation operation, const QStringList &paths)

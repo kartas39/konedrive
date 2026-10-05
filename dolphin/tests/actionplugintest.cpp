@@ -21,6 +21,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
+#include <QWidget>
 
 #include <memory>
 
@@ -111,6 +112,7 @@ private Q_SLOTS:
         QTest::addColumn<bool>("taken"); // whether `paths` of the answer holds the selected file
         QTest::addColumn<QString>("alwaysKeep");
         QTest::addColumn<QString>("freeUp");
+        QTest::addColumn<QString>("freeUpWhy");
         QTest::addColumn<QString>("blockedBy");
         QTest::addColumn<QString>("openOnline");
         QTest::addColumn<QStringList>("expected");
@@ -123,38 +125,58 @@ private Q_SLOTS:
         const QString hidden = QStringLiteral("hidden");
         const QString enabled = QStringLiteral("enabled");
         const QString disabled = QStringLiteral("disabled");
+        const QString off = QStringLiteral("off");
         const QString none;
-        QTest::newRow("nothing") << false << hidden << hidden << none << hidden << QStringList() << false << none << false << none << false;
-        QTest::newRow("always keep, unchecked") << true << QStringLiteral("off") << hidden << none << hidden << QStringList{Section, AlwaysKeep, SectionEnd} << false << none
-                                                << false << none << false;
-        QTest::newRow("always keep checked, free up, open") << true << QStringLiteral("on") << enabled << none << enabled
+        const QStringList keepAndFreeUp{Section, AlwaysKeep, FreeUp, SectionEnd};
+        QTest::newRow("nothing") << false << hidden << hidden << none << none << hidden << QStringList() << false << none << false << none << false;
+        QTest::newRow("always keep, unchecked") << true << off << hidden << none << none << hidden << QStringList{Section, AlwaysKeep, SectionEnd} << false << none << false << none
+                                                << false;
+        QTest::newRow("always keep checked, free up, open") << true << QStringLiteral("on") << enabled << none << none << enabled
                                                             << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd} << true << none << true << none << true;
-        QTest::newRow("kept by a folder above") << true << QStringLiteral("on-locked") << disabled << QStringLiteral("sub") << hidden
-                                                << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd} << true << QStringLiteral("Kept on this device because “sub” is.") << false
+        QTest::newRow("kept by a folder above") << true << QStringLiteral("on-locked") << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden
+                                                << keepAndFreeUp << true << QStringLiteral("Kept on this device because “sub” is.") << false
                                                 << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
         QTest::newRow("unchecked, free up kept by a folder above")
-            << true << QStringLiteral("off") << disabled << QStringLiteral("sub") << hidden << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd} << false << none << false
+            << true << off << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden << keepAndFreeUp << false << none << false
             << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
-        QTest::newRow("free up refused for another reason") << true << QStringLiteral("off") << disabled << none << hidden << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd}
-                                                            << false << none << false << none << false;
-        QTest::newRow("not in OneDrive yet") << true << QStringLiteral("off") << hidden << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false
-                                             << none << false << none << false;
-        QTest::newRow("open in OneDrive alone") << false << hidden << hidden << none << enabled << QStringList{Section, OpenOnline, SectionEnd} << false << none << false << none
-                                                << true;
-        QTest::newRow("values this plugin does not know") << true << QStringLiteral("sideways") << QStringLiteral("perhaps") << none << QStringLiteral("later") << QStringList()
-                                                          << false << none << false << none << false;
+        QTest::newRow("free up: no helper") << true << off << disabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << false
+                                            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
+        QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << false
+                                               << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
+        QTest::newRow("free up: the daemon cannot tell")
+            << true << off << disabled << QStringLiteral("unknown") << none << hidden << keepAndFreeUp << false << none << false
+            << QStringLiteral("KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.") << false;
+        // Locked by the folder, and "Free up space" refused for something
+        // else first: each entry says its own reason.
+        QTest::newRow("locked by a folder, free up for the helper")
+            << true << QStringLiteral("on-locked") << disabled << QStringLiteral("no-helper") << QStringLiteral("sub") << hidden << keepAndFreeUp << true
+            << QStringLiteral("Kept on this device because “sub” is.") << false
+            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
+        QTest::newRow("free up refused for a reason this plugin does not know") << true << off << disabled << QStringLiteral("something-new") << none << hidden << keepAndFreeUp
+                                                                                << false << none << false << none << false;
+        // A reason is for a disabled entry alone.
+        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << true << none
+                                                      << false;
+        QTest::newRow("not in OneDrive yet") << true << off << hidden << none << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false << none
+                                             << false << none << false;
+        QTest::newRow("open in OneDrive alone") << false << hidden << hidden << none << none << enabled << QStringList{Section, OpenOnline, SectionEnd} << false << none << false
+                                                << none << true;
+        QTest::newRow("values this plugin does not know") << true << QStringLiteral("sideways") << QStringLiteral("perhaps") << none << none << QStringLiteral("later")
+                                                          << QStringList() << false << none << false << none << false;
         // Entries with nothing to call the daemon with are not shown.
-        QTest::newRow("entries, and no paths for them") << false << QStringLiteral("on") << enabled << none << hidden << QStringList() << false << none << false << none << false;
+        QTest::newRow("entries, and no paths for them") << false << QStringLiteral("on") << enabled << none << none << hidden << QStringList() << false << none << false << none
+                                                        << false;
     }
 
-    /// The plugin shows what Menu answers, each value of each key, and
-    /// decides nothing from the marks: the file here is online-only and
-    /// carries no pin, whatever the answer says.
+    /// When the answer comes the plugin shows what Menu says, each value of
+    /// each key, and decides nothing from the marks: the file here is
+    /// online-only and carries no pin, whatever the answer says.
     void theEntriesAreWhatTheDaemonAnswers()
     {
         QFETCH(bool, taken);
         QFETCH(QString, alwaysKeep);
         QFETCH(QString, freeUp);
+        QFETCH(QString, freeUpWhy);
         QFETCH(QString, blockedBy);
         QFETCH(QString, openOnline);
         QFETCH(QStringList, expected);
@@ -169,9 +191,9 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->menuAnswer = FakeSync::menuOf(taken ? QStringList{doc} : QStringList(), alwaysKeep, freeUp, blockedBy, openOnline, doc);
+        m_fake->menuAnswer = FakeSync::menuOf(taken ? QStringList{doc} : QStringList(), alwaysKeep, freeUp, blockedBy, openOnline, doc, freeUpWhy);
 
-        const QList<QAction *> actions = createPlugin()->actions(selection({doc}), nullptr);
+        const QList<QAction *> actions = answered(createPlugin()->actions(selection({doc}), nullptr));
         QCOMPARE(names(actions), expected);
         QCOMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
         if (QAction *keep = find(actions, AlwaysKeep)) {
@@ -186,11 +208,9 @@ private Q_SLOTS:
         if (QAction *free = find(actions, FreeUp)) {
             QCOMPARE(free->text(), QStringLiteral("Free Up Space"));
             QCOMPARE(free->isEnabled(), freeUpEnabled);
-            if (!freeUpEnabled) {
-                // With no folder to name there are no words of the plugin's
-                // own: Qt then shows the entry's text.
-                QCOMPARE(free->toolTip(), freeUpToolTip.isEmpty() ? QStringLiteral("Free Up Space") : freeUpToolTip);
-            }
+            // With no reason the plugin knows there are no words of its
+            // own: Qt then shows the entry's text.
+            QCOMPARE(free->toolTip(), freeUpToolTip.isEmpty() ? QStringLiteral("Free Up Space") : freeUpToolTip);
         }
         if (QAction *online = find(actions, OpenOnline)) {
             QCOMPARE(online->text(), QStringLiteral("Open in OneDrive"));
@@ -201,19 +221,110 @@ private Q_SLOTS:
         }
     }
 
-    void noAnswerGivesNoEntries_data()
+    /// actions() never waits for the daemon: it hands the entries over at
+    /// once, waiting -- the heading and the three of them, shown, disabled,
+    /// unchecked -- and a click on one asks the daemon for nothing. The
+    /// answer sets them when it comes.
+    void theEntriesWaitForTheAnswer()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(startFake());
+        m_fake->menuDelayMs = 700;
+        m_fake->menuAnswer = FakeSync::menuOf({doc}, QStringLiteral("on"), QStringLiteral("enabled"), QString(), QStringLiteral("enabled"), doc);
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QElapsedTimer clock;
+        clock.start();
+        const QList<QAction *> actions = plugin->actions(selection({doc}), nullptr);
+        const qint64 took = clock.elapsed();
+        QVERIFY2(took < m_fake->menuDelayMs / 2, qPrintable(QStringLiteral("actions() took %1 ms").arg(took)));
+
+        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(waiting(actions));
+        QVERIFY(actions.first()->isSeparator() && actions.first()->isVisible());
+        QCOMPARE(actions.first()->text(), QStringLiteral("OneDrive"));
+        for (const QString &name : {AlwaysKeep, FreeUp, OpenOnline}) {
+            QAction *action = find(actions, name);
+            QVERIFY2(action->isVisible() && !action->isEnabled() && !action->isChecked(), qPrintable(name));
+            // A click before the answer: on the entry as it is, which is
+            // disabled, and its signal all the same -- there is nothing yet
+            // to ask the daemon with.
+            action->trigger();
+            Q_EMIT action->triggered(true);
+        }
+        QTRY_COMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
+        QTest::qWait(200);
+        QVERIFY(waiting(actions));
+        QCOMPARE(m_fake->calls(), QStringList());
+
+        QCOMPARE(names(answered(actions)), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(find(actions, AlwaysKeep)->isEnabled() && find(actions, AlwaysKeep)->isChecked());
+        QVERIFY(find(actions, FreeUp)->isEnabled() && find(actions, OpenOnline)->isEnabled());
+        // Setting the entries asked for nothing either.
+        QCOMPARE(m_fake->calls(), QStringList());
+        find(actions, FreeUp)->trigger();
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("FreeUp ") + doc});
+    }
+
+    /// The entries of a menu can be gone before its answer comes -- the
+    /// window closed, the next menu built, the plugin unloaded: the answer
+    /// then touches nothing, and the next menu is set from its own.
+    void anAnswerAfterTheMenuIsGoneTouchesNothing()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(startFake());
+        m_fake->menuDelayMs = 300;
+        const auto afterTheAnswer = [this](int sent) {
+            return QTest::qWaitFor([this, sent]() {
+                return m_fake->menuAnswersSent == sent;
+            }) && (QTest::qWait(200), true);
+        };
+
+        // The window the entries were made for is closed.
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        auto window = std::make_unique<QWidget>();
+        QPointer<QAction> heading = plugin->actions(selection({doc}), window.get()).first();
+        QVERIFY(heading);
+        window.reset();
+        QVERIFY(!heading);
+        QVERIFY(afterTheAnswer(1));
+
+        // The next menu is built before the answer to this one.
+        const QList<QAction *> first = plugin->actions(selection({doc}), nullptr);
+        heading = first.first();
+        const QList<QAction *> second = plugin->actions(selection({doc}), nullptr);
+        QVERIFY(!heading);
+        QCOMPARE(names(answered(second)), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(afterTheAnswer(3));
+        QVERIFY(find(second, AlwaysKeep)->isEnabled() && !waiting(second));
+
+        // The plugin goes while its menu waits.
+        heading = plugin->actions(selection({doc}), nullptr).first();
+        delete plugin;
+        QVERIFY(!heading);
+        QVERIFY(afterTheAnswer(4));
+        QCOMPARE(m_fake->calls(), QStringList());
+    }
+
+    void noAnswerHidesTheEntries_data()
     {
         QTest::addColumn<QString>("daemon");
         QTest::newRow("is not running") << QStringLiteral("none");
         QTest::newRow("never answers") << QStringLiteral("silent");
-        QTest::newRow("answers too late") << QStringLiteral("late");
         QTest::newRow("answers with an error") << QStringLiteral("error");
     }
 
-    /// With no answer -- no daemon, none in time, a refusal -- KOneDrive has
-    /// no entries in the menu: nothing is decided from the marks instead.
-    /// The menu is never held up for longer than the timeout.
-    void noAnswerGivesNoEntries()
+    /// With no answer -- no daemon, a refusal, none within two seconds --
+    /// KOneDrive's entries are hidden, the section with them: nothing is
+    /// decided from the marks instead.
+    void noAnswerHidesTheEntries()
     {
         QFETCH(QString, daemon);
         Tree tree;
@@ -223,7 +334,7 @@ private Q_SLOTS:
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         if (daemon != QLatin1String("none")) {
             QVERIFY(startFake());
-            m_fake->menuDelayMs = daemon == QLatin1String("silent") ? -1 : daemon == QLatin1String("late") ? 4 * konedrive::SyncClient::MenuTimeoutMs : 0;
+            m_fake->menuDelayMs = daemon == QLatin1String("silent") ? -1 : 0;
             if (daemon == QLatin1String("error")) {
                 m_fake->menuErrorName = QStringLiteral("org.konedrive.Error.Failed");
             }
@@ -232,11 +343,24 @@ private Q_SLOTS:
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QElapsedTimer clock;
         clock.start();
-        QCOMPARE(names(plugin->actions(selection({doc}), nullptr)), QStringList());
+        const QList<QAction *> actions = plugin->actions(selection({doc}), nullptr);
+        QCOMPARE(actions.size(), 5);
+        QCOMPARE(names(answered(actions)), QStringList());
         const qint64 took = clock.elapsed();
-        QVERIFY2(took < 4 * konedrive::SyncClient::MenuTimeoutMs, qPrintable(QStringLiteral("actions() took %1 ms").arg(took)));
+        for (QAction *action : actions) {
+            QVERIFY2(!action->isVisible(), qPrintable(action->objectName()));
+            if (!action->isSeparator()) {
+                QVERIFY2(!action->isEnabled() && !action->isChecked(), qPrintable(action->objectName()));
+                action->trigger();
+            }
+        }
+        if (daemon == QLatin1String("silent")) {
+            const int limit = konedrive::SyncClient::MenuAnswerTimeoutMs;
+            QVERIFY2(took >= limit - 100 && took < limit + 1000, qPrintable(QStringLiteral("hidden after %1 ms").arg(took)));
+        }
         if (m_fake) {
             QTRY_COMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
+            QTest::qWait(100);
             QCOMPARE(m_fake->calls(), QStringList());
         } else {
             QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
@@ -266,7 +390,7 @@ private Q_SLOTS:
                                            QStringList{p("OneDrive/escape/f.bin")},
                                            QStringList{p("OneDrive/../Elsewhere/f.bin")},
                                            QStringList{p("Elsewhere/f.bin"), p("Elsewhere/folder")}}) {
-            QCOMPARE(names(plugin->actions(selection(outside), nullptr)), QStringList());
+            QCOMPARE(names(answered(plugin->actions(selection(outside), nullptr))), QStringList());
         }
         QCOMPARE(m_fake->menuCalls(), QList<QStringList>());
 
@@ -274,8 +398,8 @@ private Q_SLOTS:
         // the whole selection, as it was given; so is an account's folder
         // itself.
         const QStringList mixed{p("Elsewhere/f.bin"), p("OneDrive/doc.bin")};
-        QVERIFY(!plugin->actions(selection(mixed), nullptr).isEmpty());
-        QVERIFY(!plugin->actions(selection({p("OneDrive")}), nullptr).isEmpty());
+        QVERIFY(!answered(plugin->actions(selection(mixed), nullptr)).isEmpty());
+        QVERIFY(!answered(plugin->actions(selection({p("OneDrive")}), nullptr)).isEmpty());
         QCOMPARE(m_fake->menuCalls(), (QList<QStringList>{mixed, {p("OneDrive")}}));
         QCOMPARE(m_fake->calls(), QStringList());
     }
@@ -330,15 +454,18 @@ private Q_SLOTS:
         QMenu menu;
         fileItemActions.addActionsTo(&menu, KFileItemActions::MenuActionSource::Plugins);
         // In the order the menu shows them: the heading first, the closing
-        // separator last, the entries between them.
-        QStringList shown;
+        // separator last, the entries between them -- all of them at once,
+        // waiting, and those the answer leaves shown once it has come.
         const QList<QAction *> actions = menu.actions();
-        for (const QAction *action : actions) {
+        QList<QAction *> ours;
+        for (QAction *action : actions) {
             if (action->objectName().startsWith(QLatin1String("konedrive_"))) {
-                shown.append(action->objectName());
+                ours.append(action);
             }
         }
-        QCOMPARE(shown, expected);
+        QCOMPARE(names(ours), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(waiting(ours));
+        QCOMPARE(names(answered(ours)), expected);
         QAction *heading = menu.findChild<QAction *>(Section);
         if (!heading) {
             heading = find(actions, Section);
@@ -363,7 +490,7 @@ private Q_SLOTS:
         m_fake->menuAnswer = FakeSync::menuOf({}, QStringLiteral("hidden"), QStringLiteral("hidden"), QString(), QStringLiteral("enabled"), root);
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        const QList<QAction *> actions = plugin->actions(KFileItemListProperties({folder}), nullptr);
+        const QList<QAction *> actions = answered(plugin->actions(KFileItemListProperties({folder}), nullptr));
         QCOMPARE(names(actions), (QStringList{Section, OpenOnline, SectionEnd}));
         QVERIFY(find(actions, OpenOnline)->isEnabled());
         find(actions, OpenOnline)->trigger();
@@ -385,7 +512,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/doc?id=1"))});
         QCOMPARE(m_fake->calls(), QStringList{QStringLiteral("WebUrl ") + doc});
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
@@ -393,7 +520,7 @@ private Q_SLOTS:
 
         // An answer that is not an address of the web is opened by nothing.
         m_fake->webUrl = QStringLiteral("file:///etc/passwd");
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("The page of “doc.bin” in OneDrive could not be opened")), qPrintable(errors.at(0).at(0).toString()));
         QCOMPARE(m_urls->opened.size(), 1);
@@ -438,7 +565,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QCOMPARE(errors.at(0).at(0).toString(), expected);
         QVERIFY(m_urls->opened.isEmpty());
@@ -459,7 +586,7 @@ private Q_SLOTS:
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
         // The menu was built while the daemon ran; it is gone by the click.
         QVERIFY(startFake());
-        QAction *open = find(plugin->actions(selection({doc}), nullptr), OpenOnline);
+        QAction *open = find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline);
         QVERIFY(open);
         m_fake.reset();
         open->trigger();
@@ -469,9 +596,9 @@ private Q_SLOTS:
 
         QVERIFY(startFake());
         m_fake->defaultAnswer.delayMs = -1;
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(m_fake->calls().size(), 1);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 2);
         QVERIFY2(errors.at(1).at(0).toString().startsWith(QStringLiteral("KOneDrive has not yet answered an earlier request for “doc.bin”")),
                  qPrintable(errors.at(1).at(0).toString()));
@@ -504,10 +631,10 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         const QStringList all{p("OneDrive/a.bin"), p("OneDrive/mine.txt"), p("OneDrive/b.bin"), p("Elsewhere/c.bin")};
-        find(plugin->actions(selection(all), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection(all), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Pin ") + taken.join(QLatin1Char(','))});
 
-        find(plugin->actions(selection(all), nullptr), FreeUp)->trigger();
+        find(answered(plugin->actions(selection(all), nullptr)), FreeUp)->trigger();
         QTRY_COMPARE(m_fake->calls().size(), 2);
         QCOMPARE(m_fake->calls().at(1), QStringLiteral("FreeUp ") + taken.join(QLatin1Char(',')));
         QCOMPARE(m_fake->menuCalls(), (QList<QStringList>{all, all}));
@@ -527,7 +654,7 @@ private Q_SLOTS:
         m_fake->menuAnswer = FakeSync::menuOf({a}, QStringLiteral("on"), QStringLiteral("enabled"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QAction *alwaysKeep = find(plugin->actions(selection({a}), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({a}), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
         QVERIFY(alwaysKeep->isChecked());
         alwaysKeep->trigger();
@@ -550,7 +677,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({a}), nullptr), FreeUp)->trigger();
+        find(answered(plugin->actions(selection({a}), nullptr)), FreeUp)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("2 files are in use or were changed here and were kept")),
                  qPrintable(errors.at(0).at(0).toString()));
@@ -569,7 +696,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *alwaysKeep = find(plugin->actions(selection({doc}), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
 
         QElapsedTimer clock;
@@ -645,7 +772,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *action = find(plugin->actions(selection({doc}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
+        QAction *action = find(answered(plugin->actions(selection({doc}), nullptr)), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
         action->trigger();
         QTRY_COMPARE(errors.count(), 1);
@@ -675,7 +802,7 @@ private Q_SLOTS:
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
         // The menu was built while the daemon ran; it is gone by the click.
         QVERIFY(startFake());
-        QAction *action = find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
+        QAction *action = find(answered(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr)), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
         m_fake.reset();
         QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
@@ -708,11 +835,11 @@ private Q_SLOTS:
         // Building a menu never starts the daemon: with none running there
         // are no entries, and nothing was asked to start.
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
-        QCOMPARE(names(plugin->actions(selection({doc}), nullptr)), QStringList());
+        QCOMPARE(names(answered(plugin->actions(selection({doc}), nullptr))), QStringList());
         QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
         // Choosing an entry of a menu built while it ran does ask for it.
         QVERIFY(startFake());
-        QAction *alwaysKeep = find(plugin->actions(selection({doc}), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
         m_fake.reset();
         alwaysKeep->trigger();
@@ -733,7 +860,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(m_fake->calls().size(), 1);
         m_fake->stop();
         QTRY_COMPARE(errors.count(), 1);
@@ -756,7 +883,7 @@ private Q_SLOTS:
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
         // The menu was built while the daemon ran; it is gone by the click.
         QVERIFY(startFake());
-        QAction *alwaysKeep = find(plugin->actions(selection(paths), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
         m_fake.reset();
         alwaysKeep->trigger();
@@ -782,7 +909,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QCOMPARE(errors.at(0).at(0).toString(),
                  QStringLiteral("Keeping “a.bin” on this device failed: disk full. One more file was not kept on this device for the same reason."));
@@ -804,10 +931,10 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Pin ") + doc});
 
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
         QCOMPARE(m_fake->calls().size(), 1);
         QTRY_COMPARE(errors.count(), 1);
@@ -815,7 +942,7 @@ private Q_SLOTS:
                  qPrintable(errors.at(0).at(0).toString()));
 
         // With a path not asked for yet: that one is sent, the other is not.
-        find(plugin->actions(selection({doc, fresh}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc, fresh}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 2);
         QVERIFY2(!errors.at(1).at(0).toString().contains(QStringLiteral("“new.bin”")), qPrintable(errors.at(1).at(0).toString()));
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
@@ -844,7 +971,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(m_fake->calls().size(), 1);
         const QStringList sent = m_fake->calls().first().mid(QStringLiteral("Pin ").size()).split(QLatin1Char(','));
         QCOMPARE(sent.size(), cap);
@@ -874,7 +1001,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 40000);
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 500);
         QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.at(0).at(0).toString()));

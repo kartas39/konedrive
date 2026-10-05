@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include "syncclient.h"
+
+#include <QAction>
 #include <QDBusConnection>
 #include <QDBusContext>
 #include <QDBusMessage>
@@ -17,6 +20,7 @@
 #include <QObject>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -99,6 +103,35 @@ inline QUrl url(const QString &path)
     return QUrl::fromLocalFile(path);
 }
 
+/// Whether the entries the action plugin handed over for a menu still wait
+/// for the daemon's answer.
+inline bool waiting(const QList<QAction *> &actions)
+{
+    return !actions.isEmpty() && actions.first()->property(konedrive::WaitingProperty).toBool();
+}
+
+/// The entries the action plugin handed over for a menu, once the daemon's
+/// answer -- or the lack of one -- has set them: those that are shown, in
+/// their order. Runs the event loop until then.
+inline QList<QAction *> answered(const QList<QAction *> &actions)
+{
+    if (!QTest::qWaitFor(
+            [&actions]() {
+                return !waiting(actions);
+            },
+            2 * konedrive::SyncClient::MenuAnswerTimeoutMs)) {
+        qWarning("the entries were never set from an answer");
+        return {};
+    }
+    QList<QAction *> shown;
+    for (QAction *action : actions) {
+        if (action->isVisible()) {
+            shown.append(action);
+        }
+    }
+    return shown;
+}
+
 /// A temporary tree of folders and files, removed with it.
 class Tree
 {
@@ -154,8 +187,8 @@ private:
 /// Stands in for konedrived's `org.konedrive.Files` at
 /// `/org/konedrive/Accounts` on the private session bus, on a connection of
 /// its own -- so calls to it really cross the bus -- and on a thread of its
-/// own, as the daemon is a process of its own: the plugin waits for Menu's
-/// answer without running the test's event loop.
+/// own, as the daemon is a process of its own: it answers whether or not the
+/// test's event loop runs.
 ///
 /// Pin(as), Unpin(as) and FreeUp(as) each take the whole batch of paths in one call and
 /// answer with one aggregate result, not one per path, so there is one
@@ -201,6 +234,8 @@ public:
     QString menuErrorName;
     /// How long Menu takes to answer; negative, it never does.
     int menuDelayMs = 0;
+    /// Answers of Menu sent so far, delayed or not.
+    std::atomic<int> menuAnswersSent = 0;
 
     FakeSync()
     {
@@ -221,11 +256,13 @@ public:
                               const QString &freeUp,
                               const QString &blockedBy = QString(),
                               const QString &openOnline = QStringLiteral("hidden"),
-                              const QString &openOnlinePath = QString())
+                              const QString &openOnlinePath = QString(),
+                              const QString &freeUpWhy = QString())
     {
         return {{QStringLiteral("paths"), paths},
                 {QStringLiteral("always-keep"), alwaysKeep},
                 {QStringLiteral("free-up"), freeUp},
+                {QStringLiteral("free-up-why"), freeUpWhy},
                 {QStringLiteral("blocked-by"), blockedBy},
                 {QStringLiteral("open-online"), openOnline},
                 {QStringLiteral("open-online-path"), openOnlinePath}};
@@ -307,7 +344,18 @@ public Q_SLOTS:
         const QVariantMap said = menuAnswer
             ? *menuAnswer
             : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), QString(), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
-        send(menuErrorName.isEmpty() ? message.createReply(QVariant(said)) : message.createErrorReply(menuErrorName, QStringLiteral("refused")), menuDelayMs);
+        const QDBusMessage reply = menuErrorName.isEmpty() ? message.createReply(QVariant(said)) : message.createErrorReply(menuErrorName, QStringLiteral("refused"));
+        if (menuDelayMs == 0) {
+            QDBusConnection(connectionName()).send(reply);
+            ++menuAnswersSent;
+            return;
+        }
+        QTimer::singleShot(menuDelayMs, this, [this, reply]() {
+            if (!m_stopped) {
+                QDBusConnection(connectionName()).send(reply);
+                ++menuAnswersSent;
+            }
+        });
     }
 
 private:

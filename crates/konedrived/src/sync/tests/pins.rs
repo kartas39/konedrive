@@ -356,12 +356,13 @@ async fn the_menus_share_says_a_free_up_would_be_refused_without_the_helper() {
 
     let part = service.menu_part(paths).await;
     assert!(part.taken[0].is_some_and(|taken| !taken.is_dir && !taken.pinned && !taken.hydrated), "{part:?}");
-    assert!(!part.free_up_refused && part.kept_by.is_none(), "{part:?}");
+    assert!(part.free_up_refused.is_none() && part.kept_by.is_none(), "{part:?}");
     service.check_free_up(paths).await.unwrap();
 
     service.hub().set_link(None);
     let part = service.menu_part(paths).await;
-    assert!(part.taken[0].is_some() && part.free_up_refused && part.kept_by.is_none(), "{part:?}");
+    assert!(part.taken[0].is_some() && part.kept_by.is_none(), "{part:?}");
+    assert_eq!(part.free_up_refused, Some(crate::sync::menu::FreeUpWhy::NoHelper));
     assert!(matches!(service.check_free_up(paths).await, Err(SyncError::NoHelper)));
     assert_eq!(service.item_state(&file).await, "online-only", "asking downloaded nothing");
 }

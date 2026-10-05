@@ -155,6 +155,34 @@ impl PinTarget {
     pub(super) fn pinned_above(&self) -> bool {
         !self.above.is_empty()
     }
+
+    /// Where it stands among the pins, for [`kept`].
+    fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
+
+    /// What is left of it once it has been looked at and its descriptor is closed.
+    pub(super) fn into_place(self) -> Place {
+        Place { shown: self.shown, own: self.own, above: self.above }
+    }
+}
+
+/// Where a path stands among the pins: the path, whether it carries a pin of its own, and
+/// the folders above it that carry one, nearest first.
+pub(super) type Standing<'a> = (&'a Path, bool, &'a [PathBuf]);
+
+/// A [`PinTarget`] without its descriptor: what [`kept`] goes by, for `Files.Menu`, which
+/// holds no descriptor of a selection longer than it looks at the path.
+pub(super) struct Place {
+    shown: PathBuf,
+    own: bool,
+    above: Vec<PathBuf>,
+}
+
+impl Place {
+    pub(super) fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
 }
 
 /// Opens and looks at each of `paths`; one that cannot be — outside the
@@ -185,17 +213,15 @@ pub(super) fn pin_target(root: &SyncRoot, path: &Path, reach: Reach, modes: &Arc
 /// the same call takes off. A path with a pin of its own under a pinned
 /// folder is refused too: taking its pin off would leave it pinned.
 pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
-    kept(targets).map(|(target, folder)| SyncError::NotAllowed(pin::refusal(&target.shown, folder)))
+    kept(targets.iter().map(PinTarget::standing)).map(|(shown, folder)| SyncError::NotAllowed(pin::refusal(shown, folder)))
 }
 
 /// The rule of [`kept_by_folder`]: the first of `targets` a folder keeps pinned, and that
 /// folder.
-pub(super) fn kept(targets: &[PinTarget]) -> Option<(&PinTarget, &Path)> {
-    let coming_off: std::collections::HashSet<&Path> =
-        targets.iter().filter(|target| target.own).map(|target| target.shown.as_path()).collect();
+pub(super) fn kept<'a>(targets: impl Iterator<Item = Standing<'a>> + Clone) -> Option<(&'a Path, &'a Path)> {
+    let coming_off: std::collections::HashSet<&Path> = targets.clone().filter(|(_, own, _)| *own).map(|(shown, _, _)| shown).collect();
     targets
-        .iter()
-        .flat_map(|target| target.above.iter().map(move |folder| (target, folder.as_path())))
+        .flat_map(|(shown, _, above)| above.iter().map(move |folder| (shown, folder.as_path())))
         .find(|(_, folder)| !coming_off.contains(folder))
 }
 

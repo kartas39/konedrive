@@ -310,9 +310,7 @@ impl SyncService {
             Err(e) => return Err(cannot_tell(e.to_string())),
         }
         let Some(store) = self.tree_store() else { return Err(cannot_tell("the folder's sync has not started".into())) };
-        let id = reach.item_id(file).map_err(|e| cannot_tell(e.to_string()))?;
-        let meta = file.metadata().map_err(|e| cannot_tell(e.to_string()))?;
-        let inode = Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() };
+        let (id, inode) = outbox_object(file, reach).map_err(|e| cannot_tell(e.to_string()))?;
         // Through the shared connection, off the async runtime: a change an
         // examination is recording now is waited for, not missed.
         let waiting = store
@@ -330,6 +328,14 @@ impl SyncService {
         }
         Ok(())
     }
+}
+
+/// What the outbox knows the file open as `file` by: its item id, when it has one, and
+/// the object itself. `reach` is how `file` was reached.
+pub(super) fn outbox_object(file: &File, reach: Reach) -> std::io::Result<(Option<String>, Inode)> {
+    let id = reach.item_id(file)?;
+    let meta = file.metadata()?;
+    Ok((id, Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() }))
 }
 
 /// Whether a free-up waits for the per-inode lock ([`SyncService::free_one`]).

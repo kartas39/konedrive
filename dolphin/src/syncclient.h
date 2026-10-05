@@ -24,10 +24,11 @@
 // are still sent together, in the one call this operation makes.
 //
 // What the menu offers is the daemon's to say: Menu(as) -> a{sv}, one call for
-// the selection each time a menu is built (menu() below). Dolphin asks for the
-// entries synchronously, so this one call blocks -- for MenuTimeoutMs at the
-// most -- and, unlike the others, never starts the daemon: a right click is
-// not a request for it. No answer means no entries; nothing is decided here
+// the selection each time a menu is built (askMenu() below). It is as
+// asynchronous as the others -- the menu is shown at once and its entries are
+// set when the answer comes -- but, unlike them, it never starts the daemon (a
+// right click is not a request for it) and gives up after
+// MenuAnswerTimeoutMs. No answer means no entries; nothing is decided here
 // from the marks instead.
 //
 // "Open in OneDrive" is the same kind of call, WebUrl(s) -> s for one path:
@@ -44,6 +45,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <functional>
 #include <limits>
 #include <optional>
 
@@ -66,10 +68,23 @@ struct MenuAnswer {
         Disabled,
     };
 
+    /// Why "Free up space" is disabled.
+    enum class FreeUpWhy {
+        /// Not disabled, or for a reason this plugin does not know.
+        NotSaid,
+        /// A folder above keeps an item pinned: `blockedBy`.
+        PinnedAbove,
+        NoHelper,
+        NotUploaded,
+        /// The daemon cannot tell now whether a change waits to be uploaded.
+        Unknown,
+    };
+
     /// What Pin(), Unpin() or FreeUp() is called with.
     QStringList paths;
     AlwaysKeep alwaysKeep = AlwaysKeep::Hidden;
     Offer freeUp = Offer::Hidden;
+    FreeUpWhy freeUpWhy = FreeUpWhy::NotSaid;
     /// The folder above that keeps an item pinned, when that is why
     /// `alwaysKeep` is OnLocked or `freeUp` is Disabled; empty otherwise.
     QString blockedBy;
@@ -77,6 +92,11 @@ struct MenuAnswer {
     /// What WebUrl() is called with.
     QString openOnlinePath;
 };
+
+/// A property of the heading of KOneDrive's entries in a menu: true while
+/// the entries wait for the daemon's answer, false once they are set from it
+/// (or hidden for the lack of one).
+inline constexpr char WaitingProperty[] = "konedriveWaiting";
 
 /// The answer out of the daemon's map. A key that is missing, or a value this
 /// plugin does not know, hides its entry; so does an entry with nothing to
@@ -99,16 +119,20 @@ public:
     /// Calls waiting for the daemon at once, per Dolphin window.
     static constexpr int MaxCallsInFlight = 1000;
 
-    /// How long menu() waits for the daemon.
-    static constexpr int MenuTimeoutMs = 300;
+    /// How long an answer to Menu is waited for before the entries are hidden.
+    static constexpr int MenuAnswerTimeoutMs = 2000;
 
     explicit SyncClient(const QDBusConnection &bus, QObject *parent = nullptr);
 
-    /// Menu(paths), waited for: what the daemon says the menu may offer for
-    /// the selection. `std::nullopt` when it does not answer within
-    /// MenuTimeoutMs, is not running, or answers with an error. The message
-    /// carries no auto-start: this never starts the daemon.
-    std::optional<MenuAnswer> menu(const QStringList &paths) const;
+    /// Menu(paths), asked without waiting: `answered` is called later, on the
+    /// event loop, with what the daemon says the menu may offer for the
+    /// selection -- or with `std::nullopt` when it is not running, answers
+    /// with an error, or has not answered within MenuAnswerTimeoutMs. The
+    /// message carries no auto-start: this never starts the daemon.
+    ///
+    /// The call belongs to `context`: once that is destroyed, `answered` is
+    /// never called.
+    void askMenu(const QStringList &paths, QObject *context, const std::function<void(const std::optional<MenuAnswer> &)> &answered);
 
     /// One Pin(paths) or FreeUp(paths) call for every path not already
     /// waiting and not past the cap; those are reported along with whatever

@@ -106,6 +106,7 @@ impl Files {
             ("paths", Value::from(menu.paths)),
             ("always-keep", Value::from(menu.always_keep.as_str())),
             ("free-up", Value::from(menu.free_up.as_str())),
+            ("free-up-why", Value::from(menu.free_up_why.map_or("", |why| why.as_str()))),
             ("blocked-by", Value::from(menu.blocked_by)),
             ("open-online", Value::from(menu.open_online.as_str())),
             ("open-online-path", Value::from(menu.open_online_path)),

@@ -49,14 +49,15 @@ public:
 
     ~KonedriveActionPlugin() override
     {
-        discardPreviousActions();
+        discardPreviousMenu();
     }
 
     QList<QAction *> actions(const KFileItemListProperties &fileItemInfos, QWidget *parentWidget) override
     {
         // The previous menu is gone by now; its actions would otherwise live
-        // as long as the window they are parented to.
-        discardPreviousActions();
+        // as long as the window they are parented to, and its answer, if it
+        // is still to come, is nobody's.
+        discardPreviousMenu();
 
         QStringList paths;
         const KFileItemList items = fileItemInfos.items();
@@ -67,104 +68,167 @@ public:
             }
         }
         // By the marks alone: a right click outside every sync folder costs
-        // no call. Everything else is the daemon's answer -- and with none
-        // (it is not running, or did not answer in time) there are no
-        // entries: nothing is decided here from the marks instead.
+        // no call. Everything else is the daemon's answer, and nothing is
+        // decided here from the marks instead.
         if (!konedrive::anyInSyncFolder(paths)) {
             return {};
         }
-        const std::optional<konedrive::MenuAnswer> asked = m_client->menu(paths);
-        if (!asked) {
-            return {};
-        }
-        const konedrive::MenuAnswer &answer = *asked;
-        using Keep = konedrive::MenuAnswer::AlwaysKeep;
-        using Offer = konedrive::MenuAnswer::Offer;
 
-        QList<QAction *> entries;
-        if (answer.alwaysKeep != Keep::Hidden) {
-            auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::AlwaysKeepIcon)),
-                                       i18nc("@action:inmenu", "Always Keep on This Device"),
-                                       parentWidget);
-            action->setObjectName(QStringLiteral("konedrive_always_keep"));
-            action->setCheckable(true);
-            action->setChecked(answer.alwaysKeep != Keep::Off);
-            // Checked and locked: unchecking it (Unpin()) would be refused.
-            if (answer.alwaysKeep == Keep::OnLocked) {
-                action->setEnabled(false);
-                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", answer.blockedBy));
-            }
-            const QStringList paths = answer.paths;
-            connect(action, &QAction::triggered, this, [this, paths](bool checked) {
-                // Windows-like (D-A): unchecking it only unpins -- it never
-                // frees space on its own, "Free up space" does that.
-                m_client->start(checked ? konedrive::Operation::AlwaysKeep : konedrive::Operation::Unpin, paths);
-            });
-            entries.append(action);
-        }
-        if (answer.freeUp != Offer::Hidden) {
-            auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::FreeUpSpaceIcon)), i18nc("@action:inmenu", "Free Up Space"), parentWidget);
-            action->setObjectName(QStringLiteral("konedrive_free_up_space"));
-            action->setEnabled(answer.freeUp == Offer::Enabled);
-            // The one reason there are words for: a folder above keeps it.
-            if (answer.freeUp == Offer::Disabled && !answer.blockedBy.isEmpty()) {
-                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", answer.blockedBy));
-            }
-            const QStringList paths = answer.paths;
-            connect(action, &QAction::triggered, this, [this, paths]() {
-                m_client->start(konedrive::Operation::FreeUpSpace, paths);
-            });
-            entries.append(action);
-        }
-        if (answer.openOnline != Offer::Hidden) {
-            auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::OpenOnlineIcon)), i18nc("@action:inmenu", "Open in OneDrive"), parentWidget);
-            action->setObjectName(QStringLiteral("konedrive_open_online"));
-            action->setEnabled(answer.openOnline == Offer::Enabled);
-            if (answer.openOnline == Offer::Disabled) {
-                action->setToolTip(i18nc("@info:tooltip", "Not in OneDrive yet."));
-            }
-            const QString path = answer.openOnlinePath;
-            connect(action, &QAction::triggered, this, [this, path]() {
-                m_client->start(konedrive::Operation::OpenOnline, {path});
-            });
-            entries.append(action);
-        }
-        if (entries.isEmpty()) {
-            return {};
-        }
+        // The menu is never held up for the daemon: the entries are handed
+        // over at once, waiting -- shown, disabled, unchecked, with nothing
+        // to ask the daemon for -- and are set when the answer comes.
+        auto *menu = new Menu(this);
+        m_menu = menu;
 
         // A section of the menu itself, not a submenu: a separator that
         // carries the heading (drawn where the widget style draws a
         // separator's text), the entries, and a closing separator.
-        auto *heading = new QAction(parentWidget);
-        heading->setSeparator(true);
-        heading->setText(i18nc("@title:menu the heading of KOneDrive's entries", "OneDrive"));
-        heading->setObjectName(QStringLiteral("konedrive_section"));
-        auto *end = new QAction(parentWidget);
-        end->setSeparator(true);
-        end->setObjectName(QStringLiteral("konedrive_section_end"));
+        menu->heading = new QAction(parentWidget);
+        menu->heading->setSeparator(true);
+        menu->heading->setText(i18nc("@title:menu the heading of KOneDrive's entries", "OneDrive"));
+        menu->heading->setObjectName(QStringLiteral("konedrive_section"));
+        menu->heading->setProperty(konedrive::WaitingProperty, true);
 
-        QList<QAction *> result;
-        result.append(heading);
-        result.append(entries);
-        result.append(end);
-        for (QAction *action : std::as_const(result)) {
-            m_previousActions.append(action);
-        }
-        return result;
+        menu->alwaysKeep = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::AlwaysKeepIcon)), i18nc("@action:inmenu", "Always Keep on This Device"), parentWidget);
+        menu->alwaysKeep->setObjectName(QStringLiteral("konedrive_always_keep"));
+        menu->alwaysKeep->setCheckable(true);
+        menu->alwaysKeep->setEnabled(false);
+        // The calls are the menu's own: with the menu discarded they are
+        // not made, and before the answer there are no paths to make them with.
+        connect(menu->alwaysKeep, &QAction::triggered, menu, [this, menu](bool checked) {
+            // Windows-like (D-A): unchecking it only unpins -- it never
+            // frees space on its own, "Free up space" does that.
+            m_client->start(checked ? konedrive::Operation::AlwaysKeep : konedrive::Operation::Unpin, menu->paths);
+        });
+
+        menu->freeUp = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::FreeUpSpaceIcon)), i18nc("@action:inmenu", "Free Up Space"), parentWidget);
+        menu->freeUp->setObjectName(QStringLiteral("konedrive_free_up_space"));
+        menu->freeUp->setEnabled(false);
+        connect(menu->freeUp, &QAction::triggered, menu, [this, menu]() {
+            m_client->start(konedrive::Operation::FreeUpSpace, menu->paths);
+        });
+
+        menu->openOnline = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::OpenOnlineIcon)), i18nc("@action:inmenu", "Open in OneDrive"), parentWidget);
+        menu->openOnline->setObjectName(QStringLiteral("konedrive_open_online"));
+        menu->openOnline->setEnabled(false);
+        connect(menu->openOnline, &QAction::triggered, menu, [this, menu]() {
+            if (!menu->openOnlinePath.isEmpty()) {
+                m_client->start(konedrive::Operation::OpenOnline, {menu->openOnlinePath});
+            }
+        });
+
+        menu->end = new QAction(parentWidget);
+        menu->end->setSeparator(true);
+        menu->end->setObjectName(QStringLiteral("konedrive_section_end"));
+
+        // The answer is the menu's too: it is dropped with it.
+        m_client->askMenu(paths, menu, [menu](const std::optional<konedrive::MenuAnswer> &answer) {
+            // No answer -- no daemon, an error, none in time -- is an answer
+            // that offers nothing.
+            menu->show(answer.value_or(konedrive::MenuAnswer()));
+        });
+
+        return {menu->heading, menu->alwaysKeep, menu->freeUp, menu->openOnline, menu->end};
     }
 
 private:
-    void discardPreviousActions()
+    /// The entries handed over for one menu, and what they ask the daemon
+    /// for once it has answered.
+    ///
+    /// The actions belong to the widget they were made for, which can go at
+    /// any time -- the window closed while the answer was on its way -- so
+    /// each is looked at through a guarded pointer, and one that is gone is
+    /// not touched.
+    class Menu : public QObject
     {
-        for (const QPointer<QAction> &action : std::as_const(m_previousActions)) {
-            delete action.data();
+    public:
+        using QObject::QObject;
+
+        QPointer<QAction> heading;
+        QPointer<QAction> alwaysKeep;
+        QPointer<QAction> freeUp;
+        QPointer<QAction> openOnline;
+        QPointer<QAction> end;
+        /// What Pin(), Unpin() or FreeUp() is called with: empty until the
+        /// daemon has answered, so that a waiting entry asks for nothing.
+        QStringList paths;
+        /// What WebUrl() is called with; empty until then, too.
+        QString openOnlinePath;
+
+        /// Sets every entry that is still there from `answer`.
+        void show(const konedrive::MenuAnswer &answer)
+        {
+            using Keep = konedrive::MenuAnswer::AlwaysKeep;
+            using Offer = konedrive::MenuAnswer::Offer;
+            using Why = konedrive::MenuAnswer::FreeUpWhy;
+            paths = answer.paths;
+            openOnlinePath = answer.openOnlinePath;
+
+            if (alwaysKeep) {
+                alwaysKeep->setVisible(answer.alwaysKeep != Keep::Hidden);
+                alwaysKeep->setChecked(answer.alwaysKeep == Keep::On || answer.alwaysKeep == Keep::OnLocked);
+                // Checked and locked: unchecking it (Unpin()) would be refused.
+                alwaysKeep->setEnabled(answer.alwaysKeep == Keep::Off || answer.alwaysKeep == Keep::On);
+                if (answer.alwaysKeep == Keep::OnLocked) {
+                    alwaysKeep->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", answer.blockedBy));
+                }
+            }
+            if (freeUp) {
+                freeUp->setVisible(answer.freeUp != Offer::Hidden);
+                freeUp->setEnabled(answer.freeUp == Offer::Enabled);
+                // Why FreeUp() would be refused, in a tooltip's length: the
+                // words of the refusal itself are refusaltext.cpp's.
+                switch (answer.freeUp == Offer::Disabled ? answer.freeUpWhy : Why::NotSaid) {
+                case Why::PinnedAbove:
+                    freeUp->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", answer.blockedBy));
+                    break;
+                case Why::NoHelper:
+                    freeUp->setToolTip(i18nc("@info:tooltip", "The konedrive helper is not connected. Try again once it is — it reconnects on its own."));
+                    break;
+                case Why::NotUploaded:
+                    freeUp->setToolTip(i18nc("@info:tooltip", "Not uploaded yet: freeing it up would lose the changes made here."));
+                    break;
+                case Why::Unknown:
+                    freeUp->setToolTip(i18nc("@info:tooltip", "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment."));
+                    break;
+                case Why::NotSaid:
+                    break;
+                }
+            }
+            if (openOnline) {
+                openOnline->setVisible(answer.openOnline != Offer::Hidden);
+                openOnline->setEnabled(answer.openOnline == Offer::Enabled);
+                if (answer.openOnline == Offer::Disabled) {
+                    openOnline->setToolTip(i18nc("@info:tooltip", "Not in OneDrive yet."));
+                }
+            }
+            // With nothing offered the section goes too.
+            const bool any = answer.alwaysKeep != Keep::Hidden || answer.freeUp != Offer::Hidden || answer.openOnline != Offer::Hidden;
+            if (end) {
+                end->setVisible(any);
+            }
+            if (heading) {
+                heading->setVisible(any);
+                heading->setProperty(konedrive::WaitingProperty, false);
+            }
         }
-        m_previousActions.clear();
+
+        /// The actions go with the menu they were made for.
+        ~Menu() override
+        {
+            for (const QPointer<QAction> &action : {heading, alwaysKeep, freeUp, openOnline, end}) {
+                delete action.data();
+            }
+        }
+    };
+
+    void discardPreviousMenu()
+    {
+        delete m_menu.data();
     }
 
     konedrive::SyncClient *m_client;
-    QList<QPointer<QAction>> m_previousActions;
+    QPointer<Menu> m_menu;
 };
 
 K_PLUGIN_CLASS_WITH_JSON(KonedriveActionPlugin, "konedriveactions.json")

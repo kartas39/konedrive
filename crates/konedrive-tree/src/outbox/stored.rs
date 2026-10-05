@@ -1,6 +1,7 @@
 //! A row of the outbox in the database: the one place it is read from
 //! SQLite, written to it and removed from it.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -77,11 +78,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
     let dev: Option<i64> = row.get(at::DEV)?;
     let ino: Option<i64> = row.get(at::INO)?;
     let handle: Option<Vec<u8>> = row.get(at::HANDLE)?;
-    let handle = handle.as_deref().and_then(FileHandle::decode);
-    let inode = match (dev, ino) {
-        (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
-        _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
-    };
+    let inode = inode_from(dev, ino, handle);
     let base = Base { etag: row.get(at::BASE_ETAG)?, ctag: row.get(at::BASE_CTAG)?, parent: row.get(at::BASE_PARENT)?, name: row.get(at::BASE_NAME)? };
     let has_base = base != Base::default();
     let snapshot = StoredSnapshot {
@@ -130,6 +127,48 @@ pub(super) fn rows_where(conn: &Connection, filter: &str, params: impl rusqlite:
     let mut statement = conn.prepare_cached(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter}{order}"))?;
     let rows = statement.query_map(params, outbox_row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// A row's local object out of its `dev`, `ino` and `handle` columns.
+fn inode_from(dev: Option<i64>, ino: Option<i64>, handle: Option<Vec<u8>>) -> Option<Inode> {
+    let handle = handle.as_deref().and_then(FileHandle::decode);
+    match (dev, ino) {
+        (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
+        _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
+    }
+}
+
+/// Whether any of `objects` — a local object, and its item id when it has one — has a
+/// row: a row of that item, or a row with no item id whose object it is
+/// ([`Inode::same_object`]). One pass over the outbox, whatever the number of objects.
+pub(super) fn holds_any(conn: &Connection, objects: &[(Option<String>, Inode)]) -> Result<bool, TreeError> {
+    if objects.is_empty() {
+        return Ok(false);
+    }
+    let ids: HashSet<&str> = objects.iter().filter_map(|(id, _)| id.as_deref()).collect();
+    let handles: HashSet<&FileHandle> = objects.iter().filter_map(|(_, inode)| inode.handle.as_ref()).collect();
+    let numbered = |with_handle: Option<bool>| -> HashSet<(u64, u64)> {
+        let wanted = |inode: &&Inode| with_handle.is_none_or(|with| inode.handle.is_some() == with);
+        objects.iter().map(|(_, inode)| inode).filter(wanted).map(|inode| (inode.dev, inode.ino)).collect()
+    };
+    let (all, without_handle) = (numbered(None), numbered(Some(false)));
+    let mut statement = conn.prepare_cached("SELECT item_id, dev, ino, handle FROM outbox")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let held = match row.get::<_, Option<String>>(0)? {
+            Some(id) => ids.contains(id.as_str()),
+            None => match inode_from(row.get(1)?, row.get(2)?, row.get(3)?) {
+                // Two handles are compared, and nothing else; with one missing, the numbers.
+                Some(Inode { dev, ino, handle: Some(handle) }) => handles.contains(&handle) || without_handle.contains(&(dev, ino)),
+                Some(Inode { dev, ino, handle: None }) => all.contains(&(dev, ino)),
+                None => false,
+            },
+        };
+        if held {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {

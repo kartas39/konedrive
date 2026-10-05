@@ -17,7 +17,7 @@ use konedrive_dbus::testing::TestBus;
 use konedrive_graph::oauth::Endpoints;
 use konedrived::account::testing::MemoryWallet;
 use konedrived::daemon::manager::Account;
-use konedrived::sync::menu::{AlwaysKeep, Menu, Offer};
+use konedrived::sync::menu::{AlwaysKeep, FreeUpWhy, Menu, Offer};
 use konedrived::sync::SyncService;
 
 /// The daemon and a client of it, with folders in `dir`.
@@ -108,6 +108,8 @@ async fn agrees(sync: &SyncService, menu: &Menu) {
         AlwaysKeep::Hidden => panic!("hidden with paths: {menu:?}"),
     }
     let free = sync.check_free_up(&paths).await;
+    assert_eq!(menu.free_up_why.is_some(), menu.free_up == Offer::Disabled, "a reason exactly when disabled: {menu:?}");
+    assert_eq!(menu.free_up_why == Some(FreeUpWhy::PinnedAbove), menu.free_up == Offer::Disabled && !menu.blocked_by.is_empty(), "{menu:?}");
     match menu.free_up {
         Offer::Disabled => assert!(free.is_err(), "FreeUp takes {menu:?}"),
         Offer::Enabled => assert!(free.is_ok(), "FreeUp refuses {menu:?}: {free:?}"),
@@ -180,6 +182,7 @@ async fn what_a_folder_above_keeps_pinned_is_locked_naming_the_folder() {
 
     let menu = w.menu(&[&in_docs]).await;
     assert_eq!(offered(&menu), locked);
+    assert_eq!(menu.free_up_why, Some(FreeUpWhy::PinnedAbove));
     agrees(&a.sync, &menu).await;
     let paths = [in_docs.to_str().unwrap()];
     assert_eq!(error_name(&w.files.unpin(&paths).await.unwrap_err()), Some("org.konedrive.Error.NotAllowed"));
@@ -279,11 +282,11 @@ async fn the_menu_is_one_call_on_the_bus() {
     let (c, outside) = (folder.join("c.bin"), w.dir.path().join("A-source/c.bin"));
 
     let answer = w.files.menu(&[c.to_str().unwrap(), outside.to_str().unwrap()]).await.unwrap();
-    assert_eq!(answer.len(), 6, "{answer:?}");
+    assert_eq!(answer.len(), 7, "{answer:?}");
     assert_eq!(<Vec<String>>::try_from(answer["paths"].try_clone().unwrap()).unwrap(), [c.to_str().unwrap()]);
     assert_eq!(
-        ["always-keep", "free-up", "blocked-by", "open-online", "open-online-path"].map(|key| text_of(&answer, key)),
-        ["off", "hidden", "", "hidden", ""].map(str::to_owned)
+        ["always-keep", "free-up", "free-up-why", "blocked-by", "open-online", "open-online-path"].map(|key| text_of(&answer, key)),
+        ["off", "hidden", "", "", "hidden", ""].map(str::to_owned)
     );
     // Never refused for a path it does not take, or for none.
     let answer = w.files.menu(&[]).await.unwrap();

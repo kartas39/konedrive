@@ -802,13 +802,13 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
 - `overlayplugin.cpp` — the overlay plugin: emblems on files.
 - `konedriveoverlay.json` — its description.
 - `overlayengine.h`, `overlayengine.cpp` — its logic: which emblem, and the cache of roots.
-- `actionplugin.cpp` — the context menu plugin: the OneDrive section, built from the daemon's
-  answer (`Files.Menu`).
+- `actionplugin.cpp` — the context menu plugin: the OneDrive section, handed over waiting and
+  set from the daemon's answer (`Files.Menu`) when it comes.
 - `konedriveactions.json` — its description.
 - `filestate.h`, `filestate.cpp` — what a file in the folder is, from its extended attributes
   alone: what the emblems show, and whether a selection is in a sync folder at all.
-- `syncclient.h`, `syncclient.cpp` — the calls to the daemon: the menu's question, waited for,
-  and the entries' calls, which are not.
+- `syncclient.h`, `syncclient.cpp` — the calls to the daemon, none of them waited for: the
+  menu's question and the entries' calls.
 - `refusaltext.h`, `refusaltext.cpp` — what to tell a person when the daemon refused.
 
 ### `dolphin/tests/`
