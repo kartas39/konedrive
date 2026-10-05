@@ -3,6 +3,7 @@
 #include "activityloginterface.h"
 #include "conflictsinterface.h"
 #include "folderinterface.h"
+#include "generated/reasontexts.h"
 #include "uploadqueueinterface.h"
 
 #include <QDBusArgument>
@@ -43,48 +44,6 @@ QString whyText(const QString &reason)
         return i18n("The name begins with .konedrive-, which konedrive keeps for itself.");
     }
     return i18n("It is neither a file nor a folder konedrive can show.");
-}
-
-/// What Skipped() says keeps an item on this computer that the folder cannot hold any more
-/// (`<key>:<detail>`); empty for an item that is not here. Same sentences as konedrivectl's
-/// still_here_text, each through i18n().
-QString stillHereText(const QString &waits)
-{
-    if (waits.isEmpty()) {
-        return QString();
-    }
-    const qsizetype colon = waits.indexOf(QLatin1Char(':'));
-    const QString key = colon < 0 ? waits : waits.left(colon);
-    const QString detail = colon < 0 ? QString() : waits.mid(colon + 1);
-    if (key == QLatin1String("uploads")) {
-        bool isNumber = false;
-        const int count = detail.toInt(&isNumber);
-        if (isNumber) {
-            return i18np("Still on this computer: 1 change in it waits to be uploaded.", "Still on this computer: %1 changes in it wait to be uploaded.", count);
-        }
-    }
-    if (key == QLatin1String("changes")) {
-        return i18n("Still on this computer: what was done at %1 on this computer has not reached OneDrive yet.", detail);
-    }
-    if (key == QLatin1String("open-for-writing")) {
-        return i18n("Still on this computer: %1 is open in a program.", detail);
-    }
-    if (key == QLatin1String("unknown-state")) {
-        return i18n("Still on this computer: whether %1 holds changes cannot be read. Move it out of the folder or delete it.", detail);
-    }
-    if (key == QLatin1String("not-downloaded")) {
-        return i18n("Still on this computer: %1 is not downloaded and is not where OneDrive has it. Move it out of the folder.", detail);
-    }
-    if (key == QLatin1String("local-only")) {
-        return i18n("Still on this computer: %1 is only here (its name is on the ignore list). Move it out of the folder or delete it.", detail);
-    }
-    if (key == QLatin1String("mounted-inside")) {
-        return i18n("Still on this computer: another filesystem is mounted at %1. Unmount it.", detail);
-    }
-    if (key == QLatin1String("moved-in-onedrive")) {
-        return i18n("Still on this computer: %1 was moved in OneDrive, and the name it has there is taken on this computer. Rename or move what has that name.", detail);
-    }
-    return i18n("Still on this computer: it leaves once nothing in it waits to be uploaded.");
 }
 }
 
@@ -507,7 +466,7 @@ void SyncController::loadSkipped()
             m_skipped.clear();
             for (const KonedriveNotInFolderItem &item : reply.value()) {
                 // An item that is still on this computer says so, and what keeps it.
-                const QString stillHere = stillHereText(item.waits);
+                const QString stillHere = stillHereSentence(item.waits);
                 QString why = stillHere.isEmpty() ? whyText(item.reason) : whyText(item.reason) + QLatin1Char(' ') + stillHere;
                 if (!item.here.isEmpty()) {
                     why += QLatin1Char(' ') + i18n("It is at %1.", item.here);

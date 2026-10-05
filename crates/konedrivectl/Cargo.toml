@@ -17,6 +17,7 @@ clap.workspace = true
 futures-util.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
 konedrive-reason = { path = "../konedrive-reason" }
+konedrive-text = { path = "../konedrive-text" }
 libc.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 zbus.workspace = true

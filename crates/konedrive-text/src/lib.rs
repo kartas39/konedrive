@@ -1,0 +1,94 @@
+//! What the codes mean, in words: the one catalogue of the sentences the
+//! clients show for a reason (`konedrive-reason`'s `Reason`, `LocalSkip` and
+//! `WaitsFor`).
+//!
+//! The daemon sends codes and does not translate. The sentences are written
+//! here once, in English: [`reasons`] for why a change is not uploaded,
+//! [`waits`] for what keeps an item on this computer. `konedrivectl` reads
+//! them directly ([`reasons::text`], [`waits::text`]). The window gets a C++
+//! file generated from them ([`cpp`]), every sentence inside `i18n`, so
+//! translation stays in the clients, where KDE's tools expect it.
+//!
+//! A sentence is written as the window shows it: a capital first letter, a
+//! full stop, and named places for what is filled in (`{detail}`, `{path}`,
+//! `{needs}`). Where the clients must differ because they name their own
+//! controls there is one for each ([`Sentence::Each`]), and only then.
+//!
+//! A new code gets its words here, or the crate's tests fail: every key of
+//! `konedrive-reason` has an entry, and the generated files in git are what
+//! the generator writes now.
+
+pub mod cpp;
+pub mod reasons;
+pub mod waits;
+
+/// Who shows a sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Client {
+    /// The window, which points at its own pages and buttons.
+    Window,
+    /// `konedrivectl`, which names the command to run.
+    CommandLine,
+}
+
+/// A sentence of the catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sentence {
+    /// The same for every client.
+    Same(&'static str),
+    /// One for each client, where they name their own controls.
+    Each { window: &'static str, command_line: &'static str },
+}
+
+impl Sentence {
+    /// The sentence `client` shows.
+    pub const fn of(&self, client: Client) -> &'static str {
+        match (self, client) {
+            (Self::Same(sentence), _) => sentence,
+            (Self::Each { window, .. }, Client::Window) => window,
+            (Self::Each { command_line, .. }, Client::CommandLine) => command_line,
+        }
+    }
+}
+
+/// A sentence cut at its places: `Ok` is text as it is written, `Err` the
+/// name of a place (`{detail}` gives `Err("detail")`).
+pub fn pieces(sentence: &str) -> Vec<Result<&str, &str>> {
+    let mut pieces = Vec::new();
+    let mut rest = sentence;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else { break };
+        if open > 0 {
+            pieces.push(Ok(&rest[..open]));
+        }
+        pieces.push(Err(&rest[open + 1..open + close]));
+        rest = &rest[open + close + 1..];
+    }
+    if !rest.is_empty() {
+        pieces.push(Ok(rest));
+    }
+    pieces
+}
+
+/// The sentence with its places filled in. What is filled in is never read
+/// for places again; a place with no value stays as it is written.
+pub fn fill(sentence: &str, places: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for piece in pieces(sentence) {
+        match piece {
+            Ok(text) => out.push_str(text),
+            Err(name) => match places.iter().find(|(place, _)| *place == name) {
+                Some((_, value)) => out.push_str(value),
+                None => {
+                    out.push('{');
+                    out.push_str(name);
+                    out.push('}');
+                }
+            },
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

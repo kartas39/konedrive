@@ -1,0 +1,11 @@
+[package]
+name = "konedrive-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The codes the sentences explain, and nothing else: `konedrivectl` reads the
+# catalogue, and the window gets C++ generated from it.
+[dependencies]
+konedrive-reason = { path = "../konedrive-reason" }

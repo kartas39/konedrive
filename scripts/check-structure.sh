@@ -23,6 +23,9 @@
 # the advised size; a test (`#[test]`) is allowed only in `tests.rs` and under
 # `tests/`.
 #
+# A file under a `generated` directory is written by a generator
+# (crates/konedrive-text): the size advice leaves it out.
+#
 # What it does not see is in docs/limitations/D30.md.
 set -eu
 
@@ -216,7 +219,8 @@ END {
             max = SOURCE_MAX
             kind = "a source file"
         }
-        if (lines[i] > max) {
+        # A generated file (app/generated/) is as long as its source makes it.
+        if (lines[i] > max && file !~ /(^|\/)generated\//) {
             print file ": " lines[i] " lines, " kind " is advised to be at most " max " (rule 1, advice)"
             long++
         }
