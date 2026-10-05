@@ -142,7 +142,7 @@ impl Listing {
             .await?;
         let mut staged_at = Some(seq);
         // The counts are walked once here and once at the end; in between,
-        // each page adds what it listed and placed (issue #39).
+        // each page adds what it listed and placed.
         let (mut listed, mut shown) = (counts.listed, counts.placed);
         self.ctx.state.update(|s| {
             s.cycle.items_listed = counts.listed;

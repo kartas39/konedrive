@@ -54,7 +54,7 @@ async fn binary_activity_lists_what_happened_newest_first() {
 }
 
 /// `sync transfers`: each download under way with how far it has got, or
-/// that there is none; the summary line says what is left (issue #16).
+/// that there is none; the summary line says what is left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_transfers_lists_the_downloads_under_way() {
     let f = harness().await;
@@ -71,7 +71,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
-    // "N now" counts files, not slots (issue #50): the one downloading, which holds none here.
+    // "N now" counts files, not slots: the one downloading, which holds none here.
     assert!(text.starts_with("Downloading:  1 now, 1 file left (3.0 MiB), 0 B done, 0 B/s\n"), "{text}");
     let list = text.lines().nth(3).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
@@ -224,7 +224,7 @@ async fn binary_pin_keeps_a_folder_here_and_free_lets_it_go() {
     assert!(status.lines().any(|l| l == "Always on this device:  0"), "{status}");
 }
 
-/// `sync open` (issue #53) prints the address of the item's page — of a file, and of the
+/// `sync open` prints the address of the item's page — of a file, and of the
 /// account's folder itself, which is the drive's root — and starts no opener: a stand-in
 /// `xdg-open` that records what it is given is alone in `PATH`, `KONEDRIVE_NO_BROWSER` is
 /// empty, and the piped stdout alone, or `--print`, keeps it from being called. A file that

@@ -211,7 +211,7 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
 /// `login` with no account at all adds `Personal` and signs it in, with the built-in client
 /// ID when none is set. A stand-in `xdg-open` that records the address it is
 /// given is in `PATH`, and `KONEDRIVE_NO_BROWSER` is not set: the piped stdout alone keeps
-/// it from being called (issue #21), and the address is printed. The sign-in is cancelled
+/// it from being called, and the address is printed. The sign-in is cancelled
 /// from the bus, as another client would.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn login_with_no_account_adds_personal() {

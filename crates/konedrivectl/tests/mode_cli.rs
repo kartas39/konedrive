@@ -36,7 +36,7 @@ async fn account_mode_shows_the_mode_and_the_gate_refuses_read_write() {
         assert_eq!(out.status.code(), Some(1), "{out:?}");
         assert!(err_text(&out).contains("cannot get a read-write access token") && err_text(&out).contains("write_test_drive_ids"), "{out:?}");
     } else {
-        // A release has no `dev` command (issue #79): clap refuses it.
+        // A release has no `dev` command: clap refuses it.
         assert_eq!(out.status.code(), Some(2), "{out:?}");
     }
     assert!(!token.exists(), "nothing is written");

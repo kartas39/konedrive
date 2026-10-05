@@ -235,7 +235,7 @@ pub(super) struct Shared {
     /// What the outbox held when the worker last looked.
     pub counts: OutboxCounts,
     /// No session given up is cancelled before this (Unix seconds): a
-    /// cancel failed (issue #47).
+    /// cancel failed.
     pub cancel_after: i64,
 }
 

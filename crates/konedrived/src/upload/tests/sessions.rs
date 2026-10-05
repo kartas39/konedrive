@@ -1,5 +1,5 @@
 //! Upload sessions and the empty placeholder an open one holds its name with
-//! in OneDrive (issue #47): every session persisted before its first byte, a
+//! in OneDrive: every session persisted before its first byte, a
 //! refused fragment sent again to the same session, a session given up
 //! always cancelled — so our own placeholder never becomes a conflict.
 
@@ -117,7 +117,7 @@ fn a_crash_at_each_point_of_a_session_is_replayed_to_the_same_item() {
     }
 }
 
-/// The bug as it happened (issue #47): a fragment answered `429`. Refused
+/// The bug as it happened: a fragment answered `429`. Refused
 /// once, it goes again to the same session at once — a file's only fragment
 /// and a middle one alike; refused as often as the client sends it, the row
 /// fails for now, keeps its session, and its next run resumes it. Either way
@@ -334,7 +334,7 @@ fn a_failed_cancel_is_tried_again_after_the_row_left() {
 }
 
 /// `a.txt` queued, and the daemon stopped between opening its session and
-/// persisting it (issue #84): the session's URL is lost, its place recorded,
+/// persisting it: the session's URL is lost, its place recorded,
 /// its placeholder holds the name.
 fn opened_and_lost(w: &World, content: &[u8]) {
     w.write("a.txt", content);
@@ -410,7 +410,7 @@ fn a_409_to_a_fresh_opening_from_a_listed_file_is_still_a_conflict() {
 /// The recorded place outlasts a restart. It goes once the row resolves it
 /// (its placeholder deleted, the file committed); a row that leaves before
 /// — its file removed — leaves it behind, without a row, since our
-/// placeholder may still hold the name (issue #89).
+/// placeholder may still hold the name.
 #[test]
 fn a_recorded_opening_outlasts_a_restart_and_a_row_that_left() {
     for removed in [false, true] {
@@ -431,7 +431,7 @@ fn a_recorded_opening_outlasts_a_restart_and_a_row_that_left() {
     }
 }
 
-/// Issue #89: a name held by the placeholder of an upload session nothing
+/// A name held by the placeholder of an upload session nothing
 /// here recorded — another device's, or one an older version abandoned.
 /// For a new file, a rename onto the name, and a folder's `mkdir`: the row
 /// waits (`name-held-by-an-upload`), no copy is made and the placeholder is
@@ -507,7 +507,7 @@ fn an_empty_file_over_an_unknown_placeholder_is_adopted() {
 }
 
 /// Another device opened a session at the name a few seconds before this
-/// folder's create (issue #89): the create's own opening got `409`, so it
+/// folder's create: the create's own opening got `409`, so it
 /// made no placeholder, and its record goes — the holder is never taken for
 /// ours, never deleted. The row waits; that device's session goes on.
 #[test]
@@ -691,7 +691,7 @@ fn a_resolved_record_never_deletes_a_later_placeholder() {
     assert_eq!(conflicts(&w), 0);
 }
 
-/// A timeout after OneDrive opened the session (issue #89): the record is
+/// A timeout after OneDrive opened the session: the record is
 /// kept. The row then leaves (the file replaced by another inode), and its
 /// record stays without a row: the new row at the name finds our placeholder
 /// through it, deletes it, and goes up under its name — no copy, no endless
@@ -772,7 +772,7 @@ fn a_carried_record_never_takes_a_listed_file_for_ours() {
 
 /// Two records at one name — one left by its row long ago, one carried now
 /// — are two windows, never one: a placeholder another device made between
-/// them is not ours, never deleted; the row waits (issue #89).
+/// them is not ours, never deleted; the row waits.
 #[test]
 fn a_placeholder_between_two_records_windows_is_not_ours() {
     let w = World::new(&[]);

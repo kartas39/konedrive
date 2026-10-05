@@ -269,7 +269,7 @@ pub(super) enum Read {
     Changed,
 }
 
-/// The file's content went up whole (issue #84): its pages in the page
+/// The file's content went up whole: its pages in the page
 /// cache will not be read again for it, and the kernel is told so
 /// (`POSIX_FADV_DONTNEED`), so that a bulk upload does not fill the cache
 /// systemd charges to the daemon. Advisory: the kernel may keep them, and a

@@ -1,4 +1,4 @@
-//! Graph's change notifications over Socket.IO (issue #54): the endpoint a drive hands
+//! Graph's change notifications over Socket.IO: the endpoint a drive hands
 //! out (`GET /me/drive/root/subscriptions/socketIo`), and a small client of Engine.IO v4
 //! and Socket.IO over a websocket that says when something in the drive changed.
 //!

@@ -368,7 +368,7 @@ impl Listing {
         let mode = self.begin(turn, cancel).await?;
         let fetched = self.fetch(turn, mode, cancel).await?;
         // Whether this cycle may have changed the tree: its counts are
-        // published then, and not in an idle cycle (issue #39).
+        // published then, and not in an idle cycle.
         let listed = !matches!(fetched, Fetched::News(stage::News::Changes { .. }));
         let (reconciled, changes) = self.reconcile_fetched(turn, mode, fetched, full_requested, cancel).await?;
         self.after_cycle(turn, reconciled, changes, listed || full_requested).await
@@ -396,7 +396,7 @@ impl Listing {
         self.ctx.state.update(|s| s.cycle.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
         // §16.1), whether or not anyone asks for the list: a batch of them
-        // looked over each cycle (issue #39). Not through `on_store`: the
+        // looked over each cycle. Not through `on_store`: the
         // activity log takes the store's lock itself.
         let (report, held) = (self.ctx.report.clone(), Arc::clone(turn));
         if let Err(e) = tokio::task::spawn_blocking(move || {

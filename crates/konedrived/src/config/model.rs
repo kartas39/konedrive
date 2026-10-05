@@ -28,11 +28,11 @@ pub struct Config {
     #[serde(default, deserialize_with = "drives", skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<DriveId>,
     /// Whether every account holds its background work back on a metered connection
-    /// (issues #57, #95, `docs/design/writes.md` §11); `None` for yes. One setting for the
+    /// (`docs/design/writes.md` §11); `None` for yes. One setting for the
     /// machine, not per account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_on_metered: Option<bool>,
-    /// What every account does on battery (issues #57, #95): `sync`, `power-saver` or
+    /// What every account does on battery: `sync`, `power-saver` or
     /// `pause`; `None` for `power-saver`. Kept as written, so that a value this version does
     /// not know cannot make the whole file unreadable ([`Config::on_battery`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,7 +56,7 @@ pub struct TransfersConfig {
     pub max: Option<i64>,
     /// The streams of large sync transfers (files of [`konedrive_graph::pool::LARGE_FROM`] and up; a
     /// download in parts runs several) one account runs at once; a file being opened is outside
-    /// the limit and its count (issue #50). [`konedrive_graph::pool::DEFAULT_LARGE`] when missing.
+    /// the limit and its count. [`konedrive_graph::pool::DEFAULT_LARGE`] when missing.
     /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
@@ -159,12 +159,12 @@ pub struct AccountConfig {
     /// (`local::names::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_name: String,
-    /// Whether Graph's thumbnails of the account's images and videos are fetched
-    /// (issue #80); `None` for yes.
+    /// Whether Graph's thumbnails of the account's images and videos are fetched;
+    /// `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnails: Option<bool>,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
-    /// app (issue #95): read only to be moved to [`Config::pause_on_metered`]
+    /// app: read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
     #[serde(default, rename = "pause_on_metered", skip_serializing_if = "Option::is_none")]
     pub old_pause_on_metered: Option<bool>,
@@ -209,7 +209,7 @@ pub struct HoldSettings {
     pub on_battery: OnBattery,
 }
 
-/// What every account does on battery (issues #57, #95, `docs/design/writes.md` §11).
+/// What every account does on battery (`docs/design/writes.md` §11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnBattery {
     /// The battery changes nothing.
@@ -395,7 +395,7 @@ pub fn check_label(label: &str, config: &Config, except: Option<&AccountId>) -> 
 }
 
 impl Config {
-    /// Issue #95: the accounts' `pause_on_metered` and `on_battery` of before, folded into
+    /// The accounts' `pause_on_metered` and `on_battery` of before, folded into
     /// the global keys and taken out of the accounts. The strictest value wins, over every
     /// account and a global key already there — an account without the key counting as its
     /// default: `on_battery` takes `pause` over `power-saver` over `sync` (a value it does not

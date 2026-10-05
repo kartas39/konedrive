@@ -1,4 +1,4 @@
-//! A large pinned download in parallel parts (issue #28, `docs/design/hydration.md` §7.5).
+//! A large pinned download in parallel parts (`docs/design/hydration.md` §7.5).
 //!
 //! One stream from OneDrive does not fill a fast link, so a large pinned file is cut into
 //! pieces of [`PIECE`] bytes (the last one shorter). Each stream downloads one piece at a time

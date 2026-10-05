@@ -311,7 +311,7 @@ async fn root_writable(root: &SyncRoot) -> Option<bool> {
 #[async_trait::async_trait]
 impl PendingUploads for SyncService {
     /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
-    /// still full (issue #2).
+    /// still full.
     fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
         self.quota_seen(quota);
     }

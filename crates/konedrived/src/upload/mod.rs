@@ -95,7 +95,7 @@ pub trait OutboxHost: Send + Sync {
     fn activity(&self, _event: &ActivityRow) {}
     /// The worker's status changed: its counts, its uploads, its trouble.
     fn status(&self, _status: &WorkerStatus) {}
-    /// What is kept back, summed again (`NotUploadedSummary()`, issue #38).
+    /// What is kept back, summed again (`NotUploadedSummary()`).
     fn kept_back(&self, _summary: &[crate::upload::kept_back::SummaryRow]) {}
     /// OneDrive changed under a row (§6), or a folder a row needs is gone
     /// there: a delta cycle should run soon, so that the base catches up and
@@ -129,7 +129,7 @@ pub trait OutboxHost: Send + Sync {
     }
 }
 
-/// Cancels upload session `url`, given up (issue #47): cancelled, or gone
+/// Cancels upload session `url`, given up: cancelled, or gone
 /// already, it leaves the store's list of sessions; a cancel that fails keeps
 /// it there, for a later look ([`cancel_given_up`]). Whether it was cancelled.
 pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &SessionUrl) -> Result<bool, TreeError> {
@@ -146,11 +146,11 @@ pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &Ses
     }
 }
 
-/// Cancels up to `limit` of the upload sessions given up (issue #47): listed,
+/// Cancels up to `limit` of the upload sessions given up: listed,
 /// and pointed at by no row. Stops at the first cancel that fails; whether
 /// none did.
 pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -> bool {
-    // With the look, the records of openings whose row left long ago go (issue #89).
+    // With the look, the records of openings whose row left long ago go.
     let now = crate::clock::unix_now();
     if let Err(e) = store.call(move |s| s.upload_openings_expire(now)).await {
         tracing::warn!("cannot expire the upload openings: {e}");
@@ -269,7 +269,7 @@ pub struct OutboxCounts {
     pub space_waiting: u32,
     pub space_waiting_bytes: u64,
     /// `TooBigCount`: files refused as too big for the space left; and their size, which only
-    /// the queue totals use (issue #16: kept back, so not left to upload).
+    /// the queue totals use (kept back, so not left to upload).
     pub too_big: u32,
     pub too_big_bytes: u64,
 }
@@ -370,7 +370,7 @@ impl OutboxHandle {
         }
     }
 
-    /// The daemon is stopping (issue #84): no row is taken any more, and
+    /// The daemon is stopping: no row is taken any more, and
     /// the rows in flight finish what they sent — an opened session is
     /// persisted, an upload in fragments stops after the fragment in flight.
     /// The future ends once the worker has; the caller bounds the wait

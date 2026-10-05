@@ -37,11 +37,11 @@ impl TreeStore {
 
     /// The new tree becomes `items`, with the link to ask from next time, in
     /// one transaction. A delta's swap writes only the rows it staged and
-    /// removes only what it removed (issue #39); a full listing's replaces
+    /// removes only what it removed; a full listing's replaces
     /// every row. The version a cached thumbnail was made for, the local
     /// inode and the last outbox commit travel along: a row staged without
     /// them keeps what `items` has — but for the inode of a row `items` does
-    /// not place, which is no object of a row placed again (issue #104).
+    /// not place, which is no object of a row placed again.
     /// A row the new tree does not place keeps no inode at all, nor does
     /// anything below it (I1, [`crate::forget`]).
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
@@ -116,8 +116,7 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
             [],
         )?;
         // A row that turns placed again takes no object from `items`:
-        // whatever was there when it stopped being placed is gone
-        // (issue #104).
+        // whatever was there when it stopped being placed is gone.
         tx.execute(
             &format!(
                 "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND {was})
@@ -267,8 +266,8 @@ fn placement_in_items(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option
 }
 
 /// Whether `row` turns placed again over a row of `items` that was not
-/// (`was`). Such a row, and every row below it, carries no local object
-/// (issue #104): what was on disk when it stopped being placed was taken
+/// (`was`). Such a row, and every row below it, carries no local object:
+/// what was on disk when it stopped being placed was taken
 /// off, and its placement records the objects it is placed as. Forgotten
 /// as it is staged, so that the placement that follows records them anew —
 /// and so that what a cycle that failed before its swap recorded for them,

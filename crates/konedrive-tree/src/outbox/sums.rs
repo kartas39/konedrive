@@ -1,4 +1,4 @@
-//! What the outbox holds, summed by SQL (issue #38): the counts, sizes and
+//! What the outbox holds, summed by SQL: the counts, sizes and
 //! the Not Uploaded summary come from one `GROUP BY` over the rows' kind,
 //! state and reason, and the files of one reason from a query with a `LIMIT`
 //! — never from every row read into memory, never from the disk. A size is

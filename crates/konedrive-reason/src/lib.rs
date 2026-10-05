@@ -132,10 +132,10 @@ pub enum Reason {
     /// fragment it was sending, its session kept. Waiting, never a failure.
     Paused,
     /// A new file's name is held in OneDrive by the empty placeholder of an
-    /// upload session of this folder (issue #47). Tried again later.
+    /// upload session of this folder. Tried again later.
     SessionOpen,
     /// The row's name in OneDrive is held by an empty file the delta feed
-    /// never listed: an upload session's placeholder (issue #89). Tried
+    /// never listed: an upload session's placeholder. Tried
     /// again later.
     NameHeld,
     /// The item changed in OneDrive each time its removal was sent: in
@@ -169,7 +169,7 @@ pub enum Reason {
     AnotherItem,
     /// What a blocked row with no reason is listed under.
     Blocked,
-    /// OneDrive could not be reached (issue #87). In backoff; the error's
+    /// OneDrive could not be reached. In backoff; the error's
     /// own text is in the journal only.
     Network,
     /// The local file could not be read or written. In backoff.
@@ -179,7 +179,7 @@ pub enum Reason {
     /// Any other failure of a step. In backoff.
     Failed,
     /// Refused while OneDrive is full: ready, in its place, not taken until
-    /// a quota read lets it go (issue #2).
+    /// a quota read lets it go.
     WaitingForSpace,
     /// Refused while space is left: `too-big:<needs>:<free>`, in bytes.
     /// With no sizes it is only the key every such reason is summed under
@@ -367,7 +367,7 @@ impl Reason {
     /// question, and for a string in no table.
     pub fn group(&self) -> Option<Group> {
         Some(match self {
-            // `quota-exceeded` only until a start converts it to `waiting-for-space` (#2).
+            // `quota-exceeded` only until a start converts it to `waiting-for-space`.
             Self::Quota | Self::WaitingForSpace | Self::TooBig(_) | Self::Forbidden => Group::OneAction,
             Self::NameCharacters | Self::NameSpaces | Self::NameReserved | Self::NameNotUtf8 | Self::TooLarge | Self::Refused(_) => {
                 Group::PerFile

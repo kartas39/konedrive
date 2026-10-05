@@ -19,7 +19,7 @@ use crate::remote::materialize::{replace_until, Failure, FailureReason, Leased, 
 use crate::status::activity::{self, Kind};
 use crate::status::snapshot::{ReplacementNote, SyncStateHandle};
 
-/// Replacements at once (issue #39): the queue's workers. A guess; each
+/// Replacements at once: the queue's workers. A guess; each
 /// also waits for a slot of the account's transfer pool.
 pub const REPLACE_WORKERS: usize = 8;
 
@@ -48,7 +48,7 @@ struct State {
     queue: VecDeque<Replacement>,
     /// How many workers run.
     workers: usize,
-    /// The workers' tasks ([`REPLACE_WORKERS`] at most at work, issue #39),
+    /// The workers' tasks ([`REPLACE_WORKERS`] at most at work),
     /// kept until a [`join`](Replacements::join) has waited for each. A
     /// handle dropped does not stop its worker.
     tasks: Vec<JoinHandle<()>>,
@@ -119,7 +119,7 @@ impl Replacements {
     /// already, and for each that failed and has no fresher replacement
     /// standing for it; a newer version of a file whose replacement is under
     /// way waits for that one to end. Starts workers for the queue, each the
-    /// future `worker` makes, up to [`REPLACE_WORKERS`] in all (issue #39): a
+    /// future `worker` makes, up to [`REPLACE_WORKERS`] in all: a
     /// delta changing thousands of files starts a few tasks, not one each.
     pub(super) fn admit<W: Future<Output = ()> + Send + 'static>(&self, fresh: Vec<Replacement>, worker: impl Fn() -> W) {
         let mut state = self.state();

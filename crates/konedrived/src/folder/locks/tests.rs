@@ -208,7 +208,7 @@ async fn a_row_stays_while_another_caller_is_still_using_it() {
 
 /// A waiter whose future is dropped — a D-Bus method whose caller went
 /// away, a `select!` that lost — must not leave its row behind. Measured
-/// Issue #104: a stop reaches the fill that holds the lock (and one
+/// A stop reaches the fill that holds the lock (and one
 /// already waiting), never one that comes for the lock after it, even
 /// while the slot is still in use.
 #[tokio::test]

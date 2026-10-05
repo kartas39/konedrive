@@ -1,6 +1,6 @@
 use super::*;
 
-/// `WebUrl` (issue #53): the address of the page of a file, of a folder and of
+/// `WebUrl`: the address of the page of a file, of a folder and of
 /// the account's folder itself, each from one GET and nothing else.
 #[tokio::test]
 async fn web_url_asks_onedrive_for_the_items_page_with_one_get() {

@@ -95,7 +95,7 @@ fn a_stream_in_pieces_hashes_like_the_whole() {
 }
 
 /// Pieces hashed at their offsets, in any order, combine into the hash of
-/// the whole: what a download in parallel parts checks (issue #28).
+/// the whole: what a download in parallel parts checks.
 #[test]
 fn pieces_hashed_at_their_offsets_combine_into_the_whole() {
     let data = noise(100_003, 13);

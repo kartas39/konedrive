@@ -52,7 +52,7 @@ pub struct Args {
 pub enum Only {
     /// What an upload session's placeholder looks like, what holds it, and what frees it.
     Placeholders,
-    /// A write in the drive sends a notification on its Socket.IO endpoint (issue #54).
+    /// A write in the drive sends a notification on its Socket.IO endpoint.
     Notifications,
 }
 

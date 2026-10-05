@@ -9,7 +9,7 @@ use crate::source::{chains_then, Source};
 use crate::{TreeError, TreeStore};
 
 /// Thumbnail candidates looked at by one query, and in one call
-/// ([`TreeStore::thumbnail_candidates`]; guesses, issue #39).
+/// ([`TreeStore::thumbnail_candidates`]; guesses).
 pub const THUMB_PAGE: usize = 500;
 pub const THUMB_SCAN: usize = 5000;
 
@@ -42,7 +42,7 @@ impl TreeStore {
     /// Placed images and videos whose cached thumbnail was not made for what
     /// they are now ([`TreeStore::thumbnail_made`]), with their paths: up to
     /// `limit` of them, looking at the candidates after id `after` in id
-    /// order (issue #39), [`THUMB_PAGE`] at a time and at most
+    /// order, [`THUMB_PAGE`] at a time and at most
     /// [`THUMB_SCAN`] in one call. Each page is filtered and its paths found
     /// in one query.
     pub fn thumbnail_candidates(&self, after: &str, limit: usize) -> Result<ThumbnailBatch, TreeError> {

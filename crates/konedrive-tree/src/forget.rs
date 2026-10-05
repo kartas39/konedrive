@@ -27,7 +27,7 @@ use crate::{TreeError, MAX_CHAIN};
 /// The subtrees at `roots` — `roots` themselves when `with_roots`, and
 /// everything `items` or `staging` has below them — forget their local
 /// objects in both tables, and so does every row recording one of
-/// `handles` (issue #104): seeded from a temporary table, one statement per
+/// `handles`: seeded from a temporary table, one statement per
 /// table, whatever the number of roots.
 pub(crate) fn forget_subtrees(tx: &rusqlite::Transaction<'_>, roots: &[String], with_roots: bool, handles: &[FileHandle]) -> Result<(), TreeError> {
     if !handles.is_empty() {

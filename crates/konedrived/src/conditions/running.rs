@@ -15,7 +15,7 @@
 //! neither is on. `SyncAnyway` lifts the hold until a source or the global
 //! `pause_on_metered` / `on_battery` changes.
 //!
-//! The hold's two settings ([`HoldSettings`]) are one pair for the whole app (issue #95):
+//! The hold's two settings ([`HoldSettings`]) are one pair for the whole app:
 //! the registry tells every account, as it tells the conditions. Thumbnails stay per account.
 
 use std::future::Future;
@@ -74,7 +74,7 @@ impl Settings {
     }
 }
 
-/// The settings of the hold, one pair for every account (issue #95): `config.toml`'s global
+/// The settings of the hold, one pair for every account: `config.toml`'s global
 /// `pause_on_metered` and `on_battery` (`Accounts.PauseOnMetered`, `OnBattery`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HoldSettings {

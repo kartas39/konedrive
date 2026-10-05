@@ -87,7 +87,7 @@ pub(super) struct Handles {
     pub poll: PollHandle,
     /// The watcher and the outbox worker of a read-write folder.
     pub writes: Option<(WatchHandle, OutboxHandle)>,
-    /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38): answered
+    /// `NotUploadedSummary()` as the outbox worker last summed it: answered
     /// from memory while the worker runs.
     pub kept_back: Arc<Mutex<Option<Vec<SummaryRow>>>>,
     /// Stops the tasks that have no handle of their own: the sign-in nudge and the

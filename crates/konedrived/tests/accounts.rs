@@ -260,7 +260,7 @@ async fn accounts_are_added_listed_announced_and_removed() {
     assert_eq!(signature_lines(&live, FILES_INTERFACE_NAME), signature_lines(FILES_XML, FILES_INTERFACE_NAME));
 }
 
-/// Issue #95: `PauseOnMetered` and `OnBattery` are the manager's, one pair for every
+/// `PauseOnMetered` and `OnBattery` are the manager's, one pair for every
 /// account. A start moves an account's keys of before to them (the strictest value); each
 /// setter writes `config.toml`, announces the change, and every account runs on it at once;
 /// `SetOnBattery` refuses what is not a choice, changing nothing.

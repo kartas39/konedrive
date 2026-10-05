@@ -1,4 +1,4 @@
-//! A file or folder removed here before its upload finished (issue #27): its
+//! A file or folder removed here before its upload finished: its
 //! rows leave the outbox, with no retry, and nothing of it stays in OneDrive.
 
 use konedrive_tree::ActivityKind;
@@ -164,7 +164,7 @@ fn a_file_moved_before_its_move_was_examined_is_queued_again() {
     assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 2, "started over");
 }
 
-// Issue #36: the file removed while its fragments go up stops the upload
+// The file removed while its fragments go up stops the upload
 // after the fragment in flight.
 
 /// A file of `D` in OneDrive, downloaded here and edited to [`large`]

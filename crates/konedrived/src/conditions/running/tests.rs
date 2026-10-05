@@ -16,7 +16,7 @@ async fn thumbnails_go_only_while_on_and_nothing_stops() {
     assert!(!running.thumbnails_go(&store), "a pause stops thumbnails too");
 }
 
-/// Issue #57: each `on_battery` choice against on battery or on mains, in the
+/// Each `on_battery` choice against on battery or on mains, in the
 /// power-saver profile or another — on mains the battery never holds — and the
 /// metered connection, which `pause_on_metered = false` ignores and which wins over a
 /// battery reason.
@@ -68,8 +68,8 @@ async fn sync_anyway_lasts_until_a_source_or_the_holds_settings_change() {
     assert_eq!(running.stop(&store), Some(Stop::Paused(0)), "the user's pause is said first");
 }
 
-/// Thumbnails from the account's section, the hold's settings from the global keys
-/// (issue #95), each with its default when absent; an unknown `on_battery` falls back.
+/// Thumbnails from the account's section, the hold's settings from the global keys,
+/// each with its default when absent; an unknown `on_battery` falls back.
 #[test]
 fn settings_read_config_toml_with_their_defaults() {
     let mut account: AccountConfig = toml::from_str("id = \"a\"\nlabel = \"A\"\n").unwrap();

@@ -75,7 +75,7 @@ pub use worker::ConflictCopy;
 /// row takes is still another item's (§4.4, F55 (7)).
 pub const SWAP_PREFIX: &str = ".konedrive-swap-";
 
-/// How long a record of an opening whose row left is kept (issue #89): a
+/// How long a record of an opening whose row left is kept: a
 /// guess, longer than an abandoned placeholder was seen to live (a day).
 pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
 
@@ -413,7 +413,7 @@ impl TreeStore {
         Ok(rows)
     }
 
-    /// What OneDrive removed at `rel` was taken off the disk (issue #104):
+    /// What OneDrive removed at `rel` was taken off the disk:
     /// the rows that would upload, create or move something there or below
     /// it have nothing left to send, and go — not one the worker is running,
     /// whose commit meets OneDrive's answer, nor a removal, which the cycle's

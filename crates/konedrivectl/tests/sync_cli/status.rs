@@ -114,7 +114,7 @@ async fn the_folder_follows_the_accounts_mode() {
     assert!(!f.proxy.folder.writable().await.unwrap());
 }
 
-/// `sync status` says how the local scan goes (issue #8): a read-only folder has none.
+/// `sync status` says how the local scan goes: a read-only folder has none.
 /// (How a read-write folder's scan reads is `text::status::local_scan_text`'s test.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_says_a_read_only_folder_has_no_local_scan() {

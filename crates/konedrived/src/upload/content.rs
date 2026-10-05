@@ -4,7 +4,7 @@
 //! inode lock (a free-up waits) and a read lease (a writer's open waits the
 //! milliseconds of one read), and compared with the snapshot after every
 //! read. Every non-empty file goes through an upload session persisted
-//! before its first byte (issue #47), in fragments of [`Limits::chunk`], the
+//! before its first byte, in fragments of [`Limits::chunk`], the
 //! session persisted after each: a file up to that size is the session's one
 //! fragment, and goes the same way ([`Job::send_session`]). A session is
 //! resumed while the file is still the snapshot it was opened for, and
@@ -34,7 +34,7 @@ use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow, Reason, Sessi
 use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
-/// creation time is compared with the recorded opening (issue #84).
+/// creation time is compared with the recorded opening.
 pub(super) const CLOCK_SLACK: i64 = 5 * 60;
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
@@ -75,7 +75,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
 }
 
 /// A `create` or `update` whose file is under none of its names — removed
-/// here, or moved where no row looks (issue #36; for a `create`, #27). The
+/// here, or moved where no row looks (for a `create`). The
 /// row ends now, with no retry, and the upload session it opened is
 /// cancelled. A `create` ends through [`never_uploaded`]: it leaves with the
 /// rows behind it that never got an item id, and one `not-uploaded` event.
@@ -115,19 +115,19 @@ enum Stop {
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
 ///   [`Reason::Paused`], due again as soon as the pause ends. No failure.
-/// - **The daemon stopping** (issue #84): ready, resumed at the next start.
+/// - **The daemon stopping**: ready, resumed at the next start.
 /// - **OneDrive full** (a refusal of another row, `space`): ready in its
 ///   place, reason [`Reason::WaitingForSpace`], taken again once a quota read shows
 ///   space.
 /// - **The write gate** closed: waiting until it opens.
-/// - **The file removed** (issue #36): under none of the row's names, as
+/// - **The file removed**: under none of the row's names, as
 ///   [`locate`] looks for it — the same test as a run's start. A move whose
 ///   row is recorded is found under its new name, and the upload goes on.
 async fn stop_between_fragments(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if e.stopped() {
         return Ok(Some(Stop::Wait(Outcome::wait(Reason::Paused, std::time::Duration::ZERO))));
     }
-    // The daemon is stopping (issue #84): the session is persisted, and the
+    // The daemon is stopping: the session is persisted, and the
     // next start resumes it.
     if e.closing() {
         return Ok(Some(Stop::Wait(Outcome::again())));
@@ -323,7 +323,7 @@ impl Job<'_> {
         }
     }
 
-    /// A `409` for a new file (issue #47): is the name held by the empty
+    /// A `409` for a new file: is the name held by the empty
     /// placeholder of an upload session this folder opened for it? Such a
     /// session is never taken for someone else's file. This row's own is
     /// resumed by the next run (or cancelled there, if the content changed);
@@ -333,7 +333,7 @@ impl Job<'_> {
     /// decides, as for any `409`.
     ///
     /// No listed session, but an opening recorded there whose URL never came
-    /// (a stop between the request and its persisting, issue #84):
+    /// (a stop between the request and its persisting):
     /// [`Job::opened_placeholder`].
     async fn own_placeholder(&self) -> Result<Option<Outcome>, Fail> {
         let (parent, name, seq) = (self.parent.to_owned(), self.name.to_owned(), self.row.seq);
@@ -358,9 +358,9 @@ impl Job<'_> {
     }
 
     /// A `409` at a place where this folder recorded an opening whose URL
-    /// never came (issue #84) — carried from an earlier attempt whose outcome
+    /// never came — carried from an earlier attempt whose outcome
     /// was not known, with its row or left by it, since a certain answer to
-    /// the attempt that made the record clears it (issue #89): the holder is
+    /// the attempt that made the record clears it: the holder is
     /// an empty file the delta feed never listed, made within one record's
     /// window — its first recording to its latest attempt whose outcome was
     /// not known, each widened by [`CLOCK_SLACK`]: it is that opening's
@@ -508,7 +508,7 @@ impl Job<'_> {
             // no folder sent — the row was made to send content, and a name
             // sent now would undo what was done in OneDrive. The commit
             // keeps the item where the disk has it, and the reconcile takes
-            // it off once nothing in it waits (issue #104).
+            // it off once nothing in it waits.
             if moved_there && self.unmoved_here(id).await? && !holds(self.e, &remote).await? {
                 tracing::info!("{} is in OneDrive where this folder cannot hold it: its content goes into it there", self.found.rel.display());
                 if same_content {
@@ -626,7 +626,7 @@ impl Job<'_> {
     /// file of one fragment's size and a larger one alike. The session a run
     /// before persisted for this very content is resumed from where the
     /// server stands; otherwise one is opened, and persisted before its
-    /// first byte (issue #47). The row holds the session after every step,
+    /// first byte. The row holds the session after every step,
     /// so a stop or a crash between any two of them is replayed from the
     /// session's own status.
     async fn send_session(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
@@ -655,8 +655,8 @@ impl Job<'_> {
     }
 
     /// Opens a session for this content and persists it, listed with the
-    /// place a new file's session holds, before any byte is sent (issue
-    /// #47). A new file's place is recorded before the request (issue #84):
+    /// place a new file's session holds, before any byte is sent.
+    /// A new file's place is recorded before the request:
     /// a stop before the URL is persisted leaves a placeholder this folder
     /// still knows of ([`Job::own_placeholder`]).
     async fn open(&self, target: UploadTarget<'_>) -> Result<Step, Fail> {
@@ -675,7 +675,7 @@ impl Job<'_> {
                 // Any answer but `Transient` (a timeout, a lost connection, a
                 // `5xx` other than `503`, an unreadable answer, a failure
                 // before sending) is certain: this request made no
-                // placeholder (issue #89). The record this call made goes; one
+                // placeholder. The record this call made goes; one
                 // carried from an earlier attempt whose outcome was not known
                 // is kept as it was — what holds the name may be that
                 // attempt's placeholder.
@@ -848,7 +848,7 @@ impl Job<'_> {
         Ok(self.e.store().call(move |s| s.outbox_session_ended(seq)).await?)
     }
 
-    /// `DELETE <uploadUrl>`: the session is given up (§4.3, issue #47) —
+    /// `DELETE <uploadUrl>`: the session is given up (§4.3) —
     /// the content changed while it went up, or OneDrive refused it. The row
     /// points at it no more; a cancel that fails leaves it listed, and a
     /// later run cancels it.

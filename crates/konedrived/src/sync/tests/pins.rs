@@ -50,7 +50,7 @@ impl ContentSource for RecordsRanges {
     }
 }
 
-/// Issue #28: a large file being opened (`Hydrate`) keeps one stream, open-ended; the
+/// A large file being opened (`Hydrate`) keeps one stream, open-ended; the
 /// same kind of file pinned downloads in parts, each asking for a bounded range.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_file_being_opened_keeps_one_stream_and_a_pinned_one_goes_in_parts() {

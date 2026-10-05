@@ -8,7 +8,7 @@ use tokio::sync::watch;
 
 /// One download under way, as `Transfers.Downloads` publishes it: (full path,
 /// bytes done, bytes total); and whether it is a file being opened (or
-/// `Hydrate`), which `LargeFiles` leaves out (issue #50).
+/// `Hydrate`), which `LargeFiles` leaves out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transfer {
     pub path: String,
@@ -17,7 +17,7 @@ pub struct Transfer {
     pub open: bool,
 }
 
-/// `Transfers.LargeFiles` (issue #50): the large files ([`LARGE_FROM`](konedrive_graph::pool::LARGE_FROM)
+/// `Transfers.LargeFiles`: the large files ([`LARGE_FROM`](konedrive_graph::pool::LARGE_FROM)
 /// and up) the sync moves now, each once however many streams it runs — the downloads of that
 /// size but the files being opened, and the uploads of that size.
 pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64, u64)]) -> u32 {

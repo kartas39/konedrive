@@ -110,7 +110,7 @@ async fn refuses_a_directory_the_probe_cannot_use() {
 /// daemon itself put there — refusing it as though it were some other,
 /// foreign non-empty folder would make every restart unregister every
 /// root.
-///. H78 waives the empty check for a folder that "already
+/// H78 waives the empty check for a folder that "already
 /// carries a root id", and nothing ever removes that xattr again — so if
 /// any string counts, one `setfattr -n user.konedrive.root -v x` makes a
 /// folder full of somebody's existing documents registerable, for good.

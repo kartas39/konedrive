@@ -1,4 +1,4 @@
-/// Issue #54: `sync status` says whether changes from OneDrive arrive live, and nothing
+/// `sync status` says whether changes from OneDrive arrive live, and nothing
 /// while the socket is off (the pause or the hold says why).
 #[test]
 fn the_live_changes_line_says_live_or_every_minute() {

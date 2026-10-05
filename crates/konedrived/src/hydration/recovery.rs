@@ -48,8 +48,8 @@ pub struct RecoveryReport {
     /// interrupted file, so a non-zero value means the root was **not**
     /// fully recovered.
     pub skipped: usize,
-    /// Interrupted files something had open, so no lease could be taken
-    ///. Not a failure: whatever has the
+    /// Interrupted files something had open, so no lease could be taken.
+    /// Not a failure: whatever has the
     /// file open is, as often as not, an opener waiting for it to be filled
     /// — or, after a reconnect, a fill from the connection before, still
     /// running — and an interrupted file is one the helper
@@ -264,8 +264,8 @@ pub async fn recover(
 /// inside it is opened from, and the names still to look at.
 ///
 /// Names, not descriptors: a directory of 100 000 files costs one `Vec` of
-/// its names, while opening them up front would cost 100 000 descriptors
-///. The `FileType` beside each name is the `d_type` the kernel
+/// its names, while opening them up front would cost 100 000 descriptors.
+/// The `FileType` beside each name is the `d_type` the kernel
 /// gave us — a hint for which of the two opens to attempt, never the
 /// authority for what was opened, which is the `fstat` in [`open_entry`].
 struct Frame {
@@ -584,8 +584,7 @@ async fn reset_interrupted(clearance: &Clearance, file: File) -> Result<(), Rese
     // every file read-only, and a file that is not ours is never made
     // writable, even for a moment — only a file the walk read `hydrating` or
     // `dehydrating` gets here. The reopen goes through the descriptor, so it
-    // is the inode that was classified, whatever the name leads to by now
-    //.
+    // is the inode that was classified, whatever the name leads to by now.
     //
     // It comes *before* the clear, and the read-only descriptor is closed at
     // once, so that the mark is cleared on, and the lease taken on, one and

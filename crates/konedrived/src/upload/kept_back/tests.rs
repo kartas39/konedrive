@@ -110,7 +110,7 @@ fn a_row_that_repeats_a_line_of_the_skipped_list_is_not_counted_again() {
     assert_eq!(shown(&ops), vec![at("name-characters", "a:b"), at("symlink", "a:b")]);
 }
 
-/// Issue #87: the four keys a failure is stored under all wait.
+/// The four keys a failure is stored under all wait.
 #[test]
 fn failure_keys_wait() {
     for key in [Reason::Network.key(), Reason::LocalIo.key(), Reason::Store.key(), Reason::Failed.key()] {

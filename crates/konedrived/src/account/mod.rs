@@ -151,7 +151,7 @@ pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     async fn drop_pending_uploads(&self);
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
-    /// too big for what was left, is decided again by it (issue #2).
+    /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 

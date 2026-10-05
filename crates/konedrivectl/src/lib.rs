@@ -24,7 +24,7 @@ pub const FIRST_LABEL: &str = "Personal";
 pub const ACCOUNT_VARIABLE: &str = "KONEDRIVE_ACCOUNT";
 
 /// The environment variable that, set to anything but empty, keeps the sign-in page from
-/// being opened in a browser (issue #21): a sign-in over SSH, with no desktop, or in tests.
+/// being opened in a browser: a sign-in over SSH, with no desktop, or in tests.
 pub const NO_BROWSER_VARIABLE: &str = "KONEDRIVE_NO_BROWSER";
 
 /// Whether a command opens the sign-in page in the browser: only when

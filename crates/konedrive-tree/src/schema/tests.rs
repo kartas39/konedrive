@@ -238,7 +238,7 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
 
 /// The oldest store that is upgraded and not rebuilt goes through every
 /// step, and nothing waiting in its outbox is lost: what is below a folder
-/// not placed forgets its local object (issue #104); a row's snapshot and
+/// not placed forgets its local object; a row's snapshot and
 /// marker are read from the text that held them; a session a row had is
 /// listed; a bad item's id leaves the reason; an opening is kept, and is
 /// left behind when its row goes. A `seq` is not handed out again.

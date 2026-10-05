@@ -277,7 +277,7 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     service.stop_sync().await;
 }
 
-/// Issue #38: while an examination's apply holds the store, the bus still
+/// While an examination's apply holds the store, the bus still
 /// answers at once — the counts and the Not Uploaded summary from memory,
 /// `Changes()` and `NotUploadedFiles()` through the read-only connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -160,7 +160,7 @@ pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
 }
 
 /// How many files of a reason `sync not-uploaded` lists without `--all`:
-/// the window's per-file cap, the same guess (issue #20).
+/// the window's per-file cap, the same guess.
 pub const PER_FILE_SHOWN: u32 = 20;
 
 /// A `NotUploadedSummary()` group's heading.

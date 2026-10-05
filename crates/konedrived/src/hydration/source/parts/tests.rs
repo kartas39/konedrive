@@ -169,7 +169,7 @@ async fn one_large_file_downloads_in_four_streams() {
     assert_eq!(pool.large_held(), 1, "only the first stream's slot is still held");
 }
 
-/// A download in parts is one file (issue #50): one entry of `Transfers.Downloads`, so it
+/// A download in parts is one file: one entry of `Transfers.Downloads`, so it
 /// counts once in `ActiveDownloads` and in `LargeFiles`, and its streams in `LargeStreams`.
 #[tokio::test]
 async fn a_download_in_parts_is_one_file_and_its_streams() {

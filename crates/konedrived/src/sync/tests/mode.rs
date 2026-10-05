@@ -456,7 +456,7 @@ async fn a_new_root_is_written_down_before_the_helper_hears_of_it() {
 
 /// And a root that cannot be written down is not registered at all: the
 /// helper is never told about it.
-///. `config.toml` is the account
+/// `config.toml` is the account
 /// sub-project's file too — it holds the `client_id` — and a copy that
 /// could not be read used to be treated as empty and written back from
 /// defaults, erasing everything in it. What could not be read is never

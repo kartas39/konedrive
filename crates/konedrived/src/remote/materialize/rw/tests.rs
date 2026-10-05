@@ -237,8 +237,7 @@ async fn an_edit_here_and_in_onedrive_keeps_both() {
     assert_eq!(fx.base("F").unwrap().ctag.as_deref(), Some("c2"));
 }
 
-/// What OneDrive removed (the owner's ruling of 2026-10-04, which replaced
-/// decision 2 of issue #104): what OneDrive had and the daemon placed goes
+/// What OneDrive removed: what OneDrive had and the daemon placed goes
 /// — files not downloaded, a download unchanged since, a folder with
 /// nothing left in it. What OneDrive never had stays as the user's own,
 /// its attributes off, with the folders above it: a file made here, a
@@ -340,7 +339,7 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Issue #104, decision 5: before the reconcile takes anything off the disk,
+/// Before the reconcile takes anything off the disk,
 /// the store forgets the local objects of what it removes — the item, what
 /// the base has below it, and an object from elsewhere moved in, by its own
 /// id — so that no examination can prove one of them gone.
@@ -359,7 +358,7 @@ async fn what_is_removed_is_forgotten_before_it_goes() {
     assert_eq!(id_at(&fx.path("top.txt")).as_deref(), Some("T"), "placed again where OneDrive has it");
 }
 
-/// Issue #104, point 3: an object that will not go fails the cycle, as any
+/// An object that will not go fails the cycle, as any
 /// cycle that cannot do its work; nothing of it is committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_removal_that_fails_fails_the_cycle_and_commits_nothing() {
@@ -409,7 +408,7 @@ async fn a_removal_that_fails_after_stopping_a_download_leaves_a_placeholder() {
     assert!(left.iter().all(|&b| b == 0), "nothing of the stopped download left: {left:?}");
 }
 
-/// Issue #112: a file removed in OneDrive that has a second name here, a hard
+/// A file removed in OneDrive that has a second name here, a hard
 /// link the user made. Its name goes first and its item id is taken off
 /// afterwards: a removal that fails leaves the item at its place with its id,
 /// never an object without one there, which would be uploaded as new. Once
@@ -433,7 +432,7 @@ async fn a_file_with_another_name_loses_its_id_only_once_its_name_is_gone() {
     assert!(fx.base("F").is_none());
 }
 
-/// Issue #112, the stop between the two steps: a file that can no longer be
+/// The stop between the two steps: a file that can no longer be
 /// placed has a second name, a hard link the user made; the daemon unlinks
 /// its own name and stops before it takes the item id off. The other name
 /// is then the user's own file whatever comes next: an examination records

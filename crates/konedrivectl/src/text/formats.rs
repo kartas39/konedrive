@@ -95,8 +95,8 @@ pub(crate) fn sentence(text: &str) -> String {
     }
 }
 
-/// When the folder was last checked with OneDrive, as `sync status` says it
-///: "20 s ago", "5 min ago", "3 h ago", "2 d ago", or "never"
+/// When the folder was last checked with OneDrive, as `sync status` says it:
+/// "20 s ago", "5 min ago", "3 h ago", "2 d ago", or "never"
 /// for 0. `last` and `now` are unix seconds.
 pub fn checked_text(last: i64, now: i64) -> String {
     if last == 0 {

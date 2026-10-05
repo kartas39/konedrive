@@ -27,7 +27,7 @@ pub mod panic;
 #[path = "tests/fake_onedrive/mod.rs"]
 pub mod fake_onedrive;
 
-/// The outbox at scale (issue #38): ignored tests, run by hand in release.
+/// The outbox at scale: ignored tests, run by hand in release.
 #[cfg(test)]
 #[path = "tests/bench.rs"]
 mod bench;

@@ -323,7 +323,7 @@ impl SyncService {
             self.require_helper_for(&self.require_onedrive()?)?;
             // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
             // and, while a sync runs, the quota is read again, which may end a
-            // full OneDrive (issue #2).
+            // full OneDrive.
             self.retry_outbox();
             if self.nudge() {
                 self.refresh_quota().await;
@@ -399,7 +399,7 @@ impl SyncService {
         Ok(true)
     }
 
-    /// `Refresh()`'s part for the quota (issue #2): read now, one request, into the account's
+    /// `Refresh()`'s part for the quota: read now, one request, into the account's
     /// one quota (`Account.QuotaRemaining`, `QuotaState`, …), and handed to the outbox, which
     /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
     /// changes nothing.

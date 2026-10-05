@@ -471,7 +471,7 @@ impl SyncRoot {
     /// consulted here anyway. It matters as soon as puts a path from
     /// outside this process on the other end of a D-Bus method.
     ///
-    ///: this is the *only* way anything in `sync` may turn a
+    /// This is the *only* way anything in `sync` may turn a
     /// caller's path into a descriptor it will write through.
     /// `SyncService::hydrate_now` used to open the checked string itself,
     /// with no `O_NOFOLLOW` and no `RESOLVE_BENEATH`, after awaiting an

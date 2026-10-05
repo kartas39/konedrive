@@ -37,7 +37,7 @@ use crate::hydration::server::{serve, Filler, Fillers, Router};
 use crate::hydration::source::ContentSource;
 
 /// What every account is told alike: what the machine's sources say (`conditions`), and
-/// the hold's settings, one pair for every account (issue #95).
+/// the hold's settings, one pair for every account.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Told {
     conditions: Conditions,

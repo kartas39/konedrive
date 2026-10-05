@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             1
         }
     };
-    // The stop (issue #84): nothing new is sent, and the requests in flight
+    // The stop: nothing new is sent, and the requests in flight
     // get a bounded time to return and be persisted; a second signal ends it.
     tracing::info!("stopping: the uploads in flight get up to {} s", stop::STOP_BOUND.as_secs());
     let closing: Vec<_> = registry.accounts().iter().filter_map(|sync| sync.close_outbox()).collect();

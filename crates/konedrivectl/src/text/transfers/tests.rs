@@ -1,4 +1,4 @@
-/// The pool line (issue #50): the slots in use of the pool's size, then the large files
+/// The pool line: the slots in use of the pool's size, then the large files
 /// and their streams; in use above the size is shown as it is.
 #[test]
 fn transfers_start_with_the_pool_summary() {
@@ -26,7 +26,7 @@ fn transfers_start_with_the_pool_summary() {
     assert!(super::pool_text(&over).starts_with("Pool: 18 of 16 · "), "{}", super::pool_text(&over));
 }
 
-/// Issue #16: each summary line says what is left — files down, changes up — its size and
+/// Each summary line says what is left — files down, changes up — its size and
 /// about how long it takes, and what this run has done; the time only when it is known.
 #[test]
 fn the_summary_lines_say_what_is_left_and_done() {

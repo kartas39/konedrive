@@ -113,8 +113,8 @@ pub async fn answer_request(
 }
 
 /// What [`answer_request`] did, which decides both what the opener is
-/// answered ([`errno`](Self::errno)) and what the activity log records
-///: only a fill that ran is an event.
+/// answered ([`errno`](Self::errno)) and what the activity log records:
+/// only a fill that ran is an event.
 #[derive(Debug)]
 pub enum Answered {
     /// Filled while the request waited, or edited here: left as it is.
@@ -181,7 +181,7 @@ pub async fn hydrate_with(
 }
 
 /// [`hydrate_with`], downloading the file in parallel parts ([`parts`]): a large pinned
-/// file (issue #28). Everything else about the fill — the state, the clearance, the
+/// file. Everything else about the fill — the state, the clearance, the
 /// checkpoint, the roll-back and the commit — is the same.
 pub async fn hydrate_in_parts(
     fd: OwnedFd,

@@ -154,7 +154,7 @@ pub struct Examined {
     pub renewed: bool,
 }
 
-/// Told how a Full local scan goes (issue #8): once it has started — the base is there and
+/// Told how a Full local scan goes: once it has started — the base is there and
 /// the root is — and then after each directory it listed, with what it has seen so far.
 /// Only a Full scan is told; an examination of single places never is.
 pub trait ScanProgress {

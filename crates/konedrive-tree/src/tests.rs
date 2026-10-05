@@ -1,6 +1,6 @@
 use super::*;
 
-/// Issue #38: while a long job holds the store's thread, tasks waiting for
+/// While a long job holds the store's thread, tasks waiting for
 /// the store — more than the runtime has workers — hold up no other task.
 #[test]
 fn a_long_job_does_not_starve_the_runtime() {
@@ -329,7 +329,7 @@ fn the_changed_ids_are_what_staging_differs_from_items_by() {
     assert_eq!(ids, vec!["F".to_owned(), "G".to_owned(), "N".to_owned()]);
 }
 
-/// Issue #39: a delta changing 10 of 100 000 items stages those 10 and
+/// A delta changing 10 of 100 000 items stages those 10 and
 /// the swap writes those 10 — not the whole tree; until the swap `items`
 /// is the old tree, also after a crash (the store dropped and opened
 /// again), and the next cycle stages afresh over it.
@@ -467,7 +467,7 @@ fn the_local_handle_travels_with_its_row() {
     assert_eq!(store.local_handle("B").unwrap(), Some(handle));
 }
 
-/// Review fixes, round 2, of issue #104: forgetting below a row that
+/// Forgetting below a row that
 /// turns placed again stays cheap in a store of 30,000 rows — a file
 /// (nothing below it) costs no recursive query, a folder one. The times
 /// are printed (`--nocapture`); the bounds are loose.

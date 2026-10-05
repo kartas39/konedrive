@@ -517,7 +517,7 @@ fn the_rows_waiting_for_space_are_found_by_their_reasons() {
 }
 
 /// A row leaves the outbox through `stored::remove` alone, which keeps the
-/// record of the opening it made (issue #89): a `DELETE FROM outbox`
+/// record of the opening it made: a `DELETE FROM outbox`
 /// written anywhere else in the crate would leave that record pointing at
 /// nothing. Read from the sources, tests aside.
 #[test]

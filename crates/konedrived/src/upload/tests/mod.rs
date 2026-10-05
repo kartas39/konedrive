@@ -557,7 +557,7 @@ fn http_date(at: i64) -> String {
 
 /// A pause (persisted) stops the worker without touching the rows; a `403`,
 /// a refused name and a writer each block or hold their own row, and a full
-/// OneDrive holds the content (issue #2); the file's `user.konedrive.sync`
+/// OneDrive holds the content; the file's `user.konedrive.sync`
 /// says which.
 #[test]
 fn pause_and_blocked_rows() {
@@ -630,7 +630,7 @@ fn reason_of(w: &World, rel: &str) -> Option<String> {
     w.rows().into_iter().find(|r| r.rel == Path::new(rel)).and_then(|r| r.reason_text())
 }
 
-/// Issue #2, no space left: the first refusal reads the quota, the account
+/// No space left: the first refusal reads the quota, the account
 /// turns full and sends no more content, while a rename and a delete still
 /// go. A Refresh that finds space lets everything go.
 #[test]
@@ -670,7 +670,7 @@ fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
     assert_committed(&w, "n2.txt", "n2.txt");
 }
 
-/// Issue #2, space left: the refused big file waits as too big while the
+/// Space left: the refused big file waits as too big while the
 /// small ones go; it is not sent again until a quota read shows it fits —
 /// the automatic read every 30 minutes, on a fake clock.
 #[test]
@@ -709,7 +709,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
     assert_committed(&w, "big.bin", "big.bin");
 }
 
-/// The quota is the account's one (issue #78): a read the account's info made a moment
+/// The quota is the account's one: a read the account's info made a moment
 /// ago is what a refusal uses instead of asking again, a read the worker makes shows in it,
 /// and what goes up comes off what is left and onto what is used.
 #[test]
@@ -738,7 +738,7 @@ fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
     assert_eq!(quota(&w.h.quota.state().get()), (used, 10 << 20, (5 << 20) - big.len() as u64, "normal".into()));
 }
 
-/// Issue #2: outside full, a file never refused is sent even when the free
+/// Outside full, a file never refused is sent even when the free
 /// space known says it does not fit — OneDrive has the last word.
 #[test]
 fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
@@ -752,7 +752,7 @@ fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
     assert_committed(&w, "big.bin", "big.bin");
 }
 
-/// Issue #2: rows an earlier version blocked on a full OneDrive wait for
+/// Rows an earlier version blocked on a full OneDrive wait for
 /// space from the start, and one quota read decides them.
 #[test]
 fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
@@ -772,7 +772,7 @@ fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
     assert_committed(&w, "full.txt", "full.txt");
 }
 
-/// Issue #2 with #27: a file removed while its upload was under way — the
+/// A file removed while its upload was under way — the
 /// daemon stopped mid-session, the removal examined (a `delete` behind the
 /// `running` create) — leaves the outbox at once although OneDrive is full
 /// and content rows are not taken: the session cancelled, nothing sent, one
@@ -830,7 +830,7 @@ fn drain_stopped_mid_request(w: &World, engine: &Arc<Engine>, method: &str, frag
     w.h.runtime.block_on(task).unwrap();
 }
 
-/// Issue #2 with #19's stop: OneDrive turning full while an upload in
+/// OneDrive turning full while an upload in
 /// fragments is under way stops it after the fragment in flight, as a pause
 /// does, but the row waits for space — ready, its session kept. Space again
 /// resumes it from its offset.
@@ -856,7 +856,7 @@ fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
     assert_eq!(w.content("big.bin").unwrap(), content);
 }
 
-/// #19: a pause stops an upload in fragments after the fragment in flight.
+/// A pause stops an upload in fragments after the fragment in flight.
 /// The row waits as `paused` — no failure, nothing uploading — with its
 /// session and offset kept, through a restart too. Resumed, a session still
 /// open goes on from that offset; an expired one starts over.
@@ -902,7 +902,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
     }
 }
 
-/// #19: a file's only fragment in flight when the pause comes finishes, and
+/// A file's only fragment in flight when the pause comes finishes, and
 /// the file is committed; a row that comes meanwhile does not start.
 #[test]
 fn a_fragment_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
@@ -921,7 +921,7 @@ fn a_fragment_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
     assert!(engine.status().uploads.is_empty());
 }
 
-/// Issue #84, the daemon's stop while a new file's session is being opened:
+/// The daemon's stop while a new file's session is being opened:
 /// the worker takes nothing more, waits for the answer and persists the
 /// session before its task ends; the upload in fragments stops before its
 /// first fragment, and the next start resumes the same session.
@@ -1275,7 +1275,7 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
 pub(crate) mod harness;
 mod stops;
 
-/// A file or folder removed before its upload finished (issue #27).
+/// A file or folder removed before its upload finished.
 mod removed;
 
 mod sessions;
@@ -1290,7 +1290,7 @@ mod foreign_parent;
 
 mod replaced_folder;
 
-/// Issue #87: an answer no step settles is stored on its row as a stable key, never as
+/// An answer no step settles is stored on its row as a stable key, never as
 /// the error's own text, and the row goes again after its backoff.
 #[test]
 fn an_answer_nothing_settles_waits_as_upload_error() {
@@ -1337,7 +1337,7 @@ fn the_journal_gets_no_url() {
     assert_eq!(without_urls("no address here"), "no address here");
 }
 
-/// Issue #87: an upload whose step meets a network failure waits with
+/// An upload whose step meets a network failure waits with
 /// `network`, and goes up once OneDrive answers again.
 #[test]
 fn a_network_failure_waits_as_network() {

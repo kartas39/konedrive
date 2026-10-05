@@ -64,7 +64,7 @@ impl SyncService {
     /// `class` is the slot of the account's transfer pool it takes, before the per-inode
     /// lock (never waiting for a slot with the lock held); `None` when the caller holds one
     /// already (a pinned download). A pinned download of a large file goes in parallel parts
-    /// (`source::parts`, issue #28), the slot held for it being its first stream's; a file
+    /// (`source::parts`), the slot held for it being its first stream's; a file
     /// being opened, and `Hydrate`, keep one stream.
     pub(super) async fn fill_now(&self, path: &Path, class: Option<konedrive_graph::pool::Class>) -> Result<Answered, SyncError> {
         let reg = self.require_record()?;
@@ -121,7 +121,7 @@ impl SyncService {
             Tracked::new(source, self.report.transfers.clone(), shown.clone())
         };
         // Stopped where it is when the file is taken off the disk because
-        // OneDrive removed its item (issue #104).
+        // OneDrive removed its item.
         let fill = async {
             match &split {
                 Some(split) => source::hydrate_in_parts(fd, &tracked, clearance.as_ref(), split).await,

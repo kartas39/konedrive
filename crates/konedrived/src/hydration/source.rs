@@ -62,7 +62,7 @@ pub trait ContentSource: Send + Sync {
     ///
     /// `end` is where the bytes wanted stop — the offset of the first byte not
     /// wanted — or `None` for the rest of the file: one piece of a download
-    /// in parts (issue #28) asks for its own range only. A source may still
+    /// in parts asks for its own range only. A source may still
     /// serve more than that; the download reads no further than `end`.
     ///
     /// A `from` at the end of the item or past it is answered, not refused: an empty stream

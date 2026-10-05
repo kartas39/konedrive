@@ -28,7 +28,7 @@ async fn the_poller_runs_again_on_refresh_and_stops() {
     tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
 }
 
-/// Issue #54: while the notification socket is up the poll waits `live_interval`; once it
+/// While the notification socket is up the poll waits `live_interval`; once it
 /// goes down, the next cycle is due `interval` after the last one. The poller's task is run
 /// with the test's own "socket is up" channel, in the live task's place.
 #[tokio::test]

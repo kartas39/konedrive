@@ -1,4 +1,4 @@
-//! The automatic hold's sources (`docs/design/writes.md` §11, issue #57): whether the
+//! The automatic hold's sources (`docs/design/writes.md` §11): whether the
 //! connection is metered, whether the machine runs on battery, and whether the power profile
 //! is `power-saver`. One watcher for the daemon, on the system bus, as `conditions::network` is:
 //! it follows each source's `PropertiesChanged` and tells every account through the registry

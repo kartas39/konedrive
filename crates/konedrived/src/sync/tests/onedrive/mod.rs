@@ -111,8 +111,8 @@ fn let_write(service: &SyncService) {
     });
 }
 
-/// A fake `balooctl6`, so these tests never reach the real Baloo
-///: `config add`/`config rm` are logged to `calls`, one
+/// A fake `balooctl6`, so these tests never reach the real Baloo:
+/// `config add`/`config rm` are logged to `calls`, one
 /// call per line. What is excluded already is read from the
 /// `baloofilerc` beside it (`crate::desktop::baloo`, B-I1b), never
 /// `~/.config`'s.

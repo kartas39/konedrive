@@ -294,7 +294,7 @@ fn assert_no_url(message: &str, url: &str) {
     }
 }
 
-/// Issue #80: a network error on the thumbnail's redirect names no URL,
+/// A network error on the thumbnail's redirect names no URL,
 /// so a pre-authenticated one never reaches the journal.
 #[tokio::test]
 async fn a_network_error_on_a_thumbnail_redirect_carries_no_url() {
@@ -309,7 +309,7 @@ async fn a_network_error_on_a_thumbnail_redirect_carries_no_url() {
     assert_no_url(&format!("{err:?}"), &url);
 }
 
-/// Issue #80: the same for a download's pre-authenticated URL.
+/// The same for a download's pre-authenticated URL.
 #[tokio::test]
 async fn a_network_error_on_a_download_carries_no_url() {
     let server = MockServer::start().await;

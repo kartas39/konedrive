@@ -204,7 +204,7 @@ pub fn finish_file_moves(store: &ConfigStore, paths: &Paths) {
     }
 }
 
-/// Issue #95, once, at a start after [`ConfigStore::open`] and before the accounts are
+/// Once, at a start after [`ConfigStore::open`] and before the accounts are
 /// loaded: an account's `pause_on_metered` and `on_battery` of before become the global keys,
 /// and leave the accounts, the strictest value winning ([`Config::take_old_hold_settings`]).
 /// Nothing is written when no account has either key, so a second start changes nothing, and

@@ -263,7 +263,7 @@ pub fn mode_text(mode: &str, writable: Option<bool>) -> String {
     }
 }
 
-/// The Full local scan as `LocalScan`'s properties say it (issue #8).
+/// The Full local scan as `LocalScan`'s properties say it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {
     pub state: String,

@@ -75,7 +75,7 @@ impl Materializer {
 
     /// The items of the Changed scope the base has at `here` that OneDrive
     /// still has and the new tree no longer places: what a read-write
-    /// folder lets go or wait whole (issue #104). None in a read-only one,
+    /// folder lets go or wait whole. None in a read-only one,
     /// where such an item goes like one removed.
     pub(super) fn no_longer_placed<'a>(&self, plan: &Plan, here: &[(&String, &'a Located)]) -> Vec<&'a Located> {
         match &self.mode {

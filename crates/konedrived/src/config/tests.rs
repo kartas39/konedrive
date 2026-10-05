@@ -109,7 +109,7 @@ fn the_large_file_limit_is_read_and_clamped() {
     assert_eq!(read("[transfers]\nmax = 2"), 2, "the default never above the ceiling");
 }
 
-/// Issue #95: the hold's two settings are global keys, absent until set and read as
+/// The hold's two settings are global keys, absent until set and read as
 /// their defaults then (an unknown `on_battery` as `power-saver`); each setter writes its
 /// own key at the top of the file and leaves the accounts alone.
 #[tokio::test]

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Issue #80: the thumbnail setting is absent from `config.toml` until set, reads its
+/// The thumbnail setting is absent from `config.toml` until set, reads its
 /// default then, is written when set and taken at once — thumbnails off stop nothing
 /// else — and is read back by the next start; a local folder has no settings to set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -34,7 +34,7 @@ async fn the_thumbnail_setting_is_kept_in_config_toml_and_taken_at_once() {
     assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false });
 }
 
-/// Issue #54: with the notification socket up, a change in OneDrive gives one delta
+/// With the notification socket up, a change in OneDrive gives one delta
 /// within the debounce, and `LiveChanges` says `connected`; the user's pause closes the
 /// socket (`off`) and Resume opens it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -71,7 +71,7 @@ async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it()
     assert_eq!(service.state().get().cycle.live_changes, LiveChanges::Off, "no sync, no socket");
 }
 
-/// Issue #57: on a metered connection the account holds back — no upload, no poll, no
+/// On a metered connection the account holds back — no upload, no poll, no
 /// pinned download or thumbnail (the pool gives no slot but for opens) — while an open
 /// still gets its slot, `HeldBack` says why and `Paused` stays false; when the
 /// connection is no longer metered, what waited goes at once.
@@ -124,7 +124,7 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     service.stop_sync().await;
 }
 
-/// Issue #57: the user's pause and a hold are both on — `Resume` alone does not start
+/// The user's pause and a hold are both on — `Resume` alone does not start
 /// the account while the hold is on, nor does the hold's end alone while the pause is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_account_runs_only_when_neither_a_pause_nor_a_hold_is_on() {
@@ -156,7 +156,7 @@ async fn the_account_runs_only_when_neither_a_pause_nor_a_hold_is_on() {
     service.stop_sync().await;
 }
 
-/// Issue #57: `SyncAnyway` lifts the hold at once, until a source or the global hold
+/// `SyncAnyway` lifts the hold at once, until a source or the global hold
 /// settings change; then the hold is worked out again. After a restart with the
 /// condition still on, the account is held again and `Paused` stays false.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

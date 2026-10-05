@@ -29,7 +29,7 @@ fn ready(acquire: &mut Pin<Box<Acquire>>) -> Option<Slot> {
     }
 }
 
-/// Issue #39: among 30 000 waiters the pool grants in the order they came, and one in
+/// Among 30 000 waiters the pool grants in the order they came, and one in
 /// the middle that gives up leaves the line as it was around it.
 #[test]
 fn thirty_thousand_waiters_are_granted_in_order_and_one_gives_up() {
@@ -261,7 +261,7 @@ fn at_most_four_large_transfers_run_while_small_ones_keep_going() {
     assert_eq!(pool.large_held(), DEFAULT_LARGE);
 }
 
-/// A file being opened is outside the large-stream limit and its count (issue #50): an
+/// A file being opened is outside the large-stream limit and its count: an
 /// open of a large file goes at once, takes no room in the limit, and is not among the
 /// large streams; it still takes a slot of the pool.
 #[test]
@@ -279,7 +279,7 @@ fn an_open_is_outside_the_large_stream_limit_and_its_count() {
 }
 
 /// `in_use` is every slot held, of all four classes — a metadata one among them — and
-/// counts an open's reserve above the pool's size (issue #50).
+/// counts an open's reserve above the pool's size.
 #[test]
 fn the_slots_in_use_are_every_class_and_the_reserve() {
     let pool = TransferPool::starting_at(4, 64);

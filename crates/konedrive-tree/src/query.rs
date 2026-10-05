@@ -107,7 +107,7 @@ impl TreeStore {
 
     /// What is listed and placed in `items`, and what [`skipped`](Self::skipped)
     /// lists: a walk of the whole tree, asked for once per cycle that
-    /// changed it (issue #39).
+    /// changed it.
     pub fn counts(&self) -> Result<Counts, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Counts::default());
@@ -140,7 +140,7 @@ impl TreeStore {
     /// what it waits for ([`Skipped::waits`]). So is one that is still here
     /// while OneDrive has it below a folder that is not placed, on a line of
     /// its own beside that folder's. One query, from the index of skipped
-    /// items and from what waits, up to the root (issue #39), and a look at
+    /// items and from what waits, up to the root, and a look at
     /// each of the other changes that wait.
     pub fn skipped(&self) -> Result<Vec<Skipped>, TreeError> {
         let Some(root) = self.root_item_id()? else {

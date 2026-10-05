@@ -122,7 +122,7 @@ struct DriveBody {
 }
 
 /// The drive's quota as Graph gives it (`GET /me/drive`): what the outbox decides a full
-/// OneDrive by (issue #2). `remaining` is Graph's own figure, never `total - used`.
+/// OneDrive by. `remaining` is Graph's own figure, never `total - used`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct DriveQuota {
     #[serde(default)]
@@ -251,7 +251,7 @@ impl DriveClient {
 
     /// The bytes behind a pre-authenticated download URL, from `from` on — to
     /// the end of the file, or up to `end` (the first byte not wanted: a piece
-    /// of a download in parts, issue #28). The URL carries its own
+    /// of a download in parts). The URL carries its own
     /// authorisation; the account's token is never sent to it.
     pub async fn download(&self, url: &str, from: u64, end: Option<u64>) -> Result<Download, DriveError> {
         let url = Url::parse(url)

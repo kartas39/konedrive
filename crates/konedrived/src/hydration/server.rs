@@ -237,12 +237,12 @@ pub(crate) async fn serve(
             // owner's daemon is not connected", and this daemon is connected.
             // Degrading it to an `EIO` denial costs the user one failed open.
             //
-            // What the request finds under the lock decides what it does
-            //: a file filled while the request waited is
+            // What the request finds under the lock decides what it does:
+            // a file filled while the request waited is
             // answered as it is — see `source::answer_request`.
             //
             // A file taken off the disk meanwhile, because OneDrive removed
-            // its item, stops its fill where it is (issue #104). Its opener is
+            // its item, stops its fill where it is. Its opener is
             // answered `EIO`: the kernel delivers no errno that says "gone".
             // `ENOENT` is not in `ACCEPTED_DENY_ERRNOS`, and the helper
             // turns an errno outside that set into `EIO`, with a warning.

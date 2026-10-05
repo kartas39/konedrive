@@ -9,7 +9,7 @@ fn event_at(kind: Kind, path: &str) -> Event {
     Event { at: 1, kind, path: path.into(), detail: String::new() }
 }
 
-/// Issue #39: the end of a cycle looks over the conflicts a batch at a
+/// The end of a cycle looks over the conflicts a batch at a
 /// time, round the list, dropping those whose file is gone; the list on
 /// the bus still looks at every one.
 #[test]

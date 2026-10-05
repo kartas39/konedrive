@@ -115,7 +115,7 @@ struct Run {
     /// them (deleted or moved here, not examined yet).
     missing: HashSet<String>,
     /// The inodes items were placed as, not recorded yet: written
-    /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
+    /// [`PLACED_BATCH`] at a time, and at the end of the run.
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
     /// What removals left in place so far, as the user's own.
     kept: Kept,
@@ -128,7 +128,7 @@ struct Run {
     aside: HashMap<String, PathBuf>,
 }
 
-/// Placed items recorded in one transaction (issue #39; a guess).
+/// Placed items recorded in one transaction (a guess).
 pub const PLACED_BATCH: usize = 500;
 
 /// Items whose plan, or whose rows, are read in one store call (a guess):

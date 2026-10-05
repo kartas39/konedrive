@@ -41,7 +41,7 @@ pub struct ExamineSink {
     /// again (`Some`, what to say), and when a Full scan found them current
     /// (`None`): `LastError` says so meanwhile.
     pub on_handles: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
-    /// Told how each Full local scan goes (issue #8); a single place examined is not.
+    /// Told how each Full local scan goes; a single place examined is not.
     pub scan: Option<ScanReport>,
 }
 

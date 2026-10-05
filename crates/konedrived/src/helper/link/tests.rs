@@ -273,7 +273,7 @@ async fn a_hydrate_request_interleaved_before_the_ack_still_resolves_both() {
 /// call fail with `HelperError::Timeout` rather than hang. The call
 /// timeout is injected as a few milliseconds via `connect_with_timeout`
 /// so this test does not have to sleep the real 30 s bound.
-///: `UnregisterRoot` walks the whole
+/// `UnregisterRoot` walks the whole
 /// tree as `RegisterRoot` does — every directory, and now every file's
 /// ignore mark — so it gets the same long bound. With the ordinary one,
 /// a large tree's unregistration timed out, and a timeout ends the

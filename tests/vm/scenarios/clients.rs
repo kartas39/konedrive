@@ -182,7 +182,7 @@ pub(crate) fn hostile_uid(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> 
 /// exemption is: this process holds the connection, so its own open of an
 /// `online-only` placeholder must go straight through with no fetch, while the
 /// same open from any other process must be intercepted and filled.
-///. Every connection costs the helper
+/// Every connection costs the helper
 /// two threads and about three descriptors, and the socket is 0666: any
 /// local user could open connections until the helper ran out of
 /// descriptors, and from then on every intercepted open on the machine was

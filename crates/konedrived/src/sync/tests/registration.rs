@@ -350,8 +350,8 @@ async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_ag
 }
 
 /// A failed switch the helper may still hold — its registration failed,
-/// and it could not confirm it let go — is kept intercepted instead
-///: a folder the helper may hold must never be one the
+/// and it could not confirm it let go — is kept intercepted instead:
+/// a folder the helper may hold must never be one the
 /// daemon holds without interception. It is brought up at the next
 /// connect, as every intercepted folder is.
 #[tokio::test]

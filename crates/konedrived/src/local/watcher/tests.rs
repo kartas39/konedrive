@@ -419,7 +419,7 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     watcher.stop();
 }
 
-/// The daemon's sink tells the folder's state how a Full local scan goes (issue #8): its
+/// The daemon's sink tells the folder's state how a Full local scan goes: its
 /// reason, then idle with when it finished, how long it took and what it saw. A scan with no
 /// base yet, and a single place examined, change nothing.
 #[test]

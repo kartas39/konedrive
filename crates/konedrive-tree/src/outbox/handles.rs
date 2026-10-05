@@ -23,8 +23,8 @@ impl TreeStore {
         set_local_handle(&self.conn, id, handle)
     }
 
-    /// Records the inodes `placed` items are now, in one transaction (issue
-    /// #39): a placement's batch.
+    /// Records the inodes `placed` items are now, in one transaction:
+    /// a placement's batch.
     pub fn set_local_handles(&mut self, placed: &[(String, FileHandle)]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         {
@@ -49,7 +49,7 @@ impl TreeStore {
         Ok(())
     }
 
-    /// What the daemon is about to take off the disk itself (issue #104):
+    /// What the daemon is about to take off the disk itself:
     /// the subtrees at `roots` — by `items` and by the new tree in `staging`
     /// — forget their local objects, in both tables, and so does every row
     /// that records one of `handles`, the objects themselves: one statement

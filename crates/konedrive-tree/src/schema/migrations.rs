@@ -47,7 +47,7 @@ fn add_column(conn: &Connection, table: &str, column: &str, kind: &str) -> Resul
     Ok(())
 }
 
-/// Version 3 to 4 (issue #104): every row below a row that is not placed
+/// Version 3 to 4: every row below a row that is not placed
 /// forgets its local object, in `items` and `staging`, each by its own
 /// tree. A build before #104 kept them when a folder stopped being placed,
 /// and once the folder was placed again they read as objects gone —
@@ -74,11 +74,11 @@ fn forget_below_unplaced(conn: &Connection) -> Result<(), TreeError> {
 /// #89.
 ///
 /// What they were, oldest first: the read-write cycle's tables; the tables
-/// and indexes of a staged delta (issue #39); the outbox's sizes and
-/// indexes (issue #38); the listed upload sessions (issue #47), with a
+/// and indexes of a staged delta; the outbox's sizes and
+/// indexes; the listed upload sessions, with a
 /// session a row already had listed without a place; the openings (issues
 /// #84, #89), whose first trigger deleted a record with its row;
-/// `leaving.handle` (issue #104); a bad item's columns, with the id an
+/// `leaving.handle`; a bad item's columns, with the id an
 /// earlier build kept in the reason (`hash-mismatch:<item id>`) moved to
 /// its column — such a row has no tag (limitations log F200).
 fn unnumbered_additions(conn: &Connection) -> Result<(), TreeError> {

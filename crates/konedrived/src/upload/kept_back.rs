@@ -1,11 +1,11 @@
 //! What is kept back from OneDrive, grouped by what the user can do about it
-//! (`NotUploadedSummary()`, `NotUploadedFiles()`; issue #20). Every reason a
+//! (`NotUploadedSummary()`, `NotUploadedFiles()`). Every reason a
 //! change is kept back — an outbox row that is blocked, or waits with a
 //! reason, and what the examination never uploads (`local_skipped`) — falls
 //! into one [`Group`]; [`group_of`] is the one place that decides which,
 //! from the reason and from whether the row is blocked: a blocked row needs
 //! the user, and is never among what goes up by itself.
-//! A change that waits for space in OneDrive (issue #2) is kept back too,
+//! A change that waits for space in OneDrive is kept back too,
 //! though its row stays `ready` in its place: see [`kept_reason`].
 //!
 //! The window shows one line per reason where one action fixes every file of

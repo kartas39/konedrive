@@ -270,7 +270,7 @@ pub fn stopped_mid_session_resumes(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     with_world(ctx, "session", Seed { folders: &[], files: &[] }, |w| {
         // The second fragment is throttled once: the session is half sent when the daemon
         // goes. `Retry-After` is kept short: the account's transfer pool hands out no slot for
-        // the whole of it (#22), and it outlives a stop and start of the sync, so a minute
+        // the whole of it, and it outlives a stop and start of the sync, so a minute
         // would outlast the wait below.
         w.graph.with(|c| c.throttle("PUT", "upload/", 1, 5, 1));
         let size = 25 * 1024 * 1024;

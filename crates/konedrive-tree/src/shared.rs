@@ -8,7 +8,7 @@ use super::{outbox, ReadStore, TreeError, TreeStore};
 /// its own answer.
 type Job = Box<dyn FnOnce(&mut TreeStore) + Send>;
 
-/// Jobs a store's channel holds before a sender waits (issue #38).
+/// Jobs a store's channel holds before a sender waits.
 pub const QUEUE: usize = 1024;
 
 /// Hands out the ids of the owner threads.
@@ -20,7 +20,7 @@ thread_local! {
 }
 
 /// One thread that owns a connection and runs the jobs sent to it, one at a
-/// time, in the order they arrive (issue #38).
+/// time, in the order they arrive.
 struct Owner {
     jobs: tokio::sync::mpsc::Sender<Job>,
     id: u64,
@@ -106,7 +106,7 @@ fn failed() -> TreeError {
 
 /// The store, shared by the tasks of one folder: the listing, the
 /// materializer, the outbox worker and the D-Bus queries. One thread owns
-/// its connection, and everyone else sends it jobs (issue #38): `call` from
+/// its connection, and everyone else sends it jobs: `call` from
 /// async code, `call_blocking` from plain threads. Only that thread holds a
 /// read-write connection to the store; the bus's reads go to a second,
 /// read-only connection with a thread of its own.
@@ -235,7 +235,7 @@ impl Store {
     }
 
     /// Runs `f` on the store's read-only connection, which never waits for a
-    /// writer and sees what was last committed (issue #38): the bus's lists and
+    /// writer and sees what was last committed: the bus's lists and
     /// sums. A store in memory, or one whose second connection cannot be
     /// opened, is read through its own thread; `f` is handed the same
     /// [`ReadStore`] either way.

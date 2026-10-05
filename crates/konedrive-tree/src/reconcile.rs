@@ -171,7 +171,7 @@ impl TreeStore {
     /// A folder that is read-only now (a switch back, or a daemon that
     /// starts so): what waits is the base's at once — the read phase's cycle
     /// knows no deferred change, and the delta cursor will not send it again.
-    /// A row placed again by it carries no local object (issue #104), and a
+    /// A row placed again by it carries no local object, and a
     /// row it makes not placed keeps none (I1): the first cycle takes what
     /// waited to leave off the disk as the read phase does.
     /// The first cycle, a Full reconcile, makes the folder match. Nothing to
@@ -206,8 +206,8 @@ impl TreeStore {
     /// with no local object recorded: never placed here, or forgotten by the
     /// outbox (F82 (8)) or a restore of held deletes. The root is not one.
     /// Read from those with no local object alone (an index of `items`, and
-    /// what a delta staged), each placed or not by one query for the lot
-    /// (issue #39): no walk of the whole tree.
+    /// what a delta staged), each placed or not by one query for the lot:
+    /// no walk of the whole tree.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
         let own = placed("placement");
         let start = match self.source(table) {
@@ -303,7 +303,7 @@ impl TreeStore {
         let landed = match waiting {
             Some((Change::Upsert(row), _)) if row.ctag.is_some() && row.ctag.as_deref() == ctag => {
                 // Through `apply`, so that a row placed again carries no
-                // local object but the one landed here (issue #104).
+                // local object but the one landed here.
                 apply(&tx, Source::Items, &[Change::Upsert(row)])?;
                 tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
                 true
@@ -340,7 +340,7 @@ impl TreeStore {
     /// consumed ([`RwStaged`]); `None`, with nothing staged, when there is
     /// nothing to do and no `full` reconcile is asked for.
     ///
-    /// An idle cycle reads nothing whole (issue #39): the deferred changes,
+    /// An idle cycle reads nothing whole: the deferred changes,
     /// the outbox by item id, `items` by `local_seq` and by what has no
     /// local object, each through an index.
     pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<RwStaged>, TreeError> {
