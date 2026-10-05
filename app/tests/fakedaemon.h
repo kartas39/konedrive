@@ -221,6 +221,9 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString Source READ source)
     Q_PROPERTY(QString LastError READ lastError)
+    Q_PROPERTY(KonedriveOverall Overall READ overall)
+    Q_PROPERTY(QString Trouble READ trouble)
+    Q_PROPERTY(QString NotUpdated READ notUpdated)
     Q_PROPERTY(qulonglong ItemsListed READ itemsListed)
     Q_PROPERTY(qulonglong ItemsPlaced READ itemsPlaced)
     Q_PROPERTY(qulonglong SkippedCount READ skippedCount)
@@ -245,6 +248,10 @@ public:
                                   {QStringLiteral("State"), QStringLiteral("none")},
                                   {QStringLiteral("Source"), QString()},
                                   {QStringLiteral("LastError"), QString()},
+                                  // As the daemon says it of an account that is not signed in.
+                                  {QStringLiteral("Overall"), QVariant::fromValue(KonedriveOverall{QStringLiteral("offline"), QStringLiteral("signed-out")})},
+                                  {QStringLiteral("Trouble"), QString()},
+                                  {QStringLiteral("NotUpdated"), QString()},
                                   {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("ItemsPlaced"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("SkippedCount"), QVariant::fromValue<qulonglong>(0)},
@@ -266,6 +273,9 @@ public:
     QString state() const { return value("State").toString(); }
     QString source() const { return value("Source").toString(); }
     QString lastError() const { return value("LastError").toString(); }
+    KonedriveOverall overall() const { return value("Overall").value<KonedriveOverall>(); }
+    QString trouble() const { return value("Trouble").toString(); }
+    QString notUpdated() const { return value("NotUpdated").toString(); }
     qulonglong itemsListed() const { return value("ItemsListed").toULongLong(); }
     qulonglong itemsPlaced() const { return value("ItemsPlaced").toULongLong(); }
     qulonglong skippedCount() const { return value("SkippedCount").toULongLong(); }
@@ -279,6 +289,14 @@ public:
     bool writable() const { return value("Writable").toBool(); }
     QString liveChanges() const { return value("LiveChanges").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
+
+    /// What the daemon decided of the account as a whole: the fake decides nothing, a
+    /// test says the state and the reason, with whatever else changes in the same message.
+    void decide(const char *state, const char *reason, QVariantMap with = {})
+    {
+        with.insert(QStringLiteral("Overall"), QVariant::fromValue(KonedriveOverall{QLatin1String(state), QLatin1String(reason)}));
+        set(with);
+    }
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);

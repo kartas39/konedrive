@@ -153,10 +153,10 @@
     <property name="State" type="s" access="read"/>
     <!-- Every current problem, joined with ". ". While a changed file cannot
          be replaced here, one part reads "N file(s) changed in OneDrive could
-         not be updated here yet: <reason>" — the window keys its attention
-         state on "could not be updated". While this folder waits for the
-         helper, it begins with the helper's advice for
-         Accounts.HelperState. -->
+         not be updated here yet: <reason>" (NotUpdated is that part alone).
+         While this folder waits for the helper, it begins with the helper's
+         advice for Accounts.HelperState. For the log and for older clients:
+         nothing is decided by this text, Overall says the state. -->
     <property name="LastError" type="s" access="read"/>
     <!-- The state the account is in as a whole, and the reason for it. The
          daemon decides both; a client turns the reason into words and an
@@ -194,12 +194,21 @@
       <!-- For Qt's generator (app/synctypes.h); ignored by everything else. -->
       <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveOverall"/>
     </property>
-    <!-- The sentence of the trouble Overall's reason is about, for "stopped"
-         (everything LastError says), "trouble" and "unreachable" (the
-         problems of LastError that are not the no-interception warning,
-         joined with ". "), and "not-updated" (the failed-update note); empty
-         for every other reason. -->
+    <!-- The sentence of the trouble there is now, whatever Overall's reason
+         is; empty with none. While State is "error": everything LastError
+         says. While State is "ready" or "no-interception": the problems of
+         LastError that do not stop the folder, OneDrive out of reach among
+         them, joined with ". ", without the no-interception warning and the
+         failed-update note. Empty in every other State: no such trouble is
+         counted while the first listing runs. A client shows it as the
+         sentence of "stopped", "trouble" and "unreachable", and may show it
+         under any other reason too (deletes held, a pause). -->
     <property name="Trouble" type="s" access="read"/>
+    <!-- The failed-update note alone, "N file(s) changed in OneDrive could
+         not be updated here yet: <reason>", whenever there is one, whatever
+         Overall's reason is; empty otherwise. The sentence of
+         "not-updated". -->
+    <property name="NotUpdated" type="s" access="read"/>
     <!-- "onedrive": the folder shows this account's drive (Account.Mode
          says whether changes made here go up). "local": filled with
          PopulateFromDirectory. Empty: none. -->

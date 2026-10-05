@@ -214,10 +214,13 @@ pub trait Folder {
     /// [`overall::State`](crate::overall::State) and [`overall::Reason`](crate::overall::Reason).
     #[zbus(property)]
     fn overall(&self) -> zbus::Result<crate::overall::Overall>;
-    /// The sentence of the trouble `Overall`'s reason is about, for the reasons that have
-    /// one ([`Reason::has_sentence`](crate::overall::Reason::has_sentence)); empty otherwise.
+    /// The sentence of the trouble there is now, whatever `Overall`'s reason is: the error
+    /// the folder stopped on, or the trouble that does not stop it; empty with none.
     #[zbus(property)]
     fn trouble(&self) -> zbus::Result<String>;
+    /// The failed-update note alone, whenever there is one; empty otherwise.
+    #[zbus(property)]
+    fn not_updated(&self) -> zbus::Result<String>;
     /// `onedrive`, `local`, or empty for none.
     #[zbus(property)]
     fn source(&self) -> zbus::Result<String>;

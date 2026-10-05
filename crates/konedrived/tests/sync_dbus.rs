@@ -685,8 +685,10 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     assert_eq!(f.folder.trouble().await.unwrap(), f.folder.last_error().await.unwrap());
 
     f.sync.state().update(|s| s.cycle.replacement_note = Some(konedrived::status::snapshot::ReplacementNote { files: 1, why: "no space".into() }));
-    // Still stopped: `Overall` is not sent again, only the sentence that changed.
-    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError", "Trouble"]);
+    // Still stopped: `Overall` is not sent again, only the sentences that changed.
+    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError", "NotUpdated", "Trouble"]);
+    assert_eq!(f.folder.not_updated().await.unwrap(), "1 file(s) changed in OneDrive could not be updated here yet: no space");
+    assert_eq!(f.folder.trouble().await.unwrap(), f.folder.last_error().await.unwrap());
 }
 
 /// The coalescing (at most four `PropertiesChanged` a second, since a

@@ -4,8 +4,9 @@
 //! ([`Property::of`]), and `signals` compares and sends by the same rows, so a property
 //! cannot be read one way and announced another.
 //!
-//! `Overall` and `Trouble` are rows too ([`DECIDED`]): what they say is decided by
-//! `status::overall`, from the published state, the downloads and the account's sign-in.
+//! `Overall`, `Trouble` and `NotUpdated` are rows too ([`DECIDED`]): what they say is
+//! decided by `status::overall`, from the published state, the downloads and the account's
+//! sign-in.
 //!
 //! Not here: the properties a call sets and announces itself (`IgnorePatterns`,
 //! `Thumbnails`), `Source`, which is the folder's record and is announced with `Path`, and
@@ -18,7 +19,7 @@ use konedrive_dbus::{CONFLICTS_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN
 use zbus::zvariant::Value;
 
 use crate::account::state::SignInState;
-use crate::status::overall::overall;
+use crate::status::overall;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::status::transfers::{large_files, Transfer};
 use crate::sync::SyncService;
@@ -149,13 +150,15 @@ properties! {
 }
 
 properties! {
-    /// What the daemon decides of the account as a whole (`status::overall`): announced the
-    /// moment either changes, and only then — whatever else changed under them.
+    /// What the daemon decides of the account as a whole (`status::overall`): each announced
+    /// the moment it changes, and only then — whatever else changed under them.
     DECIDED:
     /// The state and the reason for it.
-    OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall(s.sign_in, &s.snapshot, s.downloads.len()).reason.into();
-    /// The sentence of the trouble `Overall`'s reason is about, or empty.
-    TROUBLE: String = FOLDER, "Trouble", |s| overall(s.sign_in, &s.snapshot, s.downloads.len()).trouble;
+    OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall::reason(s.sign_in, &s.snapshot, s.downloads.len()).into();
+    /// The sentence of the trouble there is now, whatever the reason is; or empty.
+    TROUBLE: String = FOLDER, "Trouble", |s| overall::trouble(&s.snapshot);
+    /// The failed-update note alone, or empty.
+    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::not_updated(&s.snapshot);
 }
 
 properties! {

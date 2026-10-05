@@ -43,7 +43,8 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         state: Some("ready".into()),
         last_error: "one file could not be placed".into(),
         overall: Some(Reason::DeletesHeld.into()),
-        trouble: String::new(),
+        trouble: "one file could not be placed".into(),
+        not_updated: String::new(),
         source: "onedrive".into(),
         items: Some((120, 118)),
         skipped: 2,
@@ -133,10 +134,11 @@ fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
 }
 
 /// The `Overall:` line says the state the daemon decided, in words by its reason; the
-/// sentence of `Trouble` is printed for the reasons that are about one.
+/// sentence of `Trouble` or of `NotUpdated` is printed for the reasons that are about one,
+/// and for no other.
 #[test]
 fn the_overall_line_says_the_state_in_words_by_the_reason() {
-    let text = |reason: Reason, trouble: &str| super::overall_text(&reason.into(), trouble);
+    let text = |reason: Reason, trouble: &str| super::overall_text(&reason.into(), trouble, "");
     assert_eq!(text(Reason::UpToDate, ""), "ok — up to date");
     assert_eq!(text(Reason::SignedOut, ""), "offline — signed out of OneDrive");
     assert_eq!(text(Reason::Listing, ""), "syncing — listing your OneDrive");
@@ -147,7 +149,11 @@ fn the_overall_line_says_the_state_in_words_by_the_reason() {
     let unreachable = "cannot reach OneDrive (timed out); trying again";
     assert_eq!(text(Reason::Unreachable, unreachable), format!("offline — {unreachable}"));
     assert_eq!(text(Reason::Trouble, "part of the folder is scanned"), "warning — part of the folder is scanned");
-    assert_eq!(text(Reason::NotUpdated, "1 file(s) changed in OneDrive could not be updated here yet: no space"), "warning — 1 file(s) changed in OneDrive could not be updated here yet: no space");
+    let note = "1 file(s) changed in OneDrive could not be updated here yet: no space";
+    assert_eq!(super::overall_text(&Reason::NotUpdated.into(), "part of the folder is scanned", note), format!("warning — {note}"));
+    // Under a reason that ranks higher the two sentences are there too, and are not said
+    // on this line.
+    assert_eq!(super::overall_text(&Reason::Paused.into(), "part of the folder is scanned", note), "paused — you paused syncing");
     assert_eq!(text(Reason::Stopped, "signed out"), "warning — syncing has stopped: signed out");
     assert_eq!(text(Reason::Stopped, ""), "warning — syncing has stopped");
 
@@ -160,8 +166,8 @@ fn the_overall_line_says_the_state_in_words_by_the_reason() {
     }
     // A reason of a newer daemon is printed as it is spelled, under the state it came with.
     let newer = Overall { state: "warning".into(), reason: "on-fire".into() };
-    assert_eq!(super::overall_text(&newer, ""), "warning — on-fire");
-    assert_eq!(super::overall_text(&newer, "the disk is on fire"), "warning — the disk is on fire");
+    assert_eq!(super::overall_text(&newer, "", ""), "warning — on-fire");
+    assert_eq!(super::overall_text(&newer, "part of the folder is scanned", ""), "warning — on-fire");
 }
 
 /// `status` prints the same line under the sign-in's state.

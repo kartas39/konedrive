@@ -26,7 +26,8 @@ constexpr qint64 Now = 1758700000;
 
 /// An account's status line and state, the tray's worst state across
 /// accounts and its tooltip, and the tray itself, driven by a fake daemon on
-/// the private bus and a fake clock.
+/// the private bus and a fake clock. The state is the daemon's (Folder.Overall):
+/// the fake decides nothing, each test says what the daemon decided.
 class AppStatusTest : public QObject
 {
     Q_OBJECT
@@ -65,6 +66,7 @@ private:
                                    {QStringLiteral("State"), QStringLiteral("ready")},
                                    {QStringLiteral("Source"), QStringLiteral("onedrive")},
                                    {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(Now - 90)}});
+        family->sync->folder->decide("ok", "up-to-date");
         return family;
     }
 
@@ -77,9 +79,16 @@ private:
                                      {QStringLiteral("State"), QStringLiteral("ready")},
                                      {QStringLiteral("Source"), QStringLiteral("onedrive")},
                                      {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(Now - 20)}});
+        decide("ok", "up-to-date");
         QVERIFY(m_daemon->start());
         follow();
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+    }
+
+    /// What the daemon decided of the first account, with what else changes in the same message.
+    void decide(const char *state, const char *reason, const QVariantMap &with = {})
+    {
+        m_daemon->sync->folder->decide(state, reason, with);
     }
 
     static QStringList menuTexts(const TrayIcon &tray)
@@ -150,20 +159,23 @@ private Q_SLOTS:
     void listingIsSyncing()
     {
         startSynced();
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
+        decide("syncing", "listing", {{QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12)}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-sync"));
         QCOMPARE(m_status->text(), QStringLiteral("Listing your OneDrive: 12 items so far"));
+        QVERIFY(m_status->attention().isEmpty());
     }
 
     void aDownloadIsSyncing()
     {
         startSynced();
         m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}});
+        decide("syncing", "transferring");
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-sync"));
         QCOMPARE(m_status->text(), QStringLiteral("Downloading 1 file · checked 20 s ago"));
         m_daemon->sync->setTransfers({});
+        decide("ok", "up-to-date");
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
     }
 
@@ -173,23 +185,29 @@ private Q_SLOTS:
     {
         startSynced();
         m_daemon->sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(3)}});
+        decide("syncing", "transferring");
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         QCOMPARE(m_status->text(), QStringLiteral("3 changes waiting to upload · checked 20 s ago"));
         m_daemon->sync->setUploads({{Root + QStringLiteral("/a.odt"), 1, 10}});
         QTRY_COMPARE(m_status->text(), QStringLiteral("Uploading 1 file · checked 20 s ago"));
 
         m_daemon->sync->queue->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(2)}});
+        decide("warning", "blocked");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+        QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
         QCOMPARE(m_status->attention(), QStringLiteral("2 changes cannot be uploaded"));
 
         m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 1);
+        decide("warning", "deletes-held");
         QTRY_COMPARE(m_status->attention(), QStringLiteral("1 item deleted here waits for you: delete it in OneDrive too, or restore it"));
 
         m_daemon->sync->queue->RestoreDeletes();
         m_daemon->sync->queue->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)}, {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->setUploads({});
         m_daemon->sync->folder->Pause(0);
+        decide("paused", "paused");
         QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
+        QVERIFY(m_status->attention().isEmpty());
         QCOMPARE(m_status->iconName(), QStringLiteral("media-playback-pause"));
         QCOMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
         QVERIFY(AppStatus::rank(QStringLiteral("paused")) < AppStatus::rank(QStringLiteral("syncing")));
@@ -223,7 +241,7 @@ private Q_SLOTS:
     {
         startSynced();
         TrayIcon tray(m_app.get());
-        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        decide("paused", "held-back", {{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
         QCOMPARE(m_status->text(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
         QTRY_COMPARE(m_app->state(), QStringLiteral("paused"));
@@ -235,13 +253,17 @@ private Q_SLOTS:
         m_daemon->sync->folder->Pause(0);
         QTRY_COMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
 
-        // Something that needs the user still comes first.
+        // Something that needs the user still comes first, when the daemon says so: the
+        // line keeps saying the pause.
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+        QCOMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
+        QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
         m_daemon->sync->folder->Resume();
-        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QString()}});
+        decide("ok", "up-to-date", {{QStringLiteral("HeldBack"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
     }
@@ -282,21 +304,28 @@ private Q_SLOTS:
     {
         startSynced();
         m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(29)}});
+        decide("warning", "quota-full");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->attention(), QStringLiteral("OneDrive is full: 29 files wait for space"));
         m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), false}, {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(1)}});
+        decide("warning", "too-big");
         QTRY_COMPARE(m_status->attention(), QStringLiteral("1 file is too big for the space left in OneDrive"));
         m_daemon->sync->queue->set({{QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(0)}});
+        decide("ok", "up-to-date");
         QTRY_VERIFY(m_status->attention().isEmpty());
     }
 
     void aSyncErrorNeedsAttention()
     {
         startSynced();
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("LastError"), QStringLiteral("The folder belongs to another account")}});
+        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the folder belongs to another account")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(m_status->text(), QStringLiteral("The folder belongs to another account"));
+        // What the folder stopped on, as the daemon says it.
+        QCOMPARE(m_status->text(), QStringLiteral("the folder belongs to another account"));
+        QVERIFY(m_status->attention().isEmpty());
+        decide("warning", "stopped", {{QStringLiteral("Trouble"), QString()}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Syncing has stopped"));
     }
 
     /// A conflict needs attention, and that outranks a download under way.
@@ -305,12 +334,11 @@ private Q_SLOTS:
     void aFolderNotUpYetIsStartingNotAnError()
     {
         startSynced();
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("waiting")}, {QStringLiteral("LastError"), QString()}});
+        decide("syncing", "starting", {{QStringLiteral("State"), QStringLiteral("waiting")}});
         QTRY_COMPARE(m_status->text(), QStringLiteral("Starting…"));
         QCOMPARE(m_status->state(), QStringLiteral("syncing"));
         QVERIFY(m_status->attention().isEmpty());
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("error")},
-                                     {QStringLiteral("LastError"), QStringLiteral("the konedrive helper is not running")}});
+        decide("warning", "stopped", {{QStringLiteral("State"), QStringLiteral("error")}, {QStringLiteral("Trouble"), QStringLiteral("the konedrive helper is not running")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->text(), QStringLiteral("the konedrive helper is not running"));
     }
@@ -319,114 +347,131 @@ private Q_SLOTS:
     {
         startSynced();
         m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}});
+        decide("syncing", "transferring");
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
         QCOMPARE(m_status->attention(), QStringLiteral("1 changed file was moved out of the way"));
+        QCOMPARE(m_status->text(), QStringLiteral("Downloading 1 file · checked 20 s ago"));
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
+        decide("syncing", "transferring");
         QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
+        QVERIFY(m_status->attention().isEmpty());
     }
 
     /// A file changed in OneDrive that could not be updated here: the daemon
-    /// says so in LastError while the folder stays ready.
+    /// says so in NotUpdated while the folder stays ready.
     void aFailedUpdateNeedsAttention()
     {
         startSynced();
         const QString note = QStringLiteral("1 file(s) changed in OneDrive could not be updated here yet: the connection was reset");
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), note}});
+        decide("warning", "not-updated", {{QStringLiteral("NotUpdated"), note}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->attention(), note);
         QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 20 s ago"));
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), QString()}});
+        // The note is the attention only for its own reason.
+        decide("warning", "conflicts");
+        QTRY_VERIFY(m_status->attention() != note);
+        decide("ok", "up-to-date", {{QStringLiteral("NotUpdated"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+        QVERIFY(m_status->attention().isEmpty());
     }
 
-    /// The helper serves every account (Accounts.HelperState): its trouble
-    /// is this account's warning too, while the folder itself stays ready.
+    /// The helper's trouble, when the daemon counts it against this account: a warning
+    /// that says so, while the line says what the folder does.
     void theHelpersTroubleNeedsAttention()
     {
         startSynced();
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
+        decide("warning", "helper-unavailable");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QVERIFY2(m_status->attention().contains(QStringLiteral("helper")), qPrintable(m_status->attention()));
         QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 20 s ago"));
 
-        // A folder the helper does not intercept is not its concern (M7).
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("no-interception")}});
+        // The helper's state alone decides nothing here: the daemon says whose concern it is.
+        decide("ok", "up-to-date");
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
-        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-
-        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("connected")}});
-        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+        m_daemon->manager->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
+        QTRY_VERIFY(m_manager->helperTrouble());
+        QCOMPARE(m_status->state(), QStringLiteral("ok"));
+        QVERIFY(m_status->attention().isEmpty());
     }
 
-    /// Trouble that does not stop the folder (no network, say) keeps RootState
-    /// ready and is said in LastError: the line shows it, the tray looks
-    /// offline (review B7).
+    /// Trouble that does not stop the folder (no network, say) is said in Trouble: the
+    /// line shows it, capitalised, and the tray looks offline when the daemon says the
+    /// account cannot reach OneDrive (review B7).
     void troubleThatDoesNotStopTheFolderShowsAndLooksOffline()
     {
         startSynced();
         m_now = Now + 7200;
         const QString offline = QStringLiteral("cannot reach OneDrive (error sending request); trying again");
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), offline}});
+        decide("offline", "unreachable", {{QStringLiteral("Trouble"), offline}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("offline"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-offline"));
         const QString line = QStringLiteral("Cannot reach OneDrive (error sending request); trying again · checked 2 h ago");
         QCOMPARE(m_status->text(), line);
+        QVERIFY(m_status->attention().isEmpty());
 
         // A failed update as well: that needs attention; the line still says why.
         const QString note = QStringLiteral("1 file(s) changed in OneDrive could not be updated here yet: timed out");
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), QString(offline + QStringLiteral(". ") + note)}});
+        decide("warning", "not-updated", {{QStringLiteral("NotUpdated"), note}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->attention(), note);
         QCOMPARE(m_status->text(), line);
 
-        // The rescue note is about conflicts, which have their own state: it is not trouble.
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), QStringLiteral("1 file(s) changed here were moved to /r because the cloud changed or removed them")}});
+        // And under a pause, which the daemon ranks over it: the line says the trouble.
+        m_daemon->sync->folder->Pause(0);
+        decide("paused", "paused", {{QStringLiteral("NotUpdated"), QString()}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
+        QCOMPARE(m_status->text(), line);
+
+        m_daemon->sync->folder->Resume();
+        decide("ok", "up-to-date", {{QStringLiteral("Trouble"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
         QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 2 h ago"));
     }
 
-    /// M4: only "cannot reach OneDrive" trouble looks offline; any other
-    /// trouble that does not stop the folder looks like a warning instead.
+    /// M4: only what the daemon calls unreachable looks offline; any other trouble
+    /// that does not stop the folder is a warning, by the reason and not by the sentence.
     void otherTroubleLooksLikeAWarningNotOffline()
     {
         startSynced();
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), QStringLiteral("something else went wrong; trying again")}});
+        decide("warning", "trouble", {{QStringLiteral("Trouble"), QStringLiteral("cannot reach OneDrive, and part of the folder is scanned")}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-warning"));
+        QCOMPARE(m_status->text(), QStringLiteral("Cannot reach OneDrive, and part of the folder is scanned · checked 20 s ago"));
+        QVERIFY(m_status->attention().isEmpty());
     }
 
-    /// I2: no-interception must not hide LastError's trouble behind the
-    /// fixed warning ("this folder is registered WITHOUT interception…"),
-    /// which itself carries no ". " and needs no attention on its own.
-    void noInterceptionShowsItsOwnTrouble()
+    /// Nothing is read from LastError: whatever it says, the state, the line and the
+    /// attention are what the daemon decided (I2).
+    void nothingIsReadFromLastError()
     {
-        const QString warning = QStringLiteral(
-            "this folder is registered WITHOUT interception: nothing fills a placeholder when it "
-            "is opened, so files in this folder read as zeros until they are explicitly hydrated");
-        m_daemon = std::make_unique<FakeDaemon>();
-        m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        m_daemon->sync->folder->set({{QStringLiteral("Path"), Root},
-                                     {QStringLiteral("State"), QStringLiteral("no-interception")},
-                                     {QStringLiteral("Source"), QStringLiteral("onedrive")},
-                                     {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(Now - 20)},
-                                     {QStringLiteral("LastError"), QString(warning + QStringLiteral(". cannot reach OneDrive (error sending request); trying again"))}});
-        QVERIFY(m_daemon->start());
-        follow();
-        // "offline" alone is ambiguous (it is also what "no service yet" looks
-        // like): wait for the service first, so the text check below is not
-        // satisfied by that same coincidence.
-        QTRY_VERIFY(m_sync->serviceAvailable());
-        QTRY_COMPARE(m_status->text(), QStringLiteral("Cannot reach OneDrive (error sending request); trying again · checked 20 s ago"));
-        QCOMPARE(m_status->state(), QStringLiteral("offline"));
+        startSynced();
+        m_daemon->sync->folder->set(
+            {{QStringLiteral("LastError"),
+              QStringLiteral("cannot reach OneDrive (error sending request); trying again. 1 file(s) changed in OneDrive could not be updated here yet: timed out")}});
+        // Something the window does follow, sent after it.
+        m_daemon->sync->folder->set({{QStringLiteral("LiveChanges"), QStringLiteral("connected")}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Up to date · live"));
+        QCOMPARE(m_status->state(), QStringLiteral("ok"));
+        QVERIFY(m_status->attention().isEmpty());
+    }
 
-        // Just the warning, nothing else wrong: no-interception alone needs no attention.
-        m_daemon->sync->folder->set({{QStringLiteral("LastError"), warning}});
-        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+    /// A state this build does not know, or none at all (a daemon of an older build has
+    /// no Overall), reads offline; the line is still put together.
+    void aStateTheWindowDoesNotKnowReadsOffline()
+    {
+        startSynced();
+        decide("on-fire", "burning");
+        QTRY_COMPARE(m_status->state(), QStringLiteral("offline"));
+        QCOMPARE(m_status->iconName(), QStringLiteral("state-offline"));
         QCOMPARE(m_status->text(), QStringLiteral("Up to date · checked 20 s ago"));
+        decide("ok", "up-to-date");
+        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+        decide("", "");
+        QTRY_COMPARE(m_status->state(), QStringLiteral("offline"));
     }
 
     /// With no system tray to come back from, closing the window quits
@@ -471,15 +516,19 @@ private Q_SLOTS:
     {
         startSynced();
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        decide("offline", "signed-out");
         QTRY_COMPARE(m_status->state(), QStringLiteral("offline"));
         QCOMPARE(m_status->iconName(), QStringLiteral("state-offline"));
         QCOMPARE(m_status->text(), QStringLiteral("Signed out of OneDrive"));
+        decide("offline", "signing-in");
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Signing in…"));
+        QCOMPARE(m_status->state(), QStringLiteral("offline"));
     }
 
     void noFolderIsOffline()
     {
         startSynced();
-        m_daemon->sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}, {QStringLiteral("Source"), QString()}});
+        decide("offline", "no-folder", {{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}, {QStringLiteral("Source"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("offline"));
         QCOMPARE(m_status->text(), QStringLiteral("No OneDrive folder yet"));
     }
@@ -501,10 +550,12 @@ private Q_SLOTS:
         QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
+        decide("warning", "conflicts");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-warning"));
         QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 changed files were moved out of the way"));
 
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        decide("offline", "signed-out");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-offline"));
         QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Signed out of OneDrive"));
     }
@@ -583,14 +634,21 @@ private Q_SLOTS:
         QCOMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
 
         m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}});
+        decide("syncing", "transferring");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-sync"));
 
+        // A paused account is worse than one syncing, and one offline worse than both.
+        family->sync->folder->decide("paused", "held-back", {{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
+
         family->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        family->sync->folder->decide("offline", "signed-out", {{QStringLiteral("HeldBack"), QString()}});
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-offline"));
         QTRY_COMPARE(tray.item()->toolTipSubTitle(),
                      QStringLiteral("Personal — Downloading 1 file · checked 20 s ago\nFamily — Signed out of OneDrive"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
+        decide("warning", "conflicts");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-warning"));
         QTRY_COMPARE(tray.item()->toolTipSubTitle(),
                      QStringLiteral("Personal — 2 changed files were moved out of the way\nFamily — Signed out of OneDrive"));
@@ -615,6 +673,8 @@ private Q_SLOTS:
         tray.pauseMenu()->actions().at(0)->trigger(); // for 2 hours
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Pause:7200")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Pause:7200")));
+        decide("paused", "paused");
+        family->sync->folder->decide("paused", "paused");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
         QTRY_VERIFY(tray.resumeAction()->isVisible());
         QVERIFY(!tray.pauseMenuAction()->isVisible());
@@ -622,6 +682,8 @@ private Q_SLOTS:
         tray.resumeAction()->trigger();
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Resume")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Resume")));
+        decide("ok", "up-to-date");
+        family->sync->folder->decide("ok", "up-to-date");
         QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
     }
 
@@ -671,6 +733,7 @@ private Q_SLOTS:
         QSignalSpy toShow(&tray, &TrayIcon::accountToShow);
 
         family->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        family->sync->folder->decide("warning", "conflicts");
         QTRY_COMPARE(m_accounts->at(1)->status()->state(), QStringLiteral("warning"));
         tray.item()->activate();
         QTRY_VERIFY(window.isVisible());
@@ -679,6 +742,7 @@ private Q_SLOTS:
 
         window.hide();
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
         tray.item()->activate();
         QTRY_VERIFY(window.isVisible());

@@ -33,13 +33,14 @@ fn other(text: &str, blocking: bool) -> Option<SyncTrouble> {
     Some(SyncTrouble { text: text.into(), blocking, kind: TroubleKind::Other })
 }
 
-/// A reason with no sentence.
+/// A reason with nothing said of trouble.
 fn plain(reason: Reason) -> Overall {
-    Overall { reason, trouble: String::new() }
+    Overall { reason, trouble: String::new(), not_updated: String::new() }
 }
 
+/// A reason with the trouble there is.
 fn about(reason: Reason, trouble: &str) -> Overall {
-    Overall { reason, trouble: trouble.into() }
+    Overall { reason, trouble: trouble.into(), not_updated: String::new() }
 }
 
 // --- One test for each row of the table ---
@@ -57,7 +58,7 @@ fn an_account_signing_in_is_offline() {
 fn an_account_not_signed_in_is_offline() {
     let mut s = healthy();
     s.cycle.sync_trouble = other("signed out", true);
-    assert_eq!(overall(SignInState::SignedOut, &s, 0), plain(Reason::SignedOut));
+    assert_eq!(overall(SignInState::SignedOut, &s, 0), about(Reason::SignedOut, "signed out"));
     assert_eq!(Reason::SignedOut.state(), State::Offline);
 }
 
@@ -157,7 +158,7 @@ fn changes_that_cannot_be_uploaded_are_a_warning() {
 fn files_not_updated_here_yet_are_a_warning_that_says_the_note() {
     let note = ReplacementNote { files: 2, why: "no space left on device".into() };
     let decided = with(|s| s.cycle.replacement_note = Some(note.clone()));
-    assert_eq!(decided, about(Reason::NotUpdated, &note.text()));
+    assert_eq!(decided, Overall { reason: Reason::NotUpdated, trouble: String::new(), not_updated: note.text() });
     assert_eq!(Reason::NotUpdated.state(), State::Warning);
 }
 
@@ -280,14 +281,14 @@ fn deletes_held_come_before_conflicts() {
 }
 
 /// A pause is said over trouble that does not stop the folder, and the trouble's sentence
-/// is not published with it; trouble that stops the folder is said over a pause.
+/// is published with it; trouble that stops the folder is said over a pause.
 #[test]
 fn a_pause_and_trouble() {
     let paused = with(|s| {
         s.pause.paused_until = Some(0);
         s.local.watch_note = "part of the folder is scanned".into();
     });
-    assert_eq!(paused, plain(Reason::Paused));
+    assert_eq!(paused, about(Reason::Paused, "part of the folder is scanned"));
     let stopped = with(|s| {
         s.pause.paused_until = Some(0);
         s.cycle.sync_trouble = other("signed out", true);
@@ -301,12 +302,12 @@ fn unreachable_and_paused_is_paused() {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
         s.pause.paused_until = Some(0);
     });
-    assert_eq!(both, plain(Reason::Paused));
+    assert_eq!(both, about(Reason::Paused, "cannot reach OneDrive (timed out); trying again"));
     let held = with(|s| {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
         s.pause.held_back = "power-saver".into();
     });
-    assert_eq!(held, plain(Reason::HeldBack));
+    assert_eq!(held, about(Reason::HeldBack, "cannot reach OneDrive (timed out); trying again"));
 }
 
 #[test]
@@ -390,8 +391,8 @@ fn the_no_interception_warning_is_not_trouble() {
     assert_eq!(of(&s), about(Reason::Trouble, "left 1 interrupted file(s)"));
 }
 
-/// The failed-update note is the note alone: what `LastError` says after it is trouble of
-/// its own, and waits its turn.
+/// The failed-update note is the note alone, in a property of its own: what `LastError`
+/// says around it is the trouble, published next to it.
 #[test]
 fn the_failed_update_note_is_published_alone() {
     let note = ReplacementNote { files: 1, why: "no space".into() };
@@ -400,18 +401,43 @@ fn the_failed_update_note_is_published_alone() {
         s.cycle.sync_trouble = unreachable("cannot reach OneDrive (timed out); trying again");
         s.local.watch_note = "part of the folder is scanned".into();
     });
-    assert_eq!(decided, about(Reason::NotUpdated, &note.text()));
+    let trouble = "cannot reach OneDrive (timed out); trying again. part of the folder is scanned";
+    assert_eq!(decided, Overall { reason: Reason::NotUpdated, trouble: trouble.into(), not_updated: note.text() });
 }
 
-/// Only the four reasons that are about a sentence publish one.
+/// The two sentences are there whenever there is something to say, whatever the reason is:
+/// under a reason that ranks higher, and for an account that is not signed in.
 #[test]
-fn a_sentence_is_published_only_for_the_reasons_that_have_one() {
+fn the_sentences_are_published_under_every_reason() {
+    let note = ReplacementNote { files: 2, why: "no space".into() };
     let mut s = healthy();
     s.local.watch_note = "part of the folder is scanned".into();
+    s.cycle.replacement_note = Some(note.clone());
     s.outbox.held_count = 1;
-    let decided = of(&s);
-    assert!(!decided.reason.has_sentence() && decided.trouble.is_empty(), "{decided:?}");
-    for reason in [Reason::Stopped, Reason::Trouble, Reason::Unreachable, Reason::NotUpdated] {
-        assert!(reason.has_sentence());
-    }
+    let said = |reason| Overall { reason, trouble: "part of the folder is scanned".into(), not_updated: note.text() };
+    assert_eq!(of(&s), said(Reason::DeletesHeld));
+    assert_eq!(overall(SignInState::SignedOut, &s, 0), said(Reason::SignedOut));
+
+    // A folder that has stopped says everything `LastError` says, the note in it, and the
+    // note by itself too.
+    s.cycle.sync_trouble = other("the tree store: disk I/O error", true);
+    let stopped = of(&s);
+    assert_eq!((stopped.reason, stopped.trouble, stopped.not_updated), (Reason::Stopped, published_error(&s), note.text()));
+}
+
+/// While the first listing runs no trouble is published, as none is counted; nor for a
+/// folder that is not up yet.
+#[test]
+fn no_trouble_is_published_while_listing_or_starting() {
+    let listing = with(|s| {
+        s.cycle.listing = true;
+        s.local.watch_note = "part of the folder is scanned".into();
+        s.outbox.held_count = 1;
+    });
+    assert_eq!(listing, plain(Reason::DeletesHeld));
+    let starting = with(|s| {
+        s.folder.root_state = RootState::Waiting;
+        s.local.watch_note = "part of the folder is scanned".into();
+    });
+    assert_eq!(starting, plain(Reason::Starting));
 }

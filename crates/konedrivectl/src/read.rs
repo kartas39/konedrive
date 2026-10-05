@@ -47,6 +47,7 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         last_error: said(account.last_error()).await?,
         overall: served(folder.overall()).await?,
         trouble: said(folder.trouble()).await?,
+        not_updated: said(folder.not_updated()).await?,
     })
 }
 
@@ -87,6 +88,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         last_error: said(folder.last_error()).await?,
         overall: served(folder.overall()).await?,
         trouble: said(folder.trouble()).await?,
+        not_updated: said(folder.not_updated()).await?,
         source: said(folder.source()).await?,
         items: both(folder.items_listed(), folder.items_placed()).await?,
         skipped: said(folder.skipped_count()).await?,

@@ -66,7 +66,7 @@ pub enum Reason {
     TooBig,
     /// Changes cannot be uploaded.
     Blocked,
-    /// Files changed in OneDrive could not be updated here yet; `Folder.Trouble` says it.
+    /// Files changed in OneDrive could not be updated here yet; `Folder.NotUpdated` says it.
     NotUpdated,
     /// The helper is in trouble, for a folder it intercepts.
     HelperUnavailable,
@@ -151,11 +151,6 @@ impl Reason {
             Self::Paused | Self::HeldBack => State::Paused,
             Self::UpToDate => State::Ok,
         }
-    }
-
-    /// Whether `Folder.Trouble` carries the sentence this reason is about.
-    pub fn has_sentence(self) -> bool {
-        matches!(self, Self::Stopped | Self::Trouble | Self::Unreachable | Self::NotUpdated)
     }
 }
 

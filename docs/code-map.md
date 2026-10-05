@@ -169,6 +169,9 @@ What the sync reports. Design: `desktop.md`.
 - `totals.rs` — the queue totals: how much is left to download and to upload. `[tests]`
 - `snapshot.rs` — `SyncSnapshot`, in six groups by who writes them, and the published states:
   the root, the local scan, live changes; `LastError` and its notes. `[tests]`
+- `overall.rs` — the state an account is in as a whole and the reason for it (`Folder.Overall`),
+  with `Trouble` and `NotUpdated`: the one rule, which the window and `konedrivectl` follow.
+  `[tests]`
 
 ### `crates/konedrived/src/hydration/`
 
@@ -687,6 +690,7 @@ Design: `desktop.md`.
 - `src/lib.rs` — the D-Bus names. `[tests]`
 - `src/accounts.rs` — the proxies of the accounts' interfaces. `[tests]`
 - `src/rows.rs` — the rows the daemon answers with, by name. `[tests]`
+- `src/overall.rs` — `Folder.Overall`: the states and the reasons, as they are spelled. `[tests]`
 - `src/refusal.rs` — `Refusal`: every name a call is refused under. `[tests]`
 - `src/helper.rs` — `HelperState`: `Accounts.HelperState`, and what to say in each state. `[tests]`
 - `src/version.rs` — the version line, the same in every program. `[tests]`
@@ -730,8 +734,9 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.
 - `synctypes.h` — the structured types of the folder's interfaces.
 - `skippeditem.h` — one entry of `Skipped()` and of `NotUploaded()`.
-- `accountstatus.h`, `accountstatus.cpp` — one summary of an account and its folder.
-- `appstatus.h`, `appstatus.cpp` — the whole app's state, for the tray.
+- `accountstatus.h`, `accountstatus.cpp` — one summary of an account and its folder: the state
+  the daemon decided (`Folder.Overall`), in words by its reason.
+- `appstatus.h`, `appstatus.cpp` — the whole app's state, for the tray: the worst of the accounts'.
 - `activitymodel.h`, `activitymodel.cpp` — the activity list.
 - `conflictmodel.h`, `conflictmodel.cpp` — the "Conflicts" list.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.

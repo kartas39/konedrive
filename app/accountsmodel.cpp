@@ -8,12 +8,12 @@
 
 #include <QRegularExpression>
 
-AccountItem::AccountItem(const QDBusConnection &bus, const QString &path, DaemonController *daemon, const AccountStatus::Clock &clock, QObject *parent)
+AccountItem::AccountItem(const QDBusConnection &bus, const QString &path, const AccountStatus::Clock &clock, QObject *parent)
     : QObject(parent)
     , m_path(path)
     , m_account(new AccountController(bus, path, this))
     , m_sync(new SyncController(bus, path, this))
-    , m_status(new AccountStatus(m_account, m_sync, daemon, clock, this))
+    , m_status(new AccountStatus(m_account, m_sync, clock, this))
 {
 }
 
@@ -150,7 +150,7 @@ void AccountsModel::follow(const QStringList &paths)
 
 AccountItem *AccountsModel::insert(int row, const QString &path)
 {
-    auto *item = new AccountItem(m_daemon->bus(), path, m_daemon, m_clock, this);
+    auto *item = new AccountItem(m_daemon->bus(), path, m_clock, this);
     const auto changed = [this, item] {
         rowChanged(item);
     };

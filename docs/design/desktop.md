@@ -112,7 +112,10 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `Path` (`s`) | the account's folder, empty when it has none. A folder `config.toml` records has its path from the daemon's start, while `State` may still be `none`: it is not brought up yet |
 | `State` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
 | `Source` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
-| `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5) |
+| `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5). For the log and for older clients: no client decides anything by its text |
+| `Overall` (`(ss)`) | the state the account is in as a whole, and the reason for it; see "The account as a whole" below |
+| `Trouble` (`s`) | the sentence of the trouble there is now, whatever the reason of `Overall` is; empty with none. While `State` is `error`: everything `LastError` says. While it is `ready` or `no-interception`: the problems that do not stop the folder, OneDrive out of reach among them, joined with ". ", without the no-interception warning and the failed-update note. Empty in every other `State` |
+| `NotUpdated` (`s`) | the failed-update note alone ("N file(s) changed in OneDrive could not be updated here yet: …"), whenever there is one; empty otherwise |
 | `ItemsListed`, `ItemsPlaced`, `SkippedCount` (`t`) | the listing's progress ([sync.md](sync.md) §7.5) |
 | `LastChecked` (`x`) | Unix time of the last successful cycle; 0 for never |
 | `LocalBytes` (`t`) | the space the folder's files take on disk (`st_blocks × 512`), measured by a walk after each cycle and at most every 5 s after a download or free-up |
@@ -163,6 +166,47 @@ The speeds, the pool and `RetryAfter` are updated once a second while anything m
 | Property | Meaning |
 |---|---|
 | `State` (`s`), `Reason` (`s`), `Started` (`x`), `Directories` (`t`), `Files` (`t`), `Expected` (`t`), `Finished` (`x`), `Took` (`u`) | the Full local scan of a read-write folder ([writes.md](writes.md) §3.1): `running`, `idle`, or `none` for a read-only folder; why it runs (`start`, `read-write`, `helper-back`, `overflow`, `ignore-list`, `periodic`); when it started; the directories and the files (every entry that is not a directory) it has seen so far; about how many items it will see — the items the base had placed when it started, not the disk's count, so never a percentage; when the last one finished (0: none since the daemon started) and how long it took, in seconds. While idle, the reason, start and counts are the last scan's. The small examinations after each change are not reported. Updated at most once a second while a scan runs, and once when it ends |
+
+**The account as a whole.** The daemon decides what state an account is in, and says why:
+`Folder.Overall` is the state (`ok`, `syncing`, `warning`, `paused`, `offline`) and the reason. The
+rule is one function over what the account and its folder publish
+(`crates/konedrived/src/status/overall.rs`); the spellings are `konedrive_dbus::overall`'s. The
+first row that holds decides, in this order:
+
+| State | Reason | When |
+|---|---|---|
+| `offline` | `signing-in` | the account is signing in |
+| `offline` | `signed-out` | the account is not signed in |
+| `offline` | `no-folder` | no folder is registered |
+| `syncing` | `starting` | the folder is recorded and not up yet, with nothing known to be wrong (`State` is `waiting`) |
+| `warning` | `stopped` | the folder's syncing has stopped on an error (`State` is `error`) |
+| `warning` | `deletes-held` | deletions wait for the user's decision |
+| `warning` | `conflicts` | changed files were moved out of the way |
+| `warning` | `quota-full` | OneDrive is full and files wait for space |
+| `warning` | `too-big` | files are too big for the space left |
+| `warning` | `blocked` | changes cannot be uploaded |
+| `warning` | `not-updated` | files changed in OneDrive could not be updated here yet (`NotUpdated` says it) |
+| `warning` | `helper-unavailable` | the helper is not connected, for a folder it intercepts; not for one registered without interception |
+| `paused` | `paused` | the user paused the account |
+| `paused` | `held-back` | the account holds back by itself (metered, battery, power-saver) |
+| `offline` | `unreachable` | OneDrive cannot be reached, and nothing else is wrong |
+| `warning` | `trouble` | any other trouble that does not stop the folder |
+| `syncing` | `listing` | the first listing of the drive is running |
+| `syncing` | `transferring` | files are downloading or uploading, or changes wait to upload |
+| `ok` | `up-to-date` | none of the above |
+
+- Nothing is decided by a sentence. Out of reach is a kind the sync's trouble carries
+  (`TroubleKind`), the no-interception warning and the failed-update note are facts of the
+  folder; rewording a message changes no state.
+- `unreachable` holds only when out of reach is all that is wrong: with another note beside it (the
+  watcher's, the lock's, the outbox's) the account is `warning` for `trouble`.
+- While the first listing runs, trouble that does not stop the folder is not counted, and
+  `Trouble` is empty.
+- `Overall`, `Trouble` and `NotUpdated` are announced the moment what they say changes, each by
+  itself, and never otherwise.
+- The one state no daemon can say is "the service is not running": a client shows `offline` for
+  it by itself. A client turns the reason into words and an icon, and decides nothing else
+  (§3, §4, §5).
 
 The signal `ActivityLog.Added(x time, s kind, s path, s detail)` announces each event as it is
 recorded.
@@ -303,14 +347,14 @@ F51).
 | `settings on-metered [pause\|sync]`, `settings on-battery [sync\|power-saver\|pause]` | — | the whole app's hold settings: shows the choice, or changes it for every account (`Accounts.SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
 | `login` | chosen | signs an account that is there in again: `BeginSignIn`, opens the browser and waits. With no account at all it adds nothing: it is refused, and the refusal names `account add` |
 | `logout` | chosen | signs the account out and deletes its token |
-| `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
+| `status` | chosen, or all | the account's sign-in state and mode, and an `Overall:` line: the state of the account as a whole as the daemon decided it (`Folder.Overall`, §2.4), in words by its reason ("warning — changes cannot be uploaded"); with several accounts and none named, every account under its label, the `Client ID:` line once above them |
 | `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
 | `sync register-without-interception <path>` | chosen | the developer's local folder, named after its cost on purpose |
 | `sync forget` | chosen | Forget |
 | `sync populate-from <dir>` | chosen | fills a local folder from a directory |
 | `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files` |
 | `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files` |
-| `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; while the account holds back by itself, "Paused by itself: metered connection" (or "on battery", "power-saver mode") with how to `sync anyway`; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
+| `sync status` | chosen, or all | the folder, the same `Overall:` line as `status`, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; while the account holds back by itself, "Paused by itself: metered connection" (or "on battery", "power-saver mode") with how to `sync anyway`; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
 | `sync activity [--limit N]`, `sync transfers` | chosen | recent events; for each way one line — how many files move now, what is left, its size and about how long, what this run has done, and how fast ("Downloading: 12 now, 1 234 files left (48.2 GiB, about 12 min), 3.1 GiB done, 8.4 MiB/s"; uploads are counted in changes; what is left and done only while anything is left, the time only when known) — the transfer pool ("Pool: 7 of 32 · large files: 1 (4 of 4 streams)": the slots in use of the pool's size — shown as it is when above it, "Pool: 18 of 16 · …" — then the large files and their streams of the limit; ending "— OneDrive asked to wait 30 s" during a `Retry-After`), and the downloads and uploads under way |
@@ -415,11 +459,22 @@ follows `HeldCount` for the Status page, the tray and the `massDelete` notificat
 `Changes()` for the list when a count changes, when `Paused` changes, or when the Activity page is
 shown (limitations log A20).
 
+**The state is the daemon's.** An account's state, its icon and what needs attention come from
+`Folder.Overall` (§2.4): `AccountStatus` takes the state as it is given, and the reason chooses the
+words — the fixed line of `signing-in`, `signed-out`, `no-folder` and `starting`, `Trouble` as the
+line of `stopped`, and the attention text of `deletes-held`, `conflicts`, `quota-full`, `too-big`,
+`blocked` (each with its count), `not-updated` (`NotUpdated`) and `helper-unavailable`. Nothing is
+worked out from the other properties, and `LastError` is not read. Two things remain the
+window's: "The KOneDrive service is not running", which no daemon can say, and the wording of the
+status line under every other reason (limitations log A32).
+
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
 until 14:00", "Paused: metered connection" (the account's own hold, `HeldBack`, with the Status
 page's texts), "1 changed file was moved out of the way", "Signed out of OneDrive", "No OneDrive
-folder yet", or the error, refreshed every 10 s. While `LiveChanges` is `connected`, the "· checked
+folder yet", or the error, refreshed every 10 s. Trouble that does not stop the folder (`Trouble`)
+is what the line says, with a capital letter, also while a reason that ranks higher decides the
+state (deletions held, a pause): "Cannot reach OneDrive (…); trying again · checked 2 h ago". While `LiveChanges` is `connected`, the "· checked
 20 s ago" suffix becomes "· live", whatever comes before it ("Up to date · live"), and the line no
 longer ages. The window does not offer
 the no-interception mode: a folder is registered only through `Folder.Register`.
@@ -444,16 +499,18 @@ tray, closing the window hides it; without one, closing quits, so no process lin
 
 ## 5. The tray icon
 
-Each account has one of five states, and the icon shows the **worst** of them across the accounts,
-in this order:
+Each account has one of five states, decided by the daemon (`Folder.Overall`, §2.4), and the icon
+shows the **worst** of them across the accounts, in this order. Choosing the worst is the
+window's (`AppStatus::rank`): it compares states the daemon gave, across accounts, which no single
+account's object knows.
 
-| State | Icon | An account is in it when |
-|---|---|---|
-| needs attention | `state-warning` | a sync error, a conflict, a failed update, a change that cannot be uploaded, removals the mass-delete guard holds, trouble that does not stop the folder |
-| signed out | `state-offline` | signed out, OneDrive unreachable, or no folder yet |
-| paused | `media-playback-pause` | the account is paused (`Paused`), or holds back by itself (`HeldBack`: a metered connection, the battery) |
-| syncing | `state-sync` | a listing, a download or an upload is under way, or changes wait to be uploaded |
-| synced | `state-ok` | the folder is up to date |
+| State | Icon | `Overall` | An account is in it when |
+|---|---|---|---|
+| needs attention | `state-warning` | `warning` | a sync error, removals the mass-delete guard holds, a conflict, a full OneDrive, a change that cannot be uploaded, a failed update, the helper's trouble, other trouble that does not stop the folder |
+| signed out | `state-offline` | `offline` | signing in, signed out, no folder yet, or OneDrive unreachable with nothing else wrong; and the service not running |
+| paused | `media-playback-pause` | `paused` | the account is paused, or holds back by itself (a metered connection, the battery) |
+| syncing | `state-sync` | `syncing` | a folder starting, a listing, a download or an upload under way, or changes waiting to be uploaded |
+| synced | `state-ok` | `ok` | the folder is up to date |
 
 With no account at all, the icon is `state-offline`. The helper's trouble counts against every
 account with an intercepted folder.

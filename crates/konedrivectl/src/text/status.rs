@@ -50,18 +50,24 @@ pub struct AccountStatus {
     /// `Folder.Overall` of the account's folder: the state the account is in as a whole,
     /// and the reason.
     pub overall: Option<Overall>,
-    /// `Folder.Trouble`: the sentence the reason is about, or empty.
+    /// `Folder.Trouble`: the sentence of the trouble there is now, or empty.
     pub trouble: String,
+    /// `Folder.NotUpdated`: the failed-update note, or empty.
+    pub not_updated: String,
 }
 
 /// The `Overall:` line's text, in `status` and `sync status`: the state the daemon decided
-/// (`Folder.Overall`), said in words by its reason, with the sentence of `Folder.Trouble`
-/// for the reasons that are about one. Nothing here decides a state: a reason this build
-/// does not know is printed as the daemon spelled it.
-pub fn overall_text(overall: &Overall, trouble: &str) -> String {
+/// (`Folder.Overall`), said in words by its reason. The reasons that are about a sentence
+/// say it: `trouble` (`Folder.Trouble`) for a folder that stopped, trouble that does not
+/// stop it and OneDrive out of reach, `not_updated` (`Folder.NotUpdated`) for files not
+/// updated here. Under any other reason the trouble is not on this line: `sync status` has
+/// it in `Last error:`. Nothing here decides a state: a reason this build does not know is printed as the
+/// daemon spelled it.
+pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> String {
     let state = overall.state.as_str();
-    // A sentence of its own, or what stands for it when the daemon sent none.
-    let said = |otherwise: &str| if trouble.is_empty() { otherwise.to_owned() } else { trouble.to_owned() };
+    // The sentence, or what stands for it when the daemon sent none.
+    let or = |sentence: &str, otherwise: &str| if sentence.is_empty() { otherwise.to_owned() } else { sentence.to_owned() };
+    let said = |otherwise: &str| or(trouble, otherwise);
     let words = match Reason::parse(&overall.reason) {
         Some(Reason::SigningIn) => "signing in".to_owned(),
         Some(Reason::SignedOut) => "signed out of OneDrive".to_owned(),
@@ -77,7 +83,7 @@ pub fn overall_text(overall: &Overall, trouble: &str) -> String {
         Some(Reason::QuotaFull) => "OneDrive is full: files wait for space".to_owned(),
         Some(Reason::TooBig) => "files are too big for the space left in OneDrive".to_owned(),
         Some(Reason::Blocked) => "changes cannot be uploaded".to_owned(),
-        Some(Reason::NotUpdated) => said("files changed in OneDrive could not be updated here yet"),
+        Some(Reason::NotUpdated) => or(not_updated, "files changed in OneDrive could not be updated here yet"),
         Some(Reason::HelperUnavailable) => {
             "the konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened".to_owned()
         }
@@ -85,7 +91,7 @@ pub fn overall_text(overall: &Overall, trouble: &str) -> String {
         Some(Reason::Paused) => "you paused syncing".to_owned(),
         Some(Reason::HeldBack) => "the account holds back by itself".to_owned(),
         Some(Reason::UpToDate) => "up to date".to_owned(),
-        None => said(&overall.reason),
+        None => overall.reason.clone(),
     };
     format!("{state} — {words}")
 }
@@ -103,7 +109,7 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
         line("State:", state);
     }
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
     }
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
@@ -148,8 +154,10 @@ pub struct FolderStatus {
     pub last_error: String,
     /// `Folder.Overall`: the state the account is in as a whole, and the reason.
     pub overall: Option<Overall>,
-    /// `Folder.Trouble`: the sentence the reason is about, or empty.
+    /// `Folder.Trouble`: the sentence of the trouble there is now, or empty.
     pub trouble: String,
+    /// `Folder.NotUpdated`: the failed-update note, or empty.
+    pub not_updated: String,
     /// `Folder.Source`: `onedrive`, `local`, or empty.
     pub source: String,
     /// Items in OneDrive, and items in the folder.
@@ -219,7 +227,7 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
     let state = status.state.as_deref().unwrap_or_default();
     line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
     if let Some(overall) = &status.overall {
-        line("Overall:", &overall_text(overall, &status.trouble));
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
     }
     if status.state.is_some() {
         line("State:", state);

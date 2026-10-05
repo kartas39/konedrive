@@ -135,10 +135,10 @@ pub(crate) fn seen(
     Seen { snapshot: state.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), sign_in: account.borrow_and_update().state }
 }
 
-/// Hands `emit` the properties of [`DECIDED`] — `Overall` and `Trouble` — whenever what
-/// they say changes since they were last sent (`shown` at first), each change by itself and
-/// at once; nothing for a change of the published state, the sign-in or the downloads that
-/// leaves both as they were. Returns when one of the three goes away.
+/// Hands `emit` the properties of [`DECIDED`] — `Overall`, `Trouble` and `NotUpdated` —
+/// whenever what they say changes since they were last sent (`shown` at first), each change
+/// by itself and at once; nothing for a change of the published state, the sign-in or the
+/// downloads that leaves all three as they were. Returns when one of the three goes away.
 pub(crate) async fn decide<F, Fut>(
     mut state: watch::Receiver<SyncSnapshot>,
     mut account: watch::Receiver<AccountSnapshot>,
