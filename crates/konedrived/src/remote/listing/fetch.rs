@@ -83,7 +83,7 @@ impl Listing {
     /// an item of ours not listed yet cannot be told from one that is gone,
     /// and only the end of the listing tells them apart. It is found by its
     /// id then, downloaded content and all, rather than removed and made
-    /// again. Read without the lifecycle lock: it changes nothing.
+    /// again. Read without the folder's lock: it changes nothing.
     pub(super) async fn holds_nothing_yet(&self, turn: &Turn) -> Result<bool, CycleError> {
         if !self.on_store(turn, |s| s.is_empty(Table::Items)).await? {
             return Ok(false);

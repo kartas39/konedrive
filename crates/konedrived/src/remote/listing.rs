@@ -10,7 +10,7 @@
 //! again. A replacement that failed is retried as it is, after every cycle.
 //!
 //! Cycles of one `Listing` never overlap. A cycle asks Graph without the
-//! lifecycle lock and takes it only to change the folder and swap the link in,
+//! folder's lock (`SyncService`'s `folder`, held through the lease) and takes it only to change the folder and swap the link in,
 //! so a helper's reconnect is never kept waiting by a listing. A stop
 //! (`Poller::stop`) never waits for Graph or for whoever holds that lock; it
 //! waits only for a reconcile already changing the folder, which checks for the
@@ -360,7 +360,7 @@ impl Listing {
         // HS2: a folder that shows OneDrive is kept in step only with
         // interception and a connected helper — nothing is placed or updated
         // otherwise, and Graph is not asked for what could not be placed.
-        // Asked again under the lifecycle lock, where the answer counts.
+        // Asked again under the folder's lock, where the answer counts.
         if !self.ctx.intercepted || !self.ctx.link.is_linked() {
             return Err(CycleError::NoHelper);
         }

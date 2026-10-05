@@ -29,7 +29,7 @@
 //! **Throttling, offline, pause, sign-in** stop the whole worker: the rows
 //! keep their states. **A full OneDrive** stops only what sends content, and
 //! a file too big for what is left waits alone ([`space`]). A read-write folder's sync starts it beside the
-//! watcher and stops it with it (`sync::write_mode`); the watcher's
+//! watcher and stops it with it (`sync::start_stop`); the watcher's
 //! examination wakes it whenever it records rows.
 //!
 //! [`TreeStore::outbox_pick`]: konedrive_tree::TreeStore::outbox_pick

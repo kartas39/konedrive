@@ -82,7 +82,7 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     assert!(text.contains("locked separately"), "says why: {text}");
 }
 
-/// The daemon's own wiring (`daemon/manager.rs`, `sync::write_mode::follow`) makes a
+/// The daemon's own wiring (`daemon/manager.rs`, `sync::mode::follow`) makes a
 /// registered OneDrive folder follow `Account.Mode`: read-write takes the read-only lock off,
 /// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -318,7 +318,7 @@ impl SwitchNote {
 }
 
 /// What keeps the outbox's changes from going, and who says so: the write gate's note is
-/// the gate's alone to take back (`SyncService::write_gate`), the throttle's and the
+/// the gate's alone to take back (`Gate::check` in `sync/mode.rs`), the throttle's and the
 /// unopenable folder's are the outbox worker's (its host, `sync/outbox.rs`), the other two are the poller's
 /// (`remote::listing::poller`).
 #[derive(Debug, Clone, PartialEq, Eq)]

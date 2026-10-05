@@ -669,7 +669,7 @@ async fn two_registrations_at_once_leave_one_root_at_the_helper() {
 /// forgotten and registered again with interception while it waits
 /// could have the file ignore-marked by then, and the punch would skip
 /// the `ClearIgnore` that is suddenly needed.
-/// it waits for the fill without the lifecycle lock — a Forget is not
+/// it waits for the fill without the folder's lock — a Forget is not
 /// held up by a download — and decides the mode only after, under the
 /// lock: a folder forgotten meanwhile is refused, nothing punched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

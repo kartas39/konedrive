@@ -53,7 +53,7 @@ async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
     tokio::time::timeout(Duration::from_secs(5), task).await.expect("the task ends").unwrap();
 }
 
-/// Forget stops the sync before it takes the lifecycle lock for writing,
+/// Forget stops the sync before it takes the folder's lock for writing,
 /// but whoever holds that lock must never make a stop wait for it. The
 /// cycle asks Graph without the lock, and changes nothing without it.
 #[tokio::test]

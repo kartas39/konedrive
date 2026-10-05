@@ -145,7 +145,7 @@ const WIDER_GRANT: &str = "Microsoft answered a request for read-only access wit
 /// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
 /// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
 /// files stay, as ordinary local changes. The account's `SyncService` answers
-/// (`crate::sync::write_mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
+/// (`crate::sync::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
 #[async_trait::async_trait]
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
@@ -408,7 +408,7 @@ impl AccountService {
     ///
     /// Called whenever one of them may have changed, the folder's outbox worker finding the
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
-    /// `Mode` (`crate::sync::write_mode::follow`).
+    /// `Mode` (`crate::sync::mode::follow`).
     fn recompute_mode(&self) {
         // The mode and the list it is gated by, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when

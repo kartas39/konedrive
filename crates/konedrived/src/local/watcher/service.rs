@@ -1,5 +1,5 @@
 //! The watcher in the daemon: [`ExamineSink`], which hands each batch to the
-//! examination, and what the mode switch's hooks in `sync::write_mode` call to start
+//! examination, and what the mode switch's hooks in `sync::watcher` call to start
 //! and stop an account's watcher with its sync.
 
 use std::path::PathBuf;

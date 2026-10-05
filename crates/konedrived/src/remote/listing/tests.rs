@@ -525,7 +525,7 @@ async fn two_cycles_at_once_run_one_after_the_other() {
     assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link_to("L3")));
 }
 
-/// A cycle dropped while its reconcile runs keeps the lifecycle lock, and
+/// A cycle dropped while its reconcile runs keeps the folder's lock, and
 /// its turn, until the reconcile has stopped: a Forget must not take the
 /// lock off a folder something is still changing, and no other cycle may
 /// rebuild `staging` under it.

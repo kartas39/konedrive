@@ -14,7 +14,7 @@ use konedrive_tree::TreeStore;
 /// A first listing places each page as it comes. While page 2
 /// is still being asked for, page 1 is in the folder, under the lock,
 /// and in the counts, the store knows where to go on from, and the
-/// lifecycle lock is free for a Forget or a helper's reconnect.
+/// folder's lock is free for a Forget or a helper's reconnect.
 #[tokio::test]
 async fn a_first_listing_shows_each_page_while_the_next_is_asked_for() {
     let s = World::read_only().await;
