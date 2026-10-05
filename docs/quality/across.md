@@ -71,8 +71,8 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
 - `errno_of`: `konedrive-helper/src/registration.rs:128` and `by_handle.rs:167`.
 - **Fix:** one of each, in the lowest layer that uses it (`folder/disk.rs`, `konedrive-fs`).
   **Size:** S each. **Risk:** low.
-- **Fixed in part 2026-10-05** in `542213a` (#188): one `konedrive_fs::proc_path`, one `folder::disk::beneath`,
-  one `folder::walk::reserved` outside `local/`. Left: the `local/` copies and `unix_now` (`docs/limitations/D56.md`).
+- **Fixed 2026-10-05** in `542213a` (#188): one `konedrive_fs::proc_path`, one `folder::disk::beneath`,
+  one `folder::walk::reserved` outside `local/`. `local/` and `unix_now` in `ec8f6d76` (#194). Left: the helper (`docs/limitations/D56.md`).
 
 ## X4. Poisoned locks handled three ways
 
@@ -81,8 +81,8 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   `status/activity.rs:279, 432, 643`, `konedrive-graph/src/pool.rs:268`, `config/mod.rs:688`,
   the helper's `lock()`.
 - **Fix:** one `lock()` helper per crate and one policy. **Size:** S. **Risk:** none.
-- **Fixed in part 2026-10-05** in `0d59ccd` (#191): one policy (recover) through `panic::lock`, `read`, `write`,
-  kept by rule 7 of `scripts/check-structure.sh`; `clock::unix_now`. Left: `local/` and the helper
+- **Fixed 2026-10-05** in `0d59ccd` (#191): one policy (recover) through `panic::lock`, `read`, `write`,
+  kept by rule 7 of `scripts/check-structure.sh`; `clock::unix_now`. `local/` in `ec8f6d76` (#194). Left: the helper
   (`docs/limitations/D58.md`).
 
 ## X5. Test hooks and test doubles in production code
