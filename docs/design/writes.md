@@ -84,8 +84,10 @@ refuses a read-only account's writes whatever it was once granted;
 ### 2.2 The switch
 
 **To read-write**: a sign-in for `Files.ReadWrite`, pinned to the account (its password asked for
-again, its email filled in). Only a token response that grants it, for this account's own drive,
-writes the mode. Then the folder's sync restarts in read-write mode, in this order:
+again, its email filled in). An account with no drive recorded is asked for it first (`GET
+/me/drive`), and refused before any sign-in URL if none can be recorded. Only a token response that
+grants it, for this account's own drive, writes the mode. Then the folder's sync restarts in
+read-write mode, in this order:
 
 1. the watcher starts and walks the folder, marking every directory (§3);
 2. only once every directory is marked does the read-only lock come off (files `0644`,
@@ -1082,11 +1084,12 @@ request that is in flight is never interrupted.
   folder and into the Trash, a download that stops part-way, a helper restart.
 - **The test account**, once, through the guarded harness below: what the service does that no mock
   can say (§13).
-- **A stress run**, by hand, against a separate read-write test account: `tests/stress/` drives the
-  real daemon through `konedrivectl` and the filesystem — many files, edits, renames and moves, a
-  file moved or edited while it is mid-upload, and deletes — and checks the outbox, the item
-  counts, and, read-only against Graph itself, that every file's size and QuickXorHash in OneDrive
-  match what is on disk. See `tests/stress/README.md`.
+- **A stress run**, by hand, against a separate read-write test account (its drive must be in
+  `write_test_drive_ids`, or the tool refuses to start): `tests/stress/` drives the real daemon
+  through `konedrivectl` and the filesystem — many files, edits, renames and moves, a file moved
+  or edited mid-upload, and deletes — and checks the outbox, the item counts, and, read-only
+  against Graph itself, that every file's size and QuickXorHash in OneDrive match what is on
+  disk. See `tests/stress/README.md`.
 
 ### 12.1 Running against the test account
 

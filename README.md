@@ -576,7 +576,9 @@ folder of its own. How to run it: [`docs/design/writes.md`](docs/design/writes.m
 
 For a heavier, end-to-end workout of the upload path — many files, edits, moves, a file moved or
 edited mid-upload, deletes — against a real read-write test account, see
-[`tests/stress/README.md`](tests/stress/README.md).
+[`tests/stress/README.md`](tests/stress/README.md). It refuses to start unless the account's drive
+is listed in `write_test_drive_ids` in `config.toml`: that an account is read-write does not make
+it a test account.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a change, and
 [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.

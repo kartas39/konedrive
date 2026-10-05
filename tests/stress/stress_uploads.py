@@ -3,7 +3,9 @@
 the filesystem — see `tests/stress/README.md` for what this is, why it is plain Python, and how
 to run it.
 
-It refuses to run unless `--account` names an account that is already read-write, works only
+It refuses to run unless `--account` names a test account — one whose drive is listed in
+`write_test_drive_ids` in the daemon's `config.toml` (`account_guard.py`) — that is already
+read-write, works only
 inside `<folder>/konedrive-stress-<time>/` (plus one temporary directory outside the folder, for
 scenarios that move things out and, mostly, back in) and, by default, leaves everything it made in
 place afterwards, locally and in OneDrive, so a run can be inspected; pass `--cleanup` for the old
@@ -33,6 +35,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+import account_guard
 import graph_check
 import konedrivectl_wrap
 import quickxor
@@ -70,7 +73,21 @@ class ScenarioResult:
 
 def preflight(args: argparse.Namespace, ctl: konedrivectl_wrap.Ctl) -> RunContext:
     """Every guard this tool has before it writes anything. `--account` is required by argparse
-    itself (`required=True`, below) so a run can never fall back to "the only account there is"."""
+    itself (`required=True`, below) so a run can never fall back to "the only account there is".
+
+    First of all, the account must be a test account: its drive in `write_test_drive_ids` of the
+    daemon's `config.toml`. That it is read-write does not show it — any account's user can
+    switch it. From there on `konedrivectl` is given the account's id, so that every command of
+    the run goes to the account that was checked, or is refused."""
+    config_path = Path(args.daemon_config) if args.daemon_config else account_guard.default_config_path()
+    try:
+        ctl.account = account_guard.test_account_id(config_path, args.account)
+    except account_guard.NotATestAccount as e:
+        raise Refused(
+            f"{e}. This tool writes real changes and confirms held deletes on its own, so it runs only "
+            "against a test account, never a real one."
+        ) from e
+
     mode_run = ctl.account_mode()
     if not mode_run.ok:
         raise Refused(f"`konedrivectl --account {args.account!r} account mode` failed: {mode_run.combined()}")
@@ -79,8 +96,7 @@ def preflight(args: argparse.Namespace, ctl: konedrivectl_wrap.Ctl) -> RunContex
     if mode_value != "read-write":
         raise Refused(
             f"account {args.account!r} is not read-write (`account mode` says {first_line!r}). "
-            "This tool writes real changes and confirms held deletes on its own, so it only runs "
-            "against an account already switched to read-write — by hand, on a test account."
+            "Switch the test account to read-write by hand first."
         )
 
     status_run = ctl.sync_status()
@@ -1161,7 +1177,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--account",
         required=True,
         help="the account to run against (id, label or email, as `konedrivectl account list` shows them); "
-        "must already be switched to read-write",
+        "its drive must be listed in write_test_drive_ids in the daemon's config.toml (a test account), "
+        "and it must already be switched to read-write",
+    )
+    p.add_argument(
+        "--daemon-config",
+        default=None,
+        help="the daemon's config.toml, whose write_test_drive_ids must list the account's drive "
+        "(default: $XDG_CONFIG_HOME/konedrive/config.toml, or ~/.config/konedrive/config.toml)",
     )
     p.add_argument("--konedrivectl", default="konedrivectl", help="the konedrivectl binary to use (default: konedrivectl on PATH)")
     p.add_argument(

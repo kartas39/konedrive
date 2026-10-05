@@ -215,8 +215,8 @@ impl SyncService {
 /// The write gate of a folder: whether its account may change OneDrive now — asked by
 /// the outbox worker before each row and between an upload's fragments
 /// ([`OutboxHost::may_write`](crate::upload::OutboxHost::may_write)). It may while the folder and
-/// the account are read-write, `config.toml` — read again now — says read-write and lets the
-/// account's drive through, the drive its token was last seen to reach is that one, its
+/// the account are read-write, `config.toml` — read again now — says read-write and records a
+/// drive for the account, the drive its token was last seen to reach is that one, its
 /// token can write, and the folder's sync is not stopped by blocking trouble (`CycleError::blocking`:
 /// another account's drive, a sign-out, a failure of the tree store; the cycle that
 /// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
@@ -360,7 +360,7 @@ impl PendingUploads for SyncService {
 }
 
 /// Makes `sync` follow its account's mode (`AccountSnapshot::mode`, which the account works
-/// out from `config.toml`, the gate and its token) for as long as both exist. The accounts
+/// out from `config.toml`, its recorded drive and its token) for as long as both exist. The accounts
 /// manager starts one per account, once the folder has taken the mode the account started
 /// in.
 pub async fn follow(mut account: watch::Receiver<AccountSnapshot>, sync: Weak<SyncService>) {

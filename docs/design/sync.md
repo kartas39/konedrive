@@ -18,8 +18,8 @@ switched to read-write. It reads from OneDrive and never writes to it:
 
 A **read-write** account's folder is unlocked, and what is changed in it goes up: the watcher, the
 examination, the outbox, conflicts on write, and what its cycle does differently are in
-[writes.md](writes.md). In this version only a test account can be read-write
-([writes.md](writes.md) §2.3). Pinning is described in [pinning.md](pinning.md).
+[writes.md](writes.md). Which mode an account has is its user's choice, for any signed-in account
+([writes.md](writes.md) §2.2, §2.3). Pinning is described in [pinning.md](pinning.md).
 
 Everything here is per account: each account has its own folder, and its folder its own tree
 store, poller, activity log and conflicts. How several accounts share one daemon — and one link to

@@ -125,7 +125,8 @@ pub trait Account {
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
-    /// `NotSignedIn`, or `PendingUploads` unless `force`
+    /// `NotSignedIn`, `Failed` for an account whose drive is not known and cannot be
+    /// asked for now, or `PendingUploads` unless `force`
     /// (`dbus/org.konedrive.Account.xml`).
     fn set_mode(&self, mode: &str, force: bool) -> zbus::Result<String>;
 

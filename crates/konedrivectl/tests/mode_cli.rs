@@ -12,7 +12,7 @@ use std::process::Stdio;
 use common::{err_text, out_text, run};
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::state::SignInState;
-use konedrived::config::Mode;
+use konedrived::config::{DriveId, Mode};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn account_mode_shows_the_mode_and_read_write_starts_its_sign_in_for_any_account() {
@@ -58,11 +58,22 @@ async fn account_mode_shows_the_mode_and_read_write_starts_its_sign_in_for_any_a
     }
 
     // Signed in (said so here: Microsoft is an address where nothing answers), with the list
-    // still empty: the switch starts its sign-in, prints the address, which asks for
+    // still empty and the account's drive recorded: the switch starts its sign-in, prints the address, which asks for
     // `Files.ReadWrite`, and waits. Nothing is written before the grant. The account signed
     // out from elsewhere ends the wait.
     let service = std::sync::Arc::clone(&daemon.manager.accounts()[0].account);
     service.state().update(|s| s.state = SignInState::SignedIn);
+
+    // No drive is recorded for the account, and none can be asked for: refused at once, with
+    // no sign-in page, in words about the drive.
+    let out = run(bus.address(), &["account", "mode", "read-write"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err_text(&out).contains("drive is not known yet"), "{out:?}");
+    assert!(out_text(&out).is_empty(), "no sign-in page is offered: {out:?}");
+    assert_eq!(configured(), Mode::ReadOnly);
+
+    // With its drive recorded — one the list does not have — the switch goes on.
+    daemon.manager.config().record_drive(&account.id, &DriveId::new("D1").unwrap()).unwrap();
     let mut switch = common::command(bus.address(), &["account", "mode", "read-write"], &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

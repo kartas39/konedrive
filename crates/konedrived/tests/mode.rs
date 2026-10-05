@@ -17,7 +17,7 @@ use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::{
-    AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
+    AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
 };
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
@@ -317,6 +317,43 @@ async fn a_switch_that_is_not_granted_changes_nothing() {
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     assert_eq!(s.account.state().await.unwrap(), "signed-in");
     assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"));
+}
+
+/// An account with no drive recorded is asked which drive it is before any sign-in begins:
+/// learned, the drive is recorded and the switch goes on to its sign-in URL; not learnable,
+/// the switch is refused at once — no URL, no trip through the browser — in words that say
+/// the drive is not known yet, and nothing changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_of_an_account_with_no_recorded_drive_learns_it_or_is_refused_before_a_url() {
+    let s = signed_in(&[]).await;
+    let forget_drive = |s: &Setup| {
+        s.config()
+            .update(|config| {
+                config.account_mut(&s.id).unwrap().drive_id = None;
+                Ok::<_, ConfigError>(())
+            })
+            .unwrap();
+        assert_eq!(s.config().account(&s.id).unwrap().drive_id, None);
+    };
+
+    forget_drive(&s);
+    let url = s.account.set_mode("read-write", false).await.unwrap();
+    assert!(url.contains("scope="), "the sign-in begins: {url}");
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"), "asked and recorded first");
+    s.account.cancel_sign_in().await.unwrap();
+
+    forget_drive(&s);
+    // Graph answers nothing any more: the drive cannot be learned.
+    s.server.reset().await;
+    let config_before = std::fs::read_to_string(s.config().file()).unwrap();
+    let refused = s.account.set_mode("read-write", false).await.unwrap_err();
+    assert_eq!(error_name(&refused), Some("org.konedrive.Error.Failed"), "{refused:?}");
+    assert!(refused.to_string().contains(DRIVE_NOT_KNOWN), "{refused:?}");
+    assert!(!refused.to_string().contains("different Microsoft account"), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(s.config().file()).unwrap(), config_before);
+    assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"));
+    assert_eq!(s.account.state().await.unwrap(), "signed-in");
+    assert_eq!(s.refresh_token().as_deref(), Some("RT1"));
 }
 
 /// A folder whose uploads wait, as `PendingUploads` says (the outbox worker's outbox, faked here).

@@ -18,8 +18,17 @@ not catch a file that went up with the wrong content or arrived at the wrong nam
 the bytes.
 
 **It confirms held deletes on its own** (`sync deletes confirm`, whenever this run's mass deletes
-get held for confirmation, so the outbox can drain without a human in the loop) — so run it only
+get held for confirmation, so the outbox can drain without a human in the loop) — so it runs only
 against a dedicated **test** account, never a real one.
+
+What enforces that is `write_test_drive_ids` in the daemon's `config.toml`, the list of the test
+accounts' drives that `konedrive-write-test` checks too: before it changes anything, the tool
+reads `config.toml` (`account_guard.py`), finds the account `--account` names there, and refuses
+to start unless the drive recorded for it is on that list. That the account is read-write shows
+nothing — any signed-in account can be switched to read-write by its user — so it is asked only
+after that. The list is empty unless the developer wrote the test account's drive into it by
+hand. The tool then names the account to `konedrivectl` by its id, so every command of the run
+goes to the account that was checked.
 
 ## Running it
 
@@ -32,8 +41,12 @@ Its checks against OneDrive take a token from `konedrivectl dev export-access-to
 a development install has (`scripts/dev-install.sh`, the `dev-tools` feature).
 
 - `--account` is required — there is no "the only account there is" fallback here, unlike
-  `konedrivectl` itself. The run refuses immediately, before touching anything, unless
-  `account mode` for that account already says `read-write`.
+  `konedrivectl` itself. The run refuses immediately, before touching anything, unless the
+  account's drive is in `write_test_drive_ids` and `account mode` for that account already says
+  `read-write`. Name the account by its id or its label; an email works only if it is the one
+  `config.toml` keeps for the account.
+- `--daemon-config <path>` is the `config.toml` that is read for this; the default is the
+  daemon's own, `$XDG_CONFIG_HOME/konedrive/config.toml` (`~/.config/konedrive/config.toml`).
 - It works only inside `<folder>/konedrive-stress-<time>-<pid>/`, plus one `tempfile.mkdtemp`
   directory outside the folder (for scenarios that move things out and, mostly, back in).
 - By default it leaves everything it made in place afterwards, locally and in OneDrive, so a run
@@ -45,6 +58,7 @@ a development install has (`scripts/dev-install.sh`, the `dev-tools` feature).
 - Useful flags: `--files-per-folder` (default 50, so 200 files across the 4 folders),
   `--large-file-mb` (default 30), `--big-file-mb` (default 60, scenario 5's and 5a/5b's files),
   `--outbox-timeout`, `--refresh-timeout`, `--running-timeout`, `--report <path>`, `--cleanup`,
+  `--daemon-config`,
   `--soak-minutes`, `--seed`, `--soak-max-mb`, `--soak-max-files`. See `--help` for all of them.
 - Exit status: 0 if every scenario and the soak phase passed, 1 if anything failed (including a
   scenario that errored out unexpectedly), 2 if the command line itself was wrong. The report's

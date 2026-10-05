@@ -7,7 +7,8 @@ impl AccountService {
     ///
     /// - **To read-write**: any account may be, whatever its drive: it is the user's choice.
     ///   Refused `NotSignedIn` unless the account is signed
-    ///   in. Nothing is written yet: a sign-in asking for `Files.ReadWrite` begins, and only
+    ///   in, and `Failed` when it has no drive recorded and Graph does not say now which one
+    ///   it is. Nothing is written yet: a sign-in asking for `Files.ReadWrite` begins, and only
     ///   when its token response grants that — for this account's own drive —
     ///   are the refresh token stored and `mode = "read-write"` written; the
     ///   folder then follows `Mode`. A cancelled, refused or failed sign-in changes nothing
@@ -42,6 +43,14 @@ impl AccountService {
         }
         if snapshot.client_id.is_empty() {
             return Err(ModeError::Failed(AccountError::NoClientId.to_string()));
+        }
+        // The sign-in is taken only for the account's recorded drive: with none recorded it
+        // could only fail, after the trip through the browser. So the drive is asked for now,
+        // and the switch refused before any URL when it cannot be recorded.
+        if self.config.account(&self.id).is_some_and(|mine| mine.drive_id.is_none()) {
+            if let Err(e) = self.learn_drive().await {
+                return Err(ModeError::Failed(format!("{DRIVE_NOT_KNOWN} ({e})")));
+            }
         }
         let listener = LoopbackListener::bind()
             .await
@@ -284,9 +293,14 @@ impl AccountService {
 
 /// Why a switch to read-write that reached `drive` is refused, if it is: the drive must be
 /// the account's own: a sign-in as someone else changes nothing. Nothing else is asked of it.
+/// An account with no drive recorded (the switch records one before its sign-in begins, so
+/// only a `config.toml` that lost it since) has none to compare with, and is told that.
 fn read_write_refusal(config: &Config, id: &AccountId, drive: &DriveId, who: &str) -> Option<String> {
     let Some(mine) = config.account(id) else { return Some("This account was removed.".into()) };
-    if mine.drive_id.as_ref() != Some(drive) {
+    let Some(recorded) = &mine.drive_id else {
+        return Some(format!("{DRIVE_NOT_KNOWN}; the account stays read-only."));
+    };
+    if recorded != drive {
         return Some(format!(
             "This account is {who}, and the browser signed in as a different Microsoft account; the \
              account stays read-only."

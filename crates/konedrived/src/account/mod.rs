@@ -120,6 +120,13 @@ pub const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed out on
 pub const CONFIG_UNREADABLE_AT_SWITCH: &str = "config.toml cannot be read now, so the switch to \
      read-write was not saved; the account stays read-only.";
 
+/// What a switch to read-write says of an account with no drive recorded, when Graph does not
+/// say which one it is either (`Account.SetMode`, refused before any sign-in), or when the
+/// record was lost by the time the sign-in ended (`LastError`): the sign-in is taken only for
+/// the account's own drive, and there is none to compare with.
+pub const DRIVE_NOT_KNOWN: &str = "This account's OneDrive drive is not known yet, so it cannot be \
+     switched to read-write now; try again once konedrive has reached OneDrive";
+
 /// `LastError` of an account `config.toml` sets to read-write that has no drive recorded: a
 /// hand edit, or an account never signed in. It runs read-only.
 pub const NO_DRIVE_RECORDED: &str = "config.toml sets this account to read-write, but records no \
