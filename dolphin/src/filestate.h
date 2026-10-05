@@ -28,10 +28,6 @@ inline constexpr char PinAttribute[] = "user.konedrive.pin";
 /// removed once the upload is committed.
 inline constexpr char SyncAttribute[] = "user.konedrive.sync";
 
-/// The item's id in OneDrive, written by the daemon on every file and folder
-/// OneDrive has; one made here and not uploaded yet has none.
-inline constexpr char ItemIdAttribute[] = "user.konedrive.item-id";
-
 enum class FileState {
     /// A regular file with no `user.konedrive.state`: not a OneDrive file.
     Unmanaged,
@@ -108,23 +104,10 @@ bool hasPinMark(const QString &path);
 
 using PinMarkReader = std::function<bool(const QString &path)>;
 
-/// Whether `path` itself -- never following a symbolic link -- carries
-/// `user.konedrive.item-id`, by lgetxattr(2) alone: OneDrive has it.
-bool hasItemId(const QString &path);
-
-/// The nearest ancestor of `path`, up to and including `root`, that carries
-/// the pin -- physical ancestors (physicalDirectory, the same resolution
-/// `root` itself was found with), never `path` itself. `std::nullopt` if
-/// none of them does. Independent of whether `path` also carries its own
-/// pin: the daemon still refuses Unpin/FreeUp for a path pinned by an
-/// ancestor even when it is explicitly pinned too, since it would stay
-/// pinned by that ancestor either way (pinning.md §5) -- so this is what
-/// the menu's "pinned above" checks need, not `pinnedBy`.
-std::optional<QString> pinnedAbove(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
-
 /// The nearest item at or above `path`, up to and including `root`, that
-/// carries the pin: `path` itself first, then `pinnedAbove`. `std::nullopt`
-/// if none of them does.
+/// carries the pin: `path` itself first, then its physical ancestors
+/// (physicalDirectory, the same resolution `root` itself was found with).
+/// `std::nullopt` if none of them does.
 std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
 
 /// Whether `path` is pinned, itself or through an ancestor (pinnedBy).
@@ -164,64 +147,11 @@ QString parentDirectory(const QString &path);
 QString fileName(const QString &path);
 QString joinPath(const QString &dir, const QString &name);
 
-/// Whether `path`, by lstat(2) without following it, is a regular file or a
-/// directory -- what "Always keep on this device" and "Free up space" can
-/// apply to. A symbolic link is neither: it never borrows its target's pin.
-bool isFileOrDirectory(const QString &path);
-
-/// What the context menu offers for a selection.
-struct MenuState {
-    /// The selected paths that lie inside a sync root -- files or folders,
-    /// never a symbolic link, and never unmanaged, unrecognised or reserved
-    /// (`.konedrive-*`) -- in the order they were given, and what Pin(),
-    /// Unpin() or FreeUp() is called with: one bad item must not make the
-    /// daemon refuse the whole batch.
-    QStringList inRoot;
-    /// "Always keep on this device": offered whenever `inRoot` is not empty.
-    bool showAlwaysKeep = false;
-    /// Checked when every item of `inRoot` is effectively pinned. Unchecking
-    /// it calls Unpin(), not FreeUp() (Windows-like: unpinning never frees
-    /// space on its own).
-    bool alwaysKeepChecked = false;
-    /// While unchecked, toggling it (Pin()) is always safe -- a path already
-    /// covered by an ancestor is left as it is -- so this only matters while
-    /// checked: disabled when *any* item of `inRoot` is pinned by an
-    /// ancestor, since Unpin() refuses the whole call if any path it is
-    /// given is -- even one that is also explicitly pinned itself, which
-    /// would stay pinned by that ancestor either way (pinning.md §5).
-    bool alwaysKeepEnabled = true;
-    /// "Free up space": offered when anything in `inRoot` is a folder,
-    /// hydrated, or explicitly pinned (Windows-like: it works on any folder
-    /// in the root, not only a downloaded or pinned one).
-    bool showFreeUp = false;
-    /// Disabled when anything in `inRoot` is pinned by an ancestor (again
-    /// regardless of its own pin): FreeUp() refuses the whole call if any
-    /// path it is given is.
-    bool freeUpEnabled = true;
-    /// The ancestor folder's name, set whenever an item of `inRoot` is
-    /// pinned by an ancestor -- named in "Always keep"'s tooltip when it is
-    /// disabled, and in "Free up space"'s when it is.
-    QString blockingFolder;
-    /// The one selected path when it is an account's folder itself: a
-    /// directory that carries `user.konedrive.root` and lies in no other
-    /// account's folder. Empty otherwise. Such a path is never in `inRoot`,
-    /// and is offered "Open in OneDrive" alone.
-    QString accountFolder;
-    /// "Open in OneDrive": offered for exactly one selected path that is the
-    /// one item of `inRoot` or is `accountFolder`. Never for several.
-    bool showOpenOnline = false;
-    /// For an item of `inRoot`: whether it carries `user.konedrive.item-id`
-    /// (one not uploaded yet has no page in OneDrive). Always for
-    /// `accountFolder`, which opens the drive's root.
-    bool openOnlineEnabled = false;
-    /// What "Open in OneDrive" asks about: `accountFolder`, or the one item
-    /// of `inRoot`. Empty when it is not shown.
-    QString openOnlinePath;
-};
-
-/// Classifies `paths` for the context menu. Reads each item's attributes by
-/// path, never opening one; a root is looked up once per directory for the
-/// duration of this call only.
-MenuState menuState(const QStringList &paths, const RootMarkReader &hasRoot = hasRootMark, const PinMarkReader &hasPin = hasPinMark);
+/// Whether any of `paths` lies in a sync folder, or is one, by the marks
+/// alone: the nearest directory at or above it carries the root mark
+/// (rootOf). The context menu asks the daemon only then, so a right click
+/// anywhere else costs no call; everything else about the menu is the
+/// daemon's answer (SyncClient::menu).
+bool anyInSyncFolder(const QStringList &paths, const RootMarkReader &hasRoot = hasRootMark);
 
 } // namespace konedrive

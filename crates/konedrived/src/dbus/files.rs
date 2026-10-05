@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use zbus::interface;
+use zbus::zvariant::Value;
 
 use konedrive_dbus::Refusal;
 
@@ -92,6 +94,23 @@ impl Files {
             total.3 += freed.pinned;
         }
         Ok(total)
+    }
+
+    /// What the context menu may offer for the selection `paths`, under the keys of
+    /// `dbus/org.konedrive.Files.xml`. Never refused for a path it does not take: such a
+    /// path is not among `paths` in the answer. Changes nothing and opens no file.
+    #[zbus(out_args("menu"))]
+    async fn menu(&self, paths: Vec<String>) -> HashMap<&'static str, Value<'static>> {
+        let menu = self.manager.menu(&paths).await;
+        HashMap::from([
+            ("paths", Value::from(menu.paths)),
+            ("always-keep", Value::from(menu.always_keep.as_str())),
+            ("free-up", Value::from(menu.free_up.as_str())),
+            ("free-up-why", Value::from(menu.free_up_why.map_or("", |why| why.as_str()))),
+            ("blocked-by", Value::from(menu.blocked_by)),
+            ("open-online", Value::from(menu.open_online.as_str())),
+            ("open-online-path", Value::from(menu.open_online_path)),
+        ])
     }
 
     /// The address of the page OneDrive's web interface has for the file or folder at

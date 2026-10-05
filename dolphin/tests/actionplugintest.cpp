@@ -21,6 +21,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTest>
+#include <QWidget>
 
 #include <memory>
 
@@ -106,244 +107,338 @@ private Q_SLOTS:
         m_urls->opened.clear();
     }
 
-    /// Single-item selections: what each of the four pin states offers.
-    void menuFollowsTheState_data()
+    void theEntriesAreWhatTheDaemonAnswers_data()
     {
-        QTest::addColumn<QByteArray>("state");
-        QTest::addColumn<QString>("pin"); // "none", "explicit", "ancestor"
-        QTest::addColumn<bool>("inRoot");
-        QTest::addColumn<bool>("expectAlwaysKeep");
-        QTest::addColumn<bool>("expectChecked");
-        QTest::addColumn<bool>("expectAlwaysKeepEnabled");
-        QTest::addColumn<bool>("expectFreeUp");
-        QTest::addColumn<bool>("expectFreeUpEnabled");
+        QTest::addColumn<bool>("taken"); // whether `paths` of the answer holds the selected file
+        QTest::addColumn<QString>("alwaysKeep");
+        QTest::addColumn<QString>("freeUp");
+        QTest::addColumn<QString>("freeUpWhy");
+        QTest::addColumn<QString>("blockedBy");
+        QTest::addColumn<QString>("openOnline");
+        QTest::addColumn<QStringList>("expected");
+        QTest::addColumn<bool>("keepChecked");
+        QTest::addColumn<QString>("keepToolTip"); // not empty: disabled, with these words
+        QTest::addColumn<bool>("freeUpEnabled");
+        QTest::addColumn<QString>("freeUpToolTip");
+        QTest::addColumn<bool>("openOnlineEnabled");
 
-        QTest::newRow("online-only, not pinned") << QByteArray("online-only") << QStringLiteral("none") << true << true << false << true << false << true;
-        QTest::newRow("online-only, explicitly pinned") << QByteArray("online-only") << QStringLiteral("explicit") << true << true << true << true << true << true;
-        QTest::newRow("hydrated, not pinned") << QByteArray("hydrated") << QStringLiteral("none") << true << true << false << true << true << true;
-        QTest::newRow("hydrated, explicitly pinned") << QByteArray("hydrated") << QStringLiteral("explicit") << true << true << true << true << true << true;
-        QTest::newRow("hydrated, pinned by an ancestor") << QByteArray("hydrated") << QStringLiteral("ancestor") << true << true << true << false << true << false;
-        QTest::newRow("hydrated, not in a root") << QByteArray("hydrated") << QStringLiteral("none") << false << false << false << true << false << true;
+        const QString hidden = QStringLiteral("hidden");
+        const QString enabled = QStringLiteral("enabled");
+        const QString disabled = QStringLiteral("disabled");
+        const QString off = QStringLiteral("off");
+        const QString none;
+        const QStringList keepAndFreeUp{Section, AlwaysKeep, FreeUp, SectionEnd};
+        QTest::newRow("nothing") << false << hidden << hidden << none << none << hidden << QStringList() << false << none << false << none << false;
+        QTest::newRow("always keep, unchecked") << true << off << hidden << none << none << hidden << QStringList{Section, AlwaysKeep, SectionEnd} << false << none << false << none
+                                                << false;
+        QTest::newRow("always keep checked, free up, open") << true << QStringLiteral("on") << enabled << none << none << enabled
+                                                            << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd} << true << none << true << none << true;
+        QTest::newRow("kept by a folder above") << true << QStringLiteral("on-locked") << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden
+                                                << keepAndFreeUp << true << QStringLiteral("Kept on this device because “sub” is.") << false
+                                                << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
+        QTest::newRow("unchecked, free up kept by a folder above")
+            << true << off << disabled << QStringLiteral("pinned-above") << QStringLiteral("sub") << hidden << keepAndFreeUp << false << none << false
+            << QStringLiteral("Kept on this device because “sub” is; unpin it first.") << false;
+        QTest::newRow("free up: no helper") << true << off << disabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << false
+                                            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
+        QTest::newRow("free up: not uploaded") << true << off << disabled << QStringLiteral("not-uploaded") << none << hidden << keepAndFreeUp << false << none << false
+                                               << QStringLiteral("Not uploaded yet: freeing it up would lose the changes made here.") << false;
+        QTest::newRow("free up: the daemon cannot tell")
+            << true << off << disabled << QStringLiteral("unknown") << none << hidden << keepAndFreeUp << false << none << false
+            << QStringLiteral("KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment.") << false;
+        // Locked by the folder, and "Free up space" refused for something
+        // else first: each entry says its own reason.
+        QTest::newRow("locked by a folder, free up for the helper")
+            << true << QStringLiteral("on-locked") << disabled << QStringLiteral("no-helper") << QStringLiteral("sub") << hidden << keepAndFreeUp << true
+            << QStringLiteral("Kept on this device because “sub” is.") << false
+            << QStringLiteral("The konedrive helper is not connected. Try again once it is — it reconnects on its own.") << false;
+        QTest::newRow("free up refused for a reason this plugin does not know") << true << off << disabled << QStringLiteral("something-new") << none << hidden << keepAndFreeUp
+                                                                                << false << none << false << none << false;
+        // A reason is for a disabled entry alone.
+        QTest::newRow("a reason on an enabled entry") << true << off << enabled << QStringLiteral("no-helper") << none << hidden << keepAndFreeUp << false << none << true << none
+                                                      << false;
+        QTest::newRow("not in OneDrive yet") << true << off << hidden << none << none << disabled << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd} << false << none
+                                             << false << none << false;
+        QTest::newRow("open in OneDrive alone") << false << hidden << hidden << none << none << enabled << QStringList{Section, OpenOnline, SectionEnd} << false << none << false
+                                                << none << true;
+        QTest::newRow("values this plugin does not know") << true << QStringLiteral("sideways") << QStringLiteral("perhaps") << none << none << QStringLiteral("later")
+                                                          << QStringList() << false << none << false << none << false;
+        // Entries with nothing to call the daemon with are not shown.
+        QTest::newRow("entries, and no paths for them") << false << QStringLiteral("on") << enabled << none << none << hidden << QStringList() << false << none << false << none
+                                                        << false;
     }
 
-    void menuFollowsTheState()
+    /// When the answer comes the plugin shows what Menu says, each value of
+    /// each key, and decides nothing from the marks: the file here is
+    /// online-only and carries no pin, whatever the answer says.
+    void theEntriesAreWhatTheDaemonAnswers()
     {
-        QFETCH(QByteArray, state);
-        QFETCH(QString, pin);
-        QFETCH(bool, inRoot);
-        QFETCH(bool, expectAlwaysKeep);
-        QFETCH(bool, expectChecked);
-        QFETCH(bool, expectAlwaysKeepEnabled);
-        QFETCH(bool, expectFreeUp);
-        QFETCH(bool, expectFreeUpEnabled);
+        QFETCH(bool, taken);
+        QFETCH(QString, alwaysKeep);
+        QFETCH(QString, freeUp);
+        QFETCH(QString, freeUpWhy);
+        QFETCH(QString, blockedBy);
+        QFETCH(QString, openOnline);
+        QFETCH(QStringList, expected);
+        QFETCH(bool, keepChecked);
+        QFETCH(QString, keepToolTip);
+        QFETCH(bool, freeUpEnabled);
+        QFETCH(QString, freeUpToolTip);
+        QFETCH(bool, openOnlineEnabled);
 
         Tree tree;
-        QVERIFY(inRoot ? tree.root(QStringLiteral("OneDrive")) : tree.dir(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), state));
-        if (pin == QLatin1String("explicit")) {
-            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
-        } else if (pin == QLatin1String("ancestor")) {
-            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive"))));
-        }
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(startFake());
+        m_fake->menuAnswer = FakeSync::menuOf(taken ? QStringList{doc} : QStringList(), alwaysKeep, freeUp, blockedBy, openOnline, doc, freeUpWhy);
 
-        const QList<QAction *> actions = createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QCOMPARE(alwaysKeep != nullptr, expectAlwaysKeep);
-        if (alwaysKeep) {
-            QVERIFY(alwaysKeep->isCheckable());
-            QCOMPARE(alwaysKeep->isChecked(), expectChecked);
-            QCOMPARE(alwaysKeep->isEnabled(), expectAlwaysKeepEnabled);
-            if (!expectAlwaysKeepEnabled) {
-                QVERIFY2(alwaysKeep->toolTip().contains(QStringLiteral("OneDrive")), qPrintable(alwaysKeep->toolTip()));
+        const QList<QAction *> actions = answered(createPlugin()->actions(selection({doc}), nullptr));
+        QCOMPARE(names(actions), expected);
+        QCOMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
+        if (QAction *keep = find(actions, AlwaysKeep)) {
+            QCOMPARE(keep->text(), QStringLiteral("Always Keep on This Device"));
+            QVERIFY(keep->isCheckable());
+            QCOMPARE(keep->isChecked(), keepChecked);
+            QCOMPARE(keep->isEnabled(), keepToolTip.isEmpty());
+            if (!keepToolTip.isEmpty()) {
+                QCOMPARE(keep->toolTip(), keepToolTip);
             }
         }
-        QAction *freeUp = find(actions, FreeUp);
-        QCOMPARE(freeUp != nullptr, expectFreeUp);
-        if (freeUp) {
-            QCOMPARE(freeUp->isEnabled(), expectFreeUpEnabled);
+        if (QAction *free = find(actions, FreeUp)) {
+            QCOMPARE(free->text(), QStringLiteral("Free Up Space"));
+            QCOMPARE(free->isEnabled(), freeUpEnabled);
+            // With no reason the plugin knows there are no words of its
+            // own: Qt then shows the entry's text.
+            QCOMPARE(free->toolTip(), freeUpToolTip.isEmpty() ? QStringLiteral("Free Up Space") : freeUpToolTip);
+        }
+        if (QAction *online = find(actions, OpenOnline)) {
+            QCOMPARE(online->text(), QStringLiteral("Open in OneDrive"));
+            QCOMPARE(online->isEnabled(), openOnlineEnabled);
+            if (!openOnlineEnabled) {
+                QCOMPARE(online->toolTip(), QStringLiteral("Not in OneDrive yet."));
+            }
         }
     }
 
-    /// A selection with one pinned and one unpinned file: not fully checked
-    /// (it is not "the selection" that is pinned), and not disabled (some of
-    /// it can still usefully be toggled).
-    void mixedSelectionIsNeitherFullyCheckedNorDisabled()
+    /// actions() never waits for the daemon: it hands the entries over at
+    /// once, waiting -- the heading and the three of them, shown, disabled,
+    /// unchecked -- and a click on one asks the daemon for nothing. The
+    /// answer sets them when it comes.
+    void theEntriesWaitForTheAnswer()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/pinned.bin"), "hydrated"));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/pinned.bin"))));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/plain.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(startFake());
+        m_fake->menuDelayMs = 700;
+        m_fake->menuAnswer = FakeSync::menuOf({doc}, QStringLiteral("on"), QStringLiteral("enabled"), QString(), QStringLiteral("enabled"), doc);
 
-        const QList<QAction *> actions =
-            createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/pinned.bin")), tree.path(QStringLiteral("OneDrive/plain.bin"))}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QVERIFY(alwaysKeep);
-        QVERIFY(!alwaysKeep->isChecked());
-        QVERIFY(alwaysKeep->isEnabled());
-        QAction *freeUp = find(actions, FreeUp);
-        QVERIFY(freeUp);
-        QVERIFY(freeUp->isEnabled());
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QElapsedTimer clock;
+        clock.start();
+        const QList<QAction *> actions = plugin->actions(selection({doc}), nullptr);
+        const qint64 took = clock.elapsed();
+        QVERIFY2(took < m_fake->menuDelayMs / 2, qPrintable(QStringLiteral("actions() took %1 ms").arg(took)));
+
+        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(waiting(actions));
+        QVERIFY(actions.first()->isSeparator() && actions.first()->isVisible());
+        QCOMPARE(actions.first()->text(), QStringLiteral("OneDrive"));
+        for (const QString &name : {AlwaysKeep, FreeUp, OpenOnline}) {
+            QAction *action = find(actions, name);
+            QVERIFY2(action->isVisible() && !action->isEnabled() && !action->isChecked(), qPrintable(name));
+            // A click before the answer: on the entry as it is, which is
+            // disabled, and its signal all the same -- there is nothing yet
+            // to ask the daemon with.
+            action->trigger();
+            Q_EMIT action->triggered(true);
+        }
+        QTRY_COMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
+        QTest::qWait(200);
+        QVERIFY(waiting(actions));
+        QCOMPARE(m_fake->calls(), QStringList());
+
+        QCOMPARE(names(answered(actions)), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(find(actions, AlwaysKeep)->isEnabled() && find(actions, AlwaysKeep)->isChecked());
+        QVERIFY(find(actions, FreeUp)->isEnabled() && find(actions, OpenOnline)->isEnabled());
+        // Setting the entries asked for nothing either.
+        QCOMPARE(m_fake->calls(), QStringList());
+        find(actions, FreeUp)->trigger();
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("FreeUp ") + doc});
     }
 
-    /// Every item pinned, and only by the same ancestor folder: "Always
-    /// keep" is checked (the selection is effectively pinned) but disabled
-    /// (nothing would change), and "Free up space" is disabled too.
-    void wholeSelectionPinnedByAnAncestorDisablesBothActions()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/a.bin"), "hydrated"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/b.bin"), "hydrated"));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
-
-        const QList<QAction *> actions =
-            createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/sub/a.bin")), tree.path(QStringLiteral("OneDrive/sub/b.bin"))}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QVERIFY(alwaysKeep);
-        QVERIFY(alwaysKeep->isChecked());
-        QVERIFY(!alwaysKeep->isEnabled());
-        QVERIFY2(alwaysKeep->toolTip().contains(QStringLiteral("sub")), qPrintable(alwaysKeep->toolTip()));
-        QAction *freeUp = find(actions, FreeUp);
-        QVERIFY(freeUp);
-        QVERIFY(!freeUp->isEnabled());
-    }
-
-    /// One item explicitly pinned and another pinned only by an ancestor:
-    /// "Always keep" is disabled even though one of the two is explicitly
-    /// pinned -- unchecking it would still refuse the whole call, since the
-    /// ancestor-pinned one stays pinned by its ancestor either way
-    /// (pinning.md §5) -- and "Free up space" is disabled too.
-    void oneExplicitAndOneAncestorPinDisablesBothActions()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/explicit.bin"), "hydrated"));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/explicit.bin"))));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/byAncestor.bin"), "hydrated"));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
-
-        const QList<QAction *> actions = createPlugin()->actions(
-            selection({tree.path(QStringLiteral("OneDrive/explicit.bin")), tree.path(QStringLiteral("OneDrive/sub/byAncestor.bin"))}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QVERIFY(alwaysKeep);
-        QVERIFY(alwaysKeep->isChecked());
-        QVERIFY(!alwaysKeep->isEnabled());
-        QAction *freeUp = find(actions, FreeUp);
-        QVERIFY(freeUp);
-        QVERIFY(!freeUp->isEnabled());
-    }
-
-    /// A path both explicitly pinned and pinned by an ancestor: unlike the
-    /// mixed-selection case above, "Always keep" here is unchecked (not
-    /// every item is explicitly this one -- there is only one item, and it
-    /// is effectively pinned, so it IS checked) and disabled, since Unpin
-    /// would still refuse it.
-    void explicitAndAncestorPinOnTheSameItemDisablesAlwaysKeep()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/both.bin"), "hydrated"));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub/both.bin"))));
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
-
-        const QList<QAction *> actions = createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/sub/both.bin"))}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QVERIFY(alwaysKeep);
-        QVERIFY(alwaysKeep->isChecked());
-        QVERIFY(!alwaysKeep->isEnabled());
-        QAction *freeUp = find(actions, FreeUp);
-        QVERIFY(freeUp);
-        QVERIFY(!freeUp->isEnabled());
-    }
-
-    /// Folders get "Always keep" too, and "Free up space" for any folder in
-    /// the root (D-B), pinned or not.
-    void foldersGetActionsToo()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.dir(QStringLiteral("OneDrive/folder")));
-        const KFileItem folder(url(tree.path(QStringLiteral("OneDrive/folder"))), QStringLiteral("inode/directory"), S_IFDIR);
-
-        QList<QAction *> actions = createPlugin()->actions(KFileItemListProperties({folder}), nullptr);
-        QAction *alwaysKeep = find(actions, AlwaysKeep);
-        QVERIFY(alwaysKeep);
-        QVERIFY(!alwaysKeep->isChecked());
-        QVERIFY(find(actions, FreeUp));
-
-        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/folder"))));
-        actions = createPlugin()->actions(KFileItemListProperties({folder}), nullptr);
-        QVERIFY(find(actions, AlwaysKeep)->isChecked());
-        QVERIFY(find(actions, FreeUp));
-    }
-
-    /// Neither a symbolic link nor anything outside a root is offered
-    /// anything.
-    void nothingForALinkOrOutsideARoot()
+    /// The entries of a menu can be gone before its answer comes -- the
+    /// window closed, the next menu built, the plugin unloaded: the answer
+    /// then touches nothing, and the next menu is set from its own.
+    void anAnswerAfterTheMenuIsGoneTouchesNothing()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
-        QVERIFY(tree.symlink(QStringLiteral("OneDrive/doc.bin"), QStringLiteral("OneDrive/link.bin")));
-        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "online-only"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(startFake());
+        m_fake->menuDelayMs = 300;
+        const auto afterTheAnswer = [this](int sent) {
+            return QTest::qWaitFor([this, sent]() {
+                return m_fake->menuAnswersSent == sent;
+            }) && (QTest::qWait(200), true);
+        };
 
+        // The window the entries were made for is closed.
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/link.bin"))}), nullptr)), QStringList());
-        QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("Elsewhere/f.bin"))}), nullptr)), QStringList());
+        auto window = std::make_unique<QWidget>();
+        QPointer<QAction> heading = plugin->actions(selection({doc}), window.get()).first();
+        QVERIFY(heading);
+        window.reset();
+        QVERIFY(!heading);
+        QVERIFY(afterTheAnswer(1));
+
+        // The next menu is built before the answer to this one.
+        const QList<QAction *> first = plugin->actions(selection({doc}), nullptr);
+        heading = first.first();
+        const QList<QAction *> second = plugin->actions(selection({doc}), nullptr);
+        QVERIFY(!heading);
+        QCOMPARE(names(answered(second)), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(afterTheAnswer(3));
+        QVERIFY(find(second, AlwaysKeep)->isEnabled() && !waiting(second));
+
+        // The plugin goes while its menu waits.
+        heading = plugin->actions(selection({doc}), nullptr).first();
+        delete plugin;
+        QVERIFY(!heading);
+        QVERIFY(afterTheAnswer(4));
+        QCOMPARE(m_fake->calls(), QStringList());
     }
 
-    /// An unmanaged file (one of the user's own, in the sync folder), an
-    /// unrecognised state, and a reserved `.konedrive-*` name are all left
-    /// out of what is sent -- one of them must not make the daemon refuse
-    /// the whole batch (review #7).
-    void unmanagedUnrecognisedAndReservedAreLeftOut()
+    void noAnswerHidesTheEntries_data()
+    {
+        QTest::addColumn<QString>("daemon");
+        QTest::newRow("is not running") << QStringLiteral("none");
+        QTest::newRow("never answers") << QStringLiteral("silent");
+        QTest::newRow("answers with an error") << QStringLiteral("error");
+    }
+
+    /// With no answer -- no daemon, a refusal, none within two seconds --
+    /// KOneDrive's entries are hidden, the section with them: nothing is
+    /// decided from the marks instead.
+    void noAnswerHidesTheEntries()
+    {
+        QFETCH(QString, daemon);
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        if (daemon != QLatin1String("none")) {
+            QVERIFY(startFake());
+            m_fake->menuDelayMs = daemon == QLatin1String("silent") ? -1 : 0;
+            if (daemon == QLatin1String("error")) {
+                m_fake->menuErrorName = QStringLiteral("org.konedrive.Error.Failed");
+            }
+        }
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QElapsedTimer clock;
+        clock.start();
+        const QList<QAction *> actions = plugin->actions(selection({doc}), nullptr);
+        QCOMPARE(actions.size(), 5);
+        QCOMPARE(names(answered(actions)), QStringList());
+        const qint64 took = clock.elapsed();
+        for (QAction *action : actions) {
+            QVERIFY2(!action->isVisible(), qPrintable(action->objectName()));
+            if (!action->isSeparator()) {
+                QVERIFY2(!action->isEnabled() && !action->isChecked(), qPrintable(action->objectName()));
+                action->trigger();
+            }
+        }
+        if (daemon == QLatin1String("silent")) {
+            const int limit = konedrive::SyncClient::MenuAnswerTimeoutMs;
+            QVERIFY2(took >= limit - 100 && took < limit + 1000, qPrintable(QStringLiteral("hidden after %1 ms").arg(took)));
+        }
+        if (m_fake) {
+            QTRY_COMPARE(m_fake->menuCalls(), QList<QStringList>{{doc}});
+            QTest::qWait(100);
+            QCOMPARE(m_fake->calls(), QStringList());
+        } else {
+            QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
+        }
+    }
+
+    /// With no session bus the call is never sent, so no reply timeout runs
+    /// for it: the answer is "offers nothing" all the same -- which is what
+    /// hides the entries (noAnswerHidesTheEntries) -- and comes as any other
+    /// does, later and on the event loop, not after two seconds. The plugin
+    /// takes the session bus itself, so this asks through the client it uses.
+    void noSessionBusIsAnsweredWithNothingAtOnce()
+    {
+        const QDBusConnection noBus(QStringLiteral("konedrive-test-no-such-bus"));
+        QVERIFY(!noBus.isConnected());
+        konedrive::SyncClient client(noBus);
+        QObject context;
+        int answers = 0;
+        bool offered = true;
+        QElapsedTimer clock;
+        clock.start();
+        client.askMenu({QStringLiteral("/somewhere/doc.bin")}, &context, [&answers, &offered](const std::optional<konedrive::MenuAnswer> &answer) {
+            ++answers;
+            offered = answer.has_value();
+        });
+        QCOMPARE(answers, 0);
+        QTRY_COMPARE_WITH_TIMEOUT(answers, 1, konedrive::SyncClient::MenuAnswerTimeoutMs / 2);
+        QVERIFY(!offered);
+        QVERIFY2(clock.elapsed() < konedrive::SyncClient::MenuAnswerTimeoutMs / 2, qPrintable(QStringLiteral("answered after %1 ms").arg(clock.elapsed())));
+        QTest::qWait(100);
+        QCOMPARE(answers, 1);
+    }
+
+    /// By the marks alone, before anything is asked: a selection with
+    /// nothing in a sync folder makes no call, and has no entries.
+    void aSelectionOutsideEverySyncFolderMakesNoCall()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/mine.txt")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/odd.bin"), "not-a-state-we-know"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/.konedrive-tmp")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/good.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
+        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "online-only"));
+        QVERIFY(tree.dir(QStringLiteral("Elsewhere/folder")));
+        // A placeholder outside the sync folder, reached through a symbolic
+        // link inside it or through `..`, is not in the folder.
+        QVERIFY(tree.symlink(QStringLiteral("Elsewhere"), QStringLiteral("OneDrive/escape")));
         const auto p = [&tree](const char *name) {
             return tree.path(QString::fromLatin1(name));
         };
         QVERIFY(startFake());
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        const QStringList all{p("OneDrive/mine.txt"), p("OneDrive/odd.bin"), p("OneDrive/.konedrive-tmp"), p("OneDrive/good.bin")};
-        find(plugin->actions(selection(all), nullptr), FreeUp)->trigger();
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("FreeUp ") + p("OneDrive/good.bin")});
+        for (const QStringList &outside : {QStringList{p("Elsewhere/f.bin")},
+                                           QStringList{p("Elsewhere/folder")},
+                                           QStringList{p("OneDrive/escape/f.bin")},
+                                           QStringList{p("OneDrive/../Elsewhere/f.bin")},
+                                           QStringList{p("Elsewhere/f.bin"), p("Elsewhere/folder")}}) {
+            QCOMPARE(names(answered(plugin->actions(selection(outside), nullptr))), QStringList());
+        }
+        QCOMPARE(m_fake->menuCalls(), QList<QStringList>());
+
+        // One path in a sync folder is enough, and the daemon is asked about
+        // the whole selection, as it was given; so is an account's folder
+        // itself.
+        const QStringList mixed{p("Elsewhere/f.bin"), p("OneDrive/doc.bin")};
+        QVERIFY(!answered(plugin->actions(selection(mixed), nullptr)).isEmpty());
+        QVERIFY(!answered(plugin->actions(selection({p("OneDrive")}), nullptr)).isEmpty());
+        QCOMPARE(m_fake->menuCalls(), (QList<QStringList>{mixed, {p("OneDrive")}}));
+        QCOMPARE(m_fake->calls(), QStringList());
     }
 
-    void nothingThroughALinkOutOfTheRoot_data()
-    {
-        QTest::addColumn<QString>("shownAs");
-        QTest::newRow("through a link in the root to a folder outside") << QStringLiteral("OneDrive/escape/f.bin");
-        QTest::newRow("through .. out of the root") << QStringLiteral("OneDrive/../Elsewhere/f.bin");
-    }
-
-    /// A placeholder outside the sync folder, reached through a symbolic
-    /// link inside it, is not offered anything: it is not in the folder.
-    void nothingThroughALinkOutOfTheRoot()
-    {
-        QFETCH(QString, shownAs);
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "online-only"));
-        QVERIFY(tree.symlink(QStringLiteral("Elsewhere"), QStringLiteral("OneDrive/escape")));
-        QCOMPARE(names(createPlugin()->actions(selection({tree.path(shownAs)}), nullptr)), QStringList());
-    }
-
-    /// The menu KFileItemActions builds -- the one Dolphin shows -- offers
-    /// "Always keep" for anything inside a root, and "Free up space" for a
-    /// folder in the selection (D-B), or when something in it is hydrated
-    /// or explicitly pinned.
+    /// The menu KFileItemActions builds -- the one Dolphin shows -- holds
+    /// KOneDrive's entries as one section: the heading, what the daemon
+    /// answered, the closing separator.
     void inTheContextMenuKioBuilds_data()
     {
         QTest::addColumn<QStringList>("entries"); // name:mimetype:state, or name/ for a folder
         QTest::addColumn<QStringList>("expected");
-        QTest::newRow("one online-only file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd};
+        QTest::newRow("one file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd};
         QTest::newRow("files of different types")
             << QStringList{QStringLiteral("notes.txt:text/plain:online-only"),
                            QStringLiteral("photo.jpg:image/jpeg:online-only"),
@@ -352,7 +447,6 @@ private Q_SLOTS:
         QTest::newRow("a file and a folder") << QStringList{QStringLiteral("notes.txt:text/plain:online-only"), QStringLiteral("sub/")}
                                              << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd};
         QTest::newRow("a folder alone") << QStringList{QStringLiteral("sub/")} << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd};
-        QTest::newRow("two folders") << QStringList{QStringLiteral("sub1/"), QStringLiteral("sub2/")} << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd};
     }
 
     void inTheContextMenuKioBuilds()
@@ -372,6 +466,8 @@ private Q_SLOTS:
             QVERIFY(tree.file(QStringLiteral("OneDrive/") + parts.at(0), parts.at(2).toLatin1()));
             items.append(KFileItem(url(tree.path(QStringLiteral("OneDrive/") + parts.at(0))), parts.at(1), S_IFREG));
         }
+        // The stand-in takes every path, and offers "Open in OneDrive" for one.
+        QVERIFY(startFake());
 
         // Only the plugins built here, not whatever else is installed.
         const QStringList saved = QCoreApplication::libraryPaths();
@@ -385,15 +481,18 @@ private Q_SLOTS:
         QMenu menu;
         fileItemActions.addActionsTo(&menu, KFileItemActions::MenuActionSource::Plugins);
         // In the order the menu shows them: the heading first, the closing
-        // separator last, the entries between them.
-        QStringList shown;
+        // separator last, the entries between them -- all of them at once,
+        // waiting, and those the answer leaves shown once it has come.
         const QList<QAction *> actions = menu.actions();
-        for (const QAction *action : actions) {
+        QList<QAction *> ours;
+        for (QAction *action : actions) {
             if (action->objectName().startsWith(QLatin1String("konedrive_"))) {
-                shown.append(action->objectName());
+                ours.append(action);
             }
         }
-        QCOMPARE(shown, expected);
+        QCOMPARE(names(ours), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(waiting(ours));
+        QCOMPARE(names(answered(ours)), expected);
         QAction *heading = menu.findChild<QAction *>(Section);
         if (!heading) {
             heading = find(actions, Section);
@@ -404,39 +503,9 @@ private Q_SLOTS:
         QVERIFY(find(actions, SectionEnd)->isSeparator());
     }
 
-    /// "Open in OneDrive" is offered for one item in a root -- enabled when
-    /// OneDrive has it (it carries an item id), disabled with the reason
-    /// when it does not -- never for two, and not outside a root.
-    void openInOneDriveIsForOneItemOneDriveHas()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/there.bin"), "online-only"));
-        QVERIFY(setItemId(tree.path(QStringLiteral("OneDrive/there.bin"))));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/new.bin"), "hydrated"));
-        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "hydrated"));
-        QVERIFY(setItemId(tree.path(QStringLiteral("Elsewhere/f.bin"))));
-        const QString there = tree.path(QStringLiteral("OneDrive/there.bin"));
-        const QString fresh = tree.path(QStringLiteral("OneDrive/new.bin"));
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QList<QAction *> actions = plugin->actions(selection({there}), nullptr);
-        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd}));
-        QVERIFY(find(actions, OpenOnline)->isEnabled());
-        QCOMPARE(find(actions, OpenOnline)->text(), QStringLiteral("Open in OneDrive"));
-
-        actions = plugin->actions(selection({fresh}), nullptr);
-        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
-        QVERIFY(!find(actions, OpenOnline)->isEnabled());
-        QCOMPARE(find(actions, OpenOnline)->toolTip(), QStringLiteral("Not in OneDrive yet."));
-
-        QCOMPARE(names(plugin->actions(selection({there, fresh}), nullptr)), (QStringList{Section, AlwaysKeep, FreeUp, SectionEnd}));
-        QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("Elsewhere/f.bin"))}), nullptr)), QStringList());
-    }
-
-    /// The account's folder itself: the heading, "Open in OneDrive" --
-    /// enabled, with or without an item id -- and the closing separator,
-    /// nothing else. A click asks for the folder's own path.
+    /// The account's folder itself, as the daemon answers about it: the
+    /// heading, "Open in OneDrive" and the closing separator, nothing else.
+    /// A click asks for the path the answer named.
     void theAccountsFolderItselfOpensInOneDrive()
     {
         Tree tree;
@@ -445,18 +514,15 @@ private Q_SLOTS:
         const KFileItem folder(url(root), QStringLiteral("inode/directory"), S_IFDIR);
         QVERIFY(startFake());
         m_fake->webUrl = QStringLiteral("https://onedrive.example/root");
+        m_fake->menuAnswer = FakeSync::menuOf({}, QStringLiteral("hidden"), QStringLiteral("hidden"), QString(), QStringLiteral("enabled"), root);
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        const QList<QAction *> actions = plugin->actions(KFileItemListProperties({folder}), nullptr);
+        const QList<QAction *> actions = answered(plugin->actions(KFileItemListProperties({folder}), nullptr));
         QCOMPARE(names(actions), (QStringList{Section, OpenOnline, SectionEnd}));
         QVERIFY(find(actions, OpenOnline)->isEnabled());
         find(actions, OpenOnline)->trigger();
         QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/root"))});
-        QCOMPARE(m_fake->calls, QStringList{QStringLiteral("WebUrl ") + root});
-
-        // With another item beside it, it is one of several: nothing for it.
-        QVERIFY(tree.file(QStringLiteral("other.txt")));
-        QCOMPARE(names(plugin->actions(selection({root, tree.path(QStringLiteral("other.txt"))}), nullptr)), QStringList());
+        QCOMPARE(m_fake->calls(), QStringList{QStringLiteral("WebUrl ") + root});
     }
 
     /// A click makes one WebUrl call with the path, and the address that
@@ -473,15 +539,15 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/doc?id=1"))});
-        QCOMPARE(m_fake->calls, QStringList{QStringLiteral("WebUrl ") + doc});
+        QCOMPARE(m_fake->calls(), QStringList{QStringLiteral("WebUrl ") + doc});
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
         QCOMPARE(errors.count(), 0);
 
         // An answer that is not an address of the web is opened by nothing.
         m_fake->webUrl = QStringLiteral("file:///etc/passwd");
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("The page of “doc.bin” in OneDrive could not be opened")), qPrintable(errors.at(0).at(0).toString()));
         QCOMPARE(m_urls->opened.size(), 1);
@@ -526,7 +592,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QCOMPARE(errors.at(0).at(0).toString(), expected);
         QVERIFY(m_urls->opened.isEmpty());
@@ -545,20 +611,25 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        // The menu was built while the daemon ran; it is gone by the click.
+        QVERIFY(startFake());
+        QAction *open = find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline);
+        QVERIFY(open);
+        m_fake.reset();
+        open->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().startsWith(QStringLiteral("KOneDrive is not running, so “doc.bin” was not opened in OneDrive.")),
                  qPrintable(errors.at(0).at(0).toString()));
 
         QVERIFY(startFake());
         m_fake->defaultAnswer.delayMs = -1;
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
-        QTRY_COMPARE(m_fake->calls.size(), 1);
-        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
+        QTRY_COMPARE(m_fake->calls().size(), 1);
+        find(answered(plugin->actions(selection({doc}), nullptr)), OpenOnline)->trigger();
         QTRY_COMPARE(errors.count(), 2);
         QVERIFY2(errors.at(1).at(0).toString().startsWith(QStringLiteral("KOneDrive has not yet answered an earlier request for “doc.bin”")),
                  qPrintable(errors.at(1).at(0).toString()));
-        QCOMPARE(m_fake->calls.size(), 1);
+        QCOMPARE(m_fake->calls().size(), 1);
 
         m_fake->stop();
         QTRY_COMPARE(errors.count(), 3);
@@ -567,29 +638,33 @@ private Q_SLOTS:
         QVERIFY(m_urls->opened.isEmpty());
     }
 
-    /// Triggering an action calls Pin or FreeUp with every selected path
-    /// that lies inside a root, whatever each one's own state is -- the
-    /// daemon sorts out what each path needs.
-    void triggeringCallsPinOrFreeUpWithTheWholeSelection()
+    /// Triggering an action calls Pin or FreeUp with the paths the daemon
+    /// answered -- those it takes, not the selection: one path it refuses
+    /// must not make it refuse the whole batch.
+    void triggeringCallsPinOrFreeUpWithThePathsOfTheAnswer()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "online-only"));
         QVERIFY(tree.file(QStringLiteral("OneDrive/b.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/mine.txt")));
         QVERIFY(tree.file(QStringLiteral("Elsewhere/c.bin"), "online-only"));
         const auto p = [&tree](const char *name) {
             return tree.path(QString::fromLatin1(name));
         };
         QVERIFY(startFake());
+        const QStringList taken{p("OneDrive/a.bin"), p("OneDrive/b.bin")};
+        m_fake->menuAnswer = FakeSync::menuOf(taken, QStringLiteral("off"), QStringLiteral("enabled"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        const QStringList all{p("OneDrive/a.bin"), p("OneDrive/b.bin"), p("Elsewhere/c.bin")};
-        find(plugin->actions(selection(all), nullptr), AlwaysKeep)->trigger();
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + p("OneDrive/a.bin") + QLatin1Char(',') + p("OneDrive/b.bin")});
+        const QStringList all{p("OneDrive/a.bin"), p("OneDrive/mine.txt"), p("OneDrive/b.bin"), p("Elsewhere/c.bin")};
+        find(answered(plugin->actions(selection(all), nullptr)), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Pin ") + taken.join(QLatin1Char(','))});
 
-        find(plugin->actions(selection(all), nullptr), FreeUp)->trigger();
-        QTRY_COMPARE(m_fake->calls.size(), 2);
-        QCOMPARE(m_fake->calls.at(1), QStringLiteral("FreeUp ") + p("OneDrive/a.bin") + QLatin1Char(',') + p("OneDrive/b.bin"));
+        find(answered(plugin->actions(selection(all), nullptr)), FreeUp)->trigger();
+        QTRY_COMPARE(m_fake->calls().size(), 2);
+        QCOMPARE(m_fake->calls().at(1), QStringLiteral("FreeUp ") + taken.join(QLatin1Char(',')));
+        QCOMPARE(m_fake->menuCalls(), (QList<QStringList>{all, all}));
     }
 
     /// D-A: unchecking an already-checked "Always keep on this device"
@@ -603,14 +678,15 @@ private Q_SLOTS:
         QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/a.bin"))));
         const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
         QVERIFY(startFake());
+        m_fake->menuAnswer = FakeSync::menuOf({a}, QStringLiteral("on"), QStringLiteral("enabled"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QAction *alwaysKeep = find(plugin->actions(selection({a}), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({a}), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
         QVERIFY(alwaysKeep->isChecked());
         alwaysKeep->trigger();
         QVERIFY(!alwaysKeep->isChecked());
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Unpin ") + a});
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Unpin ") + a});
     }
 
     /// FreeUp's `busy` now also counts files changed here and not uploaded,
@@ -628,7 +704,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({a}), nullptr), FreeUp)->trigger();
+        find(answered(plugin->actions(selection({a}), nullptr)), FreeUp)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("2 files are in use or were changed here and were kept")),
                  qPrintable(errors.at(0).at(0).toString()));
@@ -647,7 +723,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *alwaysKeep = find(plugin->actions(selection({doc}), nullptr), AlwaysKeep);
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep);
         QVERIFY(alwaysKeep);
 
         QElapsedTimer clock;
@@ -656,7 +732,7 @@ private Q_SLOTS:
         const qint64 took = clock.elapsed();
         QVERIFY2(took < 500, qPrintable(QStringLiteral("trigger() took %1 ms").arg(took)));
 
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + doc});
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Pin ") + doc});
         QCOMPARE(m_fake->delayedAnswersSent, 0);
         QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 5000);
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
@@ -723,7 +799,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *action = find(plugin->actions(selection({doc}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
+        QAction *action = find(answered(plugin->actions(selection({doc}), nullptr)), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
         action->trigger();
         QTRY_COMPARE(errors.count(), 1);
@@ -740,19 +816,23 @@ private Q_SLOTS:
         QTest::newRow("Free up space") << false;
     }
 
-    /// With no daemon on the bus the action says so, plainly.
+    /// With no daemon on the bus by the time an entry is chosen, the action
+    /// says so, plainly.
     void daemonNotRunning()
     {
         QFETCH(bool, alwaysKeep);
-        QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), alwaysKeep ? "online-only" : "hydrated"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *action = find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
+        // The menu was built while the daemon ran; it is gone by the click.
+        QVERIFY(startFake());
+        QAction *action = find(answered(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr)), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
+        m_fake.reset();
+        QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
         action->trigger();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
@@ -779,7 +859,17 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), AlwaysKeep)->trigger();
+        // Building a menu never starts the daemon: with none running there
+        // are no entries, and nothing was asked to start.
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QCOMPARE(names(answered(plugin->actions(selection({doc}), nullptr))), QStringList());
+        QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
+        // Choosing an entry of a menu built while it ran does ask for it.
+        QVERIFY(startFake());
+        QAction *alwaysKeep = find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        m_fake.reset();
+        alwaysKeep->trigger();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
         QVERIFY2(text.startsWith(QStringLiteral("KOneDrive is not running, so “doc.bin” was not kept on this device")), qPrintable(text));
@@ -797,8 +887,8 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
-        QTRY_COMPARE(m_fake->calls.size(), 1);
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls().size(), 1);
         m_fake->stop();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
@@ -818,7 +908,12 @@ private Q_SLOTS:
         }
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
+        // The menu was built while the daemon ran; it is gone by the click.
+        QVERIFY(startFake());
+        QAction *alwaysKeep = find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        m_fake.reset();
+        alwaysKeep->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QTest::qWait(3 * konedrive::SyncClient::ReportDelayMs);
         QCOMPARE(errors.count(), 1);
@@ -841,7 +936,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QCOMPARE(errors.at(0).at(0).toString(),
                  QStringLiteral("Keeping “a.bin” on this device failed: disk full. One more file was not kept on this device for the same reason."));
@@ -863,23 +958,23 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + doc});
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls(), QStringList{QStringLiteral("Pin ") + doc});
 
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
-        QCOMPARE(m_fake->calls.size(), 1);
+        QCOMPARE(m_fake->calls().size(), 1);
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().startsWith(QStringLiteral("KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.")),
                  qPrintable(errors.at(0).at(0).toString()));
 
         // With a path not asked for yet: that one is sent, the other is not.
-        find(plugin->actions(selection({doc, fresh}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc, fresh}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 2);
         QVERIFY2(!errors.at(1).at(0).toString().contains(QStringLiteral("“new.bin”")), qPrintable(errors.at(1).at(0).toString()));
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
-        QCOMPARE(m_fake->calls.size(), 2);
-        QCOMPARE(m_fake->calls.at(1), QStringLiteral("Pin ") + fresh);
+        QCOMPARE(m_fake->calls().size(), 2);
+        QCOMPARE(m_fake->calls().at(1), QStringLiteral("Pin ") + fresh);
     }
 
     /// However many paths are chosen, no more than MaxCallsInFlight wait for
@@ -903,9 +998,9 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
-        QTRY_COMPARE(m_fake->calls.size(), 1);
-        const QStringList sent = m_fake->calls.first().mid(QStringLiteral("Pin ").size()).split(QLatin1Char(','));
+        find(answered(plugin->actions(selection(paths), nullptr)), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls().size(), 1);
+        const QStringList sent = m_fake->calls().first().mid(QStringLiteral("Pin ").size()).split(QLatin1Char(','));
         QCOMPARE(sent.size(), cap);
         QVERIFY(!sent.contains(paths.last()));
         QTRY_COMPARE(errors.count(), 1);
@@ -933,7 +1028,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        find(answered(plugin->actions(selection({doc}), nullptr)), AlwaysKeep)->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 40000);
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 500);
         QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.at(0).at(0).toString()));

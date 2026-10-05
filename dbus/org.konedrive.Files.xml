@@ -88,5 +88,53 @@
       <arg name="path" type="s" direction="in"/>
       <arg name="url" type="s" direction="out"/>
     </method>
+    <!-- What a file manager's context menu may offer for a selection: one
+         call per menu, so that the rules of Pin, Unpin, FreeUp and WebUrl are
+         decided here and nowhere else. Nothing is changed and no file is
+         opened (nothing is downloaded): the answer comes from what the
+         daemon knows and the marks on the paths, and does not wait for a
+         sync that is writing to the account's store. The keys:
+           paths (as): the selected paths Pin takes, in the order given;
+             what Pin, Unpin or FreeUp is then called with. A path in no
+             account's folder, a link, a file of the user's own, a reserved
+             name and an account's folder itself are left out.
+           always-keep (s): "hidden" (paths is empty); "off"; "on" (every
+             path is pinned, by itself or by a folder above); "on-locked"
+             (the same, and Unpin of paths would be refused).
+           free-up (s): "hidden" (no path is a folder, a downloaded file or
+             one with a pin of its own); "enabled"; "disabled" (FreeUp of
+             paths would be refused: free-up-why says for what).
+           free-up-why (s): why free-up is "disabled"; empty otherwise. One
+             reason: the first of these that holds, in this order.
+             "no-helper": the folder is intercepted and its helper is not
+             connected. "pinned-above": a folder above keeps a path pinned
+             (blocked-by names it). "unknown": the daemon cannot tell now
+             whether a downloaded file among the paths has a change waiting
+             to be uploaded: a mark on a file among them cannot be read, or
+             the account's sync has not started, or its store cannot be
+             read. "not-uploaded": one has such a change. The last two are
+             answered only for a folder that shows OneDrive.
+             A mark that cannot be read is found before the store is asked,
+             so the answer is then "unknown" even when another file of the
+             selection has a change waiting; FreeUp goes file by file, and
+             refuses for whichever of the two it meets first.
+             Over several accounts' folders each account finds its own
+             first reason, and the answer is that of the first account that
+             refuses, in the order the accounts' paths first come in the
+             selection: not the reason that comes first in the order above.
+           blocked-by (s): the name of the folder above that keeps a path
+             pinned, when that is why always-keep is "on-locked" or
+             free-up-why is "pinned-above"; empty otherwise.
+           open-online (s): "hidden" (not exactly one path selected, or one
+             that is neither in paths nor an account's folder itself);
+             "enabled"; "disabled" (the item is not in OneDrive yet).
+           open-online-path (s): the path WebUrl is then called with; empty
+             when open-online is "hidden".
+         Never refused for a path it does not take. The answer is about the
+         moment it was asked: a call made after it can still be refused. -->
+    <method name="Menu">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="menu" type="a{sv}" direction="out"/>
+    </method>
   </interface>
 </node>

@@ -1,7 +1,7 @@
 //! The `sync` commands that take a path: `Files` finds the account by it.
 
 use konedrive_dbus::accounts::FilesProxy;
-use konedrivectl::text::files::{folders_unread_text, free_text, pin_text, unpin_text, DOWNLOADED, FREED_UP, PLAIN_PREFIX};
+use konedrivectl::text::files::{folders_unread_text, free_text, menu_text, pin_text, unpin_text, DOWNLOADED, FREED_UP, PLAIN_PREFIX};
 use konedrivectl::text::formats::warning_text;
 
 use super::explain::{absolute_str, explained_paths, fail_if_holders_unhealthy, PathAction};
@@ -34,6 +34,13 @@ pub(super) async fn path_command(daemon: &Daemon, command: PathCmd) -> anyhow::R
         PathCmd::State { path } => {
             let files = FilesProxy::new(&daemon.connection).await?;
             println!("{}", files.item_state(&absolute_str(&path)?).await?);
+            Ok(())
+        }
+        PathCmd::Menu { paths } => {
+            let paths = paths.iter().map(|path| absolute_str(path)).collect::<anyhow::Result<Vec<String>>>()?;
+            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let files = FilesProxy::new(&daemon.connection).await?;
+            print!("{}", menu_text(&files.menu(&refs).await?));
             Ok(())
         }
         PathCmd::Open { path, print } => {

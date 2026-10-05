@@ -10,6 +10,7 @@ pub mod bring_up;
 mod folder;
 pub mod free_up;
 pub mod hydrate;
+pub mod menu;
 pub mod mode;
 pub mod move_outs;
 pub mod outbox;

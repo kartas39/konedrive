@@ -182,6 +182,40 @@ pub fn unpin_text(unpinned: u32) -> String {
     }
 }
 
+/// The keys of `Files.Menu`'s answer, in the order `sync menu` prints them.
+const MENU_KEYS: [&str; 7] = ["paths", "always-keep", "free-up", "free-up-why", "blocked-by", "open-online", "open-online-path"];
+
+/// `sync menu`: the answer of `Files.Menu`, one line per key, `key: value`. A list is
+/// its entries, each quoted, with a space between; an empty value leaves the line at
+/// the key. A key this build does not know is printed after the others.
+pub fn menu_text(answer: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>) -> String {
+    use zbus::zvariant::Value;
+    fn shown(value: &Value<'_>) -> String {
+        match value {
+            Value::Str(text) => text.to_string(),
+            Value::Array(entries) => entries
+                .iter()
+                .map(|entry| match entry {
+                    Value::Str(text) => format!("{:?}", text.as_str()),
+                    other => shown(other),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            other => format!("{other:?}"),
+        }
+    }
+    let mut unknown: Vec<&str> = answer.keys().map(String::as_str).filter(|key| !MENU_KEYS.contains(key)).collect();
+    unknown.sort_unstable();
+    let mut out = String::new();
+    for key in MENU_KEYS.into_iter().chain(unknown) {
+        if let Some(value) = answer.get(key) {
+            out.push_str(format!("{key}: {}", shown(value)).trim_end());
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// `sync free`: what was freed, what was kept because it was in use or
 /// changed here (FreeUp's `busy` counts both), and the downloaded files a pin
 /// of their own — or of a folder below the one freed — kept.

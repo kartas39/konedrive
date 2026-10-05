@@ -1,6 +1,7 @@
 use super::*;
 use crate::sync::outbox::KeptBack;
 use crate::config::Mode;
+use crate::sync::menu::FreeUpWhy;
 
 /// Write design §3.9: the account turning read-write takes the read-only lock off
 /// its folder — files `0644`, directories `0755`, the folder itself last — and the
@@ -261,6 +262,27 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     let refused = service.dehydrate(&file).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotUploaded(_)), "{refused:?}");
     assert!(matches!(service.check_free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))), "before anything changes");
+    let part = service.menu_part(std::slice::from_ref(&file)).await;
+    assert!(part.taken[0].is_some() && part.kept_by.is_none(), "{part:?}");
+    assert_eq!(part.free_up_refused, Some(FreeUpWhy::NotUploaded), "the menu is told");
+    // And it is told while the store's writer is busy: the menu's question goes through
+    // the read-only connection, which does not wait for it.
+    let (held, release) = std::sync::mpsc::channel::<()>();
+    let holder = store.clone();
+    let holding = std::thread::spawn(move || {
+        holder.call_blocking(move |_| {
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        })
+    });
+    release.recv().unwrap();
+    let start = std::time::Instant::now();
+    let part = service.menu_part(std::slice::from_ref(&file)).await;
+    let took = start.elapsed();
+    assert_eq!(part.free_up_refused, Some(FreeUpWhy::NotUploaded));
+    assert!(took < Duration::from_millis(500), "the menu waited for the store's writer: {took:?}");
+    holding.join().unwrap().unwrap();
     assert!(matches!(service.free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))));
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
 
@@ -405,6 +427,10 @@ async fn a_free_up_that_cannot_tell_whether_a_change_waits_refuses() {
     restarted.resume().await;
     let refused = restarted.dehydrate(&file).await.unwrap_err();
     assert!(matches!(&refused, SyncError::Io(why) if why.contains("cannot tell")), "{refused:?}");
+    // The menu says the same: disabled, and that nothing can tell now.
+    let part = restarted.menu_part(std::slice::from_ref(&file)).await;
+    assert!(part.taken[0].is_some_and(|taken| taken.hydrated), "{part:?}");
+    assert_eq!(part.free_up_refused, Some(FreeUpWhy::Unknown));
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
     restarted.stop_sync().await;
 }

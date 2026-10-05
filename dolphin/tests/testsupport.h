@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include "syncclient.h"
+
+#include <QAction>
 #include <QDBusConnection>
 #include <QDBusContext>
 #include <QDBusMessage>
@@ -12,14 +15,21 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QObject>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTest>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <QVariantMap>
 
+#include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <optional>
 
 #include <fcntl.h>
 #include <sys/inotify.h>
@@ -93,6 +103,35 @@ inline QUrl url(const QString &path)
     return QUrl::fromLocalFile(path);
 }
 
+/// Whether the entries the action plugin handed over for a menu still wait
+/// for the daemon's answer.
+inline bool waiting(const QList<QAction *> &actions)
+{
+    return !actions.isEmpty() && actions.first()->property(konedrive::WaitingProperty).toBool();
+}
+
+/// The entries the action plugin handed over for a menu, once the daemon's
+/// answer -- or the lack of one -- has set them: those that are shown, in
+/// their order. Runs the event loop until then.
+inline QList<QAction *> answered(const QList<QAction *> &actions)
+{
+    if (!QTest::qWaitFor(
+            [&actions]() {
+                return !waiting(actions);
+            },
+            2 * konedrive::SyncClient::MenuAnswerTimeoutMs)) {
+        qWarning("the entries were never set from an answer");
+        return {};
+    }
+    QList<QAction *> shown;
+    for (QAction *action : actions) {
+        if (action->isVisible()) {
+            shown.append(action);
+        }
+    }
+    return shown;
+}
+
 /// A temporary tree of folders and files, removed with it.
 class Tree
 {
@@ -147,12 +186,18 @@ private:
 
 /// Stands in for konedrived's `org.konedrive.Files` at
 /// `/org/konedrive/Accounts` on the private session bus, on a connection of
-/// its own -- so calls to it really cross the bus.
+/// its own -- so calls to it really cross the bus -- and on a thread of its
+/// own, as the daemon is a process of its own: it answers whether or not the
+/// test's event loop runs.
 ///
 /// Pin(as), Unpin(as) and FreeUp(as) each take the whole batch of paths in one call and
 /// answer with one aggregate result, not one per path, so there is one
 /// `defaultAnswer` for whatever the next call gets -- not one per path, the
 /// way the old per-file Hydrate/Dehydrate stand-in needed.
+///
+/// What a test sets (`defaultAnswer`, `webUrl`, `menuAnswer`, ...) it sets
+/// while no call is under way; what the calls leave behind is read through
+/// calls() and menuCalls().
 class FakeSync : public QObject, protected QDBusContext
 {
     Q_OBJECT
@@ -177,16 +222,65 @@ public:
     /// How the next call to Pin or FreeUp is answered; succeeds at once
     /// unless set otherwise. A negative delay never answers at all.
     Answer defaultAnswer;
-    /// "Pin a.bin,b.bin" or "FreeUp a.bin,b.bin", in the order calls arrived.
-    QStringList calls;
     /// Delayed answers sent so far.
-    int delayedAnswersSent = 0;
+    std::atomic<int> delayedAnswersSent = 0;
     /// WebUrl's `url`, when `defaultAnswer` is not a refusal.
     QString webUrl = QStringLiteral("https://onedrive.example/item");
+    /// Menu's answer. Unset, the stand-in takes every path it is given:
+    /// "Always keep" unchecked, "Free up space" enabled, and "Open in
+    /// OneDrive" enabled when it is given one path.
+    std::optional<QVariantMap> menuAnswer;
+    /// Menu answers with this error instead, when it is not empty.
+    QString menuErrorName;
+    /// How long Menu takes to answer; negative, it never does.
+    int menuDelayMs = 0;
+    /// Answers of Menu sent so far, delayed or not.
+    std::atomic<int> menuAnswersSent = 0;
+
+    FakeSync()
+    {
+        moveToThread(&m_thread);
+        m_thread.start();
+    }
 
     ~FakeSync() override
     {
         stop();
+        m_thread.quit();
+        m_thread.wait();
+    }
+
+    /// An answer of Menu, key by key.
+    static QVariantMap menuOf(const QStringList &paths,
+                              const QString &alwaysKeep,
+                              const QString &freeUp,
+                              const QString &blockedBy = QString(),
+                              const QString &openOnline = QStringLiteral("hidden"),
+                              const QString &openOnlinePath = QString(),
+                              const QString &freeUpWhy = QString())
+    {
+        return {{QStringLiteral("paths"), paths},
+                {QStringLiteral("always-keep"), alwaysKeep},
+                {QStringLiteral("free-up"), freeUp},
+                {QStringLiteral("free-up-why"), freeUpWhy},
+                {QStringLiteral("blocked-by"), blockedBy},
+                {QStringLiteral("open-online"), openOnline},
+                {QStringLiteral("open-online-path"), openOnlinePath}};
+    }
+
+    /// "Pin a.bin,b.bin" or "FreeUp a.bin,b.bin", in the order calls
+    /// arrived. Menu's calls are not among them.
+    QStringList calls() const
+    {
+        const QMutexLocker lock(&m_mutex);
+        return m_calls;
+    }
+
+    /// The paths each Menu call was given, in the order they arrived.
+    QList<QStringList> menuCalls() const
+    {
+        const QMutexLocker lock(&m_mutex);
+        return m_menuCalls;
     }
 
     static QString connectionName()
@@ -206,8 +300,7 @@ public:
     /// an answer is then answered NoReply by the bus.
     void stop()
     {
-        if (!m_stopped) {
-            m_stopped = true;
+        if (!m_stopped.exchange(true)) {
             QDBusConnection::disconnectFromBus(connectionName());
         }
     }
@@ -237,21 +330,56 @@ public Q_SLOTS:
         answer(QStringLiteral("WebUrl"), {path}, message, {QVariant::fromValue(webUrl)});
     }
 
+    void Menu(const QStringList &paths, const QDBusMessage &message)
+    {
+        {
+            const QMutexLocker lock(&m_mutex);
+            m_menuCalls.append(paths);
+        }
+        message.setDelayedReply(true);
+        if (menuDelayMs < 0) {
+            return;
+        }
+        const bool one = paths.size() == 1;
+        const QVariantMap said = menuAnswer
+            ? *menuAnswer
+            : menuOf(paths, QStringLiteral("off"), QStringLiteral("enabled"), QString(), one ? QStringLiteral("enabled") : QStringLiteral("hidden"), one ? paths.first() : QString());
+        const QDBusMessage reply = menuErrorName.isEmpty() ? message.createReply(QVariant(said)) : message.createErrorReply(menuErrorName, QStringLiteral("refused"));
+        if (menuDelayMs == 0) {
+            QDBusConnection(connectionName()).send(reply);
+            ++menuAnswersSent;
+            return;
+        }
+        QTimer::singleShot(menuDelayMs, this, [this, reply]() {
+            if (!m_stopped) {
+                QDBusConnection(connectionName()).send(reply);
+                ++menuAnswersSent;
+            }
+        });
+    }
+
 private:
     void answer(const QString &method, const QStringList &paths, const QDBusMessage &message, const QVariantList &results)
     {
-        calls.append(method + QLatin1Char(' ') + paths.join(QLatin1Char(',')));
+        {
+            const QMutexLocker lock(&m_mutex);
+            m_calls.append(method + QLatin1Char(' ') + paths.join(QLatin1Char(',')));
+        }
         const Answer a = defaultAnswer;
         message.setDelayedReply(true);
         if (a.delayMs < 0) {
             return;
         }
-        const QDBusMessage reply = a.errorName.isEmpty() ? message.createReply(results) : message.createErrorReply(a.errorName, a.message);
-        if (a.delayMs == 0) {
+        send(a.errorName.isEmpty() ? message.createReply(results) : message.createErrorReply(a.errorName, a.message), a.delayMs);
+    }
+
+    void send(const QDBusMessage &reply, int delayMs)
+    {
+        if (delayMs == 0) {
             QDBusConnection(connectionName()).send(reply);
             return;
         }
-        QTimer::singleShot(a.delayMs, this, [this, reply]() {
+        QTimer::singleShot(delayMs, this, [this, reply]() {
             if (!m_stopped) {
                 QDBusConnection(connectionName()).send(reply);
                 ++delayedAnswersSent;
@@ -259,7 +387,11 @@ private:
         });
     }
 
-    bool m_stopped = false;
+    QThread m_thread;
+    mutable QMutex m_mutex;
+    QStringList m_calls;
+    QList<QStringList> m_menuCalls;
+    std::atomic<bool> m_stopped = false;
 };
 
 /// Takes the `https` scheme for as long as it lives: an address the plugin

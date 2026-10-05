@@ -17,6 +17,7 @@ use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
 use crate::helper::hub::HelperHub;
+use crate::sync::menu::{self, Menu};
 use crate::sync::registry::Registry;
 use crate::conditions::running::HoldSettings;
 use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
@@ -459,37 +460,28 @@ impl AccountManager {
     /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
     /// is never opened.
     pub async fn route(&self, path: &Path) -> Option<Arc<Account>> {
-        let accounts = self.accounts();
-        let holds = |path: &Path| {
-            accounts.iter().find(|a| a.sync.root().is_some_and(|root| path.starts_with(&root.path))).cloned()
-        };
-        // The directory part resolved first: `..`, and a link to a directory in another
-        // account's folder, lead where the file really is. Taken as given only when it
-        // cannot be resolved (the file cannot be there then), and never with a `.` or `..`.
+        let folders = self.folders();
         let given = path.to_path_buf();
-        match tokio::task::spawn_blocking(move || resolve_parent(&given)).await.ok().flatten() {
-            Some(resolved) => holds(&resolved),
-            None if path.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_))) => holds(path),
-            None => None,
-        }
+        let resolved = tokio::task::spawn_blocking(move || resolve_parent(&given)).await.ok().flatten();
+        holder(&folders, path, resolved.as_deref()).cloned()
+    }
+
+    /// The accounts that have a folder, each with it.
+    fn folders(&self) -> Vec<(Arc<Account>, PathBuf)> {
+        self.accounts().into_iter().filter_map(|account| account.sync.root().map(|root| (account, root.path))).collect()
     }
 
     /// The account whose folder `path` itself is, for `Files.WebUrl`: the parent resolved
     /// and the name kept, as [`route`](Self::route) and `SyncRoot::open_item` take a path.
-    /// `route` never answers for such a path: its parent is in no account's folder.
+    /// `route` answers for such a path too — a folder is a prefix of itself, and `Pin`
+    /// takes an account's folder — so whoever tells the two apart asks this first:
+    /// `Files.WebUrl` does, and [`menu`](Self::menu) relies on that order.
     pub(crate) async fn folder_itself(&self, path: &Path) -> Option<Arc<Account>> {
-        let accounts = self.accounts();
+        let folders = self.folders();
         let given = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let resolved = resolve_parent(&given)?;
-            accounts
-                .iter()
-                .find(|a| {
-                    a.sync.root().is_some_and(|root| {
-                        resolved == root.path || std::fs::canonicalize(&root.path).is_ok_and(|real| real == resolved)
-                    })
-                })
-                .cloned()
+            itself(&folders, &real_folders(&folders), &resolved).cloned()
         })
         .await
         .ok()
@@ -509,6 +501,48 @@ impl AccountManager {
             }
         }
         Ok(groups)
+    }
+
+    /// `Files.Menu`: what the context menu may offer for the selection `paths`
+    /// ([`menu::decide`]). Each path is routed as `Pin` routes
+    /// it, and each account says what it would take and refuse of its own
+    /// ([`SyncService::menu_part`]); a path in no account's folder is in nobody's share,
+    /// and neither is an account's folder itself, which is offered "Open in OneDrive"
+    /// alone. Nothing is changed and no file is opened.
+    ///
+    /// One pass: the accounts' folders are resolved once for the call, and one blocking
+    /// task places every path — an account's folder itself is looked for first, since
+    /// [`route`](Self::route)'s rule answers for it too.
+    pub async fn menu(&self, paths: &[String]) -> Menu {
+        let folders = self.folders();
+        let given: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let placed = tokio::task::spawn_blocking(move || {
+            let real = real_folders(&folders);
+            let mut groups: Vec<(Arc<Account>, Vec<usize>)> = Vec::new();
+            let mut account_folder = false;
+            for (index, path) in given.iter().enumerate() {
+                let resolved = resolve_parent(path);
+                if resolved.as_deref().is_some_and(|resolved| itself(&folders, &real, resolved).is_some()) {
+                    account_folder = given.len() == 1;
+                    continue;
+                }
+                let Some(account) = holder(&folders, path, resolved.as_deref()) else { continue };
+                match groups.iter_mut().find(|(a, _)| Arc::ptr_eq(a, account)) {
+                    Some((_, group)) => group.push(index),
+                    None => groups.push((Arc::clone(account), vec![index])),
+                }
+            }
+            (groups, account_folder)
+        })
+        .await;
+        let Ok((groups, account_folder)) = placed else { return menu::decide(paths, &[], false) };
+        let mut parts = Vec::new();
+        for (account, indices) in groups {
+            let own: Vec<PathBuf> = indices.iter().map(|index| PathBuf::from(&paths[*index])).collect();
+            let part = account.sync.menu_part(&own).await;
+            parts.push((indices, part));
+        }
+        menu::decide(paths, &parts, account_folder)
     }
 
     /// Brings up every folder that needs no helper (design §2.2, step 5); an intercepted one
@@ -615,6 +649,31 @@ fn resolve_parent(path: &Path) -> Option<PathBuf> {
         }
         None => std::fs::canonicalize(path).ok(),
     }
+}
+
+/// [`AccountManager::route`]'s rule among `folders`, for a path whose directory part is
+/// resolved already (`resolved`; `None` when it cannot be). The directory part resolved
+/// first: `..`, and a link to a directory in another account's folder, lead where the
+/// file really is. Taken as given only when it cannot be resolved (the file cannot be
+/// there then), and never with a `.` or `..`.
+fn holder<'a>(folders: &'a [(Arc<Account>, PathBuf)], path: &Path, resolved: Option<&Path>) -> Option<&'a Arc<Account>> {
+    let holds = |path: &Path| folders.iter().find(|(_, root)| path.starts_with(root)).map(|(account, _)| account);
+    match resolved {
+        Some(resolved) => holds(resolved),
+        None if path.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_))) => holds(path),
+        None => None,
+    }
+}
+
+/// Each of `folders` resolved, in their order; `None` for one that cannot be. Blocking.
+fn real_folders(folders: &[(Arc<Account>, PathBuf)]) -> Vec<Option<PathBuf>> {
+    folders.iter().map(|(_, root)| std::fs::canonicalize(root).ok()).collect()
+}
+
+/// The account whose folder `resolved` — a path out of [`resolve_parent`] — itself is:
+/// as the folder is recorded, or as it resolves (`real`, out of [`real_folders`]).
+fn itself<'a>(folders: &'a [(Arc<Account>, PathBuf)], real: &[Option<PathBuf>], resolved: &Path) -> Option<&'a Arc<Account>> {
+    folders.iter().zip(real).find(|((_, root), real)| resolved == root || real.as_deref() == Some(resolved)).map(|((account, _), _)| account)
 }
 
 mod sign_in;

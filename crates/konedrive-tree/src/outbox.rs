@@ -355,6 +355,14 @@ impl TreeStore {
         rows_for(&self.conn, None, Some(inode))
     }
 
+    /// Whether any of `objects` — a local object, and its item id when it has one — has
+    /// a live row: what [`outbox_for_item`](Self::outbox_for_item) and
+    /// [`outbox_for_inode`](Self::outbox_for_inode) answer for each, asked as one query
+    /// for them all.
+    pub fn outbox_holds_any(&self, objects: &[(Option<String>, Inode)]) -> Result<bool, TreeError> {
+        stored::holds_any(&self.conn, objects)
+    }
+
     /// The row whose local object has `handle`: for the watcher, which maps an
     /// event's object to what it concerns.
     pub fn outbox_by_handle(&self, handle: &FileHandle) -> Result<Option<OutboxRow>, TreeError> {

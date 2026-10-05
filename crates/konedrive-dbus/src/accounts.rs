@@ -122,6 +122,11 @@ pub trait Files {
     /// `NotUploaded` for an item OneDrive does not have yet, `NotSignedIn`,
     /// and `Unreachable` when OneDrive does not answer.
     fn web_url(&self, path: &str) -> zbus::Result<String>;
+    /// What a context menu may offer for the selection `paths`, under the keys of
+    /// `dbus/org.konedrive.Files.xml`: `paths`, `always-keep`, `free-up`, `free-up-why`, `blocked-by`,
+    /// `open-online` and `open-online-path`. Changes nothing, opens no file, and is
+    /// never refused for a path it does not take.
+    fn menu(&self, paths: &[&str]) -> zbus::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: one Microsoft account.

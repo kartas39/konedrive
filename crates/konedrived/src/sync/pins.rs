@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::folder::root::SyncRoot;
+use crate::folder::root::{Reach, SyncRoot};
 use crate::hydration::source::{Answered, FillError};
 use crate::helper::NotCleared;
 use crate::folder::locks::InodeKey;
@@ -44,7 +44,7 @@ impl SyncService {
     /// blocking thread.
     pub(super) async fn pin_targets(&self, root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
         let (root, paths) = (root.clone(), paths.to_vec());
-        tokio::task::spawn_blocking(move || pin_targets(&root, &paths))
+        tokio::task::spawn_blocking(move || pin_targets(&root, &paths, Reach::Open))
             .await
             .map_err(|e| SyncError::Io(format!("the pin task failed: {e}")))?
     }
@@ -133,9 +133,12 @@ impl SyncService {
 }
 
 /// A path `Pin`, `Unpin` or `FreeUp` was given, opened beneath the root
-/// (`SyncRoot::open_item`) and looked at, before anything changes.
+/// (`SyncRoot::open_item`) and looked at, before anything changes — or one
+/// `Files.Menu` asks about, only looked at ([`Reach::Look`]).
 pub(super) struct PinTarget {
     pub(super) item: File,
+    /// How `item` was reached, and so how its marks are read.
+    pub(super) reach: Reach,
     /// Its full path as the activity log names it.
     pub(super) shown: PathBuf,
     pub(super) is_dir: bool,
@@ -147,22 +150,62 @@ pub(super) struct PinTarget {
     modes: Arc<crate::folder::disk::Modes>,
 }
 
+impl PinTarget {
+    /// Whether a folder above it pins it.
+    pub(super) fn pinned_above(&self) -> bool {
+        !self.above.is_empty()
+    }
+
+    /// Where it stands among the pins, for [`kept`].
+    fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
+
+    /// What is left of it once it has been looked at and its descriptor is closed.
+    pub(super) fn into_place(self) -> Place {
+        Place { shown: self.shown, own: self.own, above: self.above }
+    }
+}
+
+/// Where a path stands among the pins: the path, whether it carries a pin of its own, and
+/// the folders above it that carry one, nearest first.
+pub(super) type Standing<'a> = (&'a Path, bool, &'a [PathBuf]);
+
+/// A [`PinTarget`] without its descriptor: what [`kept`] goes by, for `Files.Menu`, which
+/// holds no descriptor of a selection longer than it looks at the path.
+pub(super) struct Place {
+    shown: PathBuf,
+    own: bool,
+    above: Vec<PathBuf>,
+}
+
+impl Place {
+    pub(super) fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
+}
+
 /// Opens and looks at each of `paths`; one that cannot be — outside the
 /// root, a `.konedrive-*` name, a file that is not ours — refuses them all.
 /// Blocking.
-pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
-    let modes = crate::folder::disk::Modes::of_root(root).map_err(|e| SyncError::Io(format!("{}: {e}", root.path.display())))?;
-    paths
-        .iter()
-        .map(|path| {
-            let (item, shown) = root.open_item(path)?;
-            let io = |e: io::Error| SyncError::Io(format!("{}: {e}", shown.display()));
-            let is_dir = item.metadata().map_err(io)?.is_dir();
-            let own = konedrive_fs::placeholder::read_pin(&item).map_err(io)?;
-            let above = pin::pinned_ancestors(&root.path, &shown);
-            Ok(PinTarget { item, shown, is_dir, own, above, modes: Arc::clone(&modes) })
-        })
-        .collect()
+pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf], reach: Reach) -> Result<Vec<PinTarget>, SyncError> {
+    let modes = root_modes(root)?;
+    paths.iter().map(|path| pin_target(root, path, reach, &modes)).collect()
+}
+
+/// The lock on the modes of `root`'s directories, for [`pin_target`].
+pub(super) fn root_modes(root: &SyncRoot) -> Result<Arc<crate::folder::disk::Modes>, SyncError> {
+    crate::folder::disk::Modes::of_root(root).map_err(|e| SyncError::Io(format!("{}: {e}", root.path.display())))
+}
+
+/// One path of [`pin_targets`]: taken, or why not.
+pub(super) fn pin_target(root: &SyncRoot, path: &Path, reach: Reach, modes: &Arc<crate::folder::disk::Modes>) -> Result<PinTarget, SyncError> {
+    let (item, shown) = root.item(path, reach)?;
+    let io = |e: io::Error| SyncError::Io(format!("{}: {e}", shown.display()));
+    let is_dir = item.metadata().map_err(io)?.is_dir();
+    let own = reach.pin(&item).map_err(io)?;
+    let above = pin::pinned_ancestors(&root.path, &shown);
+    Ok(PinTarget { item, reach, shown, is_dir, own, above, modes: Arc::clone(modes) })
 }
 
 /// Why pins cannot come off `targets`: a folder above one of them pins it
@@ -170,13 +213,16 @@ pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinT
 /// the same call takes off. A path with a pin of its own under a pinned
 /// folder is refused too: taking its pin off would leave it pinned.
 pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
-    let coming_off: std::collections::HashSet<&Path> =
-        targets.iter().filter(|target| target.own).map(|target| target.shown.as_path()).collect();
+    kept(targets.iter().map(PinTarget::standing)).map(|(shown, folder)| SyncError::NotAllowed(pin::refusal(shown, folder)))
+}
+
+/// The rule of [`kept_by_folder`]: the first of `targets` a folder keeps pinned, and that
+/// folder.
+pub(super) fn kept<'a>(targets: impl Iterator<Item = Standing<'a>> + Clone) -> Option<(&'a Path, &'a Path)> {
+    let coming_off: std::collections::HashSet<&Path> = targets.clone().filter(|(_, own, _)| *own).map(|(shown, _, _)| shown).collect();
     targets
-        .iter()
-        .flat_map(|target| target.above.iter().map(move |folder| (target, folder)))
-        .find(|(_, folder)| !coming_off.contains(folder.as_path()))
-        .map(|(target, folder)| SyncError::NotAllowed(pin::refusal(&target.shown, folder)))
+        .flat_map(|(shown, _, above)| above.iter().map(move |folder| (shown, folder.as_path())))
+        .find(|(_, folder)| !coming_off.contains(folder))
 }
 
 /// A pinned download is an ordinary fill ([`SyncService::fill_now`]):
