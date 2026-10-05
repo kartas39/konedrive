@@ -102,7 +102,7 @@ impl Listing {
     /// A first listing placed page by page, from the start or from
     /// where a stopped one got to (`from`, the link `items` was last
     /// committed with). Each page is staged, then placed and committed into `items`
-    /// together with the link to the page after it — under the lifecycle
+    /// together with the link to the page after it — under the folder's
     /// lock, which is let go while Graph is asked for the next page, so that
     /// a Forget or a helper's reconnect waits for one page at most. An entry
     /// whose folder has not come yet waits in `items` (and so in `staging`)

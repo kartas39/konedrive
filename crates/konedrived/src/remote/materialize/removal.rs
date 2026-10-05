@@ -4,8 +4,7 @@
 //! The store records, for each placed item, the local object it was placed
 //! as. An object the daemon unlinks while that record stays is, to the next
 //! examination, the user's own delete, and is deleted in OneDrive. So the
-//! record is cleared before anything is unlinked, here and nowhere else
-//! (decision 5).
+//! record is cleared before anything is unlinked, here and nowhere else.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -825,7 +824,7 @@ fn shown(rel: &Path) -> String {
 /// hard links the user made — keeps them, but not as the item: its item id
 /// goes from the inode, through the descriptor opened before the unlink, so
 /// that what stays is the user's own file, never the item under another
-/// name (decision 1). A downloaded one goes up as new; one not
+/// name. A downloaded one goes up as new; one not
 /// downloaded waits as not downloaded, its state kept, so that it is never
 /// read as zeros.
 ///

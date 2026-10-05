@@ -102,7 +102,7 @@ The same workflow checks that every link in a doc comment resolves (what it does
 `docs/limitations/D59.md`):
 
 ```
-RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --document-private-items
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
 ```
 
 ## The limitations log

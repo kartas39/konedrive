@@ -110,7 +110,7 @@ impl From<NotCleared> for ResetError {
     }
 }
 
-/// Startup recovery,: after a crash or power loss, a file caught
+/// Startup recovery: after a crash or power loss, a file caught
 /// mid-hydration or mid-dehydration holds content that must not be trusted —
 /// punch it back to `online-only` so the next open fetches it again.
 ///

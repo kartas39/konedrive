@@ -75,7 +75,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
 }
 
 /// A `create` or `update` whose file is under none of its names — removed
-/// here, or moved where no row looks (for a `create`). The
+/// here, or moved where no row looks. The
 /// row ends now, with no retry, and the upload session it opened is
 /// cancelled. A `create` ends through [`never_uploaded`]: it leaves with the
 /// rows behind it that never got an item id, and one `not-uploaded` event.

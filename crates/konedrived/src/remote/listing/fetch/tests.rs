@@ -87,7 +87,7 @@ async fn an_entry_waiting_for_its_folder_survives_a_stop() {
     assert_eq!(s.delta_tokens().await, [None, Some("P2".to_owned()), Some("P2".to_owned())]);
 }
 
-/// Ruling 1 of: a listing stopped between pages resumes where it
+/// A listing stopped between pages resumes where it
 /// stopped — in a new `Listing`, as after a restart — and asks for no
 /// page it placed again. It still ends in one `listed` event.
 #[tokio::test]
@@ -175,7 +175,7 @@ async fn a_next_page_turned_down_fails_the_cycle_and_the_listing_resumes_there()
     assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link_to("L1")), None));
 }
 
-/// Only the first listing is placed page by page (Ruling 2 of):
+/// Only the first listing is placed page by page:
 /// a later cycle's delta, however many pages it has, still goes into
 /// `staging` and changes the folder only once all of it is in.
 #[tokio::test]

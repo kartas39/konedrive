@@ -484,8 +484,8 @@ impl Listing {
         }
         if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
             if !self.drive_recorded.swap(true, Ordering::SeqCst) {
-                // Written by the next reconcile, which holds the lifecycle
-                // lock anyway: the Graph phase never waits for it (B3).
+                // Written by the next reconcile, which holds the folder's
+                // lock anyway: the Graph phase never waits for it.
                 *crate::panic::lock(&self.pending_drive) = Some((record.clone(), id));
             }
         }

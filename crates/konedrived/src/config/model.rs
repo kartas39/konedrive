@@ -304,7 +304,7 @@ fn local_source() -> String {
 }
 
 impl RootConfig {
-    /// `upgrade_when_helper`, with a missing value read as Ruling 4 says: a root without
+    /// `upgrade_when_helper`, with a missing value read so: a root without
     /// interception switches, and an intercepted root has nothing to switch.
     pub fn upgrades_when_helper(&self) -> bool {
         self.upgrade_when_helper.unwrap_or(!self.intercepted)

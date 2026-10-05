@@ -18,7 +18,7 @@ fn request(req_id: u64) -> Outgoing {
     Outgoing { message: ToDaemon::HydrateRequest { req_id }, fd: None }
 }
 
-/// The whole point of: a peer that never reads must not be
+/// A peer that never reads must not be
 /// able to make the helper wait. Before this, the same peer blocked
 /// `Channel::send` permanently after 278 datagrams, with a worker thread
 /// and the connection's writer mutex held.

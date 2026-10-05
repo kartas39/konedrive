@@ -271,7 +271,7 @@ async fn a_registration_made_with_no_helper_is_written_down_to_switch_and_switch
     assert_eq!(config.sync_root, resolved(dirs[2].path()));
 }
 
-/// Ruling 4 of: a `config.toml` written before the flag existed
+/// A `config.toml` written before the flag existed
 /// cannot say why its folder is without interception. It is read as a
 /// folder to switch — the user's own registration is exactly that case,
 /// and must switch once they restart the daemon or the helper reconnects
@@ -311,7 +311,7 @@ async fn a_folder_without_interception_recorded_before_the_flag_existed_switches
     assert!(Config::load(&config_file).unwrap().sync_root_intercepted);
 }
 
-/// Ruling 2 of: a switch that fails leaves the folder exactly as
+/// A switch that fails leaves the folder exactly as
 /// it was — without interception, written down that way — says why in
 /// `LastError`, and is tried again the next time the helper connects.
 #[tokio::test]

@@ -635,7 +635,7 @@ fn legacy_without_interception(w: &World) {
 /// reads `error` with the helper's advice first in `LastError`. When
 /// the helper connects it switches to interception whatever it was
 /// registered as (switch; there is no "on purpose" for a
-/// OneDrive folder any more). And, Ruling 1: the switch keeps
+/// OneDrive folder any more). And the switch keeps
 /// invariant M1 for everything its sync places afterwards — the sync
 /// starts intercepted, so a folder that arrives from the drive later is
 /// marked before it is filled.
