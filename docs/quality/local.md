@@ -74,6 +74,8 @@ inside it. `LO5` after these.
   that cannot be opened, stripped or read; an entry's own error passes it over, any other fails
   the batch, and a batch that keeps failing reaches `LastError`. What a passed-over entry costs is
   in `docs/limitations/F210.md`.
+- **2026-10-05**, `01edf3d5` (#189): an entry passed over, and a file with damaged marks, are listed under
+  "Not uploaded" and asked for again (`docs/limitations/F286.md`, `F287.md`).
 
 ## LO4. The examiner thread can die unnoticed — **defect?**
 
