@@ -261,6 +261,8 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     let refused = service.dehydrate(&file).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotUploaded(_)), "{refused:?}");
     assert!(matches!(service.check_free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))), "before anything changes");
+    let part = service.menu_part(std::slice::from_ref(&file)).await;
+    assert!(part.taken[0].is_some() && part.free_up_refused && part.kept_by.is_none(), "the menu is told: {part:?}");
     assert!(matches!(service.free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))));
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
 

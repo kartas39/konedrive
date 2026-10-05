@@ -1,5 +1,6 @@
 #include "syncclient.h"
 
+#include <QDBusArgument>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
@@ -28,6 +29,64 @@ SyncClient::SyncClient(const QDBusConnection &bus, QObject *parent)
     : QObject(parent)
     , m_bus(bus)
 {
+}
+
+namespace
+{
+MenuAnswer::Offer offerFrom(const QString &value)
+{
+    if (value == QLatin1String("enabled")) {
+        return MenuAnswer::Offer::Enabled;
+    }
+    if (value == QLatin1String("disabled")) {
+        return MenuAnswer::Offer::Disabled;
+    }
+    return MenuAnswer::Offer::Hidden;
+}
+
+/// A value of the map as itself: QtDBus leaves a container inside a variant
+/// as a QDBusArgument unless it knows the type.
+template<typename T>
+T valueOf(const QVariant &value)
+{
+    return value.userType() == qMetaTypeId<QDBusArgument>() ? qdbus_cast<T>(value.value<QDBusArgument>()) : value.value<T>();
+}
+} // namespace
+
+MenuAnswer menuAnswerFrom(const QVariantMap &answer)
+{
+    MenuAnswer result;
+    result.paths = valueOf<QStringList>(answer.value(QStringLiteral("paths")));
+    if (!result.paths.isEmpty()) {
+        const QString keep = answer.value(QStringLiteral("always-keep")).toString();
+        if (keep == QLatin1String("off")) {
+            result.alwaysKeep = MenuAnswer::AlwaysKeep::Off;
+        } else if (keep == QLatin1String("on")) {
+            result.alwaysKeep = MenuAnswer::AlwaysKeep::On;
+        } else if (keep == QLatin1String("on-locked")) {
+            result.alwaysKeep = MenuAnswer::AlwaysKeep::OnLocked;
+        }
+        result.freeUp = offerFrom(answer.value(QStringLiteral("free-up")).toString());
+    }
+    result.blockedBy = answer.value(QStringLiteral("blocked-by")).toString();
+    result.openOnlinePath = answer.value(QStringLiteral("open-online-path")).toString();
+    if (!result.openOnlinePath.isEmpty()) {
+        result.openOnline = offerFrom(answer.value(QStringLiteral("open-online")).toString());
+    }
+    return result;
+}
+
+std::optional<MenuAnswer> SyncClient::menu(const QStringList &paths) const
+{
+    QDBusMessage call = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("Menu"));
+    call << paths;
+    // A right click is not a request for the daemon: it is never started for it.
+    call.setAutoStartService(false);
+    const QDBusMessage reply = m_bus.call(call, QDBus::Block, MenuTimeoutMs);
+    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().size() != 1) {
+        return std::nullopt;
+    }
+    return menuAnswerFrom(valueOf<QVariantMap>(reply.arguments().constFirst()));
 }
 
 void SyncClient::start(Operation operation, const QStringList &paths)

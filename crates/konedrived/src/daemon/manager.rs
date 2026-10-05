@@ -17,6 +17,7 @@ use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
 use crate::helper::hub::HelperHub;
+use crate::sync::menu::{self, Menu};
 use crate::sync::registry::Registry;
 use crate::conditions::running::HoldSettings;
 use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
@@ -509,6 +510,35 @@ impl AccountManager {
             }
         }
         Ok(groups)
+    }
+
+    /// `Files.Menu`: what the context menu may offer for the selection `paths`
+    /// ([`menu::decide`]). Each path is routed as `Pin` routes
+    /// it, and each account says what it would take and refuse of its own
+    /// ([`SyncService::menu_part`]); a path in no account's folder is in nobody's share,
+    /// and neither is an account's folder itself, which is offered "Open in OneDrive"
+    /// alone. Nothing is changed and no file is opened.
+    pub async fn menu(&self, paths: &[String]) -> Menu {
+        let mut groups: Vec<(Arc<Account>, Vec<usize>)> = Vec::new();
+        let mut account_folder = false;
+        for (index, path) in paths.iter().enumerate() {
+            if self.folder_itself(Path::new(path)).await.is_some() {
+                account_folder = paths.len() == 1;
+                continue;
+            }
+            let Some(account) = self.route(Path::new(path)).await else { continue };
+            match groups.iter_mut().find(|(a, _)| Arc::ptr_eq(a, &account)) {
+                Some((_, group)) => group.push(index),
+                None => groups.push((account, vec![index])),
+            }
+        }
+        let mut parts = Vec::new();
+        for (account, indices) in groups {
+            let own: Vec<PathBuf> = indices.iter().map(|index| PathBuf::from(&paths[*index])).collect();
+            let part = account.sync.menu_part(&own).await;
+            parts.push((indices, part));
+        }
+        menu::decide(paths, &parts, account_folder)
     }
 
     /// Brings up every folder that needs no helper (design §2.2, step 5); an intercepted one

@@ -344,3 +344,24 @@ async fn a_file_recovery_finds_in_use_does_not_make_the_root_an_error() {
     assert_eq!(service.last_error(), "");
     assert_eq!(service.item_state(&path).await, "hydrating", "and it is left as found");
 }
+
+/// The menu's share of a selection restates `FreeUp`'s own precondition: in a folder with
+/// interception whose helper is gone, it would be refused, and the menu is told so. `Pin`
+/// still takes the file, and nothing is opened to find out.
+#[tokio::test]
+async fn the_menus_share_says_a_free_up_would_be_refused_without_the_helper() {
+    let (service, root_dir, _source_dir, _sockets, _helper) = populated_service(&vec![5u8; 4096]).await;
+    let file = root_dir.path().join("f.bin");
+    let paths = std::slice::from_ref(&file);
+
+    let part = service.menu_part(paths).await;
+    assert!(part.taken[0].is_some_and(|taken| !taken.is_dir && !taken.pinned && !taken.hydrated), "{part:?}");
+    assert!(!part.free_up_refused && part.kept_by.is_none(), "{part:?}");
+    service.check_free_up(paths).await.unwrap();
+
+    service.hub().set_link(None);
+    let part = service.menu_part(paths).await;
+    assert!(part.taken[0].is_some() && part.free_up_refused && part.kept_by.is_none(), "{part:?}");
+    assert!(matches!(service.check_free_up(paths).await, Err(SyncError::NoHelper)));
+    assert_eq!(service.item_state(&file).await, "online-only", "asking downloaded nothing");
+}

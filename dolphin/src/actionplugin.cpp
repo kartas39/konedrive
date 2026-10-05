@@ -22,6 +22,8 @@
 #include <QUrl>
 #include <QWidget>
 
+#include <optional>
+
 class KonedriveActionPlugin : public KAbstractFileItemActionPlugin
 {
     Q_OBJECT
@@ -64,21 +66,35 @@ public:
                 paths.append(path);
             }
         }
-        const konedrive::MenuState state = konedrive::menuState(paths);
+        // By the marks alone: a right click outside every sync folder costs
+        // no call. Everything else is the daemon's answer -- and with none
+        // (it is not running, or did not answer in time) there are no
+        // entries: nothing is decided here from the marks instead.
+        if (!konedrive::anyInSyncFolder(paths)) {
+            return {};
+        }
+        const std::optional<konedrive::MenuAnswer> asked = m_client->menu(paths);
+        if (!asked) {
+            return {};
+        }
+        const konedrive::MenuAnswer &answer = *asked;
+        using Keep = konedrive::MenuAnswer::AlwaysKeep;
+        using Offer = konedrive::MenuAnswer::Offer;
 
         QList<QAction *> entries;
-        if (state.showAlwaysKeep) {
+        if (answer.alwaysKeep != Keep::Hidden) {
             auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::AlwaysKeepIcon)),
                                        i18nc("@action:inmenu", "Always Keep on This Device"),
                                        parentWidget);
             action->setObjectName(QStringLiteral("konedrive_always_keep"));
             action->setCheckable(true);
-            action->setChecked(state.alwaysKeepChecked);
-            action->setEnabled(state.alwaysKeepEnabled);
-            if (!state.alwaysKeepEnabled) {
-                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", state.blockingFolder));
+            action->setChecked(answer.alwaysKeep != Keep::Off);
+            // Checked and locked: unchecking it (Unpin()) would be refused.
+            if (answer.alwaysKeep == Keep::OnLocked) {
+                action->setEnabled(false);
+                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", answer.blockedBy));
             }
-            const QStringList paths = state.inRoot;
+            const QStringList paths = answer.paths;
             connect(action, &QAction::triggered, this, [this, paths](bool checked) {
                 // Windows-like (D-A): unchecking it only unpins -- it never
                 // frees space on its own, "Free up space" does that.
@@ -86,27 +102,28 @@ public:
             });
             entries.append(action);
         }
-        if (state.showFreeUp) {
+        if (answer.freeUp != Offer::Hidden) {
             auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::FreeUpSpaceIcon)), i18nc("@action:inmenu", "Free Up Space"), parentWidget);
             action->setObjectName(QStringLiteral("konedrive_free_up_space"));
-            action->setEnabled(state.freeUpEnabled);
-            if (!state.freeUpEnabled) {
-                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", state.blockingFolder));
+            action->setEnabled(answer.freeUp == Offer::Enabled);
+            // The one reason there are words for: a folder above keeps it.
+            if (answer.freeUp == Offer::Disabled && !answer.blockedBy.isEmpty()) {
+                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", answer.blockedBy));
             }
-            const QStringList paths = state.inRoot;
+            const QStringList paths = answer.paths;
             connect(action, &QAction::triggered, this, [this, paths]() {
                 m_client->start(konedrive::Operation::FreeUpSpace, paths);
             });
             entries.append(action);
         }
-        if (state.showOpenOnline) {
+        if (answer.openOnline != Offer::Hidden) {
             auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::OpenOnlineIcon)), i18nc("@action:inmenu", "Open in OneDrive"), parentWidget);
             action->setObjectName(QStringLiteral("konedrive_open_online"));
-            action->setEnabled(state.openOnlineEnabled);
-            if (!state.openOnlineEnabled) {
+            action->setEnabled(answer.openOnline == Offer::Enabled);
+            if (answer.openOnline == Offer::Disabled) {
                 action->setToolTip(i18nc("@info:tooltip", "Not in OneDrive yet."));
             }
-            const QString path = state.openOnlinePath;
+            const QString path = answer.openOnlinePath;
             connect(action, &QAction::triggered, this, [this, path]() {
                 m_client->start(konedrive::Operation::OpenOnline, {path});
             });

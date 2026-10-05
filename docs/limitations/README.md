@@ -427,8 +427,9 @@ application must never read zeros where real content should be.
 ## 7. Dolphin integration
 
 The two plugins in `dolphin/`: emblems for each file's state and pin, and "Always keep on this
-device" / "Free up space" in the context menu. They read a file's state and pin from its extended
-attributes and never open it.
+device" / "Free up space" / "Open in OneDrive" in the context menu. The emblems are read from a
+file's extended attributes; what the menu offers is the daemon's answer (`Files.Menu`). Neither
+plugin ever opens a file.
 
 - [K1](K1.md) — Dolphin opens some files itself, and that downloads them.
 - [K2](K2.md) — No emblems in search results or Recent Files.
@@ -461,6 +462,8 @@ attributes and never open it.
 - [K29](K29.md) — An item that is in OneDrive but not in the folder cannot be opened in OneDrive from here.
 - [K30](K30.md) — Whether the menu section's heading "OneDrive" is drawn depends on the widget style.
 - [K31](K31.md) — "Open in OneDrive" opens only an `https` address.
+- [K32](K32.md) — The context menu waits for the daemon, and has no KOneDrive entries when it does not answer.
+- [K33](K33.md) — What the menu's answer does not say.
 
 ---
 

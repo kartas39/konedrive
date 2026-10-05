@@ -10,6 +10,7 @@ use crate::sync::SyncService;
 use crate::status::activity::Kind;
 use crate::helper::Clearance;
 use crate::folder::locks::InodeKey;
+use crate::folder::root::Reach;
 use crate::sync::pins::{PinTarget, kept_by_folder};
 use crate::sync::SyncError;
 use crate::sync::hydrate::open_shown;
@@ -71,9 +72,7 @@ impl SyncService {
     /// [`FreedUp::pinned`]; the event says how many.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
         let reg = self.require_record()?;
-        if reg.intercepted() {
-            self.require_link()?;
-        }
+        self.require_helper_to_free(&reg)?;
         let root = reg.root.path.clone();
         let (candidates, pinned) = tokio::task::spawn_blocking(move || pin::downloaded_under(&root, false))
             .await
@@ -125,20 +124,27 @@ impl SyncService {
         (freed, None)
     }
 
+    /// What every free-up needs before anything else: a folder with interception has its
+    /// helper, which clears a file's ignore mark first (`NoHelper`).
+    pub(super) fn require_helper_to_free(&self, reg: &super::folder::Record) -> Result<(), SyncError> {
+        if reg.intercepted() {
+            self.require_link()?;
+        }
+        Ok(())
+    }
+
     /// What `FreeUp` checks before it frees anything, on its own:
     /// [`check_unpinnable`](Self::check_unpinnable)'s rules, and a folder
     /// with interception has its helper (`NoHelper`).
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
         let reg = self.require_record()?;
-        if reg.intercepted() {
-            self.require_link()?;
-        }
+        self.require_helper_to_free(&reg)?;
         self.check_unpinnable(paths).await?;
         // A file named itself with a change waiting to go up refuses the whole
         // call, before any account frees anything (the outbox on the bus).
         let targets = self.pin_targets(&reg.root, paths).await?;
         for target in targets.iter().filter(|t| !t.is_dir) {
-            self.refuse_unuploaded(&target.item, &target.shown.display().to_string()).await?;
+            self.refuse_unuploaded(&target.item, target.reach, &target.shown.display().to_string()).await?;
         }
         Ok(())
     }
@@ -164,9 +170,7 @@ impl SyncService {
     /// [`FreedUp::pinned`]. One `freed` event per path that freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
         let reg = self.require_record()?;
-        if reg.intercepted() {
-            self.require_link()?;
-        }
+        self.require_helper_to_free(&reg)?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         if let Some(refusal) = kept_by_folder(&targets) {
             return Err(refusal);
@@ -174,7 +178,7 @@ impl SyncService {
         // A file named itself, whose change waits to be uploaded, is refused as
         // a whole (`docs/design/writes.md` §11); inside a folder it is left and counted.
         for target in targets.iter().filter(|t| !t.is_dir) {
-            self.refuse_unuploaded(&target.item, &target.shown.display().to_string()).await?;
+            self.refuse_unuploaded(&target.item, target.reach, &target.shown.display().to_string()).await?;
         }
         let walks: Vec<(PathBuf, bool)> = targets.iter().map(|t| (t.shown.clone(), t.is_dir)).collect();
         // The other descriptors close here: one of our own left open on a
@@ -255,7 +259,7 @@ impl SyncService {
         };
         // A change waiting to be uploaded is only here (`docs/design/writes.md` §11):
         // looked at under the inode lock, and refused when it cannot be told.
-        self.refuse_unuploaded(&file, &shown).await?;
+        self.refuse_unuploaded(&file, Reach::Open, &shown).await?;
         let folder = self.folder.read().await;
         let reg = match folder.acted_on() {
             Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now.clone(),
@@ -289,8 +293,9 @@ impl SyncService {
     /// (`NotUploaded`). Fails closed (the outbox on the bus): a OneDrive folder's
     /// outbox that cannot be read — its sync not started yet, a store error —
     /// refuses. Only a downloaded file is asked about: one that is not has
-    /// nothing to lose, and its own refusal says so (`NotHydrated`, M5).
-    async fn refuse_unuploaded(&self, file: &File, shown: &str) -> Result<(), SyncError> {
+    /// nothing to lose, and its own refusal says so (`NotHydrated`, M5). `reach` is
+    /// how `file` was reached: its marks are read that way.
+    pub(super) async fn refuse_unuploaded(&self, file: &File, reach: Reach, shown: &str) -> Result<(), SyncError> {
         let Some(reg) = self.record() else { return Ok(()) };
         if reg.source != crate::sync::RootSource::OneDrive {
             return Ok(());
@@ -299,13 +304,13 @@ impl SyncService {
             SyncError::Io(format!("{shown} is not freed up: cannot tell whether a change of it waits to be uploaded ({why}); try again in a moment"))
         };
         // A state that cannot be read cannot tell either.
-        match placeholder::read_state(file) {
+        match reach.state(file) {
             Ok(Some(placeholder::State::Hydrated)) => {}
             Ok(_) => return Ok(()),
             Err(e) => return Err(cannot_tell(e.to_string())),
         }
         let Some(store) = self.tree_store() else { return Err(cannot_tell("the folder's sync has not started".into())) };
-        let id = placeholder::read_item_id(file).map_err(|e| cannot_tell(e.to_string()))?;
+        let id = reach.item_id(file).map_err(|e| cannot_tell(e.to_string()))?;
         let meta = file.metadata().map_err(|e| cannot_tell(e.to_string()))?;
         let inode = Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() };
         // Through the shared connection, off the async runtime: a change an

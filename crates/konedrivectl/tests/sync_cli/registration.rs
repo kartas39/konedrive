@@ -36,6 +36,15 @@ async fn binary_drives_registration_populate_hydrate_and_dehydrate() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(out_text(&out).trim(), "online-only", "{}", out_text(&out));
 
+    // What the file manager's menu would offer for it: the daemon's answer, a line per key.
+    let out = run(addr, &["sync", "menu", file.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    let shown = file.to_str().unwrap();
+    assert_eq!(
+        out_text(&out),
+        format!("paths: {shown:?}\nalways-keep: off\nfree-up: hidden\nblocked-by:\nopen-online: enabled\nopen-online-path: {shown}\n")
+    );
+
     let out = run(addr, &["sync", "hydrate", file.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(out_text(&out).contains("Downloaded."), "{}", out_text(&out));
