@@ -405,7 +405,7 @@ pub(crate) fn burst(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     Ok(())
 }
 
-/// Review item 8, second half, and the worst outcome this component has.
+/// The worst outcome this component has.
 /// `fanotify(7)`: *"Upon close(2), outstanding permission events will be set
 /// to allowed"* — quoted in the design and never measured. So it is measured
 /// here: the helper is killed with openers suspended, and what those openers

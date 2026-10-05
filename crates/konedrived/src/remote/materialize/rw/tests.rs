@@ -371,7 +371,7 @@ async fn a_removal_that_fails_fails_the_cycle_and_commits_nothing() {
     assert!(fx.base("D").is_some() && fx.base("G").is_some(), "the base keeps what the disk still has");
 }
 
-/// Review fixes, round 2, point 6: a removal that fails after it stopped a
+/// A removal that fails after it stopped a
 /// download leaves the file that survives a placeholder again, not partly
 /// filled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

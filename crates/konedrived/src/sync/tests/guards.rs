@@ -35,7 +35,7 @@ async fn unregister_root_forgets_the_content_source() {
     assert_eq!(service.item_state(&file).await, "online-only");
 }
 
-/// Design §8.3, review I2: an empty folder that carries another account's
+/// Design §8.3: an empty folder that carries another account's
 /// drive holds nothing to adopt — the usual Remove, then Add, on the same
 /// folder — so it is taken, and the stale drive comes off; a folder with
 /// anything in it is still refused.
