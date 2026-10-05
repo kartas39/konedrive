@@ -175,6 +175,60 @@ fn a_placeholder_moved_out_is_downloaded_where_it_went_then_deleted() {
     assert!(w.base("P").is_none());
 }
 
+/// The link as it is once the helper has handed an object over and then went: every call
+/// goes through, and there is no clearance any more.
+struct LinkLost(Linked);
+
+#[async_trait]
+impl crate::helper::linked::Helper for LinkLost {
+    async fn open_by_handle(&self, dir: &File, handle: &FileHandle) -> Result<std::os::fd::OwnedFd, crate::helper::HelperError> {
+        self.0.open_by_handle(dir, handle).await
+    }
+
+    async fn mark_file(&self, file: &File) -> Result<(), crate::helper::HelperError> {
+        self.0.mark_file(file).await
+    }
+
+    async fn mark_dir(&self, dir: &File) -> Result<(), crate::helper::HelperError> {
+        self.0.mark_dir(dir).await
+    }
+
+    async fn unmark_dir(&self, dir: &File) -> Result<(), crate::helper::HelperError> {
+        self.0.unmark_dir(dir).await
+    }
+
+    fn clearance(&self) -> Option<Clearance> {
+        None
+    }
+}
+
+/// A file whose fill stopped part-way (`hydrating`) may carry an ignore mark, so its fill
+/// where it went needs a way to clear one. With no link to clear it by, the row waits for
+/// the helper: nothing is downloaded, stripped or deleted. With the link it goes on.
+#[test]
+fn a_half_filled_file_moved_out_waits_for_a_link_to_clear_its_mark() {
+    let w = leaving(&[("P", None, "p.txt", b"the content")]);
+    let file = File::options().write(true).open(w.path("p.txt")).unwrap();
+    placeholder::write_state(&file, State::Hydrating).unwrap();
+    drop(file);
+    let to = w.beside("outside/p.txt");
+    w.move_out("p.txt", &to);
+    w.examine(&[("", "p.txt")]);
+    let with = |helper: Arc<dyn crate::helper::linked::Helper>| w.h.moved_out.lock().unwrap().as_mut().unwrap().helper = helper;
+
+    with(Arc::new(LinkLost(Linked(w.link.clone()))));
+    w.run();
+    assert_eq!(reason_of(&w, "p.txt").as_deref(), Some(Reason::NoHelper.key()));
+    assert_eq!((w.deletes(), w.downloads(), state(&to)), (0, 0, Some(State::Hydrating)));
+    assert!(!konedrive_attrs(&to).is_empty() && w.base("P").is_some());
+
+    with(Arc::new(Linked(w.link.clone())));
+    w.due_now();
+    w.run();
+    assert_eq!(std::fs::read(&to).unwrap(), b"the content", "downloaded where it went");
+    assert!(konedrive_attrs(&to).is_empty() && w.in_bin("P") && w.rows().is_empty());
+}
+
 /// §5, WR5: the item is deleted only once the file outside holds OneDrive's content, checked
 /// against its hash. A download that brings other bytes deletes nothing and leaves the file not
 /// downloaded; the row stays, and the next run — a restart — downloads it and only then deletes.

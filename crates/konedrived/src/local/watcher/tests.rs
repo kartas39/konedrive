@@ -428,6 +428,9 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     use crate::status::snapshot::ScanState;
     let fx = listed_not_committed();
     std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
+    std::fs::create_dir(fx.path("docs/deep")).unwrap();
+    std::fs::write(fx.path("docs/deep/n.txt"), b"n").unwrap();
+    std::fs::write(fx.path("b.txt"), b"b").unwrap();
     let state = SyncStateHandle::new(SyncSnapshot::default());
     state.update(|s| {
         s.cycle.items_placed = 2;
@@ -442,7 +445,7 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::Done { .. }));
     let scan = state.get().local.scan;
     assert_eq!((scan.state, scan.reason.as_str(), scan.expected), (ScanState::Idle, "read-write", 2));
-    assert_eq!((scan.directories, scan.files), (1, 1), "docs, and docs/new.txt");
+    assert_eq!((scan.directories, scan.files), (2, 3), "docs and docs/deep; b.txt, new.txt and n.txt");
     assert!(scan.started > 0 && scan.finished >= scan.started, "{scan:?}");
 
     let mut one = Batch::new();
