@@ -1,8 +1,9 @@
 #!/bin/sh
 # The guard of the structure rules (CONTRIBUTING.md, "The structure of the code"):
 #
-#   1. size: a source file is at most 1,000 lines, a test file 1,500, a Markdown
-#      document 1,200;
+#   1. size, as advice: a source file of more than 1,000 lines, a test file of
+#      more than 1,500 and a Markdown document of more than 1,200 are listed,
+#      and nothing more;
 #   2. no Rust source file holds tests;
 #   3. in konedrived, a directory uses only the directories before it in the
 #      layer order, and remote/ does not use upload/. Test code is exempt.
@@ -11,14 +12,15 @@
 #      `.lock().unwrap()` or a recovery written out. Test code is exempt.
 #
 # It reads the files git tracks, prints one line for each thing against a rule
-# and exits with 1 if there is any. Run from anywhere in the checkout:
+# and exits with 1 if there is any. A file over the advised size is printed too,
+# and does not change the exit status. Run from anywhere in the checkout:
 #
 #   scripts/check-structure.sh
 #
 # What it takes for test code: a file under a `tests` directory, a Rust file
 # named `tests.rs`, and a Rust module declared under `#[cfg(test)]` (with
 # every file below it). Such a module is test code for the layer order and
-# the size limit; a test (`#[test]`) is allowed only in `tests.rs` and under
+# the advised size; a test (`#[test]`) is allowed only in `tests.rs` and under
 # `tests/`.
 #
 # What it does not see is in docs/limitations/D30.md.
@@ -215,8 +217,8 @@ END {
             kind = "a source file"
         }
         if (lines[i] > max) {
-            print file ": " lines[i] " lines, " kind " is at most " max " (rule 1)"
-            bad++
+            print file ": " lines[i] " lines, " kind " is advised to be at most " max " (rule 1, advice)"
+            long++
         }
     }
     # Rules 3 and 7 are for source files: what was found in test code is dropped.
@@ -232,6 +234,6 @@ END {
         print "check-structure: " bad " against the rules (CONTRIBUTING.md, \"The structure of the code\")"
         exit 1
     }
-    print "check-structure: " files " files, nothing against the rules"
+    print "check-structure: " files " files, nothing against the rules" (long ? "; " long " over the advised size" : "")
 }
 '

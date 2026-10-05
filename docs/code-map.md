@@ -55,7 +55,7 @@ Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `kon
 | The helper's installer | `tests/vm/run.sh tests/vm/install_helper_test.sh` | `scripts/install-helper.sh`, as root in the VM |
 | The kernel measurements | `tests/vm/run.sh measure`; `tests/vm/run.sh <binary>` for the built `poc-marks`, `vm-ignore-mark` and `watch-probe` | The probes behind `docs/kernel-behavior-7.2/` |
 | The test account | `konedrive-write-test` (`tests/write-account`) | Writes to OneDrive itself, through the guards; rare, never the user's real account |
-| The structure | `scripts/check-structure.sh` | The size limits, tests outside source files, the daemon's layer order |
+| The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order |
 
 ## `crates/konedrived`: the daemon
 

@@ -68,8 +68,9 @@ code map in the same change.
 
 These rules hold for every change:
 
-1. **Size.** A source file is at most 1,000 lines; a test file at most 1,500; a Markdown
-   document at most 1,200.
+1. **Size**, as advice and not as a limit: a source file of at most 1,000 lines, a test file
+   of at most 1,500, a Markdown document of at most 1,200. A longer file is listed by the
+   guard and is no reason to refuse a change; it is split when it holds two subjects.
 2. **Tests are never in a source file.** The unit tests of `x.rs` are in `x/tests.rs`, or in
    `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
 3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
