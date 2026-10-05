@@ -27,7 +27,8 @@ use crate::hydration::source::LocalDir;
 use crate::local::scan::ScanReport;
 use crate::local::liveness::NoLiveness;
 use crate::local::IgnoreList;
-use crate::remote::testing::{FakeHelper, Options, Says, Step, World};
+use crate::helper::testing::FakeHelper;
+use crate::remote::testing::{Options, Says, Step, World};
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::{Change, Kind, Placement, Row};
 
@@ -166,8 +167,8 @@ impl Fx {
     /// `config` with a link to a helper of its own, which marks whatever it
     /// is asked to until the test tells it otherwise.
     fn with_helper(&self, mut config: WatchConfig) -> (WatchConfig, FakeHelper) {
-        let helper = self.runtime.block_on(FakeHelper::start());
-        config.link = crate::helper::LinkCell::holding(Some(helper.link.clone()));
+        let helper = FakeHelper::standalone();
+        config.link = crate::helper::LinkCell::holding(Some(self.runtime.block_on(helper.connect())));
         (config, helper)
     }
 

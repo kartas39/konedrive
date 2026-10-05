@@ -1,134 +1,22 @@
 //! Moves out of the folder (`docs/design/writes.md` §8, §10, §12), on the host: each case of
 //! the move out once, through the worker, against the fake OneDrive — a folder placed by the
 //! real materializer, rows made by the real examination, the content downloaded from the fake
-//! OneDrive and verified by the real fill — and a fake helper that finds an object by its
-//! handle wherever it stands beside the folder, as the real one answers: `ESTALE` for what is
-//! gone, `EPERM` for an object without the item id. What needs the real helper (the marks
+//! OneDrive and verified by the real fill — and the daemon's fake helper behind a real link
+//! (`helper::testing::FakeHelper`), which finds an object by its handle wherever it stands
+//! beside the folder, as the real one answers: `ESTALE` for what is gone, `EPERM` for an
+//! object without the item id. What needs the real helper (the marks
 //! themselves) is in the VM suite (`tests/vm/scenarios/move_out.rs`).
 
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 
 use super::*;
-use crate::helper::linked::Helper;
-use crate::helper::{Clearance, HelperError};
+use crate::helper::linked::Linked;
+use crate::helper::Clearance;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::source::FillError;
 use crate::upload::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
-
-/// A helper that answers `OpenByHandle` by looking for the object beneath one directory:
-/// the folder, and everything that left it, are there.
-pub(super) struct FakeHelper {
-    beneath: PathBuf,
-    /// Every `OpenByHandle` is answered with this refusal, while set.
-    refuse: Mutex<Option<i32>>,
-    /// `NotRunning`, while set.
-    down: Mutex<bool>,
-    /// What was asked: (call, where the object was).
-    calls: Mutex<Vec<(&'static str, PathBuf)>>,
-    /// How many times an object was asked for by its handle, whatever the answer.
-    asked: std::sync::atomic::AtomicUsize,
-}
-
-fn where_is(file: &File) -> PathBuf {
-    std::fs::read_link(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(file))).unwrap_or_default()
-}
-
-fn handle_of(path: &Path) -> Option<FileHandle> {
-    FileHandle::at(&File::open(path.parent()?).ok()?, path.file_name()?).ok()
-}
-
-impl FakeHelper {
-    pub(super) fn beneath(beneath: PathBuf) -> Self {
-        Self { beneath, refuse: Mutex::new(None), down: Mutex::new(false), calls: Mutex::new(Vec::new()), asked: Default::default() }
-    }
-
-    /// Where the object with `handle` stands now, if anywhere.
-    fn find(&self, handle: &FileHandle) -> Option<PathBuf> {
-        let mut dirs = vec![self.beneath.clone()];
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if handle_of(&path).as_ref() == Some(handle) {
-                    return Some(path);
-                }
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    dirs.push(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn log(&self, call: &'static str, file: &File) {
-        self.calls.lock().unwrap().push((call, where_is(file)));
-    }
-
-    fn called(&self, call: &str) -> Vec<PathBuf> {
-        self.calls.lock().unwrap().iter().filter(|(c, _)| *c == call).map(|(_, p)| p.clone()).collect()
-    }
-
-    fn up(&self) -> Result<(), HelperError> {
-        if *self.down.lock().unwrap() {
-            return Err(HelperError::NotRunning);
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Helper for FakeHelper {
-    async fn open_by_handle(&self, _dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        self.up()?;
-        if let Some(errno) = *self.refuse.lock().unwrap() {
-            return Err(HelperError::Refused(errno));
-        }
-        let stale = || HelperError::Refused(libc::ESTALE);
-        let path = self.find(handle).ok_or_else(stale)?;
-        let meta = std::fs::symlink_metadata(&path).map_err(|_| stale())?;
-        let file = if meta.is_dir() {
-            File::open(&path)
-        } else {
-            std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(&path)
-        }
-        .map_err(|_| stale())?;
-        if FileHandle::of(&file).ok().as_ref() != Some(handle) {
-            return Err(stale());
-        }
-        if xattr::get(&path, XATTR_ITEM_ID).ok().flatten().is_none() {
-            return Err(HelperError::Refused(libc::EPERM));
-        }
-        self.log("open", &file);
-        Ok(file.into())
-    }
-
-    async fn mark_file(&self, file: &File) -> Result<(), HelperError> {
-        self.up()?;
-        self.log("mark_file", file);
-        Ok(())
-    }
-
-    async fn mark_dir(&self, dir: &File) -> Result<(), HelperError> {
-        self.up()?;
-        self.log("mark_dir", dir);
-        Ok(())
-    }
-
-    async fn unmark_dir(&self, dir: &File) -> Result<(), HelperError> {
-        self.up()?;
-        self.log("unmark_dir", dir);
-        Ok(())
-    }
-
-    fn clearance(&self) -> Option<Clearance> {
-        // No helper runs on the host: the way is clear.
-        Some(Clearance::NoLink(self.beneath.join("no-helper.sock")))
-    }
-}
 
 /// A [`World`] of `items` — (id, parent or the root, name, with `/` for a folder, content) —
 /// whose worker has what move-outs need: the fake helper, and fills from the fake OneDrive,
@@ -156,7 +44,7 @@ impl World {
         let roots = self.h.moved_out.lock().unwrap().as_ref().map(|mo| Arc::clone(&mo.roots));
         let root = self.root.path.clone();
         *self.h.moved_out.lock().unwrap() = Some(MoveOuts {
-            helper: self.helper.clone(),
+            helper: Arc::new(Linked(self.link.clone())),
             filler,
             route: None,
             home_trash: Some(self.trash()),
@@ -332,7 +220,7 @@ fn an_object_that_cannot_be_reached_is_never_taken_for_gone() {
         (libc::EINVAL, Reason::BadHandle.key().to_owned(), OutboxState::Blocked),
     ];
     for (errno, reason, state) in answers {
-        *w.helper.refuse.lock().unwrap() = Some(errno);
+        w.helper.refuse_opens(Some(errno));
         w.due_now();
         w.store.call_blocking(move |s| s.outbox_unblock(&[Reason::BadHandle])).unwrap();
         w.run();
@@ -342,14 +230,14 @@ fn an_object_that_cannot_be_reached_is_never_taken_for_gone() {
     w.store.call_blocking(move |s| s.outbox_unblock(&[Reason::BadHandle])).unwrap();
 
     // A helper that does not answer decides nothing either.
-    *w.helper.refuse.lock().unwrap() = None;
-    *w.helper.down.lock().unwrap() = true;
+    w.helper.refuse_opens(None);
+    w.helper_down();
     w.due_now();
     w.run();
     assert_eq!(reason_of(&w, "p.txt").as_deref(), Some(Reason::NoHelper.key()));
 
     // Its item id taken off by someone else: the helper's own `EPERM`.
-    *w.helper.down.lock().unwrap() = false;
+    w.helper_up();
     xattr::remove(&to, XATTR_ITEM_ID).unwrap();
     w.due_now();
     w.run();
@@ -369,7 +257,7 @@ fn gone_is_believed_twice_and_with_nothing_where_the_object_was() {
     w.move_out("p.txt", &p);
     w.move_out("d", &d);
     w.examine(&[("", "p.txt"), ("", "d")]);
-    *w.helper.refuse.lock().unwrap() = Some(libc::ESTALE);
+    w.helper.refuse_opens(Some(libc::ESTALE));
     w.run();
     assert!(w.reasons().iter().all(|(_, r)| r.as_deref() == Some(Reason::GoneOnce.key())), "one ESTALE is not enough: {:?}", w.reasons());
     w.due_now();
@@ -377,7 +265,7 @@ fn gone_is_believed_twice_and_with_nothing_where_the_object_was() {
     assert_eq!(w.deletes(), 0);
     assert!(w.reasons().iter().all(|(_, r)| r.as_deref() == Some(Reason::GoneUnproved.key())), "they still stand there: {:?}", w.reasons());
 
-    *w.helper.refuse.lock().unwrap() = None;
+    w.helper.refuse_opens(None);
     std::fs::remove_file(&p).unwrap();
     std::fs::remove_dir_all(&d).unwrap();
     w.due_now();
@@ -425,10 +313,10 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     // of the same worker (paused here, so that only the re-marking asks).
     let engine = w.h.engine();
     pause(&engine);
-    let before = w.helper.asked.load(Ordering::SeqCst);
+    let before = w.helper.opens_asked();
     w.h.drain(&engine);
     w.h.drain(&engine);
-    assert_eq!(w.helper.asked.load(Ordering::SeqCst) - before, 2, "asked again at the next look");
+    assert_eq!(w.helper.opens_asked() - before, 2, "asked again at the next look");
     resume(&engine);
 
     // The examination takes the handles again: Q, missing meanwhile, is placed again, not deleted.

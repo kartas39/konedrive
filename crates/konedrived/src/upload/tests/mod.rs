@@ -22,6 +22,8 @@ use super::*;
 use crate::fake_onedrive::{self as fake, qx};
 use harness::Harness;
 use crate::folder::disk::Disk;
+use crate::helper::testing::FakeHelper;
+use crate::helper::LinkCell;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::remote::materialize::{Materializer, Scope};
 use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
@@ -61,7 +63,9 @@ fn file(id: &str, parent: &str, name: &str, content: &[u8]) -> Change {
 /// helper finds it (`move_out`).
 struct World {
     dir: tempfile::TempDir,
-    helper: Arc<move_out::FakeHelper>,
+    helper: FakeHelper,
+    /// The worker's link to [`helper`](Self::helper); empty while the helper is down.
+    link: LinkCell,
     root: SyncRoot,
     store: Store,
     liveness: FakeLiveness,
@@ -105,12 +109,24 @@ impl World {
         store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         let locks = InodeLocks::new();
         let h = Harness::new(&root, &store, &locks);
-        let helper = Arc::new(move_out::FakeHelper::beneath(dir.path().canonicalize().unwrap()));
-        World { dir, helper, root, store, liveness: FakeLiveness::new(), locks, h }
+        let helper = FakeHelper::standalone();
+        helper.finding_beneath(dir.path().canonicalize().unwrap());
+        let link = LinkCell::holding(Some(h.block_on(helper.connect())));
+        World { dir, helper, link, root, store, liveness: FakeLiveness::new(), locks, h }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
         self.root.path.join(rel)
+    }
+
+    /// The helper is not running: the worker has no link to it.
+    fn helper_down(&self) {
+        self.link.set(None);
+    }
+
+    /// The helper is back, on a new link.
+    fn helper_up(&self) {
+        self.link.set(Some(self.h.block_on(self.helper.connect())));
     }
 
     fn examine_batch(&self, batch: &Batch) -> Examined {

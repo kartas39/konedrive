@@ -203,7 +203,7 @@ async fn every_folder_placed_page_by_page_is_marked_before_anything_is_put_in_it
     let listing = Listing::new(ListingContext { ..s.context() });
     s.page(None, json!([root_item(), folder("A", "R", "a"), file("AF", "A", "a.txt", "c1"), folder("C", "B", "c"), file("CF", "C", "c.txt", "c1")]), "P2").await;
     let seen = Arc::new(std::sync::Mutex::new(None));
-    let (look, marked) = (Arc::clone(&seen), Arc::clone(&s.helper.seen));
+    let (look, marked) = (Arc::clone(&seen), s.helper.marks_log());
     let answer = ResponseTemplate::new(200).set_body_json(json!({"value": [folder("B", "R", "b")], "@odata.deltaLink": s.link_to("L1")}));
     s.answer(Some("P2"), move |_: &Request| {
         *look.lock().unwrap() = Some(marked.lock().unwrap().iter().map(|m| (m.id.clone(), m.entries)).collect::<Vec<_>>());
