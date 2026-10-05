@@ -1,6 +1,6 @@
-//! The C++ the window is built with, written from the catalogue: every
-//! sentence a literal inside `i18n` or `i18np`, so `xgettext` finds it, with
-//! `%1`, `%2` for its places.
+//! The C++ the window and the Dolphin plugin are built with, written from the
+//! catalogue: every sentence a literal inside `i18n`, `i18nc` or `i18np`, so
+//! `xgettext` finds it, with `%1`, `%2` for its places.
 //!
 //! The files are kept in git ([`files`] says where), and the C++ build does
 //! not run cargo. The crate's `generated` test writes them again and fails
@@ -12,6 +12,8 @@ use konedrive_reason::{known_group, LocalSkip, Reason, TOO_BIG_PREFIX};
 use crate::reasons::{takes_sizes, ReasonText, REASONS};
 use crate::waits::{WaitSentence, STILL_HERE, WAITS};
 use crate::{pieces, Client};
+
+mod plugin;
 
 /// A generated file.
 pub struct Generated {
@@ -25,15 +27,21 @@ pub fn files() -> Vec<Generated> {
     vec![
         Generated { path: "app/generated/reasontexts.h", content: window_header() },
         Generated { path: "app/generated/reasontexts.cpp", content: window_source() },
+        Generated { path: "dolphin/src/generated/refusaltexts.h", content: plugin::header() },
+        Generated { path: "dolphin/src/generated/refusaltexts.cpp", content: plugin::source() },
     ]
 }
 
-/// The first lines of a generated file.
-fn banner() -> String {
-    "// Generated from the catalogue in crates/konedrive-text (src/reasons.rs, src/waits.rs) by src/cpp.rs.\n\
-     // Do not edit: change the catalogue, then run `KONEDRIVE_UPDATE_GENERATED=1 cargo test -p konedrive-text`.\n"
-        .to_owned()
+/// The first lines of a generated file; `sources` is where its sentences are written.
+fn banner(sources: &str) -> String {
+    format!(
+        "// Generated from the catalogue in crates/konedrive-text ({sources}) by src/cpp.rs.\n\
+         // Do not edit: change the catalogue, then run `KONEDRIVE_UPDATE_GENERATED=1 cargo test -p konedrive-text`.\n"
+    )
 }
+
+/// Where the window's sentences are written.
+const WINDOW_SOURCES: &str = "src/reasons.rs, src/waits.rs";
 
 /// A C++ string literal.
 fn literal(text: &str) -> String {
@@ -74,8 +82,17 @@ fn numbered(sentence: &str) -> (String, Vec<&str>) {
 
 /// `i18n("…", a, b)`: the sentence with the C++ expression of each place.
 fn i18n(sentence: &str, expression: &dyn Fn(&str) -> &'static str) -> String {
+    translated("i18n(", sentence, expression)
+}
+
+/// `i18nc("context", "…", a, b)`.
+fn i18nc(context: &str, sentence: &str, expression: &dyn Fn(&str) -> &'static str) -> String {
+    translated(&format!("i18nc({}, ", literal(context)), sentence, expression)
+}
+
+fn translated(opening: &str, sentence: &str, expression: &dyn Fn(&str) -> &'static str) -> String {
     let (text, names) = numbered(sentence);
-    let mut call = format!("i18n({}", literal(&text));
+    let mut call = format!("{opening}{}", literal(&text));
     for name in names {
         call.push_str(", ");
         call.push_str(expression(name));
@@ -99,7 +116,7 @@ fn keys_with_a_detail() -> Vec<String> {
 }
 
 fn window_header() -> String {
-    let mut out = banner();
+    let mut out = banner(WINDOW_SOURCES);
     out.push_str(
         r#"#pragma once
 
@@ -135,7 +152,7 @@ QString stillHereSentence(const QString &waits);
 }
 
 fn window_source() -> String {
-    let mut out = banner();
+    let mut out = banner(WINDOW_SOURCES);
     out.push_str(
         r#"#include "reasontexts.h"
 
@@ -274,8 +291,8 @@ fn reason_branch(entry: &ReasonText) -> String {
         "free" => "free",
         other => panic!("{}: no place {{{other}}} in a reason's sentence", entry.key),
     };
-    let bare = entry.bare.map(|sentence| sentence.of(Client::Window));
-    let detailed = entry.detailed.map(|sentence| sentence.of(Client::Window));
+    let bare = entry.bare.and_then(|sentence| sentence.of(Client::Desktop));
+    let detailed = entry.detailed.and_then(|sentence| sentence.of(Client::Desktop));
     if bare.is_none() && detailed.is_none() {
         return String::new();
     }

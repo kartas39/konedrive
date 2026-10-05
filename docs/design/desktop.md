@@ -13,6 +13,9 @@ plugins. The daemon's own work is in [hydration.md](hydration.md) and [sync.md](
   nothing depends on clicking through a UI, and scripts and tests can drive everything.
 - **Refusals have names.** Every refusal is a D-Bus error name; clients match the name, never the
   message, and turn it into a sentence about the user's file and what to do next.
+- **The daemon sends codes, and their sentences are written once.** A reason, a refusal and the
+  menu's `free-up-why` cross the bus as codes; the daemon does not translate them and sends no
+  sentence for them. The words are in one catalogue that every client is built from (§2.10).
 - **Nothing a client does opens a placeholder** (see the invariant in [README.md](README.md)).
 
 ## 2. The D-Bus API
@@ -361,6 +364,40 @@ what the calls check before they change anything, not what a free-up finds file 
 `Pin`, `Unpin` and `FreeUp` route every path before anything changes, and their counts are summed
 over the accounts.
 
+### 2.10 The words for the codes
+
+What a code means to a person is written once, in English, in the crate `konedrive-text`
+(`crates/konedrive-text`), which knows only the codes (`konedrive-reason`, `konedrive-dbus`):
+
+| Module | The codes | Shown by |
+|---|---|---|
+| `reasons` | every key of `Reason` and `LocalSkip`: why a change is not uploaded | the window, `konedrivectl` |
+| `waits` | every key of `WaitsFor`: what keeps an item on this computer that the folder cannot hold | the window, `konedrivectl` |
+| `files` | every name of `Refusal`, for each of four operations on a file: keep on this device, unpin, free up, open in OneDrive; and what the Dolphin plugin says of a call the daemon never answered | the Dolphin plugin, `konedrivectl` |
+| `menu` | every `free-up-why` of `Files.Menu`, and the two other tooltips of a disabled entry | the Dolphin plugin |
+
+- **A sentence** is written as the window or the plugin shows it: a capital first letter, a full
+  stop, and named places for what is filled in (`{detail}`, `{file}`, `{needs}`). There is one
+  sentence for a code, unless the clients name their own controls or say different things: then
+  there is one for the window or the plugin and one for the command line. A third form is the
+  plugin's alone: `konedrivectl` then says what its own table says of its other commands.
+  A code may have no sentence: such a reason is shown as the daemon stored it, and such a
+  refusal is told as any failure, with the daemon's message.
+- **`konedrivectl`** reads the catalogue directly and prints its sentences as they are written.
+- **The window and the Dolphin plugin** are built with C++ generated from the catalogue, every
+  sentence a literal inside `i18n` or `i18nc`, so translation stays where KDE's tools expect it:
+  `app/generated/reasontexts.{h,cpp}` and `dolphin/src/generated/refusaltexts.{h,cpp}`. The
+  files are in git, and the C++ build does not run cargo. How a reason is cut into its key and
+  what stands behind it is generated too, from `konedrive-reason`'s rule.
+- **A new code gets its words or the tests fail.** The crate's tests hold the catalogue against
+  the codes (every key and every name has an entry, which may say that it has no sentence), and
+  one test writes the generated files again and fails when one in git differs; the pull-request
+  workflow runs them (`.github/workflows/structure.yml`). The codes of `free-up-why` are the
+  daemon's, and a test there holds them against the catalogue. The steps are in
+  `CONTRIBUTING.md`, "A new reason or refusal".
+
+What the catalogue does not hold, and why, is in the limitations log (D60).
+
 ## 3. The command line
 
 `konedrivectl` talks to the same interfaces.
@@ -419,7 +456,9 @@ The path commands go through `Files`, so the path decides the account. When one 
 view of the routing rule (limitations log F50).
 
 When the daemon refuses, the CLI says what that means for the user's file and what to do, chosen by
-the error name. `sync status` never prints `error` so that it looks like success, and
+the error name. For `sync pin`, `unpin`, `free` and `open` the sentences are the catalogue's
+(§2.10), the ones Dolphin shows where there is one for both; those of the other commands are the
+CLI's own. `sync status` never prints `error` so that it looks like success, and
 `sync register` exits non-zero if the folder it just bound was not fully recovered. The CLI resolves
 only the directory a path is in, never its last component, so a symlink given as a folder reaches
 the daemon as a symlink and is refused.
@@ -775,6 +814,9 @@ selection, and sets its entries from the answer, value by value:
 | `no-helper` | "The konedrive helper is not connected. Try again once it is — it reconnects on its own." |
 | `not-uploaded` | "Not uploaded yet: freeing it up would lose the changes made here." |
 | `unknown` | "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment." |
+
+The tooltips are written in the catalogue (§2.10, `menu`), each beside the name `FreeUp` would be
+refused under, whose longer sentence is in the same crate.
 
 The plugin decides nothing from the marks: which paths count, what a pin above means and what the
 daemon would refuse are the daemon's rules, in one place (`sync/menu.rs`), beside the calls they

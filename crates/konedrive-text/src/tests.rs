@@ -88,8 +88,8 @@ fn the_sentences_are_whole_and_their_places_are_filled() {
     for entry in REASONS {
         for (sentence, places) in [(entry.bare, &["key"][..]), (entry.detailed, &["detail", "needs", "free"][..])] {
             let Some(sentence) = sentence else { continue };
-            for client in [Client::Window, Client::CommandLine] {
-                let text = sentence.of(client);
+            for client in [Client::Desktop, Client::CommandLine] {
+                let text = sentence.of(client).expect("a reason's sentence is every client's");
                 assert!(text.starts_with(char::is_uppercase), "{}: {text}", entry.key);
                 for piece in pieces(text) {
                     match piece {
@@ -100,8 +100,8 @@ fn the_sentences_are_whole_and_their_places_are_filled() {
                 // A sentence ends with a full stop, or with the detail it gives.
                 assert!(text.ends_with('.') || text.ends_with("{detail}"), "{}: {text}", entry.key);
             }
-            if let Sentence::Each { window, command_line } = sentence {
-                assert_ne!(window, command_line, "{}: one sentence is enough", entry.key);
+            if let Sentence::Each { desktop, command_line } = sentence {
+                assert_ne!(desktop, command_line, "{}: one sentence is enough", entry.key);
             }
         }
         // Nothing with a detail is worded while the key alone is not.
@@ -118,15 +118,15 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
     assert_eq!(reasons::split("network"), ("network", None));
     assert_eq!(reasons::split("mass-delete: 3"), ("mass-delete: 3", None));
 
-    assert_eq!(said("refused", Client::Window), "Refused by OneDrive.");
+    assert_eq!(said("refused", Client::Desktop), "Refused by OneDrive.");
     assert_eq!(said("refused: bad: name", Client::CommandLine), "OneDrive refused it: bad: name");
-    assert_eq!(said("refused: {key}", Client::Window), "OneDrive refused it: {key}");
-    assert_eq!(said("no-guard", Client::Window), "KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again.");
-    assert_eq!(said("too-big:300:20", Client::Window), "Too big: needs 300 B, 20 B free.");
+    assert_eq!(said("refused: {key}", Client::Desktop), "OneDrive refused it: {key}");
+    assert_eq!(said("no-guard", Client::Desktop), "KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again.");
+    assert_eq!(said("too-big:300:20", Client::Desktop), "Too big: needs 300 B, 20 B free.");
     assert_eq!(said("too-big:0300:+20", Client::CommandLine), "Too big: needs 300 B, 20 B free.");
-    assert_eq!(said("state-unreadable: Input/output error (os error 5)", Client::Window), "The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5)).");
+    assert_eq!(said("state-unreadable: Input/output error (os error 5)", Client::Desktop), "The file's KOneDrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5)).");
     for stored in ["download-failed", "download-failed: errno 5", "network: connection reset", "symlink: x", "too-big: x", "too-big:x:1", "too-big:", "ignored", "something-new", ""] {
-        for client in [Client::Window, Client::CommandLine] {
+        for client in [Client::Desktop, Client::CommandLine] {
             assert_eq!(said(stored, client), stored);
         }
     }
@@ -136,11 +136,11 @@ fn a_stored_reason_is_worded_by_its_key_and_what_stands_behind_it() {
 /// The clients say the same but where each names its own controls.
 #[test]
 fn the_clients_differ_only_in_their_own_controls() {
-    let differing: Vec<&str> = REASONS.iter().filter(|entry| said(entry.key, Client::Window) != said(entry.key, Client::CommandLine)).map(|entry| entry.key).collect();
+    let differing: Vec<&str> = REASONS.iter().filter(|entry| said(entry.key, Client::Desktop) != said(entry.key, Client::CommandLine)).map(|entry| entry.key).collect();
     assert_eq!(differing, ["mass-delete", "waiting-for-space", "too-big"]);
-    assert_eq!(said("mass-delete", Client::Window), "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.");
+    assert_eq!(said("mass-delete", Client::Desktop), "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.");
     assert_eq!(said("mass-delete", Client::CommandLine), "Part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`).");
-    assert_eq!(said("waiting-for-space", Client::Window), "OneDrive is full: free up space in OneDrive, then Refresh.");
+    assert_eq!(said("waiting-for-space", Client::Desktop), "OneDrive is full: free up space in OneDrive, then Refresh.");
     assert_eq!(said("waiting-for-space", Client::CommandLine), "Waiting for space: OneDrive is full.");
     assert_eq!(said("too-big", Client::CommandLine), "Too big for the space left in OneDrive: free up space there, then `sync refresh`.");
 }

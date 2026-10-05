@@ -48,7 +48,7 @@ pub const REASONS: &[ReasonText] = &[
     ReasonText {
         key: "mass-delete",
         bare: Some(Each {
-            window: "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.",
+            desktop: "Part of a large delete: delete it in OneDrive too, or restore it, on the Status page.",
             command_line: "Part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`).",
         }),
         detailed: None,
@@ -110,13 +110,13 @@ pub const REASONS: &[ReasonText] = &[
     ReasonText {
         key: "waiting-for-space",
         // The window says what to do, with its button; the command line only what is waited for.
-        bare: Some(Each { window: "OneDrive is full: free up space in OneDrive, then Refresh.", command_line: "Waiting for space: OneDrive is full." }),
+        bare: Some(Each { desktop: "OneDrive is full: free up space in OneDrive, then Refresh.", command_line: "Waiting for space: OneDrive is full." }),
         detailed: None,
     },
     ReasonText {
         key: "too-big",
         bare: Some(Each {
-            window: "Too big for the space left in OneDrive: free up space there, then Refresh.",
+            desktop: "Too big for the space left in OneDrive: free up space there, then Refresh.",
             command_line: "Too big for the space left in OneDrive: free up space there, then `sync refresh`.",
         }),
         detailed: Some(Same("Too big: needs {needs}, {free} free.")),
@@ -167,7 +167,7 @@ pub fn text(stored: &str, client: Client, size: &dyn Fn(u64) -> String) -> Strin
         None => entry.bare,
         Some(_) => entry.detailed,
     };
-    let Some(sentence) = sentence.map(|sentence| sentence.of(client)) else { return stored.to_owned() };
+    let Some(sentence) = sentence.and_then(|sentence| sentence.of(client)) else { return stored.to_owned() };
     let detail = detail.unwrap_or_default();
     if takes_sizes(sentence) {
         return match sizes(detail) {

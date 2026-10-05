@@ -4,8 +4,16 @@
 //! with a match over every [`Refusal`]; what it has no sentence for gets [`shared`]'s, the
 //! one written for whichever action was refused that way first. A refusal added to the
 //! enum does not compile here until [`shared`] and every group say what they print for it.
+//!
+//! The operations on a file that Dolphin's menu has too (`pin`, `unpin`, `free`, `open`)
+//! are not written here: their sentences are the catalogue's (`konedrive-text`, its
+//! `files`), printed as they are written there, and [`shared`] takes from it the
+//! sentences it has in common with them. Only where the catalogue has none for the
+//! command line does such an operation get [`shared`]'s.
 
 use konedrive_dbus::{Refusal, ERROR_PREFIX};
+use konedrive_text::files::{self, Operation};
+use konedrive_text::Client;
 
 use super::SyncAction;
 use crate::text::files::pinned_parts;
@@ -36,6 +44,31 @@ impl Told<'_> {
             format!(" ({})", self.root)
         }
     }
+
+    /// The operation of Dolphin's menu this action is, if it is one.
+    fn operation(&self) -> Option<Operation> {
+        match self.action {
+            SyncAction::Pin(_) => Some(Operation::Keep),
+            SyncAction::Unpin(_) => Some(Operation::Unpin),
+            SyncAction::Free(_) => Some(Operation::FreeUp),
+            SyncAction::Open(_) => Some(Operation::OpenOnline),
+            _ => None,
+        }
+    }
+
+    /// The catalogue's sentence for `refusal` of `operation` as the command line says
+    /// it, about `file`; `None` where it has none.
+    fn catalogue_about(&self, file: &str, operation: Operation, refusal: &Refusal) -> Option<String> {
+        // An error with no message carries its name in its place.
+        let detail = if self.detail.starts_with(ERROR_PREFIX) { "" } else { self.detail };
+        let told = files::Told { file, detail, prefix: self.prefix, folder: &self.folder() };
+        files::text(operation, refusal, Client::CommandLine, &told)
+    }
+
+    /// [`Told::catalogue_about`] the path of the action.
+    fn catalogue(&self, operation: Operation, refusal: &Refusal) -> Option<String> {
+        self.catalogue_about(self.path(), operation, refusal)
+    }
 }
 
 /// The actions that are told the same for every refusal.
@@ -50,9 +83,8 @@ enum Group {
     Hydrate,
     Dehydrate,
     FreeUpSpace,
-    /// `pin`, `unpin`, `free`.
-    Pins,
-    Open,
+    /// `pin`, `unpin`, `free`, `open`: what Dolphin's menu has too.
+    FileOperation(Operation),
     /// What reads or steers the outbox: `outbox`, `pause`, `resume`, `ignore`,
     /// `not-uploaded`, the large delete.
     Uploads,
@@ -73,8 +105,10 @@ fn group(action: SyncAction<'_>) -> Group {
         Hydrate(_) => Group::Hydrate,
         Dehydrate(_) => Group::Dehydrate,
         FreeUpSpace => Group::FreeUpSpace,
-        Pin(_) | Unpin(_) | Free(_) => Group::Pins,
-        Open(_) => Group::Open,
+        Pin(_) => Group::FileOperation(Operation::Keep),
+        Unpin(_) => Group::FileOperation(Operation::Unpin),
+        Free(_) => Group::FileOperation(Operation::FreeUp),
+        Open(_) => Group::FileOperation(Operation::OpenOnline),
         Outbox | Pause | Resume | Ignore | NotUploaded | Deletes => Group::Uploads,
         Settings | Anyway => Group::Settings,
         Skipped | Activity | Conflicts | Dismiss(_) => Group::Lists,
@@ -96,8 +130,7 @@ pub(super) fn text(told: &Told<'_>, refusal: Option<&Refusal>) -> String {
         Group::Hydrate => hydrate(told, refusal),
         Group::Dehydrate => dehydrate(told, refusal),
         Group::FreeUpSpace => free_up_space(told, refusal),
-        Group::Pins => pins(told, refusal),
-        Group::Open => open(told, refusal),
+        Group::FileOperation(operation) => file_operation(told, operation, refusal),
         Group::Uploads => uploads(told, refusal),
         Group::Settings => settings(told, refusal),
     }
@@ -106,7 +139,10 @@ pub(super) fn text(told: &Told<'_>, refusal: Option<&Refusal>) -> String {
 /// `Failed`, a name this CLI does not know yet, or an error from the bus itself: the
 /// detail is all there is, so it is kept whole.
 fn failed(told: &Told<'_>) -> String {
-    format!("{} failed: {}", told.action.doing(), told.detail)
+    match told.operation() {
+        Some(operation) => files::failed(operation, &files::Told { file: told.path(), detail: told.detail, ..files::Told::default() }),
+        None => format!("{} failed: {}", told.action.doing(), told.detail),
+    }
 }
 
 /// The sentence a refusal has for every action without one of its own.
@@ -114,14 +150,13 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
     let Told { detail, root, prefix, .. } = *told;
     let path = told.path();
     let folder = told.folder();
+    // The catalogue's sentence, written for a file operation and said of any command.
+    let catalogue = |operation| told.catalogue(operation, refusal).unwrap_or_else(|| failed(told));
     match refusal {
         // `sync open`: OneDrive is asked for the address each time.
         // The daemon's message is the cause (no network, a locked secret
         // storage, an answer that cannot be read), shown when there is one.
-        Refusal::Unreachable if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
-            "OneDrive could not be reached".to_owned()
-        }
-        Refusal::Unreachable => format!("OneDrive could not be reached: {detail}"),
+        Refusal::Unreachable => catalogue(Operation::OpenOnline),
         Refusal::NotSignedIn => format!(
             "the account is not signed in, and `{prefix} sync register` binds the folder to the \
              account's OneDrive. Sign in first with `{prefix} login` — or, in the developer's mode \
@@ -182,11 +217,7 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
              <folder>` — or, in the developer's mode with local files, `{prefix} sync \
              register-without-interception <folder>`"
         ),
-        Refusal::NoSource => format!(
-            "KOneDrive does not know where to download {path} from yet. Run `{prefix} sync \
-             populate-from <dir>` first; the daemon does not remember that directory across a \
-             restart, so run it again after one (files already there are left alone)"
-        ),
+        Refusal::NoSource => catalogue(Operation::Keep),
         Refusal::OutsideRoot => format!(
             "{path} is not a regular file inside the sync folder{folder}. Only files inside it \
              can be downloaded or freed up — not folders, symbolic links, or anything outside it"
@@ -209,22 +240,12 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
             "{path} is not a OneDrive file: it is a file of your own in the sync folder, so \
              there is nothing to download"
         ),
-        Refusal::NotHydrated => format!(
-            "{path} is not downloaded, so there is no space to free — it already takes none"
-        ),
-        Refusal::NotUploaded => format!(
-            "{} is not uploaded yet, so freeing up its space would lose the changes made here. It \
-             was left as it is; its space can be freed once it is uploaded (`{prefix} sync outbox`)",
-            if path.is_empty() { detail.split(" is not uploaded").next().unwrap_or(detail) } else { path }
-        ),
-        Refusal::ModifiedLocally => format!(
-            "{path} was changed here and has not been uploaded, so freeing its space would lose \
-             your edits. It was left exactly as it is"
-        ),
-        Refusal::InUse => format!(
-            "{path} is open in another program, so its space cannot be freed right now. Close \
-             it there and try again"
-        ),
+        Refusal::NotHydrated | Refusal::ModifiedLocally | Refusal::InUse => catalogue(Operation::FreeUp),
+        // With no path of the command's own, the daemon's message names the file.
+        Refusal::NotUploaded => {
+            let file = if path.is_empty() { detail.split(" is not uploaded").next().unwrap_or(detail) } else { path };
+            told.catalogue_about(file, Operation::FreeUp, refusal).unwrap_or_else(|| failed(told))
+        }
         // A folder that is recorded and not up, or whose sync is not running: the daemon's
         // message is the whole of it, with why.
         Refusal::NotUp if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
@@ -494,10 +515,7 @@ fn dehydrate(told: &Told<'_>, refusal: &Refusal) -> String {
              unchecked, or the emptied file could read as zeros from then on; try again once \
              the daemon is connected to the helper again — it reconnects on its own"
         ),
-        Refusal::NotManaged => format!(
-            "{path} is not a OneDrive file: it is a file of your own in the sync folder, and \
-             KOneDrive never frees the space of a file it could not download again"
-        ),
+        Refusal::NotManaged => told.catalogue(Operation::FreeUp, refusal).unwrap_or_else(|| shared(told, refusal)),
         Refusal::NotEmpty
         | Refusal::Unsupported
         | Refusal::InUse
@@ -529,21 +547,12 @@ fn dehydrate(told: &Told<'_>, refusal: &Refusal) -> String {
     }
 }
 
-/// A file that may still carry the helper's ignore mark is only freed up once the helper
-/// has cleared it: `free-up-space`, and `free`.
-fn nothing_more_freed() -> String {
-    "the konedrive helper is not connected, so nothing more \
-     was freed up. Freeing up a file must first have the helper take off any mark that lets \
-     the file's opens through unchecked, or the emptied file could read as zeros from then \
-     on; try again once the daemon is connected to the helper again — it reconnects on its \
-     own"
-        .to_owned()
-}
-
 /// `sync free-up-space`.
 fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
     match refusal {
-        Refusal::NoHelper => nothing_more_freed(),
+        // A file that may still carry the helper's ignore mark is only freed up once the
+        // helper has cleared it: what `sync free` says.
+        Refusal::NoHelper => told.catalogue(Operation::FreeUp, refusal).unwrap_or_else(|| shared(told, refusal)),
         Refusal::NotEmpty
         | Refusal::Unsupported
         | Refusal::InUse
@@ -576,110 +585,19 @@ fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
     }
 }
 
-/// `sync pin`, `unpin` and `free`.
-fn pins(told: &Told<'_>, refusal: &Refusal) -> String {
-    let path = told.path();
-    let folder = told.folder();
-    match (refusal, told.action) {
-        (Refusal::NoHelper, SyncAction::Free(_)) => nothing_more_freed(),
-        (Refusal::NoHelper, _) => shared(told, refusal),
-        (Refusal::OutsideRoot, _) => format!(
-            "{path}: only files and folders inside the sync folder{folder} can be kept on this \
-             device or freed up — not symbolic links, or anything outside it"
-        ),
-        (Refusal::NotAllowed, SyncAction::Unpin(_)) => match pinned_parts(told.detail) {
-            Some((_, by)) => format!(
-                "{path} is kept on this device because the folder {by} is, so it cannot stop being \
-                 kept on its own. `konedrivectl sync unpin {by}` stops keeping the folder"
-            ),
-            None => shared(told, refusal),
-        },
-        (Refusal::NotAllowed, _) => shared(told, refusal),
-        (Refusal::NotManaged, _) => format!(
-            "{path}: a file of your own in the sync folder is not a OneDrive file, so there is \
-             nothing to keep on this device or to free up"
-        ),
-        (
-            Refusal::NotEmpty
-            | Refusal::Unsupported
-            | Refusal::InUse
-            | Refusal::NoRoot
-            | Refusal::NotHydrated
-            | Refusal::ModifiedLocally
-            | Refusal::AlreadyRegistered
-            | Refusal::NotSignedIn
-            | Refusal::NoSource
-            | Refusal::NoConflict
-            | Refusal::Overlaps
-            | Refusal::NoAccount
-            | Refusal::NotUploaded
-            | Refusal::PendingUploads
-            | Refusal::Unreachable
-            | Refusal::Failed
-            | Refusal::WritesNotAllowed
-            | Refusal::ModeNotGranted
-            | Refusal::InvalidArgs
-            | Refusal::BusFailed
-            | Refusal::UnknownObject
-            | Refusal::UnknownMethod
-            | Refusal::UnknownInterface
-            | Refusal::NotUp
-            | Refusal::Internal
-            | Refusal::Other(_),
-            _,
-        ) => shared(told, refusal),
+/// `sync pin`, `unpin`, `free` and `open`: the catalogue's sentence, and where it has none
+/// for the command line, [`shared`]'s.
+fn file_operation(told: &Told<'_>, operation: Operation, refusal: &Refusal) -> String {
+    // The daemon's message names the path and the folder that keeps it: read here, to
+    // name the command that unpins the folder.
+    if let (Refusal::NotAllowed, Operation::Unpin, Some((_, by))) = (refusal, operation, pinned_parts(told.detail)) {
+        let path = told.path();
+        return format!(
+            "{path} is kept on this device because the folder {by} is, so it cannot stop being \
+             kept on its own. `konedrivectl sync unpin {by}` stops keeping the folder"
+        );
     }
-}
-
-/// `sync open`: `Files.WebUrl`.
-fn open(told: &Told<'_>, refusal: &Refusal) -> String {
-    let prefix = told.prefix;
-    let path = told.path();
-    let folder = told.folder();
-    match refusal {
-        Refusal::NotSignedIn => format!(
-            "the account is not signed in, so OneDrive cannot be asked for the page of {path}. Sign in \
-             with `{prefix} login` and try again"
-        ),
-        Refusal::NotUploaded => format!(
-            "{path} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it \
-             is uploaded (`{prefix} sync outbox`)"
-        ),
-        Refusal::NotManaged => format!(
-            "{path} is not a OneDrive file: it is a file of your own in the sync folder, so it has no \
-             page in OneDrive"
-        ),
-        Refusal::OutsideRoot => format!(
-            "{path}: only files and folders inside the sync folder{folder}, and the folder itself, have \
-             a page in OneDrive — not symbolic links, or anything outside it"
-        ),
-        Refusal::NotEmpty
-        | Refusal::Unsupported
-        | Refusal::InUse
-        | Refusal::NoRoot
-        | Refusal::NoHelper
-        | Refusal::NotHydrated
-        | Refusal::ModifiedLocally
-        | Refusal::AlreadyRegistered
-        | Refusal::NoSource
-        | Refusal::NoConflict
-        | Refusal::NotAllowed
-        | Refusal::Overlaps
-        | Refusal::NoAccount
-        | Refusal::PendingUploads
-        | Refusal::Unreachable
-        | Refusal::Failed
-        | Refusal::WritesNotAllowed
-        | Refusal::ModeNotGranted
-        | Refusal::InvalidArgs
-        | Refusal::BusFailed
-        | Refusal::UnknownObject
-        | Refusal::UnknownMethod
-        | Refusal::UnknownInterface
-        | Refusal::NotUp
-        | Refusal::Internal
-        | Refusal::Other(_) => shared(told, refusal),
-    }
+    told.catalogue(operation, refusal).unwrap_or_else(|| shared(told, refusal))
 }
 
 /// `sync outbox`, `pause`, `resume`, `ignore`, `not-uploaded` and the large delete.

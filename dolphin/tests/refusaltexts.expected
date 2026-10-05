@@ -1,0 +1,312 @@
+keep|org.konedrive.Error.NotEmpty||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotEmpty
+keep|org.konedrive.Error.NotEmpty|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.Unsupported||Keeping “doc.bin” on this device failed: org.konedrive.Error.Unsupported
+keep|org.konedrive.Error.Unsupported|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.InUse||“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+keep|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+keep|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+keep|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+keep|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Keeping “doc.bin” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).
+keep|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Keeping “doc.bin” on this device must first have the helper stop letting its opens through unchecked — a download that failed partway would otherwise leave it reading as zeros. Try again once the helper is back (“konedrivectl sync status” shows when it is).
+keep|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
+keep|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.
+keep|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+keep|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+keep|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so downloading it again would overwrite your edits. It was left exactly as it is.
+keep|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” was changed here and has not been uploaded, so downloading it again would overwrite your edits. It was left exactly as it is.
+keep|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+keep|org.konedrive.Error.OutsideRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+keep|org.konedrive.Error.AlreadyRegistered||Keeping “doc.bin” on this device failed: org.konedrive.Error.AlreadyRegistered
+keep|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NotSignedIn||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotSignedIn
+keep|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+keep|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+keep|org.konedrive.Error.NoConflict||Keeping “doc.bin” on this device failed: org.konedrive.Error.NoConflict
+keep|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
+keep|org.konedrive.Error.NotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Could not change what is kept on this device: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.Overlaps||Keeping “doc.bin” on this device failed: org.konedrive.Error.Overlaps
+keep|org.konedrive.Error.Overlaps|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NoAccount||Keeping “doc.bin” on this device failed: org.konedrive.Error.NoAccount
+keep|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NotUploaded||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUploaded
+keep|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.PendingUploads||Keeping “doc.bin” on this device failed: org.konedrive.Error.PendingUploads
+keep|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.Unreachable||OneDrive could not be reached.
+keep|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.NotUp||Keeping “doc.bin” on this device failed: org.konedrive.Error.NotUp
+keep|org.konedrive.Error.NotUp|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.Failed||Keeping “doc.bin” on this device failed: org.konedrive.Error.Failed
+keep|org.konedrive.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.WritesNotAllowed||Keeping “doc.bin” on this device failed: org.konedrive.Error.WritesNotAllowed
+keep|org.konedrive.Error.WritesNotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.ModeNotGranted||Keeping “doc.bin” on this device failed: org.konedrive.Error.ModeNotGranted
+keep|org.konedrive.Error.ModeNotGranted|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Error.SomethingNew||Keeping “doc.bin” on this device failed: org.konedrive.Error.SomethingNew
+keep|org.konedrive.Error.SomethingNew|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.InvalidArgs||Keeping “doc.bin” on this device failed: org.freedesktop.DBus.Error.InvalidArgs
+keep|org.freedesktop.DBus.Error.InvalidArgs|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.Failed||Keeping “doc.bin” on this device failed: org.freedesktop.DBus.Error.Failed
+keep|org.freedesktop.DBus.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.UnknownObject||Keeping “doc.bin” on this device failed: org.freedesktop.DBus.Error.UnknownObject
+keep|org.freedesktop.DBus.Error.UnknownObject|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.UnknownMethod||Keeping “doc.bin” on this device failed: org.freedesktop.DBus.Error.UnknownMethod
+keep|org.freedesktop.DBus.Error.UnknownMethod|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.UnknownInterface||Keeping “doc.bin” on this device failed: org.freedesktop.DBus.Error.UnknownInterface
+keep|org.freedesktop.DBus.Error.UnknownInterface|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.zbus.Error||Keeping “doc.bin” on this device failed: org.freedesktop.zbus.Error
+keep|org.freedesktop.zbus.Error|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.freedesktop.DBus.Error.ServiceUnknown||KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.ServiceUnknown|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.NameHasNoOwner||KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.NameHasNoOwner|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.TimedOut||KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.TimedOut|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.Spawn.ChildExited||KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.Spawn.ChildExited|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.systemd1.NoSuchUnit||KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.systemd1.NoSuchUnit|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not kept on this device. Start it with “systemctl --user start konedrived” and try again.
+keep|org.freedesktop.DBus.Error.NoReply||KOneDrive stopped before it finished downloading everything of “doc.bin”. Its emblem shows whether it is fully downloaded yet; if it is not, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+keep|org.freedesktop.DBus.Error.NoReply|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive stopped before it finished downloading everything of “doc.bin”. Its emblem shows whether it is fully downloaded yet; if it is not, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+keep|org.example.Error.InUse||Keeping “doc.bin” on this device failed: org.example.Error.InUse
+keep|org.example.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Keeping “doc.bin” on this device failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+keep|org.konedrive.Dolphin.AlreadyWaiting||KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+keep|org.konedrive.Dolphin.AlreadyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+keep|org.konedrive.Dolphin.TooManyWaiting||1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not kept on this device. Try again once some of them have finished.
+keep|org.konedrive.Dolphin.TooManyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not kept on this device. Try again once some of them have finished.
+unpin|org.konedrive.Error.NotEmpty||Unpinning “doc.bin” failed: org.konedrive.Error.NotEmpty
+unpin|org.konedrive.Error.NotEmpty|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.Unsupported||Unpinning “doc.bin” failed: org.konedrive.Error.Unsupported
+unpin|org.konedrive.Error.Unsupported|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.InUse||“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+unpin|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+unpin|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+unpin|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+unpin|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Unpinning “doc.bin” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
+unpin|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Unpinning “doc.bin” needs the helper too, the same as any other change under KOneDrive's watch. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
+unpin|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
+unpin|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned.
+unpin|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+unpin|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+unpin|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so it was left exactly as it is.
+unpin|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” was changed here and has not been uploaded, so it was left exactly as it is.
+unpin|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+unpin|org.konedrive.Error.OutsideRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+unpin|org.konedrive.Error.AlreadyRegistered||Unpinning “doc.bin” failed: org.konedrive.Error.AlreadyRegistered
+unpin|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NotSignedIn||Unpinning “doc.bin” failed: org.konedrive.Error.NotSignedIn
+unpin|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+unpin|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+unpin|org.konedrive.Error.NoConflict||Unpinning “doc.bin” failed: org.konedrive.Error.NoConflict
+unpin|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
+unpin|org.konedrive.Error.NotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Could not change what is kept on this device: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.Overlaps||Unpinning “doc.bin” failed: org.konedrive.Error.Overlaps
+unpin|org.konedrive.Error.Overlaps|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NoAccount||Unpinning “doc.bin” failed: org.konedrive.Error.NoAccount
+unpin|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NotUploaded||Unpinning “doc.bin” failed: org.konedrive.Error.NotUploaded
+unpin|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.PendingUploads||Unpinning “doc.bin” failed: org.konedrive.Error.PendingUploads
+unpin|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.Unreachable||OneDrive could not be reached.
+unpin|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.NotUp||Unpinning “doc.bin” failed: org.konedrive.Error.NotUp
+unpin|org.konedrive.Error.NotUp|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.Failed||Unpinning “doc.bin” failed: org.konedrive.Error.Failed
+unpin|org.konedrive.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.WritesNotAllowed||Unpinning “doc.bin” failed: org.konedrive.Error.WritesNotAllowed
+unpin|org.konedrive.Error.WritesNotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.ModeNotGranted||Unpinning “doc.bin” failed: org.konedrive.Error.ModeNotGranted
+unpin|org.konedrive.Error.ModeNotGranted|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Error.SomethingNew||Unpinning “doc.bin” failed: org.konedrive.Error.SomethingNew
+unpin|org.konedrive.Error.SomethingNew|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.InvalidArgs||Unpinning “doc.bin” failed: org.freedesktop.DBus.Error.InvalidArgs
+unpin|org.freedesktop.DBus.Error.InvalidArgs|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.Failed||Unpinning “doc.bin” failed: org.freedesktop.DBus.Error.Failed
+unpin|org.freedesktop.DBus.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.UnknownObject||Unpinning “doc.bin” failed: org.freedesktop.DBus.Error.UnknownObject
+unpin|org.freedesktop.DBus.Error.UnknownObject|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.UnknownMethod||Unpinning “doc.bin” failed: org.freedesktop.DBus.Error.UnknownMethod
+unpin|org.freedesktop.DBus.Error.UnknownMethod|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.UnknownInterface||Unpinning “doc.bin” failed: org.freedesktop.DBus.Error.UnknownInterface
+unpin|org.freedesktop.DBus.Error.UnknownInterface|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.zbus.Error||Unpinning “doc.bin” failed: org.freedesktop.zbus.Error
+unpin|org.freedesktop.zbus.Error|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.freedesktop.DBus.Error.ServiceUnknown||KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.ServiceUnknown|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.NameHasNoOwner||KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.NameHasNoOwner|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.TimedOut||KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.TimedOut|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.Spawn.ChildExited||KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.Spawn.ChildExited|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.systemd1.NoSuchUnit||KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.systemd1.NoSuchUnit|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not unpinned. Start it with “systemctl --user start konedrived” and try again.
+unpin|org.freedesktop.DBus.Error.NoReply||KOneDrive stopped before it finished unpinning “doc.bin”. Its emblem shows whether it is still pinned; if it is, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+unpin|org.freedesktop.DBus.Error.NoReply|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive stopped before it finished unpinning “doc.bin”. Its emblem shows whether it is still pinned; if it is, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+unpin|org.example.Error.InUse||Unpinning “doc.bin” failed: org.example.Error.InUse
+unpin|org.example.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Unpinning “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+unpin|org.konedrive.Dolphin.AlreadyWaiting||KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+unpin|org.konedrive.Dolphin.AlreadyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+unpin|org.konedrive.Dolphin.TooManyWaiting||1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not unpinned. Try again once some of them have finished.
+unpin|org.konedrive.Dolphin.TooManyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not unpinned. Try again once some of them have finished.
+free-up|org.konedrive.Error.NotEmpty||Freeing up “doc.bin” failed: org.konedrive.Error.NotEmpty
+free-up|org.konedrive.Error.NotEmpty|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.Unsupported||Freeing up “doc.bin” failed: org.konedrive.Error.Unsupported
+free-up|org.konedrive.Error.Unsupported|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.InUse||“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+free-up|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+free-up|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+free-up|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+free-up|org.konedrive.Error.NoHelper||The konedrive helper is not connected, so nothing was changed. Freeing up “doc.bin” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
+free-up|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The konedrive helper is not connected, so nothing was changed. Freeing up “doc.bin” must first have the helper take off any mark that lets the file's opens through unchecked, or the emptied file could read as zeros from then on. Try again once KOneDrive is connected to the helper again — it reconnects on its own.
+free-up|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
+free-up|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.
+free-up|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+free-up|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+free-up|org.konedrive.Error.ModifiedLocally||“doc.bin” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.
+free-up|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.
+free-up|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+free-up|org.konedrive.Error.OutsideRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not inside any of KOneDrive's folders, so nothing was done with it. Only files and folders inside them can be kept on this device or freed up.
+free-up|org.konedrive.Error.AlreadyRegistered||Freeing up “doc.bin” failed: org.konedrive.Error.AlreadyRegistered
+free-up|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NotSignedIn||Freeing up “doc.bin” failed: org.konedrive.Error.NotSignedIn
+free-up|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+free-up|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+free-up|org.konedrive.Error.NoConflict||Freeing up “doc.bin” failed: org.konedrive.Error.NoConflict
+free-up|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NotAllowed||Could not free up space: 
+free-up|org.konedrive.Error.NotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Could not free up space: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.Overlaps||Freeing up “doc.bin” failed: org.konedrive.Error.Overlaps
+free-up|org.konedrive.Error.Overlaps|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NoAccount||Freeing up “doc.bin” failed: org.konedrive.Error.NoAccount
+free-up|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
+free-up|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so freeing it up would lose the changes made here. It was left exactly as it is.
+free-up|org.konedrive.Error.PendingUploads||Freeing up “doc.bin” failed: org.konedrive.Error.PendingUploads
+free-up|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.Unreachable||OneDrive could not be reached.
+free-up|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.NotUp||Freeing up “doc.bin” failed: org.konedrive.Error.NotUp
+free-up|org.konedrive.Error.NotUp|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.Failed||Freeing up “doc.bin” failed: org.konedrive.Error.Failed
+free-up|org.konedrive.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.WritesNotAllowed||Freeing up “doc.bin” failed: org.konedrive.Error.WritesNotAllowed
+free-up|org.konedrive.Error.WritesNotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.ModeNotGranted||Freeing up “doc.bin” failed: org.konedrive.Error.ModeNotGranted
+free-up|org.konedrive.Error.ModeNotGranted|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Error.SomethingNew||Freeing up “doc.bin” failed: org.konedrive.Error.SomethingNew
+free-up|org.konedrive.Error.SomethingNew|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.InvalidArgs||Freeing up “doc.bin” failed: org.freedesktop.DBus.Error.InvalidArgs
+free-up|org.freedesktop.DBus.Error.InvalidArgs|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.Failed||Freeing up “doc.bin” failed: org.freedesktop.DBus.Error.Failed
+free-up|org.freedesktop.DBus.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.UnknownObject||Freeing up “doc.bin” failed: org.freedesktop.DBus.Error.UnknownObject
+free-up|org.freedesktop.DBus.Error.UnknownObject|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.UnknownMethod||Freeing up “doc.bin” failed: org.freedesktop.DBus.Error.UnknownMethod
+free-up|org.freedesktop.DBus.Error.UnknownMethod|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.UnknownInterface||Freeing up “doc.bin” failed: org.freedesktop.DBus.Error.UnknownInterface
+free-up|org.freedesktop.DBus.Error.UnknownInterface|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.zbus.Error||Freeing up “doc.bin” failed: org.freedesktop.zbus.Error
+free-up|org.freedesktop.zbus.Error|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.freedesktop.DBus.Error.ServiceUnknown||KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.ServiceUnknown|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.NameHasNoOwner||KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.NameHasNoOwner|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.TimedOut||KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.TimedOut|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.Spawn.ChildExited||KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.Spawn.ChildExited|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.systemd1.NoSuchUnit||KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.systemd1.NoSuchUnit|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not freed up. Start it with “systemctl --user start konedrived” and try again.
+free-up|org.freedesktop.DBus.Error.NoReply||KOneDrive stopped before it finished freeing up “doc.bin”. Its emblem shows whether it still takes space; if it does, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+free-up|org.freedesktop.DBus.Error.NoReply|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive stopped before it finished freeing up “doc.bin”. Its emblem shows whether it still takes space; if it does, start KOneDrive again (“systemctl --user start konedrived”) and try again.
+free-up|org.example.Error.InUse||Freeing up “doc.bin” failed: org.example.Error.InUse
+free-up|org.example.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Freeing up “doc.bin” failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+free-up|org.konedrive.Dolphin.AlreadyWaiting||KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+free-up|org.konedrive.Dolphin.AlreadyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+free-up|org.konedrive.Dolphin.TooManyWaiting||1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not freed up. Try again once some of them have finished.
+free-up|org.konedrive.Dolphin.TooManyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not freed up. Try again once some of them have finished.
+open-online|org.konedrive.Error.NotEmpty||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NotEmpty
+open-online|org.konedrive.Error.NotEmpty|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.Unsupported||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.Unsupported
+open-online|org.konedrive.Error.Unsupported|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.InUse||“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+open-online|org.konedrive.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is open in another program, so its space cannot be freed right now. Close it there and try again.
+open-online|org.konedrive.Error.NoRoot||The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+open-online|org.konedrive.Error.NoRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.
+open-online|org.konedrive.Error.NoHelper||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NoHelper
+open-online|org.konedrive.Error.NoHelper|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NotManaged||“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
+open-online|org.konedrive.Error.NotManaged|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.
+open-online|org.konedrive.Error.NotHydrated||“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+open-online|org.konedrive.Error.NotHydrated|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not downloaded, so there is no space to free — it already takes none.
+open-online|org.konedrive.Error.ModifiedLocally||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.ModifiedLocally
+open-online|org.konedrive.Error.ModifiedLocally|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.OutsideRoot||“doc.bin” is not inside any of KOneDrive's folders, so it has no page in OneDrive.
+open-online|org.konedrive.Error.OutsideRoot|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not inside any of KOneDrive's folders, so it has no page in OneDrive.
+open-online|org.konedrive.Error.AlreadyRegistered||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.AlreadyRegistered
+open-online|org.konedrive.Error.AlreadyRegistered|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NotSignedIn||The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.
+open-online|org.konedrive.Error.NotSignedIn|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.
+open-online|org.konedrive.Error.NoSource||KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+open-online|org.konedrive.Error.NoSource|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive does not know where to download “doc.bin” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).
+open-online|org.konedrive.Error.NoConflict||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NoConflict
+open-online|org.konedrive.Error.NoConflict|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NotAllowed||Could not change what is kept on this device: 
+open-online|org.konedrive.Error.NotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Could not change what is kept on this device: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.Overlaps||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.Overlaps
+open-online|org.konedrive.Error.Overlaps|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NoAccount||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NoAccount
+open-online|org.konedrive.Error.NoAccount|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NotUploaded||“doc.bin” is not uploaded yet, so it has no page in OneDrive.
+open-online|org.konedrive.Error.NotUploaded|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|“doc.bin” is not uploaded yet, so it has no page in OneDrive.
+open-online|org.konedrive.Error.PendingUploads||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.PendingUploads
+open-online|org.konedrive.Error.PendingUploads|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.Unreachable||OneDrive could not be reached.
+open-online|org.konedrive.Error.Unreachable|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|OneDrive could not be reached: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.NotUp||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.NotUp
+open-online|org.konedrive.Error.NotUp|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.Failed||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.Failed
+open-online|org.konedrive.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.WritesNotAllowed||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.WritesNotAllowed
+open-online|org.konedrive.Error.WritesNotAllowed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.ModeNotGranted||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.ModeNotGranted
+open-online|org.konedrive.Error.ModeNotGranted|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Error.SomethingNew||Opening “doc.bin” in OneDrive failed: org.konedrive.Error.SomethingNew
+open-online|org.konedrive.Error.SomethingNew|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.InvalidArgs||Opening “doc.bin” in OneDrive failed: org.freedesktop.DBus.Error.InvalidArgs
+open-online|org.freedesktop.DBus.Error.InvalidArgs|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.Failed||Opening “doc.bin” in OneDrive failed: org.freedesktop.DBus.Error.Failed
+open-online|org.freedesktop.DBus.Error.Failed|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.UnknownObject||Opening “doc.bin” in OneDrive failed: org.freedesktop.DBus.Error.UnknownObject
+open-online|org.freedesktop.DBus.Error.UnknownObject|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.UnknownMethod||Opening “doc.bin” in OneDrive failed: org.freedesktop.DBus.Error.UnknownMethod
+open-online|org.freedesktop.DBus.Error.UnknownMethod|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.UnknownInterface||Opening “doc.bin” in OneDrive failed: org.freedesktop.DBus.Error.UnknownInterface
+open-online|org.freedesktop.DBus.Error.UnknownInterface|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.zbus.Error||Opening “doc.bin” in OneDrive failed: org.freedesktop.zbus.Error
+open-online|org.freedesktop.zbus.Error|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.freedesktop.DBus.Error.ServiceUnknown||KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.ServiceUnknown|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.NameHasNoOwner||KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.NameHasNoOwner|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.TimedOut||KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.TimedOut|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.Spawn.ChildExited||KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.Spawn.ChildExited|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.systemd1.NoSuchUnit||KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.systemd1.NoSuchUnit|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive is not running, so “doc.bin” was not opened in OneDrive. Start it with “systemctl --user start konedrived” and try again.
+open-online|org.freedesktop.DBus.Error.NoReply||KOneDrive stopped before it found the page of “doc.bin” in OneDrive. Start KOneDrive again (“systemctl --user start konedrived”) and try again.
+open-online|org.freedesktop.DBus.Error.NoReply|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive stopped before it found the page of “doc.bin” in OneDrive. Start KOneDrive again (“systemctl --user start konedrived”) and try again.
+open-online|org.example.Error.InUse||Opening “doc.bin” in OneDrive failed: org.example.Error.InUse
+open-online|org.example.Error.InUse|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|Opening “doc.bin” in OneDrive failed: /home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first
+open-online|org.konedrive.Dolphin.AlreadyWaiting||KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+open-online|org.konedrive.Dolphin.AlreadyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.
+open-online|org.konedrive.Dolphin.TooManyWaiting||1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not opened in OneDrive. Try again once some of them have finished.
+open-online|org.konedrive.Dolphin.TooManyWaiting|/home/u/OneDrive/Docs/doc.bin is pinned by /home/u/OneDrive/Docs: unpin it first|1,000 requests to KOneDrive are already waiting for an answer, so “doc.bin” was not opened in OneDrive. Try again once some of them have finished.

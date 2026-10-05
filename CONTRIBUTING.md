@@ -106,6 +106,27 @@ The same workflow checks that every link in a doc comment resolves (what it does
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
 ```
 
+## A new reason or refusal
+
+The daemon sends codes; what a code means to a person is written once, in
+`crates/konedrive-text` (`docs/design/desktop.md` §2.10), and the window, the Dolphin plugin
+and `konedrivectl` all take it from there. For a new code:
+
+1. **The code**: a variant with its key in `crates/konedrive-reason/src/lib.rs` (`Reason`,
+   `LocalSkip`, `WaitsFor`), or a name in `crates/konedrive-dbus/src/refusal.rs` (`Refusal`).
+2. **Its words**: an entry in the catalogue — `src/reasons.rs`, `src/waits.rs` or
+   `src/files.rs` of `konedrive-text` — written as the window or the plugin shows it. One
+   sentence, unless the clients must name their own controls. The crate's tests fail until
+   the code has an entry; an entry may say that the code has no sentence.
+3. **The generated C++**: write it again and commit it with the change:
+
+```
+KONEDRIVE_UPDATE_GENERATED=1 cargo test -p konedrive-text
+```
+
+`app/generated/` and `dolphin/src/generated/` are never edited by hand. `cargo test -p
+konedrive-text` fails when they are not what the catalogue gives, and runs on every pull request.
+
 ## The limitations log
 
 `docs/limitations/` is the one place for everything in KOneDrive that is

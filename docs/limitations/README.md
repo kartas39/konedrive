@@ -421,6 +421,7 @@ application must never read zeros where real content should be.
 - [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but the helper keeps its own
 - [D58](D58.md) — The rule for locks is not asked of the helper or of test doubles
 - [D59](D59.md) — The check of the doc links sees a broken link, not a wrong one
+- [D60](D60.md) — The words for the codes are written once, except those still written for one client.
 
 ---
 
@@ -492,7 +493,7 @@ window's status, activity and conflicts, all read from the folder's interfaces (
 - [A19](A19.md) — Places: one entry per account folder; the single-account entry taken over in place.
 - [A20](A20.md) — Held removals: the notification's baseline and its default.
 - [A21](A21.md) — Upload progress reuses the download jobs' rules, and a retry looks finished.
-- [A22](A22.md) — The reasons, the kinds and copies are read by their codes, in words kept apart from `konedrivectl`'s.
+- [A22](A22.md) — The kinds and copies are read by their codes; the reasons' words are the catalogue's.
 - [A23](A23.md) — Pausing from the tray pauses every account that can be paused.
 - [A24](A24.md) — What is kept back is shown by reason; files only where each needs something done, 20 at most.
 - [A25](A25.md) — The account's own hold shows as paused, and the tray lifts it for every account.

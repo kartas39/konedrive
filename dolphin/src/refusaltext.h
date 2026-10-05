@@ -1,8 +1,10 @@
 // What to tell a person when the daemon did not do what they asked for.
 //
 // Matches the D-Bus error *name*, never the message, and says what happened
-// to their file and what they can do -- the same things `konedrivectl` says
-// (crates/konedrivectl/src/text/refusals.rs, `refusal_text`), in Dolphin's words.
+// to their file and what they can do. The sentences are not written here:
+// they are the catalogue's (crates/konedrive-text, src/files.rs), which
+// `konedrivectl` reads too, generated into generated/refusaltexts.cpp. What
+// is here is which sentence a failure gets, and how several are summed up.
 
 #pragma once
 

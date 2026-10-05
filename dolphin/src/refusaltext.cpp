@@ -1,6 +1,7 @@
 #include "refusaltext.h"
 
 #include "filestate.h"
+#include "generated/refusaltexts.h"
 #include "syncclient.h"
 
 #include <KLocalizedString>
@@ -34,22 +35,6 @@ bool daemonStopped(const QString &name)
     return name == QLatin1String("org.freedesktop.DBus.Error.NoReply");
 }
 
-/// "…, so “file” was not %1." -- the same shape for every generic refusal.
-QString wasNot(Operation operation)
-{
-    switch (operation) {
-    case Operation::AlwaysKeep:
-        return i18nc("@info how a file was not changed", "kept on this device");
-    case Operation::Unpin:
-        return i18nc("@info how a file was not changed", "unpinned");
-    case Operation::FreeUpSpace:
-        return i18nc("@info how a file was not changed", "freed up");
-    case Operation::OpenOnline:
-        return i18nc("@info how a file was not changed", "opened in OneDrive");
-    }
-    return {};
-}
-
 /// Refusals with the same key are "the same reason".
 QString reasonKey(const Failure &failure)
 {
@@ -78,203 +63,26 @@ QString refusalText(Operation operation, const Failure &failure)
     const QString &name = failure.errorName;
 
     if (name == QLatin1String(AlreadyWaitingError)) {
-        return i18nc("@info", "KOneDrive has not yet answered an earlier request for “%1”, so it was not asked again.", file);
+        return alreadyWaitingSentence(file);
     }
     if (name == QLatin1String(TooManyWaitingError)) {
-        return i18nc("@info",
-                      "%2 requests to KOneDrive are already waiting for an answer, so “%1” was not %3. "
-                      "Try again once some of them have finished.",
-                      file,
-                      SyncClient::MaxCallsInFlight,
-                      wasNot(operation));
+        return tooManyWaitingSentence(operation, file, SyncClient::MaxCallsInFlight);
     }
     if (daemonNotRunning(name)) {
-        return i18nc("@info",
-                      "KOneDrive is not running, so “%1” was not %2. "
-                      "Start it with “systemctl --user start konedrived” and try again.",
-                      file,
-                      wasNot(operation));
+        return notRunningSentence(operation, file);
     }
     if (daemonStopped(name)) {
-        switch (operation) {
-        case Operation::AlwaysKeep:
-            return i18nc("@info",
-                          "KOneDrive stopped before it finished downloading everything of “%1”. "
-                          "Its emblem shows whether it is fully downloaded yet; if it is not, start KOneDrive again "
-                          "(“systemctl --user start konedrived”) and try again.",
-                          file);
-        case Operation::Unpin:
-            return i18nc("@info",
-                          "KOneDrive stopped before it finished unpinning “%1”. "
-                          "Its emblem shows whether it is still pinned; if it is, start KOneDrive again "
-                          "(“systemctl --user start konedrived”) and try again.",
-                          file);
-        case Operation::FreeUpSpace:
-            return i18nc("@info",
-                          "KOneDrive stopped before it finished freeing up “%1”. "
-                          "Its emblem shows whether it still takes space; if it does, start KOneDrive again "
-                          "(“systemctl --user start konedrived”) and try again.",
-                          file);
-        case Operation::OpenOnline:
-            return i18nc("@info",
-                          "KOneDrive stopped before it found the page of “%1” in OneDrive. Start KOneDrive again "
-                          "(“systemctl --user start konedrived”) and try again.",
-                          file);
-        }
+        return stoppedSentence(operation, file);
     }
-
-    const QString refusal = name.startsWith(KonedriveErrorPrefix) ? name.mid(KonedriveErrorPrefix.size()) : QString();
-
-    if (refusal == QLatin1String("NoHelper")) {
-        switch (operation) {
-        case Operation::AlwaysKeep:
-            return i18nc("@info",
-                          "The konedrive helper is not connected, so nothing was changed. Keeping “%1” "
-                          "on this device must first have the helper stop letting its opens through unchecked — a "
-                          "download that failed partway would otherwise leave it reading as zeros. Try again once "
-                          "the helper is back (“konedrivectl sync status” shows when it is).",
-                          file);
-        case Operation::Unpin:
-            return i18nc("@info",
-                          "The konedrive helper is not connected, so nothing was changed. Unpinning “%1” needs "
-                          "the helper too, the same as any other change under KOneDrive's watch. Try again once "
-                          "KOneDrive is connected to the helper again — it reconnects on its own.",
-                          file);
-        case Operation::FreeUpSpace:
-            return i18nc("@info",
-                          "The konedrive helper is not connected, so nothing was changed. Freeing up "
-                          "“%1” must first have the helper take off any mark that lets the file's "
-                          "opens through unchecked, or the emptied file could read as zeros from then on. Try again once "
-                          "KOneDrive is connected to the helper again — it reconnects on its own.",
-                          file);
-        case Operation::OpenOnline:
-            // WebUrl needs no helper; named anyway, it is told as any other failure.
-            break;
-        }
+    // The name decides, never the message; the message is only what a
+    // sentence has a place for.
+    const QString sentence = refusalSentence(operation, name, file, failure.message);
+    if (!sentence.isEmpty()) {
+        return sentence;
     }
-    // "Open in OneDrive" (WebUrl): OneDrive is asked each time.
-    // The daemon's message is the cause -- no network, a locked secret
-    // storage, an answer that cannot be read -- shown when there is one.
-    if (refusal == QLatin1String("Unreachable")) {
-        return failure.message.isEmpty() ? i18nc("@info", "OneDrive could not be reached.")
-                                         : i18nc("@info", "OneDrive could not be reached: %1", failure.message);
-    }
-    if (operation == Operation::OpenOnline) {
-        if (refusal == QLatin1String("NotUploaded")) {
-            return i18nc("@info", "“%1” is not uploaded yet, so it has no page in OneDrive.", file);
-        }
-        if (refusal == QLatin1String("NotSignedIn")) {
-            return i18nc("@info", "The account is not signed in, so OneDrive cannot be asked for the page of “%1”. Sign in and try again.", file);
-        }
-        if (refusal == QLatin1String("OutsideRoot")) {
-            return i18nc("@info", "“%1” is not inside any of KOneDrive's folders, so it has no page in OneDrive.", file);
-        }
-        if (refusal == QLatin1String("NotManaged")) {
-            return i18nc("@info", "“%1” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.", file);
-        }
-    }
-    if (refusal == QLatin1String("NoRoot")) {
-        return i18nc("@info",
-                      "The folder holding “%1” is no longer registered with KOneDrive, so nothing was "
-                      "done with it.",
-                      file);
-    }
-    if (refusal == QLatin1String("NoSource")) {
-        return i18nc("@info",
-                      "KOneDrive does not know where to download “%1” from yet. Run "
-                      "“konedrivectl sync populate-from” first; KOneDrive does not remember that directory "
-                      "across a restart, so run it again after one (files already there are left alone).",
-                      file);
-    }
-    if (refusal == QLatin1String("OutsideRoot")) {
-        return i18nc("@info",
-                      "“%1” is not inside any of KOneDrive's folders, so nothing was done with it. Only files "
-                      "and folders inside them can be kept on this device or freed up.",
-                      file);
-    }
-    if (refusal == QLatin1String("NotManaged")) {
-        switch (operation) {
-        case Operation::AlwaysKeep:
-            return i18nc("@info",
-                          "“%1” is not a OneDrive file: it is a file of your own in the sync folder, "
-                          "so there is nothing for KOneDrive to keep downloaded.",
-                          file);
-        case Operation::Unpin:
-            return i18nc("@info",
-                          "“%1” is not a OneDrive file: it is a file of your own in the sync folder, "
-                          "so it was never pinned.",
-                          file);
-        case Operation::FreeUpSpace:
-            return i18nc("@info",
-                          "“%1” is not a OneDrive file: it is a file of your own in the sync folder, "
-                          "and KOneDrive never frees the space of a file it could not download again.",
-                          file);
-        case Operation::OpenOnline:
-            break; // answered above
-        }
-    }
-    if (refusal == QLatin1String("NotHydrated")) {
-        return i18nc("@info", "“%1” is not downloaded, so there is no space to free — it already takes none.", file);
-    }
-    if (refusal == QLatin1String("ModifiedLocally")) {
-        switch (operation) {
-        case Operation::AlwaysKeep:
-            return i18nc("@info",
-                          "“%1” was changed here and has not been uploaded, so downloading it again "
-                          "would overwrite your edits. It was left exactly as it is.",
-                          file);
-        case Operation::Unpin:
-            return i18nc("@info", "“%1” was changed here and has not been uploaded, so it was left exactly as it is.", file);
-        case Operation::FreeUpSpace:
-            return i18nc("@info",
-                          "“%1” was changed here and has not been uploaded, so freeing its space would "
-                          "lose your edits. It was left exactly as it is.",
-                          file);
-        case Operation::OpenOnline:
-            break;
-        }
-    }
-    // Free up refused for a file with changes waiting to be uploaded (write
-    // design §9). The name is matched ahead of the daemon's side, which W5b adds.
-    if (refusal == QLatin1String("NotUploaded") && operation == Operation::FreeUpSpace) {
-        return i18nc("@info",
-                      "“%1” is not uploaded yet, so freeing it up would lose the changes made here. "
-                      "It was left exactly as it is.",
-                      file);
-    }
-    if (refusal == QLatin1String("InUse")) {
-        return i18nc("@info",
-                      "“%1” is open in another program, so its space cannot be freed right now. Close it "
-                      "there and try again.",
-                      file);
-    }
-    if (refusal == QLatin1String("NotAllowed")) {
-        // The daemon refuses the whole call if any path it was given is
-        // pinned by an ancestor, and its own message already names that
-        // path and the folder that pins it first ("<path> is pinned by
-        // <folder>: unpin it first", pinning.md §7) -- so it
-        // is shown as is, with no file name of ours put in front of it:
-        // `failure.path` is whichever path in the batch this Failure
-        // happens to be for, not necessarily the one the daemon meant
-        // (review #18).
-        return operation == Operation::FreeUpSpace ? i18nc("@info", "Could not free up space: %1", failure.message)
-                                                    : i18nc("@info", "Could not change what is kept on this device: %1", failure.message);
-    }
-
     // Failed, a name this plugin does not know, or an error from the bus
     // itself: the daemon's message is all there is, so it is kept whole.
-    const QString detail = failure.message.isEmpty() ? name : failure.message;
-    switch (operation) {
-    case Operation::AlwaysKeep:
-        return i18nc("@info", "Keeping “%1” on this device failed: %2", file, detail);
-    case Operation::Unpin:
-        return i18nc("@info", "Unpinning “%1” failed: %2", file, detail);
-    case Operation::FreeUpSpace:
-        return i18nc("@info", "Freeing up “%1” failed: %2", file, detail);
-    case Operation::OpenOnline:
-        return i18nc("@info", "Opening “%1” in OneDrive failed: %2", file, detail);
-    }
-    return detail;
+    return failedSentence(operation, file, failure.message.isEmpty() ? name : failure.message);
 }
 
 QString failureSummary(Operation operation, const QList<Failure> &failures)
@@ -310,7 +118,7 @@ QString failureSummary(Operation operation, const QList<Failure> &failures)
                                 "One more file was not %2 for the same reason.",
                                 "%1 more files were not %2 for the same reason.",
                                 others,
-                                wasNot(operation)));
+                                wasNotWords(operation)));
         }
         paragraphs.append(text);
     }

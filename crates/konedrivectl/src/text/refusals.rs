@@ -241,6 +241,8 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
         (Some(Refusal::NoSource), _) if context.source == "onedrive" => {
             "the folder is not connected yet; try again in a moment".to_owned()
         }
+        // The catalogue's sentences end with a full stop; this table's do not.
+        (Some(Refusal::NoHelper), Some(advice)) if text.ends_with('.') => format!("{text} {}", sentence(advice)),
         (Some(Refusal::NoHelper), Some(advice)) => format!("{text}. {}", sentence(advice)),
         _ => text,
     }

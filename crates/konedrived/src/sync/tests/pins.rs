@@ -366,3 +366,20 @@ async fn the_menus_share_says_a_free_up_would_be_refused_without_the_helper() {
     assert!(matches!(service.check_free_up(paths).await, Err(SyncError::NoHelper)));
     assert_eq!(service.item_state(&file).await, "online-only", "asking downloaded nothing");
 }
+
+/// Every reason "Free up space" is disabled for has its words in the catalogue
+/// (`konedrive-text`, its `menu`), which Dolphin's tooltips are generated from, and the
+/// catalogue has no other: a new reason does not compile here until it is listed.
+#[test]
+fn every_reason_the_menu_gives_has_its_words_in_the_catalogue() {
+    use crate::sync::menu::FreeUpWhy;
+    let all = [FreeUpWhy::PinnedAbove, FreeUpWhy::NoHelper, FreeUpWhy::NotUploaded, FreeUpWhy::Unknown];
+    for why in all {
+        match why {
+            FreeUpWhy::PinnedAbove | FreeUpWhy::NoHelper | FreeUpWhy::NotUploaded | FreeUpWhy::Unknown => {}
+        }
+    }
+    let codes: Vec<&str> = all.iter().map(|why| why.as_str()).collect();
+    let worded: Vec<&str> = konedrive_text::menu::FREE_UP_WHY.iter().map(|text| text.why).collect();
+    assert_eq!(codes, worded);
+}

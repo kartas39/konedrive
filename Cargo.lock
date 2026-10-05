@@ -1141,6 +1141,7 @@ version = "0.1.1"
 name = "konedrive-text"
 version = "0.1.1"
 dependencies = [
+ "konedrive-dbus",
  "konedrive-reason",
 ]
 
@@ -1220,6 +1221,7 @@ dependencies = [
  "konedrive-fs",
  "konedrive-graph",
  "konedrive-proto",
+ "konedrive-text",
  "konedrive-tree",
  "konedrived",
  "libc",
