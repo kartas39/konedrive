@@ -121,7 +121,7 @@ pub struct Preflight {
 
 pub async fn run(options: Options) -> Ended {
     // Guard 1's first half, and guard 5's part here, before any request.
-    if !DriveId::new(options.test_drive.as_str()).is_some_and(|drive| options.config.writes_allowed(&drive)) {
+    if !DriveId::new(options.test_drive.as_str()).is_some_and(|drive| options.config.read_write_export_allowed(&drive)) {
         return Ended::Refused(format!(
             "--graph-test-drive {} is not in write_test_drive_ids in the daemon's config.toml",
             options.test_drive

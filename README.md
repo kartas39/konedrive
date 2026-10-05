@@ -214,7 +214,7 @@ removes it all again, apart from the helper.
   and **Remove Account…** are on the **Account** page. Removing an account signs it out and
   forgets it on this computer: its folder's files stay where they are (files that were never
   downloaded stay as empty placeholders), and nothing in OneDrive is deleted. Every account is
-  read-only in this version (a developer's test account aside: see "Uploading changes"). How it
+  read-only until you turn uploading on for it (see "Uploading changes"). How it
   works:
   [`docs/design/accounts.md`](docs/design/accounts.md).
 
@@ -321,12 +321,12 @@ removes it all again, apart from the helper.
 
 ## Uploading changes
 
-**Held back in this version.** KOneDrive can send what you change in the folder back to OneDrive,
-but only for a test account a developer has listed by hand in `write_test_drive_ids` in
-`~/.config/konedrive/config.toml`, until uploads have been checked against a real test account
-and released. For any other account, switching is refused and the account stays read-only.
+**Off until you turn it on.** KOneDrive can send what you change in the folder back to OneDrive.
+Every account starts read-only, and uploading is your choice, account by account. Once it is on
+for an account, what you change, move or delete in its folder is changed, moved or deleted in your
+OneDrive: nothing but that switch stands in between.
 
-When it is allowed, it works like this:
+It works like this:
 
 - **Turn it on per account**: **Upload changes made on this computer** on the **Account** page, or
   `konedrivectl account mode read-write`. It signs in again, in the browser, for permission to
@@ -573,12 +573,14 @@ inside the guest. See `docs/limitations/`, W15.
 
 Uploads are checked against a real account only on a separate test account, by hand, with
 `konedrive-write-test` (`tests/write-account/`): it refuses to start unless the drive is the test
-account's, is on the write allow-list, and looks like a test account, and it writes only inside a
+account's, is listed in `write_test_drive_ids` in `config.toml`, and looks like a test account, and it writes only inside a
 folder of its own. How to run it: [`docs/design/writes.md`](docs/design/writes.md) §12.1.
 
 For a heavier, end-to-end workout of the upload path — many files, edits, moves, a file moved or
 edited mid-upload, deletes — against a real read-write test account, see
-[`tests/stress/README.md`](tests/stress/README.md).
+[`tests/stress/README.md`](tests/stress/README.md). It refuses to start unless the account's drive
+is listed in `write_test_drive_ids` in `config.toml`: that an account is read-write does not make
+it a test account.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a change, and
 [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
@@ -618,8 +620,8 @@ keep on this device") and multiple accounts. In order, what comes next:
    ("Install from RPM"); a COPR repository comes next, so that `dnf install` and `dnf upgrade`
    find them.
 2. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
-   read-only mirror into a real sync client. Built, and held back for test accounts ("Uploading
-   changes"); released once checked against a real test account.
+   read-only mirror into a real sync client. Built, and off until you turn it on for an account
+   ("Uploading changes").
 
 Work or school accounts (Microsoft 365, OneDrive for Business) come later, in a phase of their own
 (`docs/limitations/`, F49).

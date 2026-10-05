@@ -27,7 +27,7 @@ impl TokenExport {
     }
 
     /// The test-account harness's token, which can change files: refused `WritesNotAllowed`
-    /// for an account the gate does not let through, and `ModeNotGranted` for one that is
+    /// for an account whose drive `write_test_drive_ids` does not list, and `ModeNotGranted` for one that is
     /// not read-write.
     async fn read_write(&self) -> std::result::Result<String, Fault> {
         self.service.read_write_token().await.map_err(export_fault)

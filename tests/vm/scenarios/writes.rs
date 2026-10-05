@@ -82,14 +82,13 @@ impl<'c> World<'c> {
             std::fs::write(ctx.source_dir.join(id), content).map_err(|e| e.to_string())?;
         }
         let persist = ctx.runtime.block_on(crate::registration::one_account(&base))?;
-        // The write gate open for the fake drive, as a read-write account on the list has it
-        // (write design §2.3): `config.toml` says read-write, lists the drive and records it as
+        // The write gate open for the fake drive, as a read-write account has it
+        // (write design §2.3): `config.toml` says read-write and records the drive as
         // the account's; the account runs read-write, its token can write, and was seen to reach
         // that drive. The worker asks all of it before each row.
         persist
             .store
             .update(|config| {
-                config.write_test_drive_ids = konedrived::config::DriveId::new(FAKE_DRIVE).into_iter().collect();
                 let account = config
                     .accounts
                     .iter_mut()

@@ -24,11 +24,11 @@ pub struct Config {
     /// The Entra application every account signs in with.
     #[serde(default)]
     pub client_id: String,
-    /// The development gate of the write phase (`docs/design/writes.md` §2.3): the drive ids of the test
-    /// accounts that may be read-write. Every other account stays read-only, whatever its
-    /// `mode` says. Empty — the default — lets no account through: the developer install
-    /// sets it to the test account's drive by hand, and nothing in the daemon writes it. The
-    /// release removes the gate in a commit of its own (limitations log F60).
+    /// The drives the development build may hand a read-write token out for
+    /// (`TokenExport.ReadWrite`; `docs/design/writes.md` §2.3, §12.1): the test accounts'. It decides
+    /// nothing else — an account's mode is the user's choice, whatever its drive. Empty, the
+    /// default, hands none out: the developer install sets it to the test account's drive by
+    /// hand, and nothing in the daemon writes it (limitations log F60).
     #[serde(default, deserialize_with = "drives", skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<DriveId>,
     /// Whether every account holds its background work back on a metered connection
@@ -316,9 +316,9 @@ impl RootConfig {
 }
 
 /// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in
-/// `config.toml` is the one the user chose; the account runs read-write only while the gate
-/// lets its drive through ([`Config::writes_allowed`]) and its token carries
-/// `Files.ReadWrite` (`AccountService::mode`). A value this version does not know loads as
+/// `config.toml` is the one the user chose; the account runs read-write only while its token
+/// carries `Files.ReadWrite` and reaches the drive recorded for it (`AccountService::mode`).
+/// A value this version does not know loads as
 /// read-only, is logged, and is written back as read-only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -461,11 +461,11 @@ impl Config {
         self.accounts.iter_mut().find(|a| a.id == *id)
     }
 
-    /// The development gate (`docs/design/writes.md` §2.3): whether the account of `drive_id` may be
-    /// read-write. Only a drive listed in `write_test_drive_ids` may; nothing may while the
-    /// list is empty, as it is by default. An account never signed in has no drive to ask
-    /// about.
-    pub fn writes_allowed(&self, drive: &DriveId) -> bool {
+    /// Whether `TokenExport.ReadWrite` may hand out a token for `drive` (`docs/design/writes.md`
+    /// §2.3): only for a drive listed in `write_test_drive_ids`, and for none while the list
+    /// is empty, as it is by default. It is asked for nothing else: the list does not decide
+    /// an account's mode.
+    pub fn read_write_export_allowed(&self, drive: &DriveId) -> bool {
         self.write_test_drive_ids.contains(drive)
     }
 

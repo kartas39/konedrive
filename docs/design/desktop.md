@@ -49,7 +49,7 @@ to §2.7.
 |---|---|
 | `Id` (`s`) | the account's id, the last element of its object path: 12 lowercase hexadecimal characters |
 | `Label` (`s`) | the account's name ([accounts.md](accounts.md) §2) |
-| `Mode` (`s`) | the mode the account runs in, `read-only` or `read-write`: read-write only while `config.toml` says so, the write gate lets it through and its token carries `Files.ReadWrite` ([accounts.md](accounts.md) §10) |
+| `Mode` (`s`) | the mode the account runs in, `read-only` or `read-write`: read-write only while `config.toml` says so, and its token carries `Files.ReadWrite` and reaches the account's recorded drive ([accounts.md](accounts.md) §10) |
 | `State` (`s`) | `signed-out`, `signing-in` or `signed-in` |
 | `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); empty when none |
 | `DisplayName`, `Email` (`s`) | from `GET /me` |
@@ -57,7 +57,7 @@ to §2.7.
 | `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1) |
 | `CancelSignIn()`, `SignOut()`, `RefreshInfo()` | as named; `SignOut` deletes the refresh token; `RefreshInfo` reads the name, the address and the quota again |
 | `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
-| `SetMode(s mode, b force) → s sign_in_url` | switches to `read-only` or `read-write` ([accounts.md](accounts.md) §10); the URL of the sign-in a switch to read-write needs, empty when none is needed. Refused `WritesNotAllowed` by the write gate, `NotSignedIn`, `PendingUploads` unless `force`, `InvalidArgs` for another mode. A switch to read-write ends in `Mode` turning `read-write`, or in `LastError` saying why not (limitations log F64) |
+| `SetMode(s mode, b force) → s sign_in_url` | switches to `read-only` or `read-write` ([accounts.md](accounts.md) §10); the URL of the sign-in a switch to read-write needs, empty when none is needed. Refused `NotSignedIn`, `PendingUploads` unless `force`, `InvalidArgs` for another mode. A switch to read-write ends in `Mode` turning `read-write`, or in `LastError` saying why not (limitations log F64) |
 
 Neither the refresh token nor the access token is ever exposed through `Account`; `TokenExport`
 (§2.7) is a development build's.
@@ -209,7 +209,8 @@ Every refusal is an error name under `org.konedrive.Error`: `NotSignedIn`, `Alre
 `NotHydrated`, `ModifiedLocally`, `InUse`, `NoConflict`, `NotAllowed` (a free-up of something a pin
 keeps, [pinning.md](pinning.md) §5), `Overlaps` (a folder that is, is inside, or contains another
 account's; the message names that account), `NoAccount` (`Remove` of a path that names no account),
-`WritesNotAllowed` (the write gate refuses read-write for this account), `ModeNotGranted` (the
+`WritesNotAllowed` (`TokenExport.ReadWrite` only: the account's drive is not in
+`write_test_drive_ids`), `ModeNotGranted` (the
 account's token does not carry `Files.ReadWrite`), `PendingUploads` (a switch to read-only while
 changes wait to be uploaded), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
 in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
@@ -224,8 +225,8 @@ Served only by a daemon built with the `dev-tools` feature (`scripts/dev-install
 released package has no such interface (limitations log W11). `ReadOnly() → s` returns an access token of the account for a test run in the VM — about an
 hour of `Files.Read` on that account's drive, whatever its mode, never the refresh token
 ([sync.md](sync.md) §12.2). `ReadWrite() → s`, for the test-account harness only, returns
-one that can change files: refused `WritesNotAllowed` for an account the write gate does not let
-through, `ModeNotGranted` for one that is not read-write.
+one that can change files: refused `WritesNotAllowed` for an account whose drive
+`write_test_drive_ids` does not list, `ModeNotGranted` for one that is not read-write.
 
 ### 2.8 `Accounts`
 
@@ -323,7 +324,7 @@ F51).
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
 | `dev add-account <label>` | — | a development build's only (`dev-tools`); `DevTools.AddAccount`: a signed-out account with no folder, which never has to sign in; prints its id |
-| `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
+| `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a read-write test account listed in `write_test_drive_ids` gets |
 
 The path commands go through `Files`, so the path decides the account. When one is refused
 `OutsideRoot`, the CLI reads every account's folder to say where the path is not, which is its own

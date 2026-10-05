@@ -20,9 +20,12 @@ fn account(id: &str, label: &str) -> AccountConfig {
     AccountConfig::new(AccountId::new(id), label, Origin::Added)
 }
 
-/// Whether the gate lets the account's drive through, as the file says now.
-fn writes_allowed(store: &ConfigStore, id: &AccountId) -> bool {
-    store.write_standing(id).is_some_and(|standing| standing.writable_drive.is_some())
+/// Whether `TokenExport.ReadWrite` may hand a token out for the account's drive, as the file
+/// says now.
+fn export_allowed(store: &ConfigStore, id: &AccountId) -> bool {
+    store.current().is_some_and(|config| {
+        config.account(id).and_then(|account| account.drive_id.as_ref()).is_some_and(|drive| config.read_write_export_allowed(drive))
+    })
 }
 
 #[test]
@@ -256,11 +259,14 @@ async fn an_unknown_mode_loads_as_read_only() {
     assert_eq!(Mode::parse("rw"), None);
 }
 
-/// The write design's development gate (§7) refuses every drive by default — the list is
-/// empty — and an account never signed in (no drive) even when the list is not, whatever a
-/// hand wrote into it. Only a listed drive passes, and only the file itself lists one.
+/// `write_test_drive_ids` is still read, and decides one thing: which drives the read-write
+/// token export is handed out for. Empty, as it is by default, it refuses that export for
+/// every drive and nothing else: what the file says of an account's writes — its mode and
+/// its recorded drive — is the same with the list empty, and with the drive on it. An
+/// account never signed in (no drive) is exported for by no list, whatever a hand wrote
+/// into it.
 #[tokio::test]
-async fn the_write_gate_refuses_every_drive_by_default() {
+async fn the_list_refuses_the_read_write_token_export_and_nothing_else() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(&Paths::in_dir(dir.path())).await;
     let real = store.add_account("Personal").unwrap().id;
@@ -268,31 +274,46 @@ async fn the_write_gate_refuses_every_drive_by_default() {
     let fresh = store.add_account("New").unwrap().id;
     store.record_drive(&real, &drive("REAL")).unwrap();
     store.record_drive(&test, &drive("TEST")).unwrap();
+    store
+        .update(|c| {
+            c.account_mut(&real).unwrap().mode = Mode::ReadWrite;
+            c.account_mut(&fresh).unwrap().mode = Mode::ReadWrite;
+            Ok::<_, ConfigError>(())
+        })
+        .unwrap();
     assert!(store.snapshot().write_test_drive_ids.is_empty(), "empty by default");
     for id in [&real, &test, &fresh] {
-        assert!(!writes_allowed(&store, id), "{id}: nothing is writable while the list is empty");
+        assert!(!export_allowed(&store, id), "{id}: no token is exported while the list is empty");
     }
-    // A hand edit of the list counts at once.
+    // The mode is the user's choice, whatever the list says: an unlisted drive may be written to.
+    let standing = |id: &AccountId| store.write_standing(id);
+    assert_eq!(standing(&real), Some(WriteStanding { mode: Mode::ReadWrite, recorded_drive: Some(drive("REAL")) }));
+    assert!(standing(&real).unwrap().allows_writes());
+    assert_eq!(standing(&test), Some(WriteStanding { mode: Mode::ReadOnly, recorded_drive: Some(drive("TEST")) }));
+    assert!(!standing(&test).unwrap().allows_writes(), "read-only is read-only");
+    assert_eq!(standing(&fresh), Some(WriteStanding { mode: Mode::ReadWrite, recorded_drive: None }));
+    assert!(!standing(&fresh).unwrap().allows_writes(), "an account with no recorded drive is read-only");
+    assert_eq!(standing(&id("000000000000")), None, "no such account");
+
+    // A hand edit of the list counts at once, for the export alone.
     let empty = std::fs::read_to_string(store.file()).unwrap();
     let listed = format!("write_test_drive_ids = [\"TEST\", \"\"]\n{empty}");
     std::fs::write(store.file(), &listed).unwrap();
-    assert!(writes_allowed(&store, &test));
-    assert_eq!(store.write_standing(&test), Some(WriteStanding { mode: Mode::ReadOnly, writable_drive: Some(drive("TEST")) }));
-    assert!(!writes_allowed(&store, &real), "a drive not listed stays read-only");
-    assert!(!writes_allowed(&store, &fresh), "an empty entry lets no account without a drive through");
-    assert_eq!(store.write_standing(&id("000000000000")), None, "no such account");
+    assert!(export_allowed(&store, &test));
+    assert!(!export_allowed(&store, &real), "a drive not listed is not exported for");
+    assert!(!export_allowed(&store, &fresh), "an empty entry lets no account without a drive through");
+    assert!(standing(&real).unwrap().allows_writes() && !standing(&test).unwrap().allows_writes(), "the list changes no mode");
     // The empty entry names no drive: it is not kept, and is gone at the next write.
     store.set_label(&fresh, "Newer").unwrap();
     let written = std::fs::read_to_string(store.file()).unwrap();
     assert!(written.contains("write_test_drive_ids = [\"TEST\"]\n"), "{written}");
-    assert!(writes_allowed(&store, &test), "the listed drive stays");
+    assert!(export_allowed(&store, &test), "the listed drive stays");
 
     std::fs::write(store.file(), &empty).unwrap();
-    assert!(!writes_allowed(&store, &test), "the drive taken off the list by hand");
-    std::fs::write(store.file(), &listed).unwrap();
-    assert!(writes_allowed(&store, &test));
+    assert!(!export_allowed(&store, &test), "the drive taken off the list by hand");
     std::fs::write(store.file(), "config_version = 2\nthis is not [toml\n").unwrap();
-    assert_eq!(store.write_standing(&test), None, "an unreadable file fails closed");
+    assert_eq!(store.write_standing(&real), None, "an unreadable file fails closed");
+    assert!(!export_allowed(&store, &test));
 }
 
 /// A list that is not a list makes the whole file unreadable: the store is poisoned, no

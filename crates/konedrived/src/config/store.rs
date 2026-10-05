@@ -35,21 +35,20 @@ pub enum ConfigError {
 }
 
 /// What `config.toml` says about one account's writes, from one reading of the file: the
-/// mode and the list it is gated by are never read at different times.
+/// mode and the drive are never read at different times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteStanding {
     /// The mode the user chose.
     pub mode: Mode,
-    /// The account's drive, when the development gate lets it through
-    /// ([`Config::writes_allowed`]); `None` for a drive not listed and for an account with no
-    /// drive yet.
-    pub writable_drive: Option<DriveId>,
+    /// The drive recorded for the account; `None` for an account with no drive yet, which
+    /// is read-only whatever its mode says.
+    pub recorded_drive: Option<DriveId>,
 }
 
 impl WriteStanding {
-    /// Whether the file lets the account write: read-write chosen, and the drive let through.
+    /// Whether the file lets the account write: read-write chosen, and a drive recorded.
     pub fn allows_writes(&self) -> bool {
-        self.mode == Mode::ReadWrite && self.writable_drive.is_some()
+        self.mode == Mode::ReadWrite && self.recorded_drive.is_some()
     }
 }
 
@@ -320,7 +319,7 @@ impl ConfigStore {
     }
 
     /// `config.toml` as it is *now*, read again: what a hand edit made since the daemon
-    /// started (a drive added to `write_test_drive_ids`) counts. `None` for a store that is
+    /// started (a mode changed, a drive added to `write_test_drive_ids`) counts. `None` for a store that is
     /// poisoned and a file that cannot be read now, which callers take as refusing writes.
     ///
     /// The file is read without the store's lock: every write replaces it in one step
@@ -337,14 +336,13 @@ impl ConfigStore {
     }
 
     /// What `config.toml` says *now* about account `id`'s writes: the file is read again, so
-    /// an edit of the gate's list — a drive taken off it — counts at once, not at the next
+    /// a hand edit — the mode set back to read-only — counts at once, not at the next
     /// write. `None` for a store that is poisoned, a file that cannot be read now, and an
     /// account that is not there: callers take that as read-only, and the gate fails closed.
     pub fn write_standing(&self, id: &AccountId) -> Option<WriteStanding> {
         let config = self.current()?;
         let account = config.account(id)?;
-        let writable_drive = account.drive_id.clone().filter(|drive| config.writes_allowed(drive));
-        Some(WriteStanding { mode: account.mode, writable_drive })
+        Some(WriteStanding { mode: account.mode, recorded_drive: account.drive_id.clone() })
     }
 
     /// Records `drive` as the account's drive when it has none yet, and returns the

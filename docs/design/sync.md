@@ -18,8 +18,8 @@ switched to read-write. It reads from OneDrive and never writes to it:
 
 A **read-write** account's folder is unlocked, and what is changed in it goes up: the watcher, the
 examination, the outbox, conflicts on write, and what its cycle does differently are in
-[writes.md](writes.md). In this version only a test account can be read-write
-([writes.md](writes.md) §2.3). Pinning is described in [pinning.md](pinning.md).
+[writes.md](writes.md). Which mode an account has is its user's choice, for any signed-in account
+([writes.md](writes.md) §2.2, §2.3). Pinning is described in [pinning.md](pinning.md).
 
 Everything here is per account: each account has its own folder, and its folder its own tree
 store, poller, activity log and conflicts. How several accounts share one daemon — and one link to
@@ -548,7 +548,7 @@ refuses the sign-in if that drive is not this account's, or is already another a
   `0600` file. Any process of the same user on the session bus can obtain that hour of read access, which
   is no more than it has by opening files in the folder (limitations log W11). With `--read-write`
   (`TokenExport.ReadWrite()`) it hands out a token that can write, for the test-account harness
-  only, and only for a read-write account the write gate lets through ([writes.md](writes.md)
+  only, and only for a read-write account whose drive is in `write_test_drive_ids` ([writes.md](writes.md)
   §12.1).
 
 At startup, a refresh token found by attribute search (which does not unlock the wallet) means

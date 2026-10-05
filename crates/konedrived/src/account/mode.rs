@@ -6,11 +6,12 @@ impl AccountService {
     /// `read-write` — and answers the URL of the sign-in the switch needs, empty when it
     /// needs none.
     ///
-    /// - **To read-write**: refused `WritesNotAllowed` unless the gate lets the account's
-    ///   drive through, whatever else holds; then `NotSignedIn` unless the account is signed
-    ///   in. Nothing is written yet: a sign-in asking for `Files.ReadWrite` begins, and only
-    ///   when its token response grants that — for this account's own drive, still on the
-    ///   gate's list — are the refresh token stored and `mode = "read-write"` written; the
+    /// - **To read-write**: any account may be, whatever its drive: it is the user's choice.
+    ///   Refused `NotSignedIn` unless the account is signed
+    ///   in, and `Failed` when it has no drive recorded and Graph does not say now which one
+    ///   it is. Nothing is written yet: a sign-in asking for `Files.ReadWrite` begins, and only
+    ///   when its token response grants that — for this account's own drive —
+    ///   are the refresh token stored and `mode = "read-write"` written; the
     ///   folder then follows `Mode`. A cancelled, refused or failed sign-in changes nothing
     ///   and says why in `LastError`; the account stays signed in, read-only. An account
     ///   read-write already needs no sign-in.
@@ -31,13 +32,8 @@ impl AccountService {
         }
     }
 
-    /// [`set_mode`](Self::set_mode) to read-write: the gate, then the sign-in it needs.
+    /// [`set_mode`](Self::set_mode) to read-write: the sign-in it needs.
     async fn switch_to_read_write(self: &Arc<Self>) -> Result<String, ModeError> {
-        // The gate first: no account whose drive is not listed is ever asked to sign in for
-        // write access, signed in or not.
-        if self.writable_drive().is_none() {
-            return Err(ModeError::WritesNotAllowed(WRITES_NOT_ALLOWED.into()));
-        }
         let not_signed_in = || ModeError::NotSignedIn("sign in first; then switch the account to read-write".into());
         let snapshot = self.state.get();
         if snapshot.state != SignInState::SignedIn {
@@ -48,6 +44,14 @@ impl AccountService {
         }
         if snapshot.client_id.is_empty() {
             return Err(ModeError::Failed(AccountError::NoClientId.to_string()));
+        }
+        // The sign-in is taken only for the account's recorded drive: with none recorded it
+        // could only fail, after the trip through the browser. So the drive is asked for now,
+        // and the switch refused before any URL when it cannot be recorded.
+        if self.config.account(&self.id).is_some_and(|mine| mine.drive_id.is_none()) {
+            if let Err(e) = self.learn_drive().await {
+                return Err(ModeError::Failed(format!("{DRIVE_NOT_KNOWN} ({e})")));
+            }
         }
         let browser = Attempt::bind(self.oauth_client(&snapshot.client_id, Mode::ReadWrite)).await.map_err(ModeError::Failed)?;
         // Pinned to this account: the password asked for again, its email filled
@@ -86,7 +90,7 @@ impl AccountService {
 
     /// The switch to read-write, once its token response is in: only a grant of
     /// `Files.ReadWrite`, for this account's own drive (`GET /me/drive` with the new token),
-    /// still on the gate's list, is taken. Then the refresh token is stored, the new token
+    /// is taken. Then the refresh token is stored, the new token
     /// cached and what it was granted recorded, and only then `mode = "read-write"` written
     /// and the mode worked out again. Anything else changes nothing but
     /// `LastError`.
@@ -117,7 +121,7 @@ impl AccountService {
         let now = self.config.current();
         let refusal = match &now {
             Some(config) => read_write_refusal(config, &self.id, &identity.drive, &who),
-            None => Some(format!("{}.", WRITES_NOT_ALLOWED)),
+            None => Some(CONFIG_UNREADABLE_AT_SWITCH.into()),
         };
         if let Some(why) = refusal {
             drop(session);
@@ -230,9 +234,12 @@ impl AccountService {
         Ok(())
     }
 
-    /// The account's drive when the gate lets it through, as `config.toml` says now.
-    fn writable_drive(&self) -> Option<DriveId> {
-        self.config.write_standing(&self.id).and_then(|standing| standing.writable_drive)
+    /// The account's recorded drive when `write_test_drive_ids` lists it, both from one
+    /// reading of `config.toml` as it is now: the one thing the list decides.
+    fn exportable_drive(&self) -> Option<DriveId> {
+        let config = self.config.current()?;
+        let drive = config.account(&self.id)?.drive_id.clone()?;
+        config.read_write_export_allowed(&drive).then_some(drive)
     }
 
     /// `TokenExport.ReadOnly` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
@@ -241,15 +248,15 @@ impl AccountService {
         self.tokens.read_only_token().await
     }
 
-    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/writes.md` §8.2, §12; SECURITY.md):
-    /// refused `WritesNotAllowed` unless the gate lets the account's drive through, and
+    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/writes.md` §2.3, §12.1; SECURITY.md):
+    /// refused `WritesNotAllowed` unless `write_test_drive_ids` lists the account's drive, and
     /// `ModeNotGranted` unless the account is read-write and its token carries
     /// `Files.ReadWrite`. The token itself is then asked which drive it reaches
-    /// (`GET /me/drive`): another than the one the gate lets through refuses it
+    /// (`GET /me/drive`): another than the listed one refuses it
     /// `WritesNotAllowed`, and turns the account read-only.
     pub async fn read_write_token(&self) -> Result<String, ModeError> {
-        let Some(drive) = self.writable_drive() else {
-            return Err(ModeError::WritesNotAllowed(WRITES_NOT_ALLOWED.into()));
+        let Some(drive) = self.exportable_drive() else {
+            return Err(ModeError::WritesNotAllowed(EXPORT_NOT_ALLOWED.into()));
         };
         let not_granted = || ModeError::ModeNotGranted("this account is read-only: switch it to read-write first".into());
         if self.mode() != Mode::ReadWrite {
@@ -280,17 +287,19 @@ impl AccountService {
 }
 
 /// Why a switch to read-write that reached `drive` is refused, if it is: the drive must be
-/// the account's own — a sign-in as someone else changes nothing — and on the gate's list.
+/// the account's own: a sign-in as someone else changes nothing. Nothing else is asked of it.
+/// An account with no drive recorded (the switch records one before its sign-in begins, so
+/// only a `config.toml` that lost it since) has none to compare with, and is told that.
 fn read_write_refusal(config: &Config, id: &AccountId, drive: &DriveId, who: &str) -> Option<String> {
     let Some(mine) = config.account(id) else { return Some("This account was removed.".into()) };
-    if mine.drive_id.as_ref() != Some(drive) {
+    let Some(recorded) = &mine.drive_id else {
+        return Some(format!("{DRIVE_NOT_KNOWN}; the account stays read-only."));
+    };
+    if recorded != drive {
         return Some(format!(
             "This account is {who}, and the browser signed in as a different Microsoft account; the \
              account stays read-only."
         ));
-    }
-    if !config.writes_allowed(drive) {
-        return Some(format!("{}.", WRITES_NOT_ALLOWED));
     }
     None
 }

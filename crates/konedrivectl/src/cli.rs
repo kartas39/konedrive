@@ -109,9 +109,8 @@ pub(crate) enum AccountCmd {
     ///
     /// read-write signs in again, in the browser as `login` does, asking Microsoft for
     /// permission to change the account's files, and waits; nothing changes until that
-    /// permission is granted. While uploads are being developed, only the test accounts listed
-    /// in write_test_drive_ids in config.toml can be read-write. read-only needs no sign-in,
-    /// and is refused while changes wait to be uploaded, unless --force.
+    /// permission is granted. read-only needs no sign-in, and is refused while changes wait
+    /// to be uploaded, unless --force.
     Mode {
         /// read-only or read-write; without it, the mode is shown
         #[arg(value_parser = ["read-only", "read-write"])]

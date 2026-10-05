@@ -129,7 +129,7 @@ impl From<SyncError> for Fault {
 impl From<ModeError> for Fault {
     fn from(error: ModeError) -> Self {
         match error {
-            // The development gate: the account's drive is not in `write_test_drive_ids`.
+            // `TokenExport.ReadWrite` only: the account's drive is not in `write_test_drive_ids`.
             ModeError::WritesNotAllowed(why) => Fault::Refused(Refusal::WritesNotAllowed, why),
             // The account's token does not carry `Files.ReadWrite`.
             ModeError::ModeNotGranted(why) => Fault::Refused(Refusal::ModeNotGranted, why),

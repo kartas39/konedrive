@@ -504,13 +504,14 @@ async fn a_missing_folder_asks_for_a_cycle_that_leaves_waiting_renames_alone() {
     service.stop_sync().await;
 }
 
-/// The outbox worker asks the write gate before each row. A drive
-/// taken off `write_test_drive_ids` while it runs sends nothing more: the change waits,
-/// and the folder's `LastError` says why.
+/// The outbox sends for an account whose drive `write_test_drive_ids` does not list: the
+/// list is empty here. The worker asks the write gate before each row, and a
+/// token seen to reach another drive than the recorded one while it runs sends nothing
+/// more: the change waits, and the folder's `LastError` says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
+async fn an_unlisted_drive_is_sent_to_and_a_token_seen_to_reach_another_drive_sends_nothing_more() {
     use crate::account::PendingUploads;
-    use crate::config::{ConfigError, Mode};
+    use crate::config::Mode;
     use wiremock::matchers::path_regex;
     let w = world().await;
     let mut hasher = konedrive_graph::quickxor::QuickXor::new();
@@ -552,18 +553,13 @@ async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
     .await;
     let before = sent(&w).await;
 
-    let persist = testing::parts(&service).persist;
-    persist
-        .store
-        .update(|c| {
-            c.write_test_drive_ids.clear();
-            Ok::<_, ConfigError>(())
-        })
-        .unwrap();
+    let parts = testing::parts(&service);
+    assert!(parts.persist.store.snapshot().write_test_drive_ids.is_empty(), "the first change went up with no drive listed");
+    parts.account.state().update(|s| s.live_drive = "D9".into());
     make("echo second > docs/second.txt");
     assert_eq!(service.pending_uploads().await, 1, "the change is recorded");
     wait_until("the folder says why nothing goes", || {
-        crate::status::snapshot::published_error(&service.state().get()).contains("write_test_drive_ids")
+        crate::status::snapshot::published_error(&service.state().get()).contains("was last seen to reach drive \"D9\"")
     })
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;

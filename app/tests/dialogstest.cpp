@@ -163,6 +163,9 @@ private Q_SLOTS:
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        // The whole window is loaded here, and it opens a sign-in address in the
+        // browser: the fake refuses the switch before any sign-in starts.
+        fake.account->readWriteFails = QStringLiteral("cannot listen on localhost");
         fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});
@@ -194,15 +197,14 @@ private Q_SLOTS:
         QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
-        // On: explained first. The fake's development gate refuses it, as
-        // the daemon's does by default, so no browser opens here.
+        // On: explained first. The fake refuses it, so no browser opens here.
         QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, true));
         QTRY_VERIFY(shown(explain));
         QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
         QVERIFY(explain->property("subtitle").toString().contains(QStringLiteral("/home/u/OneDrive")));
         QMetaObject::invokeMethod(explain, "confirm");
         QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
-        QTRY_VERIFY(accounts.at(0)->account()->actionError().startsWith(QStringLiteral("Uploading is not available")));
+        QTRY_COMPARE(accounts.at(0)->account()->actionError(), QStringLiteral("Uploading was not turned on: cannot listen on localhost"));
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
         // It follows the mode the account runs in.
@@ -230,6 +232,9 @@ private Q_SLOTS:
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        // The whole window is loaded here, and it opens a sign-in address in the
+        // browser: the fake refuses the switch before any sign-in starts.
+        fake.account->readWriteFails = QStringLiteral("cannot listen on localhost");
         fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
                                 {QStringLiteral("State"), QStringLiteral("ready")},
                                 {QStringLiteral("Source"), QStringLiteral("onedrive")}});

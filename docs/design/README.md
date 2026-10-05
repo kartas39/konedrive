@@ -53,9 +53,9 @@ nothing to OneDrive: its OAuth scope is `Files.Read`, so Microsoft itself refuse
 with its token. So that nothing local can diverge from the cloud, its folder is read-only (files
 `0444`, directories `0555`); a local change forced past that lock is moved aside, never
 overwritten. A **read-write** account's folder is unlocked, and what is changed in it is uploaded
-([writes.md](writes.md)). Uploading is built, but **gated** in this version: only an account whose
-drive is on a test allow-list can be switched to read-write, until the uploads have been run
-against a test account and released.
+([writes.md](writes.md)). Uploading is the user's choice, for any signed-in account: the switch on
+the Account page, or `konedrivectl account mode read-write`, with a sign-in that asks for
+`Files.ReadWrite`. No list of accounts decides it ([writes.md](writes.md) §2.3).
 
 Supported: any number of personal Microsoft accounts, each with its own sync folder on Btrfs, ext4
 or XFS; KDE Plasma 6.
@@ -216,7 +216,7 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | `scripts/` | the per-user install and its removal, the helper installer, the RPM build |
 | `tests/vm/` | the privileged end-to-end suite, run in a virtme-ng VM |
 | `tests/write-account/` | the guarded harness that checks the uploads against a real test account ([writes.md](writes.md) §12.1) |
-| `tests/stress/` | the upload stress tool: many files, edits, moves, a move mid-upload, deletes, against a real read-write test account ([writes.md](writes.md) §12) |
+| `tests/stress/` | the upload stress tool: many files, edits, moves, a move mid-upload, deletes, against a real read-write test account — one whose drive is in `write_test_drive_ids`, or it refuses to start ([writes.md](writes.md) §12) |
 | `tests/kio/` | the KIO measurements behind `docs/kio-behavior.md` |
 
 ## Glossary

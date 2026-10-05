@@ -43,8 +43,8 @@ pub struct AccountSnapshot {
     /// The account's one quota (`crate::account::quota`); 0 and empty until read.
     pub quota: QuotaFigures,
     /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
-    /// while `config.toml` says so, the gate lets its drive through, and `granted_scopes`
-    /// carries `Files.ReadWrite`. The account's folder follows it
+    /// while `config.toml` says so, `granted_scopes` carries `Files.ReadWrite`, and
+    /// `live_drive` is the drive recorded for it. The account's folder follows it
     /// (`crate::sync::mode::follow`).
     pub mode: Mode,
     /// What the account's last token may be used for: the token response's `scope` (or what
@@ -132,8 +132,8 @@ pub enum ModeNote {
     WiderGrant(String),
     /// `config.toml` cannot be read now.
     ConfigUnreadable,
-    /// `config.toml` says read-write, and the gate does not let the drive through.
-    GateKeepsReadOnly,
+    /// `config.toml` says read-write, and records no drive for the account.
+    NoDriveRecorded,
     /// The sign-in reaches another drive than `config.toml` records: the one it reaches,
     /// and the one recorded.
     DriveMismatch { live: String, recorded: String },
@@ -146,14 +146,14 @@ pub enum ModeNote {
 impl ModeNote {
     /// The note as `LastError` says it.
     pub fn text(&self) -> String {
-        use super::{CONFIG_UNREADABLE, DRIVE_MISMATCH, DRIVE_NOT_SEEN, GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE, WIDER_GRANT};
+        use super::{CONFIG_UNREADABLE, DRIVE_MISMATCH, DRIVE_NOT_SEEN, NO_DRIVE_RECORDED, SIGN_IN_TO_WRITE, WIDER_GRANT};
         match self {
             Self::WiderGrant(granted) => format!(
                 "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
                  stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
             ),
             Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
-            Self::GateKeepsReadOnly => GATE_KEEPS_READ_ONLY.to_owned(),
+            Self::NoDriveRecorded => NO_DRIVE_RECORDED.to_owned(),
             Self::DriveMismatch { live, recorded } => format!(
                 "{DRIVE_MISMATCH} {live}, but config.toml records drive {recorded} for it; it runs read-only \
                  until the two agree"

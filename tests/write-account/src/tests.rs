@@ -566,7 +566,7 @@ fn the_allow_list_is_the_daemons() {
     let file = dir.path().join("config.toml");
     std::fs::write(&file, "config_version = 2\nwrite_test_drive_ids = [\"D1\"]\n").unwrap();
     let config = read_config(&file).unwrap();
-    assert!(config.writes_allowed(&DriveId::new("D1").unwrap()) && !config.writes_allowed(&DriveId::new("D2").unwrap()));
+    assert!(config.read_write_export_allowed(&DriveId::new("D1").unwrap()) && !config.read_write_export_allowed(&DriveId::new("D2").unwrap()));
     std::fs::write(&file, "not toml at all [").unwrap();
     assert!(read_config(&file).is_err());
 }

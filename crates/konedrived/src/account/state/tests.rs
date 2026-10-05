@@ -55,9 +55,9 @@ fn every_mode_note_says_what_last_error_said() {
         "config.toml cannot be read now, so this account runs read-only until it can"
     );
     assert_eq!(
-        said(ModeNote::GateKeepsReadOnly),
-        "config.toml sets this account to read-write, but while uploads are being developed only the test accounts \
-         in write_test_drive_ids can be; it runs read-only"
+        said(ModeNote::NoDriveRecorded),
+        "config.toml sets this account to read-write, but records no OneDrive drive for it; it runs read-only \
+         until a sign-in records one"
     );
     assert_eq!(
         said(ModeNote::DriveMismatch { live: "D2".into(), recorded: "D1".into() }),

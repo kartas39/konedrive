@@ -87,9 +87,10 @@ async fn connected(w: &World, signed_in: bool) -> Arc<SyncService> {
     service_with(w, account(signed_in), Some(link(w).await), Arc::new(StaticToken::new("T")))
 }
 
-/// The world's account as the write gate lets it change OneDrive:
-/// `config.toml` says read-write and lists its drive, its token can write and was seen
-/// to reach that drive, and the account runs read-write.
+/// The world's account as the write gate needs it to change OneDrive:
+/// `config.toml` says read-write and records its drive, its token can write and was seen
+/// to reach that drive, and the account runs read-write. `write_test_drive_ids` stays
+/// empty: no list decides it.
 fn let_write(service: &SyncService) {
     use crate::config::{ConfigError, Mode};
     let parts = testing::parts(service);
@@ -97,7 +98,6 @@ fn let_write(service: &SyncService) {
     persist
         .store
         .update(|c| {
-            c.write_test_drive_ids = crate::config::DriveId::new("D1").into_iter().collect();
             let account = c.accounts.iter_mut().find(|a| a.id == persist.account).unwrap();
             account.mode = Mode::ReadWrite;
             account.drive_id = crate::config::DriveId::new("D1");

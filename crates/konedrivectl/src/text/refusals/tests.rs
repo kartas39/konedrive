@@ -13,7 +13,8 @@ fn a_remove_or_forget_refused_while_changes_wait_says_what_to_do() {
 }
 
 /// `account mode` and `export-access-token --read-write` explain each refusal by its
-/// name (`docs/design/writes.md` §11): the gate, uploads waiting, a read-only account.
+/// name (`docs/design/writes.md` §11): uploads waiting, a read-only account, and, for the token
+/// alone, a drive `write_test_drive_ids` does not list.
 #[test]
 fn a_refused_mode_is_explained_by_its_name() {
     let prefix = "konedrivectl --account Test";
@@ -29,8 +30,9 @@ fn a_refused_mode_is_explained_by_its_name() {
     assert_eq!(other, "Test was not switched to read-write: no client id");
     let read_only = dev_refusal_text(Some("org.konedrive.Error.ModeNotGranted"), "read-only", prefix);
     assert!(read_only.contains("`konedrivectl --account Test account mode read-write`"), "{read_only}");
-    let gate = dev_refusal_text(Some("org.konedrive.Error.WritesNotAllowed"), "x", prefix);
-    assert!(gate.contains("write_test_drive_ids") && gate.contains("Without --read-write"), "{gate}");
+    let unlisted = dev_refusal_text(Some("org.konedrive.Error.WritesNotAllowed"), "x", prefix);
+    assert!(unlisted.contains("write_test_drive_ids") && unlisted.contains("Without --read-write"), "{unlisted}");
+    assert!(!unlisted.contains("can be read-write"), "the list is about the token only: {unlisted}");
 }
 
 /// `Files` refuses a path in no account's folder `OutsideRoot`: with no

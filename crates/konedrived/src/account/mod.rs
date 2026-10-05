@@ -94,7 +94,8 @@ pub enum ModeError {
     /// Not `read-only` or `read-write` (`InvalidArgs`).
     #[error("{0}")]
     InvalidMode(String),
-    /// The development gate: the account's drive is not in `write_test_drive_ids`.
+    /// `TokenExport.ReadWrite` only: the account's drive is not in `write_test_drive_ids`,
+    /// or its token reaches another drive. `SetMode` never answers it.
     #[error("{0}")]
     WritesNotAllowed(String),
     /// The account's token does not carry `Files.ReadWrite`.
@@ -109,15 +110,28 @@ pub enum ModeError {
     Failed(String),
 }
 
-/// What `SetMode` refuses for the development gate (`docs/design/writes.md` §2.3).
-pub const WRITES_NOT_ALLOWED: &str = "while uploads are being developed, only the test accounts \
-     listed in write_test_drive_ids in config.toml can be read-write, and this account's drive is not \
-     one of them; it stays read-only";
+/// What `TokenExport.ReadWrite` refuses a drive `write_test_drive_ids` does not list with
+/// (`docs/design/writes.md` §2.3).
+pub const EXPORT_NOT_ALLOWED: &str = "a read-write access token is handed out only for the test \
+     accounts listed in write_test_drive_ids in config.toml, and this account's drive is not one of \
+     them";
 
-/// `LastError` of an account `config.toml` sets to read-write whose drive the gate does not let
-/// through: a hand edit. It runs read-only.
-pub const GATE_KEEPS_READ_ONLY: &str = "config.toml sets this account to read-write, but while uploads \
-     are being developed only the test accounts in write_test_drive_ids can be; it runs read-only";
+/// `LastError` of a switch to read-write whose sign-in ended while `config.toml` could not be
+/// read: nothing is written over a file that cannot be read.
+pub const CONFIG_UNREADABLE_AT_SWITCH: &str = "config.toml cannot be read now, so the switch to \
+     read-write was not saved; the account stays read-only.";
+
+/// What a switch to read-write says of an account with no drive recorded, when Graph does not
+/// say which one it is either (`Account.SetMode`, refused before any sign-in), or when the
+/// record was lost by the time the sign-in ended (`LastError`): the sign-in is taken only for
+/// the account's own drive, and there is none to compare with.
+pub const DRIVE_NOT_KNOWN: &str = "This account's OneDrive drive is not known yet, so it cannot be \
+     switched to read-write now; try again once konedrive has reached OneDrive";
+
+/// `LastError` of an account `config.toml` sets to read-write that has no drive recorded: a
+/// hand edit, or an account never signed in. It runs read-only.
+pub const NO_DRIVE_RECORDED: &str = "config.toml sets this account to read-write, but records no \
+     OneDrive drive for it; it runs read-only until a sign-in records one";
 
 /// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (write
 /// design §7). It runs read-only until it signs in with that permission.
@@ -131,7 +145,7 @@ pub const DRIVE_NOT_SEEN: &str = "config.toml sets this account to read-write, b
      its sign-in reaches has not been checked yet; it runs read-only until it is";
 
 /// `LastError` of a read-write account while `config.toml` cannot be read: the
-/// mode and the gate are read from the file each time, and fail closed.
+/// mode and the drive are read from the file each time, and fail closed.
 pub const CONFIG_UNREADABLE: &str = "config.toml cannot be read now, so this account runs read-only \
      until it can";
 
@@ -310,21 +324,21 @@ impl AccountService {
     }
 
     /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
-    /// `config.toml` says so, the gate lets its drive through, and its last token carried
-    /// `Files.ReadWrite`; [`recompute_mode`](Self::recompute_mode) keeps it.
+    /// `config.toml` says so, and its last token carried `Files.ReadWrite` and was seen to
+    /// reach the drive recorded for it; [`recompute_mode`](Self::recompute_mode) keeps it.
     pub fn mode(&self) -> Mode {
         self.state.get().mode
     }
 
-    /// The mode `config.toml` gives the account now — read again, as the gate is:
-    /// the user's choice, which it runs in only when the gate and its token allow
+    /// The mode `config.toml` gives the account now, read again:
+    /// the user's choice, which it runs in only when its token allows
     /// ([`mode`](Self::mode)). A file that cannot be read now reads as read-only.
     pub fn configured_mode(&self) -> Mode {
         self.config.write_standing(&self.id).map(|standing| standing.mode).unwrap_or_default()
     }
 
-    /// What a sign-in asks for: read-write when `config.toml` says so and the gate lets the
-    /// drive through, both from one reading of the file, so that signing in again keeps a
+    /// What a sign-in asks for: read-write when `config.toml` says so and records a drive,
+    /// both from one reading of the file, so that signing in again keeps a
     /// read-write account read-write.
     fn sign_in_mode(&self) -> Mode {
         match self.config.write_standing(&self.id) {
@@ -389,7 +403,7 @@ impl AccountService {
     /// all of:
     ///
     /// - `config.toml` saying read-write;
-    /// - the gate letting the recorded drive through, as the file says now;
+    /// - a drive recorded for the account, as the file says now;
     /// - the drive the account's token was last seen to reach being that very drive (a
     ///   recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
@@ -398,16 +412,16 @@ impl AccountService {
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
     /// `Mode` (`crate::sync::mode::follow`).
     fn recompute_mode(&self) {
-        // The mode and the list it is gated by, from one reading of the file. A
+        // The mode and the recorded drive, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when
         // the file last read said read-write.
         let standing = self.config.write_standing(&self.id);
         let unreadable = standing.is_none() && self.config.account(&self.id).is_some_and(|a| a.mode == Mode::ReadWrite);
-        let WriteStanding { mode: configured, writable_drive: allowed } =
-            standing.unwrap_or(WriteStanding { mode: Mode::ReadOnly, writable_drive: None });
+        let WriteStanding { mode: configured, recorded_drive: recorded } =
+            standing.unwrap_or(WriteStanding { mode: Mode::ReadOnly, recorded_drive: None });
         self.state.update(|s| {
             let granted = grants_writes(&s.granted_scopes);
-            let same_drive = allowed.as_ref().is_some_and(|drive| *drive == s.live_drive);
+            let same_drive = recorded.as_ref().is_some_and(|drive| *drive == s.live_drive);
             s.mode = if configured == Mode::ReadWrite && same_drive && granted { Mode::ReadWrite } else { Mode::ReadOnly };
             let signed_in = s.state == SignInState::SignedIn;
             let why = if signed_in && !s.wider_grant.is_empty() {
@@ -415,8 +429,8 @@ impl AccountService {
             } else if signed_in && unreadable {
                 Some(ModeNote::ConfigUnreadable)
             } else if signed_in && configured == Mode::ReadWrite {
-                match &allowed {
-                    None => Some(ModeNote::GateKeepsReadOnly),
+                match &recorded {
+                    None => Some(ModeNote::NoDriveRecorded),
                     // Another drive seen comes first: signing in again cannot cure it.
                     Some(drive) if !s.live_drive.is_empty() && !same_drive => {
                         Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.to_string() })

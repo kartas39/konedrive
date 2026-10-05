@@ -109,8 +109,9 @@ public:
     void grantReadWrite() { set({{QStringLiteral("Mode"), QStringLiteral("read-write")}}); }
 
     QStringList calls;
-    /// SetMode("read-write") gets through the development gate, which refuses by default.
-    bool gateOpen = false;
+    /// SetMode("read-write") is refused Failed with these words, when not empty: a test that
+    /// loads the whole window keeps the sign-in, and so the browser, from starting.
+    QString readWriteFails;
     /// Changes waiting to be uploaded, for SetMode("read-only").
     uint pendingUploads = 0;
 
@@ -145,7 +146,7 @@ public Q_SLOTS:
         }
         set({{QStringLiteral("Label"), label.trimmed()}});
     }
-    /// As the daemon's: the gate first, then the sign-in state, for read-write, which
+    /// As the daemon's: the sign-in state, for read-write, which
     /// answers a sign-in URL (grantReadWrite() then ends it); PendingUploads for
     /// read-only while `pendingUploads` is not 0, unless forced, which drops them.
     QString SetMode(const QString &mode, bool force, const QDBusMessage &message)
@@ -157,11 +158,11 @@ public Q_SLOTS:
             return QString();
         };
         if (mode == QLatin1String("read-write")) {
-            if (!gateOpen) {
-                return refuse(QStringLiteral("org.konedrive.Error.WritesNotAllowed"), QStringLiteral("DAEMON-GATE-WORDS"));
-            }
             if (state() != QLatin1String("signed-in")) {
                 return refuse(QStringLiteral("org.konedrive.Error.NotSignedIn"), QStringLiteral("sign in first; then switch the account to read-write"));
+            }
+            if (!readWriteFails.isEmpty()) {
+                return refuse(QStringLiteral("org.konedrive.Error.Failed"), readWriteFails);
             }
             set({{QStringLiteral("LastError"), QString()}});
             return QStringLiteral("https://login.example/authorize?scope=Files.ReadWrite&account=") + id();
