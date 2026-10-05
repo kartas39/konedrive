@@ -19,11 +19,6 @@ fn root() -> bool {
     root
 }
 
-/// The "not uploaded" list: each place and its reason as stored.
-fn listed(fx: &Fx) -> Vec<(String, String)> {
-    fx.store.call_blocking(|s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect()
-}
-
 fn cannot_be_read(rels: &[&str]) -> Vec<(String, String)> {
     rels.iter().map(|rel| (rel.to_string(), "unreadable".to_owned())).collect()
 }
@@ -42,15 +37,13 @@ impl<F: Fn(u64)> ScanProgress for AfterListing<F> {
 
 /// A Full local scan during which `change` runs after each directory listed,
 /// with the number of files read so far.
-pub(super) fn scan_changing(fx: &Fx, change: impl Fn(u64)) -> Result<Examined, ExamineError> {
-    let disk = fx.disk();
-    let examiner = Examiner { disk: &disk, store: &fx.store, liveness: &fx.liveness, ignore: &fx.ignore, locks: &fx.locks, now: 1000 };
-    examiner.examine_reporting(&Batch::full(), Some(&AfterListing(change)))
+pub(super) fn scan_changing(fx: &Folder, change: impl Fn(u64)) -> Result<Examined, ExamineError> {
+    fx.scan_reporting(&AfterListing(change))
 }
 
 /// A Full local scan during which `rels` lose every permission right after
 /// they were listed. They have their modes back when this returns.
-fn scan_locking(fx: &Fx, rels: &[&str]) -> Result<Examined, ExamineError> {
+fn scan_locking(fx: &Folder, rels: &[&str]) -> Result<Examined, ExamineError> {
     let examined = scan_changing(fx, |_| rels.iter().for_each(|rel| set_mode(&fx.path(rel), 0o000)));
     rels.iter().for_each(|rel| set_mode(&fx.path(rel), 0o644));
     examined
@@ -67,7 +60,7 @@ fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
     if root() {
         return;
     }
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello")]);
     fx.hydrate("a.txt", b"hello");
     File::options().write(true).open(fx.path("a.txt")).unwrap().set_modified(SystemTime::now()).unwrap();
     fx.write("new.txt", b"n");
@@ -75,9 +68,9 @@ fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
     set_mode(&fx.path("a.txt"), 0o000);
     set_mode(&fx.path("backup.txt~"), 0o000);
     let named = fx.try_examine(&fx.disk(), &names(&[("", "a.txt"), ("", "new.txt")]), &fx.liveness);
-    let listed_by_names = listed(&fx);
+    let listed_by_names = fx.skipped();
     let full = fx.try_examine(&fx.disk(), &Batch::full(), &fx.liveness);
-    let listed_by_scan = listed(&fx);
+    let listed_by_scan = fx.skipped();
     set_mode(&fx.path("a.txt"), 0o644);
     set_mode(&fx.path("backup.txt~"), 0o644);
     let named = named.expect("the places named are examined");
@@ -90,7 +83,7 @@ fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
 
     // Readable again: the recheck the run asked for takes the line off.
     fx.examine(&full.passed);
-    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(fx.skipped().is_empty(), "{:?}", fx.skipped());
 }
 
 /// LO3's other place: a copy that kept its attributes and is read-only. The
@@ -99,7 +92,7 @@ fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
 /// read-only.
 #[test]
 fn a_read_only_copy_that_kept_its_attributes_is_stripped_and_uploaded_as_new() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello")]);
     fx.hydrate("a.txt", b"hello");
     copy_keeping_attributes(&fx.path("a.txt"), &fx.path("copy.txt"));
     set_mode(&fx.path("copy.txt"), 0o444);
@@ -119,7 +112,7 @@ fn items_that_cannot_be_opened_are_passed_over_and_examined_again() {
     if root() {
         return;
     }
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello"), file("P", "R", "p.bin", &[7u8; 100])]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello"), file("P", "R", "p.bin", &[7u8; 100])]);
     fx.hydrate("a.txt", b"hello");
     fx.write("a.txt", b"HELLO");
     nix::unistd::truncate(&fx.path("p.bin"), 10).unwrap();
@@ -130,13 +123,13 @@ fn items_that_cannot_be_opened_are_passed_over_and_examined_again() {
     assert_eq!(unreadable, vec![PathBuf::from("a.txt"), PathBuf::from("p.bin")]);
     assert!(out.restored.is_empty());
     assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None)], "the new file goes up; the two are neither changed nor deleted");
-    assert_eq!(listed(&fx), cannot_be_read(&["a.txt", "p.bin"]));
+    assert_eq!(fx.skipped(), cannot_be_read(&["a.txt", "p.bin"]));
 
     // Readable again: the recheck finds the edit, gives the placeholder its size back, and
     // takes both off the list.
     let again = fx.examine(&out.passed);
     assert!(again.unreadable.is_empty());
-    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(fx.skipped().is_empty(), "{:?}", fx.skipped());
     assert_eq!(again.restored, vec![PathBuf::from("p.bin")]);
     assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None), (Update, "a.txt".into(), Some("A".into()))]);
 }
@@ -150,7 +143,7 @@ fn a_copy_and_a_new_file_that_cannot_be_opened_get_no_row() {
     if root() {
         return;
     }
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello")]);
     fx.hydrate("a.txt", b"hello");
     copy_keeping_attributes(&fx.path("a.txt"), &fx.path("copy.txt"));
     fx.write("new.txt", b"n");
@@ -161,10 +154,10 @@ fn a_copy_and_a_new_file_that_cannot_be_opened_get_no_row() {
     assert!(out.stripped.is_empty());
     assert_eq!(id_of(&fx.path("copy.txt")), Some("A".into()));
     assert!(fx.rows().is_empty(), "{:?}", fx.summary());
-    assert_eq!(listed(&fx), cannot_be_read(&["copy.txt", "new.txt"]));
+    assert_eq!(fx.skipped(), cannot_be_read(&["copy.txt", "new.txt"]));
 
     let again = fx.examine(&out.passed);
-    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(fx.skipped().is_empty(), "{:?}", fx.skipped());
     assert_eq!(again.stripped, vec![PathBuf::from("copy.txt")]);
     assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None), (Create, "copy.txt".into(), None)]);
 }
@@ -174,7 +167,7 @@ fn a_copy_and_a_new_file_that_cannot_be_opened_get_no_row() {
 /// did: it is offered again, and `LastError` says so if it keeps failing.
 #[test]
 fn an_error_that_is_not_the_entrys_own_fails_the_batch() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     fx.write("new.txt", b"n");
     let swap = || {
         if fx.path("new.txt").is_file() {
@@ -191,7 +184,7 @@ fn an_error_that_is_not_the_entrys_own_fails_the_batch() {
 /// at it: what was listed inside it gets no row.
 #[test]
 fn what_was_listed_in_a_copied_folder_that_went_gets_no_row() {
-    let fx = Fx::new(&[folder("D", "R", "d")]);
+    let fx = Folder::new(&[folder("D", "R", "d")]);
     std::fs::create_dir(fx.path("Copy")).unwrap();
     xattr::set(fx.path("Copy"), XATTR_ITEM_ID, b"D").unwrap();
     fx.write("Copy/new.txt", b"n");
@@ -215,17 +208,17 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     if root() {
         return;
     }
-    let fx = Fx::new(&[folder("D", "R", "photos")]);
+    let fx = Folder::new(&[folder("D", "R", "photos")]);
     std::os::unix::fs::symlink("/etc/hostname", fx.path("photos/link")).unwrap();
     fx.examine(&Batch::full());
     let link = ("photos/link".to_owned(), "symlink".to_owned());
-    assert_eq!(listed(&fx), std::slice::from_ref(&link));
+    assert_eq!(fx.skipped(), std::slice::from_ref(&link));
 
     set_mode(&fx.path("photos"), 0o000);
     let out = fx.examine(&Batch::full());
     // A look at the directory's own name alone, as a change of its mode asks for.
     fx.examine(&names(&[("", "photos")]));
-    let closed = listed(&fx);
+    let closed = fx.skipped();
     set_mode(&fx.path("photos"), 0o755);
     assert_eq!(out.unreadable, [PathBuf::from("photos")]);
     assert_eq!(closed, [("photos".to_owned(), "unreadable".to_owned()), link.clone()], "the link is still there, only not seen");
@@ -235,7 +228,7 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     fx.write("photos/new.txt", b"n");
     std::fs::remove_file(fx.path("photos/link")).unwrap();
     let again = fx.examine(&out.passed);
-    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(fx.skipped().is_empty(), "{:?}", fx.skipped());
     assert!(again.passed.is_empty() && again.unreadable.is_empty());
     assert_eq!(fx.summary(), vec![(Create, "photos/new.txt".into(), None)]);
 }
@@ -245,7 +238,7 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
 /// item is recorded all the same. The line goes when the state can be read again.
 #[test]
 fn a_file_whose_marks_are_damaged_is_listed_until_they_can_be_read() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello"), file("B", "R", "b.txt", b"world")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello"), file("B", "R", "b.txt", b"world")]);
     fx.hydrate("a.txt", b"hello");
     fx.hydrate("b.txt", b"world");
     xattr::remove(fx.path("a.txt"), placeholder::XATTR_STATE).unwrap();
@@ -253,21 +246,21 @@ fn a_file_whose_marks_are_damaged_is_listed_until_they_can_be_read() {
     copy_keeping_attributes(&fx.path("b.txt"), &fx.path("copy.txt"));
     let out = fx.examine(&Batch::full());
     let damaged = |rels: &[&str]| rels.iter().map(|rel| (rel.to_string(), "state-unreadable".to_owned())).collect::<Vec<_>>();
-    assert_eq!(listed(&fx), damaged(&["a.txt", "b.txt", "copy.txt"]));
+    assert_eq!(fx.skipped(), damaged(&["a.txt", "b.txt", "copy.txt"]));
     assert!(fx.rows().is_empty() && out.stripped.is_empty() && out.unreadable.is_empty(), "{:?}", fx.summary());
     assert_eq!(id_of(&fx.path("copy.txt")), Some("B".into()), "the copy is left as it is");
 
     // Renamed, it is still the item: the rename is recorded, and the line follows the file.
     fx.rename("a.txt", "c.txt");
     fx.examine(&names(&[("", "a.txt"), ("", "c.txt")]));
-    assert_eq!(listed(&fx), damaged(&["b.txt", "c.txt", "copy.txt"]));
+    assert_eq!(fx.skipped(), damaged(&["b.txt", "c.txt", "copy.txt"]));
     assert_eq!(fx.summary(), vec![(Move, "c.txt".into(), Some("A".into()))]);
 
     for rel in ["c.txt", "b.txt", "copy.txt"] {
         xattr::set(fx.path(rel), placeholder::XATTR_STATE, b"hydrated").unwrap();
     }
     fx.examine(&Batch::full());
-    assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
+    assert!(fx.skipped().is_empty(), "{:?}", fx.skipped());
     assert_eq!(fx.summary(), vec![(Move, "c.txt".into(), Some("A".into())), (Create, "copy.txt".into(), None)], "the copy can be read now: uploaded as new");
 }
 
@@ -279,37 +272,37 @@ fn the_lines_below_a_renamed_directory_follow_it() {
     if root() {
         return;
     }
-    let fx = Fx::new(&[folder("D", "R", "photos"), folder("S", "D", "sub")]);
+    let fx = Folder::new(&[folder("D", "R", "photos"), folder("S", "D", "sub")]);
     std::os::unix::fs::symlink("/etc/hostname", fx.path("photos/link")).unwrap();
     set_mode(&fx.path("photos/sub"), 0o000);
     fx.examine(&Batch::full());
     let line = |rel: &str, reason: &str| (rel.to_owned(), reason.to_owned());
-    assert_eq!(listed(&fx), [line("photos/link", "symlink"), line("photos/sub", "unreadable")]);
+    assert_eq!(fx.skipped(), [line("photos/link", "symlink"), line("photos/sub", "unreadable")]);
 
     fx.rename("photos", "pics");
     let out = fx.examine(&names(&[("", "photos"), ("", "pics")]));
-    let moved = listed(&fx);
+    let moved = fx.skipped();
     set_mode(&fx.path("pics/sub"), 0o755);
     assert_eq!(moved, [line("pics/link", "symlink"), line("pics/sub", "unreadable")]);
     assert_eq!(fx.summary(), vec![(Move, "pics".into(), Some("D".into()))]);
 
     fx.examine(&out.passed);
-    assert_eq!(listed(&fx), [line("pics/link", "symlink")]);
+    assert_eq!(fx.skipped(), [line("pics/link", "symlink")]);
 }
 
 /// A line below a directory that is no longer there goes at the look that sees the
 /// directory gone, though nothing looked at the line's own place.
 #[test]
 fn a_line_below_a_directory_that_went_goes_with_it() {
-    let fx = Fx::new(&[folder("D", "R", "photos"), folder("K", "R", "keep")]);
+    let fx = Folder::new(&[folder("D", "R", "photos"), folder("K", "R", "keep")]);
     for dir in ["photos", "keep"] {
         std::os::unix::fs::symlink("/etc/hostname", fx.path(dir).join("link")).unwrap();
     }
     fx.examine(&Batch::full());
     let line = |rel: &str| (rel.to_owned(), "symlink".to_owned());
-    assert_eq!(listed(&fx), [line("keep/link"), line("photos/link")]);
+    assert_eq!(fx.skipped(), [line("keep/link"), line("photos/link")]);
 
     std::fs::remove_dir_all(fx.path("photos")).unwrap();
     fx.examine(&names(&[("", "photos")]));
-    assert_eq!(listed(&fx), [line("keep/link")], "what is below a directory that is there stays");
+    assert_eq!(fx.skipped(), [line("keep/link")], "what is below a directory that is there stays");
 }

@@ -11,7 +11,7 @@ use super::*;
 /// and the next look at the two names finds the item renamed.
 #[test]
 fn a_name_that_holds_another_object_by_the_time_it_is_stripped_is_left_alone() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc")]);
     fx.hydrate("a.txt", b"abc");
     let item = fx.handle("a.txt");
     copy_keeping_attributes(&fx.path("a.txt"), &fx.path("b.txt"));
@@ -37,7 +37,7 @@ fn a_name_that_holds_another_object_by_the_time_it_is_stripped_is_left_alone() {
 /// as it is.
 #[test]
 fn a_backup_whose_name_holds_another_object_by_then_is_left_alone() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("b.txt", b"xyz");
     fx.rename("a.txt", "a.txt~");
@@ -56,7 +56,7 @@ fn a_backup_whose_name_holds_another_object_by_then_is_left_alone() {
 /// when its name is looked at again, for the object that is there.
 #[test]
 fn a_new_file_that_went_since_it_was_listed_gets_no_row() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     fx.write("gone.txt", b"n");
     fx.write("other.txt", b"first");
     let first = fx.handle("other.txt");

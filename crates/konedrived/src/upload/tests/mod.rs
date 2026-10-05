@@ -24,95 +24,42 @@ use harness::Harness;
 use crate::folder::disk::Disk;
 use crate::helper::testing::FakeHelper;
 use crate::helper::LinkCell;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::remote::materialize::{Materializer, Scope};
+use crate::local::testing::{file, folder, row, Folder};
+use crate::local::{Batch, Examined};
 use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use konedrive_tree::{Change, Kind, Placement, Row, Table, TreeStore};
+use konedrive_tree::{Change, Kind, Row, Table, TreeStore};
 
 use OutboxKind::{Create, Mkdir, Move, Update};
-
-const TIME: i64 = 1_700_000_000;
-
-fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind, content: &[u8]) -> Row {
-    Row {
-        id: id.into(),
-        parent_id: parent.map(str::to_owned),
-        name: name.into(),
-        kind,
-        size: if kind == Kind::File { content.len() as u64 } else { 0 },
-        mtime: TIME,
-        etag: Some(format!("e-{id}")),
-        ctag: Some(format!("c-{id}")),
-        quickxor: (kind == Kind::File).then(|| qx(content)),
-        mime: None,
-        placement: Placement::Placed,
-    }
-}
-
-fn folder(id: &str, parent: &str, name: &str) -> Change {
-    Change::Upsert(row(id, Some(parent), name, Kind::Folder, b""))
-}
-
-fn file(id: &str, parent: &str, name: &str, content: &[u8]) -> Change {
-    Change::Upsert(row(id, Some(parent), name, Kind::File, content))
-}
 
 /// A folder placed from a listing by the real materializer, a fake
 /// OneDrive holding the same, and a worker for it. The folder is `OneDrive`
 /// in a temporary directory; what leaves it goes beside it, where the fake
 /// helper finds it (`move_out`).
 struct World {
-    dir: tempfile::TempDir,
+    /// The folder, its store and what an examination needs (`local::testing`).
+    folder: Folder,
     helper: FakeHelper,
     /// The worker's link to [`helper`](Self::helper); empty while the helper is down.
     link: LinkCell,
-    root: SyncRoot,
-    store: Store,
-    liveness: FakeLiveness,
-    locks: InodeLocks,
     h: Harness,
+}
+
+impl std::ops::Deref for World {
+    type Target = Folder;
+
+    fn deref(&self) -> &Folder {
+        &self.folder
+    }
 }
 
 impl World {
     fn new(changes: &[Change]) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().canonicalize().unwrap().join("OneDrive");
-        std::fs::create_dir(&path).unwrap();
-        let root_id = "5b0e2c7a-1d3f-4e8a-9b6c-0f1e2d3c4b5a".to_owned();
-        xattr::set(&path, XATTR_ROOT, root_id.as_bytes()).unwrap();
-        let root = SyncRoot { path, root_id };
-        let store = Store::new(TreeStore::in_memory().unwrap());
-        let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
-        all.extend_from_slice(changes);
-        store
-            .call_blocking(move |s| {
-                s.begin_staging(konedrive_tree::NewTree::Whole)?;
-                s.stage(&all)
-            })
-            .unwrap();
-        {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let materializer = Materializer {
-                disk: Disk::open(&root, false).unwrap(),
-                store: store.clone(),
-                link: None,
-                runtime: runtime.handle().clone(),
-                locks: InodeLocks::new(),
-                root_item_id: "R".into(),
-                rescue_into: dir.path().join("rescued"),
-                cancel: CancellationToken::new(),
-                mode: crate::remote::mode::Mode::ReadOnly,
-                claimed: None,
-            };
-            materializer.apply(Scope::Full).unwrap();
-        }
-        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
-        let locks = InodeLocks::new();
-        let h = Harness::new(&root, &store, &locks);
+        let folder = Folder::new(changes);
+        let h = Harness::new(&folder.root, &folder.store, &folder.locks);
         let helper = FakeHelper::standalone();
-        helper.finding_beneath(dir.path().canonicalize().unwrap());
+        helper.finding_beneath(folder.dir.path().canonicalize().unwrap());
         let link = LinkCell::holding(Some(h.block_on(helper.connect())));
-        World { dir, helper, link, root, store, liveness: FakeLiveness::new(), locks, h }
+        World { folder, helper, link, h }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -130,10 +77,7 @@ impl World {
     }
 
     fn examine_batch(&self, batch: &Batch) -> Examined {
-        let disk = Disk::open(&self.root, false).unwrap();
-        let ignore = IgnoreList::default();
-        let now = crate::status::activity::unix_now();
-        Examiner { disk: &disk, store: &self.store, liveness: &self.liveness, ignore: &ignore, locks: &self.locks, now }.examine(batch).unwrap()
+        self.folder.examine_at(batch, crate::status::activity::unix_now())
     }
 
     fn examine(&self, pairs: &[(&str, &str)]) -> Examined {

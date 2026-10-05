@@ -55,7 +55,7 @@ impl Liveness for Silent {
 /// The same when the helper falls silent while a deleted folder's items are asked after.
 #[test]
 fn a_helper_that_times_out_is_asked_once_in_a_run() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c")]);
     for name in ["a.txt", "b.txt", "c.txt"] {
         std::fs::remove_file(fx.path(name)).unwrap();
     }
@@ -76,7 +76,7 @@ fn a_helper_that_times_out_is_asked_once_in_a_run() {
     assert_eq!(fx.summary().iter().map(|(kind, ..)| *kind).collect::<Vec<_>>(), [Delete, Delete, Delete]);
 
     // A folder that is gone, and a helper silent from its first item on.
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y"), file("Z", "D", "z.txt", b"z")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y"), file("Z", "D", "z.txt", b"z")]);
     let silent = Silent { gone: Some(fx.handle("docs")), ..Silent::default() };
     std::fs::remove_dir_all(fx.path("docs")).unwrap();
     let out = fx.examine_with(&names(&[("", "docs")]), &silent);
@@ -93,7 +93,7 @@ fn a_helper_that_times_out_is_asked_once_in_a_run() {
 /// OneDrive, and Activity says so.
 #[test]
 fn on_a_changed_filesystem_a_move_out_goes_on_where_its_object_is_now() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c")]);
     let (a_now, b_now, c_now) = (fx.outside.join("a.txt"), fx.outside.join("sub/b.txt"), fx.outside.join("c.txt"));
     std::fs::create_dir(fx.outside.join("sub")).unwrap();
     for (name, now) in [("a.txt", &a_now), ("b.txt", &b_now), ("c.txt", &c_now)] {
@@ -119,7 +119,7 @@ fn on_a_changed_filesystem_a_move_out_goes_on_where_its_object_is_now() {
     let b_real = fx.outside.join("real/b.txt");
     assert_eq!(b_row.inode.and_then(|i| i.handle), Some(handle_at(&b_real)), "found through the link");
     assert_eq!(b_row.target_name.as_deref(), b_real.to_str(), "and its place is the path with no link in it");
-    let said = fx.store.call_blocking(|s| s.recent_activity(50)).unwrap();
+    let said = fx.activity();
     let said: Vec<_> = said.iter().filter(|event| event.kind == konedrive_tree::ActivityKind::Restored).map(|event| event.path.as_str()).collect();
     assert_eq!(said, [fx.path("c.txt").to_str().unwrap()], "what was given up is said");
     let root = File::open(&fx.root.path).unwrap();

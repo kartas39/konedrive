@@ -11,7 +11,7 @@ use super::*;
 /// one that is not downloaded is listed, and is not the item either.
 #[test]
 fn a_copy_is_never_the_item_wherever_its_original_went() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz"), file("P", "R", "p.bin", b"only in the cloud")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz"), file("P", "R", "p.bin", b"only in the cloud")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("b.txt", b"xyz");
     let original = fx.handle("a.txt");
@@ -39,8 +39,7 @@ fn a_copy_is_never_the_item_wherever_its_original_went() {
     );
     assert_eq!((id_of(&fx.path("a2.txt")), id_of(&fx.path("b2.txt"))), (None, None));
     assert_eq!(fx.store.call_blocking(move |s| s.local_handle("A")).unwrap(), Some(original), "the item is still the original");
-    let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
+    let skipped = fx.skipped();
     assert_eq!(skipped, vec![("p2.bin".into(), "not-downloaded".into())]);
 }
 
@@ -54,7 +53,7 @@ fn a_copy_is_never_the_item_wherever_its_original_went() {
 /// went. Both stay, listed, and nothing is unlinked.
 #[test]
 fn an_empty_copy_that_is_not_downloaded_is_removed_only_when_it_is_surely_a_copy() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("P", "R", "p.bin", b"only in the cloud"), file("Q", "R", "q.bin", b"only in the cloud")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("P", "R", "p.bin", b"only in the cloud"), file("Q", "R", "q.bin", b"only in the cloud")]);
     fx.rename("q.bin", "docs/q.bin");
     for (name, id) in [("p2.bin", &b"P"[..]), ("other-account.bin", b"OTHER!1"), ("q2.bin", b"Q")] {
         File::create(fx.path(name)).unwrap().set_len(4096).unwrap();
@@ -67,10 +66,9 @@ fn an_empty_copy_that_is_not_downloaded_is_removed_only_when_it_is_surely_a_copy
     assert_eq!(id_of(&fx.path("q2.bin")).as_deref(), Some("Q"), "not surely a copy: kept");
     assert_eq!(id_of(&fx.path("other-account.bin")).as_deref(), Some("OTHER!1"), "another account's: left alone");
     assert!(fx.rows().is_empty(), "{:?}", fx.summary());
-    let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
+    let skipped = fx.skipped();
     assert_eq!(skipped, vec![("other-account.bin".into(), "not-downloaded".into()), ("q2.bin".into(), "not-downloaded".into())]);
-    let said: Vec<(String, String)> = fx.store.call_blocking(move |s| s.recent_activity(10)).unwrap().into_iter().map(|a| (a.kind.as_str().to_owned(), a.detail)).collect();
+    let said: Vec<(String, String)> = fx.activity().into_iter().map(|a| (a.kind.as_str().to_owned(), a.detail)).collect();
     assert_eq!(said, vec![("removed".into(), "removed an empty copy of p2.bin: it held no content".into())]);
 }
 
@@ -81,7 +79,7 @@ fn an_empty_copy_that_is_not_downloaded_is_removed_only_when_it_is_surely_a_copy
 /// OneDrive, nothing uploaded twice.
 #[test]
 fn a_folder_restored_at_its_place_takes_its_pending_delete_back() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("F", "D", "f.txt", b"ff"), file("P", "D", "p.bin", b"only in the cloud")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("F", "D", "f.txt", b"ff"), file("P", "D", "p.bin", b"only in the cloud")]);
     fx.hydrate("docs/f.txt", b"ff");
     let backup = fx.outside.join("docs");
     let restore = |from: &Path, to: &Path| {
@@ -105,7 +103,7 @@ fn a_folder_restored_at_its_place_takes_its_pending_delete_back() {
         assert_eq!(id_of(&fx.path(rel)).as_deref(), Some(id), "{rel}");
         assert_eq!(fx.store.call_blocking(move |s| s.local_handle(id)).unwrap(), Some(fx.handle(rel)), "{rel}");
     }
-    assert!(fx.store.call_blocking(move |s| s.local_skipped()).unwrap().is_empty());
+    assert!(fx.skipped().is_empty());
 }
 
 /// What `F53` leaves: a copy at the item's place while the item's object is
@@ -114,7 +112,7 @@ fn a_folder_restored_at_its_place_takes_its_pending_delete_back() {
 /// no delete and no move in OneDrive.
 #[test]
 fn a_copy_at_the_place_and_the_original_seen_later_are_two_files() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc")]);
     fx.hydrate("a.txt", b"abc");
     fx.rename("a.txt", "docs/a.txt");
     copy_keeping_attributes(&fx.path("docs/a.txt"), &fx.path("a.txt"));
@@ -130,7 +128,7 @@ fn a_copy_at_the_place_and_the_original_seen_later_are_two_files() {
 /// moved, and nothing takes its move back.
 #[test]
 fn a_copy_made_back_at_the_old_place_after_a_move_is_new() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("F", "D", "f.txt", b"ff"), file("A", "R", "a.txt", b"abc")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("F", "D", "f.txt", b"ff"), file("A", "R", "a.txt", b"abc")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("docs/f.txt", b"ff");
     fx.rename("a.txt", "b.txt");
@@ -167,7 +165,7 @@ fn a_copy_made_back_at_the_old_place_after_a_move_is_new() {
 fn what_carries_the_id_of_an_item_the_base_does_not_place_is_new() {
     let mut long = row("D", Some("R"), "docs", Kind::Folder, b"");
     long.placement = Placement::Skipped(konedrive_tree::SkipReason::NameTooLong);
-    let fx = Fx::new(&[Change::Upsert(long), file("F", "D", "f.txt", b"ff")]);
+    let fx = Folder::new(&[Change::Upsert(long), file("F", "D", "f.txt", b"ff")]);
     assert!(!fx.path("docs").exists());
     std::fs::create_dir(fx.path("copy")).unwrap();
     xattr::set(fx.path("copy"), XATTR_ITEM_ID, b"D").unwrap();
@@ -188,7 +186,7 @@ fn what_carries_the_id_of_an_item_the_base_does_not_place_is_new() {
 /// item, never deleted, is left for the reconcile to place again.
 #[test]
 fn with_no_recorded_object_the_item_is_only_what_stands_at_its_place() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz")]);
     fx.hydrate("b.txt", b"xyz");
     fx.store.call_blocking(move |s| s.forget_local_handles()).unwrap();
     fx.rename("b.txt", "moved.txt");

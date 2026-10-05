@@ -52,12 +52,12 @@ use crate::helper::testing::FakeHelper;
 use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::pin::Pins;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
+use crate::local::{Batch, Examined, FakeLiveness, IgnoreList};
 use crate::remote::listing::reconcile::{Commit, Held, Prepared, Reconcile, Reconciled};
 use crate::remote::listing::stage::{News, Staged};
 use crate::remote::mode::Mode;
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
-use crate::remote::materialize::{Applied, Claimed, Scope};
+use crate::remote::materialize::{Applied, Claimed, Materializer, Scope};
 use crate::status::report::Report;
 use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle};
 use crate::upload::{Engine, Limits, NoHost, WorkerConfig};
@@ -497,7 +497,7 @@ impl World {
         let (root, store, locks, liveness) = (self.root.clone(), self.store.clone(), self.locks.clone(), Arc::clone(&self.liveness));
         tokio::task::spawn_blocking(move || {
             let disk = Disk::open(&root, false).unwrap();
-            Examiner { disk: &disk, store: &store, liveness: &*liveness, ignore: &IgnoreList::default(), locks: &locks, now: now() }.examine(&batch).unwrap()
+            crate::local::testing::examine(&disk, &store, &*liveness, &IgnoreList::default(), &locks, now(), &batch).unwrap()
         })
         .await
         .unwrap()
@@ -616,6 +616,24 @@ impl Step {
         let (prepared, done) = self.passed.take().expect("applied first");
         let commit = self.commit.take().unwrap();
         tokio::task::spawn_blocking(move || reconcile.commit(&prepared, done, commit)).await.unwrap()
+    }
+}
+
+/// The materializer of a read-only reconcile with no helper, for a fixture that places a
+/// staged listing by itself (`local::testing::Folder`): the one place a test names the
+/// materializer's parts.
+pub(crate) fn materializer(disk: Disk, store: &Store, root_item_id: &str, rescue_into: PathBuf, claimed: Option<Claimed>, runtime: &tokio::runtime::Handle) -> Materializer {
+    Materializer {
+        disk,
+        store: store.clone(),
+        link: None,
+        runtime: runtime.clone(),
+        locks: InodeLocks::new(),
+        root_item_id: root_item_id.into(),
+        rescue_into,
+        cancel: CancellationToken::new(),
+        mode: Mode::ReadOnly,
+        claimed,
     }
 }
 

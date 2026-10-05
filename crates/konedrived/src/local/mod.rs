@@ -31,7 +31,7 @@ pub mod liveness;
 pub mod names;
 pub mod scan;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 pub mod watcher;

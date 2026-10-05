@@ -712,19 +712,9 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     let a_store = w.store.clone();
     let claimed: crate::remote::materialize::Claimed = Arc::new(move |id| { let id = id.to_owned(); a_store.call_blocking(move |s| Ok(s.get(Table::Items, &id)?.is_some())).unwrap() });
     let reconcile_b = |locked: bool| {
-        Materializer {
-            disk: Disk::open(&b_root, locked).unwrap(),
-            store: b_store.clone(),
-            link: None,
-            runtime: w.h.runtime.handle().clone(),
-            locks: InodeLocks::new(),
-            root_item_id: "RB".into(),
-            rescue_into: w.beside("rescued-b/now"),
-            cancel: CancellationToken::new(),
-            mode: crate::remote::mode::Mode::ReadOnly,
-            claimed: Some(Arc::clone(&claimed)),
-        }
-        .apply(Scope::Full)
+        let disk = Disk::open(&b_root, locked).unwrap();
+        crate::remote::testing::materializer(disk, &b_store, "RB", w.beside("rescued-b/now"), Some(Arc::clone(&claimed)), w.h.runtime.handle())
+            .apply(crate::remote::materialize::Scope::Full)
         .unwrap()
     };
     b_store

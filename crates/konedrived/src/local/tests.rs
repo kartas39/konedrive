@@ -13,18 +13,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
-use tokio_util::sync::CancellationToken;
+use konedrive_fs::placeholder::{self, XATTR_ITEM_ID, XATTR_ROOT};
 
 use super::handles::record_replaced;
 use super::liveness::{Liveness, NoLiveness};
+use super::testing::{file, folder, names, row, Folder, TIME};
 use super::*;
-use crate::folder::disk::Disk;
-use crate::remote::materialize::{Materializer, Scope};
-use crate::folder::root::SyncRoot;
-use crate::folder::locks::InodeLocks;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, TreeStore};
 
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
@@ -34,159 +30,6 @@ mod identity;
 mod liveness;
 mod passed_over;
 mod since_listed;
-
-const TIME: i64 = 1_700_000_000;
-
-fn qx(content: &[u8]) -> String {
-    let mut hasher = konedrive_graph::quickxor::QuickXor::new();
-    hasher.update(content);
-    hasher.finish_base64()
-}
-
-fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind, content: &[u8]) -> Row {
-    Row {
-        id: id.into(),
-        parent_id: parent.map(str::to_owned),
-        name: name.into(),
-        kind,
-        size: if kind == Kind::File { content.len() as u64 } else { 0 },
-        mtime: TIME,
-        etag: Some(format!("e-{id}")),
-        ctag: Some(format!("c-{id}")),
-        quickxor: (kind == Kind::File).then(|| qx(content)),
-        mime: None,
-        placement: Placement::Placed,
-    }
-}
-
-fn folder(id: &str, parent: &str, name: &str) -> Change {
-    Change::Upsert(row(id, Some(parent), name, Kind::Folder, b""))
-}
-
-fn file(id: &str, parent: &str, name: &str, content: &[u8]) -> Change {
-    Change::Upsert(row(id, Some(parent), name, Kind::File, content))
-}
-
-struct Fx {
-    _dir: tempfile::TempDir,
-    root: SyncRoot,
-    /// A directory beside the folder, on its filesystem: "outside".
-    outside: PathBuf,
-    store: Store,
-    liveness: FakeLiveness,
-    ignore: IgnoreList,
-    locks: InodeLocks,
-}
-
-impl Fx {
-    /// A folder whose listing is `changes` (the root comes first), placed by
-    /// the materializer.
-    fn new(changes: &[Change]) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
-        let path = base.join("OneDrive");
-        let outside = base.join("elsewhere");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        let root_id = "5b0e2c7a-1d3f-4e8a-9b6c-0f1e2d3c4b5a".to_owned();
-        xattr::set(&path, XATTR_ROOT, root_id.as_bytes()).unwrap();
-        let fx = Fx {
-            _dir: dir,
-            root: SyncRoot { path, root_id },
-            outside,
-            store: Store::new(TreeStore::in_memory().unwrap()),
-            liveness: FakeLiveness::new(),
-            ignore: IgnoreList::default(),
-            locks: InodeLocks::new(),
-        };
-        let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
-        all.extend_from_slice(changes);
-        fx.store.call_blocking(move |s| {
-            s.begin_staging(konedrive_tree::NewTree::Whole)?;
-            s.stage(&all)
-        })
-        .unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let materializer = Materializer {
-            disk: fx.disk(),
-            store: fx.store.clone(),
-            link: None,
-            runtime: runtime.handle().clone(),
-            locks: InodeLocks::new(),
-            root_item_id: "R".into(),
-            rescue_into: fx.outside.join("rescued"),
-            cancel: CancellationToken::new(),
-            mode: crate::remote::mode::Mode::ReadOnly,
-            claimed: None,
-        };
-        materializer.apply(Scope::Full).unwrap();
-        fx.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
-        fx
-    }
-
-    fn path(&self, rel: &str) -> PathBuf {
-        self.root.path.join(rel)
-    }
-
-    fn disk(&self) -> Disk {
-        Disk::open(&self.root, false).unwrap()
-    }
-
-    fn examine(&self, batch: &Batch) -> Examined {
-        self.examine_with(batch, &self.liveness)
-    }
-
-    fn examine_with(&self, batch: &Batch, liveness: &dyn Liveness) -> Examined {
-        self.try_examine(&self.disk(), batch, liveness).unwrap()
-    }
-
-    fn try_examine(&self, disk: &Disk, batch: &Batch, liveness: &dyn Liveness) -> Result<Examined, ExamineError> {
-        Examiner { disk, store: &self.store, liveness, ignore: &self.ignore, locks: &self.locks, now: 1000 }.examine(batch)
-    }
-
-    fn rows(&self) -> Vec<OutboxRow> {
-        self.store.call_blocking(move |s| s.outbox_rows()).unwrap()
-    }
-
-    /// (kind, where, item) of every row, in `seq` order.
-    fn summary(&self) -> Vec<(OutboxKind, String, Option<String>)> {
-        self.rows().into_iter().map(|r| (r.kind, r.rel.display().to_string(), r.item_id)).collect()
-    }
-
-    fn row_at(&self, rel: &str) -> OutboxRow {
-        self.rows().into_iter().find(|r| r.rel == Path::new(rel)).unwrap_or_else(|| panic!("no row at {rel}: {:?}", self.summary()))
-    }
-
-    /// Downloaded, as a fill leaves it: the content, `hydrated`, a stamp.
-    fn hydrate(&self, rel: &str, content: &[u8]) {
-        let file = File::options().write(true).open(self.path(rel)).unwrap();
-        (&file).write_all(content).unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-        placeholder::write_stamp(&file).unwrap();
-    }
-
-    fn handle(&self, rel: &str) -> FileHandle {
-        let path = self.path(rel);
-        FileHandle::at(&File::open(path.parent().unwrap()).unwrap(), path.file_name().unwrap()).unwrap()
-    }
-
-    fn write(&self, rel: &str, content: &[u8]) {
-        std::fs::write(self.path(rel), content).unwrap();
-    }
-
-    fn rename(&self, from: &str, to: &str) {
-        std::fs::rename(self.path(from), self.path(to)).unwrap();
-    }
-}
-
-/// A batch naming these (directory, name) pairs.
-fn names(pairs: &[(&str, &str)]) -> Batch {
-    let mut batch = Batch::new();
-    for (dir, name) in pairs {
-        batch.name(Path::new(dir), OsStr::new(name));
-    }
-    batch
-}
 
 fn id_of(path: &Path) -> Option<String> {
     xattr::get(path, XATTR_ITEM_ID).unwrap().map(|v| String::from_utf8(v).unwrap())
@@ -207,7 +50,7 @@ fn copy_keeping_attributes(from: &Path, to: &Path) {
 /// OneDrive refuses is blocked.
 #[test]
 fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     std::fs::create_dir_all(fx.path("new/sub")).unwrap();
     fx.write("new/sub/f.txt", b"x");
     fx.write("new/g.txt", b"y");
@@ -240,8 +83,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
     assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
     assert!(fx.row_at("new").seq < mkdir, "new folders shallowest first");
 
-    let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
+    let skipped = fx.skipped();
     assert_eq!(
         skipped,
         vec![(".konedrive-mine".into(), "reserved-name".into()), ("link".into(), "symlink".into()), ("pipe".into(), "fifo".into())]
@@ -249,7 +91,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
     // Listed while it is there.
     std::fs::remove_file(fx.path("pipe")).unwrap();
     fx.examine(&names(&[("", "pipe")]));
-    assert_eq!(fx.store.call_blocking(move |s| s.local_skipped()).unwrap().len(), 2);
+    assert_eq!(fx.skipped().len(), 2);
 }
 
 /// The content check: a size change is a change; a same-size change is
@@ -257,7 +99,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
 /// edit that kept size and time is found only through `FAN_CLOSE_WRITE`.
 #[test]
 fn an_edit_is_an_update_and_a_touch_uploads_nothing() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello"), file("B", "R", "b.txt", b"12345"), file("C", "R", "c.txt", b"old")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"hello"), file("B", "R", "b.txt", b"12345"), file("C", "R", "c.txt", b"old")]);
     for (rel, content) in [("a.txt", &b"hello"[..]), ("b.txt", b"12345"), ("c.txt", b"old")] {
         fx.hydrate(rel, content);
     }
@@ -299,7 +141,7 @@ fn an_edit_is_an_update_and_a_touch_uploads_nothing() {
 /// is ready once the writer closes (the read-lease probe).
 #[test]
 fn a_file_open_for_writing_waits_for_its_writer() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"log")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"log")]);
     fx.hydrate("a.txt", b"log");
     let mut writer = File::options().append(true).open(fx.path("a.txt")).unwrap();
     writer.write_all(b" line").unwrap();
@@ -325,7 +167,7 @@ fn a_file_open_for_writing_waits_for_its_writer() {
 /// uploaded, and the file stays a placeholder.
 #[test]
 fn a_truncated_placeholder_gets_the_clouds_size_back() {
-    let fx = Fx::new(&[file("P", "R", "p.bin", &[7u8; 100])]);
+    let fx = Folder::new(&[file("P", "R", "p.bin", &[7u8; 100])]);
     nix::unistd::truncate(&fx.path("p.bin"), 10).unwrap();
     let out = fx.examine(&names(&[("", "p.bin")]));
     assert_eq!(out.restored, vec![PathBuf::from("p.bin")]);
@@ -340,7 +182,7 @@ fn a_truncated_placeholder_gets_the_clouds_size_back() {
 /// removes the row. A directory that moves takes the rows inside it along.
 #[test]
 fn renames_and_moves_are_moves_of_the_item() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"a"), file("F", "D", "f.txt", b"f")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"a"), file("F", "D", "f.txt", b"f")]);
     fx.rename("a.txt", "b.txt");
     fx.examine(&names(&[("", "a.txt"), ("", "b.txt")]));
     let row = fx.row_at("b.txt");
@@ -380,7 +222,7 @@ fn renames_and_moves_are_moves_of_the_item() {
 fn save_by_rename_in_editors_patterns_is_an_update_of_the_item() {
     let files: [(&str, &str); 6] = [("K", "k.txt"), ("G", "g.txt"), ("L", "lo.odt"), ("V1", "v1.txt"), ("V2", "v2.txt"), ("V3", "v3.txt")];
     let changes: Vec<Change> = files.iter().map(|(id, name)| file(id, "R", name, b"old")).collect();
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     for (_, name) in files {
         fx.hydrate(name, b"old");
     }
@@ -439,7 +281,7 @@ fn save_by_rename_in_editors_patterns_is_an_update_of_the_item() {
         assert_eq!(row.inode.and_then(|i| i.handle), Some(fx.handle(name)), "{name}: the new inode takes the item over");
     }
     assert!(fx.liveness.asked().is_empty());
-    assert!(fx.store.call_blocking(move |s| s.local_skipped()).unwrap().is_empty(), "temporary and lock files stay local, unlisted");
+    assert!(fx.skipped().is_empty(), "temporary and lock files stay local, unlisted");
 }
 
 /// A copy that kept konedrive's attributes (`cp -a`, KIO) is a new file,
@@ -447,7 +289,7 @@ fn save_by_rename_in_editors_patterns_is_an_update_of_the_item() {
 /// name of a placeholder is marked (`MarkFile`) and listed.
 #[test]
 fn copies_that_kept_their_attributes_are_new_files() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc"), file("F", "D", "f.txt", b"ff"), file("P", "R", "p.bin", b"placeholder")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc"), file("F", "D", "f.txt", b"ff"), file("P", "R", "p.bin", b"placeholder")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("docs/f.txt", b"ff");
     copy_keeping_attributes(&fx.path("a.txt"), &fx.path("copy.txt"));
@@ -469,8 +311,7 @@ fn copies_that_kept_their_attributes_are_new_files() {
         assert_eq!(id_of(&fx.path(original.0)).as_deref(), Some(original.1), "{} is untouched", original.0);
     }
     assert_eq!(out.mark_files, vec![PathBuf::from("p.bin")]);
-    let skipped = fx.store.call_blocking(move |s| s.local_skipped()).unwrap();
-    assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link".to_owned())]);
+    assert_eq!(fx.skipped(), vec![("p-link.bin".into(), "hard-link".to_owned())]);
 }
 
 /// Rule 7: a base item missing from the batch is decided by its object:
@@ -479,7 +320,7 @@ fn copies_that_kept_their_attributes_are_new_files() {
 /// at a deleted name, a batch later, is an update after all.
 #[test]
 fn a_missing_item_is_decided_by_its_object() {
-    let fx = Fx::new(&[
+    let fx = Folder::new(&[
         folder("D", "R", "docs"),
         file("A", "R", "a.txt", b"a"),
         file("B", "R", "b.txt", b"b"),
@@ -521,7 +362,7 @@ fn a_missing_item_is_decided_by_its_object() {
 /// left for the reconcile to place again (WR4).
 #[test]
 fn a_rebuilt_base_never_deletes() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"a")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"a")]);
     fx.store.call_blocking(move |s| s.set_local_handle("A", None)).unwrap();
     std::fs::remove_file(fx.path("a.txt")).unwrap();
     let out = fx.examine(&Batch::full());
@@ -534,7 +375,7 @@ fn a_rebuilt_base_never_deletes() {
 /// it waits for what left it first.
 #[test]
 fn a_folder_delete_is_one_row_that_waits_for_what_left_it() {
-    let fx = Fx::new(&[
+    let fx = Folder::new(&[
         folder("D", "R", "docs"),
         file("X", "D", "x.txt", b"x"),
         file("Y", "D", "y.txt", b"y"),
@@ -559,7 +400,7 @@ fn a_folder_delete_is_one_row_that_waits_for_what_left_it() {
 fn the_mass_delete_guard_holds_a_large_delete() {
     let mut changes = vec![folder("BIG", "R", "big"), file("O", "R", "other.txt", b"o")];
     changes.extend((0..60).map(|n| file(&format!("F{n}"), "BIG", &format!("f{n}.txt"), b"f")));
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     std::fs::remove_file(fx.path("other.txt")).unwrap();
     let out = fx.examine(&names(&[("", "other.txt")]));
     assert_eq!((out.held, fx.row_at("other.txt").state), (0, OutboxState::Ready));
@@ -581,7 +422,7 @@ fn the_mass_delete_guard_holds_a_large_delete() {
 /// left alone, never removed.
 #[test]
 fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     fx.write("foreign.txt", b"content");
     xattr::set(fx.path("foreign.txt"), XATTR_ITEM_ID, b"OTHER").unwrap();
     xattr::set(fx.path("foreign.txt"), placeholder::XATTR_STATE, b"hydrated").unwrap();
@@ -597,8 +438,7 @@ fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
     assert_eq!(out.stripped, vec![PathBuf::from("foreign.txt")]);
     assert_eq!(id_of(&fx.path("linked.txt")).as_deref(), Some("LINKED"), "stripping it would strip its other name too");
     assert_eq!(id_of(&fx.path("ghost.bin")).as_deref(), Some("GHOST"));
-    let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
+    let skipped = fx.skipped();
     assert_eq!(skipped, vec![("ghost.bin".into(), "not-downloaded".into()), ("linked.txt".into(), "hard-link".into())]);
 }
 
@@ -607,7 +447,7 @@ fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
 /// leaves nothing; a new folder removed takes its rows along.
 #[test]
 fn a_pending_create_follows_its_file_until_it_is_gone() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     fx.write("n.txt", b"n");
     fx.examine(&names(&[("", "n.txt")]));
     let seq = fx.row_at("n.txt").seq;
@@ -635,7 +475,7 @@ fn a_pending_create_follows_its_file_until_it_is_gone() {
 /// it waiting — they go up once it is made — and only its name waits behind.
 #[test]
 fn ignoring_a_directory_being_made_keeps_what_is_inside_it() {
-    let mut fx = Fx::new(&[]);
+    let mut fx = Folder::new(&[]);
     std::fs::create_dir(fx.path("build")).unwrap();
     fx.write("build/a.o", b"a");
     fx.examine(&names(&[("", "build")]));
@@ -653,7 +493,7 @@ fn ignoring_a_directory_being_made_keeps_what_is_inside_it() {
 /// while the daemon was not running. Run twice, it finds the same.
 #[test]
 fn the_full_scan_finds_what_changed_while_the_daemon_was_down() {
-    let fx = Fx::new(&[
+    let fx = Folder::new(&[
         folder("D", "R", "docs"),
         file("A", "R", "a.txt", b"a"),
         file("B", "R", "b.txt", b"b"),
@@ -711,7 +551,7 @@ impl ScanProgress for Told {
 /// nothing.
 #[test]
 fn a_full_scan_tells_how_far_it_got_and_a_single_place_tells_nothing() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "D", "a.txt", b"a"), file("B", "R", "b.txt", b"b")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("A", "D", "a.txt", b"a"), file("B", "R", "b.txt", b"b")]);
     std::fs::create_dir(fx.path("docs/deep")).unwrap();
     fx.write("docs/deep/n.txt", b"n");
     let examine = |batch: &Batch, told: &Told| {
@@ -739,7 +579,7 @@ fn a_full_scan_tells_how_far_it_got_and_a_single_place_tells_nothing() {
 /// keeps it, and its delete waits for it (WR5).
 #[test]
 fn a_placeholder_dragged_out_before_its_folder_was_deleted_is_not_deleted_with_it() {
-    let fx = Fx::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
+    let fx = Folder::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
     let p = fx.handle("Docs/p.bin");
     std::fs::rename(fx.path("Docs/p.bin"), fx.outside.join("p.bin")).unwrap();
     fx.liveness.alive(p.clone(), fx.outside.join("p.bin"));
@@ -757,7 +597,7 @@ fn a_placeholder_dragged_out_before_its_folder_was_deleted_is_not_deleted_with_i
 /// after by the objects the batch saw.
 #[test]
 fn a_placeholder_dragged_out_and_its_folder_deleted_in_one_batch_is_a_move_out() {
-    let fx = Fx::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
+    let fx = Folder::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
     let p = fx.handle("Docs/p.bin");
     std::fs::rename(fx.path("Docs/p.bin"), fx.outside.join("p.bin")).unwrap();
     fx.liveness.alive(p.clone(), fx.outside.join("p.bin"));
@@ -778,7 +618,7 @@ fn a_placeholder_dragged_out_and_its_folder_deleted_in_one_batch_is_a_move_out()
 /// a stranger, stripped and uploaded again.
 #[test]
 fn an_unfinished_listing_is_no_base_to_examine_against() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"abc")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc")]);
     fx.hydrate("a.txt", b"abc");
     fx.store
         .call_blocking(move |s| {
@@ -804,7 +644,7 @@ fn an_unfinished_listing_is_no_base_to_examine_against() {
 /// folder; the delete waits for nothing that is only at the same path.
 #[test]
 fn a_folder_removed_and_made_again_is_deleted_before_the_new_one_is_made() {
-    let fx = Fx::new(&[folder("E", "R", "exports"), file("O", "E", "old.txt", b"o")]);
+    let fx = Folder::new(&[folder("E", "R", "exports"), file("O", "E", "old.txt", b"o")]);
     std::fs::remove_dir_all(fx.path("exports")).unwrap();
     std::fs::create_dir(fx.path("exports")).unwrap();
     fx.write("exports/new.txt", b"n");
@@ -823,7 +663,7 @@ fn a_folder_removed_and_made_again_is_deleted_before_the_new_one_is_made() {
 /// C3: `mv d d.old && mkdir d`: the new folder waits for the old one's move.
 #[test]
 fn a_folder_made_at_a_name_another_is_leaving_waits_for_it() {
-    let fx = Fx::new(&[folder("D", "R", "d"), file("F", "D", "f.txt", b"f")]);
+    let fx = Folder::new(&[folder("D", "R", "d"), file("F", "D", "f.txt", b"f")]);
     fx.rename("d", "d.old");
     std::fs::create_dir(fx.path("d")).unwrap();
     fx.examine(&names(&[("", "d"), ("", "d.old")]));
@@ -854,7 +694,7 @@ impl crate::hydration::source::ContentSource for Served {
 /// afterwards is a move-out, not a delete of the old inode.
 #[test]
 fn a_replaced_file_moved_out_is_a_move_out() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"old")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"old")]);
     fx.hydrate("a.txt", b"old");
     let disk = fx.disk();
     let replacement = crate::remote::materialize::Replacement { id: "A".into(), rel: "a.txt".into(), ctag: "c2".into(), size: 3 };
@@ -877,7 +717,7 @@ fn a_replaced_file_moved_out_is_a_move_out() {
 fn a_big_folder_moved_out_is_held_like_a_delete() {
     let mut changes = vec![folder("BIG", "R", "big"), file("O", "R", "other.txt", b"o")];
     changes.extend((0..60).map(|n| file(&format!("F{n}"), "BIG", &format!("f{n}.txt"), b"f")));
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     std::fs::rename(fx.path("big"), fx.outside.join("big")).unwrap();
     fx.liveness.alive_tree(&fx.outside.join("big"));
     let out = fx.examine(&names(&[("", "big")]));
@@ -891,7 +731,7 @@ fn a_big_folder_moved_out_is_held_like_a_delete() {
 #[test]
 fn removals_that_trickle_in_add_up_for_the_guard() {
     let changes: Vec<Change> = (0..62).map(|n| file(&format!("F{n}"), "R", &format!("f{n:02}.txt"), b"f")).collect();
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     let remove = |range: std::ops::Range<usize>| {
         let mut batch = Batch::new();
         for n in range {
@@ -910,7 +750,7 @@ fn removals_that_trickle_in_add_up_for_the_guard() {
 /// gone fails instead of committing nothing.
 #[test]
 fn a_row_being_sent_is_never_taken_from_under_the_worker() {
-    let fx = Fx::new(&[]);
+    let fx = Folder::new(&[]);
     fx.write("n.txt", b"n");
     fx.write("m.txt", b"m");
     fx.examine(&names(&[("", "n.txt"), ("", "m.txt")]));
@@ -931,7 +771,7 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
     assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(m_move.seq)).unwrap(), vec![m_create.seq]);
     let answered = row("N", Some("R"), "n.txt", Kind::File, b"n");
     let seq = n_create.seq;
-    let commit = |fx: &Fx| {
+    let commit = |fx: &Folder| {
         let answered = answered.clone();
         fx.store.call_blocking(move |s| s.outbox_commit(seq, konedrive_tree::outbox::Committed::Item { row: &answered, handle: None }, None))
     };
@@ -944,7 +784,7 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
 /// carries its root id.
 #[test]
 fn nothing_is_examined_in_a_root_that_went_away() {
-    let fx = Fx::new(&[file("A", "R", "a.txt", b"a")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"a")]);
     let disk = fx.disk();
     xattr::remove(&fx.root.path, XATTR_ROOT).unwrap();
     let err = fx.try_examine(&disk, &Batch::full(), &fx.liveness).unwrap_err();
@@ -960,7 +800,7 @@ fn nothing_is_examined_in_a_root_that_went_away() {
 /// that is not a path, or a place in the folder where the object is not.
 #[test]
 fn an_answer_that_cannot_be_placed_decides_nothing() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c"), file("X", "D", "x.txt", b"x")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c"), file("X", "D", "x.txt", b"x")]);
     let (b, c) = (fx.handle("b.txt"), fx.handle("c.txt"));
     std::fs::rename(fx.path("b.txt"), fx.outside.join("b.txt")).unwrap();
     fx.liveness.alive(b, "(unreachable)/elsewhere/b.txt");
@@ -982,7 +822,7 @@ fn an_unreadable_directory_does_not_stop_the_examination() {
         eprintln!("skipping: running as root, which chmod 000 cannot refuse");
         return;
     }
-    let fx = Fx::new(&[folder("D", "R", "locked"), file("X", "D", "x.txt", b"x")]);
+    let fx = Folder::new(&[folder("D", "R", "locked"), file("X", "D", "x.txt", b"x")]);
     fx.write("new.txt", b"n");
     std::fs::set_permissions(fx.path("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
     let out = fx.examine(&Batch::full());
@@ -993,11 +833,11 @@ fn an_unreadable_directory_does_not_stop_the_examination() {
 
 // Fix round 2 (the examination re-review): each of these failed before its fix.
 
-fn runnable(fx: &Fx) -> Vec<(OutboxKind, String)> {
+fn runnable(fx: &Folder) -> Vec<(OutboxKind, String)> {
     fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
 }
 
-fn seq_of(fx: &Fx, kind: OutboxKind, rel: &str) -> i64 {
+fn seq_of(fx: &Folder, kind: OutboxKind, rel: &str) -> i64 {
     fx.rows().into_iter().find(|r| r.kind == kind && r.rel == Path::new(rel)).unwrap_or_else(|| panic!("no {kind:?} at {rel}: {:?}", fx.summary())).seq
 }
 
@@ -1007,7 +847,7 @@ fn seq_of(fx: &Fx, kind: OutboxKind, rel: &str) -> i64 {
 /// exports`.
 #[test]
 fn a_new_folder_moved_over_one_deleted_since_waits_for_its_delete() {
-    let fx = Fx::new(&[folder("E", "R", "exports"), file("O", "E", "old.txt", b"o")]);
+    let fx = Folder::new(&[folder("E", "R", "exports"), file("O", "E", "old.txt", b"o")]);
     std::fs::create_dir(fx.path("exports.new")).unwrap();
     fx.write("exports.new/a.txt", b"a");
     fx.examine(&names(&[("", "exports.new")]));
@@ -1029,7 +869,7 @@ fn a_new_folder_moved_over_one_deleted_since_waits_for_its_delete() {
 /// move runs (through a temporary name, §4.4) and the delete follows it.
 #[test]
 fn a_folder_replaced_by_its_own_subfolder_does_not_wait_for_ever() {
-    let fx = Fx::new(&[folder("F", "R", "F"), folder("S", "F", "sub"), file("A", "S", "a.txt", b"a"), file("B", "F", "b.txt", b"b")]);
+    let fx = Folder::new(&[folder("F", "R", "F"), folder("S", "F", "sub"), file("A", "S", "a.txt", b"a"), file("B", "F", "b.txt", b"b")]);
     fx.rename("F/sub", "F.tmp");
     std::fs::remove_dir_all(fx.path("F")).unwrap();
     fx.rename("F.tmp", "F");
@@ -1047,7 +887,7 @@ fn a_folder_replaced_by_its_own_subfolder_does_not_wait_for_ever() {
 /// name: the name's wait is dropped, and the new folder is made first.
 #[test]
 fn a_folder_wrapped_in_a_new_one_of_its_name_does_not_wait_for_ever() {
-    let fx = Fx::new(&[folder("D", "R", "d"), file("X", "D", "x.txt", b"x")]);
+    let fx = Folder::new(&[folder("D", "R", "d"), file("X", "D", "x.txt", b"x")]);
     std::fs::create_dir(fx.path("t")).unwrap();
     fx.rename("d", "t/d");
     fx.rename("t", "d");
@@ -1066,7 +906,7 @@ fn a_folder_wrapped_in_a_new_one_of_its_name_does_not_wait_for_ever() {
 fn confirmed_removals_are_not_held_again() {
     let mut changes = vec![folder("BIG", "R", "big"), file("O", "R", "other.txt", b"o")];
     changes.extend((0..60).map(|n| file(&format!("F{n}"), "BIG", &format!("f{n}.txt"), b"f")));
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     std::fs::remove_dir_all(fx.path("big")).unwrap();
     assert_eq!(fx.examine(&names(&[("", "big")])).held, 61);
     assert_eq!(fx.store.call_blocking(move |s| s.outbox_release_held()).unwrap(), 1);
@@ -1083,7 +923,7 @@ fn confirmed_removals_are_not_held_again() {
 /// the folder's delete waits for (WR5).
 #[test]
 fn a_placeholder_moved_out_unseen_before_its_folder_was_deleted_is_a_move_out() {
-    let fx = Fx::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
+    let fx = Folder::new(&[folder("D", "R", "Docs"), file("P", "D", "p.bin", b"only in the cloud"), file("Q", "D", "q.txt", b"q")]);
     let p = fx.handle("Docs/p.bin");
     std::fs::rename(fx.path("Docs/p.bin"), fx.outside.join("p.bin")).unwrap();
     fx.liveness.alive(p, fx.outside.join("p.bin"));
@@ -1101,7 +941,7 @@ fn a_placeholder_moved_out_unseen_before_its_folder_was_deleted_is_a_move_out() 
 /// waits for the item's move.
 #[test]
 fn a_folder_whose_item_is_elsewhere_in_the_folder_waits_until_it_is_found() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), folder("O", "R", "other"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), folder("O", "R", "other"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y")]);
     let x = fx.handle("docs/x.txt");
     fx.rename("docs/x.txt", "other/x.txt");
     fx.liveness.alive(x, fx.path("other/x.txt"));
@@ -1122,7 +962,7 @@ fn a_folder_whose_item_is_elsewhere_in_the_folder_waits_until_it_is_found() {
 /// the running row, not the folder's delete.
 #[test]
 fn a_running_move_into_a_folder_that_went_gets_its_own_follow_up() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("X", "R", "x.txt", b"x")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("X", "R", "x.txt", b"x")]);
     fx.rename("x.txt", "docs/x.txt");
     fx.examine(&names(&[("", "x.txt"), ("docs", "x.txt")]));
     let running = seq_of(&fx, Move, "docs/x.txt");
@@ -1143,7 +983,7 @@ fn a_running_move_into_a_folder_that_went_gets_its_own_follow_up() {
 fn each_removed_item_counts_once_for_the_guard() {
     let mut changes = vec![folder("F", "R", "f"), file("O1", "R", "o1.txt", b"o"), file("O2", "R", "o2.txt", b"o")];
     changes.extend((0..8).map(|n| file(&format!("F{n}"), "F", &format!("f{n}.txt"), b"f")));
-    let fx = Fx::new(&changes);
+    let fx = Folder::new(&changes);
     let p = fx.handle("f/f0.txt");
     std::fs::rename(fx.path("f/f0.txt"), fx.outside.join("f0.txt")).unwrap();
     fx.liveness.alive(p, fx.outside.join("f0.txt"));
@@ -1161,7 +1001,7 @@ fn each_removed_item_counts_once_for_the_guard() {
 /// the parent, and its placeholders outside would read zeros (WR5).
 #[test]
 fn a_subfolder_dragged_out_that_is_held_back_keeps_its_parent_from_being_deleted() {
-    let fx = Fx::new(&[
+    let fx = Folder::new(&[
         folder("D", "R", "Docs"),
         folder("S", "D", "Sub"),
         file("A", "S", "a.bin", b"only in the cloud"),
@@ -1185,7 +1025,7 @@ fn a_subfolder_dragged_out_that_is_held_back_keeps_its_parent_from_being_deleted
 /// every 30 s through the helper.
 #[test]
 fn a_folder_with_an_item_that_has_no_handle_is_unproven_not_rechecked() {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y")]);
     fx.store.call_blocking(move |s| s.set_local_handle("X", None)).unwrap();
     std::fs::remove_dir_all(fx.path("docs")).unwrap();
     let out = fx.examine(&names(&[("", "docs")]));
@@ -1229,7 +1069,7 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
         ("exports", Some(OutboxState::Running)),
     ];
     for (new_name, freer) in variants {
-        let fx = Fx::new(&[folder("E", "R", "exports"), file("K", "E", "keep.txt", b"k"), file("O", "E", "old.txt", b"o")]);
+        let fx = Folder::new(&[folder("E", "R", "exports"), file("K", "E", "keep.txt", b"k"), file("O", "E", "old.txt", b"o")]);
         std::fs::create_dir(fx.path("exports.new")).unwrap();
         fx.rename("exports/keep.txt", "exports.new/keep.txt");
         fx.write("exports.new/new.txt", b"new");

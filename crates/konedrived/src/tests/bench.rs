@@ -12,17 +12,14 @@
 //! 30 000 changed files, 5 000 skipped files, 2 000 conflicts, 20 000 images
 //! without thumbnails and 30 000 transfers waiting for a slot.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::XATTR_ROOT;
-use tokio_util::sync::CancellationToken;
 
-use crate::folder::disk::Disk;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::remote::materialize::{Materializer, Scope};
+use crate::local::testing::Folder;
+use crate::local::Batch;
 use crate::folder::root::SyncRoot;
 use crate::upload::tests::harness::Harness;
 use crate::folder::locks::InodeLocks;
@@ -134,69 +131,11 @@ fn store_at(dir: &Path, changes: &[Change]) -> Store {
     Store::new(store)
 }
 
-/// A OneDrive folder placed from `changes` by the real materializer, with its store on disk.
-struct Folder {
-    dir: tempfile::TempDir,
-    root: SyncRoot,
-    store: Store,
-    liveness: FakeLiveness,
-    locks: InodeLocks,
-}
-
-impl Folder {
-    fn new(changes: &[Change]) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().canonicalize().unwrap().join("OneDrive");
-        std::fs::create_dir(&path).unwrap();
-        let root_id = "5b0e2c7a-1d3f-4e8a-9b6c-0f1e2d3c4b5a".to_owned();
-        xattr::set(&path, XATTR_ROOT, root_id.as_bytes()).unwrap();
-        let root = SyncRoot { path, root_id };
-        let mut all = vec![Change::Root(item("R", None, "", Kind::Folder))];
-        all.extend_from_slice(changes);
-        let store = Store::new(TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
-        store
-            .call_blocking(move |s| {
-                s.begin_staging(konedrive_tree::NewTree::Whole)?;
-                s.stage(&all)
-            })
-            .unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let materializer = Materializer {
-            disk: Disk::open(&root, false).unwrap(),
-            store: store.clone(),
-            link: None,
-            runtime: runtime.handle().clone(),
-            locks: InodeLocks::new(),
-            root_item_id: "R".into(),
-            rescue_into: dir.path().join("rescued"),
-            cancel: CancellationToken::new(),
-            mode: crate::remote::mode::Mode::ReadOnly,
-            claimed: None,
-        };
-        materializer.apply(Scope::Full).unwrap();
-        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
-        Folder { dir, root, store, liveness: FakeLiveness::new(), locks: InodeLocks::new() }
-    }
-
-    fn path(&self, rel: &str) -> PathBuf {
-        self.root.path.join(rel)
-    }
-
-    fn examine(&self, batch: &Batch) -> Examined {
-        let disk = Disk::open(&self.root, false).unwrap();
-        let ignore = IgnoreList::default();
-        Examiner { disk: &disk, store: &self.store, liveness: &self.liveness, ignore: &ignore, locks: &self.locks, now: TIME }.examine(batch).unwrap()
-    }
-
-    fn write_files(&self, dir: &str, prefix: &str, n: usize) {
-        std::fs::create_dir_all(self.path(dir)).unwrap();
-        for i in 0..n {
-            std::fs::write(self.path(&format!("{dir}/{prefix}{i:05}")), b"x").unwrap();
-        }
-    }
-
-    fn rows(&self) -> usize {
-        self.store.call_blocking(move |s| s.outbox_rows()).unwrap().len()
+/// `n` new files named `prefix` and a number, in `dir` of `folder`.
+fn write_files(folder: &Folder, dir: &str, prefix: &str, n: usize) {
+    std::fs::create_dir_all(folder.path(dir)).unwrap();
+    for i in 0..n {
+        std::fs::write(folder.path(&format!("{dir}/{prefix}{i:05}")), b"x").unwrap();
     }
 }
 
@@ -208,18 +147,18 @@ fn examination_of_a_directory_with_27000_new_files() {
     guard();
     let mut changes = vec![Change::Upsert(item("D", Some("R"), "big", Kind::Folder))];
     changes.extend((0..3000).map(|i| Change::Upsert(item(&format!("K{i}"), Some("D"), &format!("k{i:05}"), Kind::File))));
-    let folder = Folder::new(&changes);
+    let folder = Folder::on_disk(&changes);
     // 3 001 rows already queued: a new directory of 3 000 files.
-    folder.write_files("old", "o", 3000);
+    write_files(&folder, "old", "o", 3000);
     let mut first = Batch::new();
     first.name(Path::new(""), std::ffi::OsStr::new("old"));
     timed("examination of a new directory of 3 000 files (setup)", || folder.examine(&first));
-    folder.write_files("big", "n", 27000);
+    write_files(&folder, "big", "n", 27000);
     let mut batch = Batch::new();
     batch.dir(Path::new("big"));
     let (examined, took) = timed("examination of big/: 30 000 entries, 27 000 new", || folder.examine(&batch));
     assert_eq!(examined.applied.queued.len(), 27000);
-    assert_eq!(folder.rows(), 30001);
+    assert_eq!(folder.rows().len(), 30001);
     within("the examination batch", took, Duration::from_secs(3));
 }
 
@@ -233,8 +172,8 @@ fn full_scan_of_100000_items_and_30000_rows() {
         changes.push(Change::Upsert(item(&format!("D{d}"), Some("R"), &format!("d{d:03}"), Kind::Folder)));
         changes.extend((0..1000).map(|i| Change::Upsert(item(&format!("F{d}-{i}"), Some(&format!("D{d}")), &format!("f{i:04}"), Kind::File))));
     }
-    let (folder, _) = timed("placing 100 000 items (setup)", || Folder::new(&changes));
-    folder.write_files("new", "n", 30000);
+    let (folder, _) = timed("placing 100 000 items (setup)", || Folder::on_disk(&changes));
+    write_files(&folder, "new", "n", 30000);
     let dir = std::fs::File::open(folder.path("new")).unwrap();
     let meta = |rel: &str| {
         use std::os::unix::fs::MetadataExt;
@@ -259,7 +198,7 @@ fn full_scan_of_100000_items_and_30000_rows() {
     }
     folder.store.call_blocking(move |s| s.bench_insert(&rows)).unwrap();
     let (_, took) = timed("Full local scan: 100 000 items, 30 000 rows", || folder.examine(&Batch::full()));
-    assert_eq!(folder.rows(), 30001);
+    assert_eq!(folder.rows().len(), 30001);
     drop(folder.dir);
     within("the Full local scan", took, Duration::from_secs(10));
 }
