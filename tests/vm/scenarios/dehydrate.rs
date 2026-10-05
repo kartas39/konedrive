@@ -146,7 +146,7 @@ pub(crate) fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Resu
 /// file carried out of the folder is never passed at all —
 /// `carried_in_ignore_mark`; both are covered by the registration walk.
 ///
-/// The sequence a reasoned out, driven through the daemon's own
+/// The sequence, driven through the daemon's own
 /// `SyncService` so that every step is the code a real daemon runs:
 ///
 /// 1. a folder registered **with** interception; a file in it hydrated by an

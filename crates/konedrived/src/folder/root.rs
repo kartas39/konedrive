@@ -468,8 +468,8 @@ impl SyncRoot {
     ///
     /// The helper's own check cannot stand in for this one: it is scoped to
     /// the device a root lives on, not to the root itself, and it is not
-    /// consulted here anyway. It matters as soon as puts a path from
-    /// outside this process on the other end of a D-Bus method.
+    /// consulted here anyway. It matters as soon as a D-Bus method
+    /// puts a path from outside this process on the other end.
     ///
     /// This is the *only* way anything in `sync` may turn a
     /// caller's path into a descriptor it will write through.

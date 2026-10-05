@@ -46,7 +46,7 @@ pub struct Baloo {
     /// Baloo's settings file, read to learn what is excluded already. `None`
     /// reads nothing, and nothing counts as excluded.
     pub settings: Option<PathBuf>,
-    /// How long one call is allowed to run — [`DEFAULT_TIMEOUT`] normally;
+    /// How long one call is allowed to run — `DEFAULT_TIMEOUT` normally;
     /// settable in tests, so a hang can be exercised in well under a second.
     pub timeout: Duration,
 }

@@ -114,7 +114,7 @@ impl From<NotCleared> for ResetError {
 /// mid-hydration or mid-dehydration holds content that must not be trusted —
 /// punch it back to `online-only` so the next open fetches it again.
 ///
-/// # Why this takes a [`Clearance`], unlike 's own draft
+/// # Why this takes a [`Clearance`]
 ///
 /// A file that crashed `dehydrating` can still be carrying its ignore mark:
 /// the daemon may have died between `write_state(Dehydrating)` and a

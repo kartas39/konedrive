@@ -3,7 +3,7 @@ use zbus::interface;
 use crate::dbus::properties::*;
 use crate::dbus::LocalScan;
 
-/// The Full local scan. Every property is a row of `properties`, which says
+/// The Full local scan (issue #8). Every property is a row of `properties`, which says
 /// what it is.
 #[interface(name = "org.konedrive.LocalScan")]
 impl LocalScan {

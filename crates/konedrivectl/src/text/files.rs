@@ -143,7 +143,7 @@ pub fn pin_text(queued: u32, prefix: &str) -> String {
 }
 
 /// The path a `NotAllowed` refusal is about, and what pins it: the daemon
-/// says exactly "<path> is pinned by <folder>: unpin it first", and the
+/// says exactly `<path> is pinned by <folder>: unpin it first`, and the
 /// folder is the path or one above it — which tells the two apart even when
 /// a name holds " is pinned by " itself.
 pub(crate) fn pinned_parts(detail: &str) -> Option<(&str, &str)> {

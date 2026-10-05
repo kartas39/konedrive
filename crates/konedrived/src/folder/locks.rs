@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
-/// A file's identity, the way means "per inode": the `(st_dev,
+/// A file's identity, the way "per inode" means it: the `(st_dev,
 /// st_ino)` pair, read from an open descriptor and never spelled as a name.
 /// Two links to one inode share a key; a rename changes no
 /// key at all.
