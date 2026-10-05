@@ -158,15 +158,20 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
 "#,
     );
     for entry in &REFUSALS {
-        let calls = entry.sentence.map(|sentence| sentence.and_then(|sentence| sentence.of(Client::Desktop)).map(info));
+        // As `files::text` decides: whether the operation has a sentence first, and only
+        // then what is said instead of it without the daemon's message.
+        let calls = entry.sentence.map(|sentence| {
+            let call = info(sentence.and_then(|sentence| sentence.of(Client::Desktop))?);
+            Some(match entry.without_detail {
+                Some(bare) => format!("detail.isEmpty() ? {} : {call}", info(bare)),
+                None => call,
+            })
+        });
         if Operation::ALL.iter().all(|&operation| calls.of_ref(operation).is_none()) {
             continue;
         }
         let name = entry.refusal.known_name().expect("an entry is a name this build knows");
         out.push_str(&format!("    if (errorName == QLatin1String({})) {{\n", literal(name)));
-        if let Some(bare) = entry.without_detail {
-            out.push_str(&format!("        if (detail.isEmpty()) {{\n            return {};\n        }}\n", info(bare)));
-        }
         out.push_str(&by_operation(&calls, "        ", "return QString();"));
         out.push_str("    }\n");
     }

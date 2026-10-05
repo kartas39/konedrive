@@ -125,7 +125,8 @@ KONEDRIVE_UPDATE_GENERATED=1 cargo test -p konedrive-text
 ```
 
 `app/generated/` and `dolphin/src/generated/` are never edited by hand. `cargo test -p
-konedrive-text` fails when they are not what the catalogue gives, and runs on every pull request.
+konedrive-text` fails when they are not what the catalogue gives, and runs on every pull request
+and before a release is built.
 
 ## The limitations log
 

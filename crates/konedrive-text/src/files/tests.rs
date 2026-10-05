@@ -1,6 +1,9 @@
 use konedrive_dbus::Refusal;
 
-use super::{entry, failed, text, Operation, Told, ALREADY_WAITING, FAILED, NOT_RUNNING, REFUSALS, STOPPED, TOO_MANY_WAITING, WAS_NOT};
+use super::{
+    entry, failed, failed_of_several, text, text_of_several, Operation, Told, ALREADY_WAITING, FAILED, FAILED_SEVERAL, NOT_RUNNING, REFUSALS, STOPPED,
+    TOO_MANY_WAITING, WAS_NOT,
+};
 use crate::{pieces, Client, Sentence};
 
 /// Every name a call is refused under has an entry, in `Refusal`'s order: a
@@ -95,4 +98,40 @@ fn a_refusal_is_worded_for_its_client() {
     assert_eq!(text(Operation::Keep, &Refusal::Unreachable, Client::Desktop, &bare).unwrap(), "OneDrive could not be reached.");
     let braces = Told { file: "{detail}", ..told };
     assert_eq!(failed(Operation::FreeUp, &braces), "Freeing up “{detail}” failed: the daemon's words");
+}
+
+/// A sentence that puts one file in quotes is never said of a list: every
+/// such sentence of the command line, for an operation that takes several
+/// paths, has a list form, with the paths in no quotes.
+#[test]
+fn a_sentence_with_a_file_in_quotes_has_a_list_form() {
+    let listed = |sentence: &str| {
+        whole(sentence, &["files", "detail", "prefix", "folder"]);
+        assert!(sentence.starts_with("{files}: ") || sentence.contains(" {files} "), "{sentence}");
+    };
+    for entry in &REFUSALS {
+        for operation in [Operation::Keep, Operation::Unpin, Operation::FreeUp] {
+            let one = entry.sentence.of(operation).and_then(|sentence| sentence.of(Client::CommandLine));
+            let several = entry.several.of(operation);
+            if one.is_some_and(|one| one.contains("“{file}”")) {
+                assert!(several.is_some(), "{}: no list form", entry.refusal);
+            }
+            if let Some(several) = several {
+                assert!(one.is_some(), "{}: a list form of no sentence", entry.refusal);
+                listed(several);
+            }
+        }
+        assert_eq!(entry.several.of(Operation::OpenOnline), None, "{}: one path is opened", entry.refusal);
+    }
+    for operation in [Operation::Keep, Operation::Unpin, Operation::FreeUp] {
+        listed(FAILED_SEVERAL.of(operation).expect("an operation on several paths"));
+    }
+    let told = Told { file: "/r/a, /r/own.txt", detail: "disk full", ..Told::default() };
+    assert_eq!(
+        text_of_several(Operation::Unpin, &Refusal::NotManaged, &told).unwrap(),
+        "/r/a, /r/own.txt: one of these is not a OneDrive file but a file of your own in the sync folder, so it was never pinned."
+    );
+    assert_eq!(text_of_several(Operation::FreeUp, &Refusal::NotUploaded, &told), None);
+    assert_eq!(failed_of_several(Operation::FreeUp, &told).unwrap(), "Freeing up /r/a, /r/own.txt failed: disk full");
+    assert_eq!(failed_of_several(Operation::OpenOnline, &told), None);
 }

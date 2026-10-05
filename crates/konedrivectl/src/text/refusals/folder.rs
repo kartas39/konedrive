@@ -9,7 +9,8 @@
 //! are not written here: their sentences are the catalogue's (`konedrive-text`, its
 //! `files`), printed as they are written there, and [`shared`] takes from it the
 //! sentences it has in common with them. Only where the catalogue has none for the
-//! command line does such an operation get [`shared`]'s.
+//! command line does such an operation get [`shared`]'s. A sentence about one file is said
+//! of one path; of several paths none of which the refusal names, the catalogue's list form.
 
 use konedrive_dbus::{Refusal, ERROR_PREFIX};
 use konedrive_text::files::{self, Operation};
@@ -29,6 +30,8 @@ pub(super) struct Told<'a> {
     pub root: &'a str,
     /// How every command suggested for this account begins.
     pub prefix: &'a str,
+    /// The action's path is several paths, and the refusal names none of them.
+    pub several: bool,
 }
 
 impl Told<'_> {
@@ -65,9 +68,17 @@ impl Told<'_> {
         files::text(operation, refusal, Client::CommandLine, &told)
     }
 
-    /// [`Told::catalogue_about`] the path of the action.
+    /// [`Told::catalogue_about`] the path of the action — or, of several paths none of
+    /// which the refusal names, the catalogue's list form: a sentence written for one file
+    /// never has a list inside its quotes.
     fn catalogue(&self, operation: Operation, refusal: &Refusal) -> Option<String> {
-        self.catalogue_about(self.path(), operation, refusal)
+        let listed = if self.several { files::text_of_several(operation, refusal, &self.as_any_failure()) } else { None };
+        listed.or_else(|| self.catalogue_about(self.path(), operation, refusal))
+    }
+
+    /// What a sentence with nothing but the path and the daemon's message is filled with.
+    fn as_any_failure(&self) -> files::Told<'_> {
+        files::Told { file: self.path(), detail: self.detail, ..files::Told::default() }
     }
 }
 
@@ -139,8 +150,12 @@ pub(super) fn text(told: &Told<'_>, refusal: Option<&Refusal>) -> String {
 /// `Failed`, a name this CLI does not know yet, or an error from the bus itself: the
 /// detail is all there is, so it is kept whole.
 fn failed(told: &Told<'_>) -> String {
+    let filled = told.as_any_failure();
     match told.operation() {
-        Some(operation) => files::failed(operation, &files::Told { file: told.path(), detail: told.detail, ..files::Told::default() }),
+        Some(operation) => {
+            let listed = if told.several { files::failed_of_several(operation, &filled) } else { None };
+            listed.unwrap_or_else(|| files::failed(operation, &filled))
+        }
         None => format!("{} failed: {}", told.action.doing(), told.detail),
     }
 }

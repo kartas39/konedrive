@@ -15,7 +15,9 @@ Every push to `main` runs the release workflow
 
 1. It runs the unit tests of the daemon, the Graph client and the tree store
    (`cargo test -p konedrived -p konedrive-graph -p konedrive-tree --lib --features konedrived/dev-tools`,
-   the token export included) on the runner itself (below).
+   the token export included) on the runner itself (below), and the tests of the catalogue of
+   sentences (`cargo test -p konedrive-text`), one of which fails when a generated C++ file in
+   git is not what the catalogue gives.
    A failing test stops the run; nothing is built or tagged.
 2. In a `fedora:44` container, it installs the spec's build dependencies, checks that the
    container's Rust is the one the tests ran with (below), chooses the version (below) and builds
@@ -45,7 +47,8 @@ Docker's default seccomp profile refuses `fanotify_init`, so in a container ever
 notification watcher, and every flow that relies on it, fails. `sudo` sets the runner up (it
 installs `dbus-daemon` for the tests' private buses and lifts Ubuntu's AppArmor restriction on
 unprivileged user namespaces, which one test mounts a tmpfs in) and is not used for the tests
-themselves. Only the daemon's unit tests run there: not the workspace (#21), not the tests that
+themselves. Only the daemon's unit tests and the catalogue's tests run there: not the workspace
+(#21), not the tests that
 need root, and not the VM suite (#44).
 
 **The Rust version is pinned.** The tests use the Rust of Fedora 44's `rust` package, the compiler

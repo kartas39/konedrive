@@ -40,6 +40,26 @@ pub fn upload_reason_text(reason: &str) -> String {
     konedrive_text::reasons::text(reason, Client::CommandLine, &human_bytes)
 }
 
+/// A reason inside brackets, behind a path: a sentence has no full stop there.
+fn bracketed_reason_text(reason: &str) -> String {
+    let text = upload_reason_text(reason);
+    match text.strip_suffix('.') {
+        Some(sentence) if text != reason => sentence.to_owned(),
+        _ => text,
+    }
+}
+
+/// A reason as the heading of its files: a sentence stands alone, and a reason with no
+/// sentence, shown as stored, keeps the colon of a heading.
+fn reason_heading_text(reason: &str) -> String {
+    let text = upload_reason_text(reason);
+    if text == reason {
+        format!("{text}:")
+    } else {
+        text
+    }
+}
+
 /// `sync outbox`: one line per change waiting to go up — its state, kind and
 /// path, how far an upload has got, and why it waits.
 pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
@@ -54,7 +74,7 @@ pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
             out.push_str(&format!("  {percent}% of {}", human_bytes(*total)));
         }
         if !reason.is_empty() {
-            out.push_str(&format!("  ({})", upload_reason_text(reason)));
+            out.push_str(&format!("  ({})", bracketed_reason_text(reason)));
         }
         if state == "retry" && *next_try > 0 {
             out.push_str(&format!("  next try {}", local_time(*next_try)));
@@ -104,12 +124,11 @@ pub fn not_uploaded_text(summary: &[KeptBackReason], files: &[ReasonFiles], pref
         out.push_str(&format!("  {count}{size}: {}\n", upload_reason_text(reason)));
     }
     for (reason, KeptBackFiles { items, total }) in files {
-        // The sentence is whole, with its full stop: no colon behind it.
-        out.push_str(&format!("\n{}\n", upload_reason_text(reason)));
+        out.push_str(&format!("\n{}\n", reason_heading_text(reason)));
         for KeptBack { path, reason: why } in items {
             out.push_str(&format!("  {path}"));
             if why != reason {
-                out.push_str(&format!("  ({})", upload_reason_text(why)));
+                out.push_str(&format!("  ({})", bracketed_reason_text(why)));
             }
             out.push('\n');
         }

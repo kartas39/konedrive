@@ -383,7 +383,11 @@ What a code means to a person is written once, in English, in the crate `konedri
   plugin's alone: `konedrivectl` then says what its own table says of its other commands.
   A code may have no sentence: such a reason is shown as the daemon stored it, and such a
   refusal is told as any failure, with the daemon's message.
-- **`konedrivectl`** reads the catalogue directly and prints its sentences as they are written.
+- **`konedrivectl`** reads the catalogue directly and prints its sentences as they are written,
+  but for two things of a terminal. A sentence about one file (“{file}” …) is said of one path:
+  `sync pin`, `unpin` and `free` take several, and of several none of which the refusal names
+  the command line says the catalogue's list form (`{files}: one of these …`, the paths in no
+  quotes). And a reason printed inside brackets, behind a path, has no full stop there.
 - **The window and the Dolphin plugin** are built with C++ generated from the catalogue, every
   sentence a literal inside `i18n` or `i18nc`, so translation stays where KDE's tools expect it:
   `app/generated/reasontexts.{h,cpp}` and `dolphin/src/generated/refusaltexts.{h,cpp}`. The
@@ -392,7 +396,8 @@ What a code means to a person is written once, in English, in the crate `konedri
 - **A new code gets its words or the tests fail.** The crate's tests hold the catalogue against
   the codes (every key and every name has an entry, which may say that it has no sentence), and
   one test writes the generated files again and fails when one in git differs; the pull-request
-  workflow runs them (`.github/workflows/structure.yml`). The codes of `free-up-why` are the
+  workflow runs them (`.github/workflows/structure.yml`), and the release's before it builds
+  (`release.yml`). The codes of `free-up-why` are the
   daemon's, and a test there holds them against the catalogue. The steps are in
   `CONTRIBUTING.md`, "A new reason or refusal".
 

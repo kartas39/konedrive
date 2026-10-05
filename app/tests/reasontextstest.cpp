@@ -4,6 +4,8 @@
 #include <QLocale>
 #include <QTest>
 
+#include <limits>
+
 /// The window's words for the daemon's codes, written out: every sentence
 /// here is the one the window showed while it kept its own tables of them
 /// (`app/uploadreasons.cpp` and `stillHereText` in `app/synccontroller.cpp`,
@@ -77,6 +79,8 @@ private Q_SLOTS:
         const QLocale locale;
         row("too-big:3221225472:1073741824",
             QStringLiteral("Too big: needs %1, %2 free.").arg(locale.formattedDataSize(3221225472LL), locale.formattedDataSize(1073741824LL)));
+        row("too-big:9223372036854775807:1",
+            QStringLiteral("Too big: needs %1, %2 free.").arg(locale.formattedDataSize(std::numeric_limits<qint64>::max()), locale.formattedDataSize(1)));
         row("too-big:03:1", QStringLiteral("Too big: needs %1, %2 free.").arg(locale.formattedDataSize(3), locale.formattedDataSize(1)));
 
         // No sentence: as the daemon wrote it.
@@ -103,6 +107,9 @@ private Q_SLOTS:
                                    "symlink: of some kind",
                                    "mass-delete: 12 files",
                                    "too-big:1:2:3",
+                                   // Past what a signed 64-bit number holds: not printed negative.
+                                   "too-big:9223372036854775808:1",
+                                   "too-big:1:18446744073709551615",
                                    "too-big:",
                                    "error sending request for url (<url>)",
                                    ""}) {

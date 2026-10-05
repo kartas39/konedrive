@@ -106,10 +106,7 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
         return QString();
     }
     if (errorName == QLatin1String("org.konedrive.Error.Unreachable")) {
-        if (detail.isEmpty()) {
-            return i18nc("@info", "OneDrive could not be reached.");
-        }
-        return i18nc("@info", "OneDrive could not be reached: %1", detail);
+        return detail.isEmpty() ? i18nc("@info", "OneDrive could not be reached.") : i18nc("@info", "OneDrive could not be reached: %1", detail);
     }
     return QString();
 }

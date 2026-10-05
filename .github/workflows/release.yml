@@ -80,6 +80,11 @@ jobs:
       - name: Test the daemon
         run: cargo test --locked -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools
 
+      # All its tests, not --lib alone: the one that fails when a generated
+      # C++ file in git is not what the catalogue gives is an integration test.
+      - name: Test the catalogue of sentences and the generated files
+        run: cargo test --locked -p konedrive-text
+
   build:
     needs: test
     runs-on: ubuntu-latest

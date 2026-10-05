@@ -8,6 +8,11 @@
 //! command line `{prefix}` (how a command for this account begins) and
 //! `{folder}` (` (/the/folder)`, or nothing when it is not known). The
 //! plugin's own sentences have `{was not}` ([`WAS_NOT`]) and `{count}` too.
+//!
+//! A sentence with `{file}` is about one file. `sync pin`, `unpin` and `free`
+//! take several paths, and a refusal may name none of them: the command line
+//! then says the list form ([`RefusalText::several`], [`FAILED_SEVERAL`]),
+//! with `{files}` for the paths as they were given, in no quotes.
 
 use konedrive_dbus::Refusal;
 
@@ -83,22 +88,43 @@ pub struct RefusalText {
     pub sentence: ByOperation<Option<Sentence>>,
     /// Said instead, whatever the operation, when the daemon gave no message.
     pub without_detail: Option<&'static str>,
+    /// The command line's alone: what it says when the operation was asked of
+    /// several paths and the refusal names none of them. `None`: the sentence
+    /// above has no file in quotes, and is said of the list too.
+    pub several: ByOperation<Option<&'static str>>,
+}
+
+/// No list form.
+const OF_ONE: ByOperation<Option<&str>> = ByOperation::every(None);
+
+/// The list form of the operations that take several paths; "Open in
+/// OneDrive" takes one.
+const fn listed(keep: &'static str, unpin: &'static str, free_up: &'static str) -> ByOperation<Option<&'static str>> {
+    ByOperation { keep: Some(keep), unpin: Some(unpin), free_up: Some(free_up), open_online: None }
 }
 
 /// A refusal told the same for every operation.
 const fn every(refusal: Refusal, sentence: Sentence) -> RefusalText {
-    RefusalText { refusal, sentence: ByOperation::every(Some(sentence)), without_detail: None }
+    RefusalText { refusal, sentence: ByOperation::every(Some(sentence)), without_detail: None, several: OF_ONE }
+}
+
+/// [`every`], with one list form for the operations that take several paths.
+const fn every_listed(refusal: Refusal, sentence: Sentence, several: &'static str) -> RefusalText {
+    RefusalText { refusal, sentence: ByOperation::every(Some(sentence)), without_detail: None, several: listed(several, several, several) }
 }
 
 /// A refusal with no sentence of its own for a file operation.
 const fn as_failed(refusal: Refusal) -> RefusalText {
-    RefusalText { refusal, sentence: ByOperation::every(None), without_detail: None }
+    RefusalText { refusal, sentence: ByOperation::every(None), without_detail: None, several: OF_ONE }
 }
 
 /// What the command line says of keeping or unpinning a file changed here is
 /// what everybody says of freeing it up.
 const MODIFIED_FREE: &str =
     "“{file}” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.";
+
+const MODIFIED_SEVERAL: &str =
+    "{files}: one of these was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is.";
 
 const NOT_MANAGED_OPEN: &str = "“{file}” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.";
 
@@ -118,7 +144,11 @@ const NOT_ALLOWED_KEPT: Sentence = Desktop("Could not change what is kept on thi
 pub static REFUSALS: [RefusalText; 29] = [
     as_failed(Refusal::NotEmpty),
     as_failed(Refusal::Unsupported),
-    every(Refusal::InUse, Same("“{file}” is open in another program, so its space cannot be freed right now. Close it there and try again.")),
+    every_listed(
+        Refusal::InUse,
+        Same("“{file}” is open in another program, so its space cannot be freed right now. Close it there and try again."),
+        "{files}: one of these is open in another program, so its space cannot be freed right now. Close it there and try again.",
+    ),
     // The command line says how to register a folder, as for any of its commands.
     every(Refusal::NoRoot, Desktop("The folder holding “{file}” is no longer registered with KOneDrive, so nothing was done with it.")),
     RefusalText {
@@ -141,6 +171,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             open_online: None,
         },
         without_detail: None,
+        several: OF_ONE,
     },
     RefusalText {
         refusal: Refusal::NotManaged,
@@ -153,8 +184,17 @@ pub static REFUSALS: [RefusalText; 29] = [
             open_online: Some(Same(NOT_MANAGED_OPEN)),
         },
         without_detail: None,
+        several: listed(
+            "{files}: one of these is not a OneDrive file but a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded.",
+            "{files}: one of these is not a OneDrive file but a file of your own in the sync folder, so it was never pinned.",
+            "{files}: one of these is not a OneDrive file but a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again.",
+        ),
     },
-    every(Refusal::NotHydrated, Same("“{file}” is not downloaded, so there is no space to free — it already takes none.")),
+    every_listed(
+        Refusal::NotHydrated,
+        Same("“{file}” is not downloaded, so there is no space to free — it already takes none."),
+        "{files}: one of these is not downloaded, so there is no space to free — it already takes none.",
+    ),
     RefusalText {
         refusal: Refusal::ModifiedLocally,
         sentence: ByOperation {
@@ -170,6 +210,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             open_online: None,
         },
         without_detail: None,
+        several: listed(MODIFIED_SEVERAL, MODIFIED_SEVERAL, MODIFIED_SEVERAL),
     },
     RefusalText {
         refusal: Refusal::OutsideRoot,
@@ -183,6 +224,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             }),
         },
         without_detail: None,
+        several: OF_ONE,
     },
     as_failed(Refusal::AlreadyRegistered),
     RefusalText {
@@ -197,6 +239,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             }),
         },
         without_detail: None,
+        several: OF_ONE,
     },
     every(
         Refusal::NoSource,
@@ -215,6 +258,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             open_online: Some(NOT_ALLOWED_KEPT),
         },
         without_detail: None,
+        several: OF_ONE,
     },
     as_failed(Refusal::Overlaps),
     as_failed(Refusal::NoAccount),
@@ -233,6 +277,7 @@ pub static REFUSALS: [RefusalText; 29] = [
             }),
         },
         without_detail: None,
+        several: OF_ONE,
     },
     as_failed(Refusal::PendingUploads),
     // "Open in OneDrive" asks OneDrive each time. The daemon's message is the
@@ -241,6 +286,7 @@ pub static REFUSALS: [RefusalText; 29] = [
         refusal: Refusal::Unreachable,
         sentence: ByOperation::every(Some(Same("OneDrive could not be reached: {detail}"))),
         without_detail: Some("OneDrive could not be reached."),
+        several: OF_ONE,
     },
     as_failed(Refusal::NotUp),
     as_failed(Refusal::Failed),
@@ -263,6 +309,11 @@ pub const FAILED: ByOperation<&str> = ByOperation {
     free_up: "Freeing up “{file}” failed: {detail}",
     open_online: "Opening “{file}” in OneDrive failed: {detail}",
 };
+
+/// [`FAILED`] on the command line, of several paths none of which the
+/// refusal names.
+pub const FAILED_SEVERAL: ByOperation<Option<&str>> =
+    listed("Keeping {files} on this device failed: {detail}", "Unpinning {files} failed: {detail}", "Freeing up {files} failed: {detail}");
 
 /// "…, so “file” was not {was not}.": how the plugin says a file was not
 /// changed, in a sentence that is the same for every operation.
@@ -295,7 +346,7 @@ pub fn entry(refusal: &Refusal) -> Option<&'static RefusalText> {
 /// What a sentence of the command line is filled with.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Told<'a> {
-    /// The path the refusal is about.
+    /// The path the refusal is about; for a list form, the paths given.
     pub file: &'a str,
     /// The daemon's message; empty when it gave none.
     pub detail: &'a str,
@@ -307,7 +358,7 @@ pub struct Told<'a> {
 
 impl Told<'_> {
     fn fill(&self, sentence: &str) -> String {
-        fill(sentence, &[("file", self.file), ("detail", self.detail), ("prefix", self.prefix), ("folder", self.folder)])
+        fill(sentence, &[("file", self.file), ("files", self.file), ("detail", self.detail), ("prefix", self.prefix), ("folder", self.folder)])
     }
 }
 
@@ -320,6 +371,18 @@ pub fn text(operation: Operation, refusal: &Refusal, client: Client, told: &Told
         Some(bare) if told.detail.is_empty() => Some(bare.to_owned()),
         _ => Some(told.fill(sentence)),
     }
+}
+
+/// What the command line says of `refusal` when `operation` was asked of
+/// several paths and the refusal names none of them (`told.file` is the
+/// paths); `None` where the refusal has no list form.
+pub fn text_of_several(operation: Operation, refusal: &Refusal, told: &Told<'_>) -> Option<String> {
+    Some(told.fill(entry(refusal)?.several.of(operation)?))
+}
+
+/// [`FAILED_SEVERAL`], filled in; `None` for an operation that takes one path.
+pub fn failed_of_several(operation: Operation, told: &Told<'_>) -> Option<String> {
+    Some(told.fill(FAILED_SEVERAL.of(operation)?))
 }
 
 /// [`FAILED`], filled in.

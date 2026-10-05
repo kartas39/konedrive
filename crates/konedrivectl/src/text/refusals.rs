@@ -23,7 +23,7 @@ pub enum SyncAction<'a> {
     Conflicts,
     Dismiss(&'a str),
     FreeUpSpace,
-    /// The paths given, joined with ", ".
+    /// The paths given, joined with ", " ([`Context::several`] says when they are several).
     Pin(&'a str),
     /// The path refused ([`refused_path`](crate::text::files::refused_path)), or the paths given, joined with ", ".
     Unpin(&'a str),
@@ -138,7 +138,7 @@ fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
 /// all there is.
 pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &str) -> String {
     let (refusal, detail) = read_error(error);
-    folder::text(&folder::Told { action, detail: &detail, root, prefix: "konedrivectl" }, refusal.as_ref())
+    folder::text(&folder::Told { action, detail: &detail, root, prefix: "konedrivectl", several: false }, refusal.as_ref())
 }
 
 /// What the CLI knows of the daemon besides a refusal, read after it: the
@@ -161,6 +161,9 @@ pub struct Context<'a> {
     /// How a suggested command names the account ([`command_prefix`](crate::choice::command_prefix)); empty
     /// for plain `konedrivectl`.
     pub prefix: &'a str,
+    /// The action's path is several paths joined with ", ", and the refusal
+    /// names none of them: a sentence about one file is not said of the list.
+    pub several: bool,
 }
 
 impl Context<'_> {
@@ -193,7 +196,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
     use SyncAction::*;
     let path = action.path();
     let prefix = context.prefix();
-    let told = folder::Told { action, detail, root: context.root, prefix };
+    let told = folder::Told { action, detail, root: context.root, prefix, several: context.several };
     let path_command = matches!(action, Hydrate(_) | Dehydrate(_) | Pin(_) | Unpin(_) | Free(_) | Open(_));
     // An account removed while this command ran: its object is gone.
     if refusal.is_some_and(Refusal::is_gone) && !path_command {
@@ -251,7 +254,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
 /// [`explain_sync_error`]'s decision, on the name and message alone — so it
 /// can be tested with a name and a message that disagree.
 pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str) -> String {
-    let told = folder::Told { action, detail, root, prefix: "konedrivectl" };
+    let told = folder::Told { action, detail, root, prefix: "konedrivectl", several: false };
     folder::text(&told, name.map(Refusal::parse).as_ref())
 }
 

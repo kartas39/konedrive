@@ -18,7 +18,7 @@ fn outbox_lines_say_what_waits_and_why() {
     let rows = vec![change(1, "/f/a.txt", "running", 512, 2048, ""), change(2, "/f/a:b", "blocked", 0, 1, "name-characters")];
     let text = outbox_text(&rows, true, "konedrivectl");
     assert!(text.contains("running  create   /f/a.txt  25% of 2.0 KiB"), "{text}");
-    assert!(text.contains("blocked  create   /f/a:b  (A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it.)\n"), "{text}");
+    assert!(text.contains("blocked  create   /f/a:b  (A name OneDrive refuses (it holds one of \" * : < > ? \\ |): rename it to upload it)\n"), "{text}");
     assert!(text.ends_with("`konedrivectl sync outbox --all` shows them all\n"), "{text}");
     assert_eq!(outbox_text(&[], false, "k"), "Nothing is waiting to upload.\n");
     assert_eq!(upload_reason_text("refused: bad name"), "OneDrive refused it: bad name");
@@ -38,6 +38,28 @@ fn not_uploaded_lists_reasons_then_the_files_of_per_file_ones() {
     assert!(!text.contains("/f/20"), "{text}");
     assert!(text.ends_with("… and 5 more: `konedrivectl sync not-uploaded --all` lists them all\n"), "{text}");
     assert_eq!(not_uploaded_text(&[], &[], "k"), "Everything here is uploaded or waits to be.\n");
+}
+
+/// A sentence in brackets has no full stop before the bracket; a reason with no sentence is
+/// shown as stored, and as a heading keeps its colon.
+#[test]
+fn a_reason_in_brackets_has_no_full_stop_and_one_without_a_sentence_keeps_its_colon() {
+    let row = |reason: &str| KeptBackReason { group: "waiting".to_owned(), reason: reason.to_owned(), count: 2, bytes: 0 };
+    let item = |path: &str, reason: &str| KeptBack { path: path.to_owned(), reason: reason.to_owned() };
+    let files = vec![
+        ("download-failed".to_owned(), KeptBackFiles { items: vec![item("/f/a", "download-failed: errno 5."), item("/f/b", "download-failed")], total: 2 }),
+        ("network".to_owned(), KeptBackFiles { items: vec![item("/f/c", "state-unreadable: errno 5")], total: 1 }),
+    ];
+    let text = not_uploaded_text(&[row("download-failed"), row("network")], &files, "konedrivectl");
+    assert!(text.contains("\ndownload-failed:\n  /f/a  (download-failed: errno 5.)\n  /f/b\n"), "{text}");
+    assert!(
+        text.contains(
+            "\nOneDrive could not be reached: tried again later.\n  /f/c  (The file's KOneDrive state cannot be read: it stays here until the file is replaced (errno 5))\n"
+        ),
+        "{text}"
+    );
+    // The summary's lines are as they were: after a colon, a sentence whole.
+    assert!(text.starts_with("Waiting: these go up by themselves:\n  2: download-failed\n  2: OneDrive could not be reached: tried again later.\n\n"), "{text}");
 }
 
 #[test]
