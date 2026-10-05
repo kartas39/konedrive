@@ -213,7 +213,7 @@ account's; the message names that account), `NoAccount` (`Remove` of a path that
 account's token does not carry `Files.ReadWrite`), `PendingUploads` (a switch to read-only while
 changes wait to be uploaded), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
 in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
-`Add`, `SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
+`SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
 `Accounts` refuses with the bus's `Failed` a call that is not possible now — a client id changed
 while an account is signed in, or anything while `config.toml` cannot be read: nothing needs to
 tell those reasons apart.
@@ -235,15 +235,22 @@ through, `ModeNotGranted` for one that is not read-write.
 | `ClientId` (`s`) | the application id every account signs in with; konedrive's own built-in one unless `SetClientId` overrode it |
 | `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown`: one helper serves every account (§2.5) |
 | `LastError` (`s`) | trouble that belongs to no account: `config.toml` cannot be read or was written by a newer version, a migration step failed, an account could not be loaded; empty when none |
-| `Add(s label) → o` | adds a signed-out, read-only account with no folder and returns its object ([accounts.md](accounts.md) §7.2); `InvalidArgs` for a label the rules refuse |
+| `SignIn() → (u sign_in, s url)` | starts a sign-in for a new account, the only way to add one; returns the sign-in's number, not reused while the daemon runs, and the URL to open. The sign-in belongs to no account: nothing is made until it has succeeded. Refused, with nothing started, when `config.toml` cannot be read, no client ID can be had or the listener cannot be bound. One at a time: a newer `SignIn` ends the one before as `cancelled`, and so does `SetClientId`; either of them refused ends nothing ([accounts.md](accounts.md) §7.2) |
+| `CancelSignIn(u sign_in) → (b cancelled)` | cancels that sign-in; never refused. `true` when this call ended it. `false`, and nothing changes, for a number that is not under way, which includes a sign-in whose account is being made at that moment: its own `SignInFinished` says how it ended |
+| `SignInFinished(u sign_in, s outcome, s message, o account)` (signal) | how a sign-in ended, once for each unless the daemon stopped first: `signed-in` (the account was made and is in `List` already; `message` is its label, its email, and `account` its path), `cancelled` (`message` empty, `account` `/`), `already-added` (the drive is another account's; `message` is that account's label and `account` its path) or `failed` (`message` says why, `account` is `/`). Only `signed-in` made an account |
 | `Remove(o account)` | forgets the account's folder as `Folder.Unregister` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
-| `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
+| `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in. Once stored, it ends a sign-in for a new account under way as `cancelled` |
 | `PauseOnMetered` (`b`), `OnBattery` (`s`) | when every account holds back by itself ([writes.md](writes.md) §11): on a metered connection or not; on battery `sync`, `power-saver` or `pause`. The top-level `pause_on_metered` and `on_battery` of `config.toml`; absent, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log). Both announced with `PropertiesChanged` |
 | `SetPauseOnMetered(b)`, `SetOnBattery(s)` | change them for every account at once: written to `config.toml` under its lock, taken by every account's hold, and every account's `SyncAnyway` ends; `InvalidArgs` for an `on_battery` choice other than the three |
 
 The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
-object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for tools. The
-window and the CLI follow `Accounts` instead.
+object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for
+tools. The window and the CLI follow `Accounts` instead.
+
+In a development build (`dev-tools`) the same object also serves `org.konedrive.DevTools`, with one
+method: `AddAccount(s label) → o` adds a signed-out, read-only account with no folder, which never
+has to sign in, for a folder that shows a local directory; `InvalidArgs` for a label the rules
+refuse. A release build has no way to add a signed-out account.
 
 ### 2.9 `Files`
 
@@ -287,13 +294,13 @@ F51).
 | Command | Account | Does |
 |---|---|---|
 | `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `Folder.State` |
-| `account add <label>` | — | `Accounts.Add`: a signed-out account with no folder; prints its id |
+| `account add` | — | `Accounts.SignIn`: adds a new account by signing in. Prints the URL, opens the browser and waits for `SignInFinished` with its sign-in's number, six minutes at most; Ctrl-C and the six minutes cancel it (`Accounts.CancelSignIn`): answered `true`, it ends as cancelled or timed out; answered `false`, the sign-in had ended by itself or its account is being made, and it waits for that `SignInFinished`, with no limit, and says how it ended, so it never says "cancelled" for an account that is then added. A daemon that leaves the bus while it waits ends it at once. Says what the account is called (its email), or that this OneDrive account is already added and under which name, or why it failed; exit status 1 for all but the first |
 | `account rename <account> <label>` | the argument | `Account.SetLabel` |
 | `account remove <account>` | the argument | `Accounts.Remove`, without asking; then says what was deleted and what was kept |
 | `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
 | `set-client-id <id>` | — | `Accounts.SetClientId`, overriding the built-in client id for every account with the caller's own; a refusal names the accounts still signed in |
 | `settings on-metered [pause\|sync]`, `settings on-battery [sync\|power-saver\|pause]` | — | the whole app's hold settings: shows the choice, or changes it for every account (`Accounts.SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
-| `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
+| `login` | chosen | signs an account that is there in again: `BeginSignIn`, opens the browser and waits. With no account at all it adds nothing: it is refused, and the refusal names `account add` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
 | `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
@@ -315,6 +322,7 @@ F51).
 | `sync thumbnails [on\|off]` | chosen | shows the account's thumbnail setting, or changes it (`SetThumbnails`) |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
+| `dev add-account <label>` | — | a development build's only (`dev-tools`); `DevTools.AddAccount`: a signed-out account with no folder, which never has to sign in; prints its id |
 | `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
 
 The path commands go through `Files`, so the path decides the account. When one is refused
@@ -371,13 +379,16 @@ while the daemon is not on the bus. Both lines can be selected and copied.
 
 **Sign in…** opens the Microsoft sign-in in the browser straight away, with the account picker:
 there is no client-id field or dialog, since konedrive signs in with its own built-in application
-registration. It makes the account, signed in and named by its own doing: `Add` with a temporary
-label, `BeginSignIn`, whose URL opens in the browser, and, once the sign-in succeeds, `SetLabel`
-with the account's email ([accounts.md](accounts.md) §7.2; limitations log A15). The account stays
-out of the switcher, the tray, Places and notifications until then; if the sign-in is cancelled,
-fails, the dialog is closed, or the email is already another account's, it is removed and nothing
-is left — an "already added" account shows a message saying so, rather than being renamed. Once
-named, it is chosen and the folder picker opens at once: a sign-in exists to sync something.
+registration. It is one call, `Accounts.SignIn`, whose URL opens in the browser; the window then
+waits for `Accounts.SignInFinished` with the number that call answered ([accounts.md](accounts.md)
+§7.2). Until the sign-in has succeeded there is no account, so nothing is in the switcher, the
+tray, a Places entry or a notification; the daemon then makes the account, signed in and named by
+its email, and the signal names it. The window chooses it and the folder picker opens at once: a
+sign-in exists to sync something. Any other outcome made nothing: cancelled (the dialog's Cancel
+calls `Accounts.CancelSignIn` with the number) shows no message, a OneDrive account that is
+another account's already shows "This account is already added as …", naming it, and a failure
+shows the daemon's reason. A daemon that leaves the bus in the middle ends the adding with a
+message that says so.
 
 **Rename…**, on the Account page, checks the name as the daemon checks it before asking, so the
 dialog says at once why it will not do (A14).
@@ -689,6 +700,5 @@ The limitations log's sections 7 and 8 list them. The main ones: Dolphin still o
 itself (K1); notifications need the app running (A1); no emblems in search results or Recent Files,
 which do not use `file://` URLs (K2); and the Plasma side — how the tray, the popups and the job
 tracker actually render — is not covered by the tests, which run offscreen on private buses (A7).
-With several accounts: the window shows one at a time (A13), Sign In is several calls rather than
-one transaction (A15), and a window or a Dolphin running across the upgrade to multiple accounts
+With several accounts: the window shows one at a time (A13), and a window or a Dolphin running across the upgrade to multiple accounts
 needs a restart (F46).

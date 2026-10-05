@@ -37,10 +37,17 @@ use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBack
     gen_blocking = false
 )]
 pub trait Accounts {
-    /// Adds a signed-out, read-only account with no folder; its object path.
-    /// Refused `InvalidArgs` for a label that breaks the rules
-    /// (`dbus/org.konedrive.Accounts.xml`).
-    fn add(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Starts a sign-in for a new account: its number and the URL to open in a browser.
+    /// The account is made only once the sign-in has succeeded. How it ends is said once,
+    /// by [`sign_in_finished`](Self::receive_sign_in_finished);
+    /// [`cancel_sign_in`](Self::cancel_sign_in) cancels it. Refused, with nothing started
+    /// and nothing ended, when `config.toml` cannot be read, no client ID can be had or
+    /// the listener cannot be bound.
+    fn sign_in(&self) -> zbus::Result<(u32, String)>;
+    /// Cancels the sign-in `sign_in`: `true` when this call ended it, and `cancelled`
+    /// follows. `false` for a number that is not under way, which includes a sign-in whose
+    /// account is being made at that moment: its own `SignInFinished` says how it ended.
+    fn cancel_sign_in(&self, sign_in: u32) -> zbus::Result<bool>;
     /// Forgets the account's folder as `Folder.Unregister` does, deletes
     /// its token, cache and tree store, and removes the object. Refused
     /// `NoAccount` for a path that names no account.
@@ -77,6 +84,13 @@ pub trait Accounts {
     /// The full hash of the daemon's commit, or `unknown`.
     #[zbus(property(emits_changed_signal = "const"))]
     fn commit(&self) -> zbus::Result<String>;
+
+    /// How the sign-in `sign_in` of a [`sign_in`](Self::sign_in) ended: `outcome` is one of
+    /// [`sign_in`](crate::sign_in)'s names. `message` and `account` are the new account's
+    /// label and path (`signed-in`), those of the account that has the drive
+    /// (`already-added`), why and `/` (`failed`), or empty and `/` (`cancelled`).
+    #[zbus(signal)]
+    fn sign_in_finished(&self, sign_in: u32, outcome: String, message: String, account: OwnedObjectPath) -> zbus::Result<()>;
 }
 
 /// `/org/konedrive/Accounts`: per-file calls, each routed by path to the
@@ -121,7 +135,8 @@ pub trait Account {
     fn cancel_sign_in(&self) -> zbus::Result<()>;
     fn sign_out(&self) -> zbus::Result<()>;
     fn refresh_info(&self) -> zbus::Result<()>;
-    /// Same rules as [`AccountsProxy::add`].
+    /// The label rules (`konedrived::config::check_label`): trimmed, 1 to 40 characters, no `/`,
+    /// no control character, not 12 hexadecimal digits, unique regardless of case.
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
@@ -459,6 +474,19 @@ pub trait TokenExport {
     /// `WritesNotAllowed` for an account the development gate does not let
     /// through, `ModeNotGranted` for one that is not read-write.
     fn read_write(&self) -> zbus::Result<String>;
+}
+
+/// `/org/konedrive/Accounts`: development only, as [`TokenExportProxy`] is.
+#[zbus::proxy(
+    interface = "org.konedrive.DevTools",
+    default_service = "org.konedrive.Daemon",
+    default_path = "/org/konedrive/Accounts",
+    gen_blocking = false
+)]
+pub trait DevTools {
+    /// Adds a signed-out, read-only account with no folder under `label`, which never has
+    /// to sign in; its object path. Refused `InvalidArgs` for a label that breaks the rules.
+    fn add_account(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[cfg(test)]

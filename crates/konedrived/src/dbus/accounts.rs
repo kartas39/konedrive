@@ -14,16 +14,24 @@ pub struct Accounts {
 
 #[interface(name = "org.konedrive.Accounts")]
 impl Accounts {
-    async fn add(
-        &self,
-        label: &str,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> Result<OwnedObjectPath, Fault> {
-        let account = self.manager.add(label, connection).await?;
-        self.list_changed(&emitter).await?;
-        Ok(account.path.clone())
+    /// A new account by signing in: the sign-in's number and the URL to open. How it
+    /// ends: [`sign_in_finished`](Self::sign_in_finished).
+    #[zbus(out_args("sign_in", "url"))]
+    async fn sign_in(&self, #[zbus(connection)] connection: &Connection) -> Result<(u32, String), Fault> {
+        Ok(self.manager.sign_in(connection).await?)
     }
+
+    /// Cancels the sign-in `sign_in`: whether this call ended it. `false` for a number
+    /// that is not under way, a sign-in whose account is being made included.
+    #[zbus(out_args("cancelled"))]
+    async fn cancel_sign_in(&self, sign_in: u32) -> bool {
+        self.manager.cancel_sign_in(sign_in).await
+    }
+
+    /// How the sign-in `sign_in` ended (`konedrive_dbus::sign_in`), once for each: the
+    /// account it made, or the one that has the drive already; `/` otherwise.
+    #[zbus(signal)]
+    pub(crate) async fn sign_in_finished(emitter: &SignalEmitter<'_>, sign_in: u32, outcome: &str, message: &str, account: ObjectPath<'_>) -> zbus::Result<()>;
 
     async fn remove(
         &self,

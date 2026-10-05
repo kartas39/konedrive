@@ -80,6 +80,9 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   - **Correction:** `app/accountsmodel.h:150` does not rely on the old rule. It relies on nobody
     naming an account "Signing in…": `AccountsModel::probe` (`accountsmodel.cpp:183–193`) removes
     any such account at the next start, and both rules allow that label (limitation A15).
+  - **No longer holds, 2026-10-05** (#199): `AccountsModel::probe` is gone and A15 is closed. The
+    window makes no account under "Signing in…" and removes none: `Accounts.SignIn` makes the
+    account only once the sign-in has succeeded (limitation A27 for one an older window left).
 - **Fixed 2026-10-03** in `a62d487` (#134): the rule is `konedrive_dbus::LABEL_RULE`, used by the
   help and the refusal text; the other places are corrected. Nothing ties the sentence to
   `check_label` but a doc comment, so the two can drift again. The eight tests of #101 pass.

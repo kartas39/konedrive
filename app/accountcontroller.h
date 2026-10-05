@@ -67,7 +67,7 @@ public:
     QString actionError() const { return m_actionError; }
 
     Q_INVOKABLE void retry();
-    /// SetLabel; the daemon checks it (Accounts.Add's rules).
+    /// SetLabel; the daemon checks it (the rules AccountsModel::labelProblem states).
     Q_INVOKABLE void setLabel(const QString &label);
     Q_INVOKABLE void signIn();
     Q_INVOKABLE void cancelSignIn();

@@ -16,10 +16,6 @@ pub mod choice;
 pub mod secret_file;
 pub mod text;
 
-/// The label `konedrivectl login` gives the account it adds when there is none, as the
-/// daemon names the account it migrates from a single-account configuration.
-pub const FIRST_LABEL: &str = "Personal";
-
 /// The environment variable that chooses the account when `--account` is not given.
 pub const ACCOUNT_VARIABLE: &str = "KONEDRIVE_ACCOUNT";
 

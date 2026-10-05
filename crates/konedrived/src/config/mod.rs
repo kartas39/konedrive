@@ -21,8 +21,8 @@ mod store;
 pub use atomic::write_atomic;
 pub use ids::{AccountId, DriveId};
 pub use model::{
-    check_label, is_valid_client_id, AccountConfig, Config, HoldSettings, Mode, OnBattery, Origin, RootConfig, TransfersConfig,
-    CONFIG_VERSION, DEFAULT_CLIENT_ID, MIGRATED_LABEL,
+    check_label, is_valid_client_id, signed_in_label, AccountConfig, Config, HoldSettings, Mode, OnBattery, Origin, RootConfig,
+    TransfersConfig, CONFIG_VERSION, DEFAULT_CLIENT_ID, FALLBACK_LABEL, MIGRATED_LABEL,
 };
 pub use paths::{AccountPaths, Paths};
 pub use store::{ConfigError, ConfigStore, WriteStanding};

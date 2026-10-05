@@ -14,6 +14,7 @@ dev-tools = ["konedrived/dev-tools"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+futures-util.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
 konedrive-reason = { path = "../konedrive-reason" }
 libc.workspace = true

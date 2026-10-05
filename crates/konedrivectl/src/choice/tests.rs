@@ -31,7 +31,7 @@ fn an_account_is_chosen_by_id_label_or_email() {
     assert_eq!(several.exit_status(), 2);
     assert_eq!(choose(&accounts[..1], None).unwrap().label, "Personal");
     assert_eq!(choose(&[], None).unwrap_err().exit_status(), 1);
-    assert!(choose(&[], None).unwrap_err().to_string().contains("konedrivectl account add <label>"));
+    assert!(choose(&[], None).unwrap_err().to_string().contains("`konedrivectl account add` signs in"));
 }
 
 /// A name that fits two accounts — one's id and the other's label, or one label twice in a

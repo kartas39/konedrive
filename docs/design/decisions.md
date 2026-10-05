@@ -1013,14 +1013,14 @@ N ago" (limitations log A17, A18, A19).
 **Decision.** `konedrivectl` takes the account from `--account` (id, label or email), else from
 `KONEDRIVE_ACCOUNT`, else the only account there is; with several and none named, it stops with
 exit status 2 and lists them. The commands that take a path find the account from the path, and
-refuse `--account`, as do `account …` and `set-client-id`. `login` with no account at all adds one
-called "Personal" first.
+refuse `--account`, as do `account …` and `set-client-id`. `login` with no account at all is
+refused and names `account add`, which adds an account by signing in.
 
 **Why.** Guessing among several accounts would act on the wrong one sooner or later, and a
 refusal that lists the labels costs one retry. A path already says whose folder it is in; an
 `--account` that disagreed with it would have to be either ignored or obeyed wrongly, so it is
-refused. Adding "Personal" at `login` keeps the single-account setup — `login`, `sync register` —
-working word for word.
+refused. An account is added in one way, by signing in ([accounts.md](accounts.md) §7.2), so
+`login` adds none: the first setup is `account add`, then `sync register`.
 
 **Trade-off.** An email names an account only once the account has signed in, and
 `KONEDRIVE_ACCOUNT` is ignored by the commands that name no chosen account (limitations log F51).

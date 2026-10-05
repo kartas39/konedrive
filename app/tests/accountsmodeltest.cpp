@@ -24,7 +24,7 @@ const QString ClientId = QStringLiteral("0f8fad5b-d9cb-469f-a165-70867728950e");
 
 /// The manager's side of the window: DaemonController (Accounts),
 /// AccountsModel following Accounts, CurrentAccount and its remembered
-/// choice, and the Add dialog's one step. XDG_CONFIG_HOME is a temporary
+/// choice, and Sign In. XDG_CONFIG_HOME is a temporary
 /// directory, so konedriverc is never the user's.
 class AccountsModelTest : public QObject
 {
@@ -76,8 +76,8 @@ private Q_SLOTS:
         m_daemon.reset();
     }
 
-    /// One row per account, in the daemon's order, following Add and Remove
-    /// made elsewhere (konedrivectl, say).
+    /// One row per account, in the daemon's order, following accounts added
+    /// and removed elsewhere (konedrivectl, say).
     void followsTheManager()
     {
         start({QStringLiteral("Personal"), QStringLiteral("Family")});
@@ -220,10 +220,11 @@ private Q_SLOTS:
         QVERIFY(!current.othersNeedAttention());
     }
 
-    /// Sign In: the client id when none is set, Add with a temporary label,
-    /// BeginSignIn opened in the browser — the draft hidden until then —
-    /// then, once it is signed in, named by its email, chosen, and shown.
-    void addingSetsTheClientIdAddsChoosesAndSignsIn()
+    /// Sign In: the client id when none is set, then Accounts.SignIn, whose
+    /// URL is opened in the browser; there is no account, so no row, until
+    /// the daemon says the sign-in ended "signed-in", and then the account it
+    /// names is chosen and shown.
+    void addingSetsTheClientIdSignsInAndChooses()
     {
         start({});
         DaemonController daemon;
@@ -237,35 +238,184 @@ private Q_SLOTS:
         QVERIFY(model.adding());
         QTRY_COMPARE(open.count(), 1);
         const QString path = fake::FirstAccount;
-        QCOMPARE(open.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?account=") + fake::idFor(1));
-        QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("SetClientId:") + ClientId, QStringLiteral("Add:Signing in…")}));
-        // Hidden while it signs in: no row for it yet.
+        QCOMPARE(open.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?sign_in=1"));
+        QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("SetClientId:") + ClientId, QStringLiteral("SignIn")}));
+        // Nothing is made before the sign-in has succeeded.
+        QCOMPARE(m_daemon->objects.size(), 0);
         QCOMPARE(model.count(), 0);
+        QVERIFY(model.adding());
 
         // The sign-in completes in the browser.
-        m_daemon->object(0)->account->set(
-            {{QStringLiteral("Email"), QStringLiteral("ann@example.com")}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
+        m_daemon->finishSignIn(QStringLiteral("signed-in"), QStringLiteral("ann@example.com"));
         QTRY_COMPARE(added.count(), 1);
         QCOMPARE(added.at(0).at(0).toString(), path);
         QVERIFY(!model.adding());
         QCOMPARE(model.addError(), QString());
-        QVERIFY(m_daemon->object(0)->account->calls.contains(QStringLiteral("SetLabel:ann@example.com")));
         QCOMPARE(current.path(), path);
         QCOMPARE(remembered(), fake::idFor(1));
 
-        QTRY_COMPARE(model.count(), 1);
+        QCOMPARE(model.count(), 1);
         QTRY_COMPARE(model.at(0)->account()->label(), QStringLiteral("ann@example.com"));
         QVERIFY(model.anySignedIn());
 
-        // With a client id already set, Sign In goes straight to Add.
+        // With a client id already set, Sign In goes straight to SignIn.
         m_daemon->manager->calls.clear();
         model.addAccount(QString());
         QTRY_COMPARE(open.count(), 2);
-        m_daemon->object(1)->account->set(
-            {{QStringLiteral("Email"), QStringLiteral("bea@example.com")}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
+        m_daemon->finishSignIn(QStringLiteral("signed-in"), QStringLiteral("bea@example.com"));
         QTRY_COMPARE(added.count(), 2);
-        QCOMPARE(m_daemon->manager->calls.first(), QStringLiteral("Add:Signing in…"));
-        QCOMPARE(current.account()->label(), QStringLiteral("bea@example.com"));
+        QCOMPARE(m_daemon->manager->calls.first(), QStringLiteral("SignIn"));
+        QTRY_COMPARE(current.account()->label(), QStringLiteral("bea@example.com"));
+    }
+
+    /// The outcomes that make no account: what the window says for each.
+    void aSignInThatAddsNothingSaysWhy_data()
+    {
+        QTest::addColumn<QString>("outcome");
+        QTest::addColumn<QString>("message");
+        QTest::addColumn<QString>("error");
+        QTest::newRow("already-added") << QStringLiteral("already-added") << QStringLiteral("Personal") << QStringLiteral("This account is already added as Personal.");
+        QTest::newRow("failed") << QStringLiteral("failed") << QStringLiteral("the sign-in timed out") << QStringLiteral("the sign-in timed out");
+        QTest::newRow("failed, no message") << QStringLiteral("failed") << QString() << QStringLiteral("The account could not be added.");
+        // Cancelled from elsewhere: a newer sign-in, started with konedrivectl, replaced it.
+        QTest::newRow("cancelled") << QStringLiteral("cancelled") << QString() << QString();
+    }
+
+    void aSignInThatAddsNothingSaysWhy()
+    {
+        QFETCH(QString, outcome);
+        QFETCH(QString, message);
+        QFETCH(QString, error);
+        start({QStringLiteral("Personal")});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_COMPARE(model.count(), 1);
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 1);
+        m_daemon->finishSignIn(outcome, message);
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), error);
+        QCOMPARE(added.count(), 0);
+        QCOMPARE(model.count(), 1);
+    }
+
+    /// Cancel: Accounts.CancelSignIn with the sign-in's number, and no error.
+    /// Asked before SignIn has answered, it is done as soon as the answer
+    /// gives the number, and the browser is not opened.
+    void cancellingASignIn()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 1);
+        model.cancelAdd();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(m_daemon->manager->calls.contains(QStringLiteral("CancelSignIn:1")));
+        QCOMPARE(m_daemon->signIn, 0u);
+
+        // Before SignIn has answered.
+        model.addAccount(QString());
+        model.cancelAdd();
+        QVERIFY(model.adding());
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(m_daemon->manager->calls.contains(QStringLiteral("CancelSignIn:2")));
+        QCOMPARE(m_daemon->signIn, 0u);
+        QCOMPARE(open.count(), 1);
+        QCOMPARE(added.count(), 0);
+        QCOMPARE(model.count(), 0);
+    }
+
+    /// A cancel that comes while the daemon is making the account cancels
+    /// nothing: CancelSignIn answers false, and "signed-in" follows. The
+    /// account is shown.
+    void aCancelTooLateStillShowsTheAccount()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+
+        m_daemon->manager->cancelEnds = false;
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 1);
+        model.cancelAdd();
+        QTRY_VERIFY(m_daemon->manager->calls.contains(QStringLiteral("CancelSignIn:1")));
+        QVERIFY(model.adding());
+        m_daemon->finishSignIn(QStringLiteral("signed-in"), QStringLiteral("ann@example.com"));
+        QTRY_COMPARE(added.count(), 1);
+        QCOMPARE(added.at(0).at(0).toString(), fake::FirstAccount);
+        QVERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+    }
+
+    /// SignInFinished sent before SignIn's own answer is not lost.
+    void theOutcomeMayComeBeforeSignInAnswers()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+
+        m_daemon->manager->finishBeforeReply = {QStringLiteral("failed"), QStringLiteral("no network")};
+        model.addAccount(QString());
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QStringLiteral("no network"));
+        QCOMPARE(model.count(), 0);
+
+        m_daemon->manager->finishBeforeReply = {QStringLiteral("signed-in"), QStringLiteral("ann@example.com")};
+        model.addAccount(QString());
+        QTRY_COMPARE(added.count(), 1);
+        QCOMPARE(added.at(0).at(0).toString(), fake::FirstAccount);
+        QVERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QCOMPARE(model.count(), 1);
+    }
+
+    /// The outcome of another client's sign-in (konedrivectl's, say) is not
+    /// this window's, whether it comes before SignIn has answered or after.
+    void anotherSignInsOutcomeIsIgnored()
+    {
+        start({QStringLiteral("Personal")});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_COMPARE(model.count(), 1);
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+        QSignalSpy finished(&daemon, &DaemonController::signInFinished);
+
+        // Before the answer: this window's number is not known yet.
+        model.addAccount(QString());
+        m_daemon->sendFinished(7, QStringLiteral("failed"), QStringLiteral("not ours"), QStringLiteral("/"));
+        QTRY_COMPARE(open.count(), 1);
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(model.adding());
+
+        // After it.
+        m_daemon->sendFinished(8, QStringLiteral("signed-in"), QStringLiteral("Personal"), fake::FirstAccount);
+        m_daemon->sendFinished(9, QStringLiteral("already-added"), QStringLiteral("Personal"), fake::FirstAccount);
+        QTRY_COMPARE(finished.count(), 3);
+        QVERIFY(model.adding());
+        QCOMPARE(model.addError(), QString());
+        QCOMPARE(added.count(), 0);
+
+        // Its own still ends it.
+        m_daemon->finishSignIn(QStringLiteral("failed"), QStringLiteral("the sign-in timed out"));
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QStringLiteral("the sign-in timed out"));
+        QCOMPARE(added.count(), 0);
     }
 
     void aRefusedAddSaysWhy()
@@ -279,15 +429,88 @@ private Q_SLOTS:
         model.addAccount(QStringLiteral("bad"));
         QTRY_VERIFY(!model.adding());
         QVERIFY2(model.addError().contains(QStringLiteral("invalid client ID")), qPrintable(model.addError()));
-        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("Add:Signing in…")));
+        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("SignIn")));
         QCOMPARE(added.count(), 0);
 
         // The dialog opens clean next time.
         model.clearAddError();
         QCOMPARE(model.addError(), QString());
+
+        // SignIn itself refused.
+        m_daemon->manager->refuseSignIn = QStringLiteral("config.toml cannot be read");
+        model.addAccount(QString());
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QStringLiteral("config.toml cannot be read"));
+        QCOMPARE(m_daemon->signIn, 0u);
     }
 
-    /// Accounts.Add's rules, checked before the daemon is asked.
+    /// Cancel pressed before the answer, and the answer is a refusal: there is
+    /// nothing to cancel and nothing to say.
+    void aCancelIsNotAnsweredWithARefusal()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+
+        // SignIn refused.
+        m_daemon->manager->refuseSignIn = QStringLiteral("config.toml cannot be read");
+        model.addAccount(QString());
+        model.cancelAdd();
+        QVERIFY(model.adding());
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(m_daemon->manager->calls.contains(QStringLiteral("SignIn")));
+
+        // SetClientId refused.
+        m_daemon->manager->calls.clear();
+        model.addAccount(QStringLiteral("bad"));
+        model.cancelAdd();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("SignIn")));
+    }
+
+    /// A daemon that goes away while an account is being added sends no
+    /// SignInFinished: the adding ends, and says why. While SignIn has not
+    /// answered either, the failed call that follows says nothing more.
+    void theDaemonLeavingEndsTheAdding()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+        const QString stopped = QStringLiteral("The KOneDrive service stopped before the account was added. Sign in again.");
+
+        // With the browser open.
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 1);
+        m_daemon->stop();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), stopped);
+        QCOMPARE(added.count(), 0);
+
+        // The daemon is back with no sign-in under way, as it starts: the next Sign In works.
+        QVERIFY(m_daemon->start());
+        QTRY_VERIFY(daemon.serviceAvailable());
+        model.addAccount(QString());
+        QVERIFY(model.addError().isEmpty());
+        QTRY_COMPARE(open.count(), 2);
+
+        // Cancel pressed, and the daemon goes before it says "cancelled": no error.
+        m_daemon->manager->cancelEnds = false;
+        model.cancelAdd();
+        QTRY_VERIFY(m_daemon->manager->calls.contains(QStringLiteral("CancelSignIn:2")));
+        QVERIFY(model.adding());
+        m_daemon->stop();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QCOMPARE(added.count(), 0);
+    }
+
+    /// The rules of a label, checked before the daemon is asked.
     void labelProblems()
     {
         start({QStringLiteral("Personal")});

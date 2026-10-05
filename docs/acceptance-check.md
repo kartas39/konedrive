@@ -22,7 +22,7 @@ A OneDrive folder is kept in step only while the helper is connected, so the hel
 
 ## 1. Install this build (as yourself), and sign in
     scripts/dev-install.sh
-    konedrivectl login                     # with no account yet, adds one called Personal first
+    konedrivectl account add               # signs in; the account is named after its email
 Or open KOneDrive and choose **Sign in…** (at the top of the sidebar, or on the Status page
 while there is no account): it opens the account picker in the browser straight away — the
 account is created, named after its email, only once the sign-in succeeds.
@@ -35,7 +35,7 @@ appears; hovering it repeats the window's status line.
 If this machine ran a version from before multiple accounts, with a folder registered: after the
 upgrade the window shows one account, "Personal", with the same folder, still signed in; its
 Places entry is now called "OneDrive — Personal"; and `~/.config/konedrive/config.toml.v1` holds
-the old configuration. Skip `login` then.
+the old configuration. Skip `account add` then.
 
 `dev-install.sh` does not install the Dolphin plugins. For the emblems in steps 3 and 5, install
 them for your user as the README's "Dolphin integration" says, then log out and back in.
@@ -192,8 +192,8 @@ instead of forcing one, if you prefer.
 ## 14. A second account (optional: needs a second Microsoft account)
 Everything above used one account. With a second Microsoft account (a test account is fine):
     mkdir ~/OneDrive-test-2
-    konedrivectl account add Second
-    konedrivectl --account Second login
+    konedrivectl account add                                   # sign in as the second Microsoft account
+    konedrivectl account rename <the second account's email> Second
     konedrivectl --account Second sync register ~/OneDrive-test/<a folder>   # refused
     konedrivectl --account Second sync register ~/OneDrive-test-2
 Or, in the window, **Sign in…** from the switcher's menu: once you are signed in, the folder
@@ -210,11 +210,10 @@ account's folder cannot be registered; the second succeeds. Then:
 - In Dolphin, a file in either folder downloads when opened, and "Always keep on this device" and
   "Free up space" work in both folders (the right account's `sync activity` records each).
   `konedrivectl sync state <a file in either folder>` works without `--account`.
-- A Microsoft account can be connected once: add a third account (`konedrivectl account add
-  Third`), and sign it in (`konedrivectl --account Third login`) with the first account's
-  Microsoft account. It stays signed out, and `konedrivectl --account Third status` (or its
-  Account page) says that Microsoft account is already connected, naming the first account.
-  Remove it again with `konedrivectl account remove Third`.
+- A Microsoft account can be connected once: run `konedrivectl account add` again (or **Sign
+  in…** in the window) and sign in with the first account's Microsoft account. It says that this
+  OneDrive account is already added, naming the first account, and `konedrivectl account list`
+  still shows two accounts: nothing is left of the attempt.
 
 Then remove the second account: **Remove Account…** on its Account page, or
     konedrivectl account remove Second

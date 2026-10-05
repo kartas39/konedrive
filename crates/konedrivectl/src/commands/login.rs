@@ -2,44 +2,27 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use konedrive_dbus::accounts::AccountProxy;
-use konedrivectl::choice::{choose, AccountInfo};
 use konedrivectl::text::refusals::{explain_account_error, AccountAction};
-use konedrivectl::FIRST_LABEL;
 
 use super::browser::{open_browser, spawn_browser};
-use crate::daemon::{wanted, Daemon};
+use crate::daemon::Daemon;
 use crate::wait;
 
-/// `login` (design §5.2): the chosen account's sign-in. With no account at all and none
-/// named, it first adds one called `Personal`, so the documented setup — `set-client-id`,
-/// `login`, `sync register ~/OneDrive` — keeps working word for word.
+/// How long a command waits for a sign-in in the browser.
+pub(crate) const SIGN_IN_WAIT: Duration = Duration::from_secs(6 * 60);
+
+/// `login` (design §5.2): the chosen account's sign-in, for an account that is signed out. It
+/// adds none: with no account at all it is refused, and the refusal names `account add`.
 pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
-    let accounts = daemon.accounts().await?;
-    // An unreadable configuration first: it also leaves the client ID unknown.
-    daemon.check_loaded(&accounts).await?;
-    // A name that fits no account, or several accounts and none named, before the client ID.
-    let named = match (accounts.is_empty(), wanted(option)) {
-        (true, None) => None,
-        (_, wanted) => Some(choose(&accounts, wanted)?.clone()),
-    };
-    // Before anything is added: every account signs in with it.
+    // An unreadable configuration first, then a name that fits no account, several accounts
+    // and none named, or no account at all: before the client ID.
+    let chosen = daemon.chosen(option).await?.account;
     if daemon.manager.client_id().await?.is_empty() {
         bail!(
             "no client ID is set yet. Save the Application (client) ID of your Microsoft Entra app \
              registration first: `konedrivectl set-client-id <id>` (see the README)"
         );
     }
-    let chosen = match named {
-        Some(chosen) => chosen,
-        None => {
-            let result = daemon.manager.add(FIRST_LABEL).await;
-            let action = AccountAction::Add(FIRST_LABEL);
-            let path = result.map_err(|e| anyhow!(explain_account_error(action, &e)))?;
-            let id = daemon.account(&path).await?.id().await?;
-            println!("Added an account called {FIRST_LABEL} (`konedrivectl account rename {FIRST_LABEL} <label>` renames it).");
-            AccountInfo { path, id, label: FIRST_LABEL.to_owned(), email: String::new() }
-        }
-    };
     let proxy = daemon.account(&chosen.path).await?;
     let result = proxy.begin_sign_in().await;
     let url = result.map_err(|e| anyhow!(explain_account_error(AccountAction::SignIn(&chosen.label), &e)))?;
@@ -62,7 +45,7 @@ pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Resu
         .await?;
 
     tokio::select! {
-        result = tokio::time::timeout(Duration::from_secs(6 * 60), wait::wait_for_sign_in(&wait_proxy)) => {
+        result = tokio::time::timeout(SIGN_IN_WAIT, wait::wait_for_sign_in(&wait_proxy)) => {
             result.context("timed out")??;
         }
         _ = tokio::signal::ctrl_c() => {

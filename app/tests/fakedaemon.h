@@ -20,6 +20,7 @@
 #include <QDBusObjectPath>
 #include <QHash>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantMap>
 
 #include <memory>
@@ -873,9 +874,19 @@ public:
     QStringList calls;
     /// Remove refuses NoHelper, as it does for an intercepted folder with no helper.
     bool refuseRemove = false;
+    /// SignIn is refused Failed with this message, when it is not empty.
+    QString refuseSignIn;
+    /// An outcome and its message: SignIn's sign-in ends so before SignIn has
+    /// answered, so that SignInFinished is sent ahead of the reply.
+    QStringList finishBeforeReply;
+    /// CancelSignIn ends the sign-in under way "cancelled" and answers true.
+    /// Off: it is only logged and answers false, as a daemon that is making
+    /// the account already does.
+    bool cancelEnds = true;
 
 public Q_SLOTS:
-    QDBusObjectPath Add(const QString &label, const QDBusMessage &message);
+    uint SignIn(const QDBusMessage &message, QString &url);
+    bool CancelSignIn(uint signIn);
     void Remove(const QDBusObjectPath &account, const QDBusMessage &message);
     void SetClientId(const QString &id, const QDBusMessage &message)
     {
@@ -948,7 +959,8 @@ public:
         return connection.registerService(DaemonController::ServiceName) && ok;
     }
 
-    /// Gives the name up, as a daemon that exits does.
+    /// Gives the name up, as a daemon that exits does. Its sign-in under way
+    /// goes with it, with no SignInFinished.
     void stop()
     {
         auto connection = fake::bus();
@@ -956,14 +968,19 @@ public:
         for (FakeAccountObject *object : std::as_const(objects)) {
             connection.unregisterObject(object->path);
         }
+        signIn = 0;
         connection.unregisterObject(fake::ManagerPath);
         m_started = false;
     }
 
-    /// As Accounts.Add does: a new account, exported, then announced in Accounts.
-    FakeAccountObject *addAccount(const QString &label)
+    /// An account that is there under `label`, signed out unless `properties`
+    /// say otherwise: exported, then announced in Accounts.
+    FakeAccountObject *addAccount(const QString &label, const QVariantMap &properties = {})
     {
         auto *object = new FakeAccountObject(fake::idFor(++m_lastId), label, this);
+        if (!properties.isEmpty()) {
+            object->account->set(properties);
+        }
         objects << object;
         if (objects.size() == 1) {
             account = object->account;
@@ -974,6 +991,50 @@ public:
         }
         announce();
         return object;
+    }
+
+    /// As Accounts.SignIn does: a sign-in under way, with the next number, and
+    /// no account. One at a time: one that is under way ends "cancelled" first.
+    uint beginSignIn()
+    {
+        if (signIn != 0) {
+            finishSignIn(QStringLiteral("cancelled"), QString());
+        }
+        signIn = ++m_lastSignIn;
+        return signIn;
+    }
+
+    /// How the daemon ends the sign-in under way, with Accounts.SignInFinished
+    /// last. "signed-in": the account is made, signed in and called `message`,
+    /// its email, and joins Accounts first; the signal names its path.
+    /// "already-added": the signal names the account called `message`. Any
+    /// other outcome: no account, and "/".
+    void finishSignIn(const QString &outcome, const QString &message)
+    {
+        const uint number = signIn;
+        if (number == 0) {
+            return;
+        }
+        signIn = 0;
+        QString path = QStringLiteral("/");
+        if (outcome == QLatin1String("signed-in")) {
+            path = addAccount(message, {{QStringLiteral("Email"), message}, {QStringLiteral("State"), QStringLiteral("signed-in")}})->path;
+        } else if (outcome == QLatin1String("already-added")) {
+            for (const FakeAccountObject *object : std::as_const(objects)) {
+                if (object->account->label() == message) {
+                    path = object->path;
+                }
+            }
+        }
+        sendFinished(number, outcome, message, path);
+    }
+
+    /// Accounts.SignInFinished as it is, for any number.
+    void sendFinished(uint number, const QString &outcome, const QString &message, const QString &path)
+    {
+        auto signal = QDBusMessage::createSignal(fake::ManagerPath, DaemonController::InterfaceName, QStringLiteral("SignInFinished"));
+        signal << number << outcome << message << QVariant::fromValue(QDBusObjectPath(path));
+        fake::bus().send(signal);
     }
 
     /// As Accounts.Remove does, once it has forgotten the folder: signed out
@@ -1001,6 +1062,8 @@ public:
 
     FakeAccounts *manager;
     QList<FakeAccountObject *> objects;
+    /// The number of the SignIn that has not ended; 0 when none is under way.
+    uint signIn = 0;
     FakeAccount *account = nullptr;
     FakeSync *sync = nullptr;
 
@@ -1009,6 +1072,7 @@ private:
 
     bool m_started = false;
     int m_lastId = 0;
+    uint m_lastSignIn = 0;
 };
 
 inline FakeAccounts::FakeAccounts(FakeDaemon *daemon)
@@ -1026,17 +1090,37 @@ inline QList<QDBusObjectPath> FakeAccounts::accounts() const
     return paths;
 }
 
-inline QDBusObjectPath FakeAccounts::Add(const QString &label, const QDBusMessage &message)
+inline uint FakeAccounts::SignIn(const QDBusMessage &message, QString &url)
 {
-    calls << QStringLiteral("Add:") + label;
-    for (const FakeAccountObject *object : std::as_const(m_daemon->objects)) {
-        if (object->account->label().compare(label.trimmed(), Qt::CaseInsensitive) == 0 || label.trimmed().isEmpty()) {
-            message.setDelayedReply(true);
-            fake::bus().send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("that label is taken")));
-            return {};
-        }
+    calls << QStringLiteral("SignIn");
+    if (!refuseSignIn.isEmpty()) {
+        message.setDelayedReply(true);
+        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.Failed"), refuseSignIn));
+        return 0;
     }
-    return QDBusObjectPath(m_daemon->addAccount(label.trimmed())->path);
+    const uint number = m_daemon->beginSignIn();
+    url = QStringLiteral("https://login.example/authorize?sign_in=%1").arg(number);
+    if (!finishBeforeReply.isEmpty()) {
+        m_daemon->finishSignIn(finishBeforeReply.at(0), finishBeforeReply.at(1));
+    }
+    return number;
+}
+
+/// Never refused: whether it cancelled. False, and nothing changes, for a
+/// number that is not under way. The outcome is sent after the call has been
+/// answered.
+inline bool FakeAccounts::CancelSignIn(uint signIn)
+{
+    calls << QStringLiteral("CancelSignIn:%1").arg(signIn);
+    if (!cancelEnds || m_daemon->signIn != signIn) {
+        return false;
+    }
+    QTimer::singleShot(0, m_daemon, [daemon = m_daemon, signIn] {
+        if (daemon->signIn == signIn) {
+            daemon->finishSignIn(QStringLiteral("cancelled"), QString());
+        }
+    });
+    return true;
 }
 
 inline void FakeAccounts::Remove(const QDBusObjectPath &account, const QDBusMessage &message)

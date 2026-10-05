@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use konedrive_dbus::LABEL_RULE;
 
 #[derive(Parser)]
 #[command(
@@ -48,9 +47,9 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         command: SettingsCmd,
     },
-    /// Sign the account in with its Microsoft account, in the browser
+    /// Sign an account that is signed out in again with its Microsoft account, in the browser
     ///
-    /// With no account at all, first adds one called Personal. The sign-in page's address is
+    /// It adds no account: `account add` does. The sign-in page's address is
     /// printed; it is also opened in the browser with xdg-open, but only when stdout is a
     /// terminal and KONEDRIVE_NO_BROWSER is not set (set it for a sign-in over SSH).
     Login,
@@ -76,16 +75,14 @@ pub(crate) enum Cmd {
 pub(crate) enum AccountCmd {
     /// List every account: id, label, email, sign-in state, mode, and folder with its state
     List,
-    /// Add an account, signed out and with no folder yet, and print its id
-    // The rule is the daemon's sentence, so the help says what the daemon takes.
-    #[command(long_about = format!(
-        "Add an account, signed out and with no folder yet, and print its id\n\n{LABEL_RULE}. Then sign it \
-         in: `konedrivectl --account <label> login`."
-    ))]
-    Add {
-        #[arg(allow_hyphen_values = true)]
-        label: String,
-    },
+    /// Add an account by signing in to OneDrive in the browser; it is named by its email
+    ///
+    /// The sign-in page's address is printed; it is also opened in the browser with xdg-open,
+    /// but only when stdout is a terminal and KONEDRIVE_NO_BROWSER is not set (set it for a
+    /// sign-in over SSH). Nothing is added unless the sign-in succeeds, and a OneDrive
+    /// account that is added already is not added again. `account rename` gives the account
+    /// another label.
+    Add,
     /// Give an account a new label
     Rename {
         /// The account: its id, label or email
@@ -145,6 +142,19 @@ pub(crate) enum SettingsCmd {
 #[cfg(feature = "dev-tools")]
 #[derive(Subcommand)]
 pub(crate) enum DevCmd {
+    /// Add an account under a label, signed out and with no folder yet, which never has to
+    /// sign in: for a folder that shows a local directory (`sync
+    /// register-without-interception`, `sync populate-from`)
+    // The rule is the daemon's sentence, so the help says what the daemon takes.
+    #[command(long_about = format!(
+        "Add an account under a label, signed out and with no folder yet, which never has to sign in: for a \
+         folder that shows a local directory\n\n{}.",
+        konedrive_dbus::LABEL_RULE
+    ))]
+    AddAccount {
+        #[arg(allow_hyphen_values = true)]
+        label: String,
+    },
     /// Write an access token of the account — about an hour of read access, never the
     /// refresh token — to a file only you can read, for a test run in the VM
     ExportAccessToken {

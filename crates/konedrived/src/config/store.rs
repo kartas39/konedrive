@@ -228,6 +228,12 @@ impl ConfigStore {
         Ok(result)
     }
 
+    /// Whether [`update`](Self::update) would write now, with nothing changed: `Err` says
+    /// why not, as a write would be refused — poisoned, or a file that cannot be read now.
+    pub fn check_writable(&self) -> Result<(), ConfigError> {
+        self.update(|_| Ok(()))
+    }
+
     /// [`update`](Self::update) of one account; `NoAccount` when there is none with `id`.
     pub fn update_account<R, E: From<ConfigError>>(
         &self,
@@ -273,7 +279,7 @@ impl ConfigStore {
         })
     }
 
-    /// `Accounts.Add`: a read-only account with no folder and no drive yet, after every
+    /// A read-only account with no folder and no drive yet, after every
     /// other, under a fresh id.
     pub fn add_account(&self, label: &str) -> Result<AccountConfig, ConfigError> {
         self.update(|config| {

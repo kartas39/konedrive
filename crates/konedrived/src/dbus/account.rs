@@ -34,7 +34,7 @@ impl Account {
         tokio::spawn(async move { service.refresh_account_info().await });
     }
 
-    /// The rules of `Accounts.Add`; `InvalidArgs` otherwise.
+    /// The rules of a label (`konedrive_dbus::LABEL_RULE`); `InvalidArgs` otherwise.
     async fn set_label(&self, label: &str) -> Result<()> {
         Ok(self.service.set_label(label)?)
     }

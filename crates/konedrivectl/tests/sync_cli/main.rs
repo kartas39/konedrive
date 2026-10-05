@@ -160,7 +160,7 @@ async fn build_harness_showing(
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
         hub.set_link(Some(link));
     }
-    let account = daemon.manager.add(konedrivectl::FIRST_LABEL, &daemon.connection).await.unwrap();
+    let account = daemon.manager.add("Personal", &daemon.connection).await.unwrap();
     if signed_in {
         account.account.state().update(|s| s.state = SignInState::SignedIn);
     }

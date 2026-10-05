@@ -14,7 +14,11 @@
     <method name="CancelSignIn"/>
     <method name="SignOut"/>
     <method name="RefreshInfo"/>
-    <!-- Same rules as Accounts.Add; InvalidArgs otherwise. -->
+    <!-- Renames the account. InvalidArgs for a label that is empty, longer
+         than 40 characters, contains "/" or a control character, is 12
+         hexadecimal digits (the shape of an account's id), or is already used
+         (regardless of case); the message says which. "@" is allowed: a label
+         may be an email. The label is trimmed first. -->
     <method name="SetLabel">
       <arg name="label" type="s" direction="in"/>
     </method>
