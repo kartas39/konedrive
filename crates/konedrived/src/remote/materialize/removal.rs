@@ -346,7 +346,7 @@ impl Materializer {
             }
             if outcome == Removal::Kept {
                 if let Some(id) = id {
-                    placeholder::strip_konedrive_xattrs(&sub)?;
+                    placeholder::strip(&sub)?;
                     tracing::info!("{} is gone from OneDrive but holds local work: it stays, and is made again there", rel.display());
                     run.out.on_disk.recreated.push(id);
                     // The user's own from now on: no later cycle takes it
@@ -433,7 +433,7 @@ impl Materializer {
         if !stays {
             return Ok(None);
         }
-        placeholder::strip_konedrive_xattrs(&file)?;
+        placeholder::strip(&file)?;
         tracing::info!("{} is gone from OneDrive and holds what OneDrive never had, or was downloaded here: it stays", name.to_string_lossy());
         Ok(Some(true))
     }

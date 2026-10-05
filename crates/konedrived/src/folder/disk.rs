@@ -535,7 +535,7 @@ impl Disk {
             Ok(Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true }) => open_subdir(dir, name).and_then(|sub| {
                 placeholder::set_mode(&sub, OPEN_DIR_MODE)?;
                 if strip {
-                    placeholder::strip_konedrive_xattrs(&sub)?;
+                    placeholder::strip(&sub)?;
                 }
                 for child in self.list(&sub)? {
                     self.outside(&sub, &child, strip, failed);
@@ -553,7 +553,8 @@ impl Disk {
                 }
                 Ok(file) => {
                     if strip {
-                        placeholder::strip_konedrive_xattrs(&file).and_then(|()| placeholder::set_mode(&file, OPEN_FILE_MODE))
+                        // The id first: what is not downloaded went above, so the content is here.
+                        placeholder::strip(&file).and_then(|()| placeholder::set_mode(&file, OPEN_FILE_MODE))
                     } else {
                         placeholder::set_mode(&file, OPEN_FILE_MODE)
                     }
