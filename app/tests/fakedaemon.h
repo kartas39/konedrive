@@ -879,13 +879,14 @@ public:
     /// An outcome and its message: SignIn's sign-in ends so before SignIn has
     /// answered, so that SignInFinished is sent ahead of the reply.
     QStringList finishBeforeReply;
-    /// CancelSignIn ends the sign-in under way "cancelled". Off: it is only
-    /// logged, as with a daemon that has not got to it yet.
+    /// CancelSignIn ends the sign-in under way "cancelled" and answers true.
+    /// Off: it is only logged and answers false, as a daemon that is making
+    /// the account already does.
     bool cancelEnds = true;
 
 public Q_SLOTS:
     uint SignIn(const QDBusMessage &message, QString &url);
-    void CancelSignIn(uint signIn);
+    bool CancelSignIn(uint signIn);
     void Remove(const QDBusObjectPath &account, const QDBusMessage &message);
     void SetClientId(const QString &id, const QDBusMessage &message)
     {
@@ -1105,19 +1106,21 @@ inline uint FakeAccounts::SignIn(const QDBusMessage &message, QString &url)
     return number;
 }
 
-/// Never refused; a number that is not under way is ignored. The outcome is
-/// sent after the call has been answered.
-inline void FakeAccounts::CancelSignIn(uint signIn)
+/// Never refused: whether it cancelled. False, and nothing changes, for a
+/// number that is not under way. The outcome is sent after the call has been
+/// answered.
+inline bool FakeAccounts::CancelSignIn(uint signIn)
 {
     calls << QStringLiteral("CancelSignIn:%1").arg(signIn);
-    if (!cancelEnds) {
-        return;
+    if (!cancelEnds || m_daemon->signIn != signIn) {
+        return false;
     }
     QTimer::singleShot(0, m_daemon, [daemon = m_daemon, signIn] {
         if (daemon->signIn == signIn) {
             daemon->finishSignIn(QStringLiteral("cancelled"), QString());
         }
     });
+    return true;
 }
 
 inline void FakeAccounts::Remove(const QDBusObjectPath &account, const QDBusMessage &message)

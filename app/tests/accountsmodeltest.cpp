@@ -335,8 +335,9 @@ private Q_SLOTS:
         QCOMPARE(model.count(), 0);
     }
 
-    /// A cancel that comes while the daemon is making the account is ignored
-    /// there, and "signed-in" follows: the account is shown.
+    /// A cancel that comes while the daemon is making the account cancels
+    /// nothing: CancelSignIn answers false, and "signed-in" follows. The
+    /// account is shown.
     void aCancelTooLateStillShowsTheAccount()
     {
         start({});

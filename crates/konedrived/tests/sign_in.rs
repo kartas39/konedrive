@@ -180,8 +180,8 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
 }
 
 /// A sign-in the browser refuses, one that is cancelled and one `SetClientId` ends each
-/// say how they ended, and nothing was ever made. `CancelSignIn` with a number that is
-/// not under way changes nothing.
+/// say how they ended, and nothing was ever made. `CancelSignIn` says whether it
+/// cancelled: with a number that is not under way it changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_and_a_cancelled_sign_in_make_nothing() {
     let mut s = setup(Duration::from_secs(10)).await;
@@ -192,13 +192,13 @@ async fn a_failed_and_a_cancelled_sign_in_make_nothing() {
 
     let (sign_in, url) = s.manager.sign_in().await.unwrap();
     // Not this one's number: one that ended, and one that never was.
-    s.manager.cancel_sign_in(sign_in - 1).await.unwrap();
-    s.manager.cancel_sign_in(sign_in + 7).await.unwrap();
+    assert!(!s.manager.cancel_sign_in(sign_in - 1).await.unwrap());
+    assert!(!s.manager.cancel_sign_in(sign_in + 7).await.unwrap());
     s.no_more_finished().await;
-    s.manager.cancel_sign_in(sign_in).await.unwrap();
+    assert!(s.manager.cancel_sign_in(sign_in).await.unwrap(), "under way: this call ended it");
     assert_eq!(s.next_finished().await, (sign_in, CANCELLED.to_owned(), String::new(), "/".to_owned()));
     // Cancelled already: nothing more is said, and what the browser answers now is dropped.
-    s.manager.cancel_sign_in(sign_in).await.unwrap();
+    assert!(!s.manager.cancel_sign_in(sign_in).await.unwrap());
     let _ = reqwest::get(redirect_of(&url, "code=good-code")).await;
     s.no_more_finished().await;
     s.there_are(0).await;
@@ -278,6 +278,27 @@ async fn a_second_sign_in_ends_the_first_as_cancelled() {
     let (ended, outcome, _, account) = s.next_finished().await;
     assert_eq!((ended, outcome.as_str()), (second, SIGNED_IN));
     assert_eq!(s.manager.list().await.unwrap().iter().map(|p| p.to_string()).collect::<Vec<_>>(), [account]);
+    s.there_are(1).await;
+    s.no_more_finished().await;
+}
+
+/// A refused call ends nothing: a `SignIn` and a `SetClientId` that are refused, here for a
+/// `config.toml` that cannot be read, leave the sign-in under way as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_call_leaves_the_sign_in_under_way() {
+    let mut s = setup(Duration::from_secs(10)).await;
+    let (first, url) = s.manager.sign_in().await.unwrap();
+    let config = Paths::in_dir(s.dir.path()).config_file;
+    std::fs::write(&config, b"this is not = = toml").unwrap();
+    assert!(s.manager.sign_in().await.is_err(), "refused before the browser is opened");
+    assert!(s.manager.set_client_id("11111111-2222-3333-4444-555555555555").await.is_err());
+    s.no_more_finished().await;
+
+    // The first one is still the one under way: it signs in once the file can be read.
+    std::fs::remove_file(&config).unwrap();
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    let (ended, outcome, _, _) = s.next_finished().await;
+    assert_eq!((ended, outcome.as_str()), (first, SIGNED_IN));
     s.there_are(1).await;
     s.no_more_finished().await;
 }

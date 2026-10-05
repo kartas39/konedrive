@@ -13,8 +13,8 @@ use super::browser::{open_browser, spawn_browser};
 use super::login::SIGN_IN_WAIT;
 use crate::daemon::Daemon;
 
-/// How long the command waits for its sign-in's `SignInFinished` once it has asked for the
-/// sign-in to be cancelled: one that got through first says so.
+/// How long the command waits for its sign-in's `SignInFinished` when its `CancelSignIn`
+/// got no answer, so that nothing says whether the sign-in was cancelled.
 const LAST_WORD: Duration = Duration::from_secs(5);
 
 /// How a sign-in ended: the outcome and the message of its `SignInFinished`.
@@ -52,14 +52,24 @@ pub(crate) async fn add(daemon: &Daemon) -> anyhow::Result<()> {
     let (outcome, message) = match ended {
         Ok(end) => end,
         Err(why) => {
-            // The sign-in may have ended by itself by now: then there is nothing to cancel,
-            // and how it ended is said all the same.
-            let _ = daemon.manager.cancel_sign_in(sign_in).await;
-            match tokio::time::timeout(LAST_WORD, own_end(&mut finished, sign_in)).await {
-                // A sign-in that got through before the cancel: the account is there.
-                Ok(Ok(Some((outcome, message)))) if outcome != CANCELLED => (outcome, message),
-                _ => bail!("{why}"),
+            let end = match daemon.manager.cancel_sign_in(sign_in).await {
+                // This call ended it: nothing was added, and nothing will be.
+                Ok(true) => bail!("{why}"),
+                // Not cancelled: the sign-in ended by itself, or its account is being made
+                // now. How it ended is what is said, however long the daemon takes to say
+                // it; a daemon that leaves the bus ends the wait.
+                Ok(false) => wait_for_end(&mut finished, &mut owners, sign_in).await?,
+                // No answer: a few seconds for an outcome that was on its way.
+                Err(_) => match tokio::time::timeout(LAST_WORD, wait_for_end(&mut finished, &mut owners, sign_in)).await {
+                    Ok(end) => end?,
+                    Err(_) => bail!("{why}"),
+                },
+            };
+            // Cancelled all the same, by something else: what the command meant to do.
+            if end.0 == CANCELLED {
+                bail!("{why}");
             }
+            end
         }
     };
     match added_text(&outcome, &message) {

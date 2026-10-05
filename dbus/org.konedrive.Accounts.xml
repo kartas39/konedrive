@@ -18,18 +18,25 @@
          not to be another account's, nothing exists for it (no entry in
          config.toml, no directory, no stored token, no object). Numbers are
          not reused while the daemon runs. Refused, with nothing started, when
-         no client ID can be had or the listener cannot be bound. One at a
-         time: a SignIn while one is under way ends that one as "cancelled"
-         first, and so does SetClientId. How a sign-in ends is said by
-         SignInFinished. -->
+         config.toml cannot be read (Failed, before the browser is opened: the
+         account could not be written at the end), no client ID can be had or
+         the listener cannot be bound. One at a time: a SignIn while one is
+         under way ends that one as "cancelled" first, and so does
+         SetClientId; a SignIn or a SetClientId that is refused ends nothing.
+         How a sign-in ends is said by SignInFinished. -->
     <method name="SignIn">
       <arg name="sign_in" type="u" direction="out"/>
       <arg name="url" type="s" direction="out"/>
     </method>
-    <!-- Cancels the sign-in with that number. A number that is not under way
-         is ignored. -->
+    <!-- Cancels the sign-in with that number, and says whether it did. Never
+         refused. cancelled is true when this call ended the sign-in:
+         SignInFinished "cancelled" follows. It is false, and nothing changes,
+         when the number is not under way, which includes a sign-in whose
+         account is being made at that moment: its own SignInFinished says how
+         it ended ("signed-in" when the account was made). -->
     <method name="CancelSignIn">
       <arg name="sign_in" type="u" direction="in"/>
+      <arg name="cancelled" type="b" direction="out"/>
     </method>
     <!-- Sent exactly once for every sign-in SignIn answered, unless the
          daemon stopped first. outcome:

@@ -379,12 +379,14 @@ sign-in that does not succeed has made nothing, and there is nothing to clean up
 the attempt are the ones an account's own sign-in runs (`Account.BeginSignIn`, the switch to
 read-write): one piece of code, `account/attempt.rs`.
 
-A client holds only the sign-in's number: to cancel it (`Accounts.CancelSignIn(u sign_in)`) and
-to know which `SignInFinished` is its own. Numbers are not reused while the daemon runs.
-`SignIn` is refused, with nothing started, when `config.toml` could not be loaded, no client ID
-can be had or the listener cannot be bound. There is one sign-in for a new account at a time: a
-`SignIn` while one is under way ends that one as `cancelled` first, so a client that died in the
-middle never blocks the next attempt.
+A client holds only the sign-in's number: to cancel it (`Accounts.CancelSignIn(u sign_in) → (b
+cancelled)`) and to know which `SignInFinished` is its own. Numbers are not reused while the
+daemon runs. `SignIn` is refused, with nothing started, when `config.toml` cannot be read (the
+account could not be written at the end), no client ID can be had or the listener cannot be
+bound. There is one sign-in for a new account at a time: a `SignIn` while one is under way ends
+that one as `cancelled` first, so a client that died in the middle never blocks the next attempt.
+A refused call ends nothing: `SignIn` ends the one under way only once nothing can refuse the new
+one any more.
 
 Exactly one signal, `Accounts.SignInFinished(u sign_in, s outcome, s message, o account)`, is sent
 for every sign-in that `SignIn` answered, unless the daemon stopped first:
@@ -398,13 +400,16 @@ for every sign-in that `SignIn` answered, unless the daemon stopped first:
 
 Only `signed-in` made an account.
 
-- **The account is made, already signed in,** once the browser sign-in has succeeded, with the
-  manager's lock held (the one `Remove` and `SetClientId` take):
-  1. the identity guard is asked as an account's own sign-in asks it (§6.2), the other accounts'
-     drives settled first. A drive that is another account's gives `already-added`, any other
-     refusal `failed`, and nothing was made. The check and the entry it allows — the label, the
-     drive and the `login_hint` — are one write of `config.toml`;
-  2. the account is built (`accounts/<id>/`), its token stored and its session signed in;
+- **The account is made, already signed in,** once the browser sign-in has succeeded. The other
+  accounts' drives are settled first (§6.2), which asks Graph, before the manager's lock is taken;
+  the rest runs with that lock held (the one `Remove` and `SetClientId` take):
+  1. the identity guard is asked as an account's own sign-in asks it (§6.2). A drive that is
+     another account's gives `already-added`, any other refusal `failed`, and nothing was made.
+     The check and the entry it allows — the label, the drive and the `login_hint` — are one
+     write of `config.toml`, which reads the file again: a drive recorded since the settling is
+     seen;
+  2. the account is built (`accounts/<id>/`), its token stored and its session signed in. The
+     wallet is asked with the lock held (limitations log A31);
   3. it is listed (`Accounts.List`, `PropertiesChanged`) and put on the bus; then
      `SignInFinished` is sent.
 
@@ -417,10 +422,15 @@ Only `signed-in` made an account.
   case), the label is the first free one of `<email> 2`, `<email> 3`, and so on. When there is no
   email, or the label so made is refused by the rules (longer than 40 characters), it is the first
   free one of `Personal`, `Personal 2`, `Personal 3`, and so on (limitations log A29).
-- **A cancel** is never refused and waits for nothing. A number that is not under way — ended
-  already, or its account being made — is ignored: for the second, `signed-in` follows.
-- **`SetClientId`** ends a sign-in under way as `cancelled` when it is not itself refused; a
-  sign-in under way does not refuse it, being no account (§7.1).
+- **A cancel** is never refused and waits for nothing. It answers whether it cancelled: `true`
+  when this call ended the sign-in, and `cancelled` follows. For a number that is not under way —
+  ended already, or its account being made — it answers `false` and changes nothing: the
+  sign-in's own `SignInFinished` says how it ended, `signed-in` when the account was made. So
+  `konedrivectl account add`, after Ctrl-C or its time limit, says "cancelled" or "timed out"
+  only on `true`; on `false` it waits for the outcome and prints by it.
+- **`SetClientId`** ends a sign-in under way as `cancelled` only after its own write has
+  succeeded: refused, it ends nothing. A sign-in under way does not refuse it, being no account
+  (§7.1).
 - **A client that goes away** (the window closed, `konedrivectl` killed) leaves its sign-in under
   way: one finished in the browser after that still adds the account, and otherwise it ends at
   the timeout or at the next `SignIn` (limitations log A28).

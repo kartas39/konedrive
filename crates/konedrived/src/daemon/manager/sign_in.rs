@@ -15,7 +15,7 @@ use zbus::Connection;
 use super::{follow_mode, remove_account_dir, Account, AccountManager, ManagerError};
 use crate::account::attempt::{self, Attempt, SignedIn};
 use crate::account::{claim_new, AccountError, Refused};
-use crate::config::Mode;
+use crate::config::{AccountId, Mode};
 
 /// The sign-ins `Accounts.SignIn` answered: the number of the last one, which is never
 /// given again while the daemon runs, and the one under way.
@@ -50,9 +50,10 @@ impl End {
 
 impl AccountManager {
     /// `Accounts.SignIn`: starts a sign-in for a new account; its number and the URL to
-    /// open. One under way is ended as `cancelled` first. Refused, with nothing started,
-    /// when `config.toml` could not be loaded, no client ID can be had or the listener
-    /// cannot be bound.
+    /// open. Refused, with nothing started, when `config.toml` cannot be read, no client
+    /// ID can be had or the listener cannot be bound. One under way is ended as
+    /// `cancelled` only once nothing can refuse the new one any more: a refused call ends
+    /// nothing.
     ///
     /// The sign-in ends once: when its browser sign-in ends
     /// ([`finish_sign_in`](Self::finish_sign_in)), at a [`cancel_sign_in`](Self::cancel_sign_in),
@@ -60,10 +61,7 @@ impl AccountManager {
     pub async fn sign_in(self: &Arc<Self>, connection: &Connection) -> Result<(u32, String), ManagerError> {
         let _changing = self.changing.lock().await;
         // The account could not be written at the end: said before the browser is opened.
-        if self.config.is_poisoned() {
-            return Err(ManagerError::Failed(self.config.last_error()));
-        }
-        self.end_sign_in(None).await;
+        self.config.check_writable().map_err(|e| ManagerError::Failed(e.to_string()))?;
         let client_id = self.config.client_id();
         if client_id.is_empty() {
             return Err(AccountError::NoClientId.into());
@@ -74,6 +72,8 @@ impl AccountManager {
         let oauth = attempt::oauth_client(http, self.options.endpoints.clone(), &client_id, Mode::ReadOnly);
         let browser = Attempt::bind(oauth).await.map_err(ManagerError::Failed)?;
         let (url, asked) = (browser.picker_url(), browser.scope());
+        // Nothing refuses this one from here on: the one under way gives way to it.
+        self.end_sign_in(None).await;
         let (cancel, cancelled) = oneshot::channel();
         let number = {
             let mut sign_ins = crate::panic::lock(&self.sign_ins);
@@ -95,11 +95,12 @@ impl AccountManager {
         Ok((number, url))
     }
 
-    /// `Accounts.CancelSignIn`: ends the sign-in `number` as `cancelled`. A number that is
-    /// not under way — ended already, or being made an account — is ignored. It waits for
-    /// nothing: not for a change of the accounts, nor for the wallet.
-    pub async fn cancel_sign_in(&self, number: u32) {
-        self.end_sign_in(Some(number)).await;
+    /// `Accounts.CancelSignIn`: ends the sign-in `number` as `cancelled`, and says whether
+    /// it did. `false` for a number that is not under way — ended already, or being made
+    /// an account: then nothing changes, and for the second `signed-in` or `failed`
+    /// follows. It waits for nothing: not for a change of the accounts, nor for the wallet.
+    pub async fn cancel_sign_in(&self, number: u32) -> bool {
+        self.end_sign_in(Some(number)).await
     }
 
     /// Takes the sign-in under way, `only` the one with that number: whoever gets it ends
@@ -114,25 +115,36 @@ impl AccountManager {
 
     /// Ends the sign-in under way, `only` the one with that number, as `cancelled`: its
     /// wait for the browser ends, and whatever the browser still answers is dropped.
-    pub(super) async fn end_sign_in(&self, only: Option<u32>) {
-        let Some(UnderWay { number, cancel, connection }) = self.take_sign_in(only) else { return };
+    /// Whether there was one to end.
+    pub(super) async fn end_sign_in(&self, only: Option<u32>) -> bool {
+        let Some(UnderWay { number, cancel, connection }) = self.take_sign_in(only) else { return false };
         let _ = cancel.send(());
         tracing::info!("the sign-in {number} of a new account is cancelled");
         self.say_finished(&connection, number, End { outcome: CANCELLED, message: String::new(), account: None }).await;
+        true
     }
 
     /// The browser sign-in of `number` ended: `signed_in`, or why there is none. Nothing
     /// follows when the sign-in was ended meanwhile. Otherwise it is under way no longer,
     /// the account is made ([`make_signed_in`](Self::make_signed_in)) with `changing` held,
     /// and the outcome said.
+    ///
+    /// The other accounts' drives are settled first, before `changing` is taken: that asks
+    /// Graph, and no other change of the accounts waits for it. What it finds may be old
+    /// by the time the account is made; the guard is asked again in the write itself,
+    /// which sees every drive recorded since.
     async fn finish_sign_in(&self, number: u32, asked: &'static str, signed_in: Result<SignedIn, String>) {
+        let unsettled = match &signed_in {
+            Ok(_) => self.siblings.settle().await,
+            Err(_) => Vec::new(),
+        };
         let _changing = self.changing.lock().await;
         let Some(UnderWay { connection, .. }) = self.take_sign_in(Some(number)) else { return };
         let end = match signed_in {
             // Not reached: a wait that was cancelled is under way no longer.
             Err(why) if why.is_empty() => End { outcome: CANCELLED, message: why, account: None },
             Err(why) => End::failed(why),
-            Ok(signed_in) => match self.make_signed_in(&connection, &signed_in, asked).await {
+            Ok(signed_in) => match self.make_signed_in(&connection, &signed_in, asked, &unsettled).await {
                 Ok(account) => {
                     let label = account.account.state().get().label;
                     tracing::info!("added the account {label:?} ({})", account.id);
@@ -151,20 +163,27 @@ impl AccountManager {
     /// The account of a sign-in that succeeded, made already signed in. Called with
     /// `changing` held.
     ///
-    /// 1. The identity guard, as an account's own sign-in asks it: the other accounts'
-    ///    drives settled, then — in one write of `config.toml` — the check, and the entry
-    ///    it allows, with its label, drive and `login_hint`. Refused, nothing was made.
-    /// 2. The account built, its token stored and its session signed in.
+    /// 1. The identity guard, as an account's own sign-in asks it, with `unsettled`, the
+    ///    other accounts whose drive could not be learnt: in one write of `config.toml`,
+    ///    the check, and the entry it allows, with its label, drive and `login_hint`.
+    ///    Refused, nothing was made.
+    /// 2. The account built, its token stored and its session signed in. The wallet is
+    ///    asked with `changing` held (limitations log A31).
     /// 3. Listed, and put on the bus.
     ///
     /// A step that fails takes back what the steps before it made. The entry is written
     /// before the token is stored, so that a daemon that stops in between leaves a
     /// signed-out account anybody can see, sign in again or remove — never a token in the
     /// wallet that no account owns.
-    async fn make_signed_in(&self, connection: &Connection, signed_in: &SignedIn, asked: &'static str) -> Result<Arc<Account>, Refused> {
+    async fn make_signed_in(
+        &self,
+        connection: &Connection,
+        signed_in: &SignedIn,
+        asked: &'static str,
+        unsettled: &[AccountId],
+    ) -> Result<Arc<Account>, Refused> {
         let identity = &signed_in.identity;
-        let unsettled = self.siblings.settle().await;
-        let entry = self.config.update(|config| claim_new(config, &identity.drive, identity.email.as_deref(), &unsettled))?;
+        let entry = self.config.update(|config| claim_new(config, &identity.drive, identity.email.as_deref(), unsettled))?;
         let account = match self.build(&entry) {
             Ok(account) => account,
             Err(e) => {

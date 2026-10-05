@@ -497,6 +497,7 @@ window's status, activity and conflicts, all read from the folder's interfaces (
 - [A28](A28.md) — A client that goes away in the middle of a sign-in leaves it under way.
 - [A29](A29.md) — The fallback label "Personal" is the daemon's, and is not translated.
 - [A30](A30.md) — A daemon that stops while it makes the account of a sign-in leaves what it had made.
+- [A31](A31.md) — While a wallet prompt is open at the end of a sign-in, the other changes of the accounts wait.
 
 ---
 

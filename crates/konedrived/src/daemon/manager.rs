@@ -409,10 +409,10 @@ impl AccountManager {
                 "not possible while an account is signing in or signed in: sign out first".into(),
             ));
         }
-        // A sign-in for a new account under way signs in with the ID that was: ended, as a
-        // newer `SignIn` ends it.
-        self.end_sign_in(None).await;
         self.config.set_client_id(id)?;
+        // A sign-in for a new account under way signs in with the ID that was: ended, as a
+        // newer `SignIn` ends it, now that nothing refuses this call any more.
+        self.end_sign_in(None).await;
         for account in self.accounts() {
             account.account.use_client_id(id);
         }

@@ -40,11 +40,14 @@ pub trait Accounts {
     /// Starts a sign-in for a new account: its number and the URL to open in a browser.
     /// The account is made only once the sign-in has succeeded. How it ends is said once,
     /// by [`sign_in_finished`](Self::receive_sign_in_finished);
-    /// [`cancel_sign_in`](Self::cancel_sign_in) cancels it. Refused, with nothing started,
-    /// when no client ID can be had or the listener cannot be bound.
+    /// [`cancel_sign_in`](Self::cancel_sign_in) cancels it. Refused, with nothing started
+    /// and nothing ended, when `config.toml` cannot be read, no client ID can be had or
+    /// the listener cannot be bound.
     fn sign_in(&self) -> zbus::Result<(u32, String)>;
-    /// Cancels the sign-in `sign_in`. A number that is not under way is ignored.
-    fn cancel_sign_in(&self, sign_in: u32) -> zbus::Result<()>;
+    /// Cancels the sign-in `sign_in`: `true` when this call ended it, and `cancelled`
+    /// follows. `false` for a number that is not under way, which includes a sign-in whose
+    /// account is being made at that moment: its own `SignInFinished` says how it ended.
+    fn cancel_sign_in(&self, sign_in: u32) -> zbus::Result<bool>;
     /// Forgets the account's folder as `Folder.Unregister` does, deletes
     /// its token, cache and tree store, and removes the object. Refused
     /// `NoAccount` for a path that names no account.

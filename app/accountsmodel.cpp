@@ -353,9 +353,10 @@ void AccountsModel::cancelAdd()
 
 void AccountsModel::cancelSignIn()
 {
-    // The daemon answers with SignInFinished: "cancelled", or "signed-in" when
-    // the account was being made already. A call that gets no answer ends the
-    // wait: nothing more will come.
+    // The daemon says how the sign-in ended with SignInFinished, whatever the
+    // call answers: "cancelled" when it cancelled, and otherwise the outcome
+    // the sign-in had by itself, "signed-in" when the account was being made
+    // already. A call that gets no answer ends the wait: nothing more will come.
     const uint number = *m_signIn;
     m_daemon->cancelSignIn(number, [this, number](const QString &) {
         if (m_adding && m_signIn == number && m_awaitedPath.isEmpty()) {

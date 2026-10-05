@@ -21,9 +21,11 @@ impl Accounts {
         Ok(self.manager.sign_in(connection).await?)
     }
 
-    /// Cancels the sign-in `sign_in`; a number that is not under way is ignored.
-    async fn cancel_sign_in(&self, sign_in: u32) {
-        self.manager.cancel_sign_in(sign_in).await;
+    /// Cancels the sign-in `sign_in`: whether this call ended it. `false` for a number
+    /// that is not under way, a sign-in whose account is being made included.
+    #[zbus(out_args("cancelled"))]
+    async fn cancel_sign_in(&self, sign_in: u32) -> bool {
+        self.manager.cancel_sign_in(sign_in).await
     }
 
     /// How the sign-in `sign_in` ended (`konedrive_dbus::sign_in`), once for each: the

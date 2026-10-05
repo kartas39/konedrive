@@ -108,8 +108,9 @@ public:
     /// SignIn: `done` gets the sign-in's number and the URL to open, `failed` the
     /// daemon's reason. How the sign-in ends comes out of signInFinished.
     void signIn(std::function<void(uint, const QString &)> done, std::function<void(const QString &)> failed);
-    /// CancelSignIn for the sign-in `number`. The daemon never refuses it, and says how the
-    /// sign-in ended with signInFinished; `failed` only when the call got no answer.
+    /// CancelSignIn for the sign-in `number`. The daemon never refuses it: it answers whether
+    /// it cancelled, which is not read here, since signInFinished says how the sign-in ended
+    /// either way. `failed` only when the call got no answer.
     void cancelSignIn(uint number, std::function<void(const QString &)> failed);
     /// Remove(path). Like UnregisterRoot it waits as long as it takes: it
     /// forgets the folder through the helper first. One at a time: asked
