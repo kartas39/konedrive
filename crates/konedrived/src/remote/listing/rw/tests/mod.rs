@@ -26,7 +26,7 @@ use crate::folder::classify::classify;
 use crate::fake_onedrive::{FakeItem, ROOT};
 use crate::folder::disk::Disk;
 use crate::hydration::graph_source::GraphSource;
-use crate::local::{Batch, Examined, Examiner, IgnoreList};
+use crate::local::{Batch, Examined, IgnoreList};
 use crate::remote::mode::Mode;
 use crate::remote::testing::{id_at, now, state_at, write_version, World};
 use crate::upload::{Engine, OutboxWorker};
@@ -573,9 +573,7 @@ impl World {
         let examined = tokio::task::spawn_blocking(move || {
             let disk = Disk::open(&root, false).unwrap();
             let liveness = Scanning(bases);
-            Examiner { disk: &disk, store: &store, liveness: &liveness, ignore: &IgnoreList::default(), locks: &locks, now: now() }
-                .full_scan()
-                .unwrap()
+            crate::local::testing::examine(&disk, &store, &liveness, &IgnoreList::default(), &locks, now(), &Batch::full()).unwrap()
         })
         .await
         .unwrap();

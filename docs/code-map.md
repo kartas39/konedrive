@@ -120,7 +120,9 @@ The daemon's end of the helper socket, and the helper's state. Design: `hydratio
   their bounds; `LinkCell`, where an account keeps the link. `[tests]`
 - `clearance.rs` — `Clearance`: the rule every punch clears a file's ignore mark by.
 - `presence.rs` — whether a helper has its socket bound, told without connecting. `[tests]`
-- `testing.rs` — test support: the stand-in for the helper's end of the socket.
+- `testing.rs` — test support: the stand-ins for the helper's end of the socket, over one accept
+  loop; `FakeHelper`, the one the daemon's tests share: it records, refuses, holds an answer
+  until released, and finds an object by its handle.
 - `hub.rs` — `HelperHub`: the one link every account shares, its supervisor and `HelperState`;
   `Served`, whom it tells as the link comes and goes.
 - `linked.rs` — `Helper` and `Linked`: what the daemon asks of the helper beyond the fills, as
@@ -221,7 +223,10 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
 - `liveness.rs` — whether a missing object is still there, and where; the proof that it is absent from a place.
 - `handles.rs` — which filesystem the recorded file handles belong to, and taking them again when it changed; the record of the object a replacement swapped in.
-- `testing.rs` — tests: the stand-in for the helper's answer about an object (`FakeLiveness`).
+- `testing.rs` — tests: the one fixture of this area's tests, and of the others' that run an
+  examination (`Folder`: a temporary folder, its store, the listing placed in it, the watcher on
+  it), the sinks of the watcher's tests, and the stand-in for the helper's answer about an object
+  (`FakeLiveness`).
 - `scan.rs` — how the Full local scan goes, for `org.konedrive.LocalScan`. `[tests]`
 
 ### `crates/konedrived/src/local/watcher/`
@@ -277,12 +282,13 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 
 The tests of the worker, by topic.
 
-- `mod.rs` — the worker's steps, its order, its crash points; what the topics share: the one fixture (`World`).
-- `harness.rs` — the tests' worker around the fake OneDrive, driven by hand; also used by `local/` and the bench.
+- `mod.rs` — the worker's steps, its order, its crash points; what the topics share: the one fixture (`World`: the folder of `local/testing.rs`, the harness and the fake helper).
+- `harness.rs` — the tests' worker around the fake OneDrive, driven by hand; also used by the bench.
 - `candidates.rs` — a `403` on one row, and a new file OneDrive holds with other content.
 - `foreign_parent.rs` — a directory that carries another folder's id: nothing is sent into that folder.
-- `move_out.rs` — moves out of the folder, on the host: each case once, with a fake helper that finds what left beside the folder.
+- `move_out.rs` — moves out of the folder, on the host: each case once, with the fake helper, behind a real link, finding what left beside the folder.
 - `removed.rs` — a file or folder removed before its upload finished.
+- `replaced_folder.rs` — a folder replaced offline by a new one that keeps one of its files: the examination's rows and the worker's side of the name rule.
 - `sessions.rs` — upload sessions: a crash, a refusal, a changed file or an ended session at each step; and their placeholders.
 - `stops.rs` — a worker stopped while a section changes the folder and records it.
 - `worker.rs` — the worker's loop: when it waits, and which row goes next.
@@ -296,7 +302,8 @@ reconcile in read-write mode).
 - `mode.rs` — `Mode<W>`: read-only, or read-write with what a level needs for it (the folder's
   `Writes`, a cycle's `RwCycle`, a pass's `Rw`).
 - `testing.rs` — the one fixture of this area's tests (`World`): a temporary folder, the store, the
-  fake OneDrive and a fake helper; a real cycle, or the cycle's staging and its reconcile in two steps.
+  fake OneDrive and the fake helper (`helper/testing.rs`); a real cycle, or the cycle's staging and its
+  reconcile in two steps. The one place a test builds a materializer by itself.
 - `live.rs` — changes from OneDrive at once: the notification socket's task. `[tests]`
 - `listing.rs` — `Listing`: one folder's cycle in three steps (fetch, stage and reconcile, what
   follows a cycle that went through). `[tests]`
@@ -360,7 +367,6 @@ Baloo and thumbnails. Design: `desktop.md`.
 - `wiring.rs` — `Wiring`: what a service is made with, given once to its constructor.
 - `testing.rs` — test support, also for the VM suite: a `Wiring` of fakes (the account, a
   temporary `config.toml`, the content sources, the watcher, a clock moved by hand).
-- `testing/helper.rs` — the fake helper: it records, refuses, and holds an answer until released.
 - `registry.rs` — `Registry`: the folders of every account, listed by the account manager; whose
   folder an open is in, the overlap check, the claims, what every account is told alike. `[tests]`
 - `folder.rs` — what the folder is, as a type; `change`, the one way to change it, and the view the readers read.

@@ -27,21 +27,17 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{FileExt as _, MetadataExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
 use konedrive_graph::drive::DriveClient;
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrive_tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxRow, OutboxState, Recorded};
 use konedrive_tree::{Change, Row, Store, Table, TreeStore};
-use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path, query_param};
@@ -52,15 +48,16 @@ use crate::folder::classify::classify;
 use crate::folder::disk::Disk;
 use crate::folder::locks::InodeLocks;
 use crate::folder::root::SyncRoot;
+use crate::helper::testing::FakeHelper;
 use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::pin::Pins;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
+use crate::local::{Batch, Examined, FakeLiveness, IgnoreList};
 use crate::remote::listing::reconcile::{Commit, Held, Prepared, Reconcile, Reconciled};
 use crate::remote::listing::stage::{News, Staged};
 use crate::remote::mode::Mode;
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
-use crate::remote::materialize::{Applied, Claimed, Scope};
+use crate::remote::materialize::{Applied, Claimed, Materializer, Scope};
 use crate::status::report::Report;
 use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle};
 use crate::upload::{Engine, Limits, NoHost, WorkerConfig};
@@ -190,7 +187,8 @@ impl World {
         let report = Report::new(state.clone());
         konedrive_tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
         let pins = Pins::detached(state.clone());
-        let helper = FakeHelper::start().await;
+        let helper = FakeHelper::standalone();
+        let link = helper.connect().await;
         let (rescue_dir, rescue) = match options.rescue_dir {
             Some(dir) => (dir, None),
             None => {
@@ -205,7 +203,7 @@ impl World {
             state,
             report,
             pins,
-            link: helper.link.clone(),
+            link,
             helper,
             rescue_dir,
             lifecycle: Arc::new(tokio::sync::RwLock::new(())),
@@ -499,7 +497,7 @@ impl World {
         let (root, store, locks, liveness) = (self.root.clone(), self.store.clone(), self.locks.clone(), Arc::clone(&self.liveness));
         tokio::task::spawn_blocking(move || {
             let disk = Disk::open(&root, false).unwrap();
-            Examiner { disk: &disk, store: &store, liveness: &*liveness, ignore: &IgnoreList::default(), locks: &locks, now: now() }.examine(&batch).unwrap()
+            crate::local::testing::examine(&disk, &store, &*liveness, &IgnoreList::default(), &locks, now(), &batch).unwrap()
         })
         .await
         .unwrap()
@@ -621,107 +619,21 @@ impl Step {
     }
 }
 
-/// One `MarkDir` as the fake helper saw it.
-#[derive(Debug, Clone)]
-pub(crate) struct Marked {
-    /// The directory's item id; `None` for the holding directory.
-    pub id: Option<String>,
-    pub ino: u64,
-    /// How many entries the directory held at that moment.
-    pub entries: usize,
-    /// Its name at that moment.
-    pub name: String,
-}
-
-/// How the fake helper answers a `MarkDir`.
-#[derive(Default)]
-struct Answering {
-    /// Answered with this errno; 0 acknowledges.
-    errno: i32,
-    /// A directory whose path ends so is acknowledged only when told to.
-    stall: Option<(String, mpsc::Sender<()>, mpsc::Receiver<()>)>,
-}
-
-/// The helper of a [`World`]: it acknowledges everything and keeps every
-/// `MarkDir` it is sent ([`marks`](Self::marks)); it can be told to refuse
-/// them ([`refuse_marks`](Self::refuse_marks)) or to hold one back
-/// ([`stall_on`](Self::stall_on)).
-pub(crate) struct FakeHelper {
-    pub link: HelperLink,
-    /// Every `MarkDir` so far, in order: for a test that looks from another task.
-    pub seen: Arc<Mutex<Vec<Marked>>>,
-    answering: Arc<Mutex<Answering>>,
-    _dir: tempfile::TempDir,
-}
-
-impl FakeHelper {
-    pub(crate) async fn start() -> FakeHelper {
-        let dir = tempfile::tempdir().unwrap();
-        let socket_path = dir.path().join("helper.sock");
-        let listener = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
-        bind(listener.as_raw_fd(), &UnixAddr::new(&socket_path).unwrap()).unwrap();
-        listen(&listener, Backlog::new(4).unwrap()).unwrap();
-        let marks: Arc<Mutex<Vec<Marked>>> = Arc::default();
-        let answering: Arc<Mutex<Answering>> = Arc::default();
-        let (kept, how) = (Arc::clone(&marks), Arc::clone(&answering));
-        std::thread::spawn(move || {
-            let accepted = accept(listener.as_raw_fd()).unwrap();
-            // SAFETY: a descriptor `accept` just returned, owned by nothing else.
-            let mut channel = Channel::new(unsafe { UnixStream::from_raw_fd(accepted) }).unwrap();
-            channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-            let _ = channel.recv::<ToHelper>().unwrap();
-            channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-            while let Ok((message, dir)) = channel.recv::<ToHelper>() {
-                let mut errno = 0;
-                if let (ToHelper::MarkDir, Some(dir)) = (&message, dir) {
-                    let at = std::fs::read_link(format!("/proc/self/fd/{}", dir.as_raw_fd())).unwrap();
-                    let entries = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd())).unwrap().count();
-                    let dir = File::from(dir);
-                    let id = xattr::FileExt::get_xattr(&dir, XATTR_ITEM_ID).unwrap().map(|v| String::from_utf8(v).unwrap());
-                    let name = at.file_name().unwrap().to_string_lossy().into_owned();
-                    kept.lock().unwrap().push(Marked { id, ino: dir.metadata().unwrap().ino(), entries, name });
-                    errno = how.lock().unwrap().errno;
-                    // Taken out while it waits: the test may ask something else meanwhile.
-                    let stall = how.lock().unwrap().stall.take();
-                    if let Some((suffix, reached, release)) = stall {
-                        if at.to_string_lossy().ends_with(suffix.as_str()) {
-                            let _ = reached.send(());
-                            let _ = release.recv();
-                        }
-                        how.lock().unwrap().stall.get_or_insert((suffix, reached, release));
-                    }
-                }
-                if channel.send(&ToDaemon::Ack { errno }, None).is_err() {
-                    break;
-                }
-            }
-        });
-        let link = HelperLink::connect(&socket_path).await.unwrap().0;
-        FakeHelper { link, seen: marks, answering, _dir: dir }
-    }
-
-    /// Every `MarkDir` so far, in order.
-    pub(crate) fn marks(&self) -> Vec<Marked> {
-        self.seen.lock().unwrap().clone()
-    }
-
-    /// [`marks`](Self::marks) as (item id, entries at that moment).
-    pub(crate) fn marked(&self) -> Vec<(Option<String>, usize)> {
-        self.marks().into_iter().map(|m| (m.id, m.entries)).collect()
-    }
-
-    /// Every `MarkDir` from now on is answered with `errno`; 0 acknowledges again.
-    pub(crate) fn refuse_marks(&self, errno: i32) {
-        self.answering.lock().unwrap().errno = errno;
-    }
-
-    /// The marking of the directory whose path ends in `suffix` says so on
-    /// the first channel, and is acknowledged only when told to on the second.
-    pub(crate) fn stall_on(&self, suffix: &str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
-        let (reached_tx, reached_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        self.answering.lock().unwrap().stall = Some((suffix.to_owned(), reached_tx, release_rx));
-        (reached_rx, release_tx)
+/// The materializer of a read-only reconcile with no helper, for a fixture that places a
+/// staged listing by itself (`local::testing::Folder`): the one place a test names the
+/// materializer's parts.
+pub(crate) fn materializer(disk: Disk, store: &Store, root_item_id: &str, rescue_into: PathBuf, claimed: Option<Claimed>, runtime: &tokio::runtime::Handle) -> Materializer {
+    Materializer {
+        disk,
+        store: store.clone(),
+        link: None,
+        runtime: runtime.clone(),
+        locks: InodeLocks::new(),
+        root_item_id: root_item_id.into(),
+        rescue_into,
+        cancel: CancellationToken::new(),
+        mode: Mode::ReadOnly,
+        claimed,
     }
 }
 

@@ -109,7 +109,8 @@ fn detections_coalesce_into_one_live_row_per_item() {
 }
 
 /// A detection never merges into a running row: one follow-up waits
-/// behind it, and a create's follow-up learns the item id at commit.
+/// behind it, and a create's follow-up learns the item id at commit. A second
+/// commit of the row fails.
 #[test]
 fn a_running_row_gets_one_follow_up() {
     use OutboxKind::*;
@@ -128,6 +129,7 @@ fn a_running_row_gets_one_follow_up() {
     let committed = base_row("N", "R", "n.txt", Kind::File);
     let local_seq = s.outbox_commit(first, Committed::Item { row: &committed, handle: inode(7).handle.as_ref() }, None).unwrap();
     assert_eq!((local_seq, s.outbox_seq().unwrap()), (1, 1));
+    assert!(s.outbox_commit(first, Committed::Item { row: &committed, handle: inode(7).handle.as_ref() }, None).is_err(), "a row that is gone commits nothing");
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].item_id.as_deref(), Some("N"), "the follow-up is now an update of the new item");

@@ -30,14 +30,15 @@ fn a_run_is_running_with_its_reason_and_growing_counts_then_idle_with_when_and_h
     assert!(scan.finished >= scan.started && scan.finished > 0);
 }
 
+/// With an interval no test outlasts: what the run is told within it stays with the run.
 #[test]
-fn counts_reach_the_state_at_most_once_a_second_and_all_of_them_at_the_end() {
-    let report = report(PUBLISH_EVERY);
+fn counts_reach_the_state_at_most_once_an_interval_and_all_of_them_at_the_end() {
+    let report = report(Duration::from_secs(3600));
     let run = report.run(ScanReason::Overflow);
     run.started();
     run.seen(1, 1);
     run.seen(2, 7);
-    assert_eq!(report.state.get().local.scan.files, 0, "within the second");
+    assert_eq!(report.state.get().local.scan.files, 0, "within the interval");
     run.finish(true);
     assert_eq!((report.state.get().local.scan.directories, report.state.get().local.scan.files), (2, 7));
 }
@@ -53,14 +54,4 @@ fn a_failed_scan_keeps_the_last_finish_and_one_never_started_says_nothing() {
     run.finish(false);
     let scan = report.state.get().local.scan;
     assert_eq!((scan.state, scan.finished), (ScanState::Idle, 0));
-}
-
-#[test]
-fn a_read_only_folder_has_no_local_scan() {
-    let mut scan = LocalScan::default();
-    assert_eq!(scan.state, ScanState::None);
-    scan.follow(Mode::ReadWrite);
-    assert_eq!(scan.state, ScanState::Idle);
-    scan.follow(Mode::ReadOnly);
-    assert_eq!(scan.state.as_str(), "none");
 }

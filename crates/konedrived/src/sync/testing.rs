@@ -2,9 +2,9 @@
 //! folder through public calls and what it was made with, never through a field of
 //! [`SyncService`].
 //!
-//! - the helper: [`FakeHelper`], which records what it is asked, refuses on demand, and
-//!   holds an answer until the test lets it go (a change held open is "the helper has not
-//!   answered yet");
+//! - the helper: the daemon's one fake (`helper::testing::FakeHelper`, in the crate's own
+//!   tests only), which records what it is asked, refuses on demand, and holds an answer
+//!   until the test lets it go (a change held open is "the helper has not answered yet");
 //! - the account: [`Account`], over a state the test changes, counting what the folder
 //!   tells it;
 //! - `config.toml`: a temporary one ([`persist`]), or the test's own;
@@ -17,8 +17,6 @@
 //!
 //! Built for the crate's tests and, with the `fault-injection` feature, for the VM suite.
 
-mod helper;
-
 use std::future::Future;
 use std::io;
 use std::path::Path;
@@ -30,7 +28,8 @@ use async_trait::async_trait;
 use konedrive_graph::drive::DriveClient;
 use tokio::sync::watch;
 
-pub use helper::{FakeHelper, Seen};
+#[cfg(test)]
+pub(crate) use crate::helper::testing::{FakeHelper, Seen};
 
 use super::registry::Registry;
 use super::wiring::{self, OneDrive, Persist, SyncPaths, Wiring};

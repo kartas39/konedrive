@@ -152,7 +152,7 @@ fn object(name: &str, id: Option<&'static str>, own: bool, data: Option<&[u8]>) 
 }
 
 struct Scene<'f> {
-    fx: &'f Fx,
+    fx: &'f Folder,
     objects: Vec<Object>,
     /// The names the acts touched: what a batch of names names.
     touched: Vec<(String, String)>,
@@ -162,8 +162,8 @@ struct Scene<'f> {
 }
 
 /// The folder, placed; with the store's record of each object, or without.
-fn placed(handles: bool) -> Fx {
-    let fx = Fx::new(&[folder("D", "R", "docs"), folder("K", "R", "keep"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff")]);
+fn placed(handles: bool) -> Folder {
+    let fx = Folder::new(&[folder("D", "R", "docs"), folder("K", "R", "keep"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("docs/f.txt", b"ff");
     if !handles {
@@ -173,7 +173,7 @@ fn placed(handles: bool) -> Fx {
 }
 
 impl<'f> Scene<'f> {
-    fn new(fx: &'f Fx) -> Self {
+    fn new(fx: &'f Folder) -> Self {
         let objects = vec![
             object("a.txt", Some("A"), true, Some(b"abc")),
             object("p.bin", Some("P"), true, None),
@@ -475,7 +475,7 @@ struct Seen<'a> {
 }
 
 /// The object at `name`, if one is there.
-fn handle_of(fx: &Fx, name: &str) -> Option<FileHandle> {
+fn handle_of(fx: &Folder, name: &str) -> Option<FileHandle> {
     let path = fx.path(name);
     File::open(path.parent()?).and_then(|dir| FileHandle::at(&dir, path.file_name().unwrap())).ok()
 }
@@ -520,7 +520,7 @@ fn listed_around(before: &[Object], after: &[Object]) -> Vec<Object> {
 /// copy goes only when the item's object is the recorded one. Also what the store knows
 /// after such a look: the object found for an item is on record, and a row says where the
 /// item was last seen.
-fn outcome(fx: &Fx, seen: &Seen, known: &Known) -> (Outcome, Known) {
+fn outcome(fx: &Folder, seen: &Seen, known: &Known) -> (Outcome, Known) {
     let objects = seen.listed;
     let mut out = Outcome::default();
     let mut next = known.clone();

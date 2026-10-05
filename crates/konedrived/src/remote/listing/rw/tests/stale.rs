@@ -18,7 +18,7 @@ use super::Scanning;
 use crate::remote::testing::{now, write_version, Says, World};
 use crate::folder::disk::Disk;
 use crate::fake_onedrive::ROOT;
-use crate::local::{Examined, Examiner, IgnoreList};
+use crate::local::{Examined, IgnoreList};
 
 /// A name OneDrive has and this folder cannot (over 255 bytes): the item is
 /// `skipped:name-too-long`.
@@ -32,8 +32,7 @@ fn scan_now(w: &World) -> Option<Examined> {
     let (root, store, locks, bases) = (w.root.clone(), w.store.clone(), w.locks.clone(), w.everywhere());
     let disk = Disk::open(&root, false).unwrap();
     let liveness = Scanning(bases);
-    Examiner { disk: &disk, store: &store, liveness: &liveness, ignore: &IgnoreList::default(), locks: &locks, now: now() }
-        .full_scan()
+    crate::local::testing::examine(&disk, &store, &liveness, &IgnoreList::default(), &locks, now(), &crate::local::Batch::full())
         .map_err(|e| assert!(matches!(e, crate::local::ExamineError::NoBase), "{e}"))
         .ok()
 }

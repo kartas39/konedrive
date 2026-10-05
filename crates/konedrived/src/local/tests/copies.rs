@@ -54,13 +54,9 @@ type Pairs = Vec<(&'static str, &'static str)>;
 /// (kind, place, item) of the rows expected.
 type Rows = Vec<(OutboxKind, &'static str, Option<&'static str>)>;
 
-fn skipped(fx: &Fx) -> Vec<(String, String)> {
-    fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect()
-}
-
 /// One combination: what is wrong with it, if anything.
 fn run(act: Act, full: bool) -> Vec<String> {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff"), file("Q", "D", "q.bin", b"cloud")]);
+    let fx = Folder::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff"), file("Q", "D", "q.bin", b"cloud")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("docs/f.txt", b"ff");
     let items = [("a.txt", "A"), ("p.bin", "P"), ("docs", "D"), ("docs/f.txt", "F"), ("docs/q.bin", "Q")];
@@ -101,7 +97,7 @@ fn run(act: Act, full: bool) -> Vec<String> {
     fx.examine(&batch);
     let rows: Vec<(OutboxKind, String, Option<String>)> = rows.into_iter().map(|(kind, rel, id)| (kind, rel.to_owned(), id.map(str::to_owned))).collect();
     let list: Vec<(String, String)> = list.into_iter().map(|(rel, why)| (rel.to_owned(), why.to_owned())).collect();
-    let first = (fx.summary(), skipped(&fx));
+    let first = (fx.summary(), fx.skipped());
     if first.0 != rows {
         wrong.push(format!("the rows are {:?}", first.0));
     }
@@ -110,8 +106,8 @@ fn run(act: Act, full: bool) -> Vec<String> {
     }
     // Looked at again, the same: what went up as new goes up once.
     fx.examine(&batch);
-    if (fx.summary(), skipped(&fx)) != first {
-        wrong.push(format!("a second look changes it: {:?}, {:?}", fx.summary(), skipped(&fx)));
+    if (fx.summary(), fx.skipped()) != first {
+        wrong.push(format!("a second look changes it: {:?}, {:?}", fx.summary(), fx.skipped()));
     }
     // The item stays the item: its object keeps its marks, and the base's record of it.
     for ((rel, id), was) in items.iter().zip(&recorded) {
@@ -140,7 +136,7 @@ fn run(act: Act, full: bool) -> Vec<String> {
             wrong.push(format!("{copy} still carries an item's id"));
         }
     }
-    let said = fx.store.call_blocking(move |s| s.recent_activity(10)).unwrap().len();
+    let said = fx.activity().len();
     for (empty, by) in [("p2.bin", Act::CopyPlaceholder), ("docs2/q.bin", Act::CopyFolder)] {
         if act == by && (fx.path(empty).exists() || said != 1) {
             wrong.push(format!("{empty} is there: {}, and Activity has {said} line(s)", fx.path(empty).exists()));
