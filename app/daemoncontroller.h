@@ -105,9 +105,12 @@ public:
     Q_INVOKABLE void setOnBattery(const QString &choice);
     /// SetClientId, then `done`; or `failed` with the daemon's reason. Leaves actionError alone.
     void setClientId(const QString &id, std::function<void()> done, std::function<void(const QString &)> failed);
-    /// SignIn: `done` gets the draft's object path and the URL to open, `failed` the
-    /// daemon's reason. How the draft ends comes out of signInFinished.
-    void signIn(std::function<void(const QString &, const QString &)> done, std::function<void(const QString &)> failed);
+    /// SignIn: `done` gets the sign-in's number and the URL to open, `failed` the
+    /// daemon's reason. How the sign-in ends comes out of signInFinished.
+    void signIn(std::function<void(uint, const QString &)> done, std::function<void(const QString &)> failed);
+    /// CancelSignIn for the sign-in `number`. The daemon never refuses it, and says how the
+    /// sign-in ended with signInFinished; `failed` only when the call got no answer.
+    void cancelSignIn(uint number, std::function<void(const QString &)> failed);
     /// Remove(path). Like UnregisterRoot it waits as long as it takes: it
     /// forgets the folder through the helper first. One at a time: asked
     /// while another is under way, it does nothing.
@@ -120,13 +123,15 @@ Q_SIGNALS:
     void actionErrorChanged();
     void removeChanged();
     void daemonBuildChanged();
-    /// Accounts.SignInFinished: how the draft at `path` ended ("signed-in",
-    /// "cancelled", "already-added" or "failed") and the daemon's message.
-    void signInFinished(const QString &path, const QString &outcome, const QString &message);
+    /// Accounts.SignInFinished: how the sign-in `number` ended ("signed-in",
+    /// "cancelled", "already-added" or "failed"), the daemon's message, and
+    /// the account's path: the new account's, the one that has the drive
+    /// already, or "/" when there is none to name.
+    void signInFinished(uint number, const QString &outcome, const QString &message, const QString &account);
 
 private Q_SLOTS:
     void onPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
-    void onSignInFinished(const QDBusObjectPath &account, const QString &outcome, const QString &message);
+    void onSignInFinished(uint number, const QString &outcome, const QString &message, const QDBusObjectPath &account);
 
 private:
     void fetchAll();

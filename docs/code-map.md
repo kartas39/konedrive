@@ -103,6 +103,7 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 
 - `mod.rs` — `AccountService`: the sign-in state machine of one Microsoft account; the order of its locks.
 - `sign_in.rs` — starting, finishing and cancelling a sign-in; sign-out; the account's drive.
+- `attempt.rs` — one browser sign-in, up to "these tokens, this drive, this email": an account's own, and a new account's.
 - `mode.rs` — `Account.SetMode`: the switch between read-only and read-write.
 - `state.rs` — the observable account state, and the mode's note in `LastError`. `[tests]`
 - `quota.rs` — the quota of the account's drive, and its figures (`QuotaFigures`). `[tests]`
@@ -416,7 +417,7 @@ The daemon as a whole. Design: `accounts.md`.
 
 - `mod.rs` — the list of the modules.
 - `manager.rs` — the account manager; the trait `Bus`: how its objects get on the bus.
-- `manager/draft.rs` — the draft of `Accounts.SignIn`: how it starts, how it ends, and what a start removes.
+- `manager/sign_in.rs` — `Accounts.SignIn`: the sign-in that belongs to no account, how it ends, and the account made when it succeeds.
 - `startup.rs` — `Daemon`: the configuration's lock, the migration, the start.
 - `stop.rs` — the stop on SIGTERM or SIGINT; `Tasks`, the tasks whose end stops the daemon. `[tests]`
 
@@ -448,7 +449,7 @@ Integration tests: the daemon over a private bus, Microsoft as wiremock.
 
 - `common/mod.rs` — what they share: the fake Microsoft, the started daemon.
 - `account_flow.rs` — the sign-in, from the client id to signed in.
-- `sign_in.rs` — `Accounts.SignIn`: the draft, its outcomes, its label.
+- `sign_in.rs` — `Accounts.SignIn`: nothing made before it succeeds, its outcomes, its label.
 - `accounts.rs` — several accounts.
 - `dbus_api.rs` — `org.konedrive.Account`, and the introspection against the XML.
 - `mode.rs` — the account's mode.

@@ -13,6 +13,7 @@
 #include <QStringList>
 
 #include <functional>
+#include <optional>
 #include <vector>
 
 class DaemonController;
@@ -56,7 +57,7 @@ class AccountsModel : public QAbstractListModel
     /// An account is signed in or signing in: the client id cannot change then.
     Q_PROPERTY(bool anySignedIn READ anySignedIn NOTIFY summaryChanged)
     /// Sign In is under way: SetClientId, Accounts.SignIn, and the wait for
-    /// how its draft ends (Accounts.SignInFinished).
+    /// how that sign-in ends (Accounts.SignInFinished).
     Q_PROPERTY(bool adding READ adding NOTIFY addingChanged)
     /// Why the last Sign In failed; empty when it did not.
     Q_PROPERTY(QString addError READ addError NOTIFY addingChanged)
@@ -105,14 +106,14 @@ public:
 
     /// Sign In: SetClientId(clientId) when it is given and new, then
     /// Accounts.SignIn, whose URL comes out of openUrlRequested. The daemon
-    /// keeps the new account out of Accounts.List, so out of this model,
-    /// until it is signed in and named (by its email); accountAdded(path)
-    /// then, and the window opens the folder picker. Cancelled, failed, or
-    /// already added as another account: the daemon leaves nothing, and
-    /// addError says why unless it was cancelled. A daemon that goes away in
-    /// the middle ends the adding too, with an error that says so.
+    /// makes the account only once the sign-in has succeeded, signed in and
+    /// named (by its email); accountAdded(path) then, once its row is here,
+    /// and the window opens the folder picker. Cancelled, failed, or already
+    /// added as another account: no account was made, and addError says why
+    /// unless it was cancelled. A daemon that goes away in the middle ends
+    /// the adding too, with an error that says so.
     Q_INVOKABLE void addAccount(const QString &clientId = QString());
-    /// Gives up the sign-in under way, if any (Account.CancelSignIn on its draft).
+    /// Gives up the sign-in under way, if any (Accounts.CancelSignIn).
     Q_INVOKABLE void cancelAdd();
     /// Forgets the last Sign In's failure (the dialog opens clean).
     Q_INVOKABLE void clearAddError();
@@ -135,10 +136,10 @@ Q_SIGNALS:
 
 private:
     void follow(const QStringList &paths);
-    void handleSignInFinished(const QString &path, const QString &outcome, const QString &message);
+    void handleSignInFinished(uint number, const QString &outcome, const QString &message, const QString &account);
     void handleServiceChanged();
-    void draftFinished(const QString &outcome, const QString &message);
-    void cancelDraft();
+    void signInEnded(const QString &outcome, const QString &message, const QString &account);
+    void cancelSignIn();
     void showAdded();
     AccountItem *insert(int row, const QString &path);
     void removeAt(int row);
@@ -151,18 +152,19 @@ private:
     std::vector<std::function<void(AccountItem *)>> m_setUps;
     bool m_adding = false;
     QString m_addError;
-    /// The draft Sign In is adding, from SignIn's answer until it has ended.
-    QString m_draftPath;
+    /// The number of this Sign In's sign-in, from SignIn's answer until it has ended.
+    std::optional<uint> m_signIn;
     /// Which Sign In the answers of SetClientId and SignIn belong to: one that
     /// comes after its adding has ended is dropped.
     quint64 m_attempt = 0;
-    /// cancelAdd() was called for this adding. Before SignIn's answer, the draft
-    /// is cancelled once it has one; a refusal or a daemon that stops then ends
-    /// the adding with no error.
+    /// cancelAdd() was called for this adding. Before SignIn's answer, the
+    /// sign-in is cancelled once it has one; a refusal or a daemon that stops
+    /// then ends the adding with no error.
     bool m_cancelRequested = false;
-    /// The draft ended "signed-in" and is not in Accounts.List as this model has it yet.
-    bool m_awaitingRow = false;
-    /// SignInFinished signals that came before SignIn's answer said which draft
-    /// is this window's: path, then outcome and message.
-    QHash<QString, QStringList> m_early;
+    /// The account the sign-in ended "signed-in" with, while it is not in
+    /// Accounts.List as this model has it yet; empty otherwise.
+    QString m_awaitedPath;
+    /// SignInFinished signals that came before SignIn's answer said which
+    /// sign-in is this window's: by number; outcome, message and account.
+    QHash<uint, QStringList> m_early;
 };

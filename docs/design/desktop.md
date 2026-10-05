@@ -235,15 +235,16 @@ through, `ModeNotGranted` for one that is not read-write.
 | `ClientId` (`s`) | the application id every account signs in with; konedrive's own built-in one unless `SetClientId` overrode it |
 | `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown`: one helper serves every account (§2.5) |
 | `LastError` (`s`) | trouble that belongs to no account: `config.toml` cannot be read or was written by a newer version, a migration step failed, an account could not be loaded; empty when none |
-| `SignIn() → (o account, s url)` | adds a new account by signing in, the only way to add one: a draft, on the bus and not in `List`, whose sign-in is started; returns the draft's object and the URL to open. Refused as `Account.BeginSignIn` is, and then nothing is left. One draft at a time: a newer `SignIn` ends the one before as `cancelled`; `Account.CancelSignIn` on the draft cancels it ([accounts.md](accounts.md) §7.2) |
-| `SignInFinished(o account, s outcome, s message)` (signal) | how a draft ended, once for each: `signed-in` (the account is in `List` already, and `message` is its label: its email), `cancelled`, `already-added` (the drive is another account's; `message` is that account's label) or `failed` (`message` says why). After any but `signed-in`, nothing is left of the draft |
+| `SignIn() → (u sign_in, s url)` | starts a sign-in for a new account, the only way to add one; returns the sign-in's number, not reused while the daemon runs, and the URL to open. The sign-in belongs to no account: nothing is made until it has succeeded. Refused, with nothing started, when `config.toml` could not be loaded, no client ID can be had or the listener cannot be bound. One at a time: a newer `SignIn` ends the one before as `cancelled`, and so does `SetClientId` ([accounts.md](accounts.md) §7.2) |
+| `CancelSignIn(u sign_in)` | cancels that sign-in; never refused, and a number that is not under way is ignored |
+| `SignInFinished(u sign_in, s outcome, s message, o account)` (signal) | how a sign-in ended, once for each unless the daemon stopped first: `signed-in` (the account was made and is in `List` already; `message` is its label, its email, and `account` its path), `cancelled` (`message` empty, `account` `/`), `already-added` (the drive is another account's; `message` is that account's label and `account` its path) or `failed` (`message` says why, `account` is `/`). Only `signed-in` made an account |
 | `Remove(o account)` | forgets the account's folder as `Folder.Unregister` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
 | `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
 | `PauseOnMetered` (`b`), `OnBattery` (`s`) | when every account holds back by itself ([writes.md](writes.md) §11): on a metered connection or not; on battery `sync`, `power-saver` or `pause`. The top-level `pause_on_metered` and `on_battery` of `config.toml`; absent, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log). Both announced with `PropertiesChanged` |
 | `SetPauseOnMetered(b)`, `SetOnBattery(s)` | change them for every account at once: written to `config.toml` under its lock, taken by every account's hold, and every account's `SyncAnyway` ends; `InvalidArgs` for an `on_battery` choice other than the three |
 
 The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
-object is on the bus (a draft's too), `InterfacesRemoved` when it goes, and `GetManagedObjects` for
+object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for
 tools. The window and the CLI follow `Accounts` instead.
 
 In a development build (`dev-tools`) the same object also serves `org.konedrive.DevTools`, with one
@@ -293,7 +294,7 @@ F51).
 | Command | Account | Does |
 |---|---|---|
 | `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `Folder.State` |
-| `account add` | — | `Accounts.SignIn`: adds a new account by signing in. Prints the URL, opens the browser and waits for `SignInFinished` of its draft, six minutes at most; Ctrl-C and the six minutes cancel it (`CancelSignIn` on the draft), and it then waits a few seconds for how the draft ended: a sign-in that got through first added the account, and it says so. A daemon or a draft that goes away while it waits ends it at once. Says what the account is called (its email), or that this OneDrive account is already added and under which name, or why it failed; exit status 1 for all but the first |
+| `account add` | — | `Accounts.SignIn`: adds a new account by signing in. Prints the URL, opens the browser and waits for `SignInFinished` with its sign-in's number, six minutes at most; Ctrl-C and the six minutes cancel it (`Accounts.CancelSignIn`), and it then waits a few seconds for how the sign-in ended: one that got through first added the account, and it says so. A daemon that leaves the bus while it waits ends it at once. Says what the account is called (its email), or that this OneDrive account is already added and under which name, or why it failed; exit status 1 for all but the first |
 | `account rename <account> <label>` | the argument | `Account.SetLabel` |
 | `account remove <account>` | the argument | `Accounts.Remove`, without asking; then says what was deleted and what was kept |
 | `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
@@ -379,13 +380,15 @@ while the daemon is not on the bus. Both lines can be selected and copied.
 **Sign in…** opens the Microsoft sign-in in the browser straight away, with the account picker:
 there is no client-id field or dialog, since konedrive signs in with its own built-in application
 registration. It is one call, `Accounts.SignIn`, whose URL opens in the browser; the window then
-waits for `Accounts.SignInFinished` of the draft that call answered ([accounts.md](accounts.md)
-§7.2). The daemon keeps the draft out of `Accounts.List`, so it is in no switcher, tray, Places
-entry or notification, and lists the account, named by its email, only once the sign-in has
-succeeded. The window then chooses it and the folder picker opens at once: a sign-in exists to sync
-something. Any other outcome leaves nothing: cancelled (the dialog's Cancel calls `CancelSignIn` on
-the draft) shows no message, a OneDrive account that is another account's already shows "This
-account is already added as …", naming it, and a failure shows the daemon's reason.
+waits for `Accounts.SignInFinished` with the number that call answered ([accounts.md](accounts.md)
+§7.2). Until the sign-in has succeeded there is no account, so nothing is in the switcher, the
+tray, a Places entry or a notification; the daemon then makes the account, signed in and named by
+its email, and the signal names it. The window chooses it and the folder picker opens at once: a
+sign-in exists to sync something. Any other outcome made nothing: cancelled (the dialog's Cancel
+calls `Accounts.CancelSignIn` with the number) shows no message, a OneDrive account that is
+another account's already shows "This account is already added as …", naming it, and a failure
+shows the daemon's reason. A daemon that leaves the bus in the middle ends the adding with a
+message that says so.
 
 **Rename…**, on the Account page, checks the name as the daemon checks it before asking, so the
 dialog says at once why it will not do (A14).

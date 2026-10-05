@@ -6,8 +6,6 @@
 
 #include <KLocalizedString>
 
-#include <QDBusMessage>
-#include <QDBusPendingCallWatcher>
 #include <QRegularExpression>
 
 AccountItem::AccountItem(const QDBusConnection &bus, const QString &path, DaemonController *daemon, const AccountStatus::Clock &clock, QObject *parent)
@@ -145,7 +143,7 @@ void AccountsModel::follow(const QStringList &paths)
         m_items.move(row, i);
         endMoveRows();
     }
-    if (m_awaitingRow && indexOf(m_draftPath) >= 0) {
+    if (!m_awaitedPath.isEmpty() && indexOf(m_awaitedPath) >= 0) {
         showAdded();
     }
 }
@@ -256,19 +254,19 @@ void AccountsModel::addAccount(const QString &clientId)
             return;
         }
         m_daemon->signIn(
-            [this, attempt](const QString &path, const QString &url) {
+            [this, attempt](uint number, const QString &url) {
                 if (!m_adding || attempt != m_attempt) {
                     return;
                 }
-                m_draftPath = path;
-                // The daemon may have said how the draft ended before this
+                m_signIn = number;
+                // The daemon may have said how the sign-in ended before this
                 // answer was handled.
-                const QStringList early = m_early.take(path);
+                const QStringList early = m_early.take(number);
                 m_early.clear();
                 if (!early.isEmpty()) {
-                    draftFinished(early.at(0), early.at(1));
+                    signInEnded(early.at(0), early.at(1), early.at(2));
                 } else if (m_cancelRequested) {
-                    cancelDraft();
+                    cancelSignIn();
                 } else {
                     Q_EMIT openUrlRequested(url);
                 }
@@ -283,18 +281,19 @@ void AccountsModel::addAccount(const QString &clientId)
     }
 }
 
-void AccountsModel::handleSignInFinished(const QString &path, const QString &outcome, const QString &message)
+void AccountsModel::handleSignInFinished(uint number, const QString &outcome, const QString &message, const QString &account)
 {
     if (!m_adding) {
         return;
     }
-    if (m_draftPath.isEmpty()) {
-        // SignIn has not answered: which draft is this window's is not known yet.
-        m_early.insert(path, {outcome, message});
+    if (!m_signIn) {
+        // SignIn has not answered: which sign-in is this window's is not known yet.
+        m_early.insert(number, {outcome, message, account});
         return;
     }
-    if (path == m_draftPath) {
-        draftFinished(outcome, message);
+    // Another number is another client's sign-in.
+    if (number == *m_signIn && m_awaitedPath.isEmpty()) {
+        signInEnded(outcome, message, account);
     }
 }
 
@@ -303,19 +302,18 @@ void AccountsModel::handleServiceChanged()
     if (!m_adding || m_daemon->serviceAvailable()) {
         return;
     }
-    // A daemon that stops sends no SignInFinished, and removes the draft when
-    // it starts again. A sign-in that was being cancelled ends as it was asked to.
+    // A daemon that stops sends no SignInFinished, and its sign-in went with
+    // it. A sign-in that was being cancelled ends as it was asked to.
     finishAdding(m_cancelRequested ? QString() : i18n("The KOneDrive service stopped before the account was added. Sign in again."));
 }
 
-void AccountsModel::draftFinished(const QString &outcome, const QString &message)
+void AccountsModel::signInEnded(const QString &outcome, const QString &message, const QString &account)
 {
     if (outcome == QLatin1String("signed-in")) {
         // Accounts.List changes before the signal is sent; waited for all the same.
-        if (indexOf(m_draftPath) >= 0) {
+        m_awaitedPath = account;
+        if (indexOf(account) >= 0) {
             showAdded();
-        } else {
-            m_awaitingRow = true;
         }
     } else if (outcome == QLatin1String("cancelled")) {
         // By cancelAdd(), or by a newer sign-in started elsewhere.
@@ -329,7 +327,7 @@ void AccountsModel::draftFinished(const QString &outcome, const QString &message
 
 void AccountsModel::showAdded()
 {
-    const QString path = m_draftPath;
+    const QString path = m_awaitedPath;
     finishAdding(QString());
     Q_EMIT accountAdded(path);
 }
@@ -340,30 +338,27 @@ void AccountsModel::cancelAdd()
         return;
     }
     m_cancelRequested = true;
-    if (m_draftPath.isEmpty()) {
-        // SignIn (or SetClientId before it) is still in flight: the draft is
-        // cancelled as soon as it answers.
+    if (!m_signIn) {
+        // SignIn (or SetClientId before it) is still in flight: the sign-in
+        // is cancelled as soon as it has a number.
         return;
     }
-    if (m_awaitingRow) {
+    if (!m_awaitedPath.isEmpty()) {
         // Signed in already; only its row has not come.
         finishAdding(QString());
     } else {
-        cancelDraft();
+        cancelSignIn();
     }
 }
 
-void AccountsModel::cancelDraft()
+void AccountsModel::cancelSignIn()
 {
-    // The daemon answers with SignInFinished("cancelled"). A draft that is no
-    // longer there (the daemon restarted, say) sends none: the refused call
-    // ends the wait then.
-    const QString path = m_draftPath;
-    auto message = QDBusMessage::createMethodCall(AccountController::ServiceName, path, AccountController::InterfaceName, QStringLiteral("CancelSignIn"));
-    auto *watcher = new QDBusPendingCallWatcher(m_daemon->bus().asyncCall(message), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, path](QDBusPendingCallWatcher *w) {
-        w->deleteLater();
-        if (w->isError() && m_adding && m_draftPath == path && !m_awaitingRow) {
+    // The daemon answers with SignInFinished: "cancelled", or "signed-in" when
+    // the account was being made already. A call that gets no answer ends the
+    // wait: nothing more will come.
+    const uint number = *m_signIn;
+    m_daemon->cancelSignIn(number, [this, number](const QString &) {
+        if (m_adding && m_signIn == number && m_awaitedPath.isEmpty()) {
             finishAdding(QString());
         }
     });
@@ -371,9 +366,9 @@ void AccountsModel::cancelDraft()
 
 void AccountsModel::finishAdding(const QString &error)
 {
-    m_draftPath.clear();
+    m_signIn.reset();
     m_cancelRequested = false;
-    m_awaitingRow = false;
+    m_awaitedPath.clear();
     m_early.clear();
     m_adding = false;
     m_addError = error;

@@ -494,10 +494,9 @@ window's status, activity and conflicts, all read from the folder's interfaces (
 - [A25](A25.md) — The account's own hold shows as paused, and the tray lifts it for every account.
 - [A26](A26.md) — "· live" hides when the last check ran.
 - [A27](A27.md) — An account left under the label "Signing in…" by an older window is not removed any more.
-- [A28](A28.md) — A client that goes away in the middle of a sign-in leaves its draft.
+- [A28](A28.md) — A client that goes away in the middle of a sign-in leaves it under way.
 - [A29](A29.md) — The fallback label "Personal" is the daemon's, and is not translated.
-- [A30](A30.md) — A daemon that stops between storing the token and listing the account loses the sign-in.
-- [A31](A31.md) — Calls on a draft's objects are answered, not refused by a rule of their own.
+- [A30](A30.md) — A daemon that stops while it makes the account of a sign-in leaves what it had made.
 
 ---
 
@@ -537,6 +536,6 @@ Kept briefly so the history of a weak spot is findable; details are in the commi
   remote change. Closed by the read-write reconcile (F110–F117, commit `60be43d`).
 - **A15. Sign In is several calls in a row, not one** — the window and `konedrivectl login` each
   chained `Accounts.Add`, `Account.BeginSignIn` and `Account.SetLabel`, and the window hid and
-  removed the half-made account itself. Closed by `Accounts.SignIn` (issue #199): one call, a draft
-  the daemon keeps out of `Accounts.List`, and one signal that says how it ended. What remains is
-  A27 to A31.
+  removed the half-made account itself. Closed by `Accounts.SignIn` (issue #199): one call, an
+  account the daemon makes only once the sign-in has succeeded, and one signal that says how it
+  ended. What remains is A27 to A30.
