@@ -106,7 +106,7 @@ async fn binary_shows_and_changes_the_settings_every_account_shares() {
     assert!(config().contains("on_battery = \"pause\""), "{}", config());
 
     assert_eq!(run(addr, &["settings", "on-battery", "sometimes"]).status.code(), Some(2));
-    let out = run(addr, &["--account", konedrivectl::FIRST_LABEL, "settings", "on-battery"]);
+    let out = run(addr, &["--account", "Personal", "settings", "on-battery"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(err_text(&out).contains("one for every account"), "{}", err_text(&out));
 }

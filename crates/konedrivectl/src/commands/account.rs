@@ -5,7 +5,7 @@ use konedrive_dbus::accounts::AccountProxy;
 use konedrive_dbus::Refusal;
 use konedrivectl::choice::{choose, Source};
 use konedrivectl::text::accounts::{account_list_text, removed_text};
-use konedrivectl::text::formats::{shell_word, warning_text};
+use konedrivectl::text::formats::warning_text;
 use konedrivectl::text::refusals::{explain_account_error, explain_sync_error_in, AccountAction, Context, SyncAction};
 use konedrivectl::text::status::mode_shown_text;
 
@@ -33,14 +33,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
                 eprintln!("{}", warning_text(&trouble));
             }
         }
-        AccountCmd::Add { label } => {
-            let result = daemon.manager.add(&label).await;
-            let path = result.map_err(|e| anyhow!(explain_account_error(AccountAction::Add(&label), &e)))?;
-            let added = daemon.account(&path).await?;
-            let (id, label) = (added.id().await?, added.label().await?);
-            println!("Added the account {label} ({id}), signed out and with no folder yet.");
-            println!("Sign it in with: konedrivectl --account {} login", shell_word(&label));
-        }
+        AccountCmd::Add => return super::add::add(daemon).await,
         AccountCmd::Rename { named, label } => {
             let accounts = daemon.accounts().await?;
             daemon.check_loaded(&accounts).await?;

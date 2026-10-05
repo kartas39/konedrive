@@ -167,7 +167,7 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
             "this account already has a sync folder{folder}, and an account keeps only one. To \
              use {path} instead, run `{prefix} sync forget` first; it leaves the files in the \
              old folder as they are. For another OneDrive account, add an account of its own: \
-             `konedrivectl account add <label>`"
+             `konedrivectl account add`"
         ),
         Refusal::NotEmpty => format!(
             "{path} is not empty. A new sync folder has to start empty, so that nothing already \

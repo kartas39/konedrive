@@ -3,17 +3,16 @@
 //! `KONEDRIVE_ACCOUNT`, and a command that needs one refused with exit status 2 when there are
 //! several and none is chosen; the path commands, routed by `Files` whichever account holds
 //! the path, and refusing `--account`; `status` and `sync status` over every account; and
-//! `login` with no account at all, which adds `Personal`. No client ID is set: the daemon's
-//! built-in one is what `status` shows and what a sign-in address carries.
+//! `account add`, which signs in and adds the account under its email. No client ID is set:
+//! the daemon's built-in one is what `status` shows and what a sign-in address carries.
+//! An account that never signs in is added through the daemon's manager.
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{err_text, out_text, run_env};
-use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 
 use konedrived::config::DEFAULT_CLIENT_ID;
@@ -52,17 +51,19 @@ async fn accounts_are_added_chosen_renamed_and_removed() {
     assert!(succeeded(&bus, &["account", "list"], &[]).starts_with("No accounts yet."));
     let (status, told) = failed(&bus, &["logout"], &[]);
     assert_eq!(status, 1, "{told}");
-    assert!(told.contains("No account yet: `konedrivectl account add <label>`"), "{told}");
+    assert!(told.contains("No account yet: `konedrivectl account add`"), "{told}");
     let (status, told) = failed(&bus, &["login"], &[(konedrivectl::ACCOUNT_VARIABLE, "Test")]);
     assert_eq!(status, 1, "{told}");
     assert!(told.contains("KONEDRIVE_ACCOUNT names the account \"Test\", and there are no accounts yet"), "{told}");
 
-    let added = succeeded(&bus, &["account", "add", "Personal"], &[]);
-    let personal = daemon.manager.accounts()[0].id.clone();
-    assert!(added.contains(&format!("Added the account Personal ({personal})")), "{added}");
-    succeeded(&bus, &["account", "add", "Family"], &[]);
-    let (_, told) = failed(&bus, &["account", "add", "family"], &[]);
-    assert!(told.contains("cannot be an account's label") && told.contains("already used"), "{told}");
+    // `account add` adds a new account: it takes none to act on.
+    let (status, told) = failed(&bus, &["--account", "x", "account", "add"], &[]);
+    assert_eq!(status, 2, "{told}");
+    assert!(told.contains("`account add` adds a new account: leave out --account"), "{told}");
+    assert!(daemon.manager.accounts().is_empty());
+
+    let personal = daemon.manager.add("Personal", &daemon.connection).await.unwrap().id.clone();
+    daemon.manager.add("Family", &daemon.connection).await.unwrap();
     daemon.manager.accounts()[1].account.state().update(|s| s.email = "family.ann@live.com".into());
 
     let list = succeeded(&bus, &["account", "list"], &[]);
@@ -136,10 +137,10 @@ fn state_of(bus: &TestBus, path: &Path) -> String {
 async fn path_commands_go_by_the_path_and_status_shows_every_account() {
     let bus = TestBus::start();
     let config = tempfile::tempdir().unwrap();
-    let _daemon = common::start_daemon(&bus, config.path()).await;
+    let daemon = common::start_daemon(&bus, config.path()).await;
     let dir = tempfile::tempdir().unwrap();
-    succeeded(&bus, &["account", "add", "Personal"], &[]);
-    succeeded(&bus, &["account", "add", "Family"], &[]);
+    daemon.manager.add("Personal", &daemon.connection).await.unwrap();
+    daemon.manager.add("Family", &daemon.connection).await.unwrap();
     let personal = local_folder(&bus, dir.path(), "Personal", &["a.txt", "a2.txt"]);
     let family = local_folder(&bus, dir.path(), "Family", &["b.txt", "b2.txt"]);
 
@@ -194,7 +195,7 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
     assert!(list.contains(&format!("{} (no-interception)", family.display())), "{list}");
 
     // A third account's folder cannot be inside another's.
-    succeeded(&bus, &["account", "add", "Work"], &[]);
+    daemon.manager.add("Work", &daemon.connection).await.unwrap();
     let inside = personal.join("work");
     std::fs::create_dir(&inside).unwrap();
     let args = ["--account", "work", "sync", "register-without-interception", inside.to_str().unwrap()];
@@ -208,77 +209,87 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
     assert_eq!(state_of(&bus, &personal.join("a.txt")), "not-managed");
 }
 
-/// `login` with no account at all adds `Personal` and signs it in, with the built-in client
-/// ID when none is set. A stand-in `xdg-open` that records the address it is
-/// given is in `PATH`, and `KONEDRIVE_NO_BROWSER` is not set: the piped stdout alone keeps
-/// it from being called, and the address is printed. The sign-in is cancelled
-/// from the bus, as another client would.
+/// `account add` signs in and adds the account under its email, with no account and with one
+/// present; a OneDrive account that is added already is not added again; a sign-in that
+/// fails adds nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn login_with_no_account_adds_personal() {
+async fn account_add_signs_in_and_names_the_account_by_its_email() {
     let bus = TestBus::start();
-    let config = tempfile::tempdir().unwrap();
-    let _daemon = common::start_daemon(&bus, config.path()).await;
-    let client = bus.connect().await;
-    let manager = AccountsProxy::builder(&client)
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let server = wiremock::MockServer::start().await;
+    common::mock_identity(&server, "ann-code", "AT1", "ann@outlook.com", "D1").await;
+    common::mock_identity(&server, "bob-code", "AT2", "bob@live.com", "D2").await;
+    let daemon = common::start_daemon_signing_in(&bus, dir.path(), &server).await;
+    let add = |answer: &'static str| {
+        let address = bus.address().to_owned();
+        async move { tokio::task::spawn_blocking(move || common::run_signing_in(&address, &["account", "add"], answer)).await.unwrap() }
+    };
+    let labels = || daemon.manager.accounts().iter().map(|a| a.account.state().get().label).collect::<Vec<_>>();
 
-    assert!(manager.list().await.unwrap().is_empty());
+    // A sign-in the browser refuses: no account.
+    let out = add("error=access_denied").await;
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err_text(&out).contains("the account was not added: Access was denied in the browser."), "{out:?}");
+    assert!(labels().is_empty());
+    let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap_or_default();
+    assert!(!config.contains("[[accounts]]"), "a failed sign-in leaves no account: {config}");
+    assert!(succeeded(&bus, &["account", "list"], &[]).starts_with("No accounts yet."));
 
-    let browser = tempfile::tempdir().unwrap();
-    let opened = browser.path().join("opened");
-    let script = browser.path().join("xdg-open");
-    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", opened.display())).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let login = std::process::Command::new(env!("CARGO_BIN_EXE_konedrivectl"))
-        .arg("login")
-        .env("DBUS_SESSION_BUS_ADDRESS", bus.address())
-        .env("PATH", browser.path())
-        .env_remove(konedrivectl::ACCOUNT_VARIABLE)
-        .env_remove(konedrivectl::NO_BROWSER_VARIABLE)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    let mut account = None;
-    for _ in 0..250 {
-        if let Some(path) = manager.list().await.unwrap().first() {
-            let proxy = AccountProxy::builder(&client)
-                .path(path.clone())
-                .unwrap()
-                .cache_properties(zbus::proxy::CacheProperties::No)
-                .build()
-                .await
-                .unwrap();
-            if proxy.state().await.unwrap() == "signing-in" {
-                account = Some(proxy);
-                break;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let account = account.expect("login never started signing in");
-    assert_eq!(account.label().await.unwrap(), "Personal");
-    account.cancel_sign_in().await.unwrap();
-
-    let out = login.wait_with_output().unwrap();
-    assert!(!out.status.success(), "a cancelled sign-in fails: {out:?}");
+    // With no account: the address is printed, with the built-in client ID, and the
+    // account is named by its email.
+    let out = add("code=ann-code").await;
+    assert!(out.status.success(), "{out:?}");
     let said = out_text(&out);
-    assert!(said.starts_with("Added an account called Personal"), "{said}");
-    assert!(!opened.exists(), "no browser is opened when stdout is not a terminal");
     assert!(said.contains("Open this address in a browser:"), "{said}");
     let url = said.split_whitespace().find(|w| w.starts_with("http")).unwrap_or_default();
-    assert!(url.contains(DEFAULT_CLIENT_ID), "the address is printed, with the built-in client ID: {said}");
-    assert!(err_text(&out).contains("cancelled"), "{}", err_text(&out));
-    assert_eq!(manager.list().await.unwrap().len(), 1);
+    assert!(url.contains(DEFAULT_CLIENT_ID), "{said}");
+    assert!(said.contains("Signed in. The account is called ann@outlook.com"), "{said}");
+    assert_eq!(labels(), ["ann@outlook.com"]);
+
+    // With one present: another one, by its own email.
+    let out = add("code=bob-code").await;
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).contains("The account is called bob@live.com"), "{out:?}");
+    assert_eq!(labels(), ["ann@outlook.com", "bob@live.com"]);
+    let list = succeeded(&bus, &["account", "list"], &[]);
+    assert!(list.contains("ann@outlook.com") && list.contains("bob@live.com") && list.contains("signed-in"), "{list}");
+
+    // The same OneDrive account again: not added, and told under which name it is.
+    let out = add("code=ann-code").await;
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err_text(&out).contains("this OneDrive account is already added, as ann@outlook.com"), "{out:?}");
+    assert_eq!(labels().len(), 2);
+}
+
+/// A development build's `dev add-account <label>` adds a signed-out account under the
+/// label, as `account add <label>` did; a release build has no such command.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dev_add_account_adds_a_signed_out_account() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
+    if !cfg!(feature = "dev-tools") {
+        let (status, told) = failed(&bus, &["dev", "add-account", "Local"], &[]);
+        assert_eq!(status, 2, "{told}");
+        assert!(daemon.manager.accounts().is_empty());
+        return;
+    }
+    let added = succeeded(&bus, &["dev", "add-account", "Local"], &[]);
+    let account = daemon.manager.accounts()[0].clone();
+    assert!(added.contains(&format!("Added the account Local ({})", account.id)), "{added}");
+    assert_eq!(account.account.state().get().state, konedrived::account::state::SignInState::SignedOut);
+    let list = succeeded(&bus, &["account", "list"], &[]);
+    assert!(list.contains("Local") && list.contains("signed-out"), "{list}");
+    let (_, told) = failed(&bus, &["dev", "add-account", "local"], &[]);
+    assert!(told.contains("cannot be an account's label") && told.contains("already used"), "{told}");
+    let (status, told) = failed(&bus, &["--account", "Local", "dev", "add-account", "Other"], &[]);
+    assert_eq!(status, 2, "{told}");
+    assert!(told.contains("leave out --account"), "{told}");
 }
 
 /// The daemon takes a label with an "@" (`config::check_label`: an account is commonly named
-/// by its email), and the CLI says nothing else: not in the help of `account add`, and not
-/// in what it adds to every refused label, whatever it was refused for.
+/// by its email), and the CLI says nothing else in what it adds to a refused label,
+/// whatever it was refused for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_the_cli_says_of_a_label_is_what_the_daemon_takes() {
     let bus = TestBus::start();
@@ -286,21 +297,12 @@ async fn what_the_cli_says_of_a_label_is_what_the_daemon_takes() {
     let daemon = common::start_daemon(&bus, dir.path()).await;
 
     // The rule itself: an email is a label.
-    let added = succeeded(&bus, &["account", "add", "ann@outlook.com"], &[]);
-    assert!(added.contains("Added the account ann@outlook.com"), "{added}");
-    assert_eq!(daemon.manager.accounts()[0].account.state().get().label, "ann@outlook.com");
+    daemon.manager.add("ann@outlook.com", &daemon.connection).await.unwrap();
     assert!(succeeded(&bus, &["account", "rename", "ann@outlook.com", "a@b"], &[]).contains("to a@b"));
+    assert_eq!(daemon.manager.accounts()[0].account.state().get().label, "a@b");
 
-    let mut wrong = Vec::new();
-    let help = succeeded(&bus, &["account", "add", "--help"], &[]);
-    if help.contains("no \"@\"") {
-        wrong.push(format!("`account add --help`: {help}"));
-    }
-    // Refused for its length, and told a rule about "@" on the way.
-    let (_, told) = failed(&bus, &["account", "add", &"x".repeat(41)], &[]);
+    // Refused for its length, and told no rule about "@" on the way.
+    let (_, told) = failed(&bus, &["account", "rename", "a@b", &"x".repeat(41)], &[]);
     assert!(told.contains("at most 40"), "{told}");
-    if told.contains("no \"@\"") {
-        wrong.push(format!("a label refused for its length: {told}"));
-    }
-    assert!(wrong.is_empty(), "the CLI says a label has no \"@\", and the daemon takes one:\n{}", wrong.join("\n"));
+    assert!(!told.contains("no \"@\""), "the CLI says a label has no \"@\", and the daemon takes one: {told}");
 }

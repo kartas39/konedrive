@@ -41,6 +41,11 @@ pub trait Accounts {
     /// Refused `InvalidArgs` for a label that breaks the rules
     /// (`dbus/org.konedrive.Accounts.xml`).
     fn add(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
+    /// Adds a new account by signing in: the object path of the *draft* (on the bus, not in
+    /// [`list`](Self::list)) and the URL to open in a browser. How it ends is said once, by
+    /// [`sign_in_finished`](Self::receive_sign_in_finished); `Account.CancelSignIn` on the
+    /// draft cancels it. Refused as `Account.BeginSignIn` is, and then nothing is left.
+    fn sign_in(&self) -> zbus::Result<(OwnedObjectPath, String)>;
     /// Forgets the account's folder as `Folder.Unregister` does, deletes
     /// its token, cache and tree store, and removes the object. Refused
     /// `NoAccount` for a path that names no account.
@@ -77,6 +82,13 @@ pub trait Accounts {
     /// The full hash of the daemon's commit, or `unknown`.
     #[zbus(property(emits_changed_signal = "const"))]
     fn commit(&self) -> zbus::Result<String>;
+
+    /// How the draft `account` of a [`sign_in`](Self::sign_in) ended: `outcome` is one of
+    /// [`sign_in`](crate::sign_in)'s names, and `message` the account's label
+    /// (`signed-in`), the label of the account that has the drive (`already-added`), why
+    /// (`failed`), or empty (`cancelled`).
+    #[zbus(signal)]
+    fn sign_in_finished(&self, account: OwnedObjectPath, outcome: String, message: String) -> zbus::Result<()>;
 }
 
 /// `/org/konedrive/Accounts`: per-file calls, each routed by path to the
@@ -459,6 +471,19 @@ pub trait TokenExport {
     /// `WritesNotAllowed` for an account the development gate does not let
     /// through, `ModeNotGranted` for one that is not read-write.
     fn read_write(&self) -> zbus::Result<String>;
+}
+
+/// `/org/konedrive/Accounts`: development only, as [`TokenExportProxy`] is.
+#[zbus::proxy(
+    interface = "org.konedrive.DevTools",
+    default_service = "org.konedrive.Daemon",
+    default_path = "/org/konedrive/Accounts",
+    gen_blocking = false
+)]
+pub trait DevTools {
+    /// Adds a signed-out, read-only account with no folder under `label`, which never has
+    /// to sign in; its object path. Refused `InvalidArgs` for a label that breaks the rules.
+    fn add_account(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[cfg(test)]

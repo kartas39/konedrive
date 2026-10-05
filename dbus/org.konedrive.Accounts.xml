@@ -23,6 +23,37 @@
       <arg name="label" type="s" direction="in"/>
       <arg name="account" type="o" direction="out"/>
     </method>
+    <!-- Adds a new account by signing in. Adds a draft, starts its sign-in
+         and returns the draft's object path and the URL to open in a browser.
+         A draft is an account that is on the bus at its path and is not in
+         List. Refused as Account.BeginSignIn is, under the same error name,
+         and then nothing is left. One draft at a time: a SignIn while a draft
+         exists ends that draft as "cancelled" first. Account.CancelSignIn on
+         the draft cancels it. How a draft ends is said by SignInFinished. -->
+    <method name="SignIn">
+      <arg name="account" type="o" direction="out"/>
+      <arg name="url" type="s" direction="out"/>
+    </method>
+    <!-- Sent exactly once for every draft SignIn answered, except one a
+         restart of the daemon removed. outcome:
+         "signed-in": the account is in List under its final label, which is
+           message: its email; "<email> 2", "<email> 3", ... when another
+           account has that label; "Personal", "Personal 2", ... when there
+           is no email or it cannot be a label. List changes before this is
+           sent;
+         "cancelled": Account.CancelSignIn on the draft, or a newer SignIn;
+           message is empty;
+         "already-added": the drive is another account's; message is that
+           account's label;
+         "failed": anything else, the timeout included; message says why, as
+           Account.LastError would.
+         After every outcome but "signed-in" nothing is left of the draft: no
+         entry in config.toml, no directory, no stored token, no object. -->
+    <signal name="SignInFinished">
+      <arg name="account" type="o"/>
+      <arg name="outcome" type="s"/>
+      <arg name="message" type="s"/>
+    </signal>
     <!-- Removes an account: forgets its folder exactly as Folder.Unregister
          does (so refused NoHelper under the same rule, before anything
          changes), cancels a sign-in under way, deletes its refresh token, its

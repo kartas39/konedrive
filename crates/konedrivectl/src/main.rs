@@ -61,7 +61,9 @@ fn takes_no_account(command: &Cmd) -> Option<&'static str> {
         Cmd::SetClientId { .. } => Some("the client ID is one for every account"),
         Cmd::Settings { .. } => Some("the settings are one for every account"),
         Cmd::Account { command: AccountCmd::List } => Some("`account list` shows every account"),
-        Cmd::Account { command: AccountCmd::Add { .. } } => Some("`account add` adds a new account"),
+        Cmd::Account { command: AccountCmd::Add } => Some("`account add` adds a new account"),
+        #[cfg(feature = "dev-tools")]
+        Cmd::Dev { command: cli::DevCmd::AddAccount { .. } } => Some("`dev add-account` adds a new account"),
         Cmd::Account { command: AccountCmd::Rename { .. } | AccountCmd::Remove { .. } } => {
             Some("`account rename` and `account remove` take the account as their first argument")
         }

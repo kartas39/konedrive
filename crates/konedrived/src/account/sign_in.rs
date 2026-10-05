@@ -1,6 +1,59 @@
 use super::*;
 
+/// How a sign-in attempt begun with [`AccountService::begin_sign_in`] ended, as the account
+/// tells whoever listens ([`AccountService::tell_sign_in_end`]): the accounts manager, for
+/// the draft of an `Accounts.SignIn`. What follows from it is the listener's business.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInEnd {
+    /// The token is stored and the account signed in; the email the sign-in found, if any.
+    SignedIn { email: Option<String> },
+    /// Cancelled, or given up by a sign-out.
+    Cancelled,
+    /// The identity guard refused it: the drive is another account's, whose label this is.
+    AlreadyAdded(String),
+    /// Anything else, the timeout included: what `LastError` says.
+    Failed(String),
+}
+
+/// Why the identity guard ([`AccountService::claim`]) refuses a sign-in.
+#[derive(Debug)]
+enum Refused {
+    /// Another account has the drive: its label.
+    AlreadyConnected(String),
+    /// Any other refusal, as it is said.
+    Other(String),
+}
+
+impl From<ConfigError> for Refused {
+    fn from(error: ConfigError) -> Self {
+        Refused::Other(error.to_string())
+    }
+}
+
+impl Refused {
+    /// The sentence `LastError` shows.
+    fn sentence(&self) -> String {
+        match self {
+            Refused::AlreadyConnected(label) => format!("This Microsoft account is already connected as '{label}'."),
+            Refused::Other(sentence) => sentence.clone(),
+        }
+    }
+}
+
 impl AccountService {
+    /// From now on every end of a sign-in attempt of this account is sent to `listener`
+    /// (`None`: to nobody). One end for each attempt that began.
+    pub fn tell_sign_in_end(&self, listener: Option<tokio::sync::mpsc::UnboundedSender<SignInEnd>>) {
+        *crate::panic::lock(&self.sign_in_end) = listener;
+    }
+
+    /// Says how an attempt ended, to whoever listens.
+    fn sign_in_ended(&self, end: SignInEnd) {
+        if let Some(listener) = crate::panic::lock(&self.sign_in_end).as_ref() {
+            let _ = listener.send(end);
+        }
+    }
+
     /// Starts a sign-in and returns the URL the user must open in a browser.
     ///
     /// The start is one step under the session lock: the state becomes `signing-in`, the
@@ -97,12 +150,17 @@ impl AccountService {
         if let Some(cancel) = session.cancel.take() {
             let _ = cancel.send(());
         }
+        let mut cancelled = false;
         self.state.update(|s| {
             if s.state == SignInState::SigningIn {
                 s.state = SignInState::SignedOut;
                 s.clear_error();
+                cancelled = true;
             }
         });
+        if cancelled {
+            self.sign_in_ended(SignInEnd::Cancelled);
+        }
     }
 
     /// `Accounts.Remove`'s sign-out: the account retired first, so that no sign-in is
@@ -143,12 +201,17 @@ impl AccountService {
         }
         // The attempt is over whatever the wallet answers below: an account never shows
         // `signing-in` with no attempt behind it.
+        let mut given_up = false;
         self.state.update(|s| {
             if s.state == SignInState::SigningIn {
                 s.state = SignInState::SignedOut;
                 s.clear_error();
+                given_up = true;
             }
         });
+        if given_up {
+            self.sign_in_ended(SignInEnd::Cancelled);
+        }
         // Takes TokenManager's own lock, so an in-flight access-token refresh commits its
         // rotated refresh token to the wallet before this deletes it.
         self.tokens.forget().await.map_err(|e| AccountError::Failed(e.to_string()))?;
@@ -310,7 +373,7 @@ impl AccountService {
         let (generation, asked) = (attempt.generation, attempt.oauth.scope());
         match self.complete_sign_in(attempt).await {
             Ok(tokens) => self.commit_sign_in(generation, asked, tokens).await,
-            Err(message) => self.abort_sign_in(generation, message).await,
+            Err(message) => self.abort_sign_in(generation, Refused::Other(message)).await,
         }
     }
 
@@ -385,21 +448,21 @@ impl AccountService {
     /// `Ok(true)` when the drive was recorded now, which [`unclaim`](Self::unclaim) undoes
     /// if the sign-in fails after all. The email the sign-in found, when there is one, is kept
     /// as the account's `login_hint` in the same write.
-    fn claim(&self, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<bool, String> {
+    fn claim(&self, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<bool, Refused> {
         let who = self.who();
-        self.config.update(|config| -> Result<bool, String> {
-            let mine = config.account(&self.id).ok_or_else(|| "This account was removed.".to_owned())?;
+        self.config.update(|config| -> Result<bool, Refused> {
+            let mine = config.account(&self.id).ok_or_else(|| Refused::Other("This account was removed.".into()))?;
             if mine.drive_id.as_ref().is_some_and(|recorded| recorded != drive) {
-                return Err(format!(
+                return Err(Refused::Other(format!(
                     "This account is {who}. You signed in as a different Microsoft account; to \
                      connect that one, add a new account."
-                ));
+                )));
             }
             if let Some(other) = config.accounts.iter().find(|a| a.id != self.id && a.drive_id.as_ref() == Some(drive)) {
-                return Err(format!("This Microsoft account is already connected as '{}'.", other.label));
+                return Err(Refused::AlreadyConnected(other.label.clone()));
             }
             if config.accounts.iter().any(|a| a.id != self.id && a.drive_id.is_none() && unsettled.contains(&a.id)) {
-                return Err("Could not check which account this is; try again.".into());
+                return Err(Refused::Other("Could not check which account this is; try again.".into()));
             }
             let mine = config.account_mut(&self.id).expect("found above");
             let recorded = mine.drive_id.is_none();
@@ -435,14 +498,14 @@ impl AccountService {
     /// be asked for refuses the sign-in too.
     async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse) {
         let Some(refresh_token) = tokens.refresh_token.clone() else {
-            self.abort_sign_in(generation, "Microsoft did not return a refresh token.".into()).await;
+            self.abort_sign_in(generation, Refused::Other("Microsoft did not return a refresh token.".into())).await;
             return;
         };
         let identity = match self.identify(&tokens.access_token).await {
             Ok(identity) => identity,
             Err(e) => {
                 let message = format!("Could not check which account this is ({e}); try again.");
-                self.abort_sign_in(generation, message).await;
+                self.abort_sign_in(generation, Refused::Other(message)).await;
                 return;
             }
         };
@@ -466,9 +529,9 @@ impl AccountService {
         }
         let recorded = match self.claim(&identity.drive, identity.email.as_deref(), &unsettled) {
             Ok(recorded) => recorded,
-            Err(message) => {
+            Err(refused) => {
                 drop(session);
-                self.abort_sign_in(generation, message).await;
+                self.abort_sign_in(generation, refused).await;
                 return;
             }
         };
@@ -480,7 +543,7 @@ impl AccountService {
                 self.unclaim(&identity.drive);
             }
             drop(session);
-            self.abort_sign_in(generation, e.to_string()).await;
+            self.abort_sign_in(generation, Refused::Other(e.to_string())).await;
             return;
         }
         self.tokens.seed_as(&tokens, asked).await;
@@ -494,13 +557,15 @@ impl AccountService {
         self.record_live_drive(&identity.drive);
         self.note_granted(asked, &tokens.granted(asked));
         drop(session);
+        self.sign_in_ended(SignInEnd::SignedIn { email: identity.email });
         self.refresh_account_info().await;
     }
 
     /// Records a sign-in failure, but only if `generation` is still the current attempt.
-    /// An empty `message` means the user cancelled; `cancel_sign_in` already updated the
-    /// state directly, so there is nothing left to do here.
-    async fn abort_sign_in(&self, generation: u64, message: String) {
+    /// An empty sentence means the user cancelled; `cancel_sign_in` already updated the
+    /// state directly, and said so, so there is nothing left to do here.
+    async fn abort_sign_in(&self, generation: u64, refused: Refused) {
+        let message = refused.sentence();
         let session = self.session.lock().await;
         if session.generation != generation || message.is_empty() {
             return;
@@ -508,6 +573,11 @@ impl AccountService {
         self.state.update(|s| {
             s.state = SignInState::SignedOut;
             s.set_error(message.clone());
+        });
+        drop(session);
+        self.sign_in_ended(match refused {
+            Refused::AlreadyConnected(label) => SignInEnd::AlreadyAdded(label),
+            Refused::Other(_) => SignInEnd::Failed(message),
         });
     }
 }

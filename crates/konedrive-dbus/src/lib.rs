@@ -3,7 +3,8 @@
 //! The daemon, under [`SERVICE_NAME`], serves:
 //!
 //! - [`ACCOUNTS_PATH`]: `org.konedrive.Accounts`, `org.konedrive.Files` and
-//!   `org.freedesktop.DBus.ObjectManager`;
+//!   `org.freedesktop.DBus.ObjectManager` (and `org.konedrive.DevTools` in a development
+//!   build);
 //! - one object per account, [`account_path`]: `org.konedrive.Account` (the
 //!   sign-in and the quota), its folder's `org.konedrive.Folder`,
 //!   `org.konedrive.Transfers`, `org.konedrive.UploadQueue`,
@@ -36,7 +37,7 @@ pub const ACCOUNTS_PATH: &str = "/org/konedrive/Accounts";
 
 /// The rules of a label, which `Accounts.Add` and `Account.SetLabel` enforce (the daemon's
 /// `config::check_label`), as the one sentence that tells a person about them: `konedrivectl`
-/// shows it in the help of `account add` and after a refused label.
+/// shows it after a refused label.
 pub const LABEL_RULE: &str = "A label has 1 to 40 characters, no \"/\" and no control character, is not 12 \
                               hexadecimal digits (the shape of an account's id), and is not another account's \
                               label, whatever the case";
@@ -45,12 +46,25 @@ pub const ACCOUNTS_INTERFACE_NAME: &str = "org.konedrive.Accounts";
 pub const FILES_INTERFACE_NAME: &str = "org.konedrive.Files";
 pub const ACCOUNT_INTERFACE_NAME: &str = "org.konedrive.Account";
 pub const TOKEN_EXPORT_INTERFACE_NAME: &str = "org.konedrive.TokenExport";
+pub const DEV_TOOLS_INTERFACE_NAME: &str = "org.konedrive.DevTools";
 pub const FOLDER_INTERFACE_NAME: &str = "org.konedrive.Folder";
 pub const TRANSFERS_INTERFACE_NAME: &str = "org.konedrive.Transfers";
 pub const UPLOAD_QUEUE_INTERFACE_NAME: &str = "org.konedrive.UploadQueue";
 pub const CONFLICTS_INTERFACE_NAME: &str = "org.konedrive.Conflicts";
 pub const LOCAL_SCAN_INTERFACE_NAME: &str = "org.konedrive.LocalScan";
 pub const ACTIVITY_LOG_INTERFACE_NAME: &str = "org.konedrive.ActivityLog";
+
+/// How a draft of `Accounts.SignIn` ended: the `outcome` of `Accounts.SignInFinished`.
+pub mod sign_in {
+    /// The sign-in succeeded: the account is in `List`, and the message is its label.
+    pub const SIGNED_IN: &str = "signed-in";
+    /// `Account.CancelSignIn` on the draft, or a newer `SignIn`: nothing is left.
+    pub const CANCELLED: &str = "cancelled";
+    /// The drive is another account's, whose label the message is: nothing is left.
+    pub const ALREADY_ADDED: &str = "already-added";
+    /// Anything else, the timeout included; the message says why: nothing is left.
+    pub const FAILED: &str = "failed";
+}
 
 /// The object path of the account `id`: `/org/konedrive/Accounts/<id>`.
 ///

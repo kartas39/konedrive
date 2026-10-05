@@ -4,7 +4,8 @@
 //!
 //! - `/org/konedrive/Accounts`: `org.konedrive.Accounts` (the accounts, the settings they
 //!   share, the helper's state) and `org.konedrive.Files` (the per-file calls, routed by
-//!   path), over the `daemon::manager::AccountManager`.
+//!   path), over the `daemon::manager::AccountManager`; `org.konedrive.DevTools` too in a
+//!   development build.
 //! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and
 //!   `TokenExport` in a development build), over its `account::AccountService`; and the
 //!   interfaces of its folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
@@ -17,6 +18,8 @@ pub mod account;
 pub mod accounts;
 pub mod activity_log;
 pub mod conflicts;
+#[cfg(feature = "dev-tools")]
+pub mod dev_tools;
 pub mod export;
 pub mod fault;
 pub mod files;

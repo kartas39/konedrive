@@ -25,7 +25,7 @@ pub fn problem_line(trouble: &str) -> String {
 
 /// `status`'s `Accounts:` line when there is no account yet.
 pub fn no_account_line() -> String {
-    format!("{:<12}none yet: `konedrivectl login` adds one called {} and signs it in\n", "Accounts:", crate::FIRST_LABEL)
+    format!("{:<12}none yet: `konedrivectl account add` signs in to OneDrive and adds one\n", "Accounts:")
 }
 
 /// One account's block under its label, in `status` and `sync status` when they show several.

@@ -40,6 +40,7 @@ mod mode;
 pub mod quota;
 pub mod secret;
 mod sign_in;
+pub use sign_in::SignInEnd;
 pub mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -239,6 +240,9 @@ pub struct AccountService {
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
+    /// Who is told how each sign-in attempt ends ([`AccountService::tell_sign_in_end`]):
+    /// the accounts manager, while the account is a draft.
+    sign_in_end: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<SignInEnd>>>,
 }
 
 struct SignInAttempt {
@@ -304,6 +308,7 @@ impl AccountService {
             session: Mutex::new(Session { generation: 0, cancel: None }),
             siblings: std::sync::Mutex::new(None),
             retired: std::sync::atomic::AtomicBool::new(false),
+            sign_in_end: std::sync::Mutex::new(None),
         });
         service.install_oauth(&client_id);
         // Every refresh says what its token is valid for (`docs/design/writes.md` §2). Weak: the token
@@ -565,6 +570,12 @@ impl AccountService {
         let label = self.config.set_label(&self.id, label)?;
         self.state.update(|s| s.label = label);
         Ok(())
+    }
+
+    /// The label `config.toml` now has for the account, which the accounts manager wrote
+    /// (a draft that became an account): shown from now on.
+    pub fn show_label(&self, label: &str) {
+        self.state.update(|s| s.label = label.to_owned());
     }
 
     /// The account as a refusal names it: its email, or its label while there is none.

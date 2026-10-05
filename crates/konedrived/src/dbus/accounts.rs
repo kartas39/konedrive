@@ -25,6 +25,17 @@ impl Accounts {
         Ok(account.path.clone())
     }
 
+    /// A new account by signing in: the draft's path and the URL to open. How it ends:
+    /// [`sign_in_finished`](Self::sign_in_finished).
+    #[zbus(out_args("account", "url"))]
+    async fn sign_in(&self, #[zbus(connection)] connection: &Connection) -> Result<(OwnedObjectPath, String), Fault> {
+        Ok(self.manager.sign_in(connection).await?)
+    }
+
+    /// How the draft at `account` ended (`konedrive_dbus::sign_in`), once for each draft.
+    #[zbus(signal)]
+    pub(crate) async fn sign_in_finished(emitter: &SignalEmitter<'_>, account: ObjectPath<'_>, outcome: &str, message: &str) -> zbus::Result<()>;
+
     async fn remove(
         &self,
         account: ObjectPath<'_>,

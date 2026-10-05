@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::config::atomic::write_atomic;
 use crate::config::migrate::V1Config;
 use crate::config::{
-    check_label, is_valid_client_id, AccountConfig, AccountId, Config, DriveId, Mode, OnBattery, Origin, Paths, RootConfig,
+    check_label, is_valid_client_id, signed_in_label, AccountConfig, AccountId, Config, DriveId, Mode, OnBattery, Origin, Paths, RootConfig,
     DEFAULT_CLIENT_ID,
 };
 
@@ -282,6 +282,31 @@ impl ConfigStore {
             let account = AccountConfig::new(id, label, Origin::Added);
             config.accounts.push(account.clone());
             Ok(account)
+        })
+    }
+
+    /// `Accounts.SignIn`'s draft: an account as [`add_account`](Self::add_account) adds
+    /// one, marked as a draft, whose label is its id — which no user's label can be
+    /// ([`check_label`]).
+    pub fn add_draft(&self) -> Result<AccountConfig, ConfigError> {
+        self.update(|config| {
+            let id = AccountId::fresh(config.accounts.iter().map(|a| &a.id));
+            let mut account = AccountConfig::new(id.clone(), id.as_str(), Origin::Added);
+            account.draft = true;
+            config.accounts.push(account.clone());
+            Ok(account)
+        })
+    }
+
+    /// The draft `id` becomes an account: its label set ([`signed_in_label`], from the
+    /// `email` its sign-in found) and the draft mark taken off, in one write. The label.
+    pub fn finish_draft(&self, id: &AccountId, email: Option<&str>) -> Result<String, ConfigError> {
+        self.update(|config| {
+            let label = signed_in_label(config, id, email);
+            let account = config.account_mut(id).ok_or_else(|| ConfigError::NoAccount(id.clone()))?;
+            account.label = label.clone();
+            account.draft = false;
+            Ok(label)
         })
     }
 

@@ -1,7 +1,7 @@
 use zbus::zvariant::OwnedObjectPath;
 
 use crate::text::formats::shell_word;
-use crate::{ACCOUNT_VARIABLE, FIRST_LABEL};
+use crate::ACCOUNT_VARIABLE;
 
 /// One account, as a command chooses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,22 +74,18 @@ impl NoChoice {
 impl std::fmt::Display for NoChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NoChoice::NoAccountYet => write!(
-                f,
-                "No account yet: `konedrivectl account add <label>` adds one, or `konedrivectl login` adds \
-                 one called {FIRST_LABEL} and signs it in"
-            ),
+            NoChoice::NoAccountYet => {
+                write!(f, "No account yet: `konedrivectl account add` signs in to OneDrive and adds one")
+            }
             NoChoice::Unknown { wanted, source: Source::Environment, labels } if labels.is_empty() => write!(
                 f,
                 "{ACCOUNT_VARIABLE} names the account {wanted:?}, and there are no accounts yet. \
-                 `konedrivectl account add {}` adds it; or `unset {ACCOUNT_VARIABLE}`, and `konedrivectl \
-                 login` adds one called {FIRST_LABEL} and signs it in",
-                shell_word(wanted)
+                 `konedrivectl account add` signs in to OneDrive and adds one, named by its email"
             ),
             NoChoice::Unknown { wanted, labels, .. } if labels.is_empty() => write!(
                 f,
-                "there is no account {wanted:?}: there are no accounts yet. `konedrivectl account add <label>` \
-                 adds one"
+                "there is no account {wanted:?}: there are no accounts yet. `konedrivectl account add` signs \
+                 in to OneDrive and adds one"
             ),
             NoChoice::Unknown { wanted, source: Source::Environment, labels } => write!(
                 f,

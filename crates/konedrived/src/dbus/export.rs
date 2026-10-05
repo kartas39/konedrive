@@ -88,6 +88,8 @@ impl Bus for OnBus {
         let server = connection.object_server();
         server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
+        #[cfg(feature = "dev-tools")]
+        server.at(ACCOUNTS_PATH, crate::dbus::dev_tools::DevTools { manager: Arc::clone(manager) }).await?;
         // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
         let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
         // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
@@ -111,5 +113,14 @@ impl Bus for OnBus {
 
     async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
         all_taken_off([unexport(connection, path, partly).await, crate::dbus::account::unexport(connection, path, partly).await])
+    }
+
+    async fn sign_in_finished(&self, connection: &Connection, account: &ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
+        let accounts = connection.object_server().interface::<_, Accounts>(ACCOUNTS_PATH).await?;
+        // The account is in `List` before anybody is told that it was added.
+        if listed {
+            accounts.get().await.list_changed(accounts.signal_emitter()).await?;
+        }
+        Accounts::sign_in_finished(accounts.signal_emitter(), account.clone(), outcome, message).await
     }
 }

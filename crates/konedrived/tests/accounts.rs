@@ -820,6 +820,10 @@ impl konedrived::daemon::manager::Bus for FailingExports {
     async fn unexport(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
         konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
     }
+
+    async fn sign_in_finished(&self, connection: &zbus::Connection, account: &zbus::zvariant::ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.sign_in_finished(connection, account, outcome, message, listed).await
+    }
 }
 
 /// An `Add` whose account cannot be put on the bus leaves nothing: no account in
@@ -890,6 +894,10 @@ impl konedrived::daemon::manager::Bus for HeldServe {
 
     async fn unexport(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
         konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
+    }
+
+    async fn sign_in_finished(&self, connection: &zbus::Connection, account: &zbus::zvariant::ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.sign_in_finished(connection, account, outcome, message, listed).await
     }
 }
 
