@@ -1288,6 +1288,8 @@ mod worker;
 
 mod foreign_parent;
 
+mod replaced_folder;
+
 /// Issue #87: an answer no step settles is stored on its row as a stable key, never as
 /// the error's own text, and the row goes again after its backoff.
 #[test]

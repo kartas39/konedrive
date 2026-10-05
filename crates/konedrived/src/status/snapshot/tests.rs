@@ -178,3 +178,14 @@ fn the_gate_takes_back_only_its_own_note() {
     assert_eq!(OutboxNote::after_gate(&Some(OutboxNote::HeldBack(3)), Some("why")), Some(closed("why")));
     assert_eq!(OutboxNote::after_gate(&None, None), None);
 }
+
+/// Only a read-write folder has a watcher, and so a local scan.
+#[test]
+fn a_read_only_folder_has_no_local_scan() {
+    let mut scan = LocalScan::default();
+    assert_eq!(scan.state, ScanState::None);
+    scan.follow(Mode::ReadWrite);
+    assert_eq!(scan.state, ScanState::Idle);
+    scan.follow(Mode::ReadOnly);
+    assert_eq!(scan.state.as_str(), "none");
+}

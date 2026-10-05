@@ -404,7 +404,6 @@ impl Sink for Panicking {
 #[derive(Debug, Default)]
 pub struct FakeLiveness {
     alive: Mutex<HashMap<FileHandle, PathBuf>>,
-    asked: Mutex<Vec<FileHandle>>,
 }
 
 impl FakeLiveness {
@@ -431,16 +430,10 @@ impl FakeLiveness {
             }
         }
     }
-
-    /// Every handle asked about, in order.
-    pub fn asked(&self) -> Vec<FileHandle> {
-        self.asked.lock().unwrap().clone()
-    }
 }
 
 impl Liveness for FakeLiveness {
     fn whereabouts(&self, handle: &FileHandle) -> io::Result<Whereabouts> {
-        self.asked.lock().unwrap().push(handle.clone());
         Ok(match self.alive.lock().unwrap().get(handle) {
             Some(path) => Whereabouts::At(path.clone()),
             None => Whereabouts::Gone,

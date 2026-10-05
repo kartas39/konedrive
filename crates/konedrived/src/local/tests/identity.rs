@@ -180,19 +180,22 @@ fn what_carries_the_id_of_an_item_the_base_does_not_place_is_new() {
     assert_eq!((id_of(&fx.path("copy")), id_of(&fx.path("copy/f.txt"))), (None, None));
 }
 
-/// I2 with no object recorded (a rebuilt store): the object standing where
+/// With no object recorded (a rebuilt store): the object standing where
 /// the base places the item is the item, and is recorded again. One the user
 /// moved meanwhile is not taken for a move: it is uploaded as new, and the
-/// item, never deleted, is left for the reconcile to place again.
+/// item, never deleted, is left for the reconcile to place again (WR4). Neither is one the
+/// user removed: no record, no delete.
 #[test]
 fn with_no_recorded_object_the_item_is_only_what_stands_at_its_place() {
-    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz")]);
+    let fx = Folder::new(&[file("A", "R", "a.txt", b"abc"), file("B", "R", "b.txt", b"xyz"), file("C", "R", "c.txt", b"c")]);
     fx.hydrate("b.txt", b"xyz");
     fx.store.call_blocking(move |s| s.forget_local_handles()).unwrap();
     fx.rename("b.txt", "moved.txt");
-    let out = fx.examine(&Batch::full());
+    std::fs::remove_file(fx.path("c.txt")).unwrap();
+    let mut out = fx.examine(&Batch::full());
     assert_eq!(fx.summary(), vec![(Create, "moved.txt".into(), None)]);
-    assert_eq!(out.unproven, vec!["B".to_owned()]);
+    out.unproven.sort();
+    assert_eq!(out.unproven, vec!["B".to_owned(), "C".to_owned()]);
     assert_eq!(id_of(&fx.path("moved.txt")), None);
     assert_eq!(fx.store.call_blocking(move |s| Ok((s.local_handle("A")?, s.local_handle("B")?))).unwrap(), (Some(fx.handle("a.txt")), None));
 }
