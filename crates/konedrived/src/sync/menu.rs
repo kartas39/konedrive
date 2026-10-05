@@ -131,8 +131,9 @@ pub struct Part {
     /// The folder `Unpin` and `FreeUp` would refuse the taken paths for
     /// (`pins::kept_by_folder`).
     pub kept_by: Option<PathBuf>,
-    /// What `FreeUp` would refuse the taken paths for, if it would: the first of its
-    /// own checks, in its own order, that does not hold.
+    /// What `FreeUp` would refuse the taken paths for, if it would: the helper, then a
+    /// folder above, as `FreeUp` asks them; then `Unknown` for a mark that cannot be
+    /// read, before the store is asked, where `FreeUp` goes file by file.
     pub free_up_refused: Option<FreeUpWhy>,
 }
 
@@ -198,7 +199,8 @@ impl SyncService {
         .flatten();
         let Some(Looked { taken, places, downloaded, unreadable }) = looked else { return nothing() };
         let kept_by = kept(places.iter().map(Place::standing)).map(|(_, folder)| folder.to_path_buf());
-        // `FreeUp`'s checks, in its order.
+        // `FreeUp`'s checks: in its order, but for a mark that cannot be read, which comes
+        // before any file's change waiting to be uploaded.
         let free_up_refused = if self.require_helper_to_free(&reg).is_err() {
             Some(FreeUpWhy::NoHelper)
         } else if kept_by.is_some() {

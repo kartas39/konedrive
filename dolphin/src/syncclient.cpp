@@ -94,16 +94,30 @@ void SyncClient::askMenu(const QStringList &paths, QObject *context, const std::
     call << paths;
     // A right click is not a request for the daemon: it is never started for it.
     call.setAutoStartService(false);
-    // The watcher is the context's: it goes with it, and with it the answer.
-    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, MenuAnswerTimeoutMs), context);
-    connect(watcher, &QDBusPendingCallWatcher::finished, context, [answered](QDBusPendingCallWatcher *finished) {
-        finished->deleteLater();
-        const QDBusPendingReply<QVariantMap> reply = *finished;
-        if (reply.isError()) {
-            answered(std::nullopt);
-        } else {
-            answered(menuAnswerFrom(reply.value()));
+    // A call that was never sent is never answered, and no reply timeout runs
+    // for it: with no session bus the pending call is empty, and it says it is
+    // an error. (So does one the bus has refused already.) Either way the
+    // answer is "offers nothing", handed over as any other answer is: later,
+    // on the event loop, and only while the context lives.
+    if (m_bus.isConnected()) {
+        const QDBusPendingCall pending = m_bus.asyncCall(call, MenuAnswerTimeoutMs);
+        if (!pending.isError()) {
+            // The watcher is the context's: it goes with it, and with it the answer.
+            auto *watcher = new QDBusPendingCallWatcher(pending, context);
+            connect(watcher, &QDBusPendingCallWatcher::finished, context, [answered](QDBusPendingCallWatcher *finished) {
+                finished->deleteLater();
+                const QDBusPendingReply<QVariantMap> reply = *finished;
+                if (reply.isError()) {
+                    answered(std::nullopt);
+                } else {
+                    answered(menuAnswerFrom(reply.value()));
+                }
+            });
+            return;
         }
+    }
+    QTimer::singleShot(0, context, [answered]() {
+        answered(std::nullopt);
     });
 }
 

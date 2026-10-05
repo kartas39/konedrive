@@ -367,6 +367,33 @@ private Q_SLOTS:
         }
     }
 
+    /// With no session bus the call is never sent, so no reply timeout runs
+    /// for it: the answer is "offers nothing" all the same -- which is what
+    /// hides the entries (noAnswerHidesTheEntries) -- and comes as any other
+    /// does, later and on the event loop, not after two seconds. The plugin
+    /// takes the session bus itself, so this asks through the client it uses.
+    void noSessionBusIsAnsweredWithNothingAtOnce()
+    {
+        const QDBusConnection noBus(QStringLiteral("konedrive-test-no-such-bus"));
+        QVERIFY(!noBus.isConnected());
+        konedrive::SyncClient client(noBus);
+        QObject context;
+        int answers = 0;
+        bool offered = true;
+        QElapsedTimer clock;
+        clock.start();
+        client.askMenu({QStringLiteral("/somewhere/doc.bin")}, &context, [&answers, &offered](const std::optional<konedrive::MenuAnswer> &answer) {
+            ++answers;
+            offered = answer.has_value();
+        });
+        QCOMPARE(answers, 0);
+        QTRY_COMPARE_WITH_TIMEOUT(answers, 1, konedrive::SyncClient::MenuAnswerTimeoutMs / 2);
+        QVERIFY(!offered);
+        QVERIFY2(clock.elapsed() < konedrive::SyncClient::MenuAnswerTimeoutMs / 2, qPrintable(QStringLiteral("answered after %1 ms").arg(clock.elapsed())));
+        QTest::qWait(100);
+        QCOMPARE(answers, 1);
+    }
+
     /// By the marks alone, before anything is asked: a selection with
     /// nothing in a sync folder makes no call, and has no entries.
     void aSelectionOutsideEverySyncFolderMakesNoCall()

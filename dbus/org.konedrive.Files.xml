@@ -104,14 +104,24 @@
            free-up (s): "hidden" (no path is a folder, a downloaded file or
              one with a pin of its own); "enabled"; "disabled" (FreeUp of
              paths would be refused: free-up-why says for what).
-           free-up-why (s): why free-up is "disabled"; empty otherwise.
+           free-up-why (s): why free-up is "disabled"; empty otherwise. One
+             reason: the first of these that holds, in this order.
              "no-helper": the folder is intercepted and its helper is not
              connected. "pinned-above": a folder above keeps a path pinned
-             (blocked-by names it). "not-uploaded": a file among the paths
-             has a change waiting to be uploaded. "unknown": the daemon
-             cannot tell now whether one has (the account's sync has not
-             started, or its store cannot be read). The first that holds, in
-             that order, which is the order of FreeUp's own checks.
+             (blocked-by names it). "unknown": the daemon cannot tell now
+             whether a downloaded file among the paths has a change waiting
+             to be uploaded: a mark on a file among them cannot be read, or
+             the account's sync has not started, or its store cannot be
+             read. "not-uploaded": one has such a change. The last two are
+             answered only for a folder that shows OneDrive.
+             A mark that cannot be read is found before the store is asked,
+             so the answer is then "unknown" even when another file of the
+             selection has a change waiting; FreeUp goes file by file, and
+             refuses for whichever of the two it meets first.
+             Over several accounts' folders each account finds its own
+             first reason, and the answer is that of the first account that
+             refuses, in the order the accounts' paths first come in the
+             selection: not the reason that comes first in the order above.
            blocked-by (s): the name of the folder above that keeps a path
              pinned, when that is why always-keep is "on-locked" or
              free-up-why is "pinned-above"; empty otherwise.

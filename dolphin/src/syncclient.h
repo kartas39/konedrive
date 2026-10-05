@@ -127,8 +127,10 @@ public:
     /// Menu(paths), asked without waiting: `answered` is called later, on the
     /// event loop, with what the daemon says the menu may offer for the
     /// selection -- or with `std::nullopt` when it is not running, answers
-    /// with an error, or has not answered within MenuAnswerTimeoutMs. The
-    /// message carries no auto-start: this never starts the daemon.
+    /// with an error, or has not answered within MenuAnswerTimeoutMs, and
+    /// when there is no session bus to ask on (the call is then never sent,
+    /// and the answer does not wait for the timeout). The message carries no
+    /// auto-start: this never starts the daemon.
     ///
     /// The call belongs to `context`: once that is destroyed, `answered` is
     /// never called.

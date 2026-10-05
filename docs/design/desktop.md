@@ -339,14 +339,23 @@ sees what was last committed; `FreeUp` itself asks the writer, and is the one th
 | `paths` | `as` | the selected paths `Pin` takes, in the order given: what `Pin`, `Unpin` or `FreeUp` is then called with. A path in no account's folder, a symbolic link, a file of the user's own, a `.konedrive-*` name and an account's folder itself are left out |
 | `always-keep` | `s` | `hidden` (no path is taken); `off`; `on` (every path is pinned, by itself or by a folder above it); `on-locked` (the same, and `Unpin` of `paths` would be refused) |
 | `free-up` | `s` | `hidden` (no path is a folder, a downloaded file or one with a pin of its own); `enabled`; `disabled` (`FreeUp` of `paths` would be refused before it changed anything: `free-up-why` says for what) |
-| `free-up-why` | `s` | why `free-up` is `disabled`, empty otherwise: `no-helper` (the folder is intercepted and its helper is not connected); `pinned-above` (a folder above keeps a path pinned: `blocked-by`); `not-uploaded` (a file among the paths has a change waiting to be uploaded); `unknown` (the daemon cannot tell now whether one has: the account's sync has not started, or its store cannot be read). The first that holds, in that order — the order of `FreeUp`'s own checks |
+| `free-up-why` | `s` | why `free-up` is `disabled`, empty otherwise: `no-helper` (the folder is intercepted and its helper is not connected); `pinned-above` (a folder above keeps a path pinned: `blocked-by`); `unknown` (the daemon cannot tell now whether a downloaded file among the paths has a change waiting to be uploaded: a mark on a file among them cannot be read, or the account's sync has not started, or its store cannot be read); `not-uploaded` (one has such a change). One reason, the first that holds, in that order; the last two only for a folder that shows OneDrive (below) |
 | `blocked-by` | `s` | the name of the folder above that keeps a path pinned, when that is why `always-keep` is `on-locked` or `free-up-why` is `pinned-above`; empty otherwise |
 | `open-online` | `s` | `hidden` (not exactly one path selected, or one that is neither in `paths` nor an account's folder itself); `enabled`; `disabled` (the item has no id: it is not in OneDrive yet) |
 | `open-online-path` | `s` | the path `WebUrl` is then called with; empty when hidden |
 
+**Which reason `free-up-why` gives.** The helper and a folder above are asked about first, as
+`FreeUp` asks them. Then a mark that cannot be read on a file of the selection answers `unknown`
+before the store is asked at all, so `unknown` comes before `not-uploaded` even when another file
+of the selection has a change waiting; `FreeUp` goes file by file, and refuses for whichever of
+the two it meets first. A sync that has not started and a store that cannot be read answer
+`unknown` in place of `not-uploaded`. So `unknown` covers the marks as well as the store.
+
 A selection may span several accounts' folders: each account answers for its own paths, as `Pin`,
 `Unpin` and `FreeUp` ask each account before anything changes, and one refusal locks the entry for
-the whole selection. The answer is about the moment it was asked (limitations log K23), and covers
+the whole selection. Each account finds its own first reason, and `free-up-why` is that of the
+first account that refuses, in the order the accounts' paths first come in the selection — not the
+reason that comes first in the order of the table. The answer is about the moment it was asked (limitations log K23), and covers
 what the calls check before they change anything, not what a free-up finds file by file (K33).
 
 `Pin`, `Unpin` and `FreeUp` route every path before anything changes, and their counts are summed
