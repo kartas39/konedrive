@@ -36,6 +36,7 @@ async fn both<A, B>(
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
+    let FolderProxies { folder, .. } = daemon.sync(path).await?;
     Ok(AccountStatus {
         label: served(account.label()).await?,
         state: served(account.state()).await?,
@@ -44,6 +45,8 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         email: said(account.email()).await?,
         quota: both(account.quota_used(), account.quota_total()).await?,
         last_error: said(account.last_error()).await?,
+        overall: served(folder.overall()).await?,
+        trouble: said(folder.trouble()).await?,
     })
 }
 
@@ -82,6 +85,8 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         path: said(folder.path()).await?,
         state: served(folder.state()).await?,
         last_error: said(folder.last_error()).await?,
+        overall: served(folder.overall()).await?,
+        trouble: said(folder.trouble()).await?,
         source: said(folder.source()).await?,
         items: both(folder.items_listed(), folder.items_placed()).await?,
         skipped: said(folder.skipped_count()).await?,

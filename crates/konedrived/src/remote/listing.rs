@@ -36,7 +36,7 @@ use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
-use crate::status::snapshot::{SyncStateHandle, SyncTrouble};
+use crate::status::snapshot::{SyncStateHandle, SyncTrouble, TroubleKind};
 use konedrive_graph::drive::{DriveClient, DriveError};
 use konedrive_tree::{Store, TreeError, TreeStore};
 
@@ -180,6 +180,17 @@ impl CycleError {
             self,
             CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_) | CycleError::NoHelper
         )
+    }
+}
+
+impl CycleError {
+    /// The kind of trouble this is for the account's overall state: only
+    /// [`Offline`](CycleError::Offline) is OneDrive out of reach, whatever its sentence says.
+    pub fn kind(&self) -> TroubleKind {
+        match self {
+            CycleError::Offline(_) => TroubleKind::Unreachable,
+            _ => TroubleKind::Other,
+        }
     }
 }
 
@@ -514,7 +525,7 @@ impl Listing {
             // reads `error`. `SyncService` publishes the same the moment the
             // link drops; this only makes sure of it.
             Err(CycleError::NoHelper) => s.folder.waits_for_helper = true,
-            Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
+            Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking(), kind: e.kind() }),
         });
     }
 }

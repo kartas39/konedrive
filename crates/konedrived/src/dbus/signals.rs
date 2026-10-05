@@ -1,5 +1,6 @@
 //! What the daemon announces by itself: `PropertiesChanged` for the properties of
-//! `properties`, `ActivityLog.Added`, and `Accounts.HelperState`.
+//! `properties` (what it decides of the account as a whole among them), `ActivityLog.Added`,
+//! and `Accounts.HelperState`.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -14,7 +15,8 @@ use zbus::zvariant::ObjectPath;
 use zbus::Connection;
 
 use crate::dbus::accounts::Accounts;
-use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, PATH};
+use crate::account::state::AccountSnapshot;
+use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, DECIDED, PATH};
 use crate::dbus::{ActivityLog, Folder};
 use crate::status::snapshot::SyncSnapshot;
 use crate::status::transfers::Transfer;
@@ -44,8 +46,21 @@ pub(crate) async fn start_signals(
     // ones sent at once.
     let mut counters = service.state().subscribe();
     let mut downloads = service.report().transfers.subscribe();
-    let shown = Seen { snapshot: counters.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone() };
+    let shown = Seen { snapshot: counters.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), ..Seen::default() };
     let mut added = service.report().activity.subscribe();
+    // A third, for what is decided of the account as a whole: it follows the account's
+    // sign-in and whether anything downloads too.
+    let (mut whole, mut sign_in, mut moving) = (service.state().subscribe(), service.account().changes(), service.report().transfers.subscribe());
+    let decided_from = seen(&mut whole, &mut sign_in, &mut moving);
+    let decided_emitter = emitter.clone();
+    let decided = tokio::spawn(decide(whole, sign_in, moving, decided_from, move |changed| {
+        let emitter = decided_emitter.clone();
+        async move {
+            if let Err(e) = emit(&emitter, changed).await {
+                tracing::warn!("cannot emit PropertiesChanged for the account's overall state: {e}");
+            }
+        }
+    }));
 
     let at_once = emitter.clone();
     let states = tokio::spawn(async move {
@@ -92,7 +107,7 @@ pub(crate) async fn start_signals(
             }
         }
     });
-    Ok(vec![states, coalesced, activity])
+    Ok(vec![states, coalesced, activity, decided])
 }
 
 /// Announces `Accounts.HelperState` at every change of `helper`, the hub's own state; the
@@ -109,6 +124,53 @@ pub(crate) fn announce_helper_state(accounts: InterfaceRef<Accounts>, mut helper
             }
         }
     })
+}
+
+/// What the three hold now, each taken as seen.
+pub(crate) fn seen(
+    state: &mut watch::Receiver<SyncSnapshot>,
+    account: &mut watch::Receiver<AccountSnapshot>,
+    downloads: &mut watch::Receiver<BTreeMap<u64, Transfer>>,
+) -> Seen {
+    Seen { snapshot: state.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), sign_in: account.borrow_and_update().state }
+}
+
+/// Hands `emit` the properties of [`DECIDED`] — `Overall` and `Trouble` — whenever what
+/// they say changes since they were last sent (`shown` at first), each change by itself and
+/// at once; nothing for a change of the published state, the sign-in or the downloads that
+/// leaves both as they were. Returns when one of the three goes away.
+pub(crate) async fn decide<F, Fut>(
+    mut state: watch::Receiver<SyncSnapshot>,
+    mut account: watch::Receiver<AccountSnapshot>,
+    mut downloads: watch::Receiver<BTreeMap<u64, Transfer>>,
+    mut shown: Seen,
+    mut emit: F,
+) where
+    F: FnMut(Changed) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    loop {
+        tokio::select! {
+            changed = state.changed() => if changed.is_err() { return },
+            changed = account.changed() => if changed.is_err() { return },
+            changed = downloads.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                // Every read of a download changes its entry; only whether anything
+                // downloads is decided by.
+                if downloads.borrow_and_update().is_empty() == shown.downloads.is_empty() {
+                    continue;
+                }
+            }
+        }
+        let now = seen(&mut state, &mut account, &mut downloads);
+        let changed = properties::changed(DECIDED, &shown, &now);
+        if !changed.is_empty() {
+            emit(changed).await;
+        }
+        shown = now;
+    }
 }
 
 /// Hands `emit` the properties of [`COALESCED`] that changed since they were last sent
@@ -129,7 +191,7 @@ pub(crate) async fn coalesce<F, Fut>(
             changed = state.changed() => if changed.is_err() { return },
             changed = downloads.changed() => if changed.is_err() { return },
         }
-        let now = Seen { snapshot: state.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone() };
+        let now = Seen { snapshot: state.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), ..Seen::default() };
         let changed = properties::changed(COALESCED, &shown, &now);
         if !changed.is_empty() {
             emit(changed).await;

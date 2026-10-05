@@ -210,6 +210,14 @@ pub trait Folder {
     fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
+    /// The state the account is in as a whole, and the reason for it: the spellings of
+    /// [`overall::State`](crate::overall::State) and [`overall::Reason`](crate::overall::Reason).
+    #[zbus(property)]
+    fn overall(&self) -> zbus::Result<crate::overall::Overall>;
+    /// The sentence of the trouble `Overall`'s reason is about, for the reasons that have
+    /// one ([`Reason::has_sentence`](crate::overall::Reason::has_sentence)); empty otherwise.
+    #[zbus(property)]
+    fn trouble(&self) -> zbus::Result<String>;
     /// `onedrive`, `local`, or empty for none.
     #[zbus(property)]
     fn source(&self) -> zbus::Result<String>;

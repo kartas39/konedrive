@@ -12,9 +12,9 @@ fn the_published_state_is_computed_from_the_registration_and_the_sync() {
     assert_eq!(published_state(&s), "ready");
     s.cycle.listing = true;
     assert_eq!(published_state(&s), "listing");
-    s.cycle.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false });
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false, kind: TroubleKind::Unreachable });
     assert_eq!(published_state(&s), "listing", "no network is said, not an error");
-    s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true });
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true, kind: TroubleKind::Other });
     assert_eq!(published_state(&s), "error");
     s.folder.root_state = RootState::Error;
     s.folder.last_error = "the helper is not connected".into();

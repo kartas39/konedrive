@@ -178,7 +178,7 @@ async fn another_account_blocks_the_folder_and_touches_nothing() {
     assert!(matches!(err, CycleError::OtherAccount(_)), "{err:?}");
     assert!(err.blocking());
     assert!(!s.root.path.join("docs").exists());
-    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: true }));
+    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: true, kind: TroubleKind::Other }));
     assert_eq!(*seen.lock().unwrap(), vec!["D".to_owned()]);
 }
 
@@ -194,7 +194,7 @@ async fn no_network_is_said_and_is_not_blocking() {
     let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
     assert!(matches!(err, CycleError::Offline(_)), "{err:?}");
     assert!(!err.blocking());
-    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: false }));
+    assert_eq!(s.state.get().cycle.sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: false, kind: TroubleKind::Unreachable }));
     s.feed(Some("L1"), json!([]), "L2").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(report.full, "a cycle after a failed one reconciles in full (Ruling R7)");
@@ -617,6 +617,6 @@ async fn a_store_failure_is_the_same_trouble_wherever_a_reconcile_meets_it() {
     let listing = Listing::new(s.context());
     listing.publish_outcome(&Err(reading_the_root));
     let published = s.state.get();
-    assert_eq!(published.cycle.sync_trouble, Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    assert_eq!(published.cycle.sync_trouble, Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true, kind: TroubleKind::Other }));
     assert_eq!(crate::status::snapshot::published_state(&SyncSnapshot { folder: crate::status::snapshot::FolderStatus { root_state: crate::status::snapshot::RootState::Ready, ..published.folder.clone() }, ..published }), "error");
 }

@@ -21,6 +21,7 @@ async fn status_reports_state_and_client_id() {
     let text = common::out_text(&out);
     assert!(text.lines().any(|l| l == "Label:      Personal"), "{text}");
     assert!(text.lines().any(|l| l == "State:      signed-out"), "{text}");
+    assert!(text.lines().any(|l| l == "Overall:    offline — signed out of OneDrive"), "by `Folder.Overall`: {text}");
     assert!(text.contains(konedrived::config::DEFAULT_CLIENT_ID), "the built-in client ID: {text}");
     assert!(!text.contains("Account:"), "{text}");
 

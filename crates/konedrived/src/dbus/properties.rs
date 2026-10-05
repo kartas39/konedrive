@@ -4,6 +4,9 @@
 //! ([`Property::of`]), and `signals` compares and sends by the same rows, so a property
 //! cannot be read one way and announced another.
 //!
+//! `Overall` and `Trouble` are rows too ([`DECIDED`]): what they say is decided by
+//! `status::overall`, from the published state, the downloads and the account's sign-in.
+//!
 //! Not here: the properties a call sets and announces itself (`IgnorePatterns`,
 //! `Thumbnails`), `Source`, which is the folder's record and is announced with `Path`, and
 //! `MachineName`, which nothing changes while the daemon runs.
@@ -14,21 +17,36 @@ use konedrive_dbus::rows;
 use konedrive_dbus::{CONFLICTS_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME, UPLOAD_QUEUE_INTERFACE_NAME};
 use zbus::zvariant::Value;
 
+use crate::account::state::SignInState;
+use crate::status::overall::overall;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::status::transfers::{large_files, Transfer};
 use crate::sync::SyncService;
 
-/// What the properties are read from: the published state and the downloads under way.
-#[derive(Debug, Clone, Default)]
+/// What the properties are read from: the published state, the downloads under way, and
+/// where the account's sign-in stands.
+#[derive(Debug, Clone)]
 pub(crate) struct Seen {
     pub snapshot: SyncSnapshot,
     pub downloads: BTreeMap<u64, Transfer>,
+    pub sign_in: SignInState,
+}
+
+impl Default for Seen {
+    /// As an account starts: nothing published, nothing moving, signed out.
+    fn default() -> Self {
+        Self { snapshot: SyncSnapshot::default(), downloads: BTreeMap::new(), sign_in: SignInState::SignedOut }
+    }
 }
 
 impl Seen {
     /// As `service` publishes it now.
     pub(crate) fn of(service: &SyncService) -> Self {
-        Self { snapshot: service.state().get(), downloads: service.report().transfers.subscribe().borrow().clone() }
+        Self {
+            snapshot: service.state().get(),
+            downloads: service.report().transfers.subscribe().borrow().clone(),
+            sign_in: service.account().snapshot().state,
+        }
     }
 }
 
@@ -128,6 +146,16 @@ properties! {
     LIVE_CHANGES: String = FOLDER, "LiveChanges", |s| s.snapshot.cycle.live_changes.as_str().to_owned();
     /// OneDrive is full: no content goes up.
     QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.outbox.quota_full;
+}
+
+properties! {
+    /// What the daemon decides of the account as a whole (`status::overall`): announced the
+    /// moment either changes, and only then — whatever else changed under them.
+    DECIDED:
+    /// The state and the reason for it.
+    OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall(s.sign_in, &s.snapshot, s.downloads.len()).reason.into();
+    /// The sentence of the trouble `Overall`'s reason is about, or empty.
+    TROUBLE: String = FOLDER, "Trouble", |s| overall(s.sign_in, &s.snapshot, s.downloads.len()).trouble;
 }
 
 properties! {

@@ -140,8 +140,12 @@ pub struct SyncSnapshot {
 pub struct FolderStatus {
     pub root_path: String,
     pub root_state: RootState,
-    /// What the registration ran into.
+    /// What the registration ran into, without the warning of a folder that nothing
+    /// intercepts ([`no_interception_warning`](Self::no_interception_warning)).
     pub last_error: String,
+    /// The folder is up with nothing intercepting opens inside it: `LastError` begins with
+    /// [`NO_INTERCEPTION_WARNING`]. A fact of the folder, never trouble by itself.
+    pub no_interception_warning: bool,
     /// Why a folder registered without the helper could not be switched to interception
     /// once the helper connected: said right behind `last_error`, and gone with it.
     pub switch_note: Option<SwitchNote>,
@@ -279,7 +283,26 @@ impl SyncSnapshot {
 pub struct SyncTrouble {
     pub text: String,
     pub blocking: bool,
+    /// What kind of trouble it is: what `status::overall` decides by, never by `text`.
+    pub kind: TroubleKind,
 }
+
+/// The kinds of [`SyncTrouble`] that the account's overall state tells apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TroubleKind {
+    /// OneDrive cannot be reached: the account reads offline when nothing else is wrong.
+    Unreachable,
+    /// Anything else.
+    Other,
+}
+
+/// What `LastError` says while a root is registered without interception.
+/// Spelled out rather than hinted at: this mode's whole risk is that a file
+/// looks present and reads as zeros, so the one thing a user must not have
+/// to infer is that they are in it.
+pub const NO_INTERCEPTION_WARNING: &str =
+    "this folder is registered WITHOUT interception: nothing fills a placeholder when it is \
+     opened, so files in this folder read as zeros until they are explicitly hydrated";
 
 /// Why files that changed in OneDrive are not updated here yet: their
 /// replacements failed, and are tried again after every cycle
@@ -396,9 +419,9 @@ fn clock(at: i64) -> String {
     format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
-/// What the registration says in `LastError`: its error, and behind it the note of a
-/// failed switch.
-fn registration_error(s: &SyncSnapshot) -> String {
+/// What the registration ran into, as `LastError` says it: its error, and behind it the
+/// note of a failed switch. The no-interception warning is not part of it.
+fn registration_trouble(s: &SyncSnapshot) -> String {
     let Some(note) = &s.folder.switch_note else { return s.folder.last_error.clone() };
     let before = s.folder.last_error.trim_end_matches(". ");
     if before.is_empty() {
@@ -406,6 +429,33 @@ fn registration_error(s: &SyncSnapshot) -> String {
     } else {
         format!("{before}. {}", note.text())
     }
+}
+
+/// The problems of a folder that keeps running, in the order `LastError` says them and
+/// joined as it joins them: what the registration ran into, the sync's trouble, then the
+/// lock's, the watcher's, the handles' and the outbox's notes; `None` with none. Without
+/// what is not trouble by itself (the no-interception warning), without the helper's advice
+/// (a folder that waits for the helper does not run), and without the failed-update note,
+/// which `status::overall` gives a reason of its own.
+///
+/// With the sentence, its kind: [`TroubleKind::Unreachable`] only when OneDrive out of
+/// reach is all that is wrong — the kind the sync's trouble carries, and no other part
+/// saying anything.
+pub fn running_trouble(s: &SyncSnapshot) -> Option<(String, TroubleKind)> {
+    let registration = registration_trouble(s);
+    let outbox = s.outbox.note.as_ref().map(OutboxNote::text).unwrap_or_default();
+    let (sync, kind) = s.cycle.sync_trouble.as_ref().map_or(("", TroubleKind::Other), |t| (t.text.as_str(), t.kind));
+    let others = [registration.as_str(), s.folder.locked_note.as_str(), s.local.watch_note.as_str(), s.local.handles_note.as_str(), outbox.as_str()];
+    let alone = others.iter().all(|part| part.is_empty());
+    let [registration, rest @ ..] = others;
+    let [locked, watch, handles, outbox] = rest;
+    let text = joined([registration, sync, locked, watch, handles, outbox]);
+    (!text.is_empty()).then(|| (text, if alone { kind } else { TroubleKind::Other }))
+}
+
+/// The parts that say something, joined as `LastError` joins its problems.
+fn joined<const N: usize>(parts: [&str; N]) -> String {
+    parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(". ")
 }
 
 /// `RootState` as published: the registration's state, unless
@@ -430,8 +480,8 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
     }
 }
 
-/// `LastError` as published: what the helper's absence means, the
-/// registration's text with the note of a failed switch, the sync's and the
+/// `LastError` as published: what the helper's absence means, the no-interception warning,
+/// the registration's text with the note of a failed switch, the sync's and the
 /// replacement note, then the watcher's, the handles' and the outbox's notes, in
 /// that order — problems only. Where local work was moved out of the way is a conflict
 /// (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here:
@@ -445,11 +495,13 @@ pub fn published_error(s: &SyncSnapshot) -> String {
     // A folder that only waits, with nothing known to be wrong, says nothing of the helper.
     let calm = s.folder.root_state == RootState::Waiting && !s.folder.helper_state.known_down();
     let helper = if s.folder.waits_for_helper && !calm { s.folder.helper_state.advice().unwrap_or("") } else { "" };
-    let registration = registration_error(s);
+    let warning = if s.folder.no_interception_warning { NO_INTERCEPTION_WARNING } else { "" };
+    let registration = registration_trouble(s);
     let outbox = s.outbox.note.as_ref().map(OutboxNote::text).unwrap_or_default();
     let replacement = s.cycle.replacement_note.as_ref().map(ReplacementNote::text).unwrap_or_default();
-    [
+    joined([
         helper,
+        warning,
         registration.as_str(),
         s.cycle.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
         replacement.as_str(),
@@ -457,11 +509,7 @@ pub fn published_error(s: &SyncSnapshot) -> String {
         s.local.watch_note.as_str(),
         s.local.handles_note.as_str(),
         outbox.as_str(),
-    ]
-    .into_iter()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join(". ")
+    ])
 }
 
 /// Shared, observable sync state (see `account::state::StateHandle`, the same

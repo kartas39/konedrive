@@ -40,7 +40,7 @@ use konedrived::account::testing::MemoryWallet;
 use konedrived::account::state::{SignInState, StateHandle};
 use konedrived::helper::HelperLink;
 use konedrived::sync::SyncService;
-use konedrived::status::snapshot::SyncTrouble;
+use konedrived::status::snapshot::{SyncTrouble, TroubleKind};
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
@@ -510,7 +510,8 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
 /// Every property emits `PropertiesChanged`, and only the ones that actually
 /// changed do. On the wire: what one change of the state touches travels in one
 /// message for each interface, every property with its value and none only invalidated;
-/// `Source` follows in a message of its own.
+/// `Source` follows in a message of its own, and so does `Overall` — the state of the
+/// account as a whole, sent when it changes and not again while it does not.
 ///
 /// The second step is the one that pins the baseline: a daemon that never
 /// advanced `previous` would emit nothing at all for the return to `none`,
@@ -535,31 +536,45 @@ async fn properties_changed_reports_exactly_what_changed() {
 
     f.folder.register(first.to_str().unwrap()).await.unwrap();
     let messages = values_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
-    assert_eq!(names_of(&messages), vec!["Path", "Source", "State"], "registering a root changes where it is, what it shows, and what state it is in");
-    let (together, invalidated) = &messages[0];
+    assert_eq!(
+        names_of(&messages),
+        vec!["Overall", "Path", "Source", "State"],
+        "registering a root changes where it is, what it shows, what state it is in, and the account as a whole"
+    );
+    let overall = |reason: konedrive_dbus::overall::Reason| konedrive_dbus::overall::Overall::from(reason);
+    assert_eq!(f.folder.overall().await.unwrap(), overall(konedrive_dbus::overall::Reason::UpToDate));
+    assert_eq!(messages.iter().filter(|(changed, _)| changed.contains_key("Overall")).count(), 1, "sent once: {messages:?}");
+    let (together, invalidated) = messages.iter().find(|(changed, _)| changed.contains_key("Path")).unwrap();
     assert_eq!(together.get("Path").map(String::as_str), Some(f.folder.path().await.unwrap().as_str()), "{messages:?}");
     assert_eq!(together.get("State").map(String::as_str), Some("ready"), "`Path` and `State` in one message, with their values: {messages:?}");
     assert!(invalidated.is_empty() && !together.contains_key("Source"), "{messages:?}");
-    assert!(messages[1..].iter().any(|(changed, _)| changed.get("Source").map(String::as_str) == Some("local")), "`Source` follows: {messages:?}");
+    assert!(messages.iter().any(|(changed, _)| changed.get("Source").map(String::as_str) == Some("local")), "`Source` follows: {messages:?}");
 
     f.folder.unregister().await.unwrap();
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["Path", "Source", "State"],
+        vec!["Overall", "Path", "Source", "State"],
         "forgetting it changes them back — a daemon comparing against a stale baseline \
          would say nothing here"
     );
+    assert_eq!(f.folder.overall().await.unwrap(), overall(konedrive_dbus::overall::Reason::NoFolder));
 
     f.folder.register_without_interception(second.to_str().unwrap()).await.unwrap();
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["LastError", "Path", "Source", "State"],
+        vec!["LastError", "Overall", "Path", "Source", "State"],
         "and this mode also publishes why it is dangerous"
     );
+    // The warning of this mode is not trouble: the account is up to date, and `Trouble`
+    // was not sent.
+    assert_eq!(f.folder.overall().await.unwrap(), overall(konedrive_dbus::overall::Reason::UpToDate));
+    assert_eq!(f.folder.trouble().await.unwrap(), "");
 
-    // A pause whose end moves: `PausedUntil` alone, since `Paused` stays as it is.
+    // A pause whose end moves: `PausedUntil` alone, since `Paused` stays as it is, and so
+    // does the account as a whole — paused, for the same reason.
     f.sync.state().update(|s| s.pause.paused_until = Some(100));
-    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["Paused", "PausedUntil"]);
+    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["Overall", "Paused", "PausedUntil"]);
+    assert_eq!(f.folder.overall().await.unwrap(), overall(konedrive_dbus::overall::Reason::Paused));
     f.sync.state().update(|s| s.pause.paused_until = Some(200));
     let messages = values_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
     assert_eq!(messages.len(), 1, "{messages:?}");
@@ -657,17 +672,21 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.sync.state().update(|s| {
-        s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true })
+        s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true, kind: TroubleKind::Other })
     });
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["LastError", "State"]
+        vec!["LastError", "Overall", "State", "Trouble"]
     );
     assert_eq!(f.folder.state().await.unwrap(), "error");
     assert!(f.folder.last_error().await.unwrap().ends_with(". signed out"));
+    // The account as a whole: stopped, on everything `LastError` says.
+    assert_eq!(f.folder.overall().await.unwrap(), konedrive_dbus::overall::Overall { state: "warning".into(), reason: "stopped".into() });
+    assert_eq!(f.folder.trouble().await.unwrap(), f.folder.last_error().await.unwrap());
 
     f.sync.state().update(|s| s.cycle.replacement_note = Some(konedrived::status::snapshot::ReplacementNote { files: 1, why: "no space".into() }));
-    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError"]);
+    // Still stopped: `Overall` is not sent again, only the sentence that changed.
+    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError", "Trouble"]);
 }
 
 /// The coalescing (at most four `PropertiesChanged` a second, since a
