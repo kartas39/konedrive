@@ -1,4 +1,5 @@
 pub(crate) mod account;
+pub(crate) mod add;
 pub(crate) mod browser;
 #[cfg(feature = "dev-tools")]
 pub(crate) mod dev;

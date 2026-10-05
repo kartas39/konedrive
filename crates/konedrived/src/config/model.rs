@@ -13,6 +13,10 @@ pub const CONFIG_VERSION: u32 = 2;
 /// The label of the account a version-1 configuration becomes.
 pub const MIGRATED_LABEL: &str = "Personal";
 
+/// The label of an account added by a sign-in that found no email, or one that cannot be a
+/// label ([`signed_in_label`]).
+pub const FALLBACK_LABEL: &str = "Personal";
+
 /// `config.toml`, version 2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -366,7 +370,7 @@ pub enum Origin {
     Migrated,
 }
 
-/// Checks a label against the rules of `Accounts.Add` and `Account.SetLabel`
+/// Checks a label against the rules of `Account.SetLabel` and of every label the daemon gives
 /// ([`konedrive_dbus::LABEL_RULE`], the sentence a person is told; whoever changes a rule
 /// here changes it there), and returns it trimmed. 12 hexadecimal digits are refused in any case,
 /// so that a label is never taken for an id in `--account`; `except` is the account being
@@ -392,6 +396,31 @@ pub fn check_label(label: &str, config: &Config, except: Option<&AccountId>) -> 
         Some(other) => Err(format!("the label {:?} is already used", other.label)),
         None => Ok(label.to_owned()),
     }
+}
+
+/// The label of the account a sign-in added (`Accounts.SignIn`), `id`'s: its `email`, or the
+/// first free one of `<email> 2`, `<email> 3`, … when another account has it as its label,
+/// whatever the case. With no email, or one [`check_label`] refuses for anything else (more
+/// than 40 characters), the first free one of `Personal`, `Personal 2`, ….
+pub fn signed_in_label(config: &Config, id: &AccountId, email: Option<&str>) -> String {
+    let first_free = |base: &str| {
+        (1u32..).find_map(|n| {
+            let candidate = if n == 1 { base.to_owned() } else { format!("{base} {n}") };
+            let lower = candidate.to_lowercase();
+            let taken = config.accounts.iter().any(|a| a.id != *id && a.label.to_lowercase() == lower);
+            match check_label(&candidate, config, Some(id)) {
+                Ok(label) => Some(Some(label)),
+                Err(_) if taken => None,
+                Err(_) => Some(None),
+            }
+        })
+    };
+    let email = email.map(str::trim).filter(|email| !email.is_empty());
+    email
+        .and_then(|email| first_free(email).flatten())
+        .or_else(|| first_free(FALLBACK_LABEL).flatten())
+        // Not reached: `Personal <n>` is refused only while it is taken.
+        .unwrap_or_else(|| FALLBACK_LABEL.to_owned())
 }
 
 impl Config {

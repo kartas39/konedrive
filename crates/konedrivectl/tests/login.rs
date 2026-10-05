@@ -15,12 +15,12 @@ const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 async fn login_reports_a_sign_in_cancelled_elsewhere_promptly() {
     let bus = TestBus::start();
     let dir = tempfile::tempdir().unwrap();
-    let _daemon = common::start_daemon(&bus, dir.path()).await;
+    let daemon = common::start_daemon(&bus, dir.path()).await;
 
-    // The other client: it adds the account, sets the client ID and later cancels the sign-in.
+    // The account is there already, signed out. The other client sets the client ID and later cancels the sign-in.
     let driver = bus.connect().await;
     let manager = AccountsProxy::new(&driver).await.unwrap();
-    let path = manager.add("Personal").await.unwrap();
+    let path = daemon.manager.add("Personal", &daemon.connection).await.unwrap().path.clone();
     manager.set_client_id(CLIENT_ID).await.unwrap();
     let account = AccountProxy::builder(&driver)
         .path(path)
@@ -32,7 +32,7 @@ async fn login_reports_a_sign_in_cancelled_elsewhere_promptly() {
 
     let mut login = common::command(bus.address(), &["login"], &[]);
     let login = login.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("failed to run the konedrivectl binary");
-    let mut login = Stopped(Some(login));
+    let mut login = common::Stopped(Some(login));
     for _ in 0..500 {
         if account.state().await.unwrap() == "signing-in" {
             break;
@@ -57,14 +57,19 @@ async fn login_reports_a_sign_in_cancelled_elsewhere_promptly() {
     assert!(common::err_text(&out).contains("sign-in was cancelled"), "{out:?}");
 }
 
-/// The `login` this test started: stopped however the test ends.
-struct Stopped(Option<std::process::Child>);
+/// `login` only signs an account in again: with no account at all it adds none, is refused,
+/// and names `account add`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_with_no_account_is_refused_and_names_account_add() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
 
-impl Drop for Stopped {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+    let out = common::run(bus.address(), &["login"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(common::out_text(&out).is_empty(), "{out:?}");
+    assert!(common::err_text(&out).contains("No account yet: `konedrivectl account add`"), "{out:?}");
+    assert!(daemon.manager.accounts().is_empty(), "nothing was added");
+    let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap_or_default();
+    assert!(!config.contains("[[accounts]]"), "{config}");
 }

@@ -1,7 +1,7 @@
 use konedrive_dbus::rows::Conflict;
 
 use super::files::rescue_dirs;
-use crate::FIRST_LABEL;
+use super::formats::shell_word;
 
 /// One line of `account list`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -16,14 +16,30 @@ pub struct AccountRow {
     pub root_state: String,
 }
 
+/// What `account add` says once its sign-in has ended (`Accounts.SignInFinished`, with
+/// `konedrive_dbus::sign_in`'s outcomes): `Ok` is printed, `Err` is what the command fails
+/// with. A `cancelled` reaches here only when the command did not cancel: a newer sign-in
+/// ended this one.
+pub fn added_text(outcome: &str, message: &str) -> Result<String, String> {
+    use konedrive_dbus::sign_in::{ALREADY_ADDED, CANCELLED, FAILED, SIGNED_IN};
+    match outcome {
+        SIGNED_IN => Ok(format!(
+            "Signed in. The account is called {message} (`konedrivectl account rename {} <label>` renames it).\n",
+            shell_word(message)
+        )),
+        ALREADY_ADDED => Err(format!("this OneDrive account is already added, as {message}. Nothing was added")),
+        CANCELLED => Err("another sign-in replaced this one. Nothing was added".to_owned()),
+        FAILED if !message.is_empty() => Err(format!("the account was not added: {message}")),
+        FAILED => Err("the account was not added".to_owned()),
+        other => Err(format!("the account was not added: the daemon answered {other:?} ({message})")),
+    }
+}
+
 /// `account list` (design §5.2): a table of every account, in the order they were added —
 /// id, label, email, sign-in state, mode, and the folder with its `Folder.State`.
 pub fn account_list_text(rows: &[AccountRow]) -> String {
     if rows.is_empty() {
-        return format!(
-            "No accounts yet. `konedrivectl login` adds one called {FIRST_LABEL} and signs it in; \
-             `konedrivectl account add <label>` adds one by another name.\n"
-        );
+        return "No accounts yet. `konedrivectl account add` signs in to OneDrive and adds one.\n".to_owned();
     }
     let none = || "\u{2014}".to_owned();
     let mut table = vec![["ID", "LABEL", "EMAIL", "STATE", "MODE", "FOLDER"].map(str::to_owned)];

@@ -10,7 +10,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zbus::Connection;
 use konedrive_graph::oauth::Endpoints;
 
-use crate::account::{AccountService, Siblings};
+use crate::account::{AccountError, AccountService, Siblings};
+use sign_in::SignIns;
 use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
@@ -68,9 +69,13 @@ pub trait Bus: Send + Sync {
     /// it put on the bus is taken off by [`unexport`](Self::unexport), `partly`.
     async fn export(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
     /// Takes an account's interfaces off the bus, every one whatever the one before
-    /// answered. `partly`: some may not be there (an `Add` that failed while putting them),
+    /// answered. `partly`: some may not be there (an account whose adding failed while putting them),
     /// which is then not worth a warning.
     async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
+    /// Says how the sign-in `sign_in` of `Accounts.SignIn` ended: `Accounts.SignInFinished`,
+    /// after the change of `Accounts.List` when it made an account (`listed`). `account` is
+    /// `/` when the outcome names none.
+    async fn sign_in_finished(&self, connection: &Connection, sign_in: u32, outcome: &str, message: &str, account: &ObjectPath<'_>, listed: bool) -> zbus::Result<()>;
 }
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
@@ -102,6 +107,9 @@ pub enum ManagerError {
     /// What the account's folder refused, under the folder's names (`NoHelper`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
+    /// What `Accounts.SignIn` refuses under a name of `Account.BeginSignIn`'s (`NoClientId`).
+    #[error(transparent)]
+    SignIn(#[from] AccountError),
 }
 
 impl From<ConfigError> for ManagerError {
@@ -126,8 +134,11 @@ pub struct AccountManager {
     registry: Arc<Registry>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
-    /// `Add`, `Remove`, `SetClientId`, `SetPauseOnMetered` and `SetOnBattery`, one at a
-    /// time.
+    /// The sign-ins of `Accounts.SignIn`: the one under way belongs to no account, and is
+    /// in none of the lists above.
+    sign_ins: Mutex<SignIns>,
+    /// [`add`](Self::add), `SignIn` and the making of its account, `Remove`, `SetClientId`,
+    /// `SetPauseOnMetered` and `SetOnBattery`, one at a time.
     changing: tokio::sync::Mutex<()>,
 }
 
@@ -143,6 +154,7 @@ impl AccountManager {
             registry,
             siblings: Arc::new(Siblings::default()),
             accounts: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(SignIns::default()),
             changing: tokio::sync::Mutex::new(()),
         })
     }
@@ -300,7 +312,8 @@ impl AccountManager {
         }
     }
 
-    /// `Accounts.Add`: a signed-out, read-only account with no folder, after every other,
+    /// A signed-out, read-only account with no folder, after every other, under a label the
+    /// caller chose (a development build's `DevTools.AddAccount`, tests),
     /// listed before its objects are put on the bus, and taken off the list again when they
     /// cannot be.
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {
@@ -397,6 +410,9 @@ impl AccountManager {
             ));
         }
         self.config.set_client_id(id)?;
+        // A sign-in for a new account under way signs in with the ID that was: ended, as a
+        // newer `SignIn` ends it, now that nothing refuses this call any more.
+        self.end_sign_in(None).await;
         for account in self.accounts() {
             account.account.use_client_id(id);
         }
@@ -522,7 +538,7 @@ impl HalfRemoved {
             ManagerError::InvalidArgs(why) => ManagerError::InvalidArgs(self.text(label, &why)),
             ManagerError::Failed(why) => ManagerError::Failed(self.text(label, &why)),
             ManagerError::NoAccount(id) => ManagerError::NoAccount(self.gone_from_config(label, &id)),
-            sync @ ManagerError::Sync(_) => sync,
+            other @ (ManagerError::Sync(_) | ManagerError::SignIn(_)) => other,
         }
     }
 
@@ -601,5 +617,6 @@ fn resolve_parent(path: &Path) -> Option<PathBuf> {
     }
 }
 
+mod sign_in;
 #[cfg(test)]
 mod tests;

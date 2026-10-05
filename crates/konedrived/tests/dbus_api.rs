@@ -39,7 +39,7 @@ async fn setup(sign_in_timeout: Duration) -> Setup {
     let daemon = start_daemon(&bus, dir.path(), endpoints(&server), wallet.clone(), sign_in_timeout).await;
     let client = bus.connect().await;
     let manager = AccountsProxy::new(&client).await.unwrap();
-    let path = manager.add("Personal").await.unwrap();
+    let path = daemon.manager.add("Personal", &daemon.connection).await.unwrap().path.clone();
     let id = path.as_str().rsplit('/').next().unwrap().to_owned();
     let proxy = AccountProxy::new(&client, path).await.unwrap();
     Setup { manager, proxy, id, wallet, client, _daemon: daemon, _server: server, _dir: dir, _bus: bus }

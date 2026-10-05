@@ -91,6 +91,24 @@ fn labels_follow_the_rules() {
     assert_eq!(check_label("ann@outlook.com", &config, None), Ok("ann@outlook.com".into()));
 }
 
+/// The label of an account a sign-in added: its email, the next free `<email> N` when
+/// another account has it, and `Personal` when there is no email or it cannot be a label.
+#[test]
+fn a_signed_in_account_is_labelled_by_its_email() {
+    let me = id("aaaaaaaaaaaa");
+    let mut config = Config { accounts: vec![account("aaaaaaaaaaaa", "aaaaaaaaaaaa")], ..Config::default() };
+    assert_eq!(signed_in_label(&config, &me, Some("ann@live.com")), "ann@live.com");
+    config.accounts.push(account("bbbbbbbbbbbb", "Ann@Live.com"));
+    assert_eq!(signed_in_label(&config, &me, Some("ann@live.com")), "ann@live.com 2");
+    config.accounts.push(account("cccccccccccc", "ann@live.com 2"));
+    assert_eq!(signed_in_label(&config, &me, Some("ann@live.com")), "ann@live.com 3");
+    for no_label in [None, Some(""), Some("  "), Some(&*format!("{}@live.com", "x".repeat(40))), Some("a/b@live.com")] {
+        assert_eq!(signed_in_label(&config, &me, no_label), "Personal", "{no_label:?}");
+    }
+    config.accounts.push(account("dddddddddddd", "personal"));
+    assert_eq!(signed_in_label(&config, &me, None), "Personal 2");
+}
+
 /// `[transfers] max`: 64 when missing, clamped into 1–256.
 #[test]
 fn the_transfer_ceiling_is_read_and_clamped() {

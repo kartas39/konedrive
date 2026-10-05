@@ -187,19 +187,20 @@ removes it all again, apart from the helper.
   browser straight away, with the account picker; there is nothing to register and nothing to
   enter first. The account is created only once the sign-in succeeds, named after its email, and
   the folder picker then opens for it: choose an empty folder, and your OneDrive appears in it. A
-  cancelled or failed sign-in leaves nothing behind. Or from a terminal — with no account yet,
-  `login` adds one called "Personal" first and opens the same browser sign-in:
+  cancelled or failed sign-in leaves nothing behind. Or from a terminal — `account add` opens the
+  same browser sign-in, and says what the new account is called:
 
   ```
-  konedrivectl login
+  konedrivectl account add
   konedrivectl sync register ~/OneDrive
   konedrivectl status
   ```
 
-  `konedrivectl logout` signs the account out again and deletes its stored token.
+  `konedrivectl logout` signs the account out again and deletes its stored token;
+  `konedrivectl login` signs it in again.
 
-  For a sign-in over SSH or without a desktop, run `KONEDRIVE_NO_BROWSER=1 konedrivectl login`:
-  no browser is opened, and the address is printed to open elsewhere.
+  For a sign-in over SSH or without a desktop, run `KONEDRIVE_NO_BROWSER=1 konedrivectl account
+  add` (or `login`): no browser is opened, and the address is printed to open elsewhere.
 
   konedrive signs in with its own application registration, so this needs no setup. Anyone who
   wants to sign in with their own Microsoft Entra registration instead can set its client ID with
@@ -224,11 +225,10 @@ removes it all again, apart from the helper.
   Commands that take a path, such as `sync hydrate <path>`, find the account from the path.
 
   ```
-  konedrivectl account add Family                # a new account, signed out, with no folder
-  konedrivectl --account Family login
+  konedrivectl account add                       # signs in; the new account is named by its email
+  konedrivectl account rename bob@outlook.com Family
   konedrivectl --account Family sync register ~/OneDrive-Family
-  konedrivectl account rename Family Home
-  konedrivectl account remove Home               # asks nothing; says what it deleted and kept
+  konedrivectl account remove Family             # asks nothing; says what it deleted and kept
   ```
 
 - **The window.** The sidebar starts with the account switcher: the account shown, a menu of
@@ -352,8 +352,10 @@ How it works: [`docs/design/writes.md`](docs/design/writes.md).
 
 This is a developer's and tester's mode, not a way to use KOneDrive: the window does not offer it.
 It drives the sync folder entirely from the command line, with a local directory standing in for
-the cloud and no helper at all. The folder belongs to an account like any other; an account added
-for it and never signed in is enough, as below.
+the cloud and no helper at all. The folder belongs to an account like any other; an account that
+never signs in is enough, and only a development build (`scripts/dev-install.sh`, the `dev-tools`
+feature) can add one, with `konedrivectl dev add-account`, as below. A release build adds an
+account only by signing in.
 
 `konedrivectl sync register-without-interception` always makes a local folder, filled with
 `populate-from` — even when you are signed in, it never shows your OneDrive (that needs
@@ -370,7 +372,7 @@ mkdir -p ~/OneDrive-test ~/fake-cloud/sub
 head -c 1M </dev/urandom > ~/fake-cloud/big.bin
 echo hello > ~/fake-cloud/sub/note.txt
 
-konedrivectl account add Test                # an account for the test, never signed in
+konedrivectl dev add-account Test            # an account for the test, never signed in
 export KONEDRIVE_ACCOUNT=Test                # the account the commands below act on
 konedrivectl sync register-without-interception ~/OneDrive-test
 konedrivectl sync populate-from ~/fake-cloud

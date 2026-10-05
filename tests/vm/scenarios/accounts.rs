@@ -160,7 +160,7 @@ fn two_accounts_steps(
     let fetches = ctx.fetches();
     let mut trace: Vec<String> = Vec::new();
 
-    // Two accounts, as `Accounts.Add` makes them, each signed in by hand: nothing here
+    // Two accounts, as the manager's `add` makes them, each signed in by hand: nothing here
     // reaches Microsoft, and with no drive (`Options::drive` gives none) a folder registered while
     // signed in is a local one — intercepted, and filled from a directory.
     let mut sides = Vec::new();

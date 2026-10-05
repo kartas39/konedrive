@@ -12,17 +12,52 @@
        org.konedrive.TokenExport. Personal Microsoft accounts only in this
        version. Nothing is served at /org/konedrive/Daemon any more. -->
   <interface name="org.konedrive.Accounts">
-    <!-- Adds a signed-out, read-only account with no folder, and returns its
-         object path. InvalidArgs for a label that is empty, longer than 40
-         characters, contains "/" or a control character, is 12 hexadecimal
-         digits (the shape of an account's id), or is already used (regardless
-         of case); the message says which. "@" is allowed: a label may be an
-         email. The label is trimmed first. Failed while config.toml cannot be
-         read. -->
-    <method name="Add">
-      <arg name="label" type="s" direction="in"/>
-      <arg name="account" type="o" direction="out"/>
+    <!-- Starts a sign-in for a new account, the only way to add one, and
+         returns its number and the URL to open in a browser. The sign-in
+         belongs to no account: until it has succeeded and its drive is known
+         not to be another account's, nothing exists for it (no entry in
+         config.toml, no directory, no stored token, no object). Numbers are
+         not reused while the daemon runs. Refused, with nothing started, when
+         config.toml cannot be read (Failed, before the browser is opened: the
+         account could not be written at the end), no client ID can be had or
+         the listener cannot be bound. One at a time: a SignIn while one is
+         under way ends that one as "cancelled" first, and so does
+         SetClientId; a SignIn or a SetClientId that is refused ends nothing.
+         How a sign-in ends is said by SignInFinished. -->
+    <method name="SignIn">
+      <arg name="sign_in" type="u" direction="out"/>
+      <arg name="url" type="s" direction="out"/>
     </method>
+    <!-- Cancels the sign-in with that number, and says whether it did. Never
+         refused. cancelled is true when this call ended the sign-in:
+         SignInFinished "cancelled" follows. It is false, and nothing changes,
+         when the number is not under way, which includes a sign-in whose
+         account is being made at that moment: its own SignInFinished says how
+         it ended ("signed-in" when the account was made). -->
+    <method name="CancelSignIn">
+      <arg name="sign_in" type="u" direction="in"/>
+      <arg name="cancelled" type="b" direction="out"/>
+    </method>
+    <!-- Sent exactly once for every sign-in SignIn answered, unless the
+         daemon stopped first. outcome:
+         "signed-in": the account was made and is in List; message is its
+           label: its email; "<email> 2", "<email> 3", ... when another
+           account has that label; "Personal", "Personal 2", ... when there
+           is no email or it cannot be a label; account is its path. List
+           changes before this is sent;
+         "cancelled": CancelSignIn, a newer SignIn, or SetClientId; message
+           is empty and account is "/";
+         "already-added": the drive is another account's; message is that
+           account's label and account its path;
+         "failed": anything else, the timeout included; message says why and
+           account is "/".
+         Only "signed-in" made an account. -->
+    <signal name="SignInFinished">
+      <arg name="sign_in" type="u"/>
+      <arg name="outcome" type="s"/>
+      <arg name="message" type="s"/>
+      <arg name="account" type="o"/>
+    </signal>
     <!-- Removes an account: forgets its folder exactly as Folder.Unregister
          does (so refused NoHelper under the same rule, before anything
          changes), cancels a sign-in under way, deletes its refresh token, its

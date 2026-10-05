@@ -1,4 +1,5 @@
 use super::*;
+use crate::account::attempt::Unconfirmed;
 
 impl AccountService {
     /// `Account.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
@@ -52,16 +53,10 @@ impl AccountService {
                 return Err(ModeError::Failed(format!("{DRIVE_NOT_KNOWN} ({e})")));
             }
         }
-        let listener = LoopbackListener::bind()
-            .await
-            .map_err(|e| ModeError::Failed(format!("cannot listen on localhost: {e}")))?;
-        let oauth = self.oauth_client(&snapshot.client_id, Mode::ReadWrite);
-        let redirect_uri = listener.redirect_uri();
-        let pkce = Pkce::new();
-        let csrf = random_token();
+        let browser = Attempt::bind(self.oauth_client(&snapshot.client_id, Mode::ReadWrite)).await.map_err(ModeError::Failed)?;
         // Pinned to this account: the password asked for again, its email filled
         // in, so that a browser signed in to another account cannot consent for it.
-        let url = self.authorize_url(&oauth, &redirect_uri, &pkce, &csrf);
+        let url = self.authorize_url(&browser);
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let generation = {
             let mut session = self.session.lock().await;
@@ -78,7 +73,7 @@ impl AccountService {
             self.state.update(|s| s.clear_error());
             session.generation
         };
-        let attempt = SignInAttempt { oauth, listener, redirect_uri, pkce, csrf, cancel: cancel_rx, generation };
+        let attempt = SignInAttempt { browser, cancel: cancel_rx, generation };
         let this = Arc::clone(self);
         tokio::spawn(async move { this.finish_read_write(attempt).await });
         Ok(url)
@@ -86,7 +81,7 @@ impl AccountService {
 
     /// The browser's answer to a switch to read-write, and what it leads to.
     async fn finish_read_write(&self, attempt: SignInAttempt) {
-        let (generation, asked) = (attempt.generation, attempt.oauth.scope());
+        let (generation, asked) = (attempt.generation, attempt.browser.scope());
         match self.complete_sign_in(attempt).await {
             Ok(tokens) => self.commit_read_write(generation, asked, tokens).await,
             Err(message) => self.abort_read_write(generation, message).await,
@@ -108,12 +103,12 @@ impl AccountService {
             );
             return self.abort_read_write(generation, message).await;
         }
-        let Some(refresh_token) = tokens.refresh_token.clone() else {
-            return self.abort_read_write(generation, "Microsoft did not return a refresh token; the account stays read-only.".into()).await;
-        };
-        let identity = match self.identify(&tokens.access_token).await {
-            Ok(identity) => identity,
-            Err(e) => {
+        let SignedIn { tokens, refresh_token, identity } = match attempt::confirm(tokens, self.graph()).await {
+            Ok(signed_in) => signed_in,
+            Err(Unconfirmed::NoRefreshToken) => {
+                return self.abort_read_write(generation, "Microsoft did not return a refresh token; the account stays read-only.".into()).await;
+            }
+            Err(Unconfirmed::Unidentified(e)) => {
                 let message = format!("Could not check which account this is ({e}); the account stays read-only.");
                 return self.abort_read_write(generation, message).await;
             }

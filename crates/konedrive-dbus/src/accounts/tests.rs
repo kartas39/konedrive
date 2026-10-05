@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, ACTIVITY_LOG_INTERFACE_NAME,
-    CONFLICTS_INTERFACE_NAME, FILES_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, SERVICE_NAME,
+    CONFLICTS_INTERFACE_NAME, DEV_TOOLS_INTERFACE_NAME, FILES_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, SERVICE_NAME,
     TOKEN_EXPORT_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME, UPLOAD_QUEUE_INTERFACE_NAME,
 };
 use zbus::proxy::Defaults;
@@ -27,6 +27,7 @@ fn proxies_use_the_published_names() {
     let account = |interface: &str| (interface.to_owned(), SERVICE_NAME.to_owned(), None);
     assert_eq!(defaults::<AccountsProxy>(), manager(ACCOUNTS_INTERFACE_NAME));
     assert_eq!(defaults::<FilesProxy>(), manager(FILES_INTERFACE_NAME));
+    assert_eq!(defaults::<DevToolsProxy>(), manager(DEV_TOOLS_INTERFACE_NAME));
     assert_eq!(defaults::<AccountProxy>(), account(ACCOUNT_INTERFACE_NAME));
     assert_eq!(defaults::<FolderProxy>(), account(FOLDER_INTERFACE_NAME));
     assert_eq!(defaults::<TransfersProxy>(), account(TRANSFERS_INTERFACE_NAME));

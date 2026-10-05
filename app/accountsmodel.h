@@ -6,12 +6,14 @@
 
 #include <QAbstractListModel>
 #include <QDBusConnection>
+#include <QHash>
 #include <QList>
 #include <QObject>
-#include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
+#include <optional>
 #include <vector>
 
 class DaemonController;
@@ -54,8 +56,8 @@ class AccountsModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     /// An account is signed in or signing in: the client id cannot change then.
     Q_PROPERTY(bool anySignedIn READ anySignedIn NOTIFY summaryChanged)
-    /// Sign In is under way: SetClientId, Add, BeginSignIn, and the draft
-    /// account's sign-in and rename, until it is shown or given up.
+    /// Sign In is under way: SetClientId, Accounts.SignIn, and the wait for
+    /// how that sign-in ends (Accounts.SignInFinished).
     Q_PROPERTY(bool adding READ adding NOTIFY addingChanged)
     /// Why the last Sign In failed; empty when it did not.
     Q_PROPERTY(QString addError READ addError NOTIFY addingChanged)
@@ -95,25 +97,23 @@ public:
     /// Runs `setUp` for every account there is and every one that comes.
     void onEachAccount(std::function<void(AccountItem *)> setUp);
 
-    /// Why `label` cannot name an account (Accounts.Add's rules: trimmed,
+    /// Why `label` cannot name an account (Account.SetLabel's rules: trimmed,
     /// 1–40 characters, no "/" or control character, not 12 hexadecimal
     /// digits in any case (an account id's look), unique regardless of case
     /// among the accounts other than `exceptPath`); empty when it can. "@"
     /// is allowed: an account's label is commonly its email (A14).
     Q_INVOKABLE QString labelProblem(const QString &label, const QString &exceptPath = QString()) const;
-    /// "Personal" when no account is called that, else empty.
-    Q_INVOKABLE QString suggestedLabel() const;
 
     /// Sign In: SetClientId(clientId) when it is given and new, then
-    /// Add(a temporary label), then BeginSignIn on the new account, whose
-    /// URL comes out of openUrlRequested. The account stays out of this
-    /// model — hidden from the switcher, the tray, Places and notifications
-    /// — until it is signed in, renamed to its email (SetLabel) and shown;
-    /// accountAdded(path) then, and the window opens the folder picker.
-    /// Cancelled, refused, or already added under another account: the
-    /// draft is removed (Accounts.Remove) and nothing is left.
+    /// Accounts.SignIn, whose URL comes out of openUrlRequested. The daemon
+    /// makes the account only once the sign-in has succeeded, signed in and
+    /// named (by its email); accountAdded(path) then, once its row is here,
+    /// and the window opens the folder picker. Cancelled, failed, or already
+    /// added as another account: no account was made, and addError says why
+    /// unless it was cancelled. A daemon that goes away in the middle ends
+    /// the adding too, with an error that says so.
     Q_INVOKABLE void addAccount(const QString &clientId = QString());
-    /// Gives up the sign-in under way, if any: the draft is removed.
+    /// Gives up the sign-in under way, if any (Accounts.CancelSignIn).
     Q_INVOKABLE void cancelAdd();
     /// Forgets the last Sign In's failure (the dialog opens clean).
     Q_INVOKABLE void clearAddError();
@@ -126,8 +126,8 @@ Q_SIGNALS:
     void countChanged();
     void summaryChanged();
     void addingChanged();
-    /// The account Sign In added is signed in, named by its email, and
-    /// shown; the window selects it and opens the folder picker.
+    /// The account Sign In added is signed in, named, and shown; the window
+    /// selects it and opens the folder picker.
     void accountAdded(const QString &path);
     /// A row is gone; `item` is deleted later.
     void accountRemoved(AccountItem *item);
@@ -136,21 +136,15 @@ Q_SIGNALS:
 
 private:
     void follow(const QStringList &paths);
-    void probe(const QString &path);
-    void claimDraft(const QString &path);
-    void abandonDraft(const QString &error);
-    void handleDraftChanged();
-    bool emailAlreadyUsed(const QString &email) const;
+    void handleSignInFinished(uint number, const QString &outcome, const QString &message, const QString &account);
+    void handleServiceChanged();
+    void signInEnded(const QString &outcome, const QString &message, const QString &account);
+    void cancelSignIn();
+    void showAdded();
     AccountItem *insert(int row, const QString &path);
     void removeAt(int row);
     void rowChanged(AccountItem *item);
     void finishAdding(const QString &error);
-
-    /// The label a signing-in account holds until Sign In renames it to its
-    /// email: never a real email (no "@"), so it can never collide with one.
-    /// A leftover with this label — an earlier run's draft, crashed mid
-    /// sign-in — is recognised by it and removed at the next start (A15).
-    static const QString DraftLabel;
 
     DaemonController *m_daemon;
     AccountStatus::Clock m_clock;
@@ -158,17 +152,19 @@ private:
     std::vector<std::function<void(AccountItem *)>> m_setUps;
     bool m_adding = false;
     QString m_addError;
-    /// The account Sign In is adding, from Add's answer or a probe that
-    /// found DraftLabel first, until it is renamed (or given up).
-    QString m_draftPath;
-    AccountController *m_draft = nullptr;
-    bool m_draftStartedSignIn = false;
-    bool m_renamingDraft = false;
+    /// The number of this Sign In's sign-in, from SignIn's answer until it has ended.
+    std::optional<uint> m_signIn;
+    /// Which Sign In the answers of SetClientId and SignIn belong to: one that
+    /// comes after its adding has ended is dropped.
+    quint64 m_attempt = 0;
+    /// cancelAdd() was called for this adding. Before SignIn's answer, the
+    /// sign-in is cancelled once it has one; a refusal or a daemon that stops
+    /// then ends the adding with no error.
     bool m_cancelRequested = false;
-    /// Paths whose label is DraftLabel: excluded from the rows above.
-    QSet<QString> m_hiddenDrafts;
-    /// Paths a probe (GetAll, not a row yet) is in flight for.
-    QSet<QString> m_probing;
-    /// Paths a probe found are not a draft: shown without probing again.
-    QSet<QString> m_cleared;
+    /// The account the sign-in ended "signed-in" with, while it is not in
+    /// Accounts.List as this model has it yet; empty otherwise.
+    QString m_awaitedPath;
+    /// SignInFinished signals that came before SignIn's answer said which
+    /// sign-in is this window's: by number; outcome, message and account.
+    QHash<uint, QStringList> m_early;
 };

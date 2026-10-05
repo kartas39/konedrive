@@ -77,8 +77,10 @@ const WITHOUT_READ_WRITE: &str = "Without --read-write, the export gives a read-
 /// forgets a folder, and is a [`SyncAction`](super::SyncAction).)
 #[derive(Debug, Clone, Copy)]
 pub enum AccountAction<'a> {
-    /// `Accounts.Add`, with the label asked for.
-    Add(&'a str),
+    /// `Accounts.SignIn`: a new account, added by signing in.
+    Add,
+    /// A development build's `DevTools.AddAccount`, with the label asked for.
+    AddNamed(&'a str),
     /// `Account.SetLabel`: the account's label, and the one asked for.
     Rename(&'a str, &'a str),
     /// `Accounts.SetClientId`: the id given, and the labels of the accounts
@@ -95,7 +97,7 @@ pub enum AccountAction<'a> {
     Settings,
 }
 
-/// What to tell a person when a call on the accounts failed: `Accounts.Add`,
+/// What to tell a person when a call on the accounts failed: `Accounts.SignIn`,
 /// `Accounts.SetClientId`, `Account.SetLabel`, `BeginSignIn` or `SignOut`.
 /// These refuse under the bus's own names — `InvalidArgs` for a label or a
 /// client id the rules refuse, `Failed` for the rest — so the name decides,
@@ -114,7 +116,7 @@ fn account_text(action: AccountAction<'_>, refusal: Option<&Refusal>, detail: &s
     use AccountAction::*;
     match action {
         SetMode(label, mode, prefix) => mode_text(label, mode, prefix, refusal, detail),
-        Add(label) | Rename(_, label) if refusal == Some(&Refusal::InvalidArgs) => {
+        AddNamed(label) | Rename(_, label) if refusal == Some(&Refusal::InvalidArgs) => {
             format!("{label:?} cannot be an account's label: {detail}. {LABEL_RULE}")
         }
         SetClientId(id, _) if refusal == Some(&Refusal::InvalidArgs) => format!(
@@ -137,7 +139,8 @@ fn account_text(action: AccountAction<'_>, refusal: Option<&Refusal>, detail: &s
             )
         }
         SetClientId(..) => format!("the client ID was not saved: {detail}"),
-        Add(label) => format!("the account {label:?} was not added: {detail}"),
+        Add => format!("cannot start signing in, and no account was added: {detail}"),
+        AddNamed(label) => format!("the account {label:?} was not added: {detail}"),
         Rename(old, new) => format!("the account {old} was not renamed to {new:?}: {detail}"),
         SignIn(label) => format!("cannot start signing in to {label}: {detail}"),
         SignOut(label) => format!("cannot sign {label} out: {detail}"),

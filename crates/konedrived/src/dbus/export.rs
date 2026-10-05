@@ -40,7 +40,7 @@ pub async fn export(
     start_signals(connection, path, service).await
 }
 
-/// Takes one account's folder off the bus (`Accounts.Remove`, and an `Accounts.Add` that
+/// Takes one account's folder off the bus (`Accounts.Remove`, and an account whose adding
 /// failed while putting it there): every interface, whatever the one before answered.
 /// `partly`: see [`take_off`].
 pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
@@ -55,7 +55,7 @@ pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bo
 }
 
 /// Takes the interface `I` off `path`. One that is not there is off, and no failure; it is
-/// worth a warning unless `partly`, which the cleanup of an `Accounts.Add` that failed part
+/// worth a warning unless `partly`, which the cleanup of an adding that failed part
 /// of the way gives: on a removal every interface is there.
 pub(crate) async fn take_off<I: zbus::object_server::Interface>(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     match connection.object_server().remove::<I, _>(path).await {
@@ -88,6 +88,8 @@ impl Bus for OnBus {
         let server = connection.object_server();
         server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
+        #[cfg(feature = "dev-tools")]
+        server.at(ACCOUNTS_PATH, crate::dbus::dev_tools::DevTools { manager: Arc::clone(manager) }).await?;
         // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
         let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
         // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
@@ -111,5 +113,14 @@ impl Bus for OnBus {
 
     async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
         all_taken_off([unexport(connection, path, partly).await, crate::dbus::account::unexport(connection, path, partly).await])
+    }
+
+    async fn sign_in_finished(&self, connection: &Connection, sign_in: u32, outcome: &str, message: &str, account: &ObjectPath<'_>, listed: bool) -> zbus::Result<()> {
+        let accounts = connection.object_server().interface::<_, Accounts>(ACCOUNTS_PATH).await?;
+        // The account is in `List` before anybody is told that it was added.
+        if listed {
+            accounts.get().await.list_changed(accounts.signal_emitter()).await?;
+        }
+        Accounts::sign_in_finished(accounts.signal_emitter(), sign_in, outcome, message, account.clone()).await
     }
 }

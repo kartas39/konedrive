@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context};
-use konedrive_dbus::accounts::TokenExportProxy;
+use konedrive_dbus::accounts::{DevToolsProxy, TokenExportProxy};
+use konedrivectl::text::formats::shell_word;
+use konedrivectl::text::refusals::{explain_account_error, AccountAction};
 
 use crate::cli::DevCmd;
 use crate::daemon::Daemon;
@@ -8,6 +10,14 @@ use crate::daemon::Daemon;
 #[cfg(feature = "dev-tools")]
 pub(crate) async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::Result<()> {
     match command {
+        DevCmd::AddAccount { label } => {
+            let result = DevToolsProxy::new(&daemon.connection).await?.add_account(&label).await;
+            let path = result.map_err(|e| anyhow!(explain_account_error(AccountAction::AddNamed(&label), &e)))?;
+            let added = daemon.account(&path).await?;
+            let (id, label) = (added.id().await?, added.label().await?);
+            println!("Added the account {label} ({id}), signed out and with no folder yet.");
+            println!("Sign it in with: konedrivectl --account {} login", shell_word(&label));
+        }
         DevCmd::ExportAccessToken { out, read_write } => {
             let chosen = daemon.chosen(option).await?;
             let export = TokenExportProxy::new(&daemon.connection, chosen.account.path.clone()).await?;

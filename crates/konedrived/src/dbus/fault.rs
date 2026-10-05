@@ -162,6 +162,7 @@ impl From<ManagerError> for Fault {
             ManagerError::Failed(why) => Fault::Refused(Refusal::BusFailed, why),
             ManagerError::NoAccount(path) => Fault::Refused(Refusal::NoAccount, format!("there is no account {path}")),
             ManagerError::Sync(error) => error.into(),
+            ManagerError::SignIn(error) => error.into(),
         }
     }
 }

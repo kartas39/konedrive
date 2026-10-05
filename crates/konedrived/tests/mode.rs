@@ -159,7 +159,7 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     let client = bus.connect().await;
     let manager = AccountsProxy::new(&client).await.unwrap();
     manager.set_client_id(CLIENT_ID).await.unwrap();
-    let path = manager.add("Test").await.unwrap();
+    let path = daemon.manager.add("Test", &daemon.connection).await.unwrap().path.clone();
     let id = path.as_str().rsplit('/').next().unwrap().to_owned();
     let account = AccountProxy::builder(&client)
         .path(path.clone())
