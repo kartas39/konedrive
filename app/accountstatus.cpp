@@ -1,7 +1,6 @@
 #include "accountstatus.h"
 
 #include "accountcontroller.h"
-#include "daemoncontroller.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 
@@ -9,62 +8,16 @@
 
 #include <QDateTime>
 #include <QLocale>
-#include <QRegularExpression>
 #include <QTimer>
 
 namespace
 {
-const QString Separator = QStringLiteral(". ");
-
-/// What a `no-interception` root's LastError always starts with
-/// (crates/konedrived/src/sync/mod.rs, NO_INTERCEPTION_WARNING), mirrored
-/// here since the app has no other way to read a Rust constant. It carries
-/// no ". " of its own, so stripping it (and the separator that follows when
-/// there is trouble after it) leaves exactly the trouble, if any (I2).
-const QString NoInterceptionWarning = QStringLiteral(
-    "this folder is registered WITHOUT interception: nothing fills a placeholder when it is "
-    "opened, so files in this folder read as zeros until they are explicitly hydrated");
-
-/// Where, in LastError ("every current problem, joined with '. '"), the
-/// failed-update note begins: "N file(s) changed in OneDrive could not be
-/// updated here yet: <reason>" (dbus/org.konedrive.Folder.xml). The daemon
-/// puts it last; -1 when there is none.
-qsizetype updateNoteStart(const QString &lastError)
+/// A state of Folder.Overall as the window shows it: the daemon's, or "offline" for one
+/// this build does not know (none at all, from a daemon that has no such property).
+QString shownState(const QString &state)
 {
-    const qsizetype key = lastError.indexOf(QLatin1String("could not be updated"), 0, Qt::CaseInsensitive);
-    if (key < 0) {
-        return -1;
-    }
-    const qsizetype separator = lastError.lastIndexOf(Separator, key);
-    return separator < 0 ? 0 : separator + Separator.size();
-}
-
-/// The failed-update note, or empty.
-QString updateNote(const QString &lastError)
-{
-    const qsizetype start = updateNoteStart(lastError);
-    return start < 0 ? QString() : lastError.mid(start);
-}
-
-/// What else LastError says while the folder stays ready: trouble that does
-/// not stop it (no network, no helper), without the failed-update note and
-/// without the rescue note, which conflicts already stand for.
-QString troubleIn(const QString &lastError)
-{
-    static const QRegularExpression rescueNote(QStringLiteral("\\d+ file\\(s\\) changed here were moved to .*? because the cloud changed or removed them"));
-    const qsizetype noteStart = updateNoteStart(lastError);
-    QString rest = noteStart < 0 ? lastError : lastError.left(noteStart);
-    rest.remove(rescueNote);
-    QStringList parts = rest.split(Separator, Qt::SkipEmptyParts);
-    for (QString &part : parts) {
-        part = part.trimmed();
-    }
-    parts.removeAll(QString());
-    QString trouble = parts.join(Separator);
-    if (!trouble.isEmpty()) {
-        trouble[0] = trouble.at(0).toUpper();
-    }
-    return trouble;
+    static const QStringList known{QStringLiteral("ok"), QStringLiteral("syncing"), QStringLiteral("warning"), QStringLiteral("paused"), QStringLiteral("offline")};
+    return known.contains(state) ? state : QStringLiteral("offline");
 }
 
 /// "40 s", "2 min", "1 h": how long something took.
@@ -102,30 +55,12 @@ QString scanReasonText(const QString &reason)
     }
     return reason;
 }
-
-/// A no-interception root's LastError with the fixed warning (and the
-/// separator after it, if there is trouble) stripped, so `troubleIn` sees
-/// only the trouble, exactly as it does for a `ready` root (I2).
-QString withoutNoInterceptionWarning(QString lastError)
-{
-    if (!lastError.startsWith(NoInterceptionWarning)) {
-        // An unexpected shape (a future daemon change): safer to show it all
-        // as trouble than to silently drop it, which is the bug I2 fixes.
-        return lastError;
-    }
-    lastError.remove(0, NoInterceptionWarning.size());
-    if (lastError.startsWith(Separator)) {
-        lastError.remove(0, Separator.size());
-    }
-    return lastError;
-}
 }
 
-AccountStatus::AccountStatus(AccountController *account, SyncController *sync, DaemonController *daemon, Clock clock, QObject *parent)
+AccountStatus::AccountStatus(AccountController *account, SyncController *sync, Clock clock, QObject *parent)
     : QObject(parent)
     , m_account(account)
     , m_sync(sync)
-    , m_daemon(daemon)
     , m_clock(clock ? std::move(clock) : Clock([] {
         return QDateTime::currentSecsSinceEpoch();
     }))
@@ -139,7 +74,6 @@ AccountStatus::AccountStatus(AccountController *account, SyncController *sync, D
     connect(m_sync, &SyncController::syncChanged, this, &AccountStatus::update);
     connect(m_sync->transfers(), &TransferModel::countChanged, this, &AccountStatus::update);
     connect(m_sync->uploads(), &TransferModel::countChanged, this, &AccountStatus::update);
-    connect(m_daemon, &DaemonController::changed, this, &AccountStatus::update);
     update();
 }
 
@@ -219,7 +153,6 @@ void AccountStatus::update()
     QString attention;
     bool ages = false;
 
-    const QString rootState = m_sync->rootState();
     const int downloads = m_sync->transfers()->count();
     const qint64 checked = m_sync->lastChecked();
     // While the notification socket is up, changes arrive as they happen: "live" says more
@@ -232,52 +165,41 @@ void AccountStatus::update()
         checkedText = i18nc("@info status, %1 is a time like '20 s ago'", "checked %1", ago(checked));
     }
 
+    // The daemon decides the state and says why (Folder.Overall): the reason chooses the
+    // words here, and nothing is worked out from the other properties or from a sentence.
+    const QString reason = m_sync->overallReason();
+    state = shownState(m_sync->overallState());
     if (!m_account->serviceAvailable() || !m_sync->serviceAvailable()) {
+        // The one state that is the window's to say: no daemon can say it is not running.
         state = QStringLiteral("offline");
         text = i18n("The KOneDrive service is not running");
-    } else if (m_account->state() == QLatin1String("signing-in")) {
-        state = QStringLiteral("offline");
+    } else if (reason == QLatin1String("signing-in")) {
         text = i18n("Signing in…");
-    } else if (m_account->state() != QLatin1String("signed-in")) {
-        state = QStringLiteral("offline");
+    } else if (reason == QLatin1String("signed-out")) {
         text = i18n("Signed out of OneDrive");
-    } else if (m_sync->rootPath().isEmpty() || rootState == QLatin1String("none")) {
-        state = QStringLiteral("offline");
+    } else if (reason == QLatin1String("no-folder")) {
         text = i18n("No OneDrive folder yet");
-    } else if (rootState == QLatin1String("waiting")) {
+    } else if (reason == QLatin1String("starting")) {
         // A folder that is recorded and not up yet, with nothing known to be wrong: it is
         // being brought up, or waits for the helper to connect (the start of a session).
-        // Calm: the daemon turns it into "error" once something is known to be wrong.
-        state = QStringLiteral("syncing");
         text = i18n("Starting…");
-    } else if (rootState == QLatin1String("error")) {
-        state = QStringLiteral("warning");
-        text = m_sync->lastError().isEmpty() ? i18n("Syncing has stopped") : m_sync->lastError();
+    } else if (reason == QLatin1String("stopped")) {
+        // Folder.Trouble is then everything the folder stopped on, shown as it is.
+        text = m_sync->trouble().isEmpty() ? i18n("Syncing has stopped") : m_sync->trouble();
     } else {
-        const QString note = updateNote(m_sync->lastError());
-        // ready's LastError is read as-is; no-interception's starts with a
-        // fixed warning that is never trouble by itself (I2). Any other
-        // state (listing) has nothing of its own to read here.
-        QString trouble;
-        if (rootState == QLatin1String("ready")) {
-            trouble = troubleIn(m_sync->lastError());
-        } else if (rootState == QLatin1String("no-interception")) {
-            trouble = troubleIn(withoutNoInterceptionWarning(m_sync->lastError()));
-        }
-        // The helper serves every account: its trouble counts against each
-        // account whose folder it intercepts (design §6.3) — not one
-        // registered without interception, where nothing downloads on open
-        // whatever the helper does.
-        const bool helperTrouble = m_daemon->helperTrouble() && rootState != QLatin1String("no-interception");
+        // The line under the folder: what the account is doing, in words, from the counts
+        // and the times. The trouble that does not stop the folder is said first, whatever
+        // the reason is (deletes held, a pause).
+        const bool listing = m_sync->rootState() == QLatin1String("listing");
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
-        const bool paused = m_sync->paused();
         const QString heldBack = m_sync->heldBack();
-        if (rootState == QLatin1String("listing")) {
+        if (listing) {
             text = i18n("Listing your OneDrive: %1 items so far", m_sync->itemsListed());
-        } else if (!trouble.isEmpty()) {
-            text = trouble;
-        } else if (paused) {
+        } else if (!m_sync->trouble().isEmpty()) {
+            text = m_sync->trouble();
+            text[0] = text.at(0).toUpper();
+        } else if (m_sync->paused()) {
             text = m_sync->pausedUntil() > 0 ? i18n("Paused until %1", until(m_sync->pausedUntil())) : i18n("Paused");
         } else if (!heldBack.isEmpty()) {
             text = heldBackText(heldBack);
@@ -295,48 +217,28 @@ void AccountStatus::update()
         } else {
             text = i18n("Up to date");
         }
-        if (rootState != QLatin1String("listing") && !checkedText.isEmpty()) {
+        if (!listing && !checkedText.isEmpty()) {
             text = i18nc("@info status: what, then when it last checked", "%1 · %2", text, checkedText);
             ages = !live;
         }
 
-        if (m_sync->heldCount() > 0) {
-            // The mass-delete guard: nothing more urgent, since only the user can decide.
-            state = QStringLiteral("warning");
+        // Why the account needs attention, where the line does not say it: by the reason.
+        if (reason == QLatin1String("deletes-held")) {
             attention = i18np("1 item deleted here waits for you: delete it in OneDrive too, or restore it",
                               "%1 items deleted here wait for you: delete them in OneDrive too, or restore them",
                               m_sync->heldCount());
-        } else if (m_sync->conflictCount() > 0) {
-            state = QStringLiteral("warning");
+        } else if (reason == QLatin1String("conflicts")) {
             attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
-        } else if (m_sync->quotaFull()) {
-            state = QStringLiteral("warning");
+        } else if (reason == QLatin1String("quota-full")) {
             attention = i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());
-        } else if (m_sync->tooBigCount() > 0) {
-            state = QStringLiteral("warning");
+        } else if (reason == QLatin1String("too-big")) {
             attention = i18np("1 file is too big for the space left in OneDrive", "%1 files are too big for the space left in OneDrive", m_sync->tooBigCount());
-        } else if (m_sync->blockedCount() > 0) {
-            state = QStringLiteral("warning");
+        } else if (reason == QLatin1String("blocked")) {
             attention = i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", m_sync->blockedCount());
-        } else if (!note.isEmpty()) {
-            state = QStringLiteral("warning");
-            attention = note;
-        } else if (helperTrouble) {
-            // The tray still needs warning, not offline: the folder itself
-            // may be fine, only the helper (and so hydration on open) is not.
-            state = QStringLiteral("warning");
+        } else if (reason == QLatin1String("not-updated")) {
+            attention = m_sync->notUpdated();
+        } else if (reason == QLatin1String("helper-unavailable")) {
             attention = i18n("The konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened.");
-        } else if (paused || !heldBack.isEmpty()) {
-            // The account's own hold ranks as the user's pause: the tray shows it paused.
-            state = QStringLiteral("paused");
-        } else if (!trouble.isEmpty()) {
-            // M4: only "cannot reach OneDrive" looks offline; any other
-            // trouble that does not stop the folder is a warning instead.
-            state = trouble.startsWith(QLatin1String("cannot reach onedrive"), Qt::CaseInsensitive) ? QStringLiteral("offline") : QStringLiteral("warning");
-        } else if (rootState == QLatin1String("listing") || downloads > 0 || uploads > 0 || pending > 0) {
-            state = QStringLiteral("syncing");
-        } else {
-            state = QStringLiteral("ok");
         }
     }
 

@@ -1,6 +1,7 @@
 //! `status` and `sync status`: what was read of an account and of its folder, and how it is
 //! printed.
 
+use konedrive_dbus::overall::{Overall, Reason};
 use konedrive_dbus::HelperState;
 
 use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text};
@@ -46,6 +47,53 @@ pub struct AccountStatus {
     /// Bytes used and in all.
     pub quota: Option<(u64, u64)>,
     pub last_error: String,
+    /// `Folder.Overall` of the account's folder: the state the account is in as a whole,
+    /// and the reason.
+    pub overall: Option<Overall>,
+    /// `Folder.Trouble`: the sentence of the trouble there is now, or empty.
+    pub trouble: String,
+    /// `Folder.NotUpdated`: the failed-update note, or empty.
+    pub not_updated: String,
+}
+
+/// The `Overall:` line's text, in `status` and `sync status`: the state the daemon decided
+/// (`Folder.Overall`), said in words by its reason. The reasons that are about a sentence
+/// say it: `trouble` (`Folder.Trouble`) for a folder that stopped, trouble that does not
+/// stop it and OneDrive out of reach, `not_updated` (`Folder.NotUpdated`) for files not
+/// updated here. Under any other reason the trouble is not on this line: `sync status` has
+/// it in `Last error:`. Nothing here decides a state: a reason this build does not know is printed as the
+/// daemon spelled it.
+pub fn overall_text(overall: &Overall, trouble: &str, not_updated: &str) -> String {
+    let state = overall.state.as_str();
+    // The sentence, or what stands for it when the daemon sent none.
+    let or = |sentence: &str, otherwise: &str| if sentence.is_empty() { otherwise.to_owned() } else { sentence.to_owned() };
+    let said = |otherwise: &str| or(trouble, otherwise);
+    let words = match Reason::parse(&overall.reason) {
+        Some(Reason::SigningIn) => "signing in".to_owned(),
+        Some(Reason::SignedOut) => "signed out of OneDrive".to_owned(),
+        Some(Reason::NoFolder) => "no OneDrive folder yet".to_owned(),
+        Some(Reason::Unreachable) => said("OneDrive cannot be reached"),
+        Some(Reason::Starting) => "starting".to_owned(),
+        Some(Reason::Listing) => "listing your OneDrive".to_owned(),
+        Some(Reason::Transferring) => "files are downloading or uploading, or changes wait to upload".to_owned(),
+        Some(Reason::Stopped) if trouble.is_empty() => "syncing has stopped".to_owned(),
+        Some(Reason::Stopped) => format!("syncing has stopped: {trouble}"),
+        Some(Reason::DeletesHeld) => "deletions made here wait for you: delete them in OneDrive too, or restore them".to_owned(),
+        Some(Reason::Conflicts) => "changed files were moved out of the way".to_owned(),
+        Some(Reason::QuotaFull) => "OneDrive is full: files wait for space".to_owned(),
+        Some(Reason::TooBig) => "files are too big for the space left in OneDrive".to_owned(),
+        Some(Reason::Blocked) => "changes cannot be uploaded".to_owned(),
+        Some(Reason::NotUpdated) => or(not_updated, "files changed in OneDrive could not be updated here yet"),
+        Some(Reason::HelperUnavailable) => {
+            "the konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened".to_owned()
+        }
+        Some(Reason::Trouble) => said("something is wrong"),
+        Some(Reason::Paused) => "you paused syncing".to_owned(),
+        Some(Reason::HeldBack) => "the account holds back by itself".to_owned(),
+        Some(Reason::UpToDate) => "up to date".to_owned(),
+        None => overall.reason.clone(),
+    };
+    format!("{state} — {words}")
 }
 
 /// `status` for one account. `client_id` is `Some` when this account is all `status` shows:
@@ -59,6 +107,9 @@ pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
     }
     if let Some(state) = &status.state {
         line("State:", state);
+    }
+    if let Some(overall) = &status.overall {
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
     }
     if let Some(client_id) = client_id {
         line("Client ID:", if client_id.is_empty() { "(not set)" } else { client_id });
@@ -101,6 +152,12 @@ pub struct FolderStatus {
     /// `Folder.State`.
     pub state: Option<String>,
     pub last_error: String,
+    /// `Folder.Overall`: the state the account is in as a whole, and the reason.
+    pub overall: Option<Overall>,
+    /// `Folder.Trouble`: the sentence of the trouble there is now, or empty.
+    pub trouble: String,
+    /// `Folder.NotUpdated`: the failed-update note, or empty.
+    pub not_updated: String,
     /// `Folder.Source`: `onedrive`, `local`, or empty.
     pub source: String,
     /// Items in OneDrive, and items in the folder.
@@ -152,6 +209,9 @@ pub struct FolderStatus {
 /// opened. That matters most for `no-interception`: without the helper, a file that is not
 /// downloaded reads as zeros, and that is on screen every time.
 ///
+/// The `Overall:` line is the state of the account as a whole, as the daemon decided it
+/// ([`overall_text`]); the lines after it are what the daemon counts and measures.
+///
 /// `helper` is `Accounts.HelperState` when this folder is all `sync status` shows: the
 /// `Helper:` line says how the helper stands and, when it is not connected, what to do. One
 /// helper serves every account, so when `sync status` shows several, it prints that line
@@ -166,6 +226,9 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
     let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<W$}{value}\n"));
     let state = status.state.as_deref().unwrap_or_default();
     line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
+    if let Some(overall) = &status.overall {
+        line("Overall:", &overall_text(overall, &status.trouble, &status.not_updated));
+    }
     if status.state.is_some() {
         line("State:", state);
     }

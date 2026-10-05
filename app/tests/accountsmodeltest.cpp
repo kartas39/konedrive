@@ -212,6 +212,8 @@ private Q_SLOTS:
         family->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
         family->sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/Family")}, {QStringLiteral("State"), QStringLiteral("ready")}});
         family->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        // The state is the daemon's (Folder.Overall).
+        family->sync->folder->decide("warning", "conflicts");
         QTRY_VERIFY(current.othersNeedAttention());
         QCOMPARE(model.data(model.index(1, 0), AccountsModel::IconNameRole).toString(), QStringLiteral("state-warning"));
 

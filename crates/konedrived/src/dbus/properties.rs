@@ -4,6 +4,10 @@
 //! ([`Property::of`]), and `signals` compares and sends by the same rows, so a property
 //! cannot be read one way and announced another.
 //!
+//! `Overall`, `Trouble` and `NotUpdated` are rows too ([`DECIDED`]): what they say is
+//! decided by `status::overall`, from the published state, the downloads and the account's
+//! sign-in.
+//!
 //! Not here: the properties a call sets and announces itself (`IgnorePatterns`,
 //! `Thumbnails`), `Source`, which is the folder's record and is announced with `Path`, and
 //! `MachineName`, which nothing changes while the daemon runs.
@@ -14,21 +18,36 @@ use konedrive_dbus::rows;
 use konedrive_dbus::{CONFLICTS_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME, UPLOAD_QUEUE_INTERFACE_NAME};
 use zbus::zvariant::Value;
 
+use crate::account::state::SignInState;
+use crate::status::overall;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::status::transfers::{large_files, Transfer};
 use crate::sync::SyncService;
 
-/// What the properties are read from: the published state and the downloads under way.
-#[derive(Debug, Clone, Default)]
+/// What the properties are read from: the published state, the downloads under way, and
+/// where the account's sign-in stands.
+#[derive(Debug, Clone)]
 pub(crate) struct Seen {
     pub snapshot: SyncSnapshot,
     pub downloads: BTreeMap<u64, Transfer>,
+    pub sign_in: SignInState,
+}
+
+impl Default for Seen {
+    /// As an account starts: nothing published, nothing moving, signed out.
+    fn default() -> Self {
+        Self { snapshot: SyncSnapshot::default(), downloads: BTreeMap::new(), sign_in: SignInState::SignedOut }
+    }
 }
 
 impl Seen {
     /// As `service` publishes it now.
     pub(crate) fn of(service: &SyncService) -> Self {
-        Self { snapshot: service.state().get(), downloads: service.report().transfers.subscribe().borrow().clone() }
+        Self {
+            snapshot: service.state().get(),
+            downloads: service.report().transfers.subscribe().borrow().clone(),
+            sign_in: service.account().snapshot().state,
+        }
     }
 }
 
@@ -131,9 +150,23 @@ properties! {
 }
 
 properties! {
+    /// What the daemon decides of the account as a whole (`status::overall`): each announced
+    /// the moment it changes, and only then — whatever else changed under them.
+    DECIDED:
+    /// The state and the reason for it.
+    OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall::reason(s.sign_in, &s.snapshot, s.downloads.len()).into();
+    /// The sentence of the trouble there is now, whatever the reason is; or empty.
+    TROUBLE: String = FOLDER, "Trouble", |s| overall::trouble(&s.snapshot);
+    /// The failed-update note alone, or empty.
+    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::not_updated(&s.snapshot);
+}
+
+properties! {
     /// Announced at most four times a second, everything that changed of an interface in
     /// one message: a listing changes the counters with every page, and a download its
     /// entry with every read.
+    /// And once more ahead of an `Overall` that changed, so that its reason never arrives
+    /// before the count a client says with it (`signals::decide`).
     COALESCED:
     ITEMS_LISTED: u64 = FOLDER, "ItemsListed", |s| s.snapshot.cycle.items_listed;
     ITEMS_PLACED: u64 = FOLDER, "ItemsPlaced", |s| s.snapshot.cycle.items_placed;

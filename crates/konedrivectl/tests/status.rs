@@ -21,6 +21,7 @@ async fn status_reports_state_and_client_id() {
     let text = common::out_text(&out);
     assert!(text.lines().any(|l| l == "Label:      Personal"), "{text}");
     assert!(text.lines().any(|l| l == "State:      signed-out"), "{text}");
+    assert!(text.lines().any(|l| l == "Overall:    offline — signed out of OneDrive"), "by `Folder.Overall`: {text}");
     assert!(text.contains(konedrived::config::DEFAULT_CLIENT_ID), "the built-in client ID: {text}");
     assert!(!text.contains("Account:"), "{text}");
 
@@ -63,4 +64,22 @@ async fn a_property_the_daemon_does_not_have_is_known_as_such() {
             assert!(konedrive_dbus::is_unknown_property(&error), "{interface}: {error:?}");
         }
     }
+}
+
+/// An account whose `Folder` is not on the bus yet (it is put there after `Account`) is
+/// still printed by `status`, without its `Overall:` line: the command does not fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_prints_an_account_whose_folder_is_not_on_the_bus() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
+    let path = daemon.manager.add("Personal", &daemon.connection).await.unwrap().path.clone();
+    daemon.connection.object_server().remove::<konedrived::dbus::Folder, _>(&path).await.unwrap();
+
+    let out = common::run(bus.address(), &["status"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = common::out_text(&out);
+    assert!(text.lines().any(|l| l == "Label:      Personal"), "{text}");
+    assert!(text.lines().any(|l| l == "State:      signed-out"), "{text}");
+    assert!(!text.contains("Overall:"), "{text}");
 }

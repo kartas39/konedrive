@@ -96,6 +96,29 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveT
     return argument;
 }
 
+/// The Overall property of Folder: (state, reason), as the daemon decided them.
+struct KonedriveOverall {
+    QString state;
+    QString reason;
+};
+Q_DECLARE_METATYPE(KonedriveOverall)
+
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOverall &overall)
+{
+    argument.beginStructure();
+    argument << overall.state << overall.reason;
+    argument.endStructure();
+    return argument;
+}
+
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveOverall &overall)
+{
+    argument.beginStructure();
+    argument >> overall.state >> overall.reason;
+    argument.endStructure();
+    return argument;
+}
+
 /// One entry of Outbox(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
 /// next try in unix seconds or 0). The window's use of it is W8b's.
 struct KonedriveOutboxRow {
@@ -165,6 +188,7 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveActivityList>();
     qDBusRegisterMetaType<KonedriveConflict>();
     qDBusRegisterMetaType<KonedriveConflictList>();
+    qDBusRegisterMetaType<KonedriveOverall>();
     qDBusRegisterMetaType<KonedriveTransfer>();
     qDBusRegisterMetaType<KonedriveTransferList>();
     qDBusRegisterMetaType<KonedriveOutboxRow>();

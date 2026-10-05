@@ -1,3 +1,5 @@
+use konedrive_dbus::overall::{Overall, Reason};
+
 /// `sync status` says whether changes from OneDrive arrive live, and nothing
 /// while the socket is off (the pause or the hold says why).
 #[test]
@@ -40,6 +42,9 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         path: "/home/u/OneDrive".into(),
         state: Some("ready".into()),
         last_error: "one file could not be placed".into(),
+        overall: Some(Reason::DeletesHeld.into()),
+        trouble: "one file could not be placed".into(),
+        not_updated: String::new(),
         source: "onedrive".into(),
         items: Some((120, 118)),
         skipped: 2,
@@ -66,6 +71,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
     let p = "konedrivectl --account Work";
     let expected = format!(
         "Folder:                 /home/u/OneDrive\n\
+         Overall:                warning — deletions made here wait for you: delete them in OneDrive too, or restore them\n\
          State:                  ready\n\
          Opens:                  intercepted: a file is downloaded when something opens it\n\
          Helper:                 connected\n\
@@ -105,7 +111,8 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
 }
 
 /// A daemon of an older build has not every property this build reads: a value it does not
-/// have is absent, its line is left out, and the rest is printed.
+/// have is absent, its line is left out, and the rest is printed. `Overall` is one of them:
+/// without it no state of the whole is printed, and none is worked out here.
 #[test]
 fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
     let folder = super::FolderStatus {
@@ -124,6 +131,60 @@ fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
     );
     let account = super::AccountStatus { state: Some("signed-in".into()), email: "ann@outlook.com".into(), ..Default::default() };
     assert_eq!(super::status_text(&account, Some("id")), "State:      signed-in\nClient ID:  id\n");
+}
+
+/// The `Overall:` line says the state the daemon decided, in words by its reason; the
+/// sentence of `Trouble` or of `NotUpdated` is printed for the reasons that are about one,
+/// and for no other.
+#[test]
+fn the_overall_line_says_the_state_in_words_by_the_reason() {
+    let text = |reason: Reason, trouble: &str| super::overall_text(&reason.into(), trouble, "");
+    assert_eq!(text(Reason::UpToDate, ""), "ok — up to date");
+    assert_eq!(text(Reason::SignedOut, ""), "offline — signed out of OneDrive");
+    assert_eq!(text(Reason::Listing, ""), "syncing — listing your OneDrive");
+    assert_eq!(text(Reason::Paused, ""), "paused — you paused syncing");
+    assert_eq!(text(Reason::HeldBack, ""), "paused — the account holds back by itself");
+    assert_eq!(text(Reason::Blocked, ""), "warning — changes cannot be uploaded");
+
+    let unreachable = "cannot reach OneDrive (timed out); trying again";
+    assert_eq!(text(Reason::Unreachable, unreachable), format!("offline — {unreachable}"));
+    assert_eq!(text(Reason::Trouble, "part of the folder is scanned"), "warning — part of the folder is scanned");
+    let note = "1 file(s) changed in OneDrive could not be updated here yet: no space";
+    assert_eq!(super::overall_text(&Reason::NotUpdated.into(), "part of the folder is scanned", note), format!("warning — {note}"));
+    // Under a reason that ranks higher the two sentences are there too, and are not said
+    // on this line.
+    assert_eq!(super::overall_text(&Reason::Paused.into(), "part of the folder is scanned", note), "paused — you paused syncing");
+    assert_eq!(text(Reason::Stopped, "signed out"), "warning — syncing has stopped: signed out");
+    assert_eq!(text(Reason::Stopped, ""), "warning — syncing has stopped");
+
+    // Every reason has words of its own, and its state in front of them.
+    let mut said = std::collections::BTreeSet::new();
+    for reason in Reason::ALL {
+        let line = text(reason, "");
+        assert!(line.starts_with(&format!("{} — ", reason.state().as_str())), "{line}");
+        assert!(said.insert(line.clone()), "{line} is said for two reasons");
+    }
+    // A reason of a newer daemon is printed as it is spelled, under the state it came with.
+    let newer = Overall { state: "warning".into(), reason: "on-fire".into() };
+    assert_eq!(super::overall_text(&newer, "", ""), "warning — on-fire");
+    assert_eq!(super::overall_text(&newer, "part of the folder is scanned", ""), "warning — on-fire");
+}
+
+/// `status` prints the same line under the sign-in's state.
+#[test]
+fn status_prints_the_overall_line() {
+    let account = super::AccountStatus {
+        state: Some("signed-in".into()),
+        overall: Some(Reason::Unreachable.into()),
+        trouble: "cannot reach OneDrive (timed out); trying again".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        super::status_text(&account, None),
+        "State:      signed-in
+Overall:    offline — cannot reach OneDrive (timed out); trying again
+"
+    );
 }
 
 /// A folder that is not writable though its account is read-write reads so in the `Mode:`

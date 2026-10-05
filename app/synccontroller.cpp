@@ -236,7 +236,14 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         text("Path", m_rootPath);
         text("State", m_rootState);
         text("Source", m_rootSource);
-        text("LastError", m_lastError);
+        // LastError is not read: what the window says of trouble is these three.
+        if (const auto it = p.constFind(QLatin1String("Overall")); it != p.constEnd()) {
+            const KonedriveOverall overall = it->canConvert<QDBusArgument>() ? qdbus_cast<KonedriveOverall>(it->value<QDBusArgument>()) : it->value<KonedriveOverall>();
+            m_overallState = overall.state;
+            m_overallReason = overall.reason;
+        }
+        text("Trouble", m_trouble);
+        text("NotUpdated", m_notUpdated);
         number("ItemsListed", m_itemsListed);
         number("ItemsPlaced", m_itemsPlaced);
         number("SkippedCount", m_skippedCount);
