@@ -98,3 +98,5 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   to items that moved, history narration. Listed per area: `RE12`, `LO12`, `HY5`, `HY8`,
   `SY12`, `HE12`, `AC8`, `UP12`.
 - **Size:** S. **Risk:** none.
+- **Fixed 2026-10-05** in `b1c4ed10` (#195): a reading pass over the comments; rustdoc with a broken link as an error on
+  every pull request. What is left is in `docs/limitations/D59.md`.
