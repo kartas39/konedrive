@@ -293,7 +293,7 @@ F51).
 | Command | Account | Does |
 |---|---|---|
 | `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `Folder.State` |
-| `account add` | — | `Accounts.SignIn`: adds a new account by signing in. Prints the URL, opens the browser and waits for `SignInFinished` of its draft, six minutes at most; Ctrl-C and the six minutes cancel it (`CancelSignIn` on the draft). Says what the account is called (its email), or that this OneDrive account is already added and under which name, or why it failed; exit status 1 for all but the first |
+| `account add` | — | `Accounts.SignIn`: adds a new account by signing in. Prints the URL, opens the browser and waits for `SignInFinished` of its draft, six minutes at most; Ctrl-C and the six minutes cancel it (`CancelSignIn` on the draft), and it then waits a few seconds for how the draft ended: a sign-in that got through first added the account, and it says so. A daemon or a draft that goes away while it waits ends it at once. Says what the account is called (its email), or that this OneDrive account is already added and under which name, or why it failed; exit status 1 for all but the first |
 | `account rename <account> <label>` | the argument | `Account.SetLabel` |
 | `account remove <account>` | the argument | `Accounts.Remove`, without asking; then says what was deleted and what was kept |
 | `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |

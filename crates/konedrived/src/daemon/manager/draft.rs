@@ -62,6 +62,12 @@ impl AccountManager {
                 if let Err(e) = self.config.remove_account(&entry.id) {
                     tracing::warn!("cannot take the draft {} out of config.toml again: {e}", entry.id);
                 }
+                // What was built before it failed: the directory, and its place among the
+                // accounts the identity guard looks at.
+                if let Some(paths) = self.paths.account(&entry.id) {
+                    remove_account_dir(&paths.dir);
+                }
+                self.siblings.remove(&entry.id);
                 return Err(ManagerError::Failed(e.to_string()));
             }
         };

@@ -33,6 +33,7 @@ AccountsModel::AccountsModel(DaemonController *daemon, AccountStatus::Clock cloc
         follow(m_daemon->accounts());
     });
     connect(m_daemon, &DaemonController::signInFinished, this, &AccountsModel::handleSignInFinished);
+    connect(m_daemon, &DaemonController::serviceAvailableChanged, this, &AccountsModel::handleServiceChanged);
     follow(m_daemon->accounts());
 }
 
@@ -236,12 +237,29 @@ void AccountsModel::addAccount(const QString &clientId)
     m_addError.clear();
     Q_EMIT addingChanged();
 
-    const auto failed = [this](const QString &error) {
-        finishAdding(error.isEmpty() ? i18n("The account could not be added.") : error);
+    // An answer that comes once this adding has ended (the daemon went away
+    // in the middle) is not this adding's, nor a later one's.
+    const quint64 attempt = ++m_attempt;
+    const auto failed = [this, attempt](const QString &error) {
+        if (!m_adding || attempt != m_attempt) {
+            return;
+        }
+        if (m_cancelRequested) {
+            // Cancel was pressed first: there is nothing to cancel, and nothing to say.
+            finishAdding(QString());
+        } else {
+            finishAdding(error.isEmpty() ? i18n("The account could not be added.") : error);
+        }
     };
-    const auto signIn = [this, failed] {
+    const auto signIn = [this, attempt, failed] {
+        if (!m_adding || attempt != m_attempt) {
+            return;
+        }
         m_daemon->signIn(
-            [this](const QString &path, const QString &url) {
+            [this, attempt](const QString &path, const QString &url) {
+                if (!m_adding || attempt != m_attempt) {
+                    return;
+                }
                 m_draftPath = path;
                 // The daemon may have said how the draft ended before this
                 // answer was handled.
@@ -280,6 +298,16 @@ void AccountsModel::handleSignInFinished(const QString &path, const QString &out
     }
 }
 
+void AccountsModel::handleServiceChanged()
+{
+    if (!m_adding || m_daemon->serviceAvailable()) {
+        return;
+    }
+    // A daemon that stops sends no SignInFinished, and removes the draft when
+    // it starts again. A sign-in that was being cancelled ends as it was asked to.
+    finishAdding(m_cancelRequested ? QString() : i18n("The KOneDrive service stopped before the account was added. Sign in again."));
+}
+
 void AccountsModel::draftFinished(const QString &outcome, const QString &message)
 {
     if (outcome == QLatin1String("signed-in")) {
@@ -311,11 +339,13 @@ void AccountsModel::cancelAdd()
     if (!m_adding) {
         return;
     }
+    m_cancelRequested = true;
     if (m_draftPath.isEmpty()) {
         // SignIn (or SetClientId before it) is still in flight: the draft is
         // cancelled as soon as it answers.
-        m_cancelRequested = true;
-    } else if (m_awaitingRow) {
+        return;
+    }
+    if (m_awaitingRow) {
         // Signed in already; only its row has not come.
         finishAdding(QString());
     } else {

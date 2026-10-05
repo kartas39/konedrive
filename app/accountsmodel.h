@@ -109,7 +109,8 @@ public:
     /// until it is signed in and named (by its email); accountAdded(path)
     /// then, and the window opens the folder picker. Cancelled, failed, or
     /// already added as another account: the daemon leaves nothing, and
-    /// addError says why unless it was cancelled.
+    /// addError says why unless it was cancelled. A daemon that goes away in
+    /// the middle ends the adding too, with an error that says so.
     Q_INVOKABLE void addAccount(const QString &clientId = QString());
     /// Gives up the sign-in under way, if any (Account.CancelSignIn on its draft).
     Q_INVOKABLE void cancelAdd();
@@ -135,6 +136,7 @@ Q_SIGNALS:
 private:
     void follow(const QStringList &paths);
     void handleSignInFinished(const QString &path, const QString &outcome, const QString &message);
+    void handleServiceChanged();
     void draftFinished(const QString &outcome, const QString &message);
     void cancelDraft();
     void showAdded();
@@ -151,7 +153,12 @@ private:
     QString m_addError;
     /// The draft Sign In is adding, from SignIn's answer until it has ended.
     QString m_draftPath;
-    /// cancelAdd() came before SignIn's answer: the draft is cancelled once it has one.
+    /// Which Sign In the answers of SetClientId and SignIn belong to: one that
+    /// comes after its adding has ended is dropped.
+    quint64 m_attempt = 0;
+    /// cancelAdd() was called for this adding. Before SignIn's answer, the draft
+    /// is cancelled once it has one; a refusal or a daemon that stops then ends
+    /// the adding with no error.
     bool m_cancelRequested = false;
     /// The draft ended "signed-in" and is not in Accounts.List as this model has it yet.
     bool m_awaitingRow = false;

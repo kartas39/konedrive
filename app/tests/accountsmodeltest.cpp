@@ -383,6 +383,73 @@ private Q_SLOTS:
         QCOMPARE(m_daemon->draft, nullptr);
     }
 
+    /// Cancel pressed before the answer, and the answer is a refusal: there is
+    /// nothing to cancel and nothing to say.
+    void aCancelIsNotAnsweredWithARefusal()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+
+        // SignIn refused.
+        m_daemon->manager->refuseSignIn = QStringLiteral("config.toml cannot be read");
+        model.addAccount(QString());
+        model.cancelAdd();
+        QVERIFY(model.adding());
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(m_daemon->manager->calls.contains(QStringLiteral("SignIn")));
+
+        // SetClientId refused.
+        m_daemon->manager->calls.clear();
+        model.addAccount(QStringLiteral("bad"));
+        model.cancelAdd();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("SignIn")));
+    }
+
+    /// A daemon that goes away while an account is being added sends no
+    /// SignInFinished: the adding ends, and says why. While SignIn has not
+    /// answered either, the failed call that follows says nothing more.
+    void theDaemonLeavingEndsTheAdding()
+    {
+        start({});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QSignalSpy added(&model, &AccountsModel::accountAdded);
+        QSignalSpy open(&model, &AccountsModel::openUrlRequested);
+        const QString stopped = QStringLiteral("The KOneDrive service stopped before the account was added. Sign in again.");
+
+        // With the browser open.
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 1);
+        m_daemon->stop();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), stopped);
+        QCOMPARE(added.count(), 0);
+
+        // The daemon is back with no draft, as it starts: the next Sign In works.
+        QVERIFY(m_daemon->start());
+        QTRY_VERIFY(daemon.serviceAvailable());
+        model.addAccount(QString());
+        QVERIFY(model.addError().isEmpty());
+        QTRY_COMPARE(open.count(), 2);
+
+        // Cancel pressed, and the daemon goes before it says "cancelled": no error.
+        FakeAccount *draft = m_daemon->draft->account;
+        draft->cancelled = {};
+        model.cancelAdd();
+        QTRY_VERIFY(draft->calls.contains(QStringLiteral("CancelSignIn")));
+        QVERIFY(model.adding());
+        m_daemon->stop();
+        QTRY_VERIFY(!model.adding());
+        QCOMPARE(model.addError(), QString());
+        QCOMPARE(added.count(), 0);
+    }
+
     /// The rules of a label, checked before the daemon is asked.
     void labelProblems()
     {

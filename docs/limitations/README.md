@@ -228,7 +228,7 @@ application must never read zeros where real content should be.
 - [F200](F200.md) — A bad upload's item is remembered beside its row, and blocked rows are listed per file whatever their reason
 - [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
-- [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed `Add` can leave its entry
+- [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed add can leave its entry
 - [F208](F208.md) — What the helper's bounds per uid on waiting opens and on roots leave open
 - [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over; it is listed as not uploaded, by its name alone
 - [F211](F211.md) — A folder whose `source` in `config.toml` is neither word is held, not repaired

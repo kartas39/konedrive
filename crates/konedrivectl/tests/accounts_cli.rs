@@ -261,6 +261,33 @@ async fn account_add_signs_in_and_names_the_account_by_its_email() {
     assert_eq!(labels().len(), 2);
 }
 
+/// A daemon that stops while `account add` waits for the browser sends no `SignInFinished`:
+/// the command ends at once, and says the daemon stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_add_ends_when_the_daemon_stops() {
+    use std::io::Read;
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
+    let address = bus.address().to_owned();
+    let mut waiting = tokio::task::spawn_blocking(move || common::start_signing_in(&address, &["account", "add"])).await.unwrap();
+    assert!(waiting.address.is_some(), "no sign-in address: {}", waiting.printed);
+
+    // The daemon leaves the bus, as one that exits does.
+    daemon.connection.clone().close().await.unwrap();
+    let child = waiting.child.0.as_mut().unwrap();
+    let mut status = None;
+    wait_for("`account add` to end", || {
+        status = child.try_wait().unwrap();
+        status.is_some()
+    })
+    .await;
+    assert_eq!(status.unwrap().code(), Some(1));
+    let mut said = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut said).unwrap();
+    assert!(said.contains("the daemon stopped before the sign-in ended. Nothing was added"), "{said}");
+}
+
 /// A development build's `dev add-account <label>` adds a signed-out account under the
 /// label, as `account add <label>` did; a release build has no such command.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

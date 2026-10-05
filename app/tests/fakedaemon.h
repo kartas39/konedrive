@@ -959,7 +959,8 @@ public:
         return connection.registerService(DaemonController::ServiceName) && ok;
     }
 
-    /// Gives the name up, as a daemon that exits does.
+    /// Gives the name up, as a daemon that exits does. Its draft goes with it,
+    /// with no SignInFinished: the daemon removes it when it starts again.
     void stop()
     {
         auto connection = fake::bus();
@@ -969,6 +970,8 @@ public:
         }
         if (draft) {
             connection.unregisterObject(draft->path);
+            draft->deleteLater();
+            draft = nullptr;
         }
         connection.unregisterObject(fake::ManagerPath);
         m_started = false;

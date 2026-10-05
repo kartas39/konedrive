@@ -130,11 +130,20 @@ impl Drop for Stopped {
     }
 }
 
-/// Runs `args` — a command that prints a sign-in address and waits — and plays the browser:
-/// the address's redirect is called with `answer` (`code=…`, `error=…`) and its `state`.
-/// The command's output once it has ended. Blocking.
-pub fn run_signing_in(bus_addr: &str, args: &[&str], answer: &str) -> std::process::Output {
-    use std::io::{BufRead, BufReader, Read, Write};
+/// A command that has printed its sign-in address and waits: what it printed up to the
+/// address, and the rest of its output, not read yet.
+pub struct SigningIn {
+    pub child: Stopped,
+    pub stdout: std::io::BufReader<std::process::ChildStdout>,
+    pub printed: String,
+    /// `None`: the command ended, or closed its output, without printing an address.
+    pub address: Option<String>,
+}
+
+/// Starts `args` — a command that prints a sign-in address and waits — and reads what it
+/// prints up to the address. Blocking.
+pub fn start_signing_in(bus_addr: &str, args: &[&str]) -> SigningIn {
+    use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     let mut child = command(bus_addr, args, &[]);
     let child = child.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("failed to run the konedrivectl binary");
@@ -148,6 +157,15 @@ pub fn run_signing_in(bus_addr: &str, args: &[&str], answer: &str) -> std::proce
         printed.push_str(&line);
         line.clear();
     }
+    SigningIn { child, stdout, printed, address }
+}
+
+/// Runs `args` — a command that prints a sign-in address and waits — and plays the browser:
+/// the address's redirect is called with `answer` (`code=…`, `error=…`) and its `state`.
+/// The command's output once it has ended. Blocking.
+pub fn run_signing_in(bus_addr: &str, args: &[&str], answer: &str) -> std::process::Output {
+    use std::io::{Read, Write};
+    let SigningIn { mut child, mut stdout, mut printed, address } = start_signing_in(bus_addr, args);
     if let Some(address) = address {
         let address = url::Url::parse(&address).unwrap();
         let query: std::collections::HashMap<String, String> = address.query_pairs().into_owned().collect();

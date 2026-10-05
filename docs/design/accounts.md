@@ -401,17 +401,24 @@ draft that `SignIn` answered, except one a daemon restart removed:
   email, or the label so made is refused by the rules (longer than 40 characters), it is the first
   free one of `Personal`, `Personal 2`, `Personal 3`, and so on (limitations log A29).
 - **On success** the label is set and the draft mark removed in one write of `config.toml`; then
-  the account joins `List` (`PropertiesChanged`); then `SignInFinished` is sent. The account is
-  never in `List` under any label but its final one.
+  the account joins `List` (`PropertiesChanged`); then `SignInFinished` is sent. What is promised
+  is that the label is final before the account is in `List`, so the account is never in `List`
+  under any other, and that `SignInFinished` comes after the `List` change. Nothing is promised
+  about the draft's own `Label` change signal.
 - **At start** every entry of `config.toml` marked as a draft is removed, with its directory and
   its stored token, before the accounts come up. No signal is sent (limitations log A30).
 - **A client that goes away** (the window closed, `konedrivectl` killed) leaves its draft: a
   sign-in finished in the browser after that still adds the account, and otherwise the draft ends
   at the timeout or at the next `SignIn` (limitations log A28).
+- **A daemon that goes away** sends no signal. A client does not wait for one: the window ends
+  the adding when the daemon's name leaves the bus, `konedrivectl account add` when the daemon or
+  its draft is gone, each with an error that says the daemon stopped.
 - **Other calls on a draft's objects** are not part of the design, and no client makes them. Its
-  folder takes nothing (`Folder.Register` answers `Failed`); `Accounts.Remove` of its path,
-  `Account.SignOut` and `Accounts.SetClientId` end it as `cancelled`; `Account.SetLabel` is not
-  refused, and the label it sets is overwritten on success (limitations log A31).
+  folder takes nothing (`Folder.Register` answers `Failed`); `Accounts.Remove` of its path and
+  `Account.SignOut` end it as `cancelled`, and so does an `Accounts.SetClientId` that is not
+  refused (refused, because an account is signed in or signing in, it leaves the draft);
+  `Account.SetLabel` is not refused, and the label it sets is overwritten on success
+  (limitations log A31).
 
 `Account.BeginSignIn`, `Account.CancelSignIn` and `Account.SetLabel` keep their meaning for an
 account that is not a draft: signing a signed-out account in again (`konedrivectl login`) and
