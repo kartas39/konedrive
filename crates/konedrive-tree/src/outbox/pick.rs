@@ -207,7 +207,7 @@ fn rule_one(conn: &Connection, row: &OutboxRow, out: &mut Vec<i64>) -> Result<()
         out.extend(statement.query_map(params![id, row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
     }
     if let Some(inode) = &row.inode {
-        // The same handle's bytes, or no handle and the same inode (`same_key`).
+        // The same handle's bytes, or no handle and the same inode.
         let earlier: Vec<i64> = match &inode.handle {
             Some(handle) => {
                 let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle = ?1 AND seq < ?2")?;
