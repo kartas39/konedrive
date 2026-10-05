@@ -285,6 +285,8 @@ application must never read zeros where real content should be.
 - [F288](F288.md) — An item this daemon may not read that is renamed is looked at every 30 s for as long as it stays unreadable
 - [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
 - [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
+- [F292](F292.md) — What the reconcile makes the user's own waits for the disk once for each object with an id
+- [F293](F293.md) — Three crash windows of a rescue, a conflict copy and a removal that keeps something stay open
 
 ---
 

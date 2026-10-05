@@ -313,8 +313,8 @@ impl Materializer {
 
     /// Keeps both (§6): the object at `dir/name` (at `rel`) is renamed in its
     /// directory to the first free `name-<machine>.ext`, never over anything,
-    /// and becomes the user's own — konedrive's attributes off — to be
-    /// uploaded as new; the name is the cloud's again. Rows below a directory
+    /// and becomes the user's own — konedrive's attributes off, the item id
+    /// first ([`placeholder::strip`]) — to be uploaded as new; the name is the cloud's again. Rows below a directory
     /// follow it.
     pub(super) fn copy_aside(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
         let original = name.to_str().ok_or_else(|| ApplyError::Io(format!("{} has a name that is not UTF-8", rel.display())))?;
@@ -334,9 +334,9 @@ impl Materializer {
         let copy = copy.ok_or_else(|| ApplyError::Io(format!("no free name for a copy of {}", rel.display())))?;
         let copied = OsStr::new(&copy);
         if is_dir {
-            placeholder::strip_konedrive_xattrs(&self.disk.open_subdir(dir, copied)?)?;
+            placeholder::strip(&self.disk.open_subdir(dir, copied)?)?;
         } else if let Ok(file) = self.disk.open_file(dir, copied) {
-            placeholder::strip_konedrive_xattrs(&file)?;
+            placeholder::strip(&file)?;
         }
         let copy_rel = rel.with_file_name(&copy);
         if is_dir {
