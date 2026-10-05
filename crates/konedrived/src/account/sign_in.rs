@@ -43,7 +43,7 @@ fn drive_is_free(config: &Config, me: Option<&AccountId>, drive: &DriveId, unset
 /// and the account it allows, in one change of `config` — so one `ConfigStore` update, as
 /// [`AccountService::claim`] is: when no other account has `drive`, a new account after
 /// every other, under a fresh id, with the drive, the `email` as its `login_hint`, and
-/// its label ([`signed_in_label`]). `Err` says why the sign-in is refused, and nothing was
+/// its label ([`crate::config::signed_in_label`]). `Err` says why the sign-in is refused, and nothing was
 /// added.
 pub(crate) fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str>, unsettled: &[AccountId]) -> Result<AccountConfig, Refused> {
     drive_is_free(config, None, drive, unsettled)?;

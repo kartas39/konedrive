@@ -573,7 +573,7 @@ pub struct Siblings(std::sync::Mutex<Vec<Weak<AccountService>>>);
 
 impl Siblings {
     /// Every one of them the guard cannot tell apart from a drive, by id
-    /// ([`settle`]): for a sign-in that belongs to none of them (`Accounts.SignIn`).
+    /// ([`sign_in::settle`]): for a sign-in that belongs to none of them (`Accounts.SignIn`).
     pub(crate) async fn settle(&self) -> Vec<AccountId> {
         let all = crate::panic::lock(&self.0).iter().filter_map(Weak::upgrade).collect();
         sign_in::settle(all).await

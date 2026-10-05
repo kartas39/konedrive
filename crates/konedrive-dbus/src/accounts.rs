@@ -135,7 +135,8 @@ pub trait Account {
     fn cancel_sign_in(&self) -> zbus::Result<()>;
     fn sign_out(&self) -> zbus::Result<()>;
     fn refresh_info(&self) -> zbus::Result<()>;
-    /// Same rules as [`AccountsProxy::add`].
+    /// The label rules (`konedrived::config::check_label`): trimmed, 1 to 40 characters, no `/`,
+    /// no control character, not 12 hexadecimal digits, unique regardless of case.
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
