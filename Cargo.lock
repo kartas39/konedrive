@@ -1138,6 +1138,14 @@ name = "konedrive-reason"
 version = "0.1.1"
 
 [[package]]
+name = "konedrive-text"
+version = "0.1.1"
+dependencies = [
+ "konedrive-dbus",
+ "konedrive-reason",
+]
+
+[[package]]
 name = "konedrive-tree"
 version = "0.1.1"
 dependencies = [
@@ -1185,6 +1193,7 @@ dependencies = [
  "konedrive-graph",
  "konedrive-proto",
  "konedrive-reason",
+ "konedrive-text",
  "konedrive-tree",
  "konedrived",
  "libc",
@@ -1212,6 +1221,7 @@ dependencies = [
  "konedrive-fs",
  "konedrive-graph",
  "konedrive-proto",
+ "konedrive-text",
  "konedrive-tree",
  "konedrived",
  "libc",

@@ -226,6 +226,155 @@ fn unreachable_is_followed_by_the_daemons_cause() {
     let name = format!("{}.Unreachable", konedrive_dbus::ERROR_PREFIX);
     let told = |detail: &str| refusal_text(SyncAction::Open("/f/a.txt"), Some(&name), detail, "/f");
     assert_eq!(told("the secret storage is locked"), "OneDrive could not be reached: the secret storage is locked");
-    assert_eq!(told(""), "OneDrive could not be reached");
-    assert_eq!(told(&name), "OneDrive could not be reached", "an error with no message");
+    assert_eq!(told(""), "OneDrive could not be reached.");
+    assert_eq!(told(&name), "OneDrive could not be reached.", "an error with no message");
+}
+
+fn named(refusal: &str) -> String {
+    format!("{}.{refusal}", konedrive_dbus::ERROR_PREFIX)
+}
+
+/// `sync pin`, `unpin`, `free` and `open` say the catalogue's sentences (`konedrive-text`),
+/// as they are written there: the one Dolphin shows where there is one for both, with the
+/// path where Dolphin has the file's name, and the command line's own where it names a
+/// command or the folder.
+#[test]
+fn a_file_operation_is_told_in_the_catalogues_words() {
+    let told = |action, refusal: &str, detail: &str| {
+        let context = Context { root: "/r", prefix: "konedrivectl --account Test", ..Context::default() };
+        refusal_text_in(action, Some(&named(refusal)), detail, context)
+    };
+    // One sentence for Dolphin and the command line.
+    assert_eq!(
+        told(SyncAction::Pin("/r/own.txt"), "NotManaged", "x"),
+        "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded."
+    );
+    assert_eq!(
+        told(SyncAction::Unpin("/r/own.txt"), "NotManaged", "x"),
+        "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so it was never pinned."
+    );
+    assert_eq!(
+        told(SyncAction::Free("/r/a.bin"), "InUse", "x"),
+        "“/r/a.bin” is open in another program, so its space cannot be freed right now. Close it there and try again."
+    );
+    assert_eq!(told(SyncAction::Free("/r/a.bin"), "NotHydrated", "x"), "“/r/a.bin” is not downloaded, so there is no space to free — it already takes none.");
+    assert_eq!(
+        told(SyncAction::Open("/r/own.txt"), "NotManaged", "x"),
+        "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive."
+    );
+    // A refusal with no sentence of its own: the daemon's message, kept whole.
+    assert_eq!(told(SyncAction::Pin("/r/a.bin"), "Failed", "disk full"), "Keeping “/r/a.bin” on this device failed: disk full");
+    assert_eq!(told(SyncAction::Unpin("/r/a.bin"), "Failed", "disk full"), "Unpinning “/r/a.bin” failed: disk full");
+    assert_eq!(told(SyncAction::Free("/r/a.bin"), "SomethingNew", "disk full"), "Freeing up “/r/a.bin” failed: disk full");
+    assert_eq!(told(SyncAction::Open("/r/a.bin"), "Failed", "gone"), "Opening “/r/a.bin” in OneDrive failed: gone");
+    // The command line's own: the command for this account, and the folder.
+    assert_eq!(
+        told(SyncAction::Open("/r/new.txt"), "NotUploaded", "x"),
+        "/r/new.txt is not uploaded yet, so it has no page in OneDrive. It can be opened there once it is uploaded (`konedrivectl --account Test sync outbox`)."
+    );
+    assert_eq!(
+        told(SyncAction::Open("/r/a.bin"), "NotSignedIn", "x"),
+        "The account is not signed in, so OneDrive cannot be asked for the page of /r/a.bin. Sign in with `konedrivectl --account Test login` and try again."
+    );
+    assert_eq!(
+        told(SyncAction::Free("/r/new.txt"), "NotUploaded", "/r/new.txt is not uploaded yet, so freeing it up would lose the changes made here"),
+        "/r/new.txt is not uploaded yet, so freeing up its space would lose the changes made here. It was left as it is; its space can be freed once it is \
+         uploaded (`konedrivectl --account Test sync outbox`)."
+    );
+    assert_eq!(
+        told(SyncAction::Pin("/r/link"), "OutsideRoot", "x"),
+        "/r/link: only files and folders inside the sync folder (/r) can be kept on this device or freed up — not symbolic links, or anything outside it."
+    );
+    assert_eq!(
+        told(SyncAction::Open("/r/link"), "OutsideRoot", "x"),
+        "/r/link: only files and folders inside the sync folder (/r), and the folder itself, have a page in OneDrive — not symbolic links, or anything outside it."
+    );
+    assert_eq!(
+        told(SyncAction::Pin("/r/a.bin"), "ModifiedLocally", "x"),
+        "“/r/a.bin” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."
+    );
+}
+
+/// Where the catalogue has no sentence for the command line, a file operation is told as
+/// this table tells its other commands: a folder above that keeps the file, no folder, no
+/// helper.
+#[test]
+fn a_file_operation_the_catalogue_leaves_to_the_command_line_keeps_its_own_words() {
+    let told = |action, refusal: &str, detail: &str| refusal_text(action, Some(&named(refusal)), detail, "/r");
+    let pinned = "/r/Docs/a.bin is pinned by /r/Docs: unpin it first";
+    assert!(told(SyncAction::Unpin("/r/Docs/a.bin"), "NotAllowed", pinned).ends_with("`konedrivectl sync unpin /r/Docs` stops keeping the folder"));
+    assert!(told(SyncAction::Free("/r/Docs/a.bin"), "NotAllowed", pinned).contains("free up the folder first: `konedrivectl sync free /r/Docs`"));
+    assert!(told(SyncAction::Pin("/r/a.bin"), "NoRoot", "x").starts_with("no sync folder is registered. Register one first"));
+    assert!(told(SyncAction::Pin("/r/a.bin"), "NoHelper", "x").contains("so /r/a.bin was not registered"));
+}
+
+/// `sync free` without the helper: several paths may have been given and some freed, so
+/// the command line has its own sentence, and how to start the helper follows it.
+#[test]
+fn a_free_up_without_the_helper_says_nothing_more_was_freed() {
+    let context = Context { root: "/r", helper: "stopped", ..Context::default() };
+    let text = refusal_text_in(SyncAction::Free("/r/a.bin"), Some(&named("NoHelper")), "x", context);
+    assert!(text.starts_with("The konedrive helper is not connected, so nothing more was freed up. Freeing up a file must first"), "{text}");
+    assert!(
+        text.ends_with("it reconnects on its own. The konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`"),
+        "{text}"
+    );
+    assert_eq!(refusal_text(SyncAction::FreeUpSpace, Some(&named("NoHelper")), "x", "/r"), refusal_text(SyncAction::Free("/r/a.bin"), Some(&named("NoHelper")), "x", "/r"));
+}
+
+/// `sync pin`, `unpin` and `free` take several paths. A sentence about one file is said of
+/// the one path given; of several, none of which the refusal names, the list form is said,
+/// the paths in no quotes.
+#[test]
+fn several_paths_are_never_put_inside_one_files_quotes() {
+    let told = |action, refusal: &str, several| {
+        let context = Context { root: "/r", prefix: "konedrivectl --account Test", several, ..Context::default() };
+        refusal_text_in(action, Some(&named(refusal)), "disk full", context)
+    };
+    let two = "/r/a, /r/own.txt";
+    let not_managed = "one of these is not a OneDrive file but a file of your own in the sync folder";
+    let listed = [
+        (SyncAction::Pin(two), "NotManaged", format!("{two}: {not_managed}, so there is nothing for KOneDrive to keep downloaded.")),
+        (SyncAction::Unpin(two), "NotManaged", format!("{two}: {not_managed}, so it was never pinned.")),
+        (SyncAction::Free(two), "NotManaged", format!("{two}: {not_managed}, and KOneDrive never frees the space of a file it could not download again.")),
+        (SyncAction::Free(two), "InUse", format!("{two}: one of these is open in another program, so its space cannot be freed right now. Close it there and try again.")),
+        (SyncAction::Free(two), "NotHydrated", format!("{two}: one of these is not downloaded, so there is no space to free — it already takes none.")),
+        (
+            SyncAction::Pin(two),
+            "ModifiedLocally",
+            format!("{two}: one of these was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."),
+        ),
+        (
+            SyncAction::Free(two),
+            "ModifiedLocally",
+            format!("{two}: one of these was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."),
+        ),
+        (SyncAction::Pin(two), "Failed", format!("Keeping {two} on this device failed: disk full")),
+        (SyncAction::Unpin(two), "Failed", format!("Unpinning {two} failed: disk full")),
+        (SyncAction::Free(two), "SomethingNew", format!("Freeing up {two} failed: disk full")),
+    ];
+    for (action, refusal, text) in listed {
+        assert_eq!(told(action, refusal, true), text);
+    }
+    // No name at all: the daemon's words are all there is.
+    let context = Context { several: true, ..Context::default() };
+    assert_eq!(refusal_text_in(SyncAction::Free(two), None, "disk full", context), format!("Freeing up {two} failed: disk full"));
+    // One path, or the one the refusal names: the sentence about one file.
+    let one = "/r/own.txt";
+    let about_one = [
+        (SyncAction::Pin(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, so there is nothing for KOneDrive to keep downloaded."),
+        (SyncAction::Free(one), "NotManaged", "“/r/own.txt” is not a OneDrive file: it is a file of your own in the sync folder, and KOneDrive never frees the space of a file it could not download again."),
+        (SyncAction::Free(one), "InUse", "“/r/own.txt” is open in another program, so its space cannot be freed right now. Close it there and try again."),
+        (SyncAction::Free(one), "NotHydrated", "“/r/own.txt” is not downloaded, so there is no space to free — it already takes none."),
+        (SyncAction::Unpin(one), "ModifiedLocally", "“/r/own.txt” was changed here and has not been uploaded, so freeing its space would lose your edits. It was left exactly as it is."),
+        (SyncAction::Unpin(one), "Failed", "Unpinning “/r/own.txt” failed: disk full"),
+    ];
+    for (action, refusal, text) in about_one {
+        assert_eq!(told(action, refusal, false), text);
+    }
+    // A sentence with no file in quotes is said of the list as it is.
+    assert_eq!(
+        told(SyncAction::Pin(two), "OutsideRoot", true),
+        format!("{two}: only files and folders inside the sync folder (/r) can be kept on this device or freed up — not symbolic links, or anything outside it.")
+    );
 }

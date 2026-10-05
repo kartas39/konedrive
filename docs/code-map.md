@@ -27,6 +27,7 @@ A change that adds, moves or removes a file changes its line here.
 | `crates/konedrive-proto` | The messages between the helper and the daemon |
 | `crates/konedrive-reason` | Why a change is kept back: the reasons of outbox rows and local skips, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
+| `crates/konedrive-text` | What the codes mean, in words: the one catalogue of sentences, and the C++ generated from it |
 | `dbus/` | The D-Bus interfaces as XML: the contract between the daemon and its clients |
 | `app/` | The window and the tray icon (Qt 6, Kirigami) |
 | `dolphin/` | The Dolphin plugins: overlay emblems and the context menu |
@@ -37,8 +38,9 @@ A change that adds, moves or removes a file changes its line here.
 
 Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `konedrive-reason`
 (which use nothing); `konedrive-graph`; `konedrive-tree` (uses `konedrive-fs`, and re-exports
-`konedrive-reason` in `outbox`; it does not know `konedrive-graph`); `konedrive-dbus`; then
-`konedrive-helper`, `konedrived` and `konedrivectl`.
+`konedrive-reason` in `outbox`; it does not know `konedrive-graph`); `konedrive-dbus`;
+`konedrive-text` (uses `konedrive-reason` and `konedrive-dbus`); then `konedrive-helper`,
+`konedrived` (which uses `konedrive-text` in its tests only) and `konedrivectl`.
 
 ## How each suite is run
 
@@ -545,11 +547,13 @@ What is printed, by topic. Pure: each function is given what was read and return
 - `folder.rs` — what the commands on a folder say when they are done; `sync activity`. `[tests]`
 - `settings.rs` — `settings`.
 - `version.rs` — `--version`.
-- `uploads.rs` — the upload queue and what is not uploaded. `[tests]`
+- `uploads.rs` — the upload queue and what is not uploaded; a reason's sentence is
+  `konedrive-text`'s. `[tests]`
 - `transfers.rs` — transfers and the queue totals. `[tests]`
 - `files.rs` — skipped items, conflicts, pins, free-up. `[tests]`
 - `refusals.rs` — a refusal explained: the actions, and what the CLI read after the refusal. `[tests]`
-- `refusals/folder.rs` — the sentences of a refused folder call, by the group of the action.
+- `refusals/folder.rs` — the sentences of a refused folder call, by the group of the action;
+  those of `pin`, `unpin`, `free` and `open` are taken from `konedrive-text`.
 - `refusals/account.rs` — the sentences of a refused call on the accounts and the token export.
 - `accounts.rs` — `account list`.
 - `formats.rs` — sizes, times, durations, shell words. `[tests]`
@@ -722,6 +726,25 @@ Each has its file in `crates/konedrived/src/dbus/`. Design: `desktop.md`.
 - `org.konedrive.TokenExport.xml` — the token export of a development build.
 - `org.konedrive.DevTools.xml` — a development build's way to add a signed-out account.
 
+## `crates/konedrive-text`: the words for the codes
+
+Design: `desktop.md` §2.10. A new code gets its words here: `CONTRIBUTING.md`, "A new reason or
+refusal".
+
+### `crates/konedrive-text/`
+
+- `Cargo.toml` — the crate; it uses `konedrive-reason` and `konedrive-dbus` only.
+- `src/lib.rs` — a sentence, its places, and who shows it. `[tests]`
+- `src/reasons.rs` — why a change is not uploaded: every key of `Reason` and `LocalSkip`.
+- `src/waits.rs` — what keeps an item on this computer: every key of `WaitsFor`.
+- `src/files.rs` — a file not kept, unpinned, freed up or opened in OneDrive: every name of
+  `Refusal`, and the Dolphin plugin's own sentences. `[tests]`
+- `src/menu.rs` — why an entry of Dolphin's menu is disabled: the tooltips. `[tests]`
+- `src/cpp.rs` — the generator of the C++ files, and the window's (`app/generated/`).
+- `src/cpp/plugin.rs` — the Dolphin plugin's (`dolphin/src/generated/`).
+- `tests/generated.rs` — tests: the generated files in git are what the generator writes now;
+  with `KONEDRIVE_UPDATE_GENERATED=1` it rewrites them.
+
 ## `app/`: the window
 
 Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
@@ -745,7 +768,10 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `activitymodel.h`, `activitymodel.cpp` — the activity list.
 - `conflictmodel.h`, `conflictmodel.cpp` — the "Conflicts" list.
 - `transfermodel.h`, `transfermodel.cpp` — the downloads under way.
-- `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words.
+- `uploadreasons.h`, `uploadreasons.cpp` — why a change is not uploaded, in words: the entry
+  functions; the sentences are generated.
+- `generated/reasontexts.h`, `generated/reasontexts.cpp` — generated from `konedrive-text`, not
+  edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.
 - `konedrive.notifyrc` — the notification events.
 - `trayicon.h`, `trayicon.cpp` — the tray icon.
@@ -778,6 +804,7 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `accountsmodeltest.cpp` — `DaemonController`, `AccountsModel`, `CurrentAccount`.
 - `appstatustest.cpp` — `AccountStatus`, `AppStatus`.
 - `synccontrollertest.cpp` — `SyncController`.
+- `reasontextstest.cpp` — every reason reads as it did before its sentence was generated.
 - `modelstest.cpp` — the transfer, activity and conflict models.
 - `notifiertest.cpp` — `Notifier`.
 - `dialogstest.cpp` — the window's confirmations.
@@ -809,7 +836,10 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
   alone: what the emblems show, and whether a selection is in a sync folder at all.
 - `syncclient.h`, `syncclient.cpp` — the calls to the daemon, none of them waited for: the
   menu's question and the entries' calls.
-- `refusaltext.h`, `refusaltext.cpp` — what to tell a person when the daemon refused.
+- `refusaltext.h`, `refusaltext.cpp` — what to tell a person when the daemon refused: which
+  sentence a failure gets, and how several are summed up; the sentences are generated.
+- `generated/refusaltexts.h`, `generated/refusaltexts.cpp` — generated from `konedrive-text`,
+  not edited: the plugin's sentence for every operation and refusal, and the menu's tooltips.
 
 ### `dolphin/tests/`
 
@@ -822,6 +852,8 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
 - `overlayplugintest.cpp` — the overlay plugin as Dolphin loads it.
 - `actionplugintest.cpp` — the context menu plugin as `KFileItemActions` loads it.
 - `noopentest.cpp` — the plugins never open a file inside the folder.
+- `refusaltextstest.cpp`, `refusaltexts.expected` — every operation and refusal reads as it did
+  before its sentence was generated: the strings of the hand-written table, a line each.
 
 ## `tests/vm`: the VM suite
 
@@ -936,7 +968,8 @@ Design: `packaging.md`; `docs/releasing.md`.
 ### `.github/workflows/`
 
 - `release.yml` — a release on every push to `main`: the tests, the RPMs, the tag.
-- `structure.yml` — the guard, and the check of the links in the doc comments, on every pull request.
+- `structure.yml` — on every pull request: the guard, the check of the links in the doc comments,
+  and the generated C++ against the catalogue of sentences (`cargo test -p konedrive-text`).
 
 ## Documents
 

@@ -1,0 +1,12 @@
+[package]
+name = "konedrive-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The codes the sentences explain, and nothing else: `konedrivectl` reads the
+# catalogue, and the window and the Dolphin plugin get C++ generated from it.
+[dependencies]
+konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-reason = { path = "../konedrive-reason" }

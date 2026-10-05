@@ -55,6 +55,9 @@ konedrive_dolphin_test(overlayenginetest)
 konedrive_dolphin_test(overlayplugintest)
 konedrive_dolphin_test(actionplugintest)
 konedrive_dolphin_test(noopentest)
+# The plugin's words as they were before they were generated from the catalogue.
+konedrive_dolphin_test(refusaltextstest)
+target_compile_definitions(refusaltextstest PRIVATE KONEDRIVE_EXPECTED_TEXTS="${CMAKE_CURRENT_SOURCE_DIR}/refusaltexts.expected")
 
 # Two functions of actionplugintest need a bus of their own, or half a minute.
 add_test(NAME actionplugintest_activation

@@ -7,6 +7,7 @@
 // an `error` it emits is shown in the window's message bar.
 
 #include "filestate.h"
+#include "generated/refusaltexts.h"
 #include "syncclient.h"
 
 #include <KAbstractFileItemActionPlugin>
@@ -170,36 +171,25 @@ private:
                 // Checked and locked: unchecking it (Unpin()) would be refused.
                 alwaysKeep->setEnabled(answer.alwaysKeep == Keep::Off || answer.alwaysKeep == Keep::On);
                 if (answer.alwaysKeep == Keep::OnLocked) {
-                    alwaysKeep->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", answer.blockedBy));
+                    alwaysKeep->setToolTip(konedrive::keptByAFolderToolTip(answer.blockedBy));
                 }
             }
             if (freeUp) {
                 freeUp->setVisible(answer.freeUp != Offer::Hidden);
                 freeUp->setEnabled(answer.freeUp == Offer::Enabled);
                 // Why FreeUp() would be refused, in a tooltip's length: the
-                // words of the refusal itself are refusaltext.cpp's.
-                switch (answer.freeUp == Offer::Disabled ? answer.freeUpWhy : Why::NotSaid) {
-                case Why::PinnedAbove:
-                    freeUp->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", answer.blockedBy));
-                    break;
-                case Why::NoHelper:
-                    freeUp->setToolTip(i18nc("@info:tooltip", "The konedrive helper is not connected. Try again once it is — it reconnects on its own."));
-                    break;
-                case Why::NotUploaded:
-                    freeUp->setToolTip(i18nc("@info:tooltip", "Not uploaded yet: freeing it up would lose the changes made here."));
-                    break;
-                case Why::Unknown:
-                    freeUp->setToolTip(i18nc("@info:tooltip", "KOneDrive cannot tell yet whether a change here waits to be uploaded. Try again in a moment."));
-                    break;
-                case Why::NotSaid:
-                    break;
+                // catalogue's words (crates/konedrive-text, src/menu.rs),
+                // beside those of the refusal itself.
+                const QString why = konedrive::freeUpWhyToolTip(answer.freeUp == Offer::Disabled ? answer.freeUpWhy : Why::NotSaid, answer.blockedBy);
+                if (!why.isEmpty()) {
+                    freeUp->setToolTip(why);
                 }
             }
             if (openOnline) {
                 openOnline->setVisible(answer.openOnline != Offer::Hidden);
                 openOnline->setEnabled(answer.openOnline == Offer::Enabled);
                 if (answer.openOnline == Offer::Disabled) {
-                    openOnline->setToolTip(i18nc("@info:tooltip", "Not in OneDrive yet."));
+                    openOnline->setToolTip(konedrive::notInOneDriveToolTip());
                 }
             }
             // With nothing offered the section goes too.

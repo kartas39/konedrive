@@ -93,6 +93,7 @@ add_library(konedrive_core STATIC
     activitymodel.cpp
     conflictmodel.cpp
     uploadreasons.cpp
+    generated/reasontexts.cpp
     accountstatus.cpp
     appstatus.cpp
     notifier.cpp
@@ -186,6 +187,7 @@ if(BUILD_TESTING)
     konedrive_test(accountsmodeltest)
     konedrive_test(synccontrollertest)
     konedrive_test(modelstest)
+    konedrive_test(reasontextstest)
     konedrive_test(appstatustest)
     konedrive_test(notifiertest)
     konedrive_test(autostarttest)

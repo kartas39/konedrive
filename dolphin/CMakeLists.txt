@@ -25,6 +25,7 @@ add_definitions(-DTRANSLATION_DOMAIN=\"konedrive_dolphin\")
 # Everything the two plugins decide, in one library the tests link directly.
 add_library(konedrive_dolphin_core STATIC
     src/filestate.cpp
+    src/generated/refusaltexts.cpp
     src/overlayengine.cpp
     src/refusaltext.cpp
     src/syncclient.cpp)

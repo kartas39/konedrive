@@ -36,7 +36,7 @@ pub(super) async fn explained<T>(
         _ => false,
     };
     let prefix = chosen.prefix();
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &[], foreign, prefix: &prefix };
+    let context = Context { root: &root, source: &source, helper: &helper, folders: &[], foreign, prefix: &prefix, several: false };
     Err(anyhow!("{}", explain_sync_error_in(action, &error, context)))
 }
 
@@ -60,6 +60,8 @@ pub(super) async fn explained_paths<T>(
         paths.iter().find(|path| outside && folders.holder(path).is_none()).cloned()
     });
     let named = refused.clone().unwrap_or_else(|| paths.join(", "));
+    // A sentence about one file is said of the one path given, or of the one refused.
+    let several = refused.is_none() && paths.len() > 1;
     let about = refused.as_deref().or(paths.first().map(String::as_str)).unwrap_or_default();
     let held_by = folders.holder(about);
     let root = held_by.map(|f| f.root.clone()).unwrap_or_default();
@@ -70,7 +72,7 @@ pub(super) async fn explained_paths<T>(
     let helper = daemon.manager.helper_state().await.unwrap_or_default();
     let roots = folders.roots();
     let prefix = folders.prefix(held_by);
-    let context = Context { root: &root, source: &source, helper: &helper, folders: &roots, foreign: false, prefix: &prefix };
+    let context = Context { root: &root, source: &source, helper: &helper, folders: &roots, foreign: false, prefix: &prefix, several };
     Err(anyhow!("{}", explain_sync_error_in(action.about(&named), &error, context)))
 }
 

@@ -1,4 +1,4 @@
-# The guards that run on every pull request and run no test:
+# The guards that run on every pull request. Two run no test:
 #
 # - the structure rules (CONTRIBUTING.md, "The structure of the code"): the
 #   no tests in a source file, the order of the daemon's layers (the sizes are
@@ -8,6 +8,14 @@
 #   included, with a link that does not resolve as an error. This one builds
 #   the dependencies (checked, not linked) before it reads the comments.
 #   What it does not catch is in docs/limitations/D59.md.
+#
+# And one that runs the tests of one small crate:
+#
+# - the generated C++ (app/generated/, dolphin/src/generated/) is what the
+#   catalogue of sentences gives now, and every code has its words there
+#   (crates/konedrive-text; CONTRIBUTING.md, "A new reason or refusal"). The
+#   C++ build does not run cargo, so nothing else sees a catalogue changed
+#   without its generated files.
 name: Structure
 
 on:
@@ -64,3 +72,34 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
         run: cargo doc --locked --workspace --no-deps --document-private-items
+
+  generated-texts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # As in doc-links: the pinned toolchain, and nothing else installed.
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc --version
+
+      - name: Cache the crates and the test build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: text-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: text-rust-${{ env.RUST_VERSION }}-
+
+      # The catalogue against the codes, and the generated files in git
+      # against what the generator writes now.
+      - name: Check the sentences and the generated files
+        run: cargo test -p konedrive-text --locked
