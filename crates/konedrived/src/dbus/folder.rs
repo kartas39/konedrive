@@ -97,6 +97,21 @@ impl Folder {
     }
 
     #[zbus(property)]
+    async fn overall(&self) -> konedrive_dbus::overall::Overall {
+        OVERALL.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn trouble(&self) -> String {
+        TROUBLE.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn not_updated(&self) -> String {
+        NOT_UPDATED.of(&self.service)
+    }
+
+    #[zbus(property)]
     async fn paused(&self) -> bool {
         PAUSED.of(&self.service)
     }

@@ -224,3 +224,34 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
     assert!(text.lines().any(|l| l.starts_with("Mode:") && l.contains("read-only")), "{text}");
     assert!(!text.lines().any(|l| l.starts_with("Waiting to upload:")), "nothing uploads from a read-only folder: {text}");
 }
+
+/// `sync status` and `status` say the state of the account as a whole as the daemon decided
+/// it (`Folder.Overall`), with the sentence of `Folder.Trouble`: the line follows the daemon
+/// through a folder at rest, trouble that leaves it running, and a pause.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_the_overall_state_the_daemon_decided() {
+    use konedrived::status::snapshot::{SyncTrouble, TroubleKind};
+    let f = harness().await;
+    let addr = f._bus.address();
+    let overall = |command: &[&str]| {
+        let text = out_text(&run(addr, command));
+        let line = text.lines().find(|line| line.starts_with("Overall:")).unwrap_or_else(|| panic!("no Overall: line: {text}"));
+        line.trim_start_matches("Overall:").trim().to_owned()
+    };
+    assert_eq!(overall(&["sync", "status"]), "offline — no OneDrive folder yet");
+
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    assert_eq!(overall(&["sync", "status"]), "ok — up to date");
+    assert_eq!(overall(&["status"]), "ok — up to date");
+
+    // Out of reach by its kind, in a sentence this build has never said.
+    let reworded = "OneDrive does not answer; the next try is in a minute";
+    f.service.state().update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: reworded.into(), blocking: false, kind: TroubleKind::Unreachable }));
+    assert_eq!(overall(&["sync", "status"]), format!("offline — {reworded}"));
+    assert_eq!(overall(&["status"]), format!("offline — {reworded}"));
+
+    f.service.state().update(|s| s.pause.paused_until = Some(0));
+    assert_eq!(overall(&["sync", "status"]), "paused — you paused syncing");
+}

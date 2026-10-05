@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, SyncView, View};
 use super::running_sync::{Lock, RunningSync, Sync, Uploading, Why};
-use super::{RootSource, SyncService, NO_INTERCEPTION_WARNING};
+use super::{RootSource, SyncService};
 use crate::config::Mode;
-use crate::status::snapshot::{RootState, SwitchNote, SyncSnapshot, SyncTrouble};
+use crate::status::snapshot::{RootState, SwitchNote, SyncSnapshot, SyncTrouble, TroubleKind};
 
 /// What a folder's state comes to on the bus, and for the readers.
 #[derive(Clone)]
@@ -21,8 +21,10 @@ pub(super) struct Published {
     pub path: String,
     /// `State`, before the helper and the sync have their say (`published_state`).
     pub state: RootState,
-    /// The registration's part of `LastError`.
+    /// The registration's part of `LastError`: what it ran into.
     pub error: String,
+    /// The folder is up with nothing intercepting: `LastError` warns of it ahead of `error`.
+    pub no_interception_warning: bool,
     /// Why a switch to interception failed, said right behind `error`.
     pub switch_note: Option<SwitchNote>,
     pub helper: Helper,
@@ -69,6 +71,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
             path,
             state: RootState::Error,
             error: why.clone(),
+            no_interception_warning: false,
             switch_note: None,
             helper: Helper::NotNeeded,
             writable: false,
@@ -99,6 +102,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
         path,
         state,
         error,
+        no_interception_warning: false,
         switch_note: None,
         helper,
         writable: false,
@@ -132,12 +136,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 (_, true) => RootState::Ready,
                 (_, false) => RootState::NoInterception,
             };
-            let error = match (intercepted, up.recovery.text()) {
-                (true, None) => String::new(),
-                (true, Some(trouble)) => trouble.to_owned(),
-                (false, None) => NO_INTERCEPTION_WARNING.to_owned(),
-                (false, Some(trouble)) => format!("{NO_INTERCEPTION_WARNING}. {trouble}"),
-            };
+            let error = up.recovery.text().unwrap_or_default().to_owned();
             let helper = match up.record.interception {
                 // HS2: a folder that shows OneDrive is kept in step only with
                 // interception; without it, it waits for the helper, and switches when it
@@ -156,6 +155,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 path,
                 state,
                 error,
+                no_interception_warning: !intercepted,
                 switch_note,
                 helper,
                 writable,
@@ -192,12 +192,13 @@ impl SyncService {
             s.folder.root_path = published.path;
             s.folder.root_state = published.state;
             s.folder.last_error = published.error;
+            s.folder.no_interception_warning = published.no_interception_warning;
             s.folder.switch_note = published.switch_note;
             s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;
             s.folder.locked_note = published.locked_note;
             if let Some(text) = published.cannot_start {
-                s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true });
+                s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true, kind: TroubleKind::Other });
             }
             s.local.scan.follow(folder.wanted);
             also(s);

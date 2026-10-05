@@ -823,7 +823,7 @@ mod stale;
 /// A cycle that fails with trouble that is only said clears it too, and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
-    use crate::status::snapshot::SyncTrouble;
+    use crate::status::snapshot::{SyncTrouble, TroubleKind};
     let w = World::read_write().await;
     let reopened = Arc::new(Mutex::new(Vec::new()));
     let writes = Writes {
@@ -838,19 +838,19 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
 
-    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false, kind: TroubleKind::Other }));
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "trouble that closes no gate");
 
-    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true, kind: TroubleKind::Other }));
     w.cycle(&listing).await;
     assert_eq!(*reopened.lock().unwrap(), vec![None], "woken once, with the trouble already cleared");
 
-    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.state.update(|s| s.cycle.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true, kind: TroubleKind::Other }));
     w.graph.with(|c| c.script("GET", "root/delta", ResponseTemplate::new(503), 10));
     let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
     assert!(!err.blocking(), "{err:?}");
     let woken = reopened.lock().unwrap().clone();
     assert_eq!(woken.len(), 2, "woken by the cycle that failed, too");
-    assert_eq!(woken[1], Some(SyncTrouble { text: err.to_string(), blocking: false }), "the gate reads open by then");
+    assert_eq!(woken[1], Some(SyncTrouble { text: err.to_string(), blocking: false, kind: TroubleKind::Unreachable }), "the gate reads open by then");
 }

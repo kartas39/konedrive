@@ -313,13 +313,7 @@ pub struct SyncService {
     totals: tokio::task::AbortHandle,
 }
 
-/// What `LastError` says while a root is registered without interception.
-/// Spelled out rather than hinted at: this mode's whole risk is that a file
-/// looks present and reads as zeros, so the one thing a user must not have
-/// to infer is that they are in it.
-pub const NO_INTERCEPTION_WARNING: &str =
-    "this folder is registered WITHOUT interception: nothing fills a placeholder when it is \
-     opened, so files in this folder read as zeros until they are explicitly hydrated";
+pub use crate::status::snapshot::NO_INTERCEPTION_WARNING;
 
 impl SyncService {
     /// One account's folder, made with `wiring`, on a tokio runtime: its totals are counted
@@ -378,6 +372,12 @@ impl SyncService {
     /// The daemon's accounts, as their folders see each other.
     pub fn registry(&self) -> &Arc<registry::Registry> {
         &self.wiring.registry
+    }
+
+    /// The folder's account: its sign-in is part of the account's overall state
+    /// (`status::overall`).
+    pub fn account(&self) -> &Arc<dyn crate::account::FolderAccount> {
+        &self.wiring.account
     }
 
     /// The account's quota, which the uploads' space check reads and adjusts: the one

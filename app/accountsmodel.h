@@ -31,7 +31,7 @@ class AccountItem : public QObject
     Q_PROPERTY(AccountStatus *status READ status CONSTANT)
 
 public:
-    AccountItem(const QDBusConnection &bus, const QString &path, DaemonController *daemon, const AccountStatus::Clock &clock, QObject *parent);
+    AccountItem(const QDBusConnection &bus, const QString &path, const AccountStatus::Clock &clock, QObject *parent);
 
     QString path() const { return m_path; }
     QString id() const;

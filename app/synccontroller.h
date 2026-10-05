@@ -37,7 +37,15 @@ class SyncController : public QObject
     Q_PROPERTY(QString rootPath READ rootPath NOTIFY syncChanged)
     Q_PROPERTY(QString rootState READ rootState NOTIFY syncChanged)
     Q_PROPERTY(QString rootSource READ rootSource NOTIFY syncChanged)
-    Q_PROPERTY(QString lastError READ lastError NOTIFY syncChanged)
+    /// Folder.Overall, as the daemon decided it: the state of the account as a whole
+    /// ("ok", "syncing", "warning", "paused", "offline") and the reason for it. Both empty
+    /// until the daemon has said, and with a daemon that has no such property.
+    Q_PROPERTY(QString overallState READ overallState NOTIFY syncChanged)
+    Q_PROPERTY(QString overallReason READ overallReason NOTIFY syncChanged)
+    /// Folder.Trouble: the sentence of the trouble there is now, or empty.
+    Q_PROPERTY(QString trouble READ trouble NOTIFY syncChanged)
+    /// Folder.NotUpdated: the failed-update note, or empty.
+    Q_PROPERTY(QString notUpdated READ notUpdated NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsPlaced READ itemsPlaced NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
@@ -172,7 +180,10 @@ public:
     QString rootPath() const { return m_rootPath; }
     QString rootState() const { return m_rootState; }
     QString rootSource() const { return m_rootSource; }
-    QString lastError() const { return m_lastError; }
+    QString overallState() const { return m_overallState; }
+    QString overallReason() const { return m_overallReason; }
+    QString trouble() const { return m_trouble; }
+    QString notUpdated() const { return m_notUpdated; }
     qulonglong itemsListed() const { return m_itemsListed; }
     qulonglong itemsPlaced() const { return m_itemsPlaced; }
     qulonglong skippedCount() const { return m_skippedCount; }
@@ -350,7 +361,10 @@ private:
     QString m_rootPath;
     QString m_rootState = QStringLiteral("none");
     QString m_rootSource;
-    QString m_lastError;
+    QString m_overallState;
+    QString m_overallReason;
+    QString m_trouble;
+    QString m_notUpdated;
     qulonglong m_itemsListed = 0;
     qulonglong m_itemsPlaced = 0;
     qulonglong m_skippedCount = 0;

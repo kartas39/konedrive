@@ -4,7 +4,7 @@ use super::*;
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
 use crate::helper::status::HelperState;
-use crate::status::snapshot::{published_error, published_state, FolderStatus};
+use crate::status::snapshot::{published_error, published_state, FolderStatus, NO_INTERCEPTION_WARNING};
 use crate::sync::folder::{Content, OneDriveFolder, Record, Up};
 
 fn record(interception: Interception, source: RootSource) -> Record {
@@ -39,13 +39,14 @@ fn content(source: RootSource, why: Why) -> Content {
 fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static str, String, &'static str) {
     let published = publish(folder);
     let cycle = crate::status::snapshot::CycleStatus {
-        sync_trouble: published.cannot_start.map(|text| SyncTrouble { text, blocking: true }),
+        sync_trouble: published.cannot_start.map(|text| SyncTrouble { text, blocking: true, kind: TroubleKind::Other }),
         ..Default::default()
     };
     let folder = FolderStatus {
         root_path: published.path,
         root_state: published.state,
         last_error: published.error,
+        no_interception_warning: published.no_interception_warning,
         switch_note: published.switch_note,
         waits_for_helper: published.helper.waits(link),
         locked_note: published.locked_note,

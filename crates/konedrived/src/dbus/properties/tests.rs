@@ -23,7 +23,7 @@ fn on_the_bus<I: Interface>(interface: &I) -> BTreeSet<String> {
 async fn every_property_on_the_bus_is_a_row_of_the_table() {
     let service = crate::sync::testing::wiring().build();
     let rows = |interface: &str| -> BTreeSet<String> {
-        AT_ONCE.iter().chain(COALESCED).filter(|row| row.interface() == interface).map(|row| row.name().to_owned()).collect()
+        AT_ONCE.iter().chain(COALESCED).chain(DECIDED).filter(|row| row.interface() == interface).map(|row| row.name().to_owned()).collect()
     };
     let with = |rows: BTreeSet<String>, others: &[&str]| -> BTreeSet<String> { rows.into_iter().chain(others.iter().map(|name| (*name).to_owned())).collect() };
 
@@ -35,7 +35,7 @@ async fn every_property_on_the_bus_is_a_row_of_the_table() {
     // `MachineName` is `config.toml`'s, read when the daemon starts.
     assert_eq!(on_the_bus(&Conflicts::new(service.clone())), with(rows(CONFLICTS_INTERFACE_NAME), &["MachineName"]));
     let listed: usize = [FOLDER, QUEUE, MOVING, SCAN, CONFLICTS_INTERFACE_NAME].iter().map(|interface| rows(interface).len()).sum();
-    assert_eq!(listed, AT_ONCE.len() + COALESCED.len(), "no row is under an interface the folder does not have, and no name is there twice");
+    assert_eq!(listed, AT_ONCE.len() + COALESCED.len() + DECIDED.len(), "no row is under an interface the folder does not have, and no name is there twice");
 }
 
 /// What is announced is what changed, with its value now, under the interface that holds
