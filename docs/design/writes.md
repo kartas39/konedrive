@@ -641,7 +641,7 @@ big, and notifies once when full starts.
 
 ### 6.3 A file's session
 
-One path for every file with content (`upload/content.rs`, `send_session`): a file up to 10 MiB is
+One path for every file with content (`upload/content/session.rs`, `send_session`): a file up to 10 MiB is
 a session of one fragment, and every step below holds for it as for a larger one.
 
 1. The file is quiet; its size and time are the **snapshot**, stored in the row.
@@ -1056,7 +1056,7 @@ failed or retrying — while blocked and held rows keep their state; a pause wri
 `upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
 goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
 paused keeps the sessions and resumes none of them. The stop between fragments is one check
-(`upload/content.rs`, `stop_between_fragments`), asked before every fragment of every file, with
+(`upload/content/session.rs`, `stop_between_fragments`), asked before every fragment of every file, with
 five reasons: a pause, the daemon stopping, a full OneDrive (§6.4), the write gate — each keeps
 the session — and the file removed (§5.2, §6.3), which cancels the session and ends the row. A
 request that is in flight is never interrupted.
