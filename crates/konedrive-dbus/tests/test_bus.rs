@@ -3,7 +3,7 @@
 
 use konedrive_dbus::testing::{TestBus, METHOD_TIMEOUT};
 
-/// DB2: the bus knows no service file, so a call to a name nobody owns starts no program —
+/// The bus knows no service file, so a call to a name nobody owns starts no program —
 /// not the `konedrived` a package installed, which would run on the real `~/.config`.
 #[tokio::test]
 async fn the_bus_can_start_no_program() {

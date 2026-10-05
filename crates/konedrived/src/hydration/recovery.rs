@@ -186,7 +186,7 @@ impl From<NotCleared> for ResetError {
 /// with `std::fs::read_dir` and opened every file with `File::open`, both of
 /// which follow symlinks, having classified the entry with an lstat-shaped
 /// `DirEntry::file_type` an unbounded time earlier — the gap is a helper
-/// round trip per interrupted file. Reproduced by the review: with `sub/`
+/// round trip per interrupted file. Reproduced: with `sub/`
 /// replaced by a symlink to a directory outside the root while recovery
 /// awaited a `ClearIgnore` ack, a file outside the root was emptied,
 /// relabelled `online-only` and counted as a success. The helper does not

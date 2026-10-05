@@ -412,7 +412,7 @@ async fn started_with_source(word: &str) -> (Arc<SyncService>, FakeHelper, PathB
     (service, helper, config_file, vec![sockets, config_dir, root_dir])
 }
 
-/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
+/// `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
 /// first with a capital, typed by hand — is not read as `local` with no word of it: the
 /// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
 #[tokio::test]
@@ -436,7 +436,7 @@ async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence()
     assert!(Config::load(&config_file).unwrap().sync_root.is_empty());
 }
 
-/// SY6: the folder held for a misspelt word is held with a guess (a OneDrive folder, for
+/// The folder held for a misspelt word is held with a guess (a OneDrive folder, for
 /// its Forget). The guess never brings it up: once the word is corrected — to `local`, which
 /// the guess is not — the next bring-up reads `config.toml` again and takes what it says.
 #[tokio::test]
@@ -459,7 +459,7 @@ async fn a_word_corrected_while_the_folder_is_held_wins_over_the_guess() {
     assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"local\""), "the correction stays");
 }
 
-/// SY6: a folder that is up keeps the source it came up with. A word misspelt in
+/// A folder that is up keeps the source it came up with. A word misspelt in
 /// `config.toml` while the daemon runs does not keep it from being registered again with a
 /// helper that came back.
 #[tokio::test]
@@ -518,7 +518,7 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&own).unwrap().permissions()) & 0o777, 0o600, "a file of the user's own was changed");
 }
 
-/// SY6: a folder recorded without interception is tried again with
+/// A folder recorded without interception is tried again with
 /// `config.toml` as it is on disk, like a held one: a word corrected while the daemon runs
 /// counts at the next connect, with no write of the file in between.
 #[tokio::test]

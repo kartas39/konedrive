@@ -93,7 +93,7 @@ pub(crate) fn dehydrate_then_open(ctx: &Ctx, _checks: &mut Checks) -> Result<(),
     Ok(())
 }
 
-/// Review item 4. An evictable mark is designed to vanish, so `ClearIgnore`
+/// An evictable mark is designed to vanish, so `ClearIgnore`
 /// meets a mark that is not there as a matter of routine; if that ended the
 /// connection, every hydration in flight would be denied along with it.
 pub(crate) fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {

@@ -114,7 +114,7 @@ fn let_write(service: &SyncService) {
 /// A fake `balooctl6`, so these tests never reach the real Baloo:
 /// `config add`/`config rm` are logged to `calls`, one
 /// call per line. What is excluded already is read from the
-/// `baloofilerc` beside it (`crate::desktop::baloo`, B-I1b), never
+/// `baloofilerc` beside it (`crate::desktop::baloo`), never
 /// `~/.config`'s.
 fn write_fake_balooctl6(dir: &std::path::Path) {
     let script = dir.join("balooctl6");

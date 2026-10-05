@@ -298,7 +298,7 @@ impl SyncService {
         let cannot_tell = |why: String| {
             SyncError::Io(format!("{shown} is not freed up: cannot tell whether a change of it waits to be uploaded ({why}); try again in a moment"))
         };
-        // A state that cannot be read cannot tell either (the outbox on the bus re-review).
+        // A state that cannot be read cannot tell either.
         match placeholder::read_state(file) {
             Ok(Some(placeholder::State::Hydrated)) => {}
             Ok(_) => return Ok(()),

@@ -402,8 +402,8 @@ impl AccountService {
     ///
     /// - `config.toml` saying read-write;
     /// - the gate letting the recorded drive through, as the file says now;
-    /// - the drive the account's token was last seen to reach being that very drive (review
-    ///   I2: a recorded drive is never trusted on its own);
+    /// - the drive the account's token was last seen to reach being that very drive (a
+    ///   recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
     ///
     /// Called whenever one of them may have changed, the folder's outbox worker finding the

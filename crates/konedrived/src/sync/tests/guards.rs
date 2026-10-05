@@ -60,7 +60,7 @@ async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_n
     assert_eq!(xattr::get(empty.path(), "user.konedrive.drive").unwrap(), None, "the stale drive is taken off");
 }
 
-/// Review M2: an account being removed is retired in the change that forgets its
+/// An account being removed is retired in the change that forgets its
 /// folder, and registers nothing from then on — not even a call that was
 /// waiting for that lock.
 #[tokio::test]
@@ -73,7 +73,7 @@ async fn a_retired_account_registers_nothing() {
     assert_eq!(xattr::get(dir.path(), "user.konedrive.root").unwrap(), None, "the folder is not touched");
 }
 
-/// SY5: a removal taken back leaves the account as it was: one held back is held back
+/// A removal taken back leaves the account as it was: one held back is held back
 /// again, for its own reason, and one that was not registers a folder.
 #[tokio::test]
 async fn a_removal_taken_back_gives_the_account_its_standing_back() {

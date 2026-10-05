@@ -240,7 +240,7 @@ async fn accounts_are_added_listed_announced_and_removed() {
         let interfaces: Vec<String> = managed[path].keys().map(|name| name.to_string()).collect();
         assert!(interfaces.contains(&ACCOUNT_INTERFACE_NAME.to_owned()), "{interfaces:?}");
     }
-    // SY8: the accounts as their folders see each other are the listed ones, in that order.
+    // The accounts as their folders see each other are the listed ones, in that order.
     let folders = || d.daemon.manager.registry().accounts().iter().map(|sync| format!("{ACCOUNTS_PATH}/{}", sync.id())).collect::<Vec<_>>();
     assert_eq!(folders(), [family.as_str(), personal.as_str()]);
 
@@ -435,12 +435,12 @@ async fn a_files1_call_over_two_accounts_is_refused_whole_or_done_whole() {
 
     assert_eq!(refusal(d.files.pin(&[both[0], outside.to_str().unwrap()]).await), "org.konedrive.Error.OutsideRoot");
     assert_eq!(xattr::get(&a_file, "user.konedrive.pin").unwrap(), None, "nothing was pinned");
-    // Review M4: a path B refuses (not one of ours) refuses A's pin too.
+    // A path B refuses (not one of ours) refuses A's pin too.
     let stray = in_b.join("stray.txt");
     std::fs::write(&stray, b"mine").unwrap();
     assert_eq!(refusal(d.files.pin(&[both[0], stray.to_str().unwrap()]).await), "org.konedrive.Error.NotManaged");
     assert_eq!(xattr::get(&a_file, "user.konedrive.pin").unwrap(), None, "nothing was pinned in A either");
-    // Review M5: a path through `..` is routed where it leads.
+    // A path through `..` is routed where it leads.
     let through = in_a.join("..").join("B").join("b.bin");
     assert_eq!(d.files.item_state(through.to_str().unwrap()).await.unwrap(), "online-only", "B's file, not A's");
 
@@ -522,7 +522,7 @@ async fn an_account_whose_id_is_not_one_is_not_loaded_and_last_error_says_so() {
     );
 }
 
-/// Review I1: an account held back (§3.1) never brings its folder up, but a folder it
+/// An account held back (§3.1) never brings its folder up, but a folder it
 /// registered with interception in an earlier session is still the helper's. `Remove`
 /// forgets it through the helper — refused `NoHelper` without one, changing nothing — before
 /// the account goes.
@@ -562,7 +562,7 @@ async fn removing_a_held_account_forgets_its_folder_through_the_helper() {
     assert!(!recorded().contains(root_id), "{}", recorded());
 }
 
-/// Review M7: one daemon per configuration. A second one started on the same files while
+/// One daemon per configuration. A second one started on the same files while
 /// the first runs is refused before it reads them, so two daemons never migrate at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_daemon_on_the_same_configuration_is_refused() {
@@ -646,7 +646,7 @@ async fn a_version_1_configuration_starts_as_personal_with_its_folder() {
     assert!(!daemon.manager.config().account(&id).unwrap().legacy_token);
 }
 
-/// Design test 11, the common case (review M8): version 1's OneDrive folder, registered
+/// Design test 11, the common case: version 1's OneDrive folder, registered
 /// with interception, its drive recorded. The account comes up holding the folder until the
 /// helper is back, with the drive carried over as the account's identity; at the hub's first
 /// connect the folder is registered with the helper again, brought up, and given its drive.
@@ -736,7 +736,7 @@ impl Wallet for FailingDeletes {
     }
 }
 
-/// SY5: a `Remove` that fails after the folder was forgotten — here the sign-in cannot be
+/// A `Remove` that fails after the folder was forgotten — here the sign-in cannot be
 /// deleted — leaves the account listed. The account that stays is whole: it still has its
 /// folder, or takes one again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -822,7 +822,7 @@ impl konedrived::daemon::manager::Bus for FailingExports {
     }
 }
 
-/// SY5: an `Add` whose account cannot be put on the bus leaves nothing: no account in
+/// An `Add` whose account cannot be put on the bus leaves nothing: no account in
 /// `config.toml` to come up at the next start, no object, no directory, and the label free.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {

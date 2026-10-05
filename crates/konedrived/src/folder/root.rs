@@ -146,7 +146,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// the probe's write is refused there: no such folder came back after a
 /// restart, in either mode — "cannot bring up the sync folder: Permission
 /// denied" — and none could be switched to interception once the helper
-/// arrived. H93 still holds: the id is only *looked
+/// arrived. The id is still only *looked
 /// for* first, and a folder where looking fails is probed, whose answer is
 /// what is reported.
 fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
@@ -399,8 +399,8 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 ///
 /// Honouring any non-empty string here is what makes
 /// `setfattr -n user.konedrive.root -v x ~/Documents` enough to register a
-/// folder full of somebody's existing data: H78's relaxation skips the empty
-/// check for anything that "carries a root id", and nothing ever removes the
+/// folder full of somebody's existing data: the empty check is skipped
+/// for anything that "carries a root id", and nothing ever removes the
 /// xattr again, so one `setfattr` disarms that check for that folder
 /// permanently. It matters because §4.3's populate skips names that already
 /// exist — those files never get an item id, never get a placeholder, and

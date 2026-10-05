@@ -247,7 +247,7 @@ fn a_read_phase_placeholder_carries_its_ctag_and_the_locks_mode() {
 
 /// An empty file is created `hydrated` — nothing to fetch — and, unlike
 /// part 1's placeholders, stamped: a `hydrated` file without a stamp is
-/// what `Hydrate()` refills (H109) and what a reconcile would take for a
+/// what `Hydrate()` refills and what a reconcile would take for a
 /// file changed locally.
 #[test]
 fn an_empty_read_phase_placeholder_is_hydrated_and_stamped() {

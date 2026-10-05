@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{HalfRemoved, ManagerError};
 use crate::config::ConfigError;
 
-/// SY5: a removal that failed half-way says only what is true of the folder, and answers
+/// A removal that failed half-way says only what is true of the folder, and answers
 /// under the name its failure always had.
 #[test]
 fn a_half_removal_says_what_was_done_under_the_failures_own_name() {

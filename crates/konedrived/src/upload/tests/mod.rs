@@ -1023,7 +1023,7 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
 
 // Fix round 1 (the outbox worker review): one test per Critical and Important finding.
 
-/// I1: a swap where one side was also edited. The edited file goes through
+/// A swap where one side was also edited. The edited file goes through
 /// a temporary name; its content is throttled after the PATCH to that name
 /// landed, and the replay meets `412`. The file keeps its name here, and
 /// OneDrive ends with both files swapped and nothing under a temporary name.
@@ -1077,7 +1077,7 @@ fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
     }
 }
 
-/// I2: a large upload stopped mid-session, then the file saved again with
+/// A large upload stopped mid-session, then the file saved again with
 /// the same size, and the worker stopped while it cancels the old session.
 /// That session is never resumed with the new bytes: what OneDrive ends
 /// with is exactly the new content.
@@ -1117,7 +1117,7 @@ fn a_session_is_never_resumed_with_other_content() {
     assert_committed(&w, "big.bin", "big.bin");
 }
 
-/// I3: a delete × edit dropped while a cycle is between staging and swap.
+/// A delete × edit dropped while a cycle is between staging and swap.
 /// The drop waits for the cycle's swap (the tree lock), so the swap cannot
 /// give the item back the local object it forgot — which would make the
 /// next examination delete OneDrive's newer version.

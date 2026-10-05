@@ -54,7 +54,7 @@ fn taken(schedule: &mut Schedule, now: Instant) -> Option<Batch> {
     schedule.take(now, Take::WhenDue).cloned()
 }
 
-/// LO3: an entry that keeps being passed over has one recheck pending, however
+/// An entry that keeps being passed over has one recheck pending, however
 /// many runs passed it over, and its wait doubles up to the longest; a recheck
 /// that passes nothing over starts the waits again.
 #[test]

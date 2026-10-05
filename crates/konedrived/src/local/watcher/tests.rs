@@ -331,7 +331,7 @@ fn a_flush_examines_what_is_pending_at_once() {
     watcher.stop();
 }
 
-/// LO3: a batch that keeps failing is said in `LastError`, until one passes.
+/// A batch that keeps failing is said in `LastError`, until one passes.
 #[test]
 fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     let fx = Folder::unlisted();
@@ -354,7 +354,7 @@ fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     watcher.stop();
 }
 
-/// LO4: an examiner thread that ends with nobody asking it to says so, as the
+/// An examiner thread that ends with nobody asking it to says so, as the
 /// reader does: nothing is examined any more, so `LastError` must tell.
 #[test]
 fn an_examiner_that_dies_says_the_watcher_stopped() {

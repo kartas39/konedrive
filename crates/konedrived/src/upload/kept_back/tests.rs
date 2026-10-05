@@ -118,7 +118,7 @@ fn failure_keys_wait() {
     }
 }
 
-/// UP3. A blocked row needs the user (`BlockedCount`): whatever the worker
+/// A blocked row needs the user (`BlockedCount`): whatever the worker
 /// blocked it with, it is never listed among the changes that "go up by
 /// themselves".
 #[test]
@@ -138,7 +138,7 @@ fn a_blocked_row_is_never_shown_as_going_up_by_itself() {
     assert_eq!(got.iter().map(|(.., n, _)| *n).sum::<u32>(), 8, "{got:?}");
 }
 
-/// UP3. Every reason the worker itself writes has its group in the table:
+/// Every reason the worker itself writes has its group in the table:
 /// none is "a reason not in the table", logged as unknown.
 #[test]
 fn every_reason_the_worker_writes_is_in_the_table() {

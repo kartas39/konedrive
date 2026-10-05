@@ -12,7 +12,7 @@ use crate::remote::testing::{ino, mode};
 use crate::remote::materialize::*;
 use konedrive_graph::quickxor::QuickXor;
 use crate::hydration::source::{ContentSource, Fetched, SourceError, Version};
-/// Round 2: `(dev, ino)` alone is not a strong enough identity for a file
+/// `(dev, ino)` alone is not a strong enough identity for a file
 /// that was dropped and reopened later — an inode can be freed and
 /// reused by an unrelated file in between. `FileIdentity` must tell that
 /// case apart, which an ino-only comparison cannot.

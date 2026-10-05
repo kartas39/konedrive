@@ -103,7 +103,7 @@ impl Materializer {
             return Ok(false);
         }
         // A checkpoint of another version goes, with its bytes; one of this
-        // very version stays (A-I1). An online-only file carries no ignore
+        // very version stays. An online-only file carries no ignore
         // mark (the helper marks only what reads hydrated), so the punch
         // needs no ClearIgnore (question, answered).
         let stale = placeholder::read_progress(&writable)?.is_some_and(|p| Some(p.ctag.as_str()) != row.ctag.as_deref());
@@ -128,7 +128,7 @@ impl Materializer {
 
     /// A placeholder of the tree's very version whose time is not the
     /// cloud's — a fill wrote into it and stopped — gets the cloud's time
-    /// back, and keeps its checkpoint and the bytes it counts (A-I1). KIO
+    /// back, and keeps its checkpoint and the bytes it counts. KIO
     /// checks a thumbnail against the file's time, so a wrong one also had
     /// Dolphin open the file to make its own thumbnail: a download. Under
     /// the per-inode lock, as [`Self::update_placeholder`]: a fill running

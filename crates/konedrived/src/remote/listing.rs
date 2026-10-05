@@ -66,7 +66,7 @@ pub use replacements::REPLACE_WORKERS;
 /// A delta with more changes than this is reconciled in full.
 pub const FULL_THRESHOLD: usize = 5000;
 
-/// The account's drive, as `config.toml` keeps it (A-M5, design §8.1): the
+/// The account's drive, as `config.toml` keeps it (design §8.1): the
 /// same-account check then survives a tree store rebuilt empty, whose `meta`
 /// has forgotten it.
 #[derive(Clone)]
@@ -249,7 +249,7 @@ pub struct Listing {
     ctx: ListingContext,
     /// Asked for from the start: a `Listing`'s first cycle is Full.
     full: FullRequest,
-    /// The drive has been written into `config.toml` (A-M5), or is being:
+    /// The drive has been written into `config.toml`, or is being:
     /// once per `Listing`.
     drive_recorded: AtomicBool,
     /// The drive to write there, by the next reconcile.
@@ -458,7 +458,7 @@ impl Listing {
     /// At every cycle: a sign-out and a sign-in as someone else
     /// can come between any two of them. The drive is the one the store's
     /// `meta` records, or — for a store rebuilt empty — the one `config.toml`
-    /// keeps beside the root (A-M5); once known, it is recorded in both.
+    /// keeps beside the root; once known, it is recorded in both.
     async fn check_account(&self, turn: &Turn, cancel: &CancellationToken) -> Result<(), CycleError> {
         let id = cancellable(cancel, self.ctx.drive.drive_id()).await?.map_err(drive_error)?;
         let stored = self.on_store(turn, |s| s.drive_id()).await?;

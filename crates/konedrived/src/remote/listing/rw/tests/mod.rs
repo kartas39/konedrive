@@ -595,7 +595,7 @@ impl World {
     }
 }
 
-/// C1: one delta renames `top.txt` in OneDrive and adds a file to `docs`,
+/// One delta renames `top.txt` in OneDrive and adds a file to `docs`,
 /// which was renamed here and not examined yet. The Changed pass moves
 /// `top.txt` to the holding directory, then hands over to the Full scan (the
 /// new file's folder is not where the tree has it), which must take it from
@@ -656,7 +656,7 @@ async fn a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_
     assert_eq!(state_at(&w.path("top.txt")), Some(State::OnlineOnly));
 }
 
-/// C1: what a stop or a crash left in the holding directory goes back into
+/// What a stop or a crash left in the holding directory goes back into
 /// the folder at the next Full reconcile: where the tree has it, or — held by
 /// a local change — where the base has it. Nothing is rescued out of the
 /// folder, and nothing is deleted in OneDrive.
@@ -682,7 +682,7 @@ async fn what_a_stop_left_in_the_holding_directory_goes_back_into_the_folder() {
     assert_eq!(w.deletes(), 0, "nothing deleted in OneDrive");
 }
 
-/// I1: OneDrive changes a file right after an upload's commit, within one
+/// OneDrive changes a file right after an upload's commit, within one
 /// fetch; the guard reads it again, but the file is open, so the replacement
 /// waits. The change waits too — the cursor never sends it again — and lands
 /// once the file is closed.
@@ -714,7 +714,7 @@ async fn a_change_read_again_survives_a_replacement_that_waits() {
     assert!(w.deferred("F").is_none());
 }
 
-/// I3: `docs` is deleted here (a live `delete` row), and OneDrive moves
+/// `docs` is deleted here (a live `delete` row), and OneDrive moves
 /// `top.txt` into it. The move is not the folder's: the file stays where it
 /// is and its move waits, and no row takes OneDrive's item back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -817,7 +817,7 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
 
 mod stale;
 
-/// RE6: trouble that stops the folder closes the write gate, and the cycle that clears it
+/// Trouble that stops the folder closes the write gate, and the cycle that clears it
 /// says so to the outbox worker — after the trouble is gone, not only with `cycled`, which
 /// comes while the gate is still closed. A cycle with no such trouble before it says nothing.
 /// A cycle that fails with trouble that is only said clears it too, and says so.

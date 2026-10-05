@@ -221,7 +221,7 @@ pub(crate) fn waiter_caps(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> 
     outcome
 }
 
-/// Review item 8, first half: several thousand concurrent opens. The property
+/// Several thousand concurrent opens. The property
 /// is not "everything succeeds" — the pool is bounded on purpose, and `EAGAIN`
 /// is a real answer that means "try that again" — it is that **every** opener
 /// is answered, that none of them reads zeros, and that a retry of the refused

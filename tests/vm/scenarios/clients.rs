@@ -13,7 +13,7 @@ use crate::child::raw_connect;
 use crate::harness::{Checks, Ctx, Reader, Responder, dir_mark_present};
 use crate::HOSTILE_UID;
 
-/// Review item 5. `FAN_DENY | (errno << 24)` is accepted by the kernel for
+/// `FAN_DENY | (errno << 24)` is accepted by the kernel for
 /// eight values and refused for every other, and a refused response leaves the
 /// opener suspended **forever** (§5). The daemon reports errnos the helper does
 /// not choose, so every value it could ever produce is swept here against a
@@ -109,7 +109,7 @@ pub(crate) fn errno_sweep(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> 
     Ok(())
 }
 
-/// Review item 6. The socket is 0666 by design, so everything that protects
+/// The socket is 0666 by design, so everything that protects
 /// one user's hydrations from another has to be an authorisation check inside
 /// the helper. Three of them, driven from a process running as another uid.
 pub(crate) fn hostile_uid(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -175,7 +175,7 @@ pub(crate) fn hostile_uid(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> 
     Ok(())
 }
 
-/// Review item 7, first half. `SO_PEERCRED` on a `SOCK_SEQPACKET` socket must
+/// `SO_PEERCRED` on a `SOCK_SEQPACKET` socket must
 /// report the pid the fanotify event reports, or the daemon's narrow exemption
 /// either does not fire — deadlocking startup recovery — or fires
 /// for the wrong process. It is observable from here precisely because the

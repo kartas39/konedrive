@@ -106,7 +106,7 @@ async fn another_accounts_item_ids_are_claimed() {
     assert!(!registry.claimed_elsewhere(of_b, "ITEM-A"), "the row went");
 }
 
-/// Review M3: one candidate by device is the answer only while every other account's
+/// One candidate by device is the answer only while every other account's
 /// folder is placed. With another account's folder held back — its device unknown, and
 /// the file could be in it — the one candidate is verified like two, and a file outside
 /// its folder is no one's.

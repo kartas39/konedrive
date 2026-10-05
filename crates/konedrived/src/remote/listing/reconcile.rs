@@ -264,7 +264,7 @@ impl Reconcile {
         }
     }
 
-    /// The account's drive written into `config.toml` (A-M5) and onto the
+    /// The account's drive written into `config.toml` and onto the
     /// folder (design §8.3), when this is the reconcile that learnt it.
     fn record_drive(&mut self) {
         let Some((record, id)) = self.drive.take() else { return };

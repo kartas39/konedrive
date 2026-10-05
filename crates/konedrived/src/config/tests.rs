@@ -294,7 +294,7 @@ async fn a_malformed_write_list_lets_nothing_through() {
     assert_eq!(store.write_standing(&id("3f9a1c0e5b7d")), None);
 }
 
-/// A drive is one account, however it comes to be recorded (design §8.2, review M1): a
+/// A drive is one account, however it comes to be recorded (design §8.2): a
 /// drive another account has is refused, one of the account's own is kept.
 #[tokio::test]
 async fn a_drive_another_account_has_is_not_recorded_again() {

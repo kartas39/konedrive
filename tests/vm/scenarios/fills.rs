@@ -223,7 +223,7 @@ pub(crate) fn one_fetch_for_many_openers(ctx: &Ctx, _checks: &mut Checks) -> Res
     Ok(())
 }
 
-/// Review item 3. The helper enrols the waiter in the same step that claims
+/// The helper enrols the waiter in the same step that claims
 /// the job (`jobs::enroll`), so a `HydrateDone` cannot arrive before there is
 /// anybody to answer. Driven with a daemon that replies as fast as it can, one
 /// file at a time, so that the send and the reply race as tightly as the

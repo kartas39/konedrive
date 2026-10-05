@@ -212,7 +212,7 @@ impl SyncService {
             None
         };
         let handles = open.as_ref().map(|(watcher, outbox)| (watcher.handle(), outbox.handle()));
-        // The account's drive, as `config.toml` keeps it (A-M5, design §8.1):
+        // The account's drive, as `config.toml` keeps it (design §8.1):
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = {
             let persist = self.wiring.persist.clone();
@@ -280,8 +280,8 @@ impl SyncService {
     /// nothing retries it on its own; a `Refresh()` does, as
     /// does bringing the folder up again. The lock is put back on
     /// the folder, whatever its mode: with no sync, no watcher looks at it, so
-    /// a read-write folder a run left unlocked must not stay so (the watcher re-review
-    /// R2-1), and a read-only one never is.
+    /// a read-write folder a run left unlocked must not stay so,
+    /// and a read-only one never is.
     async fn cannot_start(&self, stopped: &mut Stopped<'_>, root: &SyncRoot, why: String) {
         tracing::error!("{why}");
         if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {

@@ -514,7 +514,7 @@ impl Materializer {
                     self.check_file(&dir, name, row, &rel, run)?;
                 }
                 if full {
-                    // Not a file a fill holds (A-M4): it is left for the next
+                    // Not a file a fill holds: it is left for the next
                     // Full reconcile.
                     self.disk.enforce_mode(&dir, name, |file| Ok(self.locks.try_lock(crate::folder::locks::InodeKey::of(file)?)))?;
                 }
