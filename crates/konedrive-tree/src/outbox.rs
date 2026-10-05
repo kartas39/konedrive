@@ -228,9 +228,6 @@ fn rows_under(conn: &Connection, dir: &Path) -> Result<Vec<OutboxRow>, TreeError
     Ok(rows)
 }
 
-/// What is recorded by path under `from` is under `to` now: the rows, and
-/// the lines of `local_skipped` of every reason, which name things that
-/// moved with the directory. A line already at the new place gives way.
 fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
     let mut update = conn.prepare_cached("UPDATE outbox SET rel = ?2 WHERE seq = ?1")?;
     for row in rows_under(conn, from)? {
@@ -238,12 +235,25 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
             update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
-    let lines: Vec<PathBuf> = conn.prepare_cached("SELECT rel FROM local_skipped")?.query_map([], |r| Ok(path_from(r.get_ref(0)?)))?.collect::<Result<_, _>>()?;
-    let mut update = conn.prepare_cached("UPDATE OR REPLACE local_skipped SET rel = ?2 WHERE rel = ?1")?;
-    for rel in lines.iter().filter(|rel| is_under(rel, from)) {
-        if let Ok(rest) = rel.strip_prefix(from) {
-            update.execute(params![path_value(rel), path_value(&to.join(rest))])?;
-        }
+    Ok(())
+}
+
+/// The lines of `local_skipped` at each first place are at the second now.
+/// All are taken off before any is put back, so two directories that
+/// changed places keep each its lines. A line already at a new place gives
+/// way.
+fn move_skipped(conn: &Connection, moves: &[(PathBuf, PathBuf)]) -> Result<(), TreeError> {
+    let mut taken = Vec::with_capacity(moves.len());
+    for (from, to) in moves {
+        let line = conn
+            .prepare_cached("DELETE FROM local_skipped WHERE rel = ?1 RETURNING reason, at, size")?
+            .query_row([path_value(from)], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?)))
+            .optional()?;
+        taken.extend(line.map(|line| (to, line)));
+    }
+    let mut put = conn.prepare_cached("INSERT OR REPLACE INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)")?;
+    for (to, (reason, at, size)) in taken {
+        put.execute(params![path_value(to), reason, at, size])?;
     }
     Ok(())
 }
@@ -302,6 +312,7 @@ impl TreeStore {
                         params![seq, reason.to_string()],
                     )?;
                 }
+                OutboxOp::MoveSkipped(moves) => move_skipped(&tx, moves)?,
                 OutboxOp::Unskip(rel) => {
                     tx.execute("DELETE FROM local_skipped WHERE rel = ?1", [path_value(rel)])?;
                 }

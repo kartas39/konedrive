@@ -199,14 +199,15 @@ impl SyncService {
     pub async fn not_uploaded(&self) -> Result<Vec<KeptBack>, SyncError> {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
-        // A path is listed once: by its line of the list, which stays from one
-        // examination to the next while a row's state moves.
-        let listed: std::collections::HashSet<std::path::PathBuf> = skipped.iter().map(|s| s.rel.clone()).collect();
+        // A row that says what a line of the list says already at the same place is left
+        // out: the line stays from one examination to the next while the row's state moves.
+        let listed: std::collections::HashSet<(std::path::PathBuf, String)> = skipped.iter().map(|s| (s.rel.clone(), s.reason.key().to_owned())).collect();
         let mut out: Vec<KeptBack> =
             skipped.into_iter().map(|s| KeptBack { path: root.join(&s.rel).display().to_string(), reason: s.reason.to_string() }).collect();
         out.extend(
             rows.into_iter()
-                .filter(|row| row.state == OutboxState::Blocked && !listed.contains(&row.rel))
+                .filter(|row| row.state == OutboxState::Blocked)
+                .filter(|row| !row.reason.as_ref().is_some_and(|why| listed.contains(&(row.rel.clone(), why.key().to_owned()))))
                 .map(|row| KeptBack { path: root.join(&row.rel).display().to_string(), reason: row.reason.unwrap_or(Reason::Blocked).to_string() }),
         );
         out.sort();

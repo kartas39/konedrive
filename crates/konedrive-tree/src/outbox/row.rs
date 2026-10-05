@@ -276,8 +276,7 @@ pub enum Recorded {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxOp {
     Record(Detection),
-    /// Rows and skipped lines under `from` are now under `to`: a directory
-    /// they are in moved.
+    /// Rows under `from` are now under `to`: a directory they are in moved.
     Rebase { from: PathBuf, to: PathBuf },
     Remove(i64),
     /// The inode the item is now (a scan's refresh).
@@ -286,6 +285,9 @@ pub enum OutboxOp {
     /// with its size when it is a file.
     Skip { rel: PathBuf, reason: LocalSkip, size: u64 },
     Unskip(PathBuf),
+    /// Lines of the skipped list, each at its first place, are at the second
+    /// now: a directory the examination found renamed took them along.
+    MoveSkipped(Vec<(PathBuf, PathBuf)>),
     /// The mass-delete guard holds a removal already waiting (unless it
     /// runs already).
     Hold { seq: i64, reason: Reason },

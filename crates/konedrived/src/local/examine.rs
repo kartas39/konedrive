@@ -436,7 +436,12 @@ impl<'l> Run<'_, '_, 'l> {
         (self.decisions.item(id) == Some(ix)).then(|| id.to_owned())
     }
 
+    /// `rel` is listed as not uploaded. Never a place at or inside one of
+    /// the daemon's own names: what is held there is not the user's to see.
     fn skip(&mut self, rel: &Path, reason: LocalSkip) {
+        if rel.components().any(|c| daemon_owned(c.as_os_str())) {
+            return;
+        }
         self.outcome.skipped.insert(rel.to_path_buf(), reason);
     }
 

@@ -77,28 +77,37 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     assert_eq!(store.read_blocking(move |s| files(s, root, false, "no-such", 20)).unwrap(), (vec![], 0));
 }
 
-/// A path the skipped list has a line for is one line, whatever its row says and whether the
-/// worker has blocked it yet: a file with damaged marks is counted once while its row goes
-/// from ready to blocked and back.
+/// A row that says what a line of the skipped list says at the same place is not a second
+/// line: a file with damaged marks is counted once, whether the worker has blocked its row
+/// yet or not. A row that says something else at that place is shown beside the line.
 #[test]
-fn a_path_on_the_skipped_list_is_counted_once_whatever_its_row_says() {
+fn a_row_that_repeats_a_line_of_the_skipped_list_is_not_counted_again() {
     let root = Path::new("/nowhere/OneDrive");
-    for (state, reason) in [(OutboxState::Blocked, Some("state-unreadable")), (OutboxState::Ready, None), (OutboxState::Retry, Some("local-error"))] {
+    let shown = |ops: &[OutboxOp]| {
         let mut store = TreeStore::in_memory().unwrap();
-        let ops = [
-            create("a.txt", state, reason),
-            create("other.txt", OutboxState::Blocked, Some("state-unreadable: Input/output error (os error 5)")),
-            OutboxOp::Skip { rel: PathBuf::from("a.txt"), reason: "state-unreadable".into(), size: 3 },
-        ];
-        store.outbox_apply(&ops, 1).unwrap();
+        store.outbox_apply(ops, 1).unwrap();
         let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups_unlisted().unwrap(), false);
-        let shown: Vec<(&str, &str, u32)> = got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect();
-        assert_eq!(shown, vec![("per-file", "state-unreadable", 2)], "{state:?}");
         let store = konedrive_tree::Store::new(store);
-        let (items, total) = store.read_blocking(move |s| files(s, root, false, "state-unreadable", 0)).unwrap();
-        assert_eq!(total, 2);
-        assert_eq!(items.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec!["/nowhere/OneDrive/a.txt", "/nowhere/OneDrive/other.txt"]);
+        let mut files_of = Vec::new();
+        for (_, reason, count, _) in &got {
+            let key = reason.clone();
+            let (items, total) = store.read_blocking(move |s| files(s, root, false, &key, 0)).unwrap();
+            assert_eq!((items.len() as u32, total), (*count, *count), "{reason}");
+            files_of.extend(items.into_iter().map(|(path, _)| (reason.clone(), path)));
+        }
+        files_of
+    };
+    let line = |rel: &str, reason: &str| OutboxOp::Skip { rel: PathBuf::from(rel), reason: reason.into(), size: 3 };
+    let at = |reason: &str, name: &str| (reason.to_owned(), format!("/nowhere/OneDrive/{name}"));
+    let damaged = vec![at("state-unreadable", "a.txt"), at("state-unreadable", "other.txt")];
+    for (state, reason) in [(OutboxState::Blocked, Some("state-unreadable")), (OutboxState::Blocked, Some("state-unreadable: Input/output error (os error 5)")), (OutboxState::Ready, None)] {
+        let ops = [create("a.txt", state, reason), create("other.txt", OutboxState::Blocked, Some("state-unreadable")), line("a.txt", "state-unreadable")];
+        assert_eq!(shown(&ops), damaged, "{state:?} {reason:?}");
     }
+    // Another reason at the same place is another truth: a name OneDrive refuses, where a
+    // symbolic link stands now.
+    let ops = [create("a:b", OutboxState::Blocked, Some("name-characters")), line("a:b", "symlink")];
+    assert_eq!(shown(&ops), vec![at("name-characters", "a:b"), at("symlink", "a:b")]);
 }
 
 /// Issue #87: the four keys a failure is stored under all wait.

@@ -296,3 +296,20 @@ fn the_lines_below_a_renamed_directory_follow_it() {
     fx.examine(&out.passed);
     assert_eq!(listed(&fx), [line("pics/link", "symlink")]);
 }
+
+/// A line below a directory that is no longer there goes at the look that sees the
+/// directory gone, though nothing looked at the line's own place.
+#[test]
+fn a_line_below_a_directory_that_went_goes_with_it() {
+    let fx = Fx::new(&[folder("D", "R", "photos"), folder("K", "R", "keep")]);
+    for dir in ["photos", "keep"] {
+        std::os::unix::fs::symlink("/etc/hostname", fx.path(dir).join("link")).unwrap();
+    }
+    fx.examine(&Batch::full());
+    let line = |rel: &str| (rel.to_owned(), "symlink".to_owned());
+    assert_eq!(listed(&fx), [line("keep/link"), line("photos/link")]);
+
+    std::fs::remove_dir_all(fx.path("photos")).unwrap();
+    fx.examine(&names(&[("", "photos")]));
+    assert_eq!(listed(&fx), [line("keep/link")], "what is below a directory that is there stays");
+}

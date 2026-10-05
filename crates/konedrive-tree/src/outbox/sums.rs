@@ -66,12 +66,14 @@ impl TreeStore {
         self.groups_where("")
     }
 
-    /// [`outbox_groups`](Self::outbox_groups) without the rows at a place
-    /// `local_skipped` has a line for: what is kept back is one line for
-    /// each path, and the line of the list is the one that stays from one
-    /// examination to the next while a row's state moves.
+    /// [`outbox_groups`](Self::outbox_groups) without the rows that say what
+    /// a line of `local_skipped` at the same place says already (the same
+    /// key, with or without a detail behind it): such a file is one line,
+    /// and the line of the list is the one that stays from one examination
+    /// to the next while the row's state moves. A row that says something
+    /// else at that place is kept.
     pub fn outbox_groups_unlisted(&self) -> Result<Vec<OutboxGroup>, TreeError> {
-        self.groups_where(UNLISTED)
+        self.groups_where(&format!(" WHERE{UNLISTED}"))
     }
 
     fn groups_where(&self, only: &str) -> Result<Vec<OutboxGroup>, TreeError> {
@@ -105,7 +107,7 @@ impl TreeStore {
     pub fn outbox_places_of(&self, groups: &[&OutboxGroup], limit: u32) -> Result<Vec<(PathBuf, usize)>, TreeError> {
         let mut out = Vec::new();
         for (n, group) in groups.iter().enumerate() {
-            let sql = format!("SELECT rel FROM outbox WHERE kind = ?1 AND state = ?2 AND reason IS ?3 AND rel NOT IN (SELECT rel FROM local_skipped) ORDER BY rel{}", limited(limit));
+            let sql = format!("SELECT rel FROM outbox WHERE kind = ?1 AND state = ?2 AND reason IS ?3 AND{UNLISTED} ORDER BY rel{}", limited(limit));
             let mut statement = self.conn.prepare_cached(&sql)?;
             let rels = statement
                 .query_map(rusqlite::params![group.kind, group.state, group.reason], |r| Ok(path_from(r.get_ref(0)?)))?
@@ -129,8 +131,10 @@ impl TreeStore {
     }
 }
 
-/// The rows at no place `local_skipped` has a line for.
-const UNLISTED: &str = " WHERE rel NOT IN (SELECT rel FROM local_skipped)";
+/// The rows that do not repeat a line of `local_skipped` at their place: the reason is
+/// neither the line's nor the line's with a detail behind it (`<key>: <detail>`).
+const UNLISTED: &str = " NOT EXISTS (SELECT 1 FROM local_skipped s WHERE s.rel = outbox.rel \
+     AND (outbox.reason = s.reason OR substr(outbox.reason, 1, length(s.reason) + 2) = s.reason || ': '))";
 
 fn limited(limit: u32) -> String {
     if limit == 0 {
