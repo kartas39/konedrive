@@ -193,7 +193,7 @@ impl Look<'_> {
     /// [`Materializer::waits`] for the object of item `id` at `dir/name`, which is
     /// where the base has it, and for everything below it: the directory
     /// and the base are walked side by side. Returned: the first thing
-    /// found that an examination records or that passes by itself.m. The
+    /// found that an examination records or that passes by itself. The
     /// first thing found that stays until the user does something about it
     /// is kept ([`Self::stay`]), and the walk goes on.
     fn differs(&mut self, dir: &File, name: &OsStr, rel: &Path, id: &str, is_dir: bool) -> Result<Option<WaitsFor>, ApplyError> {
