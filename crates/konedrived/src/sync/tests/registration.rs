@@ -271,7 +271,7 @@ async fn a_registration_made_with_no_helper_is_written_down_to_switch_and_switch
     assert_eq!(config.sync_root, resolved(dirs[2].path()));
 }
 
-/// Ruling 4 of: a `config.toml` written before the flag existed
+/// A `config.toml` written before the flag existed
 /// cannot say why its folder is without interception. It is read as a
 /// folder to switch — the user's own registration is exactly that case,
 /// and must switch once they restart the daemon or the helper reconnects
@@ -311,7 +311,7 @@ async fn a_folder_without_interception_recorded_before_the_flag_existed_switches
     assert!(Config::load(&config_file).unwrap().sync_root_intercepted);
 }
 
-/// Ruling 2 of: a switch that fails leaves the folder exactly as
+/// A switch that fails leaves the folder exactly as
 /// it was — without interception, written down that way — says why in
 /// `LastError`, and is tried again the next time the helper connects.
 #[tokio::test]
@@ -350,8 +350,8 @@ async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_ag
 }
 
 /// A failed switch the helper may still hold — its registration failed,
-/// and it could not confirm it let go — is kept intercepted instead
-///: a folder the helper may hold must never be one the
+/// and it could not confirm it let go — is kept intercepted instead:
+/// a folder the helper may hold must never be one the
 /// daemon holds without interception. It is brought up at the next
 /// connect, as every intercepted folder is.
 #[tokio::test]
@@ -412,7 +412,7 @@ async fn started_with_source(word: &str) -> (Arc<SyncService>, FakeHelper, PathB
     (service, helper, config_file, vec![sockets, config_dir, root_dir])
 }
 
-/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
+/// `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
 /// first with a capital, typed by hand — is not read as `local` with no word of it: the
 /// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
 #[tokio::test]
@@ -436,7 +436,7 @@ async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence()
     assert!(Config::load(&config_file).unwrap().sync_root.is_empty());
 }
 
-/// SY6: the folder held for a misspelt word is held with a guess (a OneDrive folder, for
+/// The folder held for a misspelt word is held with a guess (a OneDrive folder, for
 /// its Forget). The guess never brings it up: once the word is corrected — to `local`, which
 /// the guess is not — the next bring-up reads `config.toml` again and takes what it says.
 #[tokio::test]
@@ -459,7 +459,7 @@ async fn a_word_corrected_while_the_folder_is_held_wins_over_the_guess() {
     assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"local\""), "the correction stays");
 }
 
-/// SY6: a folder that is up keeps the source it came up with. A word misspelt in
+/// A folder that is up keeps the source it came up with. A word misspelt in
 /// `config.toml` while the daemon runs does not keep it from being registered again with a
 /// helper that came back.
 #[tokio::test]
@@ -518,7 +518,7 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&own).unwrap().permissions()) & 0o777, 0o600, "a file of the user's own was changed");
 }
 
-/// SY6: a folder recorded without interception is tried again with
+/// A folder recorded without interception is tried again with
 /// `config.toml` as it is on disk, like a held one: a word corrected while the daemon runs
 /// counts at the next connect, with no write of the file in between.
 #[tokio::test]

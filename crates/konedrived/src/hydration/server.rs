@@ -56,27 +56,23 @@ pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 /// Dehydration (`docs/design/hydration.md` §8) promises "the daemon
 /// serializes operations per inode, so a
 /// hydration request for a file being dehydrated runs after the dehydration
-/// finishes", but nothing enforced that: `grep` finds no such lock anywhere
-/// in this crate before this, because nothing before it ever ran
-/// `serve_hydrations` and `dehydrate::dehydrate` at once — `main.rs` called
-/// neither. This is what wires both into the same running daemon (see
-/// [`SyncService::dehydrate`], which shares the same `locks` table), so this
-/// is the first point at which two fills of the *same* file — one a
-/// hydration, one a dehydration's punch — could run concurrently and tear
-/// it.
+/// finishes". `locks` is what keeps that promise: this loop and
+/// `SyncService::dehydrate` run in the same daemon and share the one table,
+/// so two fills of the *same* file — one a hydration, one a dehydration's
+/// punch — never run concurrently and tear it.
 ///
 /// `locks` is keyed by `(st_dev, st_ino)` read from the descriptor itself,
 /// which is what "per inode" means and the only key the
-/// two sides can be made to agree on. The version this replaces keyed on a
-/// path string — `readlink("/proc/self/fd/<n>")` here, `canonicalize()` on
-/// the D-Bus side — and two names for one inode therefore did not serialize
-/// at all: measured, `ln f.bin g.bin` plus one `Hydrate` call on each name
-/// put **two fills in flight on the same inode**, where a failing fetch's
-/// roll-back (`online-only` + `punch_all`) lands on top of the other fill's
-/// committed `hydrated`, leaving a file labelled `hydrated` over a hole —
-/// which the helper then allows *and* ignore-marks. `readlink` also answers
-/// `"<path> (deleted)"` for an unlinked file, and any rename between the two
-/// sides' key computations desynchronised them.
+/// two sides can be made to agree on. A key made of a path string —
+/// `readlink("/proc/self/fd/<n>")` here, `canonicalize()` on the D-Bus side —
+/// does not serialize two names for one inode at all: measured, `ln f.bin
+/// g.bin` plus one `Hydrate` call on each name put **two fills in flight on
+/// the same inode**, where a failing fetch's roll-back (`online-only` +
+/// `punch_all`) lands on top of the other fill's committed `hydrated`,
+/// leaving a file labelled `hydrated` over a hole — which the helper then
+/// allows *and* ignore-marks. `readlink` also answers `"<path> (deleted)"`
+/// for an unlinked file, and any rename between the two sides' key
+/// computations desynchronises them.
 pub async fn serve_hydrations(
     link: HelperLink,
     requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
@@ -241,12 +237,12 @@ pub(crate) async fn serve(
             // owner's daemon is not connected", and this daemon is connected.
             // Degrading it to an `EIO` denial costs the user one failed open.
             //
-            // What the request finds under the lock decides what it does
-            //: a file filled while the request waited is
+            // What the request finds under the lock decides what it does:
+            // a file filled while the request waited is
             // answered as it is — see `source::answer_request`.
             //
             // A file taken off the disk meanwhile, because OneDrive removed
-            // its item, stops its fill where it is (issue #104). Its opener is
+            // its item, stops its fill where it is. Its opener is
             // answered `EIO`: the kernel delivers no errno that says "gone".
             // `ENOENT` is not in `ACCEPTED_DENY_ERRNOS`, and the helper
             // turns an errno outside that set into `EIO`, with a warning.

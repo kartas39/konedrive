@@ -4,9 +4,9 @@
 //! a read-write folder also holds the user's own changes
 //! (`docs/design/writes.md` §2.2). What read-write mode brings differs by
 //! level, so the enum is one and its load is the level's: the folder's part
-//! in uploading ([`Writes`](super::listing::Writes)), what one cycle carries
+//! in uploading ([`Writes`](crate::remote::listing::Writes)), what one cycle carries
 //! to its swap, the rules a pass over the folder goes by
-//! ([`Rw`](super::materialize::Rw)).
+//! ([`Rw`](crate::remote::materialize::Rw)).
 
 /// Read-only, or read-write with what that level needs for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

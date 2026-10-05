@@ -123,7 +123,7 @@ fn a_copy_at_the_place_and_the_original_seen_later_are_two_files() {
     assert_eq!((id_of(&fx.path("a.txt")).as_deref(), id_of(&fx.path("docs/a.txt"))), (Some("A"), None));
 }
 
-/// I2, issue #113: a copy made back at the item's old place after the item
+/// I2: a copy made back at the item's old place after the item
 /// was moved is a new file or folder there; the item stays the object that
 /// moved, and nothing takes its move back.
 #[test]
@@ -157,7 +157,7 @@ fn a_copy_made_back_at_the_old_place_after_a_move_is_new() {
     assert_eq!(fx.store.call_blocking(move |s| Ok((s.local_handle("A")?, s.local_handle("D")?))).unwrap(), (Some(item), Some(dir)));
 }
 
-/// I2, issue #113: an item the base does not place (its name cannot be
+/// I2: an item the base does not place (its name cannot be
 /// placed here) has no object on disk. A copy carrying its id — of the
 /// folder as it was, kept with its attributes — is the user's own: uploaded
 /// as new, never a rename of the item in OneDrive.

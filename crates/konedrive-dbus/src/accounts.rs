@@ -277,7 +277,7 @@ pub trait Transfers {
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
-    /// The queue totals (issue #16): files left to download and changes left to upload,
+    /// The queue totals: files left to download and changes left to upload,
     /// their bytes, the bytes done in this run, and the seconds left (0: unknown).
     #[zbus(property)]
     fn download_left_count(&self) -> zbus::Result<u32>;

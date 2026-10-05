@@ -218,7 +218,7 @@ impl TreeStore {
         Ok(local_seq)
     }
 
-    /// Row `seq` opened the upload session `url` (issue #47): listed, with
+    /// Row `seq` opened the upload session `url`: listed, with
     /// the place `place` (parent id, name) a new file's session holds, and the
     /// row's session from now on, at offset 0 — in one transaction, before
     /// any byte is sent. A row gone meanwhile leaves the session listed and
@@ -240,8 +240,8 @@ impl TreeStore {
         Ok(())
     }
 
-    /// Row `seq` is about to open a new file's session at (`parent`, `name`)
-    /// (issue #84): recorded before the request, so that a stop before its
+    /// Row `seq` is about to open a new file's session at (`parent`, `name`):
+    /// recorded before the request, so that a stop before its
     /// URL is persisted still knows the empty placeholder it may leave there.
     /// Recorded again at the same place (the name without case, as OneDrive
     /// compares), it keeps its first time: the placeholder of an earlier
@@ -312,7 +312,7 @@ impl TreeStore {
     /// `parent`, with a row or without, whose URL never came: each record's
     /// first time and its latest attempt whose outcome is not known. Only
     /// within one of them may an empty placeholder there be this folder's —
-    /// never between two (issue #89).
+    /// never between two.
     pub fn upload_opening_windows(&self, parent: &str, name: &str) -> Result<Vec<(i64, i64)>, TreeError> {
         let lower = name.to_lowercase();
         let mut windows = Vec::new();
@@ -399,8 +399,8 @@ impl TreeStore {
         Ok(())
     }
 
-    /// A `create` or `mkdir` whose local object is gone before it landed
-    /// (issue #27): in one transaction, row `seq` goes, and so do the rows
+    /// A `create` or `mkdir` whose local object is gone before it landed:
+    /// in one transaction, row `seq` goes, and so do the rows
     /// `behind` it of the same object that never got an item id — nothing
     /// of it reached OneDrive. A row of that object recorded since the worker
     /// looked (the object back in a place it was not looked for) is not
@@ -513,7 +513,7 @@ impl TreeStore {
 
     /// Rows blocked with reason `from` are ready again with reason `to`, in
     /// their places: rows an earlier version blocked on a full OneDrive wait
-    /// for space now (issue #2). How many.
+    /// for space now. How many.
     pub fn outbox_space_convert(&self, from: &Reason, to: &Reason) -> Result<usize, TreeError> {
         Ok(self.conn.execute(
             "UPDATE outbox SET state = 'ready', reason = ?2, next_try = NULL WHERE state = 'blocked' AND reason = ?1",

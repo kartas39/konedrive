@@ -21,7 +21,7 @@ impl SyncService {
         let Some(store) = lifecycle.store() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
-            // One query, on the read-only connection (issue #39): the cycle's
+            // One query, on the read-only connection: the cycle's
             // work is not held up behind it.
             store.read_blocking(|s| s.skipped())
         })

@@ -83,7 +83,7 @@ impl Listing {
     /// an item of ours not listed yet cannot be told from one that is gone,
     /// and only the end of the listing tells them apart. It is found by its
     /// id then, downloaded content and all, rather than removed and made
-    /// again. Read without the lifecycle lock: it changes nothing.
+    /// again. Read without the folder's lock: it changes nothing.
     pub(super) async fn holds_nothing_yet(&self, turn: &Turn) -> Result<bool, CycleError> {
         if !self.on_store(turn, |s| s.is_empty(Table::Items)).await? {
             return Ok(false);
@@ -102,7 +102,7 @@ impl Listing {
     /// A first listing placed page by page, from the start or from
     /// where a stopped one got to (`from`, the link `items` was last
     /// committed with). Each page is staged, then placed and committed into `items`
-    /// together with the link to the page after it — under the lifecycle
+    /// together with the link to the page after it — under the folder's
     /// lock, which is let go while Graph is asked for the next page, so that
     /// a Forget or a helper's reconnect waits for one page at most. An entry
     /// whose folder has not come yet waits in `items` (and so in `staging`)
@@ -142,7 +142,7 @@ impl Listing {
             .await?;
         let mut staged_at = Some(seq);
         // The counts are walked once here and once at the end; in between,
-        // each page adds what it listed and placed (issue #39).
+        // each page adds what it listed and placed.
         let (mut listed, mut shown) = (counts.listed, counts.placed);
         self.ctx.state.update(|s| {
             s.cycle.items_listed = counts.listed;

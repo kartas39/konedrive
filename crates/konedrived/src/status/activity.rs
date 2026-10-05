@@ -51,8 +51,8 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
-/// What a `failed` or `update-failed` event says when the disk is full
-///: exactly this, which the window's notifier tells apart from
+/// What a `failed` or `update-failed` event says when the disk is full:
+/// exactly this, which the window's notifier tells apart from
 /// every other failure.
 pub const NO_DISK_SPACE: &str = "not enough disk space";
 
@@ -139,7 +139,7 @@ fn there(path: &str) -> bool {
 ///
 /// An event is kept only while its path is inside the folder registered now
 /// (`SyncSnapshot::folder`'s `root_path`): a download that ends after its folder was
-/// forgotten — `Hydrate` does not hold the lifecycle lock — records nothing,
+/// forgotten — `Hydrate` does not hold the folder's lock (`SyncService`'s `folder`) — records nothing,
 /// in memory or in the next folder's store.
 pub struct Activity {
     backing: Mutex<Backing>,
@@ -292,7 +292,7 @@ impl Activity {
     /// rest are dropped (a conflict whose file is gone drops off
     /// by itself). Whether it is there is asked with `lstat`, never an open.
     /// `Conflicts.Count` follows. Read on the store's read-only connection,
-    /// and what is gone dropped in one job (issue #39). Blocking.
+    /// and what is gone dropped in one job. Blocking.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let kept = {
             let backing = self.backing();
@@ -314,7 +314,7 @@ impl Activity {
 
     /// Looks over the next [`PRUNE_BATCH`] conflicts, in the order of their
     /// rescued paths from where the last look stopped — the whole list, a
-    /// batch at a time, round and round (issue #39) — drops those whose file
+    /// batch at a time, round and round — drops those whose file
     /// is gone in one job, and sets `Conflicts.Count` to what is left on
     /// record. Blocking.
     pub fn prune(&self) {

@@ -48,8 +48,8 @@ pub struct RecoveryReport {
     /// interrupted file, so a non-zero value means the root was **not**
     /// fully recovered.
     pub skipped: usize,
-    /// Interrupted files something had open, so no lease could be taken
-    ///. Not a failure: whatever has the
+    /// Interrupted files something had open, so no lease could be taken.
+    /// Not a failure: whatever has the
     /// file open is, as often as not, an opener waiting for it to be filled
     /// — or, after a reconnect, a fill from the connection before, still
     /// running — and an interrupted file is one the helper
@@ -110,11 +110,11 @@ impl From<NotCleared> for ResetError {
     }
 }
 
-/// Startup recovery,: after a crash or power loss, a file caught
+/// Startup recovery: after a crash or power loss, a file caught
 /// mid-hydration or mid-dehydration holds content that must not be trusted —
 /// punch it back to `online-only` so the next open fetches it again.
 ///
-/// # Why this takes a [`Clearance`], unlike 's own draft
+/// # Why this takes a [`Clearance`]
 ///
 /// A file that crashed `dehydrating` can still be carrying its ignore mark:
 /// the daemon may have died between `write_state(Dehydrating)` and a
@@ -186,7 +186,7 @@ impl From<NotCleared> for ResetError {
 /// with `std::fs::read_dir` and opened every file with `File::open`, both of
 /// which follow symlinks, having classified the entry with an lstat-shaped
 /// `DirEntry::file_type` an unbounded time earlier — the gap is a helper
-/// round trip per interrupted file. Reproduced by the review: with `sub/`
+/// round trip per interrupted file. Reproduced: with `sub/`
 /// replaced by a symlink to a directory outside the root while recovery
 /// awaited a `ClearIgnore` ack, a file outside the root was emptied,
 /// relabelled `online-only` and counted as a success. The helper does not
@@ -264,8 +264,8 @@ pub async fn recover(
 /// inside it is opened from, and the names still to look at.
 ///
 /// Names, not descriptors: a directory of 100 000 files costs one `Vec` of
-/// its names, while opening them up front would cost 100 000 descriptors
-///. The `FileType` beside each name is the `d_type` the kernel
+/// its names, while opening them up front would cost 100 000 descriptors.
+/// The `FileType` beside each name is the `d_type` the kernel
 /// gave us — a hint for which of the two opens to attempt, never the
 /// authority for what was opened, which is the `fstat` in [`open_entry`].
 struct Frame {
@@ -584,8 +584,7 @@ async fn reset_interrupted(clearance: &Clearance, file: File) -> Result<(), Rese
     // every file read-only, and a file that is not ours is never made
     // writable, even for a moment — only a file the walk read `hydrating` or
     // `dehydrating` gets here. The reopen goes through the descriptor, so it
-    // is the inode that was classified, whatever the name leads to by now
-    //.
+    // is the inode that was classified, whatever the name leads to by now.
     //
     // It comes *before* the clear, and the read-only descriptor is closed at
     // once, so that the mark is cleared on, and the lease taken on, one and

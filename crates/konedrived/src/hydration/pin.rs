@@ -598,7 +598,7 @@ impl Pins {
     }
 
     /// The pinned files waiting to download, and their size: part of what is left to
-    /// download (issue #16).
+    /// download.
     fn publish_waiting(&self, queue: &Queue) {
         let left = queue.left();
         self.state.update(|s| s.local.pinned_waiting = left);

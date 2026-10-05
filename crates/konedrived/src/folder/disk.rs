@@ -570,9 +570,9 @@ impl Disk {
 
     /// Takes the lock off the whole folder: `UnregisterRoot`, and a switch to read-write
     /// (`docs/design/writes.md` §2.2). An entry that cannot be changed — a file root owns, a directory
-    /// set to `000` by hand — is logged and passed over, never the end of the walk (review
-    /// M3). The root comes last, and only when every entry went through: a root still locked
-    /// means a walk that did not finish (`SyncService::ensure_unlocked`), and the walk then
+    /// set to `000` by hand — is logged and passed over, never the end of the walk.
+    /// The root comes last, and only when every entry went through: a root still locked
+    /// means a walk that did not finish (`SyncService::lock_after_walk`), and the walk then
     /// says how many entries it could not change.
     pub fn unlock_tree(&self) -> io::Result<()> {
         let _held = self.modes.hold();

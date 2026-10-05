@@ -621,7 +621,7 @@ async fn an_account_with_no_drive_recorded_is_asked_first() {
     assert_eq!(b.last_error, "Could not check which account this is; try again.");
     assert_eq!(two.b_wallet.current(), None);
 
-    // Review M1: an account signed out while its token is still stored — a wallet that did
+    // An account signed out while its token is still stored — a wallet that did
     // not answer at startup — may be any drive too.
     two.a.state().update(|s| s.state = SignInState::SignedOut);
     let b = sign_in_with(&two.b, "code-b").await;
@@ -653,7 +653,7 @@ impl SecretStore for RefusingWallet {
     }
 }
 
-/// Review M6: a sign-in that passes the guard and then cannot store its token stores
+/// A sign-in that passes the guard and then cannot store its token stores
 /// nothing — the drive it recorded for the slot is taken back, so the slot can still be
 /// signed in as another Microsoft account.
 #[tokio::test]
@@ -671,7 +671,7 @@ async fn a_sign_in_whose_token_cannot_be_stored_records_no_drive() {
     assert_eq!(svc.config().account(svc.id()).unwrap().drive_id, None, "the drive is taken back");
 }
 
-/// Review M2: an account being removed begins no sign-in from then on.
+/// An account being removed begins no sign-in from then on.
 #[tokio::test]
 async fn a_retired_account_begins_no_sign_in() {
     let f = Fixture::new(Duration::from_secs(5)).await;

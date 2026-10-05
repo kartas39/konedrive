@@ -93,7 +93,7 @@ pub(crate) fn dehydrate_then_open(ctx: &Ctx, _checks: &mut Checks) -> Result<(),
     Ok(())
 }
 
-/// Review item 4. An evictable mark is designed to vanish, so `ClearIgnore`
+/// An evictable mark is designed to vanish, so `ClearIgnore`
 /// meets a mark that is not there as a matter of routine; if that ended the
 /// connection, every hydration in flight would be denied along with it.
 pub(crate) fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -144,10 +144,9 @@ pub(crate) fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Resu
 /// file's mark as it passes. A hydration still in flight at the Forget marks
 /// its file *after* that walk has passed it — `inflight_across_forget` — and a
 /// file carried out of the folder is never passed at all —
-/// `carried_in_ignore_mark`; both are covered by the registration walk
-///.
+/// `carried_in_ignore_mark`; both are covered by the registration walk.
 ///
-/// The sequence a reasoned out, driven through the daemon's own
+/// The sequence, driven through the daemon's own
 /// `SyncService` so that every step is the code a real daemon runs:
 ///
 /// 1. a folder registered **with** interception; a file in it hydrated by an

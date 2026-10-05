@@ -244,7 +244,7 @@ impl Engine {
         true
     }
 
-    /// Cancels the upload sessions given up (issue #47): listed, and pointed
+    /// Cancels the upload sessions given up: listed, and pointed
     /// at by no row — the row left the outbox, moved on to other content, or
     /// its own cancel failed. At every drain the worker may send in, the
     /// start's included; a cancel that fails stops the look, and the next

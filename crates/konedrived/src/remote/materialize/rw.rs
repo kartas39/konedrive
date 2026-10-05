@@ -9,7 +9,7 @@
 //!   a folder such a row moves — not moved, replaced or removed. Nor what it
 //!   finds away from where the base has it, a local move or copy not
 //!   examined yet, with everything below it. Their changes wait
-//!   ([`Pending::unsettled`](super::Pending::unsettled)): the base keeps the
+//!   ([`Pending::unsettled`](crate::remote::materialize::Pending::unsettled)): the base keeps the
 //!   version the disk holds;
 //! - **places nothing below a folder being removed** ([`Rw::removing`]):
 //!   below a live `delete` or `move-out` row the delta's changes go to the
@@ -31,11 +31,12 @@
 //!   changed here stay, with their folders, their attributes off, and go up
 //!   as new; nothing is rescued out of the folder
 //!   (`resyncChangesUploadDifferences` keeps every download too, §3.7);
-//! - **lets what can no longer be placed wait where it is** (issue #104):
+//! - **lets what can no longer be placed wait where it is**:
 //!   an item OneDrive still has and the folder cannot hold goes from the
 //!   disk whole, in the cycle, when nothing in it waits; while anything
 //!   does it stays an item like any other, placed by the base, and its
-//!   change waits with what it waits for ([`Policy::Unplaced`],
+//!   change waits with what it waits for
+//!   ([`Policy::Unplaced`](crate::remote::materialize::removal::Policy::Unplaced),
 //!   [`Materializer::wait_to_leave`]);
 //! - **forgets before it removes**: the local objects of everything it takes
 //!   off the disk are forgotten in the store first, so that no examination
@@ -82,7 +83,7 @@ pub struct Rw {
     /// Where rows with no item id stand — a `create` or a `mkdir` not landed
     /// yet: an object there without an id is the outbox's, not in the way.
     /// Each such place and every folder above it, so that a look is one
-    /// lookup (issue #39).
+    /// lookup.
     pub pending: HashSet<PathBuf>,
     /// Items placed again where missing: new in OneDrive, a file whose
     /// content changed there, an item with no local object on record — and

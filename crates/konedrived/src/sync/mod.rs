@@ -302,7 +302,7 @@ pub struct SyncService {
     /// an item takes a slot of it. The drive of the wiring reports into it.
     pool: Arc<konedrive_graph::pool::TransferPool>,
     /// The large pinned files downloading in parts, and how many streams each has: who is
-    /// due the next free large slot of `pool` (`source::parts`, issue #28).
+    /// due the next free large slot of `pool` (`source::parts`).
     parts: Arc<source::Share>,
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.

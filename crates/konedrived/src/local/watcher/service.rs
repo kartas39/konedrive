@@ -1,5 +1,5 @@
 //! The watcher in the daemon: [`ExamineSink`], which hands each batch to the
-//! examination, and what the mode switch's hooks in `sync::write_mode` call to start
+//! examination, and what the mode switch's hooks in `sync::watcher` call to start
 //! and stop an account's watcher with its sync.
 
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ pub struct ExamineSink {
     /// again (`Some`, what to say), and when a Full scan found them current
     /// (`None`): `LastError` says so meanwhile.
     pub on_handles: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
-    /// Told how each Full local scan goes (issue #8); a single place examined is not.
+    /// Told how each Full local scan goes; a single place examined is not.
     pub scan: Option<ScanReport>,
 }
 

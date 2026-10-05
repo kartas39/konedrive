@@ -1,4 +1,4 @@
-//! What can no longer be placed in a read-write folder (issue #104): an
+//! What can no longer be placed in a read-write folder: an
 //! item OneDrive still has and the folder cannot hold goes from the disk
 //! whole or waits whole, once everything else is placed; it yields its name
 //! to another item by stepping aside.

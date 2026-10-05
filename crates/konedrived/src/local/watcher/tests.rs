@@ -331,7 +331,7 @@ fn a_flush_examines_what_is_pending_at_once() {
     watcher.stop();
 }
 
-/// LO3: a batch that keeps failing is said in `LastError`, until one passes.
+/// A batch that keeps failing is said in `LastError`, until one passes.
 #[test]
 fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     let fx = Folder::unlisted();
@@ -354,7 +354,7 @@ fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     watcher.stop();
 }
 
-/// LO4: an examiner thread that ends with nobody asking it to says so, as the
+/// An examiner thread that ends with nobody asking it to says so, as the
 /// reader does: nothing is examined any more, so `LastError` must tell.
 #[test]
 fn an_examiner_that_dies_says_the_watcher_stopped() {
@@ -419,7 +419,7 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     watcher.stop();
 }
 
-/// The daemon's sink tells the folder's state how a Full local scan goes (issue #8): its
+/// The daemon's sink tells the folder's state how a Full local scan goes: its
 /// reason, then idle with when it finished, how long it took and what it saw. A scan with no
 /// base yet, and a single place examined, change nothing.
 #[test]

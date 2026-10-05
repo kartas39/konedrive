@@ -238,7 +238,7 @@ pub(super) enum Taken {
     Adopt(Box<DriveItem>),
     /// An empty file the delta feed never listed: as far as anything here
     /// can tell, the placeholder of an upload session — another device's,
-    /// one abandoned, or one of this folder's (issue #89). Never copied
+    /// one abandoned, or one of this folder's. Never copied
     /// around, never deleted (a delete ends its session): the row waits
     /// ([`Reason::NameHeld`]).
     Held,
@@ -259,7 +259,7 @@ pub(super) enum Taken {
 /// empty file the items table (the delta feed's mirror) does not know: an
 /// upload session's placeholder is never in the feed (nor in a listing being
 /// staged), and nothing in OneDrive
-/// tells a live session from an abandoned one, or whose it is (issue #89). An
+/// tells a live session from an abandoned one, or whose it is. An
 /// empty file the feed listed is a real file, and decided as any other.
 pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str, ours: Ours<'_>) -> Result<Taken, Fail> {
     let holder = match e.drive().child(parent, name).await {
@@ -436,7 +436,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
     Ok(Outcome::again())
 }
 
-/// Cancels an upload session given up (issue #47): the content changed, the
+/// Cancels an upload session given up: the content changed, the
 /// file went, the row became something else — its empty placeholder holds
 /// the name in OneDrive until then. Cancelled, or gone already, it leaves the
 /// list of sessions; a cancel that fails keeps it there, and a later run
@@ -560,8 +560,8 @@ pub(in crate::upload) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, f
     Ok(Outcome::again())
 }
 
-/// A `create` or `mkdir` whose local object is under none of its names
-/// (issue #27). A row is bound to its object, not to its name, and such an
+/// A `create` or `mkdir` whose local object is under none of its names.
+/// A row is bound to its object, not to its name, and such an
 /// object does not come back: a file saved over by replacing it is a new
 /// object, and one moved where no row looked is found by the examination
 /// and queued again as new. So the row ends now, with no retry: the upload

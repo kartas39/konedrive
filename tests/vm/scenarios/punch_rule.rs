@@ -505,7 +505,7 @@ fn local_rule_steps(
     }
 
     // A fill that fails and rolls back: `Hydrate()` of a file labelled
-    // `hydrated` with no stamp (H109), from a source that has nothing.
+    // `hydrated` with no stamp, from a source that has nothing.
     xattr::remove(c, "user.konedrive.stamp").map_err(|e| e.to_string())?;
     ctx.runtime
         .block_on(service.populate_from_directory(empty_source))

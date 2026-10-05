@@ -29,7 +29,7 @@ impl Materializer {
             if !placed && self.finish_new_folder(&holding, &name, id.as_deref(), run)? {
                 continue;
             }
-            // Removed in OneDrive: it goes (issue #104). One that is still
+            // Removed in OneDrive: it goes. One that is still
             // there but no longer placed goes back, and leaves from there.
             let removed = match &id {
                 Some(id) => {

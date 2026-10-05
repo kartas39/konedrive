@@ -258,7 +258,7 @@ impl Recovery {
             Recovery::Uninspected(text)
         } else if report.busy > 0 {
             // Not an error: what has such a file open is, as often as not, the very open
-            // that will fill it. So it is logged and not said in `LastError` (B-M11): said
+            // that will fill it. So it is logged and not said in `LastError`: said
             // there, it stayed for the whole session, long after the file was filled.
             tracing::info!(
                 "startup recovery left {} interrupted file(s) as they were because they were in \
@@ -534,8 +534,7 @@ impl SyncService {
             // earlier change, cut before its end, stopped.
             self.clear_outbox_counts();
             self.state.update(|s| s.local.watch_note.clear());
-            // Under the lock, where no other change can have started a sync meanwhile
-            // (B-M1).
+            // Under the lock, where no other change can have started a sync meanwhile.
             self.let_go_of_activity().await;
         }
         stopped

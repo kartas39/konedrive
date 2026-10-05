@@ -121,8 +121,8 @@ fn fake_helper(path: PathBuf) {
 }
 
 /// A helper that accepts the connection and then says nothing at all — the
-/// shape that makes `HelperLink::connect` take its full 30 s call timeout
-///, and therefore the shape that exposes anything the daemon
+/// shape that makes `HelperLink::connect` take its full 30 s call timeout,
+/// and therefore the shape that exposes anything the daemon
 /// does *after* connecting but before it is ready to answer.
 fn silent_helper(path: PathBuf) {
     let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
@@ -356,7 +356,7 @@ async fn introspection_matches_the_checked_in_xml() {
     }
     #[cfg(feature = "dev-tools")]
     assert_eq!(signature_lines(&live, TOKEN_EXPORT_INTERFACE_NAME), signature_lines(TOKEN_EXPORT_XML, TOKEN_EXPORT_INTERFACE_NAME));
-    // A release build hands out no token at all (issue #79).
+    // A release build hands out no token at all.
     #[cfg(not(feature = "dev-tools"))]
     assert!(!live.contains(TOKEN_EXPORT_INTERFACE_NAME), "{live}");
 }
@@ -383,8 +383,8 @@ async fn a_local_folder_has_no_counters_and_refuses_refresh() {
     assert_eq!(error_name(&err), Some("org.konedrive.Error.Unsupported"));
 }
 
-/// Every refusal a caller can act on arrives as its own D-Bus error name
-///. They all used to collapse into
+/// Every refusal a caller can act on arrives as its own D-Bus error name.
+/// They all used to collapse into
 /// `org.freedesktop.DBus.Error.Failed` with the reason in the message, which
 /// leaves a client nothing to branch on but English prose — and "the file
 /// was modified locally" and "the file is not downloaded" call for two
@@ -767,7 +767,7 @@ async fn each_property_changes_under_its_own_interface() {
     );
 }
 
-/// One quota per account (issue #78): what the folder's uploads read shows in `Account`'s
+/// One quota per account: what the folder's uploads read shows in `Account`'s
 /// four quota properties, with their `PropertiesChanged` — the uploads keep no copy of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_folders_quota_read_is_the_accounts_quota() {
@@ -804,7 +804,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
     assert_eq!((account.quota_used().await.unwrap(), account.quota_remaining().await.unwrap()), (50, 50));
 }
 
-/// The Full local scan on the bus (issue #8): a read-only folder has none, and a scan's
+/// The Full local scan on the bus: a read-only folder has none, and a scan's
 /// progress travels with the counters, in one message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_local_scan_is_on_the_bus() {
@@ -933,8 +933,8 @@ async fn messages_within(
 /// `UnknownInterface` by a daemon that already owns the name.
 ///
 /// The helper here accepts the connection and then says nothing, which is
-/// the shape that makes `HelperLink::connect` take its full 30 s bound
-///. The daemon used to claim the name, then connect, then
+/// the shape that makes `HelperLink::connect` take its full 30 s bound.
+/// The daemon used to claim the name, then connect, then
 /// attach the folder's interface — so that silence was a 30 s window in which the daemon
 /// was on the bus and this interface was not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

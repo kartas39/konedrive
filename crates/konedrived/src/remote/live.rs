@@ -1,4 +1,4 @@
-//! Changes from OneDrive at once (issue #54): one task per account, started and stopped with
+//! Changes from OneDrive at once: one task per account, started and stopped with
 //! its poller, keeps Graph's notification socket open ([`konedrive_graph::drive::socket`]) and asks the
 //! poller for a cycle when an event says the drive changed. The poll stays as the safety net:
 //! every [`Schedule::live_interval`](super::listing::Schedule::live_interval) while the socket

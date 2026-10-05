@@ -59,7 +59,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
 }
 
-/// Issue #80: `sync thumbnails` prints the setting without an argument and changes it with
+/// `sync thumbnails` prints the setting without an argument and changes it with
 /// one; a choice that is none is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_shows_and_changes_the_thumbnail_setting() {
@@ -81,7 +81,7 @@ async fn binary_shows_and_changes_the_thumbnail_setting() {
     assert_eq!(run(addr, &["sync", "on-battery"]).status.code(), Some(2), "moved to `settings`");
 }
 
-/// Issue #95: `settings on-metered` and `settings on-battery` print the setting every account
+/// `settings on-metered` and `settings on-battery` print the setting every account
 /// shares without an argument and change it with one — written to `config.toml` and taken by
 /// the account at once. A choice that is none, and `--account`, are usage errors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -111,7 +111,7 @@ async fn binary_shows_and_changes_the_settings_every_account_shares() {
     assert!(err_text(&out).contains("one for every account"), "{}", err_text(&out));
 }
 
-/// Issue #57: while the account holds back by itself, `sync status` says why; `sync anyway`
+/// While the account holds back by itself, `sync status` says why; `sync anyway`
 /// lifts the hold, and the line goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it() {
@@ -136,7 +136,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
     assert_eq!(line(&out_text(&run(addr, &["sync", "status"]))), None);
 }
 
-/// Issue #54: `sync status` says how changes from OneDrive arrive — every minute while the
+/// `sync status` says how changes from OneDrive arrive — every minute while the
 /// socket cannot connect (this drive serves no notification endpoint), nothing while the
 /// account is held back — and `sync anyway --all` lifts the hold of every account that holds
 /// back by itself, but not the user's pause; with `--account` it is a usage error.

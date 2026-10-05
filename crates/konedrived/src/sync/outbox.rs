@@ -62,7 +62,7 @@ impl SyncService {
     }
 
     /// Runs `f` on the store's read-only connection, on a blocking thread:
-    /// never behind a writer (issue #38).
+    /// never behind a writer.
     async fn read_outbox<T: Send + 'static>(
         &self,
         f: impl FnOnce(&konedrive_tree::ReadStore<'_>) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
@@ -140,7 +140,7 @@ impl SyncService {
         }
     }
 
-    /// The daemon is stopping (issue #84): the outbox worker, if one runs,
+    /// The daemon is stopping: the outbox worker, if one runs,
     /// takes nothing more and lets the requests in flight return. The future
     /// ends when it has; the caller bounds the wait (`crate::daemon::stop`).
     pub fn close_outbox(&self) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
@@ -215,7 +215,7 @@ impl SyncService {
     }
 
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
-    /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
+    /// (group, reason, count, bytes) ([`kept_back::summary`](crate::upload::kept_back::summary)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
         self.outbox_store()?;
         if let Some(kept) = self.running().and_then(|running| crate::panic::lock(&running.kept_back).clone()) {
@@ -299,7 +299,7 @@ impl SyncService {
         })
         .await;
         // The upload sessions of the rows dropped are given up: cancelled now, so that no
-        // empty placeholder keeps a name in OneDrive (issue #47). One that fails stays listed
+        // empty placeholder keeps a name in OneDrive. One that fails stays listed
         // for the worker of a later read-write start.
         if let Some(drive) = self.drive() {
             upload::cancel_given_up(&store, drive, DROPPED_CANCELS).await;
@@ -394,7 +394,7 @@ const PAUSED_STATE: &str = "paused";
 /// try: a pause is no failure, and nothing is tried before it ends (an upload
 /// in fragments still sending shows its bytes until it stops at the next).
 /// Otherwise, while OneDrive is `full`, a change that sends content and says
-/// nothing else says it waits for space (issue #2).
+/// nothing else says it waits for space.
 pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<Change> {
     rows
         .into_iter()
@@ -425,7 +425,7 @@ pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::
 }
 
 /// The upload sessions a forced switch to read-only cancels at most, beyond what the pool
-/// runs at once (issue #47).
+/// runs at once.
 const DROPPED_CANCELS: usize = 256;
 
 /// What the outbox worker reports to and asks of: the activity log, the published state,

@@ -256,7 +256,7 @@ impl AccountManager {
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let config = self.config.snapshot();
-        // The folder asks its account for the sign-in, the one quota (issue #78), the mode
+        // The folder asks its account for the sign-in, the one quota, the mode
         // worked out again when its outbox worker finds the write gate closed, and tells it
         // of a drive that is not the folder's. A folder registered while signed in shows
         // OneDrive only with a drive to show, and a restored one starts syncing as it is
@@ -409,7 +409,7 @@ impl AccountManager {
     }
 
     /// `Accounts.SetPauseOnMetered`: written to `config.toml`, then taken by every account
-    /// at once (issue #95).
+    /// at once.
     pub async fn set_pause_on_metered(&self, on: bool) -> Result<(), ManagerError> {
         self.change_hold_settings(|config| config.set_pause_on_metered(on)).await
     }

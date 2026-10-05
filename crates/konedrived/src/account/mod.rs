@@ -145,13 +145,13 @@ const WIDER_GRANT: &str = "Microsoft answered a request for read-only access wit
 /// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
 /// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
 /// files stay, as ordinary local changes. The account's `SyncService` answers
-/// (`crate::sync::write_mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
+/// (`crate::sync::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
 #[async_trait::async_trait]
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     async fn drop_pending_uploads(&self);
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
-    /// too big for what was left, is decided again by it (issue #2).
+    /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 
@@ -402,13 +402,13 @@ impl AccountService {
     ///
     /// - `config.toml` saying read-write;
     /// - the gate letting the recorded drive through, as the file says now;
-    /// - the drive the account's token was last seen to reach being that very drive (review
-    ///   I2: a recorded drive is never trusted on its own);
+    /// - the drive the account's token was last seen to reach being that very drive (a
+    ///   recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
     ///
     /// Called whenever one of them may have changed, the folder's outbox worker finding the
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
-    /// `Mode` (`crate::sync::write_mode::follow`).
+    /// `Mode` (`crate::sync::mode::follow`).
     fn recompute_mode(&self) {
         // The mode and the list it is gated by, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when

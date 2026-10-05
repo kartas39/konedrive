@@ -1,4 +1,4 @@
-//! Queue totals (issue #16): how much is left to download and to upload, how much of this
+//! Queue totals: how much is left to download and to upload, how much of this
 //! run is done, and about how long the rest takes — per account, each way. `Transfers`
 //! publishes them as `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`,
 //! `DownloadTimeLeft`, and the same four for uploads.

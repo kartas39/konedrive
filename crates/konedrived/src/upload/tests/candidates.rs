@@ -4,7 +4,7 @@
 use konedrive_tree::ActivityKind;
 use super::*;
 
-/// UP1. A `403` blocks its own row (`forbidden`) and nothing else: the other
+/// A `403` blocks its own row (`forbidden`) and nothing else: the other
 /// rows go on. In the daemon, what a sign-in (after the sign-out it needs)
 /// gives the folder is a worker built anew, and all it is told afterwards is
 /// `Refresh()` and that a cycle went through. That lets the row go again.
@@ -35,7 +35,7 @@ fn a_row_blocked_by_403_goes_again_with_the_worker_a_sign_in_builds() {
     assert_committed(&w, "a.txt", "a.txt");
 }
 
-/// UP1. A worker that may not send — here, the user's pause — leaves the row
+/// A worker that may not send — here, the user's pause — leaves the row
 /// a `403` blocked as it is, listed among what needs the user; it lets it go
 /// once it may send.
 #[test]
@@ -59,7 +59,7 @@ fn a_row_blocked_by_403_stays_blocked_while_the_new_worker_may_not_send() {
     assert_committed(&w, "a.txt", "a.txt");
 }
 
-/// UP2. OneDrive answers a new file's upload with an item that holds other
+/// OneDrive answers a new file's upload with an item that holds other
 /// content, and the delete of that item fails: the row remembers the item,
 /// to delete it before the file goes again. A second failure of that delete
 /// must not make the row forget it: once OneDrive answers again, the bad
@@ -115,7 +115,7 @@ fn a_bad_upload_whose_delete_fails_twice_is_still_deleted_before_the_file_goes_a
     assert_committed(&w, "a.txt", "a.txt");
 }
 
-/// UP2. The bad item is deleted only while its content is what the upload
+/// The bad item is deleted only while its content is what the upload
 /// left: the cTag its answer gave says so. Edited in OneDrive since (another
 /// device, the web), it is someone's now: left there and forgotten, and the
 /// file goes up beside it as it does beside any other holder of its name.
@@ -155,7 +155,7 @@ fn a_bad_upload_changed_in_onedrive_since_is_left_there() {
     assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Conflict).count(), 1, "the file goes up as a copy beside it: {:?}", w.summary());
 }
 
-/// UP2. OneDrive moves an item's eTag by itself, with its content as it
+/// OneDrive moves an item's eTag by itself, with its content as it
 /// was: the bad item is still the worker's own upload, and is deleted — the
 /// file lands under its own name, with no conflict copy.
 #[test]

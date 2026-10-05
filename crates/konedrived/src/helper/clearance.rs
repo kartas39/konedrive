@@ -15,7 +15,7 @@ use super::{HelperError, HelperLink};
 /// modification). Whether one can be there used to be argued across the
 /// whole system — "a folder without interception cannot carry a stale mark
 /// that matters" — and that argument was falsified three times, each time by
-/// a race nobody had seen (H132, the 's N2).
+/// a race nobody had seen.
 /// This does not argue at all. Right before a file is emptied:
 ///
 /// - **a link to the helper exists** → the helper is asked to `ClearIgnore`,

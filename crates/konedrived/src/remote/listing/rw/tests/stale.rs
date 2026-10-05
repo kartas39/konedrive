@@ -1,5 +1,5 @@
 //! What the daemon takes off the disk itself is never deleted or moved in
-//! OneDrive (issue #104): an item removed in OneDrive, and one OneDrive
+//! OneDrive: an item removed in OneDrive, and one OneDrive
 //! still has and the folder can no longer hold, which goes only when
 //! nothing in it waits and is an item like any other until then. Against
 //! the fake OneDrive, in a

@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
-/// A file's identity, the way means "per inode": the `(st_dev,
-/// st_ino)` pair, read from an open descriptor and never spelled as a name
-///. Two links to one inode share a key; a rename changes no
+/// A file's identity, the way "per inode" means it: the `(st_dev,
+/// st_ino)` pair, read from an open descriptor and never spelled as a name.
+/// Two links to one inode share a key; a rename changes no
 /// key at all.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct InodeKey {
@@ -43,7 +43,7 @@ struct Slot {
     mutex: Arc<tokio::sync::Mutex<()>>,
     /// Cancelled when the inode is taken off the disk because OneDrive
     /// removed its item ([`InodeLocks::cancel`]): a fill that holds the lock
-    /// stops (issue #104).
+    /// stops.
     cancel: CancellationToken,
     /// Incremented before the caller starts waiting and decremented when it
     /// lets go — whether it acquired the lock or was cancelled while parked
@@ -53,10 +53,9 @@ struct Slot {
 
 type LockTable = Arc<Mutex<HashMap<InodeKey, Slot>>>;
 
-/// Serializes hydration and dehydration of the same inode: promise
-/// that nothing enforced before this task (see [`serve_hydrations`]'s doc
-/// comment). A file being hydrated and dehydrated at the same time is a torn
-/// file.
+/// Serializes hydration and dehydration of the same inode (see the doc
+/// comment of `serve_hydrations` in `hydration/server.rs`). A file being
+/// hydrated and dehydrated at the same time is a torn file.
 ///
 /// Cheap to hold onto for the life of the daemon: each row is dropped from
 /// the table the moment its last user lets go, so the table never grows past
@@ -106,8 +105,8 @@ impl InodeLocks {
     }
 
     /// Exclusive use of `key` if nobody holds or awaits it now, and `None`
-    /// otherwise — without waiting. Startup recovery takes it this way
-    ///: a fill or a free-up of the same file is running in this
+    /// otherwise — without waiting. Startup recovery takes it this way:
+    /// a fill or a free-up of the same file is running in this
     /// daemon, and waiting for it would hold the whole reconnect behind a
     /// download (the very thing took away), while the file it is
     /// busy with is one recovery leaves alone anyway.
@@ -130,7 +129,7 @@ impl InodeLocks {
     }
 
     /// The inode `key` is being taken off the disk because OneDrive removed
-    /// its item (issue #104): whoever holds or awaits its lock — a fill — is
+    /// its item: whoever holds or awaits its lock — a fill — is
     /// told to stop ([`InodeGuard::cancelled`]). Whether anyone was.
     pub fn cancel(&self, key: InodeKey) -> bool {
         match crate::panic::lock(&self.inner).get_mut(&key) {
@@ -261,7 +260,7 @@ pub(crate) fn hold_in_force() -> Option<InodeHold> {
 
 /// Runs `fill` — a download into a file — unless the file is taken off the
 /// disk meanwhile because OneDrive removed its item: then it is dropped where
-/// it is, and `None` says so (issue #104). Without a guard it runs to its end.
+/// it is, and `None` says so. Without a guard it runs to its end.
 ///
 /// The fill runs as work under the guard ([`holding`]): a blocking section it
 /// had begun when it was dropped ends before the lock is free.

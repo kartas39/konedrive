@@ -5,7 +5,7 @@
 //! A read-only folder shows OneDrive: whatever is not where the tree has it
 //! goes to the holding directory, a local version in the way is rescued out
 //! of the folder, and nothing waits. A read-write folder also holds the
-//! user's own changes ([`Rw`](super::Rw)): what a local change holds is left
+//! user's own changes ([`Rw`](crate::remote::materialize::Rw)): what a local change holds is left
 //! as it is and its change waits, a local version in the way is kept beside
 //! the cloud's, and nothing leaves the folder.
 
@@ -75,7 +75,7 @@ impl Materializer {
 
     /// The items of the Changed scope the base has at `here` that OneDrive
     /// still has and the new tree no longer places: what a read-write
-    /// folder lets go or wait whole (issue #104). None in a read-only one,
+    /// folder lets go or wait whole. None in a read-only one,
     /// where such an item goes like one removed.
     pub(super) fn no_longer_placed<'a>(&self, plan: &Plan, here: &[(&String, &'a Located)]) -> Vec<&'a Located> {
         match &self.mode {

@@ -1,5 +1,5 @@
 //! What a row holds of the content it sends ([`Snapshot`]), as the row has
-//! it and as its columns keep it ([`StoredSnapshot`]), and the forms of its
+//! it and as its columns keep it ([`StoredSnapshot`](crate::outbox::encoded::StoredSnapshot)), and the forms of its
 //! `target_name` ([`OutboxRow::swap_name`], [`OutboxRow::last_place`]).
 
 use std::path::Path;

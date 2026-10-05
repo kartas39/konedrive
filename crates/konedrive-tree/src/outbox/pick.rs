@@ -1,4 +1,4 @@
-//! Which rows run next, without reading the whole queue (issue #38).
+//! Which rows run next, without reading the whole queue.
 //!
 //! **Rules 1–3** of the module's doc are asked of one row at a time, by point
 //! queries: its item's and its local object's earlier rows (the item and
@@ -207,7 +207,7 @@ fn rule_one(conn: &Connection, row: &OutboxRow, out: &mut Vec<i64>) -> Result<()
         out.extend(statement.query_map(params![id, row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
     }
     if let Some(inode) = &row.inode {
-        // The same handle's bytes, or no handle and the same inode (`same_key`).
+        // The same handle's bytes, or no handle and the same inode.
         let earlier: Vec<i64> = match &inode.handle {
             Some(handle) => {
                 let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle = ?1 AND seq < ?2")?;
@@ -482,7 +482,7 @@ impl TreeStore {
         Ok(statement.query_row([now], |r| r.get(0))?)
     }
 
-    /// Whether a removal of `row`'s object is recorded behind it (issue #27).
+    /// Whether a removal of `row`'s object is recorded behind it.
     pub fn outbox_removed_behind(&self, row: &OutboxRow) -> Result<bool, TreeError> {
         let Some(inode) = &row.inode else { return Ok(false) };
         let behind = rows_where(

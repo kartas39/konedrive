@@ -126,7 +126,7 @@ properties! {
     /// notification socket), `connecting` (trying; the poll runs meanwhile), or `off`
     /// (stopped, or not a OneDrive folder).
     LIVE_CHANGES: String = FOLDER, "LiveChanges", |s| s.snapshot.cycle.live_changes.as_str().to_owned();
-    /// OneDrive is full: no content goes up (issue #2).
+    /// OneDrive is full: no content goes up.
     QUOTA_FULL: bool = QUEUE, "QuotaFull", |s| s.snapshot.outbox.quota_full;
 }
 
@@ -169,15 +169,15 @@ properties! {
     /// Bytes a second uploaded, the average of the last 3 s.
     UPLOAD_SPEED: u64 = MOVING, "UploadSpeed", |s| s.snapshot.transfers.throughput.up_speed;
     /// Files downloading now: the entries of `Downloads`, each file once however many
-    /// streams it runs (issue #50).
+    /// streams it runs.
     ACTIVE_DOWNLOADS: u32 = MOVING, "ActiveDownloads", |s| count(s.downloads.len());
     /// Files uploading now: the entries of `Uploads`.
     ACTIVE_UPLOADS: u32 = MOVING, "ActiveUploads", |s| count(s.snapshot.outbox.uploads.len());
     /// The large files (100 MiB and up) the sync moves now, each once however many streams
-    /// it runs; files being opened left out (issue #50).
+    /// it runs; files being opened left out.
     LARGE_FILES: u32 = MOVING, "LargeFiles", |s| large_files(&s.downloads, &s.snapshot.outbox.uploads);
     /// Every slot of the pool held now, all four classes, the opens' reserve included: may
-    /// be above `PoolSize` (issue #50).
+    /// be above `PoolSize`.
     POOL_IN_USE: u32 = MOVING, "PoolInUse", |s| s.snapshot.transfers.throughput.in_use;
     /// The size of the account's transfer pool now.
     POOL_SIZE: u32 = MOVING, "PoolSize", |s| s.snapshot.transfers.throughput.size;
@@ -193,7 +193,7 @@ properties! {
     /// when there is none.
     RETRY_AFTER: u32 = MOVING, "RetryAfter", |s| s.snapshot.transfers.throughput.retry_after;
     /// Files left to download: the pinned files waiting and every download under way
-    /// (issue #16, `status::totals`).
+    /// (`status::totals`).
     DOWNLOAD_LEFT_COUNT: u32 = MOVING, "DownloadLeftCount", |s| s.snapshot.transfers.queue.down.left_count;
     /// Their size, less what the downloads under way have received.
     DOWNLOAD_LEFT_BYTES: u64 = MOVING, "DownloadLeftBytes", |s| s.snapshot.transfers.queue.down.left_bytes;
@@ -210,7 +210,7 @@ properties! {
     /// Seconds the uploads left take at the last 30 s's speed; 0 when unknown, and while paused.
     UPLOAD_TIME_LEFT: u32 = MOVING, "UploadTimeLeft", |s| s.snapshot.transfers.queue.up.time_left;
 
-    /// The Full local scan (issue #8): `running`, `idle`, or `none` for a read-only folder.
+    /// The Full local scan: `running`, `idle`, or `none` for a read-only folder.
     SCAN_STATE: String = SCAN, "State", |s| s.snapshot.local.scan.state.as_str().to_owned();
     /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
     /// ignore-list, periodic.

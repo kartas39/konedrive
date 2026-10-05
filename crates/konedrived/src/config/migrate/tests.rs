@@ -224,7 +224,7 @@ async fn a_store_that_cannot_be_moved_is_left_where_it_is() {
     }
 }
 
-/// Issue #95: the accounts' own `pause_on_metered` and `on_battery` become the global
+/// The accounts' own `pause_on_metered` and `on_battery` become the global
 /// keys, the strictest value winning — an account without a key counting as its
 /// default — and leave the accounts; the file is written once, and a second start
 /// changes nothing.

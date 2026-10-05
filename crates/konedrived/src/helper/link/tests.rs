@@ -227,7 +227,7 @@ async fn two_concurrent_callers_do_not_cross_wire() {
     );
 }
 
-/// Fix 3, item 2: an unsolicited `HydrateRequest` arriving on the wire
+/// An unsolicited `HydrateRequest` arriving on the wire
 /// before the `Ack` for an outstanding call must not disturb that call's
 /// pairing — the reader thread tells the two apart by message type, not
 /// by position, so both resolve correctly regardless of what is
@@ -268,12 +268,12 @@ async fn a_hydrate_request_interleaved_before_the_ack_still_resolves_both() {
     assert_eq!(request.req_id, 99);
 }
 
-/// Fix 3, item 3 (and the direct proof of): a helper that
+/// A helper that
 /// accepts, greets, reads a request, and then goes silent must make the
 /// call fail with `HelperError::Timeout` rather than hang. The call
 /// timeout is injected as a few milliseconds via `connect_with_timeout`
 /// so this test does not have to sleep the real 30 s bound.
-///: `UnregisterRoot` walks the whole
+/// `UnregisterRoot` walks the whole
 /// tree as `RegisterRoot` does — every directory, and now every file's
 /// ignore mark — so it gets the same long bound. With the ordinary one,
 /// a large tree's unregistration timed out, and a timeout ends the

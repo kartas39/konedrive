@@ -2,7 +2,7 @@ use konedrive_dbus::rows::Transfer;
 
 use super::formats::{grouped, human_bytes};
 
-/// One direction's queue totals (issue #16): `Transfers`' `DownloadLeftCount`,
+/// One direction's queue totals: `Transfers`' `DownloadLeftCount`,
 /// `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft`, or the same four for uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueueTotals {
@@ -39,7 +39,7 @@ pub struct TransferSummary {
     pub retry_after: u32,
 }
 
-/// The pool's line, as the window shows it too (issue #50): the slots in use of the pool's
+/// The pool's line, as the window shows it too: the slots in use of the pool's
 /// size, then the large files and their streams — "Pool: 7 of 32 · large files: 1 (4 of 4
 /// streams)" — with "— OneDrive asked to wait 30 s" during a `Retry-After`. In use may be
 /// above the size (an open's reserve; slots still held after a throttle halved the pool), and

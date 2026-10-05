@@ -21,6 +21,13 @@
 //! The mode is [`Mode`] with a read-write cycle's load ([`RwCycle`]): the
 //! read phase's reconcile, or a read-write folder's (`docs/design/writes.md`
 //! §9), which holds the tree lock until the swap.
+//!
+//! [`Reconcile::run`]: crate::remote::listing::reconcile::Reconcile::run
+//! [`Reconcile::apply_with_handover`]: crate::remote::listing::reconcile::Reconcile::apply_with_handover
+//! [`Reconcile::after_commit`]: crate::remote::listing::reconcile::Reconcile::after_commit
+//! [`Reconcile::failed`]: crate::remote::listing::reconcile::Reconcile::failed
+//! [`commit_cycle`]: crate::remote::listing::reconcile::commit_cycle
+//! [`RwCycle`]: crate::remote::listing::reconcile::RwCycle
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -257,7 +264,7 @@ impl Reconcile {
         }
     }
 
-    /// The account's drive written into `config.toml` (A-M5) and onto the
+    /// The account's drive written into `config.toml` and onto the
     /// folder (design §8.3), when this is the reconcile that learnt it.
     fn record_drive(&mut self) {
         let Some((record, id)) = self.drive.take() else { return };

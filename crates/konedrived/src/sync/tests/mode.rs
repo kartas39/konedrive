@@ -2,7 +2,7 @@ use super::*;
 
 // --- The mode boundary --------------------
 
-/// H133. An intercepted root may carry ignore marks, and only the
+/// An intercepted root may carry ignore marks, and only the
 /// helper's `UnregisterRoot` takes them off — its walk clears the mark of
 /// every file in the tree. A Forget that could not tell the helper used
 /// to be accepted anyway: the daemon forgot the folder while the helper
@@ -73,7 +73,7 @@ async fn a_forget_the_helper_answers_eperm_goes_through_and_any_other_refusal_do
     assert!(service.root().is_none());
 }
 
-/// H134. A root registered without interception was never announced to
+/// A root registered without interception was never announced to
 /// the helper, so forgetting it has nothing to tell the helper — and
 /// telling it anyway made it impossible to forget while a helper was
 /// connected: the helper refuses to unregister a root the uid does not
@@ -93,7 +93,7 @@ async fn forgetting_a_root_registered_without_interception_never_asks_the_helper
     assert!(helper.seen().is_empty(), "the helper was asked: {:?}", helper.seen());
 }
 
-/// H135, first half. `PopulateFromDirectory` used to mark every
+/// `PopulateFromDirectory` used to mark every
 /// directory it created whenever a link merely existed — in a root
 /// registered without interception too. On a filesystem where the uid
 /// owns no helper root the helper refuses that `EPERM`, and the populate
@@ -456,7 +456,7 @@ async fn a_new_root_is_written_down_before_the_helper_hears_of_it() {
 
 /// And a root that cannot be written down is not registered at all: the
 /// helper is never told about it.
-///. `config.toml` is the account
+/// `config.toml` is the account
 /// sub-project's file too — it holds the `client_id` — and a copy that
 /// could not be read used to be treated as empty and written back from
 /// defaults, erasing everything in it. What could not be read is never
@@ -669,7 +669,7 @@ async fn two_registrations_at_once_leave_one_root_at_the_helper() {
 /// forgotten and registered again with interception while it waits
 /// could have the file ignore-marked by then, and the punch would skip
 /// the `ClearIgnore` that is suddenly needed.
-/// it waits for the fill without the lifecycle lock — a Forget is not
+/// it waits for the fill without the folder's lock — a Forget is not
 /// held up by a download — and decides the mode only after, under the
 /// lock: a folder forgotten meanwhile is refused, nothing punched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

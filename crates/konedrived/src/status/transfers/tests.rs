@@ -1,6 +1,6 @@
 use super::*;
 
-/// `LargeFiles` (issue #50): each large download once, a file being opened left out, and
+/// `LargeFiles`: each large download once, a file being opened left out, and
 /// the large uploads; small ones are not large files.
 #[test]
 fn large_files_are_the_large_downloads_but_opens_and_the_large_uploads() {

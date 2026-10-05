@@ -206,8 +206,8 @@ pub(super) fn set_snapshot(conn: &Connection, seq: i64, snapshot: Option<super::
 /// Row `seq` leaves the outbox, whatever the reason: every delete of a row
 /// is this one. Whether it was there.
 ///
-/// The record of an opening the row made (issue #84) is kept without it
-/// (`upload_openings_left`, issue #89), from now by the wall clock: the
+/// The record of an opening the row made is kept without it
+/// (`upload_openings_left`), from now by the wall clock: the
 /// placeholder the opening may have left in OneDrive is still this
 /// folder's. Call it inside the transaction that removes the row, so that
 /// a row never goes and leaves its record pointing at nothing.

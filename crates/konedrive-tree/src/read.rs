@@ -9,7 +9,7 @@ use crate::{TreeError, TreeStore};
 
 /// What a job of [`Store::read`](crate::Store::read) is handed: the store
 /// for reading alone. It sees what was last committed and never waits for
-/// a writer (issue #38); a call that changes the store is not among its
+/// a writer; a call that changes the store is not among its
 /// methods, so one cannot be sent to the read-only connection by mistake.
 pub struct ReadStore<'a> {
     store: &'a TreeStore,

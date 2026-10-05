@@ -174,7 +174,7 @@ pub(crate) fn demote(file: &File, keep: Keep, shape: Shape, held: Held<'_>) -> i
     Ok(Demoted::Done { kept })
 }
 
-/// A file whose download was stopped part-way because its item was removed (issue #104),
+/// A file whose download was stopped part-way because its item was removed,
 /// and which survives — set aside for another account, or left by a removal that failed: a
 /// placeholder again, with no content and no checkpoint, never a partly filled file. Only a
 /// file still `hydrating` is touched; the caller holds its inode lock, and the fill that

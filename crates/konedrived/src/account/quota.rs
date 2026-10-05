@@ -1,4 +1,4 @@
-//! The quota of one account's drive (issue #78): one copy, served by `org.konedrive.Account`
+//! The quota of one account's drive: one copy, served by `org.konedrive.Account`
 //! (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`, `QuotaState`), whoever reads it — the
 //! account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a
 //! refused upload, the check every 30 minutes, `upload::space`). Between two reads the

@@ -1,7 +1,12 @@
-# The guard of the structure rules (CONTRIBUTING.md, "The structure of the code"),
-# on every pull request: the size limits, no tests in a source file, the order
-# of the daemon's layers. scripts/check-structure.sh reads the files only:
-# nothing is built.
+# The guards that run on every pull request and run no test:
+#
+# - the structure rules (CONTRIBUTING.md, "The structure of the code"): the
+#   size limits, no tests in a source file, the order of the daemon's layers.
+#   scripts/check-structure.sh reads the files only: nothing is built;
+# - the links in the doc comments: rustdoc over the workspace, private items
+#   included, with a link that does not resolve as an error. This one builds
+#   the dependencies (checked, not linked) before it reads the comments.
+#   What it does not catch is in docs/limitations/D59.md.
 name: Structure
 
 on:
@@ -9,6 +14,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The Rust the release's tests run with (release.yml, RUST_VERSION): a newer
+  # rustdoc may bring lints this workflow has not seen. Moved with that one.
+  RUST_VERSION: "1.98.1"
 
 jobs:
   check:
@@ -20,3 +30,36 @@ jobs:
 
       - name: Check the structure rules
         run: scripts/check-structure.sh
+
+  doc-links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # rustup is on the runner's image; the toolchain is pinned, not the
+      # image's. Nothing else is installed: SQLite is built from the crate's
+      # own source, and no other crate needs a system library to be checked.
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+          rustc --version
+
+      - name: Cache the crates and the doc build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: doc-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: doc-rust-${{ env.RUST_VERSION }}-
+
+      - name: Check the links in the doc comments
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
+        run: cargo doc --locked --workspace --no-deps --document-private-items

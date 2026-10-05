@@ -1,4 +1,4 @@
-//! How the Full local scan goes, for `org.konedrive.LocalScan` (issue #8): whether one runs, why, since when
+//! How the Full local scan goes, for `org.konedrive.LocalScan`: whether one runs, why, since when
 //! and what it has seen so far, and when the last one finished. Only a read-write folder
 //! has a watcher, and so a local scan; a read-only one says `none`.
 //!

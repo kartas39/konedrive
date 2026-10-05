@@ -419,6 +419,7 @@ application must never read zeros where real content should be.
 - [D55](D55.md) — The enumeration of local acts has no act that makes something unreadable, and one act for damaged marks
 - [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but the helper keeps its own
 - [D58](D58.md) — The rule for locks is not asked of the helper or of test doubles
+- [D59](D59.md) — The check of the doc links sees a broken link, not a wrong one
 
 ---
 

@@ -11,7 +11,7 @@
 //! The same linearity lets a file be hashed in pieces, in any order: a piece
 //! hashed [`at`](QuickXor::at) its offset in the file folds its bytes into
 //! the lanes they belong to in the whole, and the pieces
-//! [`combine`](QuickXor::combine) into the whole file's hash (issue #28).
+//! [`combine`](QuickXor::combine) into the whole file's hash.
 
 use base64::Engine;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The fake's notification socket (issue #54): Engine.IO v4 over a local websocket, as
+/// The fake's notification socket: Engine.IO v4 over a local websocket, as
 /// Graph's Socket.IO endpoint speaks it. Every connection gets the open packet, has its
 /// namespace joins answered, gets a ping every [`PING_INTERVAL`], and a `notification` event
 /// in the namespace `/notifications` whenever the drive changes.

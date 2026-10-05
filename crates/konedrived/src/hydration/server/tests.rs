@@ -388,7 +388,7 @@ async fn the_reader_reaches_acks_queued_behind_every_request_the_helper_may_send
     }
 }
 
-/// A fill stopped because OneDrive removed its file (issue #104) answers its
+/// A fill stopped because OneDrive removed its file answers its
 /// opener like every other fill: with an errno the kernel delivers. `ENOENT`
 /// is not one (`ACCEPTED_DENY_ERRNOS`); the helper turns it into `EIO`, so the
 /// opener is never told the file is gone.

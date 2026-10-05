@@ -10,7 +10,7 @@
 //! again. A replacement that failed is retried as it is, after every cycle.
 //!
 //! Cycles of one `Listing` never overlap. A cycle asks Graph without the
-//! lifecycle lock and takes it only to change the folder and swap the link in,
+//! folder's lock (`SyncService`'s `folder`, held through the lease) and takes it only to change the folder and swap the link in,
 //! so a helper's reconnect is never kept waiting by a listing. A stop
 //! (`Poller::stop`) never waits for Graph or for whoever holds that lock; it
 //! waits only for a reconcile already changing the folder, which checks for the
@@ -66,7 +66,7 @@ pub use replacements::REPLACE_WORKERS;
 /// A delta with more changes than this is reconciled in full.
 pub const FULL_THRESHOLD: usize = 5000;
 
-/// The account's drive, as `config.toml` keeps it (A-M5, design §8.1): the
+/// The account's drive, as `config.toml` keeps it (design §8.1): the
 /// same-account check then survives a tree store rebuilt empty, whose `meta`
 /// has forgotten it.
 #[derive(Clone)]
@@ -249,7 +249,7 @@ pub struct Listing {
     ctx: ListingContext,
     /// Asked for from the start: a `Listing`'s first cycle is Full.
     full: FullRequest,
-    /// The drive has been written into `config.toml` (A-M5), or is being:
+    /// The drive has been written into `config.toml`, or is being:
     /// once per `Listing`.
     drive_recorded: AtomicBool,
     /// The drive to write there, by the next reconcile.
@@ -360,7 +360,7 @@ impl Listing {
         // HS2: a folder that shows OneDrive is kept in step only with
         // interception and a connected helper — nothing is placed or updated
         // otherwise, and Graph is not asked for what could not be placed.
-        // Asked again under the lifecycle lock, where the answer counts.
+        // Asked again under the folder's lock, where the answer counts.
         if !self.ctx.intercepted || !self.ctx.link.is_linked() {
             return Err(CycleError::NoHelper);
         }
@@ -368,7 +368,7 @@ impl Listing {
         let mode = self.begin(turn, cancel).await?;
         let fetched = self.fetch(turn, mode, cancel).await?;
         // Whether this cycle may have changed the tree: its counts are
-        // published then, and not in an idle cycle (issue #39).
+        // published then, and not in an idle cycle.
         let listed = !matches!(fetched, Fetched::News(stage::News::Changes { .. }));
         let (reconciled, changes) = self.reconcile_fetched(turn, mode, fetched, full_requested, cancel).await?;
         self.after_cycle(turn, reconciled, changes, listed || full_requested).await
@@ -396,7 +396,7 @@ impl Listing {
         self.ctx.state.update(|s| s.cycle.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
         // §16.1), whether or not anyone asks for the list: a batch of them
-        // looked over each cycle (issue #39). Not through `on_store`: the
+        // looked over each cycle. Not through `on_store`: the
         // activity log takes the store's lock itself.
         let (report, held) = (self.ctx.report.clone(), Arc::clone(turn));
         if let Err(e) = tokio::task::spawn_blocking(move || {
@@ -458,7 +458,7 @@ impl Listing {
     /// At every cycle: a sign-out and a sign-in as someone else
     /// can come between any two of them. The drive is the one the store's
     /// `meta` records, or — for a store rebuilt empty — the one `config.toml`
-    /// keeps beside the root (A-M5); once known, it is recorded in both.
+    /// keeps beside the root; once known, it is recorded in both.
     async fn check_account(&self, turn: &Turn, cancel: &CancellationToken) -> Result<(), CycleError> {
         let id = cancellable(cancel, self.ctx.drive.drive_id()).await?.map_err(drive_error)?;
         let stored = self.on_store(turn, |s| s.drive_id()).await?;
@@ -484,8 +484,8 @@ impl Listing {
         }
         if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
             if !self.drive_recorded.swap(true, Ordering::SeqCst) {
-                // Written by the next reconcile, which holds the lifecycle
-                // lock anyway: the Graph phase never waits for it (B3).
+                // Written by the next reconcile, which holds the folder's
+                // lock anyway: the Graph phase never waits for it.
                 *crate::panic::lock(&self.pending_drive) = Some((record.clone(), id));
             }
         }

@@ -125,7 +125,7 @@ impl Run<'_, '_, '_> {
         }
         let n = removed.len() as u64;
         // The items in the folder — a walk of the whole tree — counted only
-        // when the share decides (issue #39).
+        // when the share decides.
         let trips = fresh
             && (n > MASS_DELETE_ITEMS || (n >= MASS_DELETE_FLOOR && n * 100 > self.facts.placed()? * MASS_DELETE_PERCENT));
         if trips {

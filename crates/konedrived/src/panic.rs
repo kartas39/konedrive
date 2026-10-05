@@ -2,7 +2,8 @@
 //! panic, and a lock taken whether or not a holder of it panicked.
 //!
 //! The daemon catches a panic and goes on, so a lock is never left unusable by one: every
-//! lock of `std::sync` is taken through [`lock`], [`read`] or [`write`]
+//! lock of `std::sync` is taken through [`lock`](crate::panic::lock), [`read`](crate::panic::read) or
+//! [`write`](crate::panic::write)
 //! (`scripts/check-structure.sh` refuses the other spellings). Whoever takes it next finds
 //! the data as the panic left it, so what is done under such a lock is kept to steps that
 //! cannot leave it half-changed.

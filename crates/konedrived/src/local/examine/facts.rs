@@ -30,7 +30,7 @@ pub(super) struct Facts<'e> {
     base: HashMap<String, Option<Rc<Row>>>,
     /// Item id → the local object the base records (`items.local_handle`),
     /// and where the base places the item: asked with the item's row, in one
-    /// job of the store's thread (issue #38).
+    /// job of the store's thread.
     recorded: HashMap<String, (Option<FileHandle>, Option<Located>)>,
     expected: HashMap<String, Expect>,
 }
@@ -174,7 +174,7 @@ impl<'e> Facts<'e> {
     }
 }
 
-/// The live rows as an examination looks them up (issue #38): by item, by
+/// The live rows as an examination looks them up: by item, by
 /// local object, by place, by parent directory, built once per run, so that
 /// no step walks every row for each entry, item or directory.
 pub(super) struct Rows {

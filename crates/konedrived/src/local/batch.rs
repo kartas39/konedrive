@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 
-/// Why a Full local scan runs (`LocalScan.Reason`, issue #8).
+/// Why a Full local scan runs (`LocalScan.Reason`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanReason {
     /// The folder's read-write sync started: the daemon started, or the sync started again.

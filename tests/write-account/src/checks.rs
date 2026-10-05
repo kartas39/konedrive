@@ -475,7 +475,7 @@ impl Run {
     }
 }
 
-/// A file's content as the outbox worker sends it (issue #47): an empty file in one `PUT`, any
+/// A file's content as the outbox worker sends it: an empty file in one `PUT`, any
 /// other in a session of one fragment.
 pub async fn send(drive: &DriveClient, target: UploadTarget<'_>, content: Vec<u8>, time: i64) -> Result<DriveItem, WriteError> {
     if content.is_empty() {

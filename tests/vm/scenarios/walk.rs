@@ -8,7 +8,7 @@ use konedrive_fs::placeholder::create_placeholder;
 
 use crate::harness::{Checks, Ctx, dir_mark_present, ignore_mark_present};
 
-/// Review item 7, second half. The helper's unit runs with
+/// The helper's unit runs with
 /// `ProtectHome=read-only`, which is a mount namespace in which the tree the
 /// sync root lives on is read-only *for the helper*. What has to keep working
 /// is the write the **daemon** performs through the descriptor the helper
@@ -82,7 +82,7 @@ pub(crate) fn readonly_mount_event_fd(ctx: &Ctx, checks: &mut Checks) -> Result<
     result
 }
 
-/// Review item 9. Two hazards for the startup walk, in one tree: a symlinked
+/// Two hazards for the startup walk, in one tree: a symlinked
 /// subdirectory (the helper walks as root, so following one is how a user has
 /// every directory on the machine marked), and directories being renamed under
 /// the walk while it runs.
@@ -157,7 +157,7 @@ pub(crate) fn startup_walk_hazards(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     Ok(())
 }
 
-/// Review item 12, second half. `readdir`'s `d_type` is only a hint, and some
+/// `readdir`'s `d_type` is only a hint, and some
 /// filesystems report `DT_UNKNOWN` for everything; the walk must settle the
 /// question with `openat2(O_DIRECTORY)` rather than believe the hint. An ext4
 /// image built without the `filetype` feature is a filesystem that really does

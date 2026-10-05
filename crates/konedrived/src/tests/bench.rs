@@ -1,4 +1,4 @@
-//! The outbox (issue #38) and the cloud side (issue #39) at scale: a bench,
+//! The outbox and the cloud side at scale: a bench,
 //! never run by `cargo test`. Each
 //! operation is an ignored test on a temporary store and a temporary folder;
 //! it prints its time and fails when its budget is exceeded:
@@ -393,7 +393,7 @@ fn a_whole_table_read() {
     assert_eq!(rows.len(), 30_000);
 }
 
-// The cloud side (issue #39).
+// The cloud side.
 
 /// 100 000 items: 100 folders of 1 000 files, every fifth file an image —
 /// 20 000 images — and every twentieth skipped for its name — 5 000.

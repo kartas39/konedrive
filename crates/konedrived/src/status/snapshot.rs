@@ -89,8 +89,8 @@ pub enum RootState {
     None,
     /// A root is registered and, as far as this daemon knows, healthy.
     Ready,
-    /// A root is registered, but **nothing intercepts opens inside it**
-    ///: it was registered through
+    /// A root is registered, but **nothing intercepts opens inside it**:
+    /// it was registered through
     /// `RegisterWithoutInterception`, so a placeholder nobody fills
     /// reads as zeros until it is hydrated by hand. Distinct from `ready`
     /// precisely because a client must be able to tell the two apart. A
@@ -209,7 +209,7 @@ pub struct LocalStatus {
     /// that finds them current. Empty otherwise.
     pub handles_note: String,
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
-    /// `Expected`, `Finished`, `Took`: the Full local scan (issue #8).
+    /// `Expected`, `Finished`, `Took`: the Full local scan.
     pub scan: LocalScan,
 }
 
@@ -230,7 +230,7 @@ pub struct OutboxStatus {
     pub held_count: u32,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
-    /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
+    /// `QuotaFull`: OneDrive is full and no content goes up.
     pub quota_full: bool,
     /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while full, the changes
     /// that send content; `TooBigCount`: files too big for the space left.
@@ -258,7 +258,7 @@ pub struct TransferStatus {
     /// `DownloadSpeed`, `UploadSpeed`, `PoolInUse`, `PoolSize`, `PoolCeiling`, `LargeStreams`,
     /// `LargeStreamLimit`, `RetryAfter`: the account's transfer pool, once a second while
     /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
-    /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead (issue #50).
+    /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead.
     pub throughput: konedrive_graph::pool::Throughput,
     /// `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft` and
     /// the same four for uploads: counted from the rest by [`totals::run`].
@@ -318,7 +318,7 @@ impl SwitchNote {
 }
 
 /// What keeps the outbox's changes from going, and who says so: the write gate's note is
-/// the gate's alone to take back (`SyncService::write_gate`), the throttle's and the
+/// the gate's alone to take back (`Gate::check` in `sync/mode.rs`), the throttle's and the
 /// unopenable folder's are the outbox worker's (its host, `sync/outbox.rs`), the other two are the poller's
 /// (`remote::listing::poller`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,8 +434,8 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 /// registration's text with the note of a failed switch, the sync's and the
 /// replacement note, then the watcher's, the handles' and the outbox's notes, in
 /// that order — problems only. Where local work was moved out of the way is a conflict
-/// (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here
-///: said here, it stayed until a Forget, and a folder that
+/// (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here:
+/// said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
 ///
 /// The helper's part (HS3) is worked out from `HelperState` whenever that

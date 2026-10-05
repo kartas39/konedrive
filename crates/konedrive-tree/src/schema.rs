@@ -30,7 +30,7 @@ pub const SCHEMA_VERSION: &str = "8";
 ///   `local_handle` is the file handle of the inode the item was placed or
 ///   adopted as, `local_seq` the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
-///   while it is staged (issue #39).
+///   while it is staged.
 /// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
 ///   cycles ([`crate::reconcile`]). `deferred.waits`: what keeps an item
 ///   that is to leave the folder, as the last cycle found it.
@@ -41,23 +41,23 @@ pub const SCHEMA_VERSION: &str = "8";
 ///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`; a
 ///   `move-out` row's marker is `moved_out`.
 /// - `upload_sessions`: the upload sessions opened and not yet completed,
-///   cancelled or found gone (issue #47), with the place a new file's
+///   cancelled or found gone, with the place a new file's
 ///   session holds in OneDrive with its empty placeholder until then. A row
 ///   points at its session (`session_url`); one no row points at any more
 ///   was given up, and is cancelled
 ///   ([`TreeStore::upload_sessions_given_up`]).
-/// - `upload_openings`: the place a new file's session is about to take
-///   (issue #84), recorded before the request that opens it, so that a stop
+/// - `upload_openings`: the place a new file's session is about to take,
+///   recorded before the request that opens it, so that a stop
 ///   before its URL is persisted still knows the placeholder it may have
 ///   left. One per row (`at` its first time, `last` the latest attempt
 ///   whose outcome is not known, read as `at` when a store older than it
 ///   left none); the URL replaces it. `upload_openings_left`: a record
-///   whose row left, or moved to another place (issue #89), kept until a
+///   whose row left, or moved to another place, kept until a
 ///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
 /// - `items_unplaced` and `items_skipped` ask whether a row is placed as
 ///   every query and the decoder do ([`placed`]), so that a query uses them.
 /// - The indexes keep a cycle and the outbox's lookups from reading a whole
-///   table (issues #38, #39).
+///   table.
 fn schema() -> String {
     let tree = |table: &str| {
         format!(
@@ -156,8 +156,8 @@ fn should_rebuild(error: &TreeError) -> bool {
 
 impl TreeStore {
     /// Opens the store at `path`, creating it — and rebuilding it empty when it
-    /// is missing, unreadable as a database, or of an unknown schema version
-    ///. Every other error — permission denied, disk I/O, brief lock
+    /// is missing, unreadable as a database, or of an unknown schema version.
+    /// Every other error — permission denied, disk I/O, brief lock
     /// contention that outlasts the busy timeout — is returned unchanged, and
     /// nothing on disk is touched: a transient failure is not corruption, and
     /// must never cost the user their tree.
@@ -213,8 +213,8 @@ impl TreeStore {
         Ok(Self { path: Some(path.to_path_buf()), ..Self::prepare(conn)? })
     }
 
-    /// A second connection to the store at `path`, for reading only (issue
-    /// #38): in WAL mode it reads the last committed state and never waits
+    /// A second connection to the store at `path`, for reading only:
+    /// in WAL mode it reads the last committed state and never waits
     /// for the writer. Nothing is created or changed; its reads are the
     /// outbox's lists and sums for the bus.
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, TreeError> {

@@ -27,8 +27,8 @@ impl ObjectKey {
 
 impl TreeStore {
     /// Every row's blockers: the live rows it waits for (the module's four
-    /// rules), computed for all rows at once, as the worker did before issue
-    /// #38: what the tests hold the point queries of [`pick`] to.
+    /// rules), computed for all rows at once:
+    /// what the tests hold the point queries of [`pick`] to.
     #[cfg(test)]
     pub fn outbox_dependencies(&self) -> Result<HashMap<i64, Vec<i64>>, TreeError> {
         let rows = all_rows(&self.conn)?;

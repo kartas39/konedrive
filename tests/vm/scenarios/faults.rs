@@ -16,7 +16,7 @@ use crate::burst::run_burst;
 use crate::child::raw_connect;
 use crate::harness::{Checks, Ctx, Reader, count_in_log};
 
-/// Review item 12, first half. Running out of descriptors is the one failure
+/// Running out of descriptors is the one failure
 /// the event loop survives on purpose: the helper exiting sets
 /// every outstanding permission event to *allowed*, which is silent data loss,
 /// while a denial is an errno the application can see.
@@ -69,7 +69,7 @@ pub(crate) fn emfile_survived(ctx: &Ctx, checks: &mut Checks) -> Result<(), Stri
     }
 }
 
-/// Review item 11, first half. Nothing input-reachable panics in a worker any
+/// Nothing input-reachable panics in a worker any
 /// more, so the unwind path that exists for has to be injected. The
 /// helper is restarted with a fault armed on a distinctive file size.
 pub(crate) fn worker_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
@@ -96,7 +96,7 @@ pub(crate) fn worker_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<
     Ok(())
 }
 
-/// Review item 11, second half. A panic in a connection's request loop must
+/// A panic in a connection's request loop must
 /// run the `Disconnect` guard while unwinding: without it the `Daemon` stays
 /// in the map, every later hydration for that uid is addressed to a connection
 /// nobody reads, and the suspended openers are never denied.
@@ -348,7 +348,7 @@ fn fill_to_the_brim(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Review item 14. The host test for this skips silently whenever
+/// The host test for this skips silently whenever
 /// unprivileged user namespaces are unavailable, so the one place it can be
 /// relied on is here, where a real mount needs no namespace at all.
 pub(crate) fn cross_device_recovery(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {

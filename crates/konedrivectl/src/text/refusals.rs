@@ -25,9 +25,9 @@ pub enum SyncAction<'a> {
     FreeUpSpace,
     /// The paths given, joined with ", ".
     Pin(&'a str),
-    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    /// The path refused ([`refused_path`](crate::text::files::refused_path)), or the paths given, joined with ", ".
     Unpin(&'a str),
-    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    /// The path refused ([`refused_path`](crate::text::files::refused_path)), or the paths given, joined with ", ".
     Free(&'a str),
     /// `sync open`: `Files.WebUrl`, with the path.
     Open(&'a str),
@@ -175,7 +175,7 @@ impl Context<'_> {
 
 /// [`explain_sync_error`], with what [`Context`] adds: a refusal for want
 /// of the helper ends with how to start it (HS4), a folder that shows
-/// OneDrive is not told to populate itself from a directory (B-M6), a path
+/// OneDrive is not told to populate itself from a directory, a path
 /// in no account's folder is told which folders there are, and a folder
 /// that was another account's is told so.
 pub fn explain_sync_error_in(action: SyncAction<'_>, error: &zbus::Error, context: Context<'_>) -> String {

@@ -9,7 +9,7 @@
 //! crash in between leaves `items` and the delta link as they were and the
 //! next cycle asks for the same changes again.
 //!
-//! A delta's new tree is `items` with the delta laid over it (issue #39):
+//! A delta's new tree is `items` with the delta laid over it:
 //! the table `staging` holds only the rows the delta writes, each a whole
 //! row, and `staging_gone` the ids it removes. Reading the new tree reads
 //! `staging` first and `items` for the rest; the swap writes those rows and
@@ -75,7 +75,7 @@ pub struct TreeStore {
     path: Option<PathBuf>,
     /// `staging` holds a whole new tree ([`NewTree::Whole`]), not a delta.
     whole: bool,
-    /// What changed in the outbox since it was last asked (issue #38).
+    /// What changed in the outbox since it was last asked.
     changes: std::sync::Arc<outbox::OutboxChanges>,
 }
 

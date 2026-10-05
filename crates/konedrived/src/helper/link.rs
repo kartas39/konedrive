@@ -104,8 +104,8 @@ pub struct HelperLink {
     calls: blocking_mpsc::Sender<Call>,
     /// A duplicate of the connection's socket, kept to `shutdown()` it
     /// explicitly (timed-out call) and, via `ShutdownOnDrop`,
-    /// whenever the last handle to it goes away for any other reason
-    ///. The reader and writer threads hold their own
+    /// whenever the last handle to it goes away for any other reason.
+    /// The reader and writer threads hold their own
     /// duplicates of the same underlying open file description, so shutting
     /// this one down unblocks them too.
     socket: Arc<ShutdownOnDrop>,
@@ -134,7 +134,7 @@ impl HelperLink {
     /// the helper's `Welcome` and for our own `Hello`'s `Ack` — is bounded
     /// and awaited, never a raw blocking call on the caller's own thread.
     ///
-    ///: this can legitimately take up to 30 s (`CALL_TIMEOUT`) to
+    /// This can legitimately take up to 30 s (`CALL_TIMEOUT`) to
     /// resolve, against a helper that accepts the connection and then never
     /// speaks — the `Welcome`/`Hello` handshake shares the same bound every
     /// other call on `HelperLink` uses. Bounding this call
@@ -445,8 +445,8 @@ fn dup(file: &File) -> Result<OwnedFd, HelperError> {
     file.as_fd().try_clone_to_owned().map_err(|e| HelperError::Io(e.to_string()))
 }
 
-/// Awaits the helper's opening `Welcome`, delivered by the reader thread
-///, bounded by `timeout`.
+/// Awaits the helper's opening `Welcome`, delivered by the reader thread,
+/// bounded by `timeout`.
 async fn await_welcome(
     welcome_rx: oneshot::Receiver<Result<(), HelperError>>,
     timeout: Duration,

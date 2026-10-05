@@ -34,7 +34,7 @@ pub(in crate::upload) enum Outcome {
     /// Tried again at `at` (Unix seconds), with `reason`: no attempt is counted.
     Later { reason: Reason, at: i64 },
     /// In backoff with `reason`: 1 s doubling to an hour with each attempt. `detail` is a
-    /// failure's own text, for the journal only (issue #87): never the row's reason.
+    /// failure's own text, for the journal only: never the row's reason.
     Backoff { reason: Reason, detail: Option<String> },
     /// It needs the user: blocked with `reason`, and said once as an event. A `403` is one
     /// ([`Reason::Forbidden`]): it blocks its own row, and the others go on.
@@ -73,7 +73,7 @@ impl Outcome {
 
     /// In backoff for a failure: `key` is one of the reasons for a
     /// failure ([`Reason::Network`] and the others), `detail` the error's
-    /// own text, which only the journal gets (issue #87).
+    /// own text, which only the journal gets.
     pub fn failed(key: Reason, detail: impl ToString) -> Self {
         Outcome::Backoff { reason: key, detail: Some(detail.to_string()) }
     }
@@ -158,7 +158,7 @@ pub(in crate::upload) fn outcome_of(fail: Fail) -> Result<Outcome, NoSpace> {
 }
 
 /// `text` with every `http://…` and `https://…` cut out, up to the next
-/// whitespace: the journal gets no address (issue #87).
+/// whitespace: the journal gets no address.
 pub(in crate::upload) fn without_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;

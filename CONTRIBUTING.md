@@ -98,6 +98,13 @@ scripts/check-structure.sh
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.
 
+The same workflow checks that every link in a doc comment resolves (what it does not catch:
+`docs/limitations/D59.md`):
+
+```
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
+```
+
 ## The limitations log
 
 `docs/limitations/` is the one place for everything in KOneDrive that is

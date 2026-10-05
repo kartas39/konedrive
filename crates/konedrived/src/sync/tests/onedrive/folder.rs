@@ -1,6 +1,6 @@
 use super::*;
 
-/// `WebUrl` (issue #53): the address of the page of a file, of a folder and of
+/// `WebUrl`: the address of the page of a file, of a folder and of
 /// the account's folder itself, each from one GET and nothing else.
 #[tokio::test]
 async fn web_url_asks_onedrive_for_the_items_page_with_one_get() {
@@ -635,7 +635,7 @@ fn legacy_without_interception(w: &World) {
 /// reads `error` with the helper's advice first in `LastError`. When
 /// the helper connects it switches to interception whatever it was
 /// registered as (switch; there is no "on purpose" for a
-/// OneDrive folder any more). And, Ruling 1: the switch keeps
+/// OneDrive folder any more). And the switch keeps
 /// invariant M1 for everything its sync places afterwards — the sync
 /// starts intercepted, so a folder that arrives from the drive later is
 /// marked before it is filled.

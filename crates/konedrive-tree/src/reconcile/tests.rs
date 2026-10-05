@@ -89,7 +89,7 @@ fn handle(n: u8) -> FileHandle {
     FileHandle { kind: 1, bytes: vec![n, n, n] }
 }
 
-/// Issue #104, decision 5: one call forgets the local objects of an item
+/// One call forgets the local objects of an item
 /// and of everything below it — by `items` and by the new tree — in both
 /// tables, and of whatever records one of the objects given.
 #[test]
@@ -114,7 +114,7 @@ fn forgetting_an_item_forgets_everything_below_it_in_both_tables() {
     assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
 }
 
-/// Review fix 7 of issue #104: many subtree roots and handles at once —
+/// Many subtree roots and handles at once —
 /// thousands, some unknown — are forgotten together, each subtree whole.
 #[test]
 fn forgetting_takes_many_roots_and_handles_at_once() {
@@ -141,7 +141,7 @@ fn forgetting_takes_many_roots_and_handles_at_once() {
     assert_eq!(s.local_handle("K").unwrap(), None, "by its handle");
 }
 
-/// Issue #104, decision 5: a row that turns placed again over an `items`
+/// A row that turns placed again over an `items`
 /// row that is not placed carries no local object — staged by a delta,
 /// swapped in whole, landed from what waited, or applied by a folder
 /// turned read-only.

@@ -212,7 +212,7 @@ impl SyncService {
             None
         };
         let handles = open.as_ref().map(|(watcher, outbox)| (watcher.handle(), outbox.handle()));
-        // The account's drive, as `config.toml` keeps it (A-M5, design §8.1):
+        // The account's drive, as `config.toml` keeps it (design §8.1):
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = {
             let persist = self.wiring.persist.clone();
@@ -280,8 +280,8 @@ impl SyncService {
     /// nothing retries it on its own; a `Refresh()` does, as
     /// does bringing the folder up again. The lock is put back on
     /// the folder, whatever its mode: with no sync, no watcher looks at it, so
-    /// a read-write folder a run left unlocked must not stay so (the watcher re-review
-    /// R2-1), and a read-only one never is.
+    /// a read-write folder a run left unlocked must not stay so,
+    /// and a read-only one never is.
     async fn cannot_start(&self, stopped: &mut Stopped<'_>, root: &SyncRoot, why: String) {
         tracing::error!("{why}");
         if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
@@ -323,7 +323,7 @@ impl SyncService {
             self.require_helper_for(&self.require_onedrive()?)?;
             // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
             // and, while a sync runs, the quota is read again, which may end a
-            // full OneDrive (issue #2).
+            // full OneDrive.
             self.retry_outbox();
             if self.nudge() {
                 self.refresh_quota().await;
@@ -399,7 +399,7 @@ impl SyncService {
         Ok(true)
     }
 
-    /// `Refresh()`'s part for the quota (issue #2): read now, one request, into the account's
+    /// `Refresh()`'s part for the quota: read now, one request, into the account's
     /// one quota (`Account.QuotaRemaining`, `QuotaState`, …), and handed to the outbox, which
     /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
     /// changes nothing.

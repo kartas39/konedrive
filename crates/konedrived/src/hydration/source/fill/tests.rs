@@ -127,7 +127,7 @@ impl ContentSource for PreEpochMtime {
     }
 }
 
-/// I3: the placeholder is 4 KiB and the download grows it to 512 KiB
+/// The placeholder is 4 KiB and the download grows it to 512 KiB
 /// before breaking, so both halves of the rollback are *visible*: the
 /// size has to come back down and the blocks have to go away. The
 /// original version of this test used a 4096-byte remote against a
@@ -160,7 +160,7 @@ async fn a_failed_download_leaves_an_empty_placeholder_and_an_errno() {
     assert_eq!(read_stamp(&opened).unwrap(), None, "a failed fill leaves no stamp");
 }
 
-/// C2: the growth direction resizes itself — `write_all_at` past the end
+/// The growth direction resizes itself — `write_all_at` past the end
 /// extends the file whether or not anything calls `set_len`. Shrinking is
 /// the direction that needs the truncation, and it is the direction that
 /// loses data without it: a 1,000,000-byte placeholder marked `hydrated`
@@ -198,7 +198,7 @@ async fn a_source_that_keeps_failing_is_retried_three_times_then_refused() {
     assert_eq!(read_state(&opened).unwrap(), Some(State::OnlineOnly));
 }
 
-/// I4: a descriptor that is not a placeholder at all. The helper only
+/// A descriptor that is not a placeholder at all. The helper only
 /// ever sends managed files, but "the item id is unreadable" is a real
 /// disk-error path and it must not answer with something undeliverable.
 #[tokio::test]
@@ -210,7 +210,7 @@ async fn a_file_with_no_item_id_is_refused_with_an_errno_the_kernel_accepts() {
     assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
 }
 
-/// I8: a full disk must reach the application as `ENOSPC`, which §5.2
+/// A full disk must reach the application as `ENOSPC`, which §5.2
 /// step 5 and §9 both ask for by name and which the kernel does accept —
 /// flattening every local failure to `EIO` throws away the one thing the
 /// user can act on. Everything outside the accepted set still has to
@@ -228,7 +228,7 @@ fn local_write_failures_keep_the_errnos_the_kernel_accepts() {
     }
 }
 
-/// I5, the positive half: a file completed across two
+/// A file completed across two
 /// fetches. `fail_at` is permanent, so before this nothing followed the
 /// resume arithmetic end to end — and the resume offset is exactly where
 /// bytes land in the wrong place.
@@ -251,7 +251,7 @@ async fn a_download_that_resumes_completes_the_file_byte_for_byte() {
     assert_eq!(read_state(&opened).unwrap(), Some(State::Hydrated));
 }
 
-/// I5, the negative half: the source answers the resume with
+/// The source answers the resume with
 /// the whole file again — an HTTP server replying `200` to a `Range`
 /// request — and says so. Writing that at the resume offset produces a
 /// file whose middle is its beginning, reported as a success.
@@ -293,7 +293,7 @@ async fn a_source_that_restarts_the_stream_is_refused_instead_of_written_at_the_
     );
 }
 
-/// I6: `written(0) >= size(0)` ends the fill loop on the
+/// `written(0) >= size(0)` ends the fill loop on the
 /// first answer, so a declared size of 0 truncates a live placeholder
 /// with no retry and no corroboration whatsoever. Fail closed instead.
 #[tokio::test]

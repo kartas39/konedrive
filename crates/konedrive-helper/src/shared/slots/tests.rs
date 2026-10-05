@@ -71,7 +71,7 @@ fn one_uid_filling_its_slots_does_not_stop_another_waiting() {
     assert_eq!(waiting_for(&counters, 1001), 1, "releasing one uid's slots frees only its own");
 }
 
-/// The follow-up to: the per-uid cap alone restored fairness
+/// The per-uid cap alone restored fairness
 /// between uids at the cost of the flat pool bound the machine used to
 /// have — the worst case became `MAX_DAEMON_WAITERS` times the number of
 /// uids with a registered root whose daemon is down, which is unbounded

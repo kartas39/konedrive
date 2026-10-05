@@ -49,15 +49,14 @@ const IDLE_CHECK: i64 = 300;
 /// A row rewritten and sent again at once more often than this backs off.
 const AGAIN_LIMIT: u32 = 20;
 
-/// Upload sessions given up that one look cancels at most (issue #47).
+/// Upload sessions given up that one look cancels at most.
 const CANCELS_PER_LOOK: usize = 32;
 
 /// After a cancel that failed, the sessions given up are looked at again no
-/// sooner than this (issue #47; provisional).
+/// sooner than this (provisional).
 const CANCEL_AGAIN: i64 = 60;
 
-/// The counts are summed again at most this often while the outbox changes
-/// (issue #38).
+/// The counts are summed again at most this often while the outbox changes.
 const TALLY_EVERY: Duration = Duration::from_secs(1);
 
 /// Rows a pick looks for: once this many can run, no more portions are read
@@ -72,7 +71,7 @@ pub(crate) struct Engine {
     cfg: WorkerConfig,
     /// The loop's own state ([`state`]): the files of `engine/` only.
     shared: Mutex<Shared>,
-    /// What is known of the space in OneDrive (issue #2): `space`'s.
+    /// What is known of the space in OneDrive: `space`'s.
     space: Mutex<space::Space>,
     /// The status last handed to the host; its lock makes publishing one at a time
     /// ([`publish`](Self::publish)).
@@ -97,7 +96,7 @@ pub(crate) struct Engine {
     /// The counts are wanted again though the outbox did not change (OneDrive
     /// turned full, or not).
     recount: Notify,
-    /// The daemon is stopping (issue #84): no row is taken any more, an
+    /// The daemon is stopping: no row is taken any more, an
     /// upload in fragments stops after the fragment in flight, and the
     /// worker's run ends once the rows in flight have. For good: a worker
     /// closed is not started again.
@@ -195,7 +194,7 @@ impl Engine {
     }
 
     /// The daemon is stopping: nothing new is taken, and what is in flight
-    /// finishes its request (issue #84). See [`Engine::closing`].
+    /// finishes its request. See [`Engine::closing`].
     pub(super) fn close(&self) {
         self.closing.cancel();
         self.wake();

@@ -9,15 +9,15 @@
 //! object, by file handle (or inode where there is no handle).
 //!
 //! **Order.** Rows run in `seq` order, the order of first detection, which a
-//! merge keeps. Four rules hold a row back ([`TreeStore::outbox_blockers`]):
+//! merge keeps. Four rules hold a row back ([`pick`]):
 //! an earlier row of the same item; the `mkdir` of the directory it is in,
 //! whose item id it needs; for a folder's `delete` or `move-out`, every row
 //! of an item the base has inside the folder; and a row that frees the name
 //! in OneDrive a row takes. The last three are structural, whatever the
 //! rows' `seq`: a move out of a folder detected after the folder's delete
 //! must still run first, or the cloud deletes it with the folder. Where rule
-//! 4 closes a circle, its edges in the circle are dropped (see
-//! [`TreeStore::outbox_dependencies`]).
+//! 4 closes a circle, its edges in the circle are dropped (`name_edges`
+//! in [`pick`]).
 //!
 //! Also here: `local_skipped` (what is never uploaded, §3.4 rule 2) and the
 //! item's local object (`items.local_handle`).
@@ -75,7 +75,7 @@ pub use worker::ConflictCopy;
 /// row takes is still another item's (§4.4, F55 (7)).
 pub const SWAP_PREFIX: &str = ".konedrive-swap-";
 
-/// How long a record of an opening whose row left is kept (issue #89): a
+/// How long a record of an opening whose row left is kept: a
 /// guess, longer than an abandoned placeholder was seen to live (a day).
 pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
 
@@ -413,7 +413,7 @@ impl TreeStore {
         Ok(rows)
     }
 
-    /// What OneDrive removed at `rel` was taken off the disk (issue #104):
+    /// What OneDrive removed at `rel` was taken off the disk:
     /// the rows that would upload, create or move something there or below
     /// it have nothing left to send, and go — not one the worker is running,
     /// whose commit meets OneDrive's answer, nor a removal, which the cycle's

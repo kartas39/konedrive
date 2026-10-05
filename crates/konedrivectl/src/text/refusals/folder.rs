@@ -115,7 +115,7 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
     let path = told.path();
     let folder = told.folder();
     match refusal {
-        // `sync open` (issue #53): OneDrive is asked for the address each time.
+        // `sync open`: OneDrive is asked for the address each time.
         // The daemon's message is the cause (no network, a locked secret
         // storage, an answer that cannot be read), shown when there is one.
         Refusal::Unreachable if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {

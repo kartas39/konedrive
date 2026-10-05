@@ -5,9 +5,9 @@
 //! (without case), a folder's cTag changing with anything below it, deletes
 //! to a recycle bin, upload sessions with `Content-Range` — a new file's
 //! session holding its name with an empty placeholder until it completes or
-//! is cancelled, as OneDrive's does (issue #47). It serves the drive's notification
+//! is cancelled, as OneDrive's does. It serves the drive's notification
 //! endpoint and a local Engine.IO / Socket.IO websocket that sends a `notification` event
-//! whenever the drive changes (issue #54). Never a real network.
+//! whenever the drive changes. Never a real network.
 
 mod sockets;
 
@@ -124,7 +124,7 @@ pub struct Cloud {
     pub created: HashMap<String, i64>,
     /// A delete of a session's placeholder (`DELETE /items/{its id}`) is
     /// refused `403` while set; otherwise it deletes the placeholder and ends
-    /// its session. What OneDrive does is unmeasured (issue #84): both are
+    /// its session. What OneDrive does is unmeasured: both are
     /// modelled.
     pub refuse_placeholder_delete: bool,
     /// Requests carried out whose answer is lost (a timeout after OneDrive
@@ -520,7 +520,7 @@ impl Cloud {
                 };
                 ResponseTemplate::new(200).set_body_json(body)
             }
-            // Graph's change notifications (issue #54).
+            // Graph's change notifications.
             ("GET", ["me", "drive", "root", "subscriptions", "socketIo"]) => {
                 let mut body = json!({ "id": "sub", "notificationUrl": self.socket_url });
                 if let Some(lifetime) = self.socket_lifetime {

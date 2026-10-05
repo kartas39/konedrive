@@ -97,8 +97,8 @@ fn replacement_dir(disk: &Disk, parent: &Path) -> std::io::Result<Option<File>> 
 }
 
 /// A file's identity strong enough to survive `old` being dropped and
-/// reopened later, rather than kept open for the whole download (round 1,
-/// issue 3). `(dev, ino)` alone is not enough (round 2's finding): once its
+/// reopened later, rather than kept open for the whole download.
+/// `(dev, ino)` alone is not enough: once its
 /// descriptor is closed, nothing pins the inode number — it can be freed and
 /// reused by an unrelated file created while the new version downloads, and
 /// the two would then compare equal. [`Fingerprint`] tells a reused inode

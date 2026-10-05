@@ -1,4 +1,4 @@
-//! The daemon's stop (issue #84): on SIGTERM or SIGINT nothing new is sent,
+//! The daemon's stop: on SIGTERM or SIGINT nothing new is sent,
 //! and the requests in flight get up to [`STOP_BOUND`] to return — an opened
 //! upload session to be persisted, a fragment to be answered — before the
 //! process exits. What is still in flight then is cut, as before: the

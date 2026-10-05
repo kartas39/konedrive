@@ -286,7 +286,7 @@ fn punch_clean_file_watched(
 /// `tokio::time::timeout`, a `select!` losing a race) leaves it that way,
 /// with its blocks intact and its ignore mark possibly already cleared.
 /// That is a safe state, not a lost one — the helper treats `dehydrating`
-/// as "hydrate it again", and [`recover`] punches and relabels
+/// as "hydrate it again", and [`recover`](crate::hydration::recovery::recover) punches and relabels
 /// it at the next start — but it is not a *tidy* one, so a caller that can
 /// cancel should prefer to let the sequence finish.
 pub async fn dehydrate(
@@ -341,16 +341,16 @@ pub(crate) async fn dehydrate_opened(
     };
 
     // Step 2, second half: local rule, here, where the file
-    // is about to be emptied, and after `dehydrating` is durable (H69) — so a
+    // is about to be emptied, and after `dehydrating` is durable — so a
     // mark an opener places from now on is placed through a `hydrate` path
-    // that reads `dehydrating` and takes it off again (H139). The descriptor
+    // that reads `dehydrating` and takes it off again. The descriptor
     // the helper is handed is the one that was just checked and marked, and
     // the one that is about to be punched: the mark cannot be cleared on one
     // inode and a hole punched in another.
     //
     // Nothing here rests on what can or cannot have happened to the file
     // before: not on "a folder without interception carries no mark that
-    // matters", which was falsified three times (H132, C2, N2), each time by
+    // matters", which was falsified three times, each time by
     // a race nobody had seen. A link means the helper clears the mark; no
     // helper bound to its socket means no group of ours, and so no mark,
     // exists; a helper bound and no link means nothing is emptied.

@@ -65,7 +65,7 @@ impl FillError {
 /// its stamp says. With a matching stamp it is simply there; with a stamp
 /// that does not match it was edited locally, and that edit is the only copy
 /// (§8); with none it was labelled by something other than this daemon — the
-/// case `Hydrate()` repairs on request (H109), and never something to do
+/// case `Hydrate()` repairs on request, and never something to do
 /// behind an opener's back, since the helper lets every opener of a
 /// `hydrated` file through anyway. The helper reads the state again itself
 /// before it lets the opener through (§5.2 step 5).
@@ -113,8 +113,8 @@ pub async fn answer_request(
 }
 
 /// What [`answer_request`] did, which decides both what the opener is
-/// answered ([`errno`](Self::errno)) and what the activity log records
-///: only a fill that ran is an event.
+/// answered ([`errno`](Self::errno)) and what the activity log records:
+/// only a fill that ran is an event.
 #[derive(Debug)]
 pub enum Answered {
     /// Filled while the request waited, or edited here: left as it is.
@@ -152,7 +152,7 @@ impl Answered {
 ///   mark then, and none can be placed once this fill has written
 ///   `hydrating`. (A stale mark on an `online-only` file already reads
 ///   zeros; filling the file repairs that, and failing leaves it as it was.)
-/// - `hydrated` (only `Hydrate()` fills one, when its stamp is missing, H109)
+/// - `hydrated` (only `Hydrate()` fills one, when its stamp is missing)
 ///   and `dehydrating` (a `Dehydrate` cancelled between its state write and
 ///   its `ClearIgnore`): yes. `hydrating`, which a panicked or
 ///   crashed fill of such a file leaves: possibly.
@@ -171,7 +171,7 @@ impl Answered {
 /// that needs nothing — is filled all the same, and any other is refused
 /// [`FillError::NotCleared`] before it is touched. It is never `None` on the
 /// strength of the folder's mode: a folder without interception is cleared
-/// like any other (H146).
+/// like any other.
 pub async fn hydrate_with(
     fd: OwnedFd,
     source: &dyn ContentSource,
@@ -181,7 +181,7 @@ pub async fn hydrate_with(
 }
 
 /// [`hydrate_with`], downloading the file in parallel parts ([`parts`]): a large pinned
-/// file (issue #28). Everything else about the fill — the state, the clearance, the
+/// file. Everything else about the fill — the state, the clearance, the
 /// checkpoint, the roll-back and the commit — is the same.
 pub async fn hydrate_in_parts(
     fd: OwnedFd,

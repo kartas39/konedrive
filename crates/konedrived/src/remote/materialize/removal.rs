@@ -4,8 +4,7 @@
 //! The store records, for each placed item, the local object it was placed
 //! as. An object the daemon unlinks while that record stays is, to the next
 //! examination, the user's own delete, and is deleted in OneDrive. So the
-//! record is cleared before anything is unlinked, here and nowhere else
-//! (issue #104, decision 5).
+//! record is cleared before anything is unlinked, here and nowhere else.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -448,7 +447,7 @@ impl Materializer {
             Probe::Unmanaged { .. } => self.rescue(dir, name, shown, run),
             Probe::Managed { id, .. } if self.claimed_elsewhere(&id)? => {
                 // It survives, out of the folder: a download stopped in it is
-                // a placeholder again first (issue #104).
+                // a placeholder again first.
                 self.settle_stopped(dir, name, stopped);
                 self.set_aside(dir, name, shown, run)
             }
@@ -825,11 +824,11 @@ fn shown(rel: &Path) -> String {
 /// hard links the user made — keeps them, but not as the item: its item id
 /// goes from the inode, through the descriptor opened before the unlink, so
 /// that what stays is the user's own file, never the item under another
-/// name (issue #104, decision 1). A downloaded one goes up as new; one not
+/// name. A downloaded one goes up as new; one not
 /// downloaded waits as not downloaded, its state kept, so that it is never
 /// read as zeros.
 ///
-/// The name goes first (issue #112): a stop between the two leaves the
+/// The name goes first: a stop between the two leaves the
 /// other names with the id and no object at the item's place, never the
 /// object at its place without an id, which would be uploaded as new. For
 /// the same reason an id that cannot be taken off does not fail the cycle:

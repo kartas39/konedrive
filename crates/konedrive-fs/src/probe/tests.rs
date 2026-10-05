@@ -27,7 +27,7 @@ fn the_probe_file_has_no_name_while_it_is_open() {
     assert!(entries.is_empty(), "the probe put {entries:?} into the directory");
 }
 
-/// The other half of: whatever is already sitting under the
+/// Whatever is already sitting under the
 /// name the old probe used, the probe no longer cares. A directory is
 /// used here because it is the one artefact a `remove_file` cleanup
 /// cannot quietly delete — it stands in for "the folder has something

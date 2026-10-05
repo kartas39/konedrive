@@ -7,8 +7,8 @@
 //!
 //! # Why the opens happen in child processes
 //!
-//! `konedrive-helper` exempts the owning daemon's **pid** from interception
-//!: a process that holds a connection owning a registered root
+//! `konedrive-helper` exempts the owning daemon's **pid** from interception:
+//! a process that holds a connection owning a registered root
 //! may open that user's files without being suspended, because otherwise
 //! startup recovery would ask the very daemon that is blocked to unblock
 //! itself. This programme *is* the daemon — it holds the `HelperLink` — so an

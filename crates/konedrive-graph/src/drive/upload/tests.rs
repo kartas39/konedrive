@@ -143,7 +143,7 @@ async fn an_ended_session_is_session_gone_and_cancelling_it_is_done() {
     drive.cancel_upload(&url).await.unwrap();
 }
 
-/// Issue #47: a fragment refused `429` goes again to the same session once
+/// A fragment refused `429` goes again to the same session once
 /// the session says it still expects it; refused every time, the refusal
 /// comes back after the policy's attempts and the session is left open.
 #[tokio::test]

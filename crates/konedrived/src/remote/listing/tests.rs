@@ -465,7 +465,7 @@ async fn the_drive_kept_beside_the_root_outlives_a_rebuilt_store() {
     assert!(matches!(&err, CycleError::OtherAccount(drive) if drive == "D0"), "{err:?}");
 }
 
-/// A drive is one account (design §8.2, review M1): an account with no drive recorded
+/// A drive is one account (design §8.2): an account with no drive recorded
 /// yet, signed in to a drive another account has, does not list it into a second folder
 /// — the folder is blocked, naming that account, and nothing is placed.
 #[tokio::test]
@@ -525,7 +525,7 @@ async fn two_cycles_at_once_run_one_after_the_other() {
     assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link_to("L3")));
 }
 
-/// A cycle dropped while its reconcile runs keeps the lifecycle lock, and
+/// A cycle dropped while its reconcile runs keeps the folder's lock, and
 /// its turn, until the reconcile has stopped: a Forget must not take the
 /// lock off a folder something is still changing, and no other cycle may
 /// rebuild `staging` under it.
@@ -599,7 +599,7 @@ async fn a_partial_download_survives_recovery_and_the_full_reconcile_after_it() 
     assert_eq!(file.metadata().unwrap().mtime(), 1_714_557_600, "the cloud's time is back");
 }
 
-/// RE6: one failure of the tree store is the same trouble wherever a reconcile meets it,
+/// One failure of the tree store is the same trouble wherever a reconcile meets it,
 /// and it stops the folder. Reading the root's id and every call the materializer makes go
 /// through `applying`; the commit and every `on_store` call go through `From<TreeError>`.
 #[tokio::test]

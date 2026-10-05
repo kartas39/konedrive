@@ -915,7 +915,7 @@ Design: `packaging.md`; `docs/releasing.md`.
 ### `.github/workflows/`
 
 - `release.yml` — a release on every push to `main`: the tests, the RPMs, the tag.
-- `structure.yml` — the guard, on every pull request.
+- `structure.yml` — the guard, and the check of the links in the doc comments, on every pull request.
 
 ## Documents
 

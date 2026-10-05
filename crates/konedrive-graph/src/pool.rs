@@ -1,5 +1,5 @@
 //! The transfer pool: how many requests one account has in flight at once, downloads and
-//! uploads together (issue #3, `docs/design/hydration.md` §6.4).
+//! uploads together (`docs/design/hydration.md` §6.4).
 //!
 //! OneDrive publishes no limit on concurrency; it throttles an account as a whole with `429`
 //! or `503` and a `Retry-After`. So the pool finds its own level, per account:
@@ -16,9 +16,9 @@
 //! [`Class::Open`]) fills the link on its own: `[transfers] large` ([`DEFAULT_LARGE`]) limits the
 //! streams of large sync transfers that run at once, each in a slot of the pool; a large one
 //! waiting for that limit lets the small ones behind it go. A file being opened is outside the
-//! limit and its count (issue #50): it is never marked large, neither waits for the limit nor
+//! limit and its count: it is never marked large, neither waits for the limit nor
 //! takes room in it, and still takes a slot of the pool. A large pinned download in parts holds
-//! one large slot per stream (`hydration::source::parts`, issue #28): its extra streams take only
+//! one large slot per stream (`hydration::source::parts`): its extra streams take only
 //! slots nothing waits for ([`TransferPool::waiting`]), and give them back when something does.
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above
@@ -58,11 +58,11 @@ pub const BURST_GRACE: Duration = Duration::from_secs(1);
 pub const DEFAULT_THROTTLE_WAIT: Duration = Duration::from_secs(10);
 /// The speed is the average of this long.
 pub const SPEED_SPAN: Duration = Duration::from_secs(3);
-/// The speed a queue's time left is worked out from is the average of this long (issue #16):
+/// The speed a queue's time left is worked out from is the average of this long:
 /// longer than [`SPEED_SPAN`], so that the estimate does not jump with every burst. A guess.
 pub const AVERAGE_SPAN: Duration = Duration::from_secs(30);
 /// A direction in which nothing has moved for this long has no average speed, and so no time
-/// left (issue #16). A guess.
+/// left. A guess.
 pub const STILL_AFTER: Duration = Duration::from_secs(10);
 /// The shortest span the average is taken over at the start of a run, so that the first
 /// bytes of a run do not make a speed of their own.
@@ -124,7 +124,7 @@ pub struct Throughput {
     pub down_speed: u64,
     pub up_speed: u64,
     /// Every slot held now, of all four classes, the opens' reserve included: may be above
-    /// `size` (issue #50).
+    /// `size`.
     pub in_use: u32,
     pub size: u32,
     pub ceiling: u32,
@@ -135,12 +135,12 @@ pub struct Throughput {
     /// Seconds left of OneDrive's `Retry-After`, during which no slot is handed out; 0 when
     /// there is none.
     pub retry_after: u32,
-    /// Bytes moved each way since the pool started (issue #16: what a run has done).
+    /// Bytes moved each way since the pool started (what a run has done).
     pub down_moved: u64,
     pub up_moved: u64,
     /// Bytes a second each way, the average of the last [`AVERAGE_SPAN`] (or of the run so
     /// far, when it began within it); 0 once nothing has moved that way for [`STILL_AFTER`]
-    /// (issue #16: what a queue's time left is worked out from).
+    /// (what a queue's time left is worked out from).
     pub down_average: u64,
     pub up_average: u64,
 }
@@ -154,7 +154,7 @@ struct Waiter {
     waker: Option<Waker>,
 }
 
-/// Who waits for a slot (issue #39): every waiter by its id, and those not
+/// Who waits for a slot: every waiter by its id, and those not
 /// granted yet in line by class and size, in the order they came (ids
 /// only grow). A grant, a release and a waiter that gives up find their
 /// waiter without a search.
@@ -311,7 +311,7 @@ impl TransferPool {
 
     /// Whether anything waits for a slot now: a transfer in line that has not been handed
     /// one. An extra stream of a download in parts takes only a slot nothing waits for, and
-    /// gives its slot back when something does (issue #28).
+    /// gives its slot back when something does.
     pub fn waiting(&self) -> bool {
         self.lock().waiters.queued()
     }

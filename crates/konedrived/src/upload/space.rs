@@ -1,4 +1,4 @@
-//! A full OneDrive (issue #2, `docs/design/writes.md` §4.11): what the
+//! A full OneDrive (`docs/design/writes.md` §4.11): what the
 //! worker does when OneDrive refuses content for lack of space.
 //!
 //! **Free space** is Graph's `quota.remaining`, never `total - used`, less
@@ -108,7 +108,7 @@ impl Space {
 /// rows `looked` at since the last quota read). A `create` that waits for
 /// space is taken all the same when a removal of its object stands behind it
 /// (`removed`): a file removed before its upload finished leaves the outbox at
-/// once (issue #27), full or not. Its run sends no content: it ends if the
+/// once, full or not. Its run sends no content: it ends if the
 /// file is gone, and waits on if not ([`Engine::space_holds`]).
 pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed: impl FnOnce() -> Result<bool, TreeError>) -> Result<bool, TreeError> {
     if !waits(row.reason.as_ref()) && !(full && row.kind.sends_content()) {

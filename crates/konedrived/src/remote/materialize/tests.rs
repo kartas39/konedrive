@@ -82,7 +82,7 @@ async fn handle(w: &World, id: &str) -> Option<konedrive_fs::handle::FileHandle>
     w.store.call(move |s| s.local_handle(&id)).await.unwrap()
 }
 
-/// Issue #104, decisions 4 and 5, read-only: what the reconcile takes
+/// Read-only: what the reconcile takes
 /// off the disk — here a folder that is no longer placed (a name too
 /// long) — is forgotten in the store before it goes, and a download into
 /// a file in it stops; placed again, it records its new objects.
@@ -107,7 +107,7 @@ async fn a_read_only_removal_forgets_first_and_stops_a_download() {
     assert_eq!(handle(&w, "G").await, Some(placed), "placed again, with its new object");
 }
 
-/// Review fix 6 of issue #104, read-only: a file of another account being
+/// Read-only: a file of another account being
 /// downloaded inside a folder removed in OneDrive is set aside alive, as
 /// always — but its download is stopped first and it is a placeholder
 /// again, not partly filled.

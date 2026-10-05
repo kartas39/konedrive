@@ -266,8 +266,8 @@ pub(crate) fn count_in_log(log: &Path, needle: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// How many times the helper did something it reports through a throttle
-///. A throttled line stands for as many occurrences as it says
+/// How many times the helper did something it reports through a throttle.
+/// A throttled line stands for as many occurrences as it says
 /// it does; any other line stands for itself, which is also what every line
 /// meant before the throttle existed — so this counts correctly against a
 /// helper from either side of that change.

@@ -1,6 +1,6 @@
 //! Phase 1 in a read-write folder: what is done with each object of ours,
 //! by where the base has its item, where the new tree has it, and what a
-//! local change holds ([`Sorted`]).
+//! local change holds ([`Sorted`](crate::remote::materialize::Sorted)).
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -23,7 +23,7 @@ pub(super) enum Was {
     /// OneDrive.
     Removed,
     /// At its base place, and the new tree has it but does not place it: no
-    /// longer placeable here (issue #104).
+    /// longer placeable here.
     Unplaced,
     /// Away from its base place: a local move or copy not examined yet.
     Elsewhere,
@@ -77,7 +77,7 @@ pub(super) fn where_it_was(entry: &Scanned, planned: &Planned) -> Was {
 }
 
 /// Whether OneDrive still has the item and the new tree no longer places
-/// it (issue #104): not one under the outbox's temporary name there, whose
+/// it: not one under the outbox's temporary name there, whose
 /// object stays where it is.
 pub(in crate::remote::materialize) fn no_longer_placed(planned: &Planned) -> bool {
     planned.new.is_some() && planned.new_place().is_none() && !swapped(planned)
@@ -256,7 +256,7 @@ impl Materializer {
         // A local change holds it — unless OneDrive removed it and its
         // object is where the base has it: that goes, whatever holds it.
         // What is no longer placed is looked at whole: a change that
-        // holds it is one more thing it waits for (issue #104).
+        // holds it is one more thing it waits for.
         if held && (placed_now || !at_place) {
             run.out.pending.unsettled.insert(id.to_owned());
             if unplaced_now {

@@ -277,7 +277,7 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     service.stop_sync().await;
 }
 
-/// Issue #38: while an examination's apply holds the store, the bus still
+/// While an examination's apply holds the store, the bus still
 /// answers at once — the counts and the Not Uploaded summary from memory,
 /// `Changes()` and `NotUploadedFiles()` through the read-only connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -903,7 +903,7 @@ async fn a_folder_moved_away_stops_its_sync_and_says_so() {
     service.stop_sync().await;
 }
 
-/// SY1: a forced switch to read-only and a bring-up end, with a cycle under way. The switch
+/// A forced switch to read-only and a bring-up end, with a cycle under way. The switch
 /// and the bring-up are each a change of the folder: the change tells the cycle to stop
 /// before it waits for the folder's state, waits for the cycle to end once it has the
 /// state, and takes no tree lock, so none of the three can wait for another for good.

@@ -10,7 +10,7 @@
 //! ([`DriveClient::upload_empty`]).
 //!
 //! An open session holds its name in OneDrive with an empty placeholder until
-//! it completes or is cancelled (issue #47), so a session is never simply
+//! it completes or is cancelled, so a session is never simply
 //! dropped: a fragment OneDrive refuses for now (`429`, `503`, a dropped
 //! connection, a timeout) is sent again to the same session
 //! ([`DriveClient::upload_chunk`]), and a session given up is cancelled
@@ -179,7 +179,7 @@ impl DriveClient {
     /// session already has (`416`) is answered with where the session stands.
     ///
     /// A fragment refused for now — `429` or `503`, a dropped connection, a
-    /// timeout — goes again to the same session (issue #47): after
+    /// timeout — goes again to the same session: after
     /// `Retry-After` (or the policy's wait) the session is asked where it
     /// stands, and the fragment is sent again if it still expects it, up to
     /// the policy's `attempts` sends in all. A session that moved on

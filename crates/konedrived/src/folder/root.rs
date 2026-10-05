@@ -146,7 +146,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// the probe's write is refused there: no such folder came back after a
 /// restart, in either mode — "cannot bring up the sync folder: Permission
 /// denied" — and none could be switched to interception once the helper
-/// arrived. H93 still holds: the id is only *looked
+/// arrived. The id is still only *looked
 /// for* first, and a folder where looking fails is probed, whose answer is
 /// what is reported.
 fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
@@ -399,8 +399,8 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 ///
 /// Honouring any non-empty string here is what makes
 /// `setfattr -n user.konedrive.root -v x ~/Documents` enough to register a
-/// folder full of somebody's existing data: H78's relaxation skips the empty
-/// check for anything that "carries a root id", and nothing ever removes the
+/// folder full of somebody's existing data: the empty check is skipped
+/// for anything that "carries a root id", and nothing ever removes the
 /// xattr again, so one `setfattr` disarms that check for that folder
 /// permanently. It matters because §4.3's populate skips names that already
 /// exist — those files never get an item id, never get a placeholder, and
@@ -468,10 +468,10 @@ impl SyncRoot {
     ///
     /// The helper's own check cannot stand in for this one: it is scoped to
     /// the device a root lives on, not to the root itself, and it is not
-    /// consulted here anyway. It matters as soon as puts a path from
-    /// outside this process on the other end of a D-Bus method.
+    /// consulted here anyway. It matters as soon as a D-Bus method
+    /// puts a path from outside this process on the other end.
     ///
-    ///: this is the *only* way anything in `sync` may turn a
+    /// This is the *only* way anything in `sync` may turn a
     /// caller's path into a descriptor it will write through.
     /// `SyncService::hydrate_now` used to open the checked string itself,
     /// with no `O_NOFOLLOW` and no `RESOLVE_BENEATH`, after awaiting an
