@@ -18,7 +18,7 @@ async fn a_hundred_changes_in_a_second_are_at_most_five_messages() {
     let transfers = Downloads::default();
     let sent: Arc<Mutex<Vec<Changed>>> = Arc::default();
     let log = Arc::clone(&sent);
-    tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), Seen::default(), move |changed| {
+    tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), Sent::default(), move |changed| {
         log.lock().unwrap().push(changed);
         std::future::ready(())
     }));
@@ -67,16 +67,19 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     let log = Arc::clone(&sent);
     let (mut states, mut accounts, mut downloads) = (state.subscribe(), account.subscribe(), transfers.subscribe());
     let shown = seen(&mut states, &mut accounts, &mut downloads);
-    tokio::spawn(decide(states, accounts, downloads, shown, move |changed| {
+    tokio::spawn(decide(states, accounts, downloads, shown, Sent::default(), move |changed| {
         log.lock().unwrap().push(changed);
         std::future::ready(())
     }));
-    // The messages sent since the last call: each the properties of `Folder` it carries.
+    // The messages sent since the last call that say something of the whole: each the
+    // decided properties it carries. The counters sent ahead of an `Overall` are another
+    // test's.
     let mut read = 0;
     let mut since = |sent: &Mutex<Vec<Changed>>| -> Vec<Vec<(&'static str, Value<'static>)>> {
         let sent = sent.lock().unwrap();
         let new = sent[read..]
             .iter()
+            .filter(|message| message.get(FOLDER_INTERFACE_NAME).is_some_and(|folder| DECIDED.iter().any(|row| folder.contains_key(row.name()))))
             .map(|message| {
                 assert_eq!(message.keys().copied().collect::<Vec<_>>(), [FOLDER_INTERFACE_NAME]);
                 let mut properties: Vec<_> = message[FOLDER_INTERFACE_NAME].iter().map(|(name, value)| (*name, value.try_clone().unwrap())).collect();
@@ -145,4 +148,68 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     state.update(|s| s.outbox.pending_count = 0);
     settle().await;
     assert_eq!(since(&sent), [vec![overall(Reason::Transferring), ("Trouble", Value::from(""))], vec![overall(Reason::UpToDate)]]);
+}
+
+/// The reason never arrives ahead of its count: a first conflict while the coalescing task
+/// waits out its 250 ms is announced with its count first, and the reason after it. The
+/// count is not sent a second time when the wait is over.
+#[tokio::test(start_paused = true)]
+async fn a_reason_is_not_sent_ahead_of_the_count_it_speaks_of() {
+    use konedrive_dbus::overall::{Overall, Reason};
+    use konedrive_dbus::{CONFLICTS_INTERFACE_NAME, FOLDER_INTERFACE_NAME};
+
+    use crate::account::state::{SignInState, StateHandle};
+    use crate::status::snapshot::RootState;
+
+    let state = SyncStateHandle::new(SyncSnapshot::default());
+    state.update(|s| {
+        s.folder.root_path = "/home/u/OneDrive".into();
+        s.folder.root_state = RootState::Ready;
+        s.folder.helper_state = HelperState::Connected;
+    });
+    let account = StateHandle::new(AccountSnapshot::default());
+    account.update(|s| s.state = SignInState::SignedIn);
+    let transfers = Downloads::default();
+    // Both tasks send to one log, as both send on one connection.
+    let sent: Arc<Mutex<Vec<Changed>>> = Arc::default();
+    let (mut states, mut accounts, mut downloads) = (state.subscribe(), account.subscribe(), transfers.subscribe());
+    let from = seen(&mut states, &mut accounts, &mut downloads);
+    let counters: Sent = Arc::new(tokio::sync::Mutex::new(from.clone()));
+    let log = Arc::clone(&sent);
+    tokio::spawn(decide(states, accounts, downloads, from, Arc::clone(&counters), move |changed| {
+        log.lock().unwrap().push(changed);
+        std::future::ready(())
+    }));
+    let log = Arc::clone(&sent);
+    tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), counters, move |changed| {
+        log.lock().unwrap().push(changed);
+        std::future::ready(())
+    }));
+    let settle = || tokio::time::sleep(Duration::from_millis(10));
+    // Where in the log the messages that carry `name` of `interface` are, with its value.
+    let carrying = |interface: &str, name: &str| -> Vec<(usize, Value<'static>)> {
+        let sent = sent.lock().unwrap();
+        sent.iter().enumerate().filter_map(|(at, message)| Some((at, message.get(interface)?.get(name)?.try_clone().unwrap()))).collect()
+    };
+
+    // A counter goes out, and the coalescing task waits.
+    state.update(|s| s.cycle.items_listed = 1);
+    settle().await;
+    assert_eq!(carrying(FOLDER_INTERFACE_NAME, "ItemsListed"), [(0, Value::from(1u64))]);
+
+    // The first conflict, well inside that wait.
+    state.update(|s| s.local.conflict_count = 1);
+    settle().await;
+    let count = carrying(CONFLICTS_INTERFACE_NAME, "Count");
+    let reason = carrying(FOLDER_INTERFACE_NAME, "Overall");
+    assert_eq!(count, [(1, Value::from(1u32))], "the count, at once");
+    assert_eq!(reason, [(2, Value::from(Overall::from(Reason::Conflicts)))], "the reason, after its count");
+
+    tokio::time::sleep(COALESCE * 2).await;
+    assert_eq!(carrying(CONFLICTS_INTERFACE_NAME, "Count").len(), 1, "not again when the wait is over");
+    // A second conflict changes no reason: its count waits its turn as before.
+    state.update(|s| s.local.conflict_count = 2);
+    settle().await;
+    assert_eq!(carrying(CONFLICTS_INTERFACE_NAME, "Count").last(), Some(&(3, Value::from(2u32))));
+    assert_eq!(carrying(FOLDER_INTERFACE_NAME, "Overall").len(), 1);
 }

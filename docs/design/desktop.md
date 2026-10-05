@@ -38,7 +38,8 @@ at `/org/konedrive/Daemon`, the object of the single-account versions ([accounts
 Properties change through `PropertiesChanged`, each under the interface that holds it: one change
 of the state that touches several interfaces sends one signal for each. Counters, status and the
 transfers are coalesced: at most one signal per interface per 250 ms, so a drive of hundreds of
-thousands of items cannot flood the bus.
+thousands of items cannot flood the bus. A change of `Folder.Overall` does not wait for them
+(§2.4).
 
 The manager's interfaces, `Accounts` and `Files`, are in §2.8 and §2.9; each account's in §2.2
 to §2.7.
@@ -110,7 +111,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | Property | Meaning |
 |---|---|
 | `Path` (`s`) | the account's folder, empty when it has none. A folder `config.toml` records has its path from the daemon's start, while `State` may still be `none`: it is not brought up yet |
-| `State` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
+| `State` (`s`) | `none`, `waiting`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
 | `Source` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
 | `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5). For the log and for older clients: no client decides anything by its text |
 | `Overall` (`(ss)`) | the state the account is in as a whole, and the reason for it; see "The account as a whole" below |
@@ -204,6 +205,10 @@ first row that holds decides, in this order:
   `Trouble` is empty.
 - `Overall`, `Trouble` and `NotUpdated` are announced the moment what they say changes, each by
   itself, and never otherwise.
+- A reason never arrives ahead of the count a client says with it: when `Overall` changes, the
+  coalesced properties that changed and are not sent yet (§2, the conflicts' `Count` and
+  `HeldCount` among them) are announced first, whatever is left of their 250 ms, and `Overall`
+  after them.
 - The one state no daemon can say is "the service is not running": a client shows `offline` for
   it by itself. A client turns the reason into words and an icon, and decides nothing else
   (§3, §4, §5).

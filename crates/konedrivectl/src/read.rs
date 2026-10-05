@@ -1,6 +1,7 @@
 //! What the commands read of the daemon into the types `text/` prints.
 
 use konedrive_dbus::accounts::FolderProxies;
+use konedrive_dbus::Refusal;
 use konedrivectl::text::accounts::AccountRow;
 use konedrivectl::text::status::{AccountStatus, FolderStatus, LocalScan};
 use konedrivectl::text::transfers::{QueueTotals, TransferSummary};
@@ -33,6 +34,16 @@ async fn both<A, B>(
     Ok(served(first).await?.zip(served(second).await?))
 }
 
+/// [`served`], for what `Folder` says of the account as a whole: `None` also while the
+/// account's `Folder` is not on the bus (an account being added has its `Account` there
+/// first), so that the account is printed without its `Overall:` line.
+async fn decided<T>(read: impl std::future::Future<Output = zbus::Result<T>>) -> zbus::Result<Option<T>> {
+    match served(read).await {
+        Err(error) if Refusal::says_gone(&error) => Ok(None),
+        other => other,
+    }
+}
+
 /// The account at `path`, as `status` shows it.
 pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> zbus::Result<AccountStatus> {
     let account = daemon.account(path).await?;
@@ -45,9 +56,9 @@ pub(crate) async fn account_status(daemon: &Daemon, path: &OwnedObjectPath) -> z
         email: said(account.email()).await?,
         quota: both(account.quota_used(), account.quota_total()).await?,
         last_error: said(account.last_error()).await?,
-        overall: served(folder.overall()).await?,
-        trouble: said(folder.trouble()).await?,
-        not_updated: said(folder.not_updated()).await?,
+        overall: decided(folder.overall()).await?,
+        trouble: decided(folder.trouble()).await?.unwrap_or_default(),
+        not_updated: decided(folder.not_updated()).await?.unwrap_or_default(),
     })
 }
 

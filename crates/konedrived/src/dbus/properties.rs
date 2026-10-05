@@ -165,6 +165,8 @@ properties! {
     /// Announced at most four times a second, everything that changed of an interface in
     /// one message: a listing changes the counters with every page, and a download its
     /// entry with every read.
+    /// And once more ahead of an `Overall` that changed, so that its reason never arrives
+    /// before the count a client says with it (`signals::decide`).
     COALESCED:
     ITEMS_LISTED: u64 = FOLDER, "ItemsListed", |s| s.snapshot.cycle.items_listed;
     ITEMS_PLACED: u64 = FOLDER, "ItemsPlaced", |s| s.snapshot.cycle.items_placed;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use konedrive_dbus::HelperState;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio::task::JoinHandle;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::ObjectPath;
@@ -16,7 +16,7 @@ use zbus::Connection;
 
 use crate::dbus::accounts::Accounts;
 use crate::account::state::AccountSnapshot;
-use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, DECIDED, PATH};
+use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, DECIDED, OVERALL, PATH};
 use crate::dbus::{ActivityLog, Folder};
 use crate::status::snapshot::SyncSnapshot;
 use crate::status::transfers::Transfer;
@@ -25,6 +25,12 @@ use crate::sync::SyncService;
 /// The shortest time between two coalesced `PropertiesChanged`: at most four
 /// a second.
 pub const COALESCE: Duration = Duration::from_millis(250);
+
+/// What the properties of [`COALESCED`] were last sent from. Whoever sends them holds it
+/// from reading the published state until the message is out: [`coalesce`] on its schedule,
+/// and [`decide`] ahead of an `Overall` that changed. So neither sends a value older than
+/// one the other has sent, and neither sends again what the other did.
+pub(crate) type Sent = Arc<Mutex<Seen>>;
 
 /// Turns the changes of `service`'s published state into signals of the folder's
 /// interfaces at `path`, which are on the bus already; the tasks that send them, to stop
@@ -46,14 +52,14 @@ pub(crate) async fn start_signals(
     // ones sent at once.
     let mut counters = service.state().subscribe();
     let mut downloads = service.report().transfers.subscribe();
-    let shown = Seen { snapshot: counters.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), ..Seen::default() };
+    let shown: Sent = Arc::new(Mutex::new(Seen { snapshot: counters.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), ..Seen::default() }));
     let mut added = service.report().activity.subscribe();
     // A third, for what is decided of the account as a whole: it follows the account's
     // sign-in and whether anything downloads too.
     let (mut whole, mut sign_in, mut moving) = (service.state().subscribe(), service.account().changes(), service.report().transfers.subscribe());
     let decided_from = seen(&mut whole, &mut sign_in, &mut moving);
     let decided_emitter = emitter.clone();
-    let decided = tokio::spawn(decide(whole, sign_in, moving, decided_from, move |changed| {
+    let decided = tokio::spawn(decide(whole, sign_in, moving, decided_from, Arc::clone(&shown), move |changed| {
         let emitter = decided_emitter.clone();
         async move {
             if let Err(e) = emit(&emitter, changed).await {
@@ -139,11 +145,17 @@ pub(crate) fn seen(
 /// whenever what they say changes since they were last sent (`shown` at first), each change
 /// by itself and at once; nothing for a change of the published state, the sign-in or the
 /// downloads that leaves all three as they were. Returns when one of the three goes away.
+///
+/// An `Overall` that changed never arrives ahead of what a client says with it: the
+/// properties of [`COALESCED`] that changed since `counters` are handed to `emit` first, in
+/// a call of their own, whatever is left of their wait. A client that reads "conflicts"
+/// has the conflicts' count already, and one that reads "transferring" what is moving.
 pub(crate) async fn decide<F, Fut>(
     mut state: watch::Receiver<SyncSnapshot>,
     mut account: watch::Receiver<AccountSnapshot>,
     mut downloads: watch::Receiver<BTreeMap<u64, Transfer>>,
     mut shown: Seen,
+    counters: Sent,
     mut emit: F,
 ) where
     F: FnMut(Changed) -> Fut,
@@ -164,11 +176,21 @@ pub(crate) async fn decide<F, Fut>(
                 }
             }
         }
+        // Held from the read on: see `Sent`.
+        let mut sent = counters.lock().await;
         let now = seen(&mut state, &mut account, &mut downloads);
         let changed = properties::changed(DECIDED, &shown, &now);
+        if changed.get(OVERALL.interface).is_some_and(|folder| folder.contains_key(OVERALL.name)) {
+            let ahead = properties::changed(COALESCED, &sent, &now);
+            if !ahead.is_empty() {
+                emit(ahead).await;
+                *sent = now.clone();
+            }
+        }
         if !changed.is_empty() {
             emit(changed).await;
         }
+        drop(sent);
         shown = now;
     }
 }
@@ -176,11 +198,12 @@ pub(crate) async fn decide<F, Fut>(
 /// Hands `emit` the properties of [`COALESCED`] that changed since they were last sent
 /// (`shown` at first) — at most once per [`COALESCE`]: a change during the wait is sent
 /// when it is over, together with every other. Nothing is sent for a change that leaves
-/// all of them as they were (a `State` change, say). Returns when either side goes away.
+/// all of them as they were (a `State` change, say), or that [`decide`] has sent ahead of
+/// an `Overall` (it shares `shown`). Returns when either side goes away.
 pub(crate) async fn coalesce<F, Fut>(
     mut state: watch::Receiver<SyncSnapshot>,
     mut downloads: watch::Receiver<BTreeMap<u64, Transfer>>,
-    mut shown: Seen,
+    shown: Sent,
     mut emit: F,
 ) where
     F: FnMut(Changed) -> Fut,
@@ -191,13 +214,17 @@ pub(crate) async fn coalesce<F, Fut>(
             changed = state.changed() => if changed.is_err() { return },
             changed = downloads.changed() => if changed.is_err() { return },
         }
+        // Held from the read on, and not through the wait: see `Sent`.
+        let mut sent = shown.lock().await;
         let now = Seen { snapshot: state.borrow_and_update().clone(), downloads: downloads.borrow_and_update().clone(), ..Seen::default() };
-        let changed = properties::changed(COALESCED, &shown, &now);
-        if !changed.is_empty() {
-            emit(changed).await;
-            shown = now;
-            tokio::time::sleep(COALESCE).await;
+        let changed = properties::changed(COALESCED, &sent, &now);
+        if changed.is_empty() {
+            continue;
         }
+        emit(changed).await;
+        *sent = now;
+        drop(sent);
+        tokio::time::sleep(COALESCE).await;
     }
 }
 
