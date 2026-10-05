@@ -829,8 +829,8 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
     }
 
-    async fn sign_in_finished(&self, connection: &zbus::Connection, account: &zbus::zvariant::ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.sign_in_finished(connection, account, outcome, message, listed).await
+    async fn sign_in_finished(&self, connection: &zbus::Connection, sign_in: u32, outcome: &str, message: &str, account: &zbus::zvariant::ObjectPath<'_>, listed: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.sign_in_finished(connection, sign_in, outcome, message, account, listed).await
     }
 }
 
@@ -904,8 +904,8 @@ impl konedrived::daemon::manager::Bus for HeldServe {
         konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
     }
 
-    async fn sign_in_finished(&self, connection: &zbus::Connection, account: &zbus::zvariant::ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.sign_in_finished(connection, account, outcome, message, listed).await
+    async fn sign_in_finished(&self, connection: &zbus::Connection, sign_in: u32, outcome: &str, message: &str, account: &zbus::zvariant::ObjectPath<'_>, listed: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.sign_in_finished(connection, sign_in, outcome, message, account, listed).await
     }
 }
 

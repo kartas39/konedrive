@@ -14,16 +14,22 @@ pub struct Accounts {
 
 #[interface(name = "org.konedrive.Accounts")]
 impl Accounts {
-    /// A new account by signing in: the draft's path and the URL to open. How it ends:
-    /// [`sign_in_finished`](Self::sign_in_finished).
-    #[zbus(out_args("account", "url"))]
-    async fn sign_in(&self, #[zbus(connection)] connection: &Connection) -> Result<(OwnedObjectPath, String), Fault> {
+    /// A new account by signing in: the sign-in's number and the URL to open. How it
+    /// ends: [`sign_in_finished`](Self::sign_in_finished).
+    #[zbus(out_args("sign_in", "url"))]
+    async fn sign_in(&self, #[zbus(connection)] connection: &Connection) -> Result<(u32, String), Fault> {
         Ok(self.manager.sign_in(connection).await?)
     }
 
-    /// How the draft at `account` ended (`konedrive_dbus::sign_in`), once for each draft.
+    /// Cancels the sign-in `sign_in`; a number that is not under way is ignored.
+    async fn cancel_sign_in(&self, sign_in: u32) {
+        self.manager.cancel_sign_in(sign_in).await;
+    }
+
+    /// How the sign-in `sign_in` ended (`konedrive_dbus::sign_in`), once for each: the
+    /// account it made, or the one that has the drive already; `/` otherwise.
     #[zbus(signal)]
-    pub(crate) async fn sign_in_finished(emitter: &SignalEmitter<'_>, account: ObjectPath<'_>, outcome: &str, message: &str) -> zbus::Result<()>;
+    pub(crate) async fn sign_in_finished(emitter: &SignalEmitter<'_>, sign_in: u32, outcome: &str, message: &str, account: ObjectPath<'_>) -> zbus::Result<()>;
 
     async fn remove(
         &self,

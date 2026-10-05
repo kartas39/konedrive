@@ -57,6 +57,11 @@ impl MemoryWallet {
         self.items.lock().unwrap().get(slot).map(|(_, secret)| secret.clone())
     }
 
+    /// How many items the wallet holds.
+    pub fn count(&self) -> usize {
+        self.items.lock().unwrap().len()
+    }
+
     pub fn label(&self, slot: &Slot) -> Option<String> {
         self.items.lock().unwrap().get(slot).map(|(label, _)| label.clone())
     }

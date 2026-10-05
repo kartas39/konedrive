@@ -54,15 +54,18 @@ pub const CONFLICTS_INTERFACE_NAME: &str = "org.konedrive.Conflicts";
 pub const LOCAL_SCAN_INTERFACE_NAME: &str = "org.konedrive.LocalScan";
 pub const ACTIVITY_LOG_INTERFACE_NAME: &str = "org.konedrive.ActivityLog";
 
-/// How a draft of `Accounts.SignIn` ended: the `outcome` of `Accounts.SignInFinished`.
+/// How a sign-in of `Accounts.SignIn` ended: the `outcome` of `Accounts.SignInFinished`.
+/// Only `signed-in` made an account.
 pub mod sign_in {
-    /// The sign-in succeeded: the account is in `List`, and the message is its label.
+    /// The sign-in succeeded: the account was made and is in `List`; the message is its
+    /// label, and the account its path.
     pub const SIGNED_IN: &str = "signed-in";
-    /// `Account.CancelSignIn` on the draft, or a newer `SignIn`: nothing is left.
+    /// `Accounts.CancelSignIn`, a newer `SignIn`, or `SetClientId`.
     pub const CANCELLED: &str = "cancelled";
-    /// The drive is another account's, whose label the message is: nothing is left.
+    /// The drive is another account's, whose label the message is, and whose path the
+    /// account.
     pub const ALREADY_ADDED: &str = "already-added";
-    /// Anything else, the timeout included; the message says why: nothing is left.
+    /// Anything else, the timeout included; the message says why.
     pub const FAILED: &str = "failed";
 }
 

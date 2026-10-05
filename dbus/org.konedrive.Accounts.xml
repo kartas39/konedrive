@@ -12,36 +12,44 @@
        org.konedrive.TokenExport. Personal Microsoft accounts only in this
        version. Nothing is served at /org/konedrive/Daemon any more. -->
   <interface name="org.konedrive.Accounts">
-    <!-- Adds a new account by signing in, the only way to add one. Adds a draft, starts its sign-in
-         and returns the draft's object path and the URL to open in a browser.
-         A draft is an account that is on the bus at its path and is not in
-         List. Refused as Account.BeginSignIn is, under the same error name,
-         and then nothing is left. One draft at a time: a SignIn while a draft
-         exists ends that draft as "cancelled" first. Account.CancelSignIn on
-         the draft cancels it. How a draft ends is said by SignInFinished. -->
+    <!-- Starts a sign-in for a new account, the only way to add one, and
+         returns its number and the URL to open in a browser. The sign-in
+         belongs to no account: until it has succeeded and its drive is known
+         not to be another account's, nothing exists for it (no entry in
+         config.toml, no directory, no stored token, no object). Numbers are
+         not reused while the daemon runs. Refused, with nothing started, when
+         no client ID can be had or the listener cannot be bound. One at a
+         time: a SignIn while one is under way ends that one as "cancelled"
+         first, and so does SetClientId. How a sign-in ends is said by
+         SignInFinished. -->
     <method name="SignIn">
-      <arg name="account" type="o" direction="out"/>
+      <arg name="sign_in" type="u" direction="out"/>
       <arg name="url" type="s" direction="out"/>
     </method>
-    <!-- Sent exactly once for every draft SignIn answered, except one a
-         restart of the daemon removed. outcome:
-         "signed-in": the account is in List under its final label, which is
-           message: its email; "<email> 2", "<email> 3", ... when another
+    <!-- Cancels the sign-in with that number. A number that is not under way
+         is ignored. -->
+    <method name="CancelSignIn">
+      <arg name="sign_in" type="u" direction="in"/>
+    </method>
+    <!-- Sent exactly once for every sign-in SignIn answered, unless the
+         daemon stopped first. outcome:
+         "signed-in": the account was made and is in List; message is its
+           label: its email; "<email> 2", "<email> 3", ... when another
            account has that label; "Personal", "Personal 2", ... when there
-           is no email or it cannot be a label. List changes before this is
-           sent;
-         "cancelled": Account.CancelSignIn on the draft, or a newer SignIn;
-           message is empty;
+           is no email or it cannot be a label; account is its path. List
+           changes before this is sent;
+         "cancelled": CancelSignIn, a newer SignIn, or SetClientId; message
+           is empty and account is "/";
          "already-added": the drive is another account's; message is that
-           account's label;
-         "failed": anything else, the timeout included; message says why, as
-           Account.LastError would.
-         After every outcome but "signed-in" nothing is left of the draft: no
-         entry in config.toml, no directory, no stored token, no object. -->
+           account's label and account its path;
+         "failed": anything else, the timeout included; message says why and
+           account is "/".
+         Only "signed-in" made an account. -->
     <signal name="SignInFinished">
-      <arg name="account" type="o"/>
+      <arg name="sign_in" type="u"/>
       <arg name="outcome" type="s"/>
       <arg name="message" type="s"/>
+      <arg name="account" type="o"/>
     </signal>
     <!-- Removes an account: forgets its folder exactly as Folder.Unregister
          does (so refused NoHelper under the same rule, before anything

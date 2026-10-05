@@ -19,7 +19,7 @@
 //!      `refresh_account_info`): what answers there never calls back into what takes
 //!      `session` (a sign-out, a switch of the mode).
 //!    - Between accounts: no account's `session` is held while another account is asked.
-//!      The identity guard asks the other accounts for their drives (`settle_siblings`: their
+//!      The identity guard asks the other accounts for their drives (`settle`: their
 //!      refresh lock, then `ConfigStore`'s) before it takes its own `session`.
 //! 3. **The leaves**, none held while another is asked for, none held across an `await`:
 //!    - `ConfigStore`'s lock, across one read or one read-modify-write of `config.toml`; the
@@ -35,12 +35,13 @@
 //! The file writes of the leaves are blocking and `fsync`ed, also where they run under the
 //! refresh lock on a runtime thread (limitations log F231, F249).
 
+pub(crate) mod attempt;
 pub mod cache;
 mod mode;
 pub mod quota;
 pub mod secret;
 mod sign_in;
-pub use sign_in::SignInEnd;
+pub(crate) use sign_in::{claim_new, Refused};
 pub mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -53,11 +54,10 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::account::cache::AccountInfo;
 use crate::account::quota::Quota;
-use crate::config::{AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, WriteStanding};
+use crate::account::attempt::{Attempt, SignedIn};
+use crate::config::{AccountConfig, AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, Origin, WriteStanding};
 use konedrive_graph::drive::{DriveClient, Status};
-use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
-use konedrive_graph::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
-use konedrive_graph::pkce::{random_token, Pkce};
+use konedrive_graph::oauth::{grants_writes, is_read_only, Endpoints, OAuthClient, TokenResponse};
 use crate::account::secret::SecretStore;
 use crate::account::state::{AccountSnapshot, ModeNote, SignInState, StateHandle};
 use konedrive_graph::token::{AuthError, TokenManager};
@@ -240,26 +240,14 @@ pub struct AccountService {
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
-    /// Who is told how each sign-in attempt ends ([`AccountService::tell_sign_in_end`]):
-    /// the accounts manager, while the account is a draft.
-    sign_in_end: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<SignInEnd>>>,
 }
 
+/// An account's own attempt ([`attempt`]): what interrupts its wait for the browser, and
+/// the generation it was started with.
 struct SignInAttempt {
-    oauth: OAuthClient,
-    listener: LoopbackListener,
-    redirect_uri: String,
-    pkce: Pkce,
-    csrf: String,
+    browser: Attempt,
     cancel: oneshot::Receiver<()>,
     generation: u64,
-}
-
-/// Who a sign-in turned out to be (design §8.2): the drive, and the email when `/me`
-/// answered.
-struct Identity {
-    drive: DriveId,
-    email: Option<String>,
 }
 
 impl AccountService {
@@ -274,11 +262,7 @@ impl AccountService {
         secrets: Arc<dyn SecretStore>,
         sign_in_timeout: Duration,
     ) -> anyhow::Result<Arc<Self>> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("konedrive/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(60))
-            .build()?;
+        let http = attempt::http_client()?;
         let label = config.account(id).map(|a| a.label).unwrap_or_default();
         let client_id = config.client_id();
         // Read-only until startup has read what the last token was valid for.
@@ -308,7 +292,6 @@ impl AccountService {
             session: Mutex::new(Session { generation: 0, cancel: None }),
             siblings: std::sync::Mutex::new(None),
             retired: std::sync::atomic::AtomicBool::new(false),
-            sign_in_end: std::sync::Mutex::new(None),
         });
         service.install_oauth(&client_id);
         // Every refresh says what its token is valid for (`docs/design/writes.md` §2). Weak: the token
@@ -388,7 +371,7 @@ impl AccountService {
     /// A client asking for `mode`'s scope, for the authorization, the code exchange or a
     /// refresh.
     fn oauth_client(&self, client_id: &str, mode: Mode) -> OAuthClient {
-        OAuthClient::new(self.http.clone(), self.endpoints.clone(), client_id.to_owned()).with_scope(scopes_for(mode == Mode::ReadWrite))
+        attempt::oauth_client(self.http.clone(), self.endpoints.clone(), client_id, mode)
     }
 
     /// Every refresh asks for the scope of the mode the account runs in. A read-write account
@@ -572,12 +555,6 @@ impl AccountService {
         Ok(())
     }
 
-    /// The label `config.toml` now has for the account, which the accounts manager wrote
-    /// (a draft that became an account): shown from now on.
-    pub fn show_label(&self, label: &str) {
-        self.state.update(|s| s.label = label.to_owned());
-    }
-
     /// The account as a refusal names it: its email, or its label while there is none.
     fn who(&self) -> String {
         let s = self.state.get();
@@ -595,6 +572,13 @@ impl AccountService {
 pub struct Siblings(std::sync::Mutex<Vec<Weak<AccountService>>>);
 
 impl Siblings {
+    /// Every one of them the guard cannot tell apart from a drive, by id
+    /// ([`settle`]): for a sign-in that belongs to none of them (`Accounts.SignIn`).
+    pub(crate) async fn settle(&self) -> Vec<AccountId> {
+        let all = crate::panic::lock(&self.0).iter().filter_map(Weak::upgrade).collect();
+        sign_in::settle(all).await
+    }
+
     /// `account` is one of them from now on.
     pub fn add(self: &Arc<Self>, account: &Arc<AccountService>) {
         crate::panic::lock(&self.0).push(Arc::downgrade(account));
@@ -633,8 +617,7 @@ fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::account
     })
 }
 
-/// What a sign-in is refused with when Graph names no drive.
-const NO_DRIVE: &str = "Microsoft Graph did not say which drive this is";
+use attempt::NO_DRIVE;
 
 /// What a retired account answers a sign-in.
 const RETIRED: &str = "this account is being removed";

@@ -106,21 +106,6 @@ fn a_signed_in_account_is_labelled_by_its_email() {
     assert_eq!(signed_in_label(&config, &me, None), "Personal 2");
 }
 
-/// A draft is an entry marked as one, labelled by its id; finishing it sets the label and
-/// takes the mark off in one write.
-#[tokio::test]
-async fn a_draft_is_marked_until_it_is_finished() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = Paths::in_dir(dir.path());
-    let store = open(&paths).await;
-    let draft = store.add_draft().unwrap();
-    assert!(draft.draft && draft.label == draft.id.as_str());
-    assert!(std::fs::read_to_string(&paths.config_file).unwrap().contains("draft = true"));
-    assert_eq!(store.finish_draft(&draft.id, Some("ann@live.com")).unwrap(), "ann@live.com");
-    let written = std::fs::read_to_string(&paths.config_file).unwrap();
-    assert!(written.contains("label = \"ann@live.com\"") && !written.contains("draft"), "{written}");
-}
-
 /// `[transfers] max`: 64 when missing, clamped into 1–256.
 #[test]
 fn the_transfer_ceiling_is_read_and_clamped() {

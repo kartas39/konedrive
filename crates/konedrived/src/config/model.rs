@@ -152,11 +152,6 @@ pub struct AccountConfig {
     /// account's directory ([`crate::config::migrate::finish_file_moves`]).
     #[serde(default, skip_serializing_if = "is_false")]
     pub migrate_files: bool,
-    /// Set while the account is the *draft* of an `Accounts.SignIn` that has not ended: on
-    /// the bus, in no `Accounts.List`, its label its own id. Taken off, with the label set,
-    /// when the sign-in succeeds; an entry that still has it at a start is removed.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub draft: bool,
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootConfig>,
@@ -196,7 +191,6 @@ impl AccountConfig {
             login_hint: String::new(),
             legacy_token: false,
             migrate_files: false,
-            draft: false,
             root: None,
             ignore: None,
             machine_name: String::new(),

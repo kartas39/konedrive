@@ -115,12 +115,12 @@ impl Bus for OnBus {
         all_taken_off([unexport(connection, path, partly).await, crate::dbus::account::unexport(connection, path, partly).await])
     }
 
-    async fn sign_in_finished(&self, connection: &Connection, account: &ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()> {
+    async fn sign_in_finished(&self, connection: &Connection, sign_in: u32, outcome: &str, message: &str, account: &ObjectPath<'_>, listed: bool) -> zbus::Result<()> {
         let accounts = connection.object_server().interface::<_, Accounts>(ACCOUNTS_PATH).await?;
         // The account is in `List` before anybody is told that it was added.
         if listed {
             accounts.get().await.list_changed(accounts.signal_emitter()).await?;
         }
-        Accounts::sign_in_finished(accounts.signal_emitter(), account.clone(), outcome, message).await
+        Accounts::sign_in_finished(accounts.signal_emitter(), sign_in, outcome, message, account.clone()).await
     }
 }

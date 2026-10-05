@@ -37,11 +37,14 @@ use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBack
     gen_blocking = false
 )]
 pub trait Accounts {
-    /// Adds a new account by signing in: the object path of the *draft* (on the bus, not in
-    /// [`list`](Self::list)) and the URL to open in a browser. How it ends is said once, by
-    /// [`sign_in_finished`](Self::receive_sign_in_finished); `Account.CancelSignIn` on the
-    /// draft cancels it. Refused as `Account.BeginSignIn` is, and then nothing is left.
-    fn sign_in(&self) -> zbus::Result<(OwnedObjectPath, String)>;
+    /// Starts a sign-in for a new account: its number and the URL to open in a browser.
+    /// The account is made only once the sign-in has succeeded. How it ends is said once,
+    /// by [`sign_in_finished`](Self::receive_sign_in_finished);
+    /// [`cancel_sign_in`](Self::cancel_sign_in) cancels it. Refused, with nothing started,
+    /// when no client ID can be had or the listener cannot be bound.
+    fn sign_in(&self) -> zbus::Result<(u32, String)>;
+    /// Cancels the sign-in `sign_in`. A number that is not under way is ignored.
+    fn cancel_sign_in(&self, sign_in: u32) -> zbus::Result<()>;
     /// Forgets the account's folder as `Folder.Unregister` does, deletes
     /// its token, cache and tree store, and removes the object. Refused
     /// `NoAccount` for a path that names no account.
@@ -79,12 +82,12 @@ pub trait Accounts {
     #[zbus(property(emits_changed_signal = "const"))]
     fn commit(&self) -> zbus::Result<String>;
 
-    /// How the draft `account` of a [`sign_in`](Self::sign_in) ended: `outcome` is one of
-    /// [`sign_in`](crate::sign_in)'s names, and `message` the account's label
-    /// (`signed-in`), the label of the account that has the drive (`already-added`), why
-    /// (`failed`), or empty (`cancelled`).
+    /// How the sign-in `sign_in` of a [`sign_in`](Self::sign_in) ended: `outcome` is one of
+    /// [`sign_in`](crate::sign_in)'s names. `message` and `account` are the new account's
+    /// label and path (`signed-in`), those of the account that has the drive
+    /// (`already-added`), why and `/` (`failed`), or empty and `/` (`cancelled`).
     #[zbus(signal)]
-    fn sign_in_finished(&self, account: OwnedObjectPath, outcome: String, message: String) -> zbus::Result<()>;
+    fn sign_in_finished(&self, sign_in: u32, outcome: String, message: String, account: OwnedObjectPath) -> zbus::Result<()>;
 }
 
 /// `/org/konedrive/Accounts`: per-file calls, each routed by path to the

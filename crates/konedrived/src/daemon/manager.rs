@@ -10,8 +10,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zbus::Connection;
 use konedrive_graph::oauth::Endpoints;
 
-use crate::account::{AccountError, AccountService, Siblings, SignInEnd};
-use draft::Draft;
+use crate::account::{AccountError, AccountService, Siblings};
+use sign_in::SignIns;
 use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
@@ -72,9 +72,10 @@ pub trait Bus: Send + Sync {
     /// answered. `partly`: some may not be there (an account whose adding failed while putting them),
     /// which is then not worth a warning.
     async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
-    /// Says how the draft at `account` ended: `Accounts.SignInFinished`, after the change
-    /// of `Accounts.List` when the draft became an account (`listed`).
-    async fn sign_in_finished(&self, connection: &Connection, account: &ObjectPath<'_>, outcome: &str, message: &str, listed: bool) -> zbus::Result<()>;
+    /// Says how the sign-in `sign_in` of `Accounts.SignIn` ended: `Accounts.SignInFinished`,
+    /// after the change of `Accounts.List` when it made an account (`listed`). `account` is
+    /// `/` when the outcome names none.
+    async fn sign_in_finished(&self, connection: &Connection, sign_in: u32, outcome: &str, message: &str, account: &ObjectPath<'_>, listed: bool) -> zbus::Result<()>;
 }
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
@@ -106,7 +107,7 @@ pub enum ManagerError {
     /// What the account's folder refused, under the folder's names (`NoHelper`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
-    /// What `Account.BeginSignIn` refuses, under its names: `Accounts.SignIn`'s.
+    /// What `Accounts.SignIn` refuses under a name of `Account.BeginSignIn`'s (`NoClientId`).
     #[error(transparent)]
     SignIn(#[from] AccountError),
 }
@@ -133,10 +134,10 @@ pub struct AccountManager {
     registry: Arc<Registry>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
-    /// The draft of an `Accounts.SignIn` that has not ended: on the bus, in none of the
-    /// lists above. Written only with `changing` held.
-    draft: Mutex<Option<Draft>>,
-    /// [`add`](Self::add), `SignIn` and the end of its draft, `Remove`, `SetClientId`,
+    /// The sign-ins of `Accounts.SignIn`: the one under way belongs to no account, and is
+    /// in none of the lists above.
+    sign_ins: Mutex<SignIns>,
+    /// [`add`](Self::add), `SignIn` and the making of its account, `Remove`, `SetClientId`,
     /// `SetPauseOnMetered` and `SetOnBattery`, one at a time.
     changing: tokio::sync::Mutex<()>,
 }
@@ -153,7 +154,7 @@ impl AccountManager {
             registry,
             siblings: Arc::new(Siblings::default()),
             accounts: Mutex::new(Vec::new()),
-            draft: Mutex::new(None),
+            sign_ins: Mutex::new(SignIns::default()),
             changing: tokio::sync::Mutex::new(()),
         })
     }
@@ -216,11 +217,6 @@ impl AccountManager {
     pub async fn load(&self) {
         let config = self.config.snapshot();
         for (entry, held) in config.accounts.iter().zip(config.holds()) {
-            // One the start could not remove ([`remove_drafts`](Self::remove_drafts)) is
-            // still no account.
-            if entry.draft {
-                continue;
-            }
             let taken = self.accounts().iter().any(|a| a.id == entry.id);
             if taken || account_path(&entry.id).is_none() || self.paths.account(&entry.id).is_none() {
                 let why = held.unwrap_or_else(|| "its id repeats an earlier account's".into());
@@ -369,12 +365,6 @@ impl AccountManager {
     /// the failure always had, says what was done.
     pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
-        // The draft's path: removing it is cancelling it.
-        let draft = crate::panic::lock(&self.draft).as_ref().filter(|d| d.account.path.as_str() == path.as_str()).map(|d| d.account.id.clone());
-        if let Some(id) = draft {
-            self.end_draft(Some(&id), SignInEnd::Cancelled).await;
-            return Ok(());
-        }
         let account = self.account(path).ok_or_else(|| ManagerError::NoAccount(path.to_string()))?;
         if self.config.is_poisoned() {
             return Err(ManagerError::Failed(self.config.last_error()));
@@ -419,8 +409,9 @@ impl AccountManager {
                 "not possible while an account is signing in or signed in: sign out first".into(),
             ));
         }
-        // A draft signs in with the ID that was: ended, as a newer `SignIn` ends it.
-        self.end_draft(None, SignInEnd::Cancelled).await;
+        // A sign-in for a new account under way signs in with the ID that was: ended, as a
+        // newer `SignIn` ends it.
+        self.end_sign_in(None).await;
         self.config.set_client_id(id)?;
         for account in self.accounts() {
             account.account.use_client_id(id);
@@ -626,6 +617,6 @@ fn resolve_parent(path: &Path) -> Option<PathBuf> {
     }
 }
 
-mod draft;
+mod sign_in;
 #[cfg(test)]
 mod tests;
