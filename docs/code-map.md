@@ -46,7 +46,7 @@ Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `kon
 |---|---|---|
 | The Rust workspace | `cargo test --workspace` | The unit tests of every crate and the integration tests in `crates/*/tests/`, on private buses, temporary directories and wiremock |
 | One crate, or one test binary | `cargo test -p konedrived --lib`, `cargo test -p konedrivectl --test sync_cli` | The same, narrowed while working on one part |
-| The development build's tests | `cargo test -p konedrived -p konedrivectl --features konedrived/dev-tools,konedrivectl/dev-tools` | The token export (`dbus/token_export.rs`, `konedrivectl dev`) |
+| The development build's tests | `cargo test -p konedrived -p konedrivectl --features konedrived/dev-tools,konedrivectl/dev-tools` | The token export and the signed-out account (`dbus/token_export.rs`, `dbus/dev_tools.rs`, `konedrivectl dev`) |
 | The outbox at scale | `cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1` | `crates/konedrived/src/tests/bench.rs`: ignored tests, run by hand |
 | The window | `cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure` | `app/tests/` |
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
@@ -416,6 +416,7 @@ The daemon as a whole. Design: `accounts.md`.
 
 - `mod.rs` — the list of the modules.
 - `manager.rs` — the account manager; the trait `Bus`: how its objects get on the bus.
+- `manager/draft.rs` — the draft of `Accounts.SignIn`: how it starts, how it ends, and what a start removes.
 - `startup.rs` — `Daemon`: the configuration's lock, the migration, the start.
 - `stop.rs` — the stop on SIGTERM or SIGINT; `Tasks`, the tasks whose end stops the daemon. `[tests]`
 
@@ -434,6 +435,7 @@ The D-Bus interfaces, one file each, named like the XML in `dbus/`. Design: `des
 - `activity_log.rs` — `org.konedrive.ActivityLog`.
 - `local_scan.rs` — `org.konedrive.LocalScan`.
 - `token_export.rs` — `org.konedrive.TokenExport`, only in a development build.
+- `dev_tools.rs` — `org.konedrive.DevTools`, only in a development build.
 - `export.rs` — putting the objects on the bus and taking them off; `OnBus`.
 - `properties.rs` — the table of the properties the daemon announces by itself. `[tests]`
 - `signals.rs` — what the daemon announces by itself: `PropertiesChanged`, `ActivityLog.Added`,
@@ -446,6 +448,7 @@ Integration tests: the daemon over a private bus, Microsoft as wiremock.
 
 - `common/mod.rs` — what they share: the fake Microsoft, the started daemon.
 - `account_flow.rs` — the sign-in, from the client id to signed in.
+- `sign_in.rs` — `Accounts.SignIn`: the draft, its outcomes, its label.
 - `accounts.rs` — several accounts.
 - `dbus_api.rs` — `org.konedrive.Account`, and the introspection against the XML.
 - `mode.rs` — the account's mode.
@@ -510,8 +513,9 @@ what is decided and what is said, with nothing read from the daemon.
 ### `crates/konedrivectl/src/commands/`
 
 - `mod.rs` — the list of the command groups.
-- `account.rs` — `account`: list, add, remove, rename, mode.
-- `login.rs` — `login`.
+- `account.rs` — `account`: list, remove, rename, mode.
+- `add.rs` — `account add`: a new account, by signing in.
+- `login.rs` — `login`: an account there already signs in again.
 - `browser.rs` — opening the sign-in page.
 - `status.rs` — `status`.
 - `settings.rs` — `settings`.
@@ -706,6 +710,7 @@ Each has its file in `crates/konedrived/src/dbus/`. Design: `desktop.md`.
 - `org.konedrive.ActivityLog.xml` — the activity log.
 - `org.konedrive.LocalScan.xml` — the Full local scan.
 - `org.konedrive.TokenExport.xml` — the token export of a development build.
+- `org.konedrive.DevTools.xml` — a development build's way to add a signed-out account.
 
 ## `app/`: the window
 
@@ -718,7 +723,7 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `Main.qml` — the window: pages chosen from a sidebar.
 - `qmlregistration.h` — what the QML finds in `org.konedrive.app`.
 - `daemoncontroller.h`, `daemoncontroller.cpp` — the manager object, `org.konedrive.Accounts`.
-- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers.
+- `accountsmodel.h`, `accountsmodel.cpp` — the accounts, each with its controllers; Sign In.
 - `currentaccount.h`, `currentaccount.cpp` — the account the window shows.
 - `accountcontroller.h`, `accountcontroller.cpp` — one account's `org.konedrive.Account`.
 - `synccontroller.h`, `synccontroller.cpp` — one account's folder, for QML.

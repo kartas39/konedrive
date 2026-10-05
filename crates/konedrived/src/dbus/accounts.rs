@@ -14,17 +14,6 @@ pub struct Accounts {
 
 #[interface(name = "org.konedrive.Accounts")]
 impl Accounts {
-    async fn add(
-        &self,
-        label: &str,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> Result<OwnedObjectPath, Fault> {
-        let account = self.manager.add(label, connection).await?;
-        self.list_changed(&emitter).await?;
-        Ok(account.path.clone())
-    }
-
     /// A new account by signing in: the draft's path and the URL to open. How it ends:
     /// [`sign_in_finished`](Self::sign_in_finished).
     #[zbus(out_args("account", "url"))]

@@ -40,7 +40,7 @@ pub async fn export(
     start_signals(connection, path, service).await
 }
 
-/// Takes one account's folder off the bus (`Accounts.Remove`, and an `Accounts.Add` that
+/// Takes one account's folder off the bus (`Accounts.Remove`, and an account whose adding
 /// failed while putting it there): every interface, whatever the one before answered.
 /// `partly`: see [`take_off`].
 pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
@@ -55,7 +55,7 @@ pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bo
 }
 
 /// Takes the interface `I` off `path`. One that is not there is off, and no failure; it is
-/// worth a warning unless `partly`, which the cleanup of an `Accounts.Add` that failed part
+/// worth a warning unless `partly`, which the cleanup of an adding that failed part
 /// of the way gives: on a removal every interface is there.
 pub(crate) async fn take_off<I: zbus::object_server::Interface>(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     match connection.object_server().remove::<I, _>(path).await {

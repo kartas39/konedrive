@@ -12,18 +12,7 @@
        org.konedrive.TokenExport. Personal Microsoft accounts only in this
        version. Nothing is served at /org/konedrive/Daemon any more. -->
   <interface name="org.konedrive.Accounts">
-    <!-- Adds a signed-out, read-only account with no folder, and returns its
-         object path. InvalidArgs for a label that is empty, longer than 40
-         characters, contains "/" or a control character, is 12 hexadecimal
-         digits (the shape of an account's id), or is already used (regardless
-         of case); the message says which. "@" is allowed: a label may be an
-         email. The label is trimmed first. Failed while config.toml cannot be
-         read. -->
-    <method name="Add">
-      <arg name="label" type="s" direction="in"/>
-      <arg name="account" type="o" direction="out"/>
-    </method>
-    <!-- Adds a new account by signing in. Adds a draft, starts its sign-in
+    <!-- Adds a new account by signing in, the only way to add one. Adds a draft, starts its sign-in
          and returns the draft's object path and the URL to open in a browser.
          A draft is an account that is on the bus at its path and is not in
          List. Refused as Account.BeginSignIn is, under the same error name,

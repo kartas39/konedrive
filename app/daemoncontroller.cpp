@@ -54,6 +54,7 @@ DaemonController::DaemonController(const QDBusConnection &bus, QObject *parent)
                   QStringLiteral("PropertiesChanged"),
                   this,
                   SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
+    m_bus.connect(ServiceName, ObjectPath, InterfaceName, QStringLiteral("SignInFinished"), this, SLOT(onSignInFinished(QDBusObjectPath, QString, QString)));
     connect(m_watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &, const QString &newOwner) {
         if (newOwner.isEmpty()) {
             m_daemonBuildKnown = false;
@@ -191,20 +192,25 @@ void DaemonController::setOnBattery(const QString &choice)
     });
 }
 
-void DaemonController::add(const QString &label, std::function<void(const QString &)> done, std::function<void(const QString &)> failed)
+void DaemonController::signIn(std::function<void(const QString &, const QString &)> done, std::function<void(const QString &)> failed)
 {
-    auto *watcher = new QDBusPendingCallWatcher(m_iface->Add(label), this);
+    auto *watcher = new QDBusPendingCallWatcher(m_iface->SignIn(), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [done, failed](QDBusPendingCallWatcher *w) {
         w->deleteLater();
-        const QDBusPendingReply<QDBusObjectPath> reply = *w;
+        const QDBusPendingReply<QDBusObjectPath, QString> reply = *w;
         if (reply.isError()) {
             if (failed) {
                 failed(reply.error().message());
             }
         } else if (done) {
-            done(reply.value().path());
+            done(reply.argumentAt<0>().path(), reply.argumentAt<1>());
         }
     });
+}
+
+void DaemonController::onSignInFinished(const QDBusObjectPath &account, const QString &outcome, const QString &message)
+{
+    Q_EMIT signInFinished(account.path(), outcome, message);
 }
 
 void DaemonController::remove(const QString &path)

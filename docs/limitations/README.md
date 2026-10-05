@@ -482,7 +482,6 @@ window's status, activity and conflicts, all read from the folder's interfaces (
 - [A12](A12.md) — Places: a folder registered only through `konedrivectl` while the app is not running gets its entry when the app next starts.
 - [A13](A13.md) — The window shows one account at a time.
 - [A14](A14.md) — Account names are checked in the window too, by a copy of the daemon's rules.
-- [A15](A15.md) — Sign In is several calls in a row, not one.
 - [A16](A16.md) — The upload switch keeps its own "waiting for sign-in"; the client ID is one for all.
 - [A17](A17.md) — The tray sums up every account.
 - [A18](A18.md) — Notifications and download progress name the account, only once there are several.
@@ -494,6 +493,11 @@ window's status, activity and conflicts, all read from the folder's interfaces (
 - [A24](A24.md) — What is kept back is shown by reason; files only where each needs something done, 20 at most.
 - [A25](A25.md) — The account's own hold shows as paused, and the tray lifts it for every account.
 - [A26](A26.md) — "· live" hides when the last check ran.
+- [A27](A27.md) — An account left under the label "Signing in…" by an older window is not removed any more.
+- [A28](A28.md) — A client that goes away in the middle of a sign-in leaves its draft.
+- [A29](A29.md) — The fallback label "Personal" is the daemon's, and is not translated.
+- [A30](A30.md) — A daemon that stops between storing the token and listing the account loses the sign-in.
+- [A31](A31.md) — Calls on a draft's objects are answered, not refused by a rule of their own.
 
 ---
 
@@ -531,3 +535,8 @@ Kept briefly so the history of a weak spot is findable; details are in the commi
 - **F63. A read-write folder reconciled by the read phase's rules** — a Full reconcile
   rescued new local files out of the folder, put back local moves and rescued local edits before a
   remote change. Closed by the read-write reconcile (F110–F117, commit `60be43d`).
+- **A15. Sign In is several calls in a row, not one** — the window and `konedrivectl login` each
+  chained `Accounts.Add`, `Account.BeginSignIn` and `Account.SetLabel`, and the window hid and
+  removed the half-made account itself. Closed by `Accounts.SignIn` (issue #199): one call, a draft
+  the daemon keeps out of `Accounts.List`, and one signal that says how it ended. What remains is
+  A27 to A31.

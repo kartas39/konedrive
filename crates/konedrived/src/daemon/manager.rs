@@ -69,7 +69,7 @@ pub trait Bus: Send + Sync {
     /// it put on the bus is taken off by [`unexport`](Self::unexport), `partly`.
     async fn export(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
     /// Takes an account's interfaces off the bus, every one whatever the one before
-    /// answered. `partly`: some may not be there (an `Add` that failed while putting them),
+    /// answered. `partly`: some may not be there (an account whose adding failed while putting them),
     /// which is then not worth a warning.
     async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
     /// Says how the draft at `account` ended: `Accounts.SignInFinished`, after the change
@@ -136,7 +136,7 @@ pub struct AccountManager {
     /// The draft of an `Accounts.SignIn` that has not ended: on the bus, in none of the
     /// lists above. Written only with `changing` held.
     draft: Mutex<Option<Draft>>,
-    /// `Add`, `SignIn` and the end of its draft, `Remove`, `SetClientId`,
+    /// [`add`](Self::add), `SignIn` and the end of its draft, `Remove`, `SetClientId`,
     /// `SetPauseOnMetered` and `SetOnBattery`, one at a time.
     changing: tokio::sync::Mutex<()>,
 }
@@ -317,7 +317,7 @@ impl AccountManager {
     }
 
     /// A signed-out, read-only account with no folder, after every other, under a label the
-    /// caller chose (`Accounts.Add`, a development build's `DevTools.AddAccount`, tests),
+    /// caller chose (a development build's `DevTools.AddAccount`, tests),
     /// listed before its objects are put on the bus, and taken off the list again when they
     /// cannot be.
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {

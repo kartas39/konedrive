@@ -30,7 +30,7 @@ account. How one folder follows its drive is in [sync.md](sync.md); how a file i
 | Field | What it is |
 |---|---|
 | Id | 12 random lowercase hexadecimal characters (48 bits), checked against the ids present and never reused. It names the account's D-Bus object, its state and rescue directories and its Places entry; nobody has to type it |
-| Label | The name people see and type. The window sets it to the account's email once it signs in ("ann@outlook.com"), and it can be renamed to anything the rules allow ("Personal", "Family"). Trimmed; 1 to 40 characters; no `/`, no control character; not 12 hexadecimal digits in any case; unique regardless of case. Not shaped like an id, a label is never mistaken for one where `--account` or an object path could take either; unlike an id, it may equal an email, which is the window's own convention. It can be changed at any time, and nothing on disk is named after it |
+| Label | The name people see and type. The daemon sets it to the account's email when the account is added by signing in ("ann@outlook.com", §7.2), and it can be renamed to anything the rules allow ("Personal", "Family"). Trimmed; 1 to 40 characters; no `/`, no control character; not 12 hexadecimal digits in any case; unique regardless of case. Not shaped like an id, a label is never mistaken for one where `--account` or an object path could take either; unlike an id, it may equal an email, which is what the daemon names a new account. It can be changed at any time, and nothing on disk is named after it |
 | Drive | The Graph drive id of the Microsoft account: the account's identity (§6). Empty until the first sign-in or the first `GET /me/drive`, then never changed |
 | Mode | `read-only`, the default, or `read-write` (§10) |
 | Origin | `migrated` for the account carried over from a single-account installation (§8), `added` for every other. A missing or unknown value reads as `migrated` |
@@ -61,7 +61,7 @@ konedrived
 | Component | Where | Responsibility |
 |---|---|---|
 | `ConfigStore` | `config/store.rs`, `config/migrate.rs` | Loads `config.toml`, migrates a single-account file (§8), validates it, and runs every change as re-read, change and atomic write under one lock (§4.1) |
-| `AccountManager` | `daemon/manager.rs`, `daemon/startup.rs`, `dbus/accounts.rs` | The ordered list of accounts; startup; `Add`, `Remove` and `SetClientId`; putting each account's objects on the bus and taking them off; routing per-file calls by path (§3.5) |
+| `AccountManager` | `daemon/manager.rs`, `daemon/startup.rs`, `dbus/accounts.rs` | The ordered list of accounts; startup; `SignIn`, `Remove` and `SetClientId`; putting each account's objects on the bus and taking them off; routing per-file calls by path (§3.5) |
 | `Account` | `daemon/manager.rs` | One account: its `AccountService`, its `SyncService`, its paths, and the tasks that turn their state into `PropertiesChanged` |
 | `AccountService` | `account/`, `konedrive-graph/src/oauth.rs` | Per account: sign-in, tokens, the account's own wallet item (§4.3), its drive, and the identity check at sign-in (§6.2) |
 | `SyncService` | `sync/` | Per account: everything [sync.md](sync.md), [hydration.md](hydration.md) and [pinning.md](pinning.md) describe for one folder, on the hub's link |
@@ -79,7 +79,8 @@ Every object a client may call is on the bus before the name is claimed, as befo
    each under an account id of its own.
 2. `config.toml` is loaded, and migrated if it is a single-account file (§8).
 3. The files a migration still has to move are moved, before anything opens them (§8.3).
-4. Each account is brought up in order: its session restored from the wallet's presence check and
+4. Every entry marked as a draft is removed, with its directory and its stored token (§7.2). Each
+   account is then brought up in order: its session restored from the wallet's presence check and
    its cached name and quota, and an intercepted folder held as registered until the helper is
    back.
 5. `/org/konedrive/Accounts` and every account's object are exported, and only then is
@@ -214,6 +215,8 @@ drive_id = "E5F6A7B8"
 The fields of `[accounts.root]` are the single-account file's `sync_root_*` fields, with the same
 defaults: a missing `intercepted` reads as `true`, a missing `source` as `local`, and
 `upgrade_when_helper` is written only when it was decided ([hydration.md](hydration.md) §14.4).
+An account entry carries `draft = true` only while it is the draft of a sign-in that adds it
+(§7.2).
 
 **One owner.** Every change — the client id, a label, a drive, the migration's flags, a folder
 registered or forgotten — goes through `ConfigStore::update`, which re-reads the file, applies the
@@ -282,7 +285,9 @@ show. The access token stays in the daemon's memory, one per account ([sync.md](
 `Accounts.List` lists the account objects in account order and changes with
 `PropertiesChanged`. The `ObjectManager` announces each account object with `InterfacesAdded` once
 it is on the bus and `InterfacesRemoved` when it goes, which is what generic tools (`busctl`,
-D-Spy) understand; konedrive's own clients follow `Accounts`. The members are in
+D-Spy) understand; konedrive's own clients follow `Accounts.List`. A draft (§7.2) is announced by
+the `ObjectManager` like any other object and is not in `List`. A development build's daemon also
+serves `org.konedrive.DevTools` at `/org/konedrive/Accounts`. The members are in
 [desktop.md](desktop.md) §2.
 
 Nothing answers any more at `/org/konedrive/Daemon`, the single-account object, and there is no
@@ -365,20 +370,62 @@ account.
 
 ### 7.2 Add
 
-`Accounts.Add(label)` adds a signed-out, read-only account with no folder and no drive, after every
-other, and answers its object path; the object is on the bus by the time the call answers, and
-`Accounts` changes. A label the rules refuse (§2) is `InvalidArgs`, with the reason. Signing in
-(`Account.BeginSignIn`) and choosing a folder (`Folder.Register`) are separate calls, made on the
-account's own object as they were for the single account. An `Add` whose object cannot be put on
-the bus is refused `Failed`, and what it made is taken back: the interfaces already on the bus,
+An account is added only by signing in. **`Accounts.SignIn() → (o account, s url)`** adds a new
+account as a *draft*, starts its sign-in and answers the draft's object path and the URL to open
+in a browser. The window's **Sign in…** and `konedrivectl account add` both call it, and nothing
+else.
+
+A draft is an account that is on the bus at its path and is not in `Accounts.List`: no client that
+follows `List` ever sees it. It is in `config.toml`, marked `draft = true`, under a label no user's
+label can collide with (its id, which the label rules refuse). What `Account.BeginSignIn` would
+refuse, `SignIn` refuses under the same error name, and then nothing is left. There is one draft
+at a time: a `SignIn` while a draft exists ends that draft first, as a cancel does, so a client
+that died in the middle never blocks the next attempt.
+
+Exactly one signal, `Accounts.SignInFinished(o account, s outcome, s message)`, is sent for every
+draft that `SignIn` answered, except one a daemon restart removed:
+
+| Outcome | When | What is left |
+|---|---|---|
+| `signed-in` | the sign-in succeeded and the account has its label | the account, in `List`; `message` is its label |
+| `cancelled` | `Account.CancelSignIn` on the draft, or a newer `SignIn` | nothing; `message` is empty |
+| `already-added` | the drive is another account's (§6.2) | nothing; `message` is that account's label |
+| `failed` | anything else, the timeout included | nothing; `message` says why, as `Account.LastError` would |
+
+"Nothing" is what `Remove` leaves for a signed-out account with no folder: no entry in
+`config.toml`, no `accounts/<id>/`, no stored token, no object on the bus.
+
+- **The label** is the account's email. A name never decides whether an account is already added;
+  only the drive does. When another account already has the email as its label (compared without
+  case), the label is the first free one of `<email> 2`, `<email> 3`, and so on. When there is no
+  email, or the label so made is refused by the rules (longer than 40 characters), it is the first
+  free one of `Personal`, `Personal 2`, `Personal 3`, and so on (limitations log A29).
+- **On success** the label is set and the draft mark removed in one write of `config.toml`; then
+  the account joins `List` (`PropertiesChanged`); then `SignInFinished` is sent. The account is
+  never in `List` under any label but its final one.
+- **At start** every entry of `config.toml` marked as a draft is removed, with its directory and
+  its stored token, before the accounts come up. No signal is sent (limitations log A30).
+- **A client that goes away** (the window closed, `konedrivectl` killed) leaves its draft: a
+  sign-in finished in the browser after that still adds the account, and otherwise the draft ends
+  at the timeout or at the next `SignIn` (limitations log A28).
+- **Other calls on a draft's objects** are not part of the design, and no client makes them. Its
+  folder takes nothing (`Folder.Register` answers `Failed`); `Accounts.Remove` of its path,
+  `Account.SignOut` and `Accounts.SetClientId` end it as `cancelled`; `Account.SetLabel` is not
+  refused, and the label it sets is overwritten on success (limitations log A31).
+
+`Account.BeginSignIn`, `Account.CancelSignIn` and `Account.SetLabel` keep their meaning for an
+account that is not a draft: signing a signed-out account in again (`konedrivectl login`) and
+renaming use them. Choosing a folder (`Folder.Register`) is a separate call on the account's own
+object.
+
+There is no adding a signed-out account under a chosen name. Only a development build
+(`dev-tools`) can still make one, for a folder that shows a local directory (README, "A folder
+without OneDrive or the helper"): `org.konedrive.DevTools.AddAccount(s label) → o`, which
+`konedrivectl dev add-account <label>` calls. A label the rules refuse (§2) is `InvalidArgs`, with
+the reason. The manager's own `add` is behind both ways: an account whose objects cannot be put on
+the bus is refused `Failed`, and what was made is taken back: the interfaces already on the bus,
 the account's entry in `config.toml`, and `accounts/<id>/`. If `config.toml` cannot be written at
 that moment the entry stays, and comes up as an account at the next start (limitations log F205).
-
-The window's **Sign in…** makes several calls in a row, not one transaction: `Add` with a temporary
-label, `BeginSignIn` on the new account, whose URL it opens in the browser, and, once the sign-in
-succeeds, `SetLabel` with the account's email. The account is kept out of the window everywhere in
-between, and is removed if any of this fails, is cancelled, or names an email another account
-already has (limitations log A15).
 
 ### 7.3 Remove
 
@@ -415,7 +462,7 @@ step 2 the account is signed out. The refusal says what failed and what was done
 account is signed out, and whether its folder is no longer registered, was forgotten while
 `config.toml` still records it, or was left as it was (limitations log F205).
 
-`Add`, `Remove` and `SetClientId` run one at a time.
+`SignIn` and the end of its draft, `Remove` and `SetClientId` run one at a time.
 
 ## 8. From one account to several
 
@@ -509,9 +556,11 @@ log F41).
   `account add`, `account rename` and `account remove`; `status` and `sync status` show every
   account when none is chosen; and the path commands (`sync hydrate`, `dehydrate`, `state`, `pin`,
   `unpin`, `free`) go through `Files`, where the path decides the account
-  ([desktop.md](desktop.md) §3; limitations log F50, F51). `login` with no account at all first
-  adds one called `Personal`, so the single-account setup — `login`, `sync register` — works as it
-  did; `set-client-id` is needed only to override the built-in client id. A name that fits more
+  ([desktop.md](desktop.md) §3; limitations log F50, F51). `account add` is the command line's
+  "Sign in…": it calls `Accounts.SignIn`, opens the browser, waits for `SignInFinished` and says
+  what the account is called. `login` only signs an account that is there in again; with no
+  account at all it is refused and names `account add`. The first setup is `account add`, then
+  `sync register`; `set-client-id` is needed only to override the built-in client id. A name that fits more
   than one account (possible only in a hand-edited `config.toml`) is refused with exit status 2,
   never taken as the first. Every command the CLI suggests names its account with `--account`
   whenever there are several or `KONEDRIVE_ACCOUNT` is set, and with several accounts each success
@@ -521,7 +570,7 @@ log F41).
 $ konedrivectl account list
 ID            LABEL     EMAIL            STATE       MODE       FOLDER
 3f9a1c0e5b7d  Personal  ann@outlook.com  signed-in   read-only  /home/ann/OneDrive (ready)
-8c21d07a44e1  Family    —                signed-out  read-only  —
+8c21d07a44e1  Family    bob@outlook.com  signed-out  read-only  —
 $ konedrivectl --account family login
 ```
 
@@ -583,6 +632,7 @@ Recorded in [`../limitations/`](../limitations/):
 - a folder that the helper holds for an account taken out of `config.toml` by hand stays with the
   helper (Z6);
 - in the window: one account at a time (A13), label rules checked by a copy of the daemon's (A14),
-  Sign In as several calls (A15), the upload switch's own wait for its sign-in and one client id
+  what a sign-in that adds an account leaves when something stops in the middle, and its fallback
+  label (A27 to A31), the upload switch's own wait for its sign-in and one client id
   for all (A16), the tray's summary (A17), the account named in notifications and download progress
   (A18), one Places entry per account folder (A19), and the mass-delete notification (A20).

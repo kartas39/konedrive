@@ -132,6 +132,12 @@ impl Daemon {
         Self { daemon, client, manager, files, wallet, config, dir, _bus: bus }
     }
 
+    /// A signed-out account under `label`, as the manager adds one: nothing on the bus
+    /// adds an account but `Accounts.SignIn`.
+    async fn add(&self, label: &str) -> OwnedObjectPath {
+        self.daemon.manager.add(label, &self.daemon.connection).await.unwrap().path.clone()
+    }
+
     async fn sync(&self, account: &OwnedObjectPath) -> FolderProxies<'static> {
         FolderProxies::uncached(&self.client, account.clone()).await.unwrap()
     }
@@ -192,7 +198,7 @@ fn refusal<T: std::fmt::Debug>(result: zbus::Result<T>) -> String {
     error_name(&error).unwrap_or_else(|| panic!("not a D-Bus method error: {error}")).to_owned()
 }
 
-/// Design test 8: `Add` and `Remove`, the ordered `List`, the `ObjectManager`'s
+/// Design test 8: an account added and `Remove`, the ordered `List`, the `ObjectManager`'s
 /// `InterfacesAdded` and `InterfacesRemoved`, and the checked-in XML of `Accounts` and
 /// `Files` against the live object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -219,21 +225,18 @@ async fn accounts_are_added_listed_announced_and_removed() {
     let mut changed = properties.receive_properties_changed().await.unwrap();
     assert!(d.manager.list().await.unwrap().is_empty());
 
-    let family = d.manager.add(" Family ").await.unwrap();
+    let family = d.add(" Family ").await;
     let announced = tokio::time::timeout(Duration::from_secs(5), added.next()).await.unwrap().unwrap();
     assert_eq!(announced.args().unwrap().object_path.as_str(), family.as_str());
-    // What the window's `AccountsModel` follows.
-    let signal = tokio::time::timeout(Duration::from_secs(5), changed.next()).await.unwrap().unwrap();
-    let args = signal.args().unwrap();
-    assert_eq!(args.interface_name.as_str(), ACCOUNTS_INTERFACE_NAME);
-    assert!(args.changed_properties.contains_key("List"), "{:?}", args.changed_properties.keys().collect::<Vec<_>>());
     let account = AccountProxy::new(&d.client, family.clone()).await.unwrap();
     assert_eq!(account.label().await.unwrap(), "Family", "trimmed");
     assert_eq!(format!("{ACCOUNTS_PATH}/{}", account.id().await.unwrap()), family.as_str());
-    assert_eq!(refusal(d.manager.add("family").await), "org.freedesktop.DBus.Error.InvalidArgs", "a label used, in another case");
-    assert_eq!(refusal(d.manager.add("a/b").await), "org.freedesktop.DBus.Error.InvalidArgs");
+    for refused in ["family", "a/b"] {
+        let result = d.daemon.manager.add(refused, &d.daemon.connection).await;
+        assert!(matches!(result, Err(konedrived::daemon::manager::ManagerError::InvalidArgs(_))), "{refused}: a label used in another case, or with a slash");
+    }
 
-    let personal = d.manager.add("Personal").await.unwrap();
+    let personal = d.add("Personal").await;
     assert_eq!(d.manager.list().await.unwrap(), vec![family.clone(), personal.clone()], "in the order added");
     let managed = objects.get_managed_objects().await.unwrap();
     for path in [&family, &personal] {
@@ -246,6 +249,11 @@ async fn accounts_are_added_listed_announced_and_removed() {
 
     d.manager.remove(&family.as_ref()).await.unwrap();
     assert_eq!(d.manager.list().await.unwrap(), vec![personal.clone()]);
+    // What the window's `AccountsModel` follows.
+    let signal = tokio::time::timeout(Duration::from_secs(5), changed.next()).await.unwrap().unwrap();
+    let args = signal.args().unwrap();
+    assert_eq!(args.interface_name.as_str(), ACCOUNTS_INTERFACE_NAME);
+    assert!(args.changed_properties.contains_key("List"), "{:?}", args.changed_properties.keys().collect::<Vec<_>>());
     assert_eq!(folders(), [personal.as_str()]);
     let gone = tokio::time::timeout(Duration::from_secs(5), removed.next()).await.unwrap().unwrap();
     assert_eq!(gone.args().unwrap().object_path.as_str(), family.as_str());
@@ -321,7 +329,7 @@ async fn the_hold_settings_are_one_pair_for_every_account() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_that_nests_with_another_accounts_is_refused_naming_it() {
     let d = Daemon::start().await;
-    let (a, b) = (d.manager.add("A").await.unwrap(), d.manager.add("B").await.unwrap());
+    let (a, b) = (d.add("A").await, d.add("B").await);
     let (in_a, in_b) = (d.dir.path().join("A"), d.dir.path().join("B"));
     for folder in [&in_a, &in_b] {
         std::fs::create_dir_all(folder).unwrap();
@@ -345,7 +353,7 @@ async fn a_folder_that_nests_with_another_accounts_is_refused_naming_it() {
 async fn each_account_fills_from_its_own_source() {
     let d = Daemon::start().await;
     let helper = d.supervise_helper().await;
-    let (a, b) = (d.manager.add("A").await.unwrap(), d.manager.add("B").await.unwrap());
+    let (a, b) = (d.add("A").await, d.add("B").await);
     let (a_sync, b_sync) = (d.sync(&a).await, d.sync(&b).await);
     let (in_a, in_b) = (d.dir.path().join("A"), d.dir.path().join("B"));
     for (sync, folder, source) in [
@@ -418,7 +426,7 @@ async fn each_account_fills_from_its_own_source() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_files1_call_over_two_accounts_is_refused_whole_or_done_whole() {
     let d = Daemon::start().await;
-    let (a, b) = (d.manager.add("A").await.unwrap(), d.manager.add("B").await.unwrap());
+    let (a, b) = (d.add("A").await, d.add("B").await);
     let (in_a, in_b) = (d.dir.path().join("A"), d.dir.path().join("B"));
     for (account, folder, source) in [
         (&a, &in_a, d.source("A", &[("a.bin", 1, 4096)])),
@@ -466,7 +474,7 @@ async fn a_files1_call_over_two_accounts_is_refused_whole_or_done_whole() {
 async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     let d = Daemon::start().await;
     let (helper, socket) = d.connect_helper().await;
-    let path = d.manager.add("Personal").await.unwrap();
+    let path = d.add("Personal").await;
     let account = d.account(&path);
     let files = Paths::in_dir(d.config.path()).account(&account.id).unwrap();
     account.account.state().update(|s| s.state = SignInState::SignedIn);
@@ -753,10 +761,10 @@ async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
         drive: konedrived::daemon::manager::no_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    let _daemon = start_daemon_with(&bus, config.path(), options).await;
+    let daemon = start_daemon_with(&bus, config.path(), options).await;
     let client = bus.connect().await;
     let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
-    let path = manager.add("Personal").await.unwrap();
+    let path = daemon.manager.add("Personal", &daemon.connection).await.unwrap().path.clone();
     let sync = FolderProxies::uncached(&client, path.clone()).await.unwrap().folder;
     let folder = dir.path().join("Folder");
     std::fs::create_dir(&folder).unwrap();
@@ -826,7 +834,7 @@ impl konedrived::daemon::manager::Bus for FailingExports {
     }
 }
 
-/// An `Add` whose account cannot be put on the bus leaves nothing: no account in
+/// An adding whose account cannot be put on the bus leaves nothing: no account in
 /// `config.toml` to come up at the next start, no object, no directory, and the label free.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
@@ -846,7 +854,7 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
     let client = bus.connect().await;
     let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
 
-    assert!(manager.add("Personal").await.is_err(), "the account's folder cannot be put on the bus");
+    assert!(daemon.manager.add("Personal", &daemon.connection).await.is_err(), "the account's folder cannot be put on the bus");
     assert!(manager.list().await.unwrap().is_empty());
     assert!(daemon.manager.registry().accounts().is_empty(), "nor is its folder one of the daemon's");
     let written = std::fs::read_to_string(Paths::in_dir(config.path()).config_file).unwrap_or_default();
@@ -858,7 +866,7 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
     assert!(!objects.contains("<node name="), "no object of the account is left on the bus: {objects}");
 
     exports.failing.store(false, std::sync::atomic::Ordering::SeqCst);
-    let path = manager.add("Personal").await.expect("the label is free, and the account's object path too");
+    let path = daemon.manager.add("Personal", &daemon.connection).await.expect("the label is free, and the account's object path too").path.clone();
     let account = AccountProxy::builder(&client).path(path.clone()).unwrap().build().await.unwrap();
     assert_eq!(account.label().await.unwrap(), "Personal");
 }

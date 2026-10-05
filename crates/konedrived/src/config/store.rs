@@ -273,7 +273,7 @@ impl ConfigStore {
         })
     }
 
-    /// `Accounts.Add`: a read-only account with no folder and no drive yet, after every
+    /// A read-only account with no folder and no drive yet, after every
     /// other, under a fresh id.
     pub fn add_account(&self, label: &str) -> Result<AccountConfig, ConfigError> {
         self.update(|config| {

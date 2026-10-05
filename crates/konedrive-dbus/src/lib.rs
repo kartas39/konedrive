@@ -35,7 +35,7 @@ pub const SERVICE_NAME: &str = "org.konedrive.Daemon";
 /// account objects below it.
 pub const ACCOUNTS_PATH: &str = "/org/konedrive/Accounts";
 
-/// The rules of a label, which `Accounts.Add` and `Account.SetLabel` enforce (the daemon's
+/// The rules of a label, which `Account.SetLabel` enforces (the daemon's
 /// `config::check_label`), as the one sentence that tells a person about them: `konedrivectl`
 /// shows it after a refused label.
 pub const LABEL_RULE: &str = "A label has 1 to 40 characters, no \"/\" and no control character, is not 12 \

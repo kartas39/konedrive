@@ -37,10 +37,6 @@ use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBack
     gen_blocking = false
 )]
 pub trait Accounts {
-    /// Adds a signed-out, read-only account with no folder; its object path.
-    /// Refused `InvalidArgs` for a label that breaks the rules
-    /// (`dbus/org.konedrive.Accounts.xml`).
-    fn add(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
     /// Adds a new account by signing in: the object path of the *draft* (on the bus, not in
     /// [`list`](Self::list)) and the URL to open in a browser. How it ends is said once, by
     /// [`sign_in_finished`](Self::receive_sign_in_finished); `Account.CancelSignIn` on the

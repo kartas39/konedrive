@@ -376,7 +376,7 @@ pub enum Origin {
     Migrated,
 }
 
-/// Checks a label against the rules of `Accounts.Add` and `Account.SetLabel`
+/// Checks a label against the rules of `Account.SetLabel` and of every label the daemon gives
 /// ([`konedrive_dbus::LABEL_RULE`], the sentence a person is told; whoever changes a rule
 /// here changes it there), and returns it trimmed. 12 hexadecimal digits are refused in any case,
 /// so that a label is never taken for an id in `--account`; `except` is the account being

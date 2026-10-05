@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDBusConnection>
+#include <QDBusObjectPath>
 #include <QDBusPendingCall>
 #include <QObject>
 #include <QString>
@@ -104,8 +105,9 @@ public:
     Q_INVOKABLE void setOnBattery(const QString &choice);
     /// SetClientId, then `done`; or `failed` with the daemon's reason. Leaves actionError alone.
     void setClientId(const QString &id, std::function<void()> done, std::function<void(const QString &)> failed);
-    /// Add(label): `done` gets the new account's object path, `failed` the daemon's reason.
-    void add(const QString &label, std::function<void(const QString &)> done, std::function<void(const QString &)> failed);
+    /// SignIn: `done` gets the draft's object path and the URL to open, `failed` the
+    /// daemon's reason. How the draft ends comes out of signInFinished.
+    void signIn(std::function<void(const QString &, const QString &)> done, std::function<void(const QString &)> failed);
     /// Remove(path). Like UnregisterRoot it waits as long as it takes: it
     /// forgets the folder through the helper first. One at a time: asked
     /// while another is under way, it does nothing.
@@ -118,9 +120,13 @@ Q_SIGNALS:
     void actionErrorChanged();
     void removeChanged();
     void daemonBuildChanged();
+    /// Accounts.SignInFinished: how the draft at `path` ended ("signed-in",
+    /// "cancelled", "already-added" or "failed") and the daemon's message.
+    void signInFinished(const QString &path, const QString &outcome, const QString &message);
 
 private Q_SLOTS:
     void onPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
+    void onSignInFinished(const QDBusObjectPath &account, const QString &outcome, const QString &message);
 
 private:
     void fetchAll();

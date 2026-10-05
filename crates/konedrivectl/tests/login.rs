@@ -15,12 +15,12 @@ const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 async fn login_reports_a_sign_in_cancelled_elsewhere_promptly() {
     let bus = TestBus::start();
     let dir = tempfile::tempdir().unwrap();
-    let _daemon = common::start_daemon(&bus, dir.path()).await;
+    let daemon = common::start_daemon(&bus, dir.path()).await;
 
-    // The other client: it adds the account, sets the client ID and later cancels the sign-in.
+    // The account is there already, signed out. The other client sets the client ID and later cancels the sign-in.
     let driver = bus.connect().await;
     let manager = AccountsProxy::new(&driver).await.unwrap();
-    let path = manager.add("Personal").await.unwrap();
+    let path = daemon.manager.add("Personal", &daemon.connection).await.unwrap().path.clone();
     manager.set_client_id(CLIENT_ID).await.unwrap();
     let account = AccountProxy::builder(&driver)
         .path(path)
