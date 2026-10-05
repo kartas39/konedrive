@@ -404,17 +404,16 @@ application must never read zeros where real content should be.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
 - [D39](D39.md) — An item OneDrive moved where the folder cannot hold it: what the upload worker knows, and when.
 - [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
-- [D41](D41.md) — The tests of `local/` still stand on two fixtures of their own; the tidy list is not carried out.
+- [D41](D41.md) — What the one fixture of `local/`'s tests leaves
 - [D42](D42.md) — What the running sync as an object leaves by hand.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
 - [D45](D45.md) — The test of a version 7 store through the daemon makes its store by rewriting one.
 - [D46](D46.md) — No test has the real helper hang while the examination asks it
 - [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
-- [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
 - [D49](D49.md) — Test support that is still in the code of `hydration/`
 - [D50](D50.md) — What `dbus/` and `daemon/` still share by hand
-- [D51](D51.md) — The helper's stand-in is one accept loop for `helper/`, `hydration/` and `folder/`, not for the daemon
+- [D51](D51.md) — The helper's stand-ins are one module for the daemon's own tests, not for the tests outside the crate
 - [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 - [D53](D53.md) — The enumeration of local acts is held to a small model of the rule, a second writing of it; what the examination's four parts left as it was
 - [D55](D55.md) — The enumeration of local acts has no act that makes something unreadable, and one act for damaged marks
