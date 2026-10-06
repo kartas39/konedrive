@@ -370,8 +370,10 @@ then labelled with the email the daemon last learned for the account, or generic
   the account's — any drive, for an account that has none recorded — is refused `NotEmpty`: "this
   folder holds another OneDrive account's files; choose an empty folder". An empty folder holds
   nothing to adopt: its stale drive is taken off, and the registration goes ahead — Remove, then
-  Add, on the same folder works once the folder is emptied. A local folder carries no drive. Neither
-  does a folder forgotten before multiple accounts, which any account can therefore still adopt.
+  Add, on the same folder works once the folder is emptied. Where the drive cannot be taken off, the
+  folder is registered all the same and keeps the other account's drive. A local folder carries no
+  drive. Neither does a folder forgotten before multiple accounts, which any account can therefore
+  still adopt.
 - **A hand-edited configuration** whose folders collide is held back at load (§4.1).
 
 ## 7. Adding and removing

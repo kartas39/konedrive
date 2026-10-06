@@ -58,10 +58,10 @@ The manager's interfaces, `Accounts` and `Files`, are in §2.8 and §2.9; each a
 | `Label` (`s`) | the account's name ([accounts.md](accounts.md) §2) |
 | `Mode` (`s`) | the mode the account runs in, `read-only` or `read-write`: read-write only while `config.toml` says so, and its token carries `Files.ReadWrite` and reaches the account's recorded drive ([accounts.md](accounts.md) §10) |
 | `State` (`s`) | `signed-out`, `signing-in` or `signed-in` |
-| `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); with no failure, why a signed-in account runs read-only although `config.toml` says read-write; empty otherwise |
+| `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); with no failure, why a signed-in account runs read-only although `config.toml` says read-write, or that Microsoft answered a read-only request with a token that can write, which is used to read only (limitations log F66); empty otherwise |
 | `DisplayName`, `Email` (`s`) | from `GET /me`; empty for a signed-out account |
 | `QuotaUsed`, `QuotaTotal`, `QuotaRemaining` (`t`), `QuotaState` (`s`) | the account's one quota: bytes used and in all, Graph's `quota.remaining` (never `total - used`) and `quota.state` (`normal`, `nearing`, `critical`, `exceeded`), from `GET /me/drive`, whoever reads it — the account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a refused upload, the check every 30 minutes; [writes.md](writes.md) §6.4). Every read updates all four, and what it did not give keeps its last value; between reads the bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. 0 and empty until read, and again after a sign-out; kept in `account.json` across restarts |
-| `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1). `Failed` for an account that is signed in or signing in |
+| `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1). The bus's `Failed` (§2.6) for an account that is signed in or signing in |
 | `CancelSignIn()`, `SignOut()`, `RefreshInfo()` | as named; `SignOut` deletes the refresh token and the cached name and quota; `RefreshInfo` reads the name, the address and the quota again |
 | `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
 | `SetMode(s mode, b force) → s sign_in_url` | switches to `read-only` or `read-write` ([accounts.md](accounts.md) §10); the URL of the sign-in a switch to read-write needs, empty when none is needed. Refused `NotSignedIn` (to read-write), `PendingUploads` unless `force` (to read-only), `InvalidArgs` for another mode, `Failed` when it cannot be done now. A switch to read-write ends in `Mode` turning `read-write`, or in `LastError` saying why not; cancelled, in neither |
@@ -281,9 +281,11 @@ A registration first refuses an account that is held back or being removed (`Fai
 order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks;
 `RegisterWithoutInterception` gives neither `NotSignedIn` nor `NoHelper`. An argument that will not
 do — a label, a client id, a mode, an `on_battery` choice, an ignore pattern — is refused with the
-bus's own `InvalidArgs`, and `Accounts` refuses with the bus's `Failed` a call that is not possible
-now — a client id changed while an account is signed in, or anything while `config.toml` cannot be
-read: nothing needs to tell those reasons apart.
+bus's own `InvalidArgs`, and `Accounts` refuses with the bus's `Failed`
+(`org.freedesktop.DBus.Error.Failed`) a call that is not possible now — a client id changed while an
+account is signed in, or anything while `config.toml` cannot be read: nothing needs to tell those
+reasons apart. `Account`'s `BeginSignIn`, `SignOut` and `SetLabel` refuse with the bus's `Failed`
+too; `SetMode`'s `Failed` is `org.konedrive.Error.Failed`.
 
 ### 2.7 `TokenExport`, per account, in a development build
 
@@ -425,7 +427,9 @@ several accounts and none named, stops the command with exit status 2 ("Several 
 with --account (Personal, Family)"); with no account at all, it stops with exit status 1 and says
 how to add one. The commands marked "—" or "by path" in the table refuse `--account` with exit
 status 2 rather than ignore it, and ignore `KONEDRIVE_ACCOUNT`, which is a default for a whole
-shell.
+shell. Every command the CLI suggests names its account with `--account` whenever there are several
+accounts or `KONEDRIVE_ACCOUNT` is set, and with several accounts each success line starts with the
+account's label.
 
 | Command | Account | Does |
 |---|---|---|

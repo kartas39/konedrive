@@ -694,9 +694,9 @@ client has an answer a user already knows, it is followed.
   mode the account runs in, its own sign-in the mode `config.toml` records
   ([accounts.md](accounts.md) §10).
 - **Why.** Microsoft refuses any write made with a `Files.Read` token, so "nothing is written to the
-  cloud" is enforced by the server, not by the client's discipline. Asking for the read-only scope
-  at every refresh keeps a read-only account's tokens unable to write even if its grant were ever
-  wider.
+  cloud" is enforced by the server, not by the client's discipline. Microsoft may still answer a
+  read-only request with a token that can write, from consent it keeps: the daemon uses it to read
+  only, hands it to nobody and says so in `LastError` (limitations log F66).
 - **Trade-off.** Switching to read-write needs a sign-in of its own, for `Files.ReadWrite`.
 
 ### An access-token export for test runs, in development builds only
@@ -782,7 +782,9 @@ client has an answer a user already knows, it is followed.
   only after a sign-in that asked for it. Publishing the mode run in, not the one asked for, keeps
   "read-write" from meaning anything a token cannot do. While uploads were being developed,
   `write_test_drive_ids` also decided which accounts could be read-write at all; that gate is gone,
-  and the list now serves only the token export (above).
+  and the list now serves only the token export (above). What keeps a stray click from making
+  another account writable is the switch's pinned sign-in, which asks for the password again with
+  the account's email filled in.
 - **Trade-off.** Once an account is read-write, nothing but the user's own switch stands between a
   change in its folder and the real OneDrive. A read-write account that loses its grant turns
   read-only until it signs in for it again.

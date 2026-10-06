@@ -104,7 +104,9 @@ modification (§4.3), so a file emptied under one is empty *and* permanently uni
 later open reads zeros, and nothing notices (limitations log Z5). This is the one failure that is
 both silent and unrecoverable. A downloaded file is emptied only once it reads `hydrating` or
 `dehydrating`: both states say "the content is not to be trusted", and the helper never marks such a
-file. And before a file that may carry a mark is emptied, the mark is cleared by **the local rule**:
+file. And before a file that may carry a mark is emptied, the mark is cleared by **the local rule**,
+decided where the file is emptied and never argued from what happened to it before (arguing from
+where a mark can be was proved wrong three times, each by a race nobody had seen):
 
 - with a link to the helper, the daemon asks the helper to `ClearIgnore` the file, and stops on any
   failure;
@@ -411,8 +413,9 @@ order matters:
 A file with no konedrive state is refused `NotManaged`. A file labelled `hydrated` with a matching
 stamp, or with no bytes, is already there; with no stamp it is filled (nothing this daemon wrote can
 be in that state); one whose stamp does not match is refused `ModifiedLocally` and never
-overwritten. A way that cannot be cleared (§6.1 step 1) is `NoHelper` when a helper is there and
-this daemon has no link to it.
+overwritten. A way that cannot be cleared (§6.1 step 1) is `NoHelper` in an intercepted folder with
+no link to the helper, whether one runs or not, and in a folder without interception when a helper
+is bound and this daemon has no link to it. A helper that refuses the clearing is a plain failure.
 
 ### 6.6 Content sources
 
@@ -527,11 +530,12 @@ changes: freed up with nothing intercepting, the file would read zeros. Then:
    because a rename in between — an editor's atomic save, say — would otherwise send the punch to
    another file. In a folder that shows OneDrive, a downloaded file with a change waiting to upload
    is refused `NotUploaded` ([writes.md](writes.md) §11), and one whose outbox cannot be asked is
-   refused too. A zero-byte file that is `hydrated` and has no stamp has nothing to
-   free: the call succeeds and changes nothing. Otherwise require `state=hydrated` and a stamp
-   matching the current size and time, or refuse: no konedrive state → `NotManaged`; another state →
-   `NotHydrated`; a stamp mismatch → `ModifiedLocally` (a local edit not uploaded is the only copy).
-   Record the file's times, because the punch will change them.
+   refused too. A zero-byte file that is `hydrated` and has no stamp has nothing to free: the call
+   succeeds and changes nothing (one the sync placed carries a stamp, and takes the steps below).
+   Otherwise require `state=hydrated` and a stamp matching the current size and time, or refuse: no
+   konedrive state → `NotManaged`; another state → `NotHydrated`; a stamp mismatch →
+   `ModifiedLocally` (a local edit not uploaded is the only copy). Record the file's times, because
+   the punch will change them.
 2. Set `state=dehydrating`, `fsync`, and clear the way by M3's local rule: with a link, the helper
    `ClearIgnore`s the file — from now on every open reaches the helper again. **Any failure stops
    here**: the state goes back to `hydrated` and the call fails. With no link (a folder without
@@ -594,8 +598,10 @@ without interception is recovered by the same rule: when a helper runs that this
 to, its files are left as found and counted `deferred`, and recovered once a link exists. The report
 distinguishes `scanned`, `reset`, `failed`, `skipped` (a subtree on another filesystem or deeper
 than 128 levels, and anything that could not be opened or read), `busy` and `deferred`, so that
-"nothing needed fixing" and "nothing could be fixed" do not read alike. `failed > 0` publishes
-`Folder.State = error`; `skipped` and `deferred` put a note in `LastError`; `busy` is only logged.
+"nothing needed fixing" and "nothing could be fixed" do not read alike. The report gives one
+outcome, the first that applies: `failed > 0` publishes `Folder.State = error`; `skipped` puts a
+note in `LastError`; `busy` is only logged; `deferred` puts a note in `LastError`. So a `deferred`
+count leaves no note when any file was `busy`.
 
 ## 10. The helper–daemon link
 

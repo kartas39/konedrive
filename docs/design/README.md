@@ -147,8 +147,8 @@ the folder ([desktop.md](desktop.md) §9). Whatever still opens a placeholder do
 
 **No file is emptied while an ignore mark is on it** (M3). An ignore mark survives modification,
 so a file emptied under one stays unintercepted and reads zeros, with nothing left to notice.
-Every place that empties a file first makes the state that announces it durable (`dehydrating` or
-`hydrating`), then has the helper clear the mark, and stops if it cannot.
+Every place that empties a file that may carry one first makes the state that announces it durable
+(`dehydrating` or `hydrating`), then clears the mark by M3's local rule, and stops if it cannot.
 ([hydration.md](hydration.md) §3.)
 
 **Local changes are never lost.** Before a change from the cloud touches a file, the daemon checks
@@ -168,7 +168,8 @@ finishes:
 - items being moved wait in a holding directory, each under its item id, so a half-done
   reconcile is resolved by id;
 - the first listing commits each page together with the link to the next;
-- a fill writes `state=hydrated` last, and a failed fill demotes the file before it empties it;
+- a fill writes `state=hydrated` last, and a failed fill empties the file before it writes
+  `state=online-only`;
 - startup recovery finishes whatever an interrupted fill or free-up left behind.
 
 Losing the tree store costs one full listing, never data: the extended attributes on the files are

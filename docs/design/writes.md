@@ -115,9 +115,8 @@ records a drive for the account, the token carries `Files.ReadWrite` and was las
 drive, and the folder's sync is not stopped. Closed, nothing more is sent, the rows wait, and
 `LastError` says why. A `mode` set to read-write by hand counts once the token grants it for the
 recorded drive. No list of accounts decides the mode: `write_test_drive_ids`, empty by default and
-written by nothing in konedrive, is left for one thing: `TokenExport.ReadWrite` is refused
-`WritesNotAllowed` for a drive not on it (§12.1; [decisions.md](decisions.md), "The mode, and the
-write gate").
+written by nothing in konedrive, only makes `TokenExport.ReadWrite` refuse `WritesNotAllowed` for a
+drive not on it (§12.1; [decisions.md](decisions.md), "The mode, and the write gate").
 
 ## 3. Noticing local changes: the watcher
 
@@ -135,9 +134,8 @@ the root also:    FAN_DELETE_SELF | FAN_MOVE_SELF
 
 `FAN_RENAME` carries both sides of a move in one event, with the moved object's handle; a side that
 is missing means the object came from, or went to, a directory nobody watches. `FAN_MODIFY` is not
-subscribed: a write is looked at when it is closed. What the kernel does with each of these was
-measured on 7.2 ([`../kernel-behavior-7.2/notification.md`](../kernel-behavior-7.2/notification.md)
-§14).
+subscribed: a write is looked at when it is closed. Each was measured on 7.2:
+[`../kernel-behavior-7.2/notification.md`](../kernel-behavior-7.2/notification.md) §14.
 
 An unprivileged group has the kernel's limits: inode marks only, a queue of 16 384 events, and a
 budget of marks per user. A full queue is reported (`FAN_Q_OVERFLOW`) and costs a Full local scan
@@ -359,8 +357,7 @@ create).
 
 **States**: `waiting` (the file is open for writing, its content is not local yet, or the worker
 stopped between fragments) → `ready` → `running` → gone at the commit; or `retry` (with `next_try`),
-`blocked` (needs the user) or `held` (§4.5). A row waiting for space in OneDrive stays `ready`
-(§6.4).
+`blocked` (needs the user) or `held` (§4.5). A row waiting for space stays `ready` (§6.4).
 
 **An object gone before it landed.** A row is bound to its local object, not to its name. A `create`
 or `mkdir` whose object is under none of the names its rows saw ends on that run, with no retry. Its
@@ -387,8 +384,7 @@ Rows run in `seq` order under four rules:
 Rule 4 alone can close a circle (`mv d t/ && mv t d`); inside such a circle its waits are dropped. A
 row that then meets its name still taken (`409`), by an item a live row is freeing, takes it through
 a temporary name, `.konedrive-swap-<item id>`, saved in the row before the request, and a final
-`move` row follows. Swaps (`a` ↔ `b`) go the same way, and so does a rename that changes only the
-case of a name.
+`move` row follows. Swaps (`a` ↔ `b`) and renames that change only case go the same way.
 
 **How the next rows are picked.** The worker never reads the whole queue for a step. It reads the
 rows that are due, in `seq` order, a hundred at a time, and asks each one's waits by point queries
@@ -398,8 +394,8 @@ stops the worker.
 
 **The invariant.** When nothing in the outbox can run, it is because something runs, something waits
 for a time (`retry`, `waiting`), or something waits for the user (held deletes, a refused name, a
-full OneDrive, a move-out waiting for the helper). A pick that finds due rows and none of these
-reports them as stalled, in the log (`konedrive-tree/src/outbox/pick.rs`).
+full OneDrive, a move-out waiting for the helper). A pick that finds due rows and none of these has
+the worker report them as stalled, in the log (`upload/engine.rs`).
 
 Metadata rows (`mkdir`, `move`, `delete`) run one at a time, `move-out` rows one at a time beside
 them, both in the metadata slots of the account's transfer pool, which go before transfers
@@ -514,7 +510,7 @@ gone (the helper's supervisor, the watch of the helper's state).
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours and nothing here knows the item yet, a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table nor a listing being staged knows is taken for an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again. This holds for every `409`: a create, a move or rename, a folder's `mkdir`. Anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours and nothing here knows the item yet, a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table nor a listing being staged knows is taken for an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again. This holds for every `409`: a create, a move or rename, a folder's `mkdir`. Anything else makes the file here a copy (§7); a `move` row's object takes the copy's name with its attributes kept, and the row becomes the move of the same item to that name |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag (an upload from its first byte); otherwise §7 |
 | `404` | an `update` or a `move`: the item is gone in OneDrive, §7. A `delete`: done. A `create` or `mkdir`: its parent is gone; a cycle is asked for and the row retries |
 | an upload URL that answers `404`, `410`, `401` or `403` | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
@@ -541,26 +537,26 @@ There is one quota per account: the space check and the account's own reads (a s
 last 10 s, the account's included, is used instead. Then:
 
 - **no space left** — `quota.state` is `exceeded`, or less than 1 MiB is free: the account is
-  *full*. No row that adds content is taken, and an upload under way stops at its next fragment and
-  keeps its session — the same stop as a pause's (§11). A row that met the refusal or the stop has
-  the reason `waiting-for-space`; the others simply wait;
+  *full*. No row that adds content is taken, but for a `create` whose file was removed, which sends
+  nothing and leaves; an upload under way stops at its next fragment and keeps its session — the
+  same stop as a pause's (§11). A row that met the refusal or the stop has the reason
+  `waiting-for-space`; the others simply wait;
 - **space left** — only the refused file waits, `too-big:<bytes needed>:<bytes free>`, until a quota
   read shows it fits. Every other file is sent whatever the known free space says: a figure gone
   stale never holds files back, and OneDrive has the last word.
 
 A quota that cannot be read after a refusal counts as full. A waiting row stays `ready` in its
-place, with no timer of its own. Moves, renames, deletes and new folders go on: a delete frees
-space, but does not end *full* by itself.
+place, with no timer of its own. Moves, renames, deletes and new folders go on, but one itself
+refused `507` waits as a file does. A delete frees space, but does not end *full* by itself.
 
 **Leaving full.** Every quota read decides again: `Folder.Refresh` (`konedrivectl sync refresh`),
 `Account.RefreshInfo`, and an automatic read every 30 minutes while the account is full or a file is
 too big, made while the worker may send and has no row in flight. With space again, *full* ends and
-every too-big file that now fits is free to go. At a start, rows an earlier version blocked with
-`quota-exceeded` become `waiting-for-space` rows, and the quota is read once before anything sends
-content.
+every too-big file that now fits goes. At a start, rows an earlier version blocked with
+`quota-exceeded` become `waiting-for-space`, and the quota is read once before content is sent.
 
-**What shows it**: `UploadQueue.QuotaFull`, `QuotaWaitingCount`/`QuotaWaitingBytes`, `TooBigCount`,
-`Account.QuotaState` and `QuotaRemaining`; one line in `sync status`, on the Status page and in Not
+**Shown by** `UploadQueue.QuotaFull`, `QuotaWaitingCount`/`QuotaWaitingBytes`, `TooBigCount`,
+`Account.QuotaState` and `QuotaRemaining`; a line in `sync status`, on the Status page and in Not
 Uploaded.
 
 ### 6.3 A file's session
@@ -609,6 +605,10 @@ any character OneDrive refuses replaced by `-`, at most 32 characters.
 | **edited** | a copy; the same hash on both sides is adopted | the upload goes to the renamed item, and the file here takes OneDrive's name where the folder can hold it | this computer's wins: uploaded again as a new item (`restored`) |
 | **renamed or moved** | the rename is sent again with the fresh eTag | the first to reach OneDrive wins: the file here follows OneDrive's place where the folder can hold it | a downloaded file, or a folder, is uploaded again at its new place (`restored`); a placeholder follows the delete |
 | **deleted** | OneDrive's wins: the delete is dropped and the item comes back as a placeholder (`restored`) | deleted with the fresh eTag | done |
+
+**Where the folder cannot hold OneDrive's place** for the item, the worker sends only what the user
+changed: content goes into the item where it is, with no name and no folder sent, and a rename or a
+move made here is sent as that alone.
 
 **Both new at one name** (create/create): the same hash is adopted, no copy and nothing sent;
 another hash gets a copy, and so does a name that differs only in case, which is the same name to
@@ -665,8 +665,10 @@ its own pid. Details: [hydration.md](hydration.md) §10.1, §11; SECURITY.md.
 - **In the Trash** (the user's own, or a `.Trash-<uid>` or sticky `.Trash/<uid>` at the top of a
   mount, with the entry's `.trashinfo`), nothing is downloaded: a placeholder is removed with its
   `.trashinfo`, a downloaded file stays as the user's, and the item goes to OneDrive's recycle bin.
-  A folder sent to the Trash loses its placeholders and keeps what was downloaded (the Trash inside
-  a folder that is a mount point: issue #225).
+  A file whose fill or free-up was cut short goes as a placeholder does: a free-up cut short before
+  its punch still holds the whole content, so an edit made in place since is lost with the file. A
+  folder sent to the Trash loses its placeholders and keeps what was downloaded (the Trash inside a
+  folder that is a mount point: issue #225).
 - **Doubt keeps the row**, and the item in OneDrive: `EPERM`, no helper, a download that stopped, a
   place that cannot be proved, anything a moved-out folder held that is alive but unreachable.
   `ESTALE` is the user's delete only with the evidence of §4.2, rule 7; for the row's own object it
@@ -697,8 +699,7 @@ cycle that drops a `move-out` row because OneDrive removed the item tidy the sam
 
 ## 9. Reconcile in read-write mode
 
-A read-only folder's cycle is [sync.md](sync.md)'s, unchanged. A read-write folder's keeps the
-user's changes.
+A read-only folder's cycle is [sync.md](sync.md)'s; a read-write folder's keeps the user's changes.
 
 **The cycle.** The first cycle after bring-up waits for the watcher's first batch to be examined —
 the Full local scan, once a base exists — so that changes made while the daemon was down are rows
@@ -735,25 +736,26 @@ item the commit wrote. The cycle records `outbox_seq` when its fetch begins; a d
 an item the outbox committed since (`items.local_seq`) is trusted only if it is the commit itself
 (the same eTag), and otherwise read again with `GET /items/{id}` under the lock. So is every entry
 that removes such an item, and every entry about one the outbox deleted since (`outbox_gone`).
-Reading again rather than dropping keeps a change OneDrive made just after the commit. This is also
-what makes echo harmless: the delta that reports the daemon's own upload finds the base already as
-it says.
+Reading again rather than dropping keeps a change OneDrive made just after the commit. This also
+makes echo harmless: a delta reporting the daemon's own upload finds the base already as it says.
 
 **What the reconcile leaves.** An item with an outbox row, in any state, and everything under a
 folder that has a row which is not a removal, is not moved or replaced; a local move not examined
 yet is left where it is. OneDrive's change to such an item waits in the store (`deferred`), staged
 again every cycle until the disk takes it or an outbox commit supersedes it; below a pending
-`delete` or `move-out` the change goes into the base and nothing is placed. A Changed reconcile does
-not turn Full over an item that is not where the base has it. OneDrive's moves still go through the
-holding directory, but whatever sits there is placed from it, removed if OneDrive removed it, or put
-back; it never leaves the folder, where it would be taken for a move out.
+`delete` or `move-out` the change goes into the base and nothing is placed, but an item OneDrive
+moves into such a folder from elsewhere waits where the base has it, its move not in the base. A
+Changed reconcile does not turn Full over an item that is not where the base has it. OneDrive's
+moves still go through the holding directory, but what sits there is placed from it, removed if
+OneDrive removed it, or put back; it never leaves the folder, where it would pass for a move out.
 
 **Where the read phase rescued, a copy.** A file in the way of an item OneDrive brings or changed is
 renamed to a conflict copy in place (§7) and handed to the examination, which uploads it: the
 daemon's own renames raise no event the watcher keeps, so after its swap the cycle hands the watcher
-whatever it kept, copied or stripped. A folder of the user's at the name of a folder OneDrive brings
-merges with it. A missing item whose local object is on record is not placed again: its absence is a
-delete or a move not examined yet, and the examination is given its place.
+whatever it kept, copied or stripped. An object with no id at the name of an item OneDrive did not
+change (a save by rename not examined yet) is left alone. A folder of the user's at the name of a
+folder OneDrive brings merges with it. A missing item whose local object is on record is not placed
+again: its absence is a delete or a move not examined yet, and the examination is given its place.
 
 **What OneDrive removed** is removed here at once, in place, whatever rows wait for it, and what
 OneDrive never had is kept (§7). What goes is what OneDrive had and the daemon placed: a file not
@@ -763,16 +765,20 @@ changed here — its stamp differs, it is open for writing, or an `update` waits
 that is not of the removed item at all, a file of ours whose state cannot be read and that holds
 data, with the folders above them. Their konedrive attributes come off, so they are the user's own:
 the files go up as new, the folders are made again in OneDrive, and the rows that waited there and
-are not being sent are dropped, the examination recording new ones. The activity log has a `removed`
-entry for each outermost place where something stays (limitations log F187). While another
-filesystem is mounted inside a removed folder, nothing of that folder is touched (issue #204).
+are not being sent are dropped, the examination recording new ones. What is kept under an ignored
+name, or a name OneDrive refuses, stays on this computer only and is never uploaded. The activity
+log has a `removed` entry for each outermost place where something stays (limitations log F187).
+While another filesystem is mounted inside a removed folder, nothing of that folder is touched
+(issue #204).
 
 **What can no longer be placed** while OneDrive still has it (a name too long, the Personal Vault,
 …, or a folder above it that is one) is a change that may have to wait (`take_off`, `Unplaced`):
 
 - **Nothing waits in it: it goes in the cycle.** No outbox row has a place at or below it, and the
   disk shows there exactly what the base has: the store forgets the objects, it leaves the disk
-  whole, and the base takes OneDrive's row. It is listed in `Skipped()`.
+  whole, and the base takes OneDrive's row. It is listed in `Skipped()`. Each object is looked at
+  again right before its unlink, and only what was looked at goes: local work, an item id not looked
+  at or a mount stops the removal there.
 - **Something waits: nothing of it is touched.** The base keeps the item placed where the disk has
   it, and OneDrive's row waits in `deferred`. Meanwhile it is an item like any other: what the user
   does in it is sent. It yields its name to an item that takes it: renamed aside to
@@ -788,10 +794,9 @@ filesystem is mounted inside a removed folder, nothing of that folder is touched
 itself.** Before the reconcile removes anything, the store forgets the recorded local object of
 everything it removes, in `items` and in `staging`: the item, what the tree has below it, and every
 object found there by its own id and file handle. An examination that then misses such an item finds
-it unproven, never deleted (§4.2 rule 7, WR4). The store keeps the same rule on its own side: **the
-base records a local object only for an item it places**. Whatever writes a row into `items` that
-the base then does not place clears its recorded object and those of everything below it in the same
-transaction.
+it unproven, never deleted (§4.2 rule 7, WR4). The store's own rule: **the base records a local
+object only for an item it places**. Whatever writes a row into `items` that the base then does not
+place clears its recorded object and those of everything below it in the same transaction.
 
 **Replacements** of a downloaded file run under a write lease on the old file, granted only while
 nobody has it open: a writer is not left writing into an unlinked inode ([sync.md](sync.md) §9).

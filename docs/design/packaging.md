@@ -55,9 +55,9 @@ published on GitHub Releases.
 Inside the spec:
 
 - **Rust.** `cargo build --release --offline --locked` for `konedrived`, `konedrivectl` and
-  `konedrive-helper`, with cargo's home and output inside the build directory, and no `--features`.
-  The `fault-injection` features are the VM suite's alone: the build stops if the helper contains a
-  `KONEDRIVE_FAULT_` string, the same check `scripts/install-helper.sh` makes.
+  `konedrive-helper`, with Fedora's `RUSTFLAGS`, cargo's home and output inside the build directory,
+  and no `--features`. The `fault-injection` features are the VM suite's alone: the build stops if
+  the helper contains a `KONEDRIVE_FAULT_` string, the same check `scripts/install-helper.sh` makes.
   `scripts/build-rpm.sh --dev-tools`, never with `--version`, adds the `dev-tools` features (the
   token export); any other build stops if `konedrived` contains them.
 - **C++.** `app/` and `dolphin/` are configured with Fedora's `%cmake_kf6` (installed under `/usr`,
