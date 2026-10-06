@@ -217,9 +217,10 @@ fn punch_clean_file_watched(
     watch(Watch::UnderLease, file);
 
     // Steps 4–5. The lease is held across all of them: `lease` is dropped
-    // below, so every open arriving from here on waits for the break instead
-    // of reading a file mid-punch or a file that is empty but still says
-    // `dehydrating`.
+    // below, so no open arriving from here on reads a file mid-punch or a
+    // file that is empty but still says `dehydrating`: in an intercepted
+    // folder it is denied `EPERM` at once (`docs/design/hydration.md` §8,
+    // "Races"), and in a folder without interception it waits for the break.
     let shape = Shape { size: None, times: restore };
     match demote(file, Keep::Nothing, shape, Held::Lease(&lease)).map_err(io_error)? {
         Demoted::Done { .. } => {}

@@ -51,7 +51,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             let sync = daemon.sync(&target.path).await?;
             let folder = sync.folder.path().await.unwrap_or_default();
             // Read first: the list goes with the account. Where each listed file was rescued
-            // to is the one thing about rescues this can know (issue #231).
+            // to is the one thing about rescues this can know.
             let conflicts = sync.conflicts.list().await.unwrap_or_default();
             let result = daemon.manager.remove(&target.path.as_ref()).await;
             if let Err(error) = result {

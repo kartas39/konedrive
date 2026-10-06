@@ -82,7 +82,8 @@ mod fan {
     pub const RENAME: u64 = 0x1000_0000;
     pub const ONDIR: u64 = 0x4000_0000;
 
-    /// The design's mask for every directory (§3.1).
+    /// The design's mask for every directory, as `docs/kernel-behavior-7.2/notification.md`
+    /// §14.3 has it.
     pub const DESIGN_MASK: u64 = CREATE
         | DELETE
         | RENAME

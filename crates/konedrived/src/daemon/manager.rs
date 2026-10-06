@@ -353,10 +353,11 @@ impl AccountManager {
 
     /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
     /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
-    /// rule (`NoHelper` for an intercepted folder with no helper) — then a sign-in under way
-    /// cancelled, the refresh token, the cached name and quota and the tree store deleted,
-    /// the account taken out of `config.toml`, and its object off the bus. The folder's
-    /// files and the rescued files are kept.
+    /// rule (`NoHelper` for an intercepted folder with no helper), a OneDrive folder's tree
+    /// store with it — then a sign-in under way cancelled, the refresh token and the cached
+    /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
+    /// with what is left in it, and its object off the bus. The folder's files and the
+    /// rescued files are kept.
     ///
     /// A removal that fails after the account was retired — the sign-in cannot be deleted,
     /// or the account cannot be taken out of `config.toml` — leaves the account as an
@@ -456,9 +457,9 @@ impl AccountManager {
     }
 
     /// The account whose folder holds `path` (§3.5), for `Files`: the one whose
-    /// folder is a component prefix of it, taken as given, or else with its directory part
-    /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
-    /// is never opened.
+    /// folder is a component prefix of it with its directory part resolved — a folder
+    /// reached through a link (`/home` → `/var/home`) — or, only when that cannot be
+    /// resolved, taken as given. The file itself is never opened.
     pub async fn route(&self, path: &Path) -> Option<Arc<Account>> {
         let folders = self.folders();
         let given = path.to_path_buf();

@@ -52,8 +52,8 @@ const MAX_CONTROL_FDS: u32 = 8;
 /// beyond it is enrolled in the helper and held back — its openers stay
 /// suspended, exactly as they would behind a request already sent — and each
 /// `HydrateDone` that returns a credit sends the oldest one waiting. It used
-/// to be refused `EAGAIN` instead, and a desktop thumbnailing a folder of 200
-/// photos is not something that should fail two thirds of its opens.
+/// to be refused `EAGAIN` instead, which most of 3000 concurrent opens then got
+/// (`docs/design/hydration.md` §10.3).
 pub const MAX_OUTSTANDING_HYDRATIONS: usize = 64;
 
 /// The errno values the kernel accepts in a `FAN_DENY` response, measured

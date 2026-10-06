@@ -30,9 +30,9 @@
          when no drive is recorded for it and it cannot be asked for now.
          The sign-in asks for
          Files.ReadWrite; only once its token response grants that, for this
-         account's own drive, does Mode become "read-write". A cancelled
-         (CancelSignIn), refused or failed sign-in changes nothing but
-         LastError; State stays "signed-in" throughout.
+         account's own drive, does Mode become "read-write". A refused or
+         failed sign-in changes nothing but LastError, a cancelled one
+         (CancelSignIn) nothing at all; State stays "signed-in" throughout.
          To read-only: refused PendingUploads while changes wait to be
          uploaded, unless force, which drops them (the files stay; a rename
          half-done in OneDrive under a temporary name stays until the
@@ -48,7 +48,8 @@
       <arg name="sign_in_url" type="s" direction="out"/>
     </method>
     <!-- The last element of this object's path: 12 lowercase hex
-         characters, never reused. -->
+         characters, no other account's (a removed account's may come
+         again). -->
     <property name="Id" type="s" access="read"/>
     <property name="Label" type="s" access="read"/>
     <!-- The mode the account runs in: "read-only" | "read-write". It is

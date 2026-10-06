@@ -124,9 +124,10 @@ scripts/check-structure.sh
      two or more code lines away.
    - **Found wrongly**: any other `.read()` or `.write()` that takes nothing and whose result
      is unwrapped (none in the code today).
-   - **A crate's first lock**: `konedrivectl`, `konedrive-dbus`, `konedrive-fs` and
-     `tests/write-account` take no lock of `std::sync` in source today; the first one there
-     needs a function of its own and a line in the guard.
+   - **A crate's first lock**: `konedrivectl`, `konedrive-dbus` and `konedrive-fs` take no
+     lock of `std::sync` in source today; the first one there needs a function of its own and
+     a line in the guard. What is under a `tests/` directory is test code to the guard, so a
+     lock there (`tests/write-account/src/guard.rs`) is not read.
 
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.

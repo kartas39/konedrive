@@ -435,18 +435,18 @@ async fn run(case: Case) -> Vec<String> {
     // request nobody made (the name sent back), once, where `f.txt` has content
     // waiting and OneDrive exchanged its name with `g.txt`'s.
     let content = matches!(case.local, 2 | 4);
-    let f259 = case.other == FILES && case.local == 2 && id != "F";
+    let name_sent_back = case.other == FILES && case.local == 2 && id != "F";
     let (mut known, mut own, mut sessions) = (0, 0, 0);
     for request in &sent {
         if is_an_upload(request) {
-            let of_the_file = request.0 == "PUT" || request.1.contains("items/F/") || (f259 && request.1.contains("f-fedora.txt"));
+            let of_the_file = request.0 == "PUT" || request.1.contains("items/F/") || (name_sent_back && request.1.contains("f-fedora.txt"));
             sessions += usize::from(request.0 == "POST");
             if !content || !of_the_file {
                 wrong.push(format!("an upload nobody asked for: {request:?}"));
             }
         } else if users.contains(request) {
             own += 1;
-        } else if f259 && request == &("PATCH".to_owned(), "me/drive/items/F".to_owned()) {
+        } else if name_sent_back && request == &("PATCH".to_owned(), "me/drive/items/F".to_owned()) {
             known += 1;
         } else {
             wrong.push(format!("sent, and not the user's: {request:?}"));
@@ -475,7 +475,7 @@ async fn run(case: Case) -> Vec<String> {
         }
     }
     let made: Vec<&String> = now.iter().filter(|(item, _)| !staged.contains_key(*item)).map(|(_, is)| &is.1).collect();
-    if !(made.is_empty() || f259 && made == ["f-fedora.txt"]) {
+    if !(made.is_empty() || name_sent_back && made == ["f-fedora.txt"]) {
         wrong.push(format!("made in OneDrive: {made:?}"));
     }
     if w.graph.with(|c| c.bin.keys().any(|binned| !(case.local == 5 && binned == of))) {

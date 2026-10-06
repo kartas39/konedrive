@@ -217,7 +217,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
         // `dehydrating` is not "somebody is busy with it": under the
         // per-inode lock this call holds, no dehydration of this inode can
         // be running. It is what a crash — or a cancelled `Dehydrate`
-        // (`root::dehydrate`'s) — left behind, and §6.1 says
+        // (`hydration::dehydrate`'s) — left behind, and §6.1 says
         // exactly what to do with it: treat it as "hydrate it again".
         // Reporting success over whatever the punch got to is the one thing
         // that must not happen.

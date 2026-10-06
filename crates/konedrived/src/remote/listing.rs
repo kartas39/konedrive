@@ -468,7 +468,7 @@ impl Listing {
     /// At every cycle: a sign-out and a sign-in as someone else
     /// can come between any two of them. The drive is the one the store's
     /// `meta` records, or — for a store rebuilt empty — the one `config.toml`
-    /// keeps beside the root; once known, it is recorded in both.
+    /// keeps for the account; once known, it is recorded in both.
     async fn check_account(&self, turn: &Turn, cancel: &CancellationToken) -> Result<(), CycleError> {
         let id = cancellable(cancel, self.ctx.drive.drive_id()).await?.map_err(drive_error)?;
         let stored = self.on_store(turn, |s| s.drive_id()).await?;
@@ -521,8 +521,10 @@ impl Listing {
             Err(CycleError::Cancelled) => {}
             // The folder waits for the helper (HS2, HS3): `LastError` says so
             // in the helper's own words (`HelperState`), and `RootState`
-            // reads `error`. `SyncService` publishes the same the moment the
-            // link drops; this only makes sure of it.
+            // reads `error` (`published_state`, `published_error`: not while the
+            // folder is `waiting` and the helper is not known to be down).
+            // `SyncService` publishes the same the moment the link drops; this
+            // only makes sure of it.
             Err(CycleError::NoHelper) => s.folder.waits_for_helper = true,
             Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking(), kind: e.kind() }),
         });

@@ -53,7 +53,8 @@ pub enum OutboxState {
     Running,
     /// Failed; tried again at `next_try`.
     Retry,
-    /// Needs the user: a name OneDrive refuses, too large, OneDrive full.
+    /// Needs the user: a name OneDrive refuses, too large. A full OneDrive
+    /// blocks nothing: its rows stay `Ready` with a reason.
     Blocked,
     /// Held by the mass-delete guard until confirmed.
     Held,

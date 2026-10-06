@@ -133,8 +133,8 @@ impl SyncService {
     ///
     /// # Made with no helper connected, it switches when one connects
     ///
-    /// The window calls this when `RegisterRoot` was refused for want of a
-    /// helper ("Use Without the Helper"), and a helper installed later used
+    /// This is called when `RegisterRoot` was refused for want of a helper
+    /// (from the command line: the window never calls it), and a helper installed later used
     /// to change nothing: the folder read as zeros until a Forget and a new
     /// registration. So a registration made with no helper connected is
     /// recorded as one to switch, and [`resume`](Self::resume) switches it

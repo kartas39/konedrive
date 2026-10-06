@@ -127,7 +127,9 @@ find_package(KF6KirigamiAddons 1.0 REQUIRED)
 # unchanged, and a package's is that of its changelog day: rpmbuild gives
 # every file that date, which has no time of day, so a second package built on
 # one day installed the program with the same time, and the window went on
-# running the first one's QML. The C++ types stay registered imperatively in
+# running the first one's QML. Units that earlier builds left in
+# ~/.cache/konedrive/qmlcache stay on disk unused, and nothing removes them.
+# The C++ types stay registered imperatively in
 # org.konedrive.app (qmlregistration.h), which the files import; qmlcachegen
 # cannot see them, and compiles what uses them to bytecode only.
 qt_policy(SET QTP0001 NEW)

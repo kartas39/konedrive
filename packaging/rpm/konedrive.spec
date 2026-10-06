@@ -31,8 +31,9 @@ Release:        1%{?dist}
 Summary:        OneDrive client for KDE Plasma with files on demand
 
 # Only the project's own license. The binaries also link the vendored crates,
-# each under its own license (MIT, Apache-2.0 and others); issue #13
-# says what a public build would have to add.
+# each under its own license (MIT, Apache-2.0 and others). A public build
+# would have to name those licenses here and declare the crates with
+# bundled(crate(...)); the repository for such a build is issue #13.
 License:        GPL-3.0-or-later
 URL:            https://github.com/kartas39/konedrive
 Source0:        %{name}-%{version}.tar.gz

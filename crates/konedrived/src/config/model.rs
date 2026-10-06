@@ -476,11 +476,12 @@ impl Config {
     }
 
     /// The validation at load (`docs/design/accounts.md` §4.1): one entry per account, in file order, `Some`
-    /// with the reason when the account is *held* — loaded, but its folder is not brought
-    /// up. An account is held when its id is not an account id (it would not fit an object
-    /// path or a file path), or when it repeats an earlier account's id, label (whatever
-    /// the case) or drive, or its folder has an earlier folder's root id, or is, is inside
-    /// or contains an earlier folder. Nothing is rewritten.
+    /// with the reason when the account is *held*. An account is held when its id is not
+    /// an account id (it would not fit an object path or a file path), or when it repeats
+    /// an earlier account's id, label (whatever the case) or drive, or its folder has an
+    /// earlier folder's root id, or is, is inside or contains an earlier folder. One held
+    /// for its id is not loaded at all; any other is loaded, but its folder is not brought
+    /// up (`AccountManager::load`). Nothing is rewritten.
     pub fn holds(&self) -> Vec<Option<String>> {
         self.accounts
             .iter()

@@ -70,7 +70,8 @@ pub struct Materializer {
     pub runtime: tokio::runtime::Handle,
     pub locks: InodeLocks,
     pub root_item_id: String,
-    /// `rescued/<timestamp>` for this cycle.
+    /// This cycle's directory for rescued files: `<timestamp>` under the folder's
+    /// rescue base (`rescued/<account id>/`, or what `rescue_base` chose).
     pub rescue_into: PathBuf,
     pub cancel: CancellationToken,
     /// The mode, with a read-write folder's rules (`docs/design/writes.md`

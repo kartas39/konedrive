@@ -6,7 +6,7 @@
 //!
 //! - **keeps its hands off what a local change holds** ([`Rw::held`]): an
 //!   item with a live outbox row, in any state, and what the base has below
-//!   a folder such a row moves — not moved, replaced or removed. Nor what it
+//!   a folder such a row moves — not moved or replaced. Nor what it
 //!   finds away from where the base has it, a local move or copy not
 //!   examined yet, with everything below it. Their changes wait
 //!   ([`Pending::unsettled`](crate::remote::materialize::Pending::unsettled)): the base keeps the

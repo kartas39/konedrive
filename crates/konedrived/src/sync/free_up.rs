@@ -24,7 +24,7 @@ impl SyncService {
     /// gate, so that the per-inode lock can be taken on the inode that is
     /// about to be emptied — `(st_dev, st_ino)` from that very descriptor,
     /// never a name — and so that the descriptor the lock was
-    /// taken on is the one `root::dehydrate_opened` marks, clears and
+    /// taken on is the one `hydration::dehydrate::dehydrate_opened` marks, clears and
     /// punches (one open per dehydration).
     ///
     /// Recorded as a `freed` event with what it freed.
@@ -266,7 +266,7 @@ impl SyncService {
             _ => return Err(SyncError::NoRoot),
         };
         // local rule decides at the punch (`Clearance`,
-        // `root::dehydrate_opened`). An intercepted root is refused outright
+        // `hydration::dehydrate::dehydrate_opened`). An intercepted root is refused outright
         // without its link: freed up while nothing intercepts, the file
         // would read zeros until the helper is back. A root registered
         // without interception reads zeros by design, and goes by the rule:

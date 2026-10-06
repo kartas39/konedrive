@@ -723,7 +723,7 @@ async fn the_counters_travel_in_one_properties_changed_message() {
 
     // Only the messages that carry a counter: what the registration itself changed (`Path`,
     // `Source`, `State`, `LastError`) is sent by another task, and may come after the
-    // subscription above (issue #227).
+    // subscription above.
     let counters = ["ItemsListed", "ItemsPlaced", "SkippedCount"];
     let mut carrying = messages_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
     carrying.retain(|names| names.iter().any(|name| counters.contains(&name.as_str())));
@@ -770,8 +770,7 @@ async fn each_property_changes_under_its_own_interface() {
         seen.push((args.interface_name.to_string(), names));
     }
     // Only the messages that carry one of the properties changed here: what the registration
-    // itself changed is sent by another task, and may come after the subscription above
-    // (issue #227).
+    // itself changed is sent by another task, and may come after the subscription above.
     let changed = ["Count", "ItemsListed", "Directories", "PoolSize", "PendingCount"];
     seen.retain(|(_, names)| names.iter().any(|name| changed.contains(&name.as_str())));
     seen.sort();

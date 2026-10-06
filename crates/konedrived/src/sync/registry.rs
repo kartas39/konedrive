@@ -301,7 +301,8 @@ impl Registry {
     }
 
     /// Which account the file behind a hydration request's descriptor belongs to
-    /// (§3.4), stopping at the first answer: by device — the accounts
+    /// (§3.4), stopping at the first answer: by the item id of an object that
+    /// left an account's folder (below); by device — the accounts
     /// whose folder is on the file's filesystem (as it was when registered),
     /// and one is the answer, unless some account has a folder whose device is
     /// not known, which could be the file's; then by

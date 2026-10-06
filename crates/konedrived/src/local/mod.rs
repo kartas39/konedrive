@@ -60,5 +60,5 @@ pub const MASS_DELETE_ITEMS: u64 = 500;
 /// (provisional)...
 pub const MASS_DELETE_PERCENT: u64 = 20;
 /// ... counted only from this many items up, so that removing one file of a
-/// folder of four is not a mass delete (provisional; the design is silent).
+/// folder of four is not a mass delete (provisional).
 pub const MASS_DELETE_FLOOR: u64 = 10;

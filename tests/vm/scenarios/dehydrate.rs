@@ -114,7 +114,7 @@ pub(crate) fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Resu
         if still_there {
             "the evictable ignore mark survived drop_caches (the inode was still pinned)"
         } else {
-            "the evictable ignore mark is gone after drop_caches, as memory.md §8's argument needs"
+            "the evictable ignore mark is gone after drop_caches, as docs/kernel-behavior-7.2/memory.md §8's argument needs"
         },
     );
 
