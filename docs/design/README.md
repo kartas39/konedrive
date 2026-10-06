@@ -7,36 +7,32 @@ a sparse file with the true name, size and time, holding no data. Opening a plac
 the whole file before the open returns, so the program that opened it only ever sees the real
 bytes.
 
-This directory describes how that works and why it is built the way it is. It is written for
-someone who wants to understand, review or change the system.
+This directory says how that works and why, for someone who will review or change the system.
 
 ## Documents
 
 | Document | What it covers |
 |---|---|
 | This page | The overview: the processes, the path of an open, the invariants everything else serves |
-| [hydration.md](hydration.md) | Placeholders and their extended attributes, the helper and its fanotify marks, filling and freeing up files, startup recovery, the helper–daemon protocol |
+| [hydration.md](hydration.md) | Placeholders and their extended attributes, the helper and its fanotify marks, filling and freeing up files, startup recovery, the helper–daemon protocol, what the helper allows each user, registering a folder |
 | [sync.md](sync.md) | Listing the drive and following its changes, the tree store, reconciling the folder, the first listing, replacing changed files, rescues and conflicts, the read-only lock, the account |
-| [pinning.md](pinning.md) | "Always keep on this device": the pin attribute, what a pin downloads and keeps, freeing up around pins, the sweep |
+| [pinning.md](pinning.md) | "Always keep on this device": the pin attribute, what a pin downloads and keeps, freeing up around pins, the sweep, and how the bus, the command line and Dolphin show it |
 | [writes.md](writes.md) | Uploads from a read-write account's folder: the mode and the write gate, the watcher of local changes, the examination, the outbox and its requests, conflicts on write, moves out of the folder, the reconcile in read-write mode, and the guarded run against a test account |
 | [accounts.md](accounts.md) | Several accounts, each with its own folder: what an account is, one daemon and one helper link for all of them, which account an open or a path belongs to, the configuration and each account's files, keeping accounts apart, adding and removing, the move from a single-account installation |
-| [desktop.md](desktop.md) | The D-Bus API, `konedrivectl`, the window and tray icon, notifications, download progress, thumbnails, Baloo, the Dolphin plugins |
+| [desktop.md](desktop.md) | The D-Bus API, `konedrivectl`, the window and tray icon, notifications, download and upload progress, thumbnails, Baloo, the Dolphin plugins |
 | [decisions.md](decisions.md) | The notable decisions, each with its reason and its cost |
 | [packaging.md](packaging.md) | The RPM packages: what goes where, why two, the helper enabled on install, upgrades, and the switch from the developer install |
 
 Related documents elsewhere in the repository:
 
-- [`../code-map.md`](../code-map.md) — where everything is: every crate, directory and file,
-  where its tests are, and how each suite is run.
+- [`../code-map.md`](../code-map.md) — every crate, directory and file, with its tests.
 - [`../kernel-behavior-7.2/`](../kernel-behavior-7.2/README.md) — what fanotify, leases and the
   filesystems were measured to do on Linux 7.2, and how to reproduce each measurement.
-- [`../kio-behavior.md`](../kio-behavior.md) — what KIO and Dolphin open, and how the thumbnail
-  cache is named.
-- [`../limitations/`](../limitations/) — every known limit,
-  workaround, fragile spot and provisional number. Its entries have short identifiers (Z1, P6,
-  W2, F33, K1, …), which these documents use to point at them.
-- [`../acceptance-check.md`](../acceptance-check.md) — a manual check of a build against a real
-  account.
+- [`../kio-behavior.md`](../kio-behavior.md) — what KIO and Dolphin open; the thumbnail cache.
+- [`../limitations/`](../limitations/) — the limits that cannot simply be removed, because the
+  kernel, the filesystem, OneDrive or the desktop decides, or because we chose them. Its entries
+  have short identifiers (Z1, P6, K1, …), which these documents use to point at them.
+- [`../acceptance-check.md`](../acceptance-check.md) — a manual check against a real account.
 - [../history/original-proposal.md](../history/original-proposal.md) — the original proposal for
   the whole client. Where it and these documents differ, these documents describe what the code
   does, and [decisions.md](decisions.md) says what changed and why.
@@ -44,12 +40,11 @@ Related documents elsewhere in the repository:
 ## Status
 
 The client lists the whole drive, keeps the folder in step with changes made in the cloud,
-downloads on open and frees up space on request. "Always keep on this device" (pinning) is built —
-see [pinning.md](pinning.md) — and so are multiple accounts, each with its own folder — see
-[accounts.md](accounts.md).
+downloads on open and frees up space on request. Pinning ([pinning.md](pinning.md)) and several
+accounts, each with its own folder ([accounts.md](accounts.md)), are built.
 
 Every account is **read-only** unless it is switched to read-write. A read-only account writes
-nothing to OneDrive: its OAuth scope is `Files.Read`, so Microsoft itself refuses any write made
+nothing to OneDrive: its sign-in asks for `Files.Read`, so Microsoft itself refuses any write made
 with its token. So that nothing local can diverge from the cloud, its folder is read-only (files
 `0444`, directories `0555`); a local change forced past that lock is moved aside, never
 overwritten. A **read-write** account's folder is unlocked, and what is changed in it is uploaded
@@ -57,10 +52,11 @@ overwritten. A **read-write** account's folder is unlocked, and what is changed 
 the Account page, or `konedrivectl account mode read-write`, with a sign-in that asks for
 `Files.ReadWrite`. No list of accounts decides it ([writes.md](writes.md) §2.3).
 
-Supported: any number of personal Microsoft accounts, each with its own sync folder on Btrfs, ext4
-or XFS; KDE Plasma 6.
-The kernel needs fanotify pre-content permission events with evictable ignore marks (Linux 6.0)
-and, for a denied open to carry a meaningful errno, Linux 6.14; the design was measured on 7.2.
+Supported: several personal Microsoft accounts, each with its own sync folder (at most 32 folders
+for one user); KDE Plasma 6. The folders are tested on Btrfs, ext4 and XFS; network, FUSE and FAT
+filesystems are refused ([hydration.md](hydration.md) §14.2). The kernel needs fanotify
+permission events in a pre-content group with evictable ignore marks (Linux 6.0) and, for a
+denied open to carry a meaningful errno, Linux 6.14; the design was measured on 7.2.
 
 ## The processes
 
@@ -76,11 +72,11 @@ and, for a denied open to carry a meaningful errno, Linux 6.14; the design was m
 
 | Process | Runs as | Does | Never does |
 |---|---|---|---|
-| `konedrive-helper` | root, system service, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH` only | Owns the fanotify permission group. Marks the folder's directories, suspends opens of files that are not downloaded, hands each one to the owning user's daemon, and answers the kernel; opens by file handle a user's own object that left the folder ([writes.md](writes.md) §8.2) | Use the network, hold credentials, read or write file content, decide anything that needs more than an `fstat`, an `fgetxattr` and a table lookup |
+| `konedrive-helper` | root, system service, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH` only | Owns the fanotify permission group. Marks the folder's directories, holds opens of files that are not downloaded, hands each one to the owning user's daemon, and answers the kernel; opens by file handle a user's own object that left the folder ([writes.md](writes.md) §8.2) | Use the network, hold credentials, read or write file content, decide anything that needs more than an `fstat`, an `fgetxattr` and a table lookup |
 | `konedrived` | the user; systemd user service, D-Bus activated | Everything else, for each of the user's accounts: sign-in and tokens, listing the drive, the tree store, placing and updating placeholders, filling and freeing up files, recovery, rescues, thumbnails, the D-Bus API; for a read-write account, watching the folder and uploading its changes | Run with any privilege |
 | `konedrive` (KOneDrive) | the user | The window and tray icon: shows what the daemon publishes and calls its methods | Touch the sync folder itself |
 | `konedrivectl` | the user | The command line for every feature of the window, plus developer commands | — |
-| Dolphin plugins | inside Dolphin | Emblems from each file's state and pin attributes; "Always keep on this device" and "Free up space" in the context menu | Open a file in the sync folder |
+| Dolphin plugins | inside Dolphin | Emblems from each file's state, pin and upload attributes; "Always keep on this device", "Free up space" and "Open in OneDrive" in the context menu, as the daemon says they may be offered | Open a file in the sync folder |
 
 The helper exists because only a fanotify group of class `FAN_CLASS_PRE_CONTENT` can hold an open
 until the file has content, and creating one needs `CAP_SYS_ADMIN`. Everything that does not need
@@ -100,11 +96,12 @@ side is minimal").
    Unix socket.
 4. The daemon finds which of its accounts' folders holds the file ([accounts.md](accounts.md)
    §3.4), takes the file's per-inode lock, reads the state again, marks it `hydrating`, asks
-   Graph, with that account's token, for the item's current metadata (size, cTag, `quickXorHash`, download URL) and streams the
-   content into the file through the descriptor, hashing as it writes. A broken stream resumes with
-   an HTTP `Range`; every 16 MiB the progress is made durable.
-5. When every byte is written and the hash matches, the daemon sets the file's time, syncs, writes
-   the stamp and, last of all, `state=hydrated`. It answers `HydrateDone`.
+   Graph, with that account's token, for the item's current metadata (size, cTag,
+   `quickXorHash`, download URL) and streams the content into the file through the descriptor,
+   hashing as it writes. A broken stream resumes with an HTTP `Range`; every 16 MiB the progress
+   is made durable.
+5. When every byte is written and the hash matches, the daemon sets the file's time, syncs,
+   writes the cTag and the stamp and, last of all, `state=hydrated`. It answers `HydrateDone`.
 6. The helper reads the state once more. It says `hydrated`, so the helper places an evictable
    *ignore mark* on the file, reads the state again to be sure, and allows every waiting open.
 7. The program reads the real bytes. Later opens do not reach the helper at all: the ignore mark
@@ -114,10 +111,11 @@ If anything fails, every waiting open is denied with an errno the kernel accepts
 …) and the file goes back to `online-only`; no program is ever allowed onto a file that is not
 complete. [hydration.md](hydration.md) has the details.
 
-Changes made in the cloud travel the other way. Every 60 seconds, or at once on request, the daemon
-asks Graph for the changes since its last delta link, writes them into the tree store's staging
-table, makes the folder match, and only then commits the new link. [sync.md](sync.md) has the
-details.
+Changes made in the cloud travel the other way. When OneDrive's notification socket says
+something changed, on request, and otherwise every 60 seconds (every 5 minutes while that socket
+is up), the daemon asks Graph for the changes since its last delta link, writes them into the
+tree store's staging table, makes the folder match, and only then commits the new link.
+[sync.md](sync.md) has the details.
 
 ## Invariants
 
@@ -138,10 +136,11 @@ the helper's registration and startup walks mark every directory before descendi
 
 **A placeholder is never opened except to fill it.** An open of a placeholder is a download, so
 nothing konedrive runs opens one to look at it. The state is read from the extended attribute by
-name (`lgetxattr`): by `ItemState`, by the CLI, by the Dolphin plugins. The helper works only
-through descriptors it is handed and never opens a file under a marked directory. The daemon opens
-a file only to fill it, free it up, recover it or update its attributes, and always beneath the
-root's own descriptor. For programs outside konedrive the design removes the reasons to open:
+name (`lgetxattr`): by `ItemState`, by the Dolphin plugins. The helper works through descriptors
+it is handed; the one object it opens itself, by file handle for an upload, it never reads
+([hydration.md](hydration.md) §4.4). The daemon opens a file only to fill it, free it up, recover
+it or update its attributes, always beneath the root's own descriptor, and its own opens are let
+through without a download. For programs outside konedrive the design removes the reasons to open:
 thumbnails come from OneDrive ([desktop.md](desktop.md) §8) and the Baloo indexer is kept out of
 the folder ([desktop.md](desktop.md) §9). Whatever still opens a placeholder downloads it
 (limitations log P6, K1).
@@ -166,8 +165,8 @@ finishes:
 
 - the delta link advances only after the folder matches the tree it describes, in the same
   transaction that swaps that tree in;
-- items being moved wait in a holding directory named by item id, so a half-done reconcile is
-  resolved by id;
+- items being moved wait in a holding directory, each under its item id, so a half-done
+  reconcile is resolved by id;
 - the first listing commits each page together with the link to the next;
 - a fill writes `state=hydrated` last, and a failed fill demotes the file before it empties it;
 - startup recovery finishes whatever an interrupted fill or free-up left behind.
@@ -186,9 +185,9 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 
 | What | Where |
 |---|---|
-| The sync folders | one per account, anywhere the user owns, on Btrfs, ext4 or XFS; chosen at registration; never one inside another |
+| The sync folders | one per account, anywhere the user owns, on a filesystem the helper accepts ([hydration.md](hydration.md) §14.2); chosen at registration; never one inside another |
 | Per-file state | extended attributes `user.konedrive.*` on the files and directories themselves; a OneDrive folder's root also carries its account's drive |
-| Daemon configuration | `~/.config/konedrive/config.toml`: the client id, and each account with its label, mode, drive and folder ([accounts.md](accounts.md) §4.1); `config.toml.v1` after a single-account configuration was migrated |
+| Daemon configuration | `~/.config/konedrive/config.toml`: the client id, the transfer and pause settings, and each account with its label, mode, drive, folder and pause ([accounts.md](accounts.md) §4.1); `config.toml.v1` after a single-account configuration was migrated |
 | Tree store, activity log, conflicts, the outbox of changes to upload | `$XDG_STATE_HOME/konedrive/accounts/<account id>/tree.sqlite` |
 | Cached account name and quota | `$XDG_STATE_HOME/konedrive/accounts/<account id>/account.json` |
 | Refresh tokens | the Secret Service (KWallet), one item per account; never written anywhere else |
@@ -203,17 +202,19 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 |---|---|
 | `crates/konedrive-helper` | the privileged helper |
 | `crates/konedrive-proto` | the helper–daemon wire protocol |
-| `crates/konedrive-fs` | placeholder operations: extended attributes, sparse files, hole punching, leases, `O_TMPFILE`, the filesystem probe, the read-only lock's write window |
+| `crates/konedrive-fs` | placeholder operations: extended attributes, sparse files, hole punching, leases, file handles, `O_TMPFILE`, the filesystem probe, the read-only lock's write window |
 | `crates/konedrive-graph` | sign-in with Microsoft and the Graph client: OAuth, tokens, the drive API, upload sessions, the notification socket, the transfer pool, QuickXorHash |
 | `crates/konedrive-tree` | the tree store (SQLite): items, staging, the outbox, the activity log, the conflicts |
-| `crates/konedrived` | the daemon, a directory for each area: `config/`, `account/`, `helper/`, `folder/`, `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/` (`SyncService` and the helper hub), `daemon/`, `dbus/` |
+| `crates/konedrived` | the daemon, a directory for each area: `config/`, `account/`, `helper/`, `folder/`, `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/` (`SyncService`), `daemon/`, `dbus/` |
 | `crates/konedrive-dbus` | shared D-Bus names and error names, client proxies, the helper-state sentences |
+| `crates/konedrive-reason` | why a change is kept back: the reasons of outbox rows and local skips |
+| `crates/konedrive-text` | what the codes mean, in words: the one catalogue of sentences, and the C++ generated from it |
 | `crates/konedrivectl` | the command line |
 | `dbus/` | the D-Bus interface definitions |
 | `app/` | the KOneDrive window and tray icon (C++/QML, Kirigami) |
 | `dolphin/` | the Dolphin plugins |
 | `packaging/` | the systemd units and the D-Bus activation file; the RPM spec in `packaging/rpm/` |
-| `scripts/` | the per-user install and its removal, the helper installer, the RPM build |
+| `scripts/` | the per-user install and its removal, the helper installer, the RPM build and its version, the structure check |
 | `tests/vm/` | the privileged end-to-end suite, run in a virtme-ng VM |
 | `tests/write-account/` | the guarded harness that checks the uploads against a real test account ([writes.md](writes.md) §12.1) |
 | `tests/stress/` | the upload stress tool: many files, edits, moves, a move mid-upload, deletes, against a real read-write test account — one whose drive is in `write_test_drive_ids`, or it refuses to start ([writes.md](writes.md) §12) |
@@ -224,7 +225,7 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 - **Placeholder** — a sparse file with the item's real size and time and no data, in state
   `online-only`.
 - **Hydrate, fill** — download a file's content into its placeholder. **Dehydrate, free up** —
-  punch the content out again, back to `online-only`.
+  punch the content out again.
 - **Account** — one Microsoft account signed in to konedrive, with its own folder; known by a
   random id and a label, and identified by its drive ([accounts.md](accounts.md) §2).
 - **Root** — an account's registered sync folder. It carries `user.konedrive.root`, a random UUID.
@@ -232,14 +233,13 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
   placeholder fills it. **Without interception** is a developer's mode in which nothing does
   ([hydration.md](hydration.md) §14.3).
 - **Link** — the daemon's connection to the helper, shared by every account.
-- **Item id, cTag** — Graph's stable id of an item, and the tag that changes when its content
-  changes.
+- **Item id, cTag** — Graph's stable id of an item, and the tag of its content's version.
 - **Delta link** — the URL Graph hands out for asking what changed since the last listing.
 - **Tree store** — the daemon's SQLite map of the drive.
 - **Reconcile** — making the folder match a tree. **Full** looks at the whole folder, **Changed**
   only at the items a delta named.
-- **Stamp** — the size and time a file had when its download completed; a mismatch means it was
-  changed locally.
+- **Stamp** — the size and time a file had when its download completed; a mismatch means a
+  local change.
 - **Rescue** — moving a file that holds local work out of the folder before a cloud change would
   replace or remove it. Each rescued file is listed as a **conflict**.
 - **Read-only, read-write** — an account's mode: whether what is changed in its folder is uploaded
