@@ -136,7 +136,7 @@ the helper's registration and startup walks mark every directory before descendi
 
 **A placeholder is never opened except to fill it.** An open of a placeholder is a download, so
 nothing konedrive runs opens one to look at it. The state is read from the extended attribute by
-name (`lgetxattr`): by `ItemState`, by the Dolphin plugins. The helper works through descriptors
+name (`lgetxattr`): by `ItemState`, by Dolphin's overlay. The helper works through descriptors
 it is handed; the one object it opens itself, by file handle for an upload, it never reads
 ([hydration.md](hydration.md) §4.4). The daemon opens a file only to fill it, free it up, recover
 it or update its attributes, always beneath the root's own descriptor, and its own opens are let
