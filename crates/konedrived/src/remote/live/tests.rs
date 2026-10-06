@@ -221,14 +221,14 @@ async fn a_pause_and_a_hold_close_the_socket_and_keep_it_closed_until_they_end()
     let w = world().await;
     w.connected().await;
 
-    crate::conditions::running::set_paused(&w.store, Some(0)).await.unwrap();
+    w.running.change(|s| s.paused_until = Some(0));
     w.wake();
     w.wait("closed by the pause", |w| w.live() == LiveChanges::Off && w.graph.sockets.open() == 0 && !*w.up.borrow()).await;
     let (endpoints, accepted) = (w.endpoints(), w.graph.sockets.accepted());
     w.wake();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!((w.endpoints(), w.graph.sockets.accepted()), (endpoints, accepted), "nothing is asked while paused");
-    crate::conditions::running::set_paused(&w.store, None).await.unwrap();
+    w.running.change(|s| s.paused_until = None);
     w.wake();
     w.connected().await;
 

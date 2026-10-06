@@ -121,7 +121,7 @@ impl ThumbnailFiller {
         for wanted in candidates {
             // Turned off or paused meanwhile: no more requests; what was not asked waits
             // for the next drain.
-            if !self.running.thumbnails_go(&self.store) {
+            if !self.running.thumbnails_go() {
                 break;
             }
             // The wait for a slot, and the request — which can wait out Graph's
@@ -162,7 +162,7 @@ impl ThumbnailFiller {
             let (outcome, next) = self.run_from(cancel, limit, from).await;
             total.taken += outcome.taken;
             total.written += outcome.written;
-            if cancel.is_cancelled() || !self.running.thumbnails_go(&self.store) {
+            if cancel.is_cancelled() || !self.running.thumbnails_go() {
                 break;
             }
             after = next;
@@ -184,7 +184,7 @@ impl ThumbnailFiller {
                 }
                 // Turned off, or paused (`docs/design/writes.md` §11): no request; the
                 // next kick after the pause ends, or turning them on, drains what waits.
-                if !self.running.thumbnails_go(&self.store) {
+                if !self.running.thumbnails_go() {
                     continue;
                 }
                 self.drain(&cancel, 200).await;

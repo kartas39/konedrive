@@ -537,6 +537,10 @@ impl SyncService {
     pub(crate) async fn restore(&self) {
         let mut stopped = self.change().await;
         self.restore_in(&mut stopped).await;
+        drop(stopped);
+        // The account's pause, kept in `config.toml`, is shown from the start, whether a
+        // sync follows or not.
+        self.show_pause();
     }
 
     /// [`restore`](Self::restore), inside a change. Every call that changes the

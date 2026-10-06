@@ -167,8 +167,8 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
 }
 
 /// the outbox on the bus, `Pause`: a paused account asks OneDrive for nothing — not on
-/// `Refresh`, not after a restart, since the pause is kept in the tree
-/// store — until `Resume`; a timed pause ends by itself.
+/// `Refresh`, not after a restart, since the pause is kept in the account's
+/// section of `config.toml` — until `Resume`; a timed pause ends by itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     const START: i64 = 1_700_000_000;
@@ -180,8 +180,15 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     let service = on_the_clock(link(&w).await);
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
+    // Read afresh each time: what the file holds now.
+    let written = || {
+        let persist = persist(&w.config.path().join("config.toml"));
+        persist.store.account(&persist.account).unwrap().paused_until
+    };
+    assert_eq!(written(), None);
     service.pause_syncing(0).await.unwrap();
     assert_eq!(service.state().get().pause.paused_until, Some(0));
+    assert_eq!(written(), Some(0));
     let before = deltas(&w).await;
     service.refresh().await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -198,9 +205,11 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     restarted.resume_syncing().await.unwrap();
     wait_for_deltas(&w, before).await;
     assert_eq!(restarted.state().get().pause.paused_until, None);
+    assert_eq!(written(), None);
 
     restarted.pause_syncing(3600).await.unwrap();
     assert_eq!(restarted.state().get().pause.paused_until, Some(START + 3600));
+    assert_eq!(written(), Some(START + 3600));
     let before = deltas(&w).await;
     clock.advance(3599);
     restarted.refresh().await.unwrap();
@@ -210,6 +219,106 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     wait_until("the timed pause ends by itself", || restarted.state().get().pause.paused_until.is_none()).await;
     wait_for_deltas(&w, before).await;
     restarted.stop_sync().await;
+}
+
+/// A pause that a version before this one kept in the folder's tree store is the account's
+/// from the first sync start on: in `config.toml`, shown, holding the poll, and gone from
+/// the store. One that had run out by then is only taken off the store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_kept_in_the_tree_store_becomes_the_accounts_at_the_first_start() {
+    const START: i64 = 1_700_000_000;
+    for (old, taken) in [(0, Some(0)), (START + 600, Some(START + 600)), (START - 1, None)] {
+        let w = world().await;
+        let clock = testing::ManualClock::at(START);
+        let on_the_clock = |link| made(&w, wiring(&w, account(true), Arc::new(StaticToken::new("T"))).clock(&clock).link(Some(link)));
+        let service = on_the_clock(link(&w).await);
+        service.register_root(w.folder.path()).await.unwrap();
+        listed(&service).await;
+        // As the older version left it.
+        testing::tree_store(&service).unwrap().set_old_pause(Some(old)).await.unwrap();
+        assert_eq!(service.state().get().pause.paused_until, None);
+        service.stop_sync().await;
+        service.hub().set_link(None);
+        drop(service);
+        let before = deltas(&w).await;
+
+        let restarted = on_the_clock(link(&w).await);
+        restarted.restore().await;
+        restarted.resume().await;
+        if taken.is_some() {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(deltas(&w).await, before, "{old}: the sync starts paused");
+        } else {
+            wait_for_deltas(&w, before).await;
+        }
+        assert_eq!(restarted.state().get().pause.paused_until, taken, "{old}");
+        let persist = persist(&w.config.path().join("config.toml"));
+        assert_eq!(persist.store.account(&persist.account).unwrap().paused_until, taken, "{old}");
+        assert_eq!(testing::tree_store(&restarted).unwrap().old_pause().await.unwrap(), None, "{old}: read once");
+        restarted.stop_sync().await;
+    }
+}
+
+/// A pause of an older version in the store, beside a time in `config.toml` that has
+/// passed: the time is no pause of the account's own, and the store's is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_kept_in_the_tree_store_is_taken_over_a_time_that_passed() {
+    const START: i64 = 1_700_000_000;
+    let w = world().await;
+    let clock = testing::ManualClock::at(START);
+    let on_the_clock = |link| made(&w, wiring(&w, account(true), Arc::new(StaticToken::new("T"))).clock(&clock).link(Some(link)));
+    let service = on_the_clock(link(&w).await);
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    service.pause_syncing(10).await.unwrap();
+    clock.advance(20);
+    wait_until("the timed pause ran out", || service.state().get().pause.paused_until.is_none()).await;
+    let written = || {
+        let persist = persist(&w.config.path().join("config.toml"));
+        persist.store.account(&persist.account).unwrap().paused_until
+    };
+    assert_eq!(written(), Some(START + 10), "the time that passed stays in the file");
+    testing::tree_store(&service).unwrap().set_old_pause(Some(0)).await.unwrap();
+    service.stop_sync().await;
+    service.hub().set_link(None);
+    drop(service);
+
+    let restarted = on_the_clock(link(&w).await);
+    restarted.restore().await;
+    assert_eq!(restarted.state().get().pause.paused_until, None, "a time that passed is no pause");
+    restarted.resume().await;
+    wait_until("the store's pause is taken", || restarted.state().get().pause.paused_until == Some(0)).await;
+    assert_eq!(written(), Some(0));
+    assert_eq!(testing::tree_store(&restarted).unwrap().old_pause().await.unwrap(), None);
+    restarted.stop_sync().await;
+}
+
+/// A `Pause` or a `Resume` that `config.toml` does not take changes nothing: it is
+/// refused, and neither the workers nor the bus take the account for paused or resumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_that_cannot_be_written_pauses_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let writable = |on: bool| std::fs::set_permissions(w.config.path(), std::fs::Permissions::from_mode(if on { 0o700 } else { 0o500 })).unwrap();
+
+    writable(false);
+    let refused = service.pause_syncing(0).await;
+    writable(true);
+    assert!(matches!(refused, Err(SyncError::Config(_))), "{refused:?}");
+    assert_eq!((service.run_settings().paused_until, service.state().get().pause.paused_until), (None, None));
+    assert!(!service.state().get().stopped());
+
+    service.pause_syncing(0).await.unwrap();
+    writable(false);
+    let refused = service.resume_syncing().await;
+    writable(true);
+    assert!(matches!(refused, Err(SyncError::Config(_))), "{refused:?}");
+    assert_eq!((service.run_settings().paused_until, service.state().get().pause.paused_until), (Some(0), Some(0)));
+    service.resume_syncing().await.unwrap();
+    service.stop_sync().await;
 }
 
 /// the outbox on the bus: the outbox as the bus shows it — `Changes()`, `NotUploaded()`, the
@@ -732,7 +841,8 @@ async fn a_folder_whose_changes_wait_is_not_forgotten() {
     service.unregister_root().await.unwrap();
 }
 
-/// the outbox on the bus: a forgotten folder is no longer paused on the bus.
+/// the outbox on the bus: a forgotten folder is no longer paused on the bus, nor in
+/// `config.toml`: the next folder starts unpaused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_forgotten_folder_is_not_paused() {
     let w = world().await;
@@ -743,6 +853,9 @@ async fn a_forgotten_folder_is_not_paused() {
     assert!(service.state().get().pause.paused_until.is_some());
     service.unregister_root().await.unwrap();
     assert_eq!(service.state().get().pause.paused_until, None);
+    let persist = persist(&w.config.path().join("config.toml"));
+    assert_eq!(persist.store.account(&persist.account).unwrap().paused_until, None);
+    assert_eq!(service.run_settings().paused_until, None);
 }
 
 /// the watcher: a folder turning read-write whose watcher cannot start stays locked,
@@ -887,9 +1000,11 @@ async fn a_folder_moved_away_stops_its_sync_and_says_so() {
 
     std::fs::rename(w.folder.path(), w.config.path().join("moved")).unwrap();
     wait_until("the folder reads error", || service.root_state() == "error" && service.last_error().contains("moved or deleted")).await;
+    // The pause is the account's, and is taken all the same.
+    service.pause_syncing(0).await.unwrap();
+    assert_eq!(service.state().get().pause.paused_until, Some(0));
+    service.resume_syncing().await.unwrap();
     // Its store is still open, and no call is served from it.
-    let refused = service.pause_syncing(0).await.unwrap_err();
-    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("moved or deleted")), "{refused:?}");
     let refused = service.outbox(0).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotUp(_)), "{refused:?}");
     let gone = |refused: &SyncError| matches!(refused, SyncError::NotUp(why) if why.contains("tried just now") && why.contains("another folder stands in its place"));

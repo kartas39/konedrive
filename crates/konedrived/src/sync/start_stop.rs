@@ -50,6 +50,8 @@ impl SyncService {
             Ok(prepared) => prepared,
             Err(why) => return self.cannot_start(stopped, &reg.root, why).await,
         };
+        // Before any part that asks about the pause is started.
+        self.take_old_pause(&prepared.store).await;
         let ended = stopped.folder().onedrive().and_then(|onedrive| onedrive.watcher_ended.clone());
         let (sync, walked) = self.build(prepared, &reg, wanted, reason, ended).await;
         let (lock, stop, tasks) = (sync.lock_cell(), sync.handles().stop.clone(), Arc::clone(&sync.handles().tidying));
@@ -58,7 +60,7 @@ impl SyncService {
         }
         // The readers reach the sync from here on.
         stopped.publish();
-        // `Paused` as the store keeps it, and a timer for a pause that ends.
+        // `Paused` as the account has it, and a timer for a pause that ends.
         self.show_pause();
         // The folder is writable only once its watcher has walked it (`Lock::Walking` until
         // then). No directory is made in the folder before it is watched (write design Z2):

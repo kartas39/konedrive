@@ -167,6 +167,11 @@ pub struct AccountConfig {
     /// `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnails: Option<bool>,
+    /// The user's pause of the account (`Folder.Pause`, `docs/design/writes.md` §11):
+    /// paused until then, unix seconds, 0 for until resumed; absent while not paused. A
+    /// time that has passed is no pause, and stays here until the section is written again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_until: Option<i64>,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app: read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
@@ -195,6 +200,7 @@ impl AccountConfig {
             ignore: None,
             machine_name: String::new(),
             thumbnails: None,
+            paused_until: None,
             old_pause_on_metered: None,
             old_on_battery: None,
         }

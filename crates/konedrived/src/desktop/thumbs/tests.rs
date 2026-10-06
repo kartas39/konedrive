@@ -374,7 +374,7 @@ async fn thumbnails_off_ask_for_nothing_and_on_again_ask_for_what_is_missing() {
     kick.notify_one();
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(w.server.received_requests().await.unwrap().is_empty(), "off: no request");
-    assert!(!running.stopped(&w.store), "the rest of the account runs");
+    assert!(!running.stopped(), "the rest of the account runs");
 
     running.change(|s| s.thumbnails = true);
     let cached = w.cached("normal", &w.folder.path().join("p.jpg"));

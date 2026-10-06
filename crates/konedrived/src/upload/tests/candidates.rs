@@ -48,12 +48,12 @@ fn a_row_blocked_by_403_stays_blocked_while_the_new_worker_may_not_send() {
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
 
     let rebuilt = w.h.engine();
-    pause(&rebuilt);
+    pause(&w);
     w.h.drain(&rebuilt);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
     assert_eq!(rebuilt.status().counts.blocked, 1);
 
-    resume(&rebuilt);
+    resume(&w);
     w.h.drain(&rebuilt);
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_committed(&w, "a.txt", "a.txt");

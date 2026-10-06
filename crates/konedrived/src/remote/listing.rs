@@ -434,7 +434,7 @@ impl Listing {
         }
         // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
         // the pause is Full, and finds them again.
-        let paused = self.ctx.running.stopped(&self.ctx.store);
+        let paused = self.ctx.running.stopped();
         if paused && !applied.pending.replacements.is_empty() {
             self.request_full();
         } else {

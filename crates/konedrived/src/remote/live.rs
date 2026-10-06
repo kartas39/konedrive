@@ -83,7 +83,7 @@ pub struct LiveContext {
 
 impl LiveContext {
     fn stopped(&self) -> bool {
-        self.running.stopped(&self.store)
+        self.running.stopped()
     }
 
     fn show(&self, live: LiveChanges) {

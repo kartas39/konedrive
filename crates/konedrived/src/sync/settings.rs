@@ -1,5 +1,6 @@
 //! The account's own settings, kept in its section of `config.toml` and taken at once:
-//! thumbnails, the ignore list, and the name conflict copies are made with.
+//! thumbnails, the user's pause, the ignore list, and the name conflict copies are made
+//! with.
 
 use std::sync::Arc;
 
@@ -20,28 +21,37 @@ impl SyncService {
         self.running.settings()
     }
 
-    /// `SetThumbnails`: `change` is written to the account's section of `config.toml`, and
-    /// taken at once. Refused `Unsupported` for a folder not connected to OneDrive, as
-    /// `Pause` is.
+    /// `SetThumbnails`, `Pause`, `Resume`: `change` is written to the account's section of
+    /// `config.toml`, and taken at once. Refused `Unsupported` for a folder not connected to
+    /// OneDrive. Nothing here needs the account's sync to be running.
     pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
         self.require_onedrive()?;
-        // `config.toml` and the settings in memory change together, under the file's own
-        // lock: two calls at once leave both the same. Only what changed is written.
+        // `config.toml` first, and the settings in memory only once it is written: a change
+        // that is refused changes nothing, here or on the bus. One change at a time
+        // ([`Running::changing`]), so two calls at once leave the file and memory the same.
+        // Only what changed is written.
         let (running, persist) = (Arc::clone(&self.running), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
+            let _one = running.changing();
+            let before = running.settings();
+            let mut after = before;
+            change(&mut after);
             persist
                 .store
                 .update_account(&persist.account, |a| {
-                    let before = running.settings();
-                    let mut after = before;
-                    change(&mut after);
                     if after.thumbnails != before.thumbnails {
                         a.thumbnails = Some(after.thumbnails);
                     }
-                    running.change(|s| *s = after);
+                    // By the file, not by memory: a timed pause that ran out is gone from
+                    // memory and still written there.
+                    if a.paused_until != after.paused_until {
+                        a.paused_until = after.paused_until;
+                    }
                     Ok::<_, ConfigError>(())
                 })
-                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))
+                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))?;
+            running.change(|s| *s = after);
+            Ok::<_, SyncError>(())
         })
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;

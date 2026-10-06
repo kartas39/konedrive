@@ -204,7 +204,7 @@ async fn run(
         // Paused (`docs/design/writes.md` §11): OneDrive is not asked, so nothing is
         // replaced either, until the pause ends or `Resume()` nudges.
         // The same for anything else that stops the account's background work.
-        if let Some(stop) = listing.ctx.running.stop(&listing.ctx.store) {
+        if let Some(stop) = listing.ctx.running.stop() {
             // A timed pause ends by the account's clock, as it is kept: whoever asks whether
             // it is over agrees. Looked at again after the poll's interval at the latest,
             // and no sooner than in a second.
