@@ -161,6 +161,7 @@ impl SyncService {
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
         let until = if seconds == 0 { 0 } else { self.clock.now() + i64::from(seconds) };
         self.change_run_settings(move |s| s.paused_until = Some(until)).await?;
+        self.old_pause_is_over().await;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
         Ok(())
     }
@@ -168,8 +169,19 @@ impl SyncService {
     /// `Resume()`: the pause ends now; the outbox and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
         self.change_run_settings(|s| s.paused_until = None).await?;
+        self.old_pause_is_over().await;
         tracing::info!("syncing resumed");
         Ok(())
+    }
+
+    /// The user has said what the pause is, and `config.toml` has it: a pause an older
+    /// version left in the folder's store, still there because it could not be moved at the
+    /// start ([`Self::take_old_pause`]), must not come back at the next one.
+    async fn old_pause_is_over(&self) {
+        let Some(store) = self.tree_store() else { return };
+        if let Err(e) = store.set_old_pause(None).await {
+            tracing::warn!("the pause kept in the tree store cannot be taken off it: {e}");
+        }
     }
 
     /// A forgotten folder's pause goes with it, from `config.toml` too: a folder registered
