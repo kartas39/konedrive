@@ -99,7 +99,7 @@ impl Marks {
 
     /// The group for directories of `fsid`, made on first need: one per
     /// filesystem id, since a nested Btrfs subvolume cannot share a group
-    /// with its parent (§3.6). `None` when none can be made (the 128 groups
+    /// with its parent (`docs/kernel-behavior-7.2/notification.md` §14.6). `None` when none can be made (the 128 groups
     /// a uid may hold): that subvolume is scan-only.
     fn group_for(&mut self, fsid: Fsid) -> Option<usize> {
         if let Some(at) = self.groups.iter().position(|g| g.fsid == fsid) {

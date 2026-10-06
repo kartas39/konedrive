@@ -101,7 +101,7 @@ impl Sink for ExamineSink {
 
 /// A sink that says when it was first handed a batch — the watcher's bring-up hands over
 /// the Full local scan first — whatever came of it (the read-write reconcile: the folder's first delta cycle
-/// waits for it, `docs/design/writes.md` §3). Dropped unsent when the watcher stops first: the
+/// waits for it, `docs/design/writes.md` §9). Dropped unsent when the watcher stops first: the
 /// cycle then waits no more.
 pub(crate) struct FirstScan<S: Sink> {
     pub(crate) inner: S,

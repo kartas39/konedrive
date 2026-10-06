@@ -214,7 +214,7 @@ impl SyncService {
             None
         };
         let handles = open.as_ref().map(|(watcher, outbox)| (watcher.handle(), outbox.handle()));
-        // The account's drive, as `config.toml` keeps it (design §8.1):
+        // The account's drive, as `config.toml` keeps it (`docs/design/accounts.md` §6.1):
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = {
             let persist = self.wiring.persist.clone();
@@ -225,7 +225,7 @@ impl SyncService {
         // it wait out its own idle timer.
         let kick = Arc::new(Notify::new());
         // A read-write folder's cycle shares the tree lock with its outbox worker, and its
-        // first one waits for the watcher's Full local scan (`docs/design/writes.md` §3, §9).
+        // first one waits for the watcher's Full local scan (`docs/design/writes.md` §9).
         let writes = handles.clone().map(|(watcher, outbox)| {
             self.cycle_writes(first_scan, &tree_lock, watcher, outbox, self.tidy_after_cycle(&reg.root, &store, &source, Arc::clone(&tidying)))
         });
@@ -266,7 +266,7 @@ impl SyncService {
         let writes = match open {
             Some((watcher, outbox)) => {
                 // The folder's first delta cycle runs before the outbox
-                // (`docs/design/writes.md` §3). Rows a previous run left `running` are
+                // (`docs/design/writes.md` §9). Rows a previous run left `running` are
                 // replayed first; the rest go as the watcher's examination records them.
                 outbox.wait_for_cycle(false);
                 outbox.start();
@@ -308,7 +308,7 @@ impl SyncService {
     /// `Refresh()`: a cycle now, for a folder that shows OneDrive.
     ///
     /// A folder whose sync is not running — it could not start: its tree
-    /// store could not be opened (F18) — has it started again here, the way
+    /// store could not be opened — has it started again here, the way
     /// every start is made, inside a change of the folder's state. `Ok` means a
     /// sync runs; when it still cannot, the refusal says why.
     ///
@@ -323,7 +323,7 @@ impl SyncService {
     pub async fn refresh(&self) -> Result<(), SyncError> {
         if self.view().down.is_none() {
             self.require_helper_for(&self.require_onedrive()?)?;
-            // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
+            // The outbox too (`docs/design/writes.md` §6.4): rows in backoff go now,
             // and, while a sync runs, the quota is read again, which may end a
             // full OneDrive.
             self.retry_outbox();

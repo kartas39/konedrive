@@ -27,7 +27,7 @@ pub(super) enum Was {
     Unplaced,
     /// Away from its base place: a local move or copy not examined yet.
     Elsewhere,
-    /// Under the outbox's temporary name in OneDrive (F82 (5)): the local
+    /// Under the outbox's temporary name in OneDrive: the local
     /// object stays where it is, and the examination moves the item back.
     Swapped,
     /// An id neither the base nor the new tree has: not ours to remove.
@@ -50,7 +50,7 @@ pub(super) fn where_it_was(entry: &Scanned, planned: &Planned) -> Was {
         // Not the base's: one this very placement left (a cycle stopped
         // before its swap) is put where the tree has it; anything else is
         // a file from elsewhere — another folder, another account — the
-        // user's, which the examination takes as new (§3.4 rule 6).
+        // user's, which the examination takes as new (`docs/design/writes.md` §4.2 rule 6).
         return if staged && placed { Was::Moved } else { Was::Stranger };
     };
     let at_base_place = base.row.parent_id == entry.parent_id && entry.rel.file_name() == Some(OsStr::new(&base.row.name)) && (base.row.kind == Kind::Folder) == entry.is_dir;
@@ -104,7 +104,7 @@ impl Scan {
             run.left.insert(seen.id.clone());
             // Its change waits too, whatever the tree does with it: the
             // examination takes the local move on, and the outbox meets
-            // OneDrive's side (§6).
+            // OneDrive's side (§7).
             run.out.pending.unsettled.insert(seen.id.clone());
         }
         if seen.entry.is_dir {
@@ -219,7 +219,7 @@ impl Materializer {
         }
         let placed_now = planned.new_place().is_some();
         if swapped(planned) {
-            // Under the outbox's temporary name in OneDrive (F82 (5)): the
+            // Under the outbox's temporary name in OneDrive: the
             // base says where it is there, and its object stays.
             run.out.on_disk.taken.insert(id.to_owned());
             return Ok(Sorted::Stays);
@@ -269,7 +269,7 @@ impl Materializer {
             // Deleted or moved here, not examined yet. Where the tree
             // still places it, phase 2 decides; where it removes it, the
             // removal waits: the examination takes the local change
-            // on, and the outbox meets OneDrive's side (§6).
+            // on, and the outbox meets OneDrive's side (§7).
             run.missing.insert(id.to_owned());
             // No longer placed, not here, and no object of it on record:
             // nothing an examination could still find. The base takes

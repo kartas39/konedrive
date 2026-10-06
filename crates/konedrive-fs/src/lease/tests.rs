@@ -100,9 +100,9 @@ fn refused_while_another_descriptor_is_open() {
     assert!(WriteLease::take(&file).unwrap().is_none(), "expected refusal");
 }
 
-/// The write design assumed (§15) that a read lease is refused while
-/// anyone has the file open for writing, from the kernel source rather
-/// than the man page. Measured here: a writer refuses it, a second reader
+/// The write design (`docs/design/writes.md` §4.3) assumed that a read lease
+/// is refused while anyone has the file open for writing, from the kernel
+/// source rather than the man page. Measured here: a writer refuses it, a second reader
 /// does not, and the refusal ends when the writer closes.
 #[test]
 fn a_read_lease_is_refused_only_while_someone_writes() {

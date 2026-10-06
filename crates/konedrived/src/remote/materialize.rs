@@ -70,7 +70,8 @@ pub struct Materializer {
     pub runtime: tokio::runtime::Handle,
     pub locks: InodeLocks,
     pub root_item_id: String,
-    /// `rescued/<timestamp>` for this cycle.
+    /// This cycle's directory for rescued files: `<timestamp>` under the folder's
+    /// rescue base (`rescued/<account id>/`, or what `rescue_base` chose).
     pub rescue_into: PathBuf,
     pub cancel: CancellationToken,
     /// The mode, with a read-write folder's rules (`docs/design/writes.md`
@@ -332,7 +333,7 @@ impl Materializer {
         plan.ids().filter(|id| **id != self.root_item_id).cloned().collect()
     }
 
-    /// The Full scope (§3.7), in three phases. Phase 1: the scan, and what
+    /// The Full scope (`docs/design/sync.md` §6.2), in three phases. Phase 1: the scan, and what
     /// it found sorted ([`Self::sort_scanned`]); then, deepest first, in one
     /// order, so that nothing is moved out from above what is still to be
     /// done below it, what moved goes to the holding directory and what
@@ -408,7 +409,7 @@ impl Materializer {
         self.after_placement(unplaced, run)
     }
 
-    /// The Changed scope (§3.7), in the same three phases. Phase 1, by
+    /// The Changed scope (§6.2), in the same three phases. Phase 1, by
     /// where things are now, deepest first: each item of the plan is sorted
     /// ([`Self::sort_changed`]) and moved to the holding directory or taken
     /// off where it stands. Phase 2, by where things belong, shallowest

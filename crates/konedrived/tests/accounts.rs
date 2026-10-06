@@ -1,4 +1,4 @@
-//! The multiple-accounts daemon over a private test bus (design §10, tests 7–11): the
+//! The multiple-accounts daemon over a private test bus: the
 //! manager at `/org/konedrive/Accounts` — `Accounts`, `Files` and the `ObjectManager` —
 //! and the accounts below it, started as `main` starts them (`accounts::start`). A fake
 //! helper speaks the wire protocol; nothing is intercepted for real.
@@ -324,7 +324,7 @@ async fn the_hold_settings_are_one_pair_for_every_account() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
 }
 
-/// Design §8.3 (test 7): a folder that is, is inside, or contains another account's folder
+/// `docs/design/accounts.md` §6.3 (test 7): a folder that is, is inside, or contains another account's folder
 /// is refused `Overlaps`, naming that account — both ways.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_that_nests_with_another_accounts_is_refused_naming_it() {
@@ -530,7 +530,7 @@ async fn an_account_whose_id_is_not_one_is_not_loaded_and_last_error_says_so() {
     );
 }
 
-/// An account held back (§3.1) never brings its folder up, but a folder it
+/// An account held back (§4.1) never brings its folder up, but a folder it
 /// registered with interception in an earlier session is still the helper's. `Remove`
 /// forgets it through the helper — refused `NoHelper` without one, changing nothing — before
 /// the account goes.

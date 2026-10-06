@@ -113,7 +113,7 @@ void AccountController::applyProperties(const QVariantMap &properties)
         m_signInUrl.clear();
         Q_EMIT signInUrlChanged();
     }
-    // A switch to read-write ends as the command line's does (F64): granted, or LastError
+    // A switch to read-write ends as the command line's does: granted, or LastError
     // saying why not (SetMode cleared it before it answered), or no longer signed in.
     if (modeSignInPending()) {
         const bool refused = properties.contains(QStringLiteral("LastError")) && !m_lastError.isEmpty();

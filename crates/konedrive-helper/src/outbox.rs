@@ -72,12 +72,11 @@ pub const REQUEST_CAPACITY: usize = MAX_OUTSTANDING_HYDRATIONS + 1;
 ///
 /// An `Ack` answers one of the daemon's own calls, and the daemon awaits each
 /// call before it counts as done, so the `Ack`s waiting here are at most its
-/// calls in flight: four hydration reports at once (four fill
-/// slots), plus whatever registration, marking and dehydration calls its sync
-/// service has running, each of which awaits its calls one at a time. Nothing
-/// in the daemon caps that second number with a constant, so this is not a
-/// bound the daemon promises; it is sized an order of magnitude above
-/// anything it does.
+/// calls in flight: one hydration report for each request it has taken (at most
+/// `MAX_OUTSTANDING_HYDRATIONS`, the credit), plus whatever registration, marking and
+/// dehydration calls its sync service has running, each of which awaits its calls one at
+/// a time. Nothing in the daemon caps that second number with a constant, so this is not
+/// a bound the daemon promises; it is twice the credit.
 ///
 /// And reaching it costs nothing but time: [`Outbox::send_ack_with`] **waits** for
 /// room instead of failing, so the reader stops taking new requests from that

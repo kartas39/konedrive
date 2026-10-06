@@ -1,5 +1,5 @@
 //! What the events since the last hand-over made dirty, and when it is time
-//! to hand it over (`docs/design/writes.md` §3 "Batches", amended by §3.4).
+//! to hand it over (`docs/design/writes.md` §3.4).
 //!
 //! Dirt is kept by directory *handle*, not by path, and turned into a
 //! [`Batch`] of paths only at hand-over, through the map as it is then: a

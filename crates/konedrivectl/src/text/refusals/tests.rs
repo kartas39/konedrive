@@ -13,7 +13,7 @@ fn a_remove_or_forget_refused_while_changes_wait_says_what_to_do() {
 }
 
 /// `account mode` and `export-access-token --read-write` explain each refusal by its
-/// name (`docs/design/writes.md` §11): uploads waiting, a read-only account, and, for the token
+/// name (`docs/design/desktop.md` §2.6): uploads waiting, a read-only account, and, for the token
 /// alone, a drive `write_test_drive_ids` does not list.
 #[test]
 fn a_refused_mode_is_explained_by_its_name() {

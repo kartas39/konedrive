@@ -1,4 +1,4 @@
-//! A full OneDrive (`docs/design/writes.md` §4.11): what the
+//! A full OneDrive (`docs/design/writes.md` §6.4): what the
 //! worker does when OneDrive refuses content for lack of space.
 //!
 //! **Free space** is Graph's `quota.remaining`, never `total - used`, less

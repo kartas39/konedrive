@@ -6,7 +6,7 @@
 //!
 //! - **keeps its hands off what a local change holds** ([`Rw::held`]): an
 //!   item with a live outbox row, in any state, and what the base has below
-//!   a folder such a row moves — not moved, replaced or removed. Nor what it
+//!   a folder such a row moves — not moved or replaced. Nor what it
 //!   finds away from where the base has it, a local move or copy not
 //!   examined yet, with everything below it. Their changes wait
 //!   ([`Pending::unsettled`](crate::remote::materialize::Pending::unsettled)): the base keeps the
@@ -20,8 +20,8 @@
 //!   a delete or a move the examination has still to see — a changed one too:
 //!   its object may be alive out of the folder, and only once the
 //!   examination and the outbox have decided (delete × edit: OneDrive wins,
-//!   §6) is it placed again;
-//! - **keeps both where the read phase rescued** (§6): a local version in the
+//!   §7) is it placed again;
+//! - **keeps both where the read phase rescued** (§7): a local version in the
 //!   way is renamed beside the cloud's, `name-<machine>.ext`, and uploaded
 //!   as new ([`Materializer::copy_aside`]);
 //! - **removes what OneDrive removed, in the cycle, and keeps what it never
@@ -30,7 +30,7 @@
 //!   folder once nothing is left in it. A file made here and a download
 //!   changed here stay, with their folders, their attributes off, and go up
 //!   as new; nothing is rescued out of the folder
-//!   (`resyncChangesUploadDifferences` keeps every download too, §3.7);
+//!   (`resyncChangesUploadDifferences` keeps every download too, §9);
 //! - **lets what can no longer be placed wait where it is**:
 //!   an item OneDrive still has and the folder cannot hold goes from the
 //!   disk whole, in the cycle, when nothing in it waits; while anything
@@ -89,13 +89,13 @@ pub struct Rw {
     /// content changed there, an item with no local object on record — and
     /// every folder above them.
     pub revive: HashSet<String>,
-    /// Items the base records no local object for (F82 (8)).
+    /// Items the base records no local object for.
     pub unplaced: HashSet<String>,
     /// Items the new tree changes: what `staging` differs from `items` by.
     pub changed: HashSet<String>,
-    /// For conflict copies: `name-<machine>.ext` (§6).
+    /// For conflict copies: `name-<machine>.ext` (§7).
     pub machine: String,
-    /// `resyncChangesUploadDifferences` (§3.7): what OneDrive's new listing
+    /// `resyncChangesUploadDifferences` (§9): what OneDrive's new listing
     /// left out and was downloaded here is uploaded again as new, and a
     /// downloaded file that differs from OneDrive's version is kept beside it.
     pub upload_differences: bool,
@@ -198,7 +198,7 @@ impl Rw {
 
     /// How what OneDrive removed is taken off the disk: what was changed
     /// or made here stays, and after a `resyncChangesUploadDifferences`
-    /// listing, which does not mean removed, every download too (§3.7).
+    /// listing, which does not mean removed, every download too (§9).
     pub(super) fn removed(&self) -> Policy {
         if self.upload_differences {
             Policy::Resync
@@ -210,7 +210,7 @@ impl Rw {
     /// Whether the cloud has something to put at item `id`'s name that the
     /// disk does not show: the new tree changes it, or no local object of it
     /// is on record. Otherwise an object of the user's there — a save by
-    /// rename, say — is theirs until the examination sees it (§3.4 rule 7).
+    /// rename, say — is theirs until the examination sees it (§4.2 rule 7).
     pub(super) fn brings(&self, id: &str) -> bool {
         self.changed.contains(id) || self.unplaced.contains(id)
     }
@@ -229,7 +229,7 @@ fn is_new_name(rel: &Path) -> bool {
 impl Materializer {
     /// Whether another item of ours at `rel` is there by a local change —
     /// with a row, below one, or away from where the base has it — so that
-    /// it keeps the name: the outbox settles the two (§6).
+    /// it keeps the name: the outbox settles the two (§7).
     pub(super) fn holds_the_name(&self, rw: &Rw, other: &str, rel: &Path, run: &Run) -> Result<bool, ApplyError> {
         if rw.held.contains(other) || rw.removing.contains(other) || run.left.contains(other) {
             return Ok(true);
@@ -312,7 +312,7 @@ impl Materializer {
         Ok(())
     }
 
-    /// Keeps both (§6): the object at `dir/name` (at `rel`) is renamed in its
+    /// Keeps both (§7): the object at `dir/name` (at `rel`) is renamed in its
     /// directory to the first free `name-<machine>.ext`, never over anything,
     /// and becomes the user's own — konedrive's attributes off, the item id
     /// first ([`placeholder::strip`]) — to be uploaded as new; the name is the cloud's again. Rows below a directory

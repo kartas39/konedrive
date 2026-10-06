@@ -89,22 +89,69 @@ These rules hold for every change:
 scripts/check-structure.sh
 ```
 
+   The guard reads lines, not Rust. What it does not see:
+
+   - **Layers**: only a path written as `crate::<directory>` counts (and `super::<directory>`
+     in a directory's own `mod.rs`). A higher layer's item reached through a re-export, a
+     `use … as` name or a path a macro builds passes. Rules 4 and 5 are not checked at all.
+   - **Test code** is told by name and by declaration: a `tests` directory, `tests.rs`, and a
+     module declared right under `#[cfg(test)]`, with everything below it. A module behind
+     another condition (`#[cfg(any(test, feature = "…"))]`) is taken for source, and a single
+     `#[cfg(test)]` function or constant in a source file is held to the layer order.
+   - **Tests in a source file** are found by `#[test]`, `#[tokio::test]` and a
+     `#[cfg(test)] mod … {` at the start of a line; a test attribute a macro writes is not.
+   - **Size**: only `.rs`, `.cpp`, `.h`, `.qml`, `.sh`, `.py` and `.md` files are counted.
+   - **The code map** is kept by hand: nothing checks that every file has its line there.
+
 7. **Locks.** A lock of `std::sync` is taken through `crate::panic::lock`, `read` or `write`,
    which go on after a holder of the lock panicked; never with `.lock().unwrap()` or a
    recovery written out. What is done under such a lock must therefore not be able to leave
    its data half-changed. `konedrive-graph` and `konedrive-tree` have a function of their own
    for it. Not asked of test code, test doubles, the helper and the files that hold those
-   functions: `docs/limitations/D58.md`.
+   functions. What the guard does with this rule:
+
+   - **Not checked**: `crates/konedrive-helper/`, which has its own `lock` and writes the
+     recovery out in a few more places (code that runs as root is not changed for tidiness);
+     files named `testing.rs` or under `testing/`; and the three files that hold the functions
+     (`konedrived/src/panic.rs`, `konedrive-graph/src/lib.rs`,
+     `konedrive-tree/src/outbox/changes.rs`), where a second lock written with `unwrap` passes.
+   - **Found**: `.lock()`, `.read()` or `.write()` with nothing passed, or `Mutex::lock(…)` and
+     the like, followed in the same chain (on the line, or on the next line that is not empty
+     or a comment) by `unwrap…`, `expect`, `ok`, `map_err`, `is_ok` or `is_err`.
+   - **Not seen**: a lock result kept in a variable and looked at later, `match` or
+     `if let Ok(…) = ….lock()`, `try_lock`, a `Condvar`'s wait, a result handed to a function
+     or returned with `?`, a lock taken through another name, and a chain whose next call is
+     two or more code lines away.
+   - **Found wrongly**: any other `.read()` or `.write()` that takes nothing and whose result
+     is unwrapped (none in the code today).
+   - **A crate's first lock**: `konedrivectl`, `konedrive-dbus` and `konedrive-fs` take no
+     lock of `std::sync` in source today; the first one there needs a function of its own and
+     a line in the guard. What is under a `tests/` directory is test code to the guard, so a
+     lock there (`tests/write-account/src/guard.rs`) is not read.
 
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.
 
-The same workflow checks that every link in a doc comment resolves (what it does not catch:
-`docs/limitations/D59.md`):
+The same workflow checks that every link in a doc comment resolves:
 
 ```
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --locked --workspace --no-deps --document-private-items
 ```
+
+It sees a broken link, not a wrong one. What it does not catch:
+
+- **A link that resolves to another item than the one meant.** The case met: a module's file
+  starts with `//!` and its `mod` line in the parent carries a `///` line. rustdoc then
+  resolves the links of the file's `//!` in the parent's scope, so a bare name is looked up one
+  level too high. Such a link is written with its full path (`crate::panic::write`).
+- **Test code**: what is under `#[cfg(test)]` is not documented, so the links in the doc
+  comments of test modules and of the `testing` fixtures are not checked.
+- **A link from a public item's doc to a private item** resolves only because private items
+  are documented. rustdoc warns of each, and the check does not fail on a warning.
+- **What rustdoc does not read**: a `//` comment, and a name in backticks that is not a link,
+  can name a file, a function or a test that is gone.
+- **The compiler's version**: the workflow's `RUST_VERSION` is a second copy of the one in
+  `release.yml`, and the two are moved together by hand.
 
 ## A new reason or refusal
 

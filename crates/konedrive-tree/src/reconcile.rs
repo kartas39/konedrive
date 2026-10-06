@@ -18,7 +18,7 @@
 //! - **Tombstones.** An item the outbox deleted in OneDrive has no base row
 //!   left to carry its `local_seq`, so the delete's commit count is kept by
 //!   id: a delta fetched before the delete must not bring the item back (the
-//!   stale-delta guard, §3.7).
+//!   stale-delta guard, §9).
 
 use std::collections::HashMap;
 
@@ -204,7 +204,7 @@ impl TreeStore {
 
     /// Items `table` places — the item and every folder above it placed —
     /// with no local object recorded: never placed here, or forgotten by the
-    /// outbox (F82 (8)) or a restore of held deletes. The root is not one.
+    /// outbox or a restore of held deletes. The root is not one.
     /// Read from those with no local object alone (an index of `items`, and
     /// what a delta staged), each placed or not by one query for the lot:
     /// no walk of the whole tree.
@@ -225,7 +225,7 @@ impl TreeStore {
 
     /// Items the outbox wrote after commit count `seq` (`local_seq`): a read-write
     /// cycle looks at them again, so that the disk follows what the outbox
-    /// committed (F82 (7): a move adopted with a newer cTag).
+    /// committed (a move adopted with a newer cTag).
     pub(crate) fn committed_items_since(&self, seq: i64) -> Result<Vec<String>, TreeError> {
         let mut statement = self.conn.prepare_cached("SELECT id FROM items WHERE local_seq > ?1")?;
         let ids = statement.query_map([seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
@@ -323,7 +323,7 @@ impl TreeStore {
 
     /// Rows that were to go into one of `folders` — folders gone from
     /// OneDrive, whose local directory stays, holding local work, and is
-    /// made again there (F116) — wait for that directory's `mkdir`
+    /// made again there — wait for that directory's `mkdir`
     /// instead, and find its new id by their place.
     pub fn outbox_detach_parents(&self, folders: &[String]) -> Result<usize, TreeError> {
         let mut n = 0;
@@ -372,7 +372,7 @@ impl TreeStore {
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
-    /// stale-delta guard fetched (§3.7).
+    /// stale-delta guard fetched (§9).
     pub fn stage_over(&mut self, changes: &[Change]) -> Result<(), TreeError> {
         let source = self.source(Table::Staging);
         let tx = self.conn.transaction()?;

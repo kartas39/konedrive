@@ -29,7 +29,7 @@ pub(super) enum Decision {
     AllowMarked,
     /// A placeholder whose content is not there: ask its owner's daemon.
     Hydrate,
-    /// Refused, `EIO`: nothing says the content is there, and §5.2's last
+    /// Refused, `EIO`: nothing says the content is there, and `docs/design/hydration.md` §5.1's last
     /// rule is never to allow zeros.
     Deny(Denied),
 }
@@ -116,7 +116,7 @@ impl Decision {
             // A file with no state attribute is not ours — unless it also
             // carries an item id, in which case it is one of ours with its
             // state missing, and we have no idea whether its body is there.
-            // §5.2's last rule applies: never allow zeros.
+            // hydration.md §5.1's last rule applies: never allow zeros.
             Ok(None) => match facts.item_id() {
                 Ok(None) => Decision::Allow,
                 Ok(Some(item)) => Decision::Deny(Denied::StateMissing { item }),

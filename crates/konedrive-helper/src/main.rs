@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Nothing that can fail stands between the walk and the event loop but
-    // the loop itself (§6.5).
+    // the loop itself (`docs/design/hydration.md` §12).
     let _ = walked.send(());
     event_loop(&shared, &pool)
 }

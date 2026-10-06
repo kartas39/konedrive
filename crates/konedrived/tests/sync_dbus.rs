@@ -168,7 +168,7 @@ async fn setup_with_helper(with_helper: bool) -> Setup {
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
         hub.set_link(Some(link));
     }
-    // §3.1 refuses a registration when nobody is signed in, so the tests
+    // `docs/design/hydration.md` §14.1 refuses a registration when nobody is signed in, so the tests
     // that register a folder start from a signed-in daemon. The one that
     // measures the refusal signs out again.
     added.account.state().update(|s| s.state = SignInState::SignedIn);
@@ -480,7 +480,7 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
     );
     assert_eq!(f.folder.state().await.unwrap(), "none");
 
-    // Deliberately signed out. `RegisterRoot` requires a sign-in because §3.1
+    // Deliberately signed out. `RegisterRoot` requires a sign-in because §14.1
     // binds the folder to the signed-in drive; this mode must not, because it
     // exists for a machine with no helper and no drive, filled from a local
     // directory. Requiring a Microsoft sign-in here would put the one path
@@ -723,7 +723,7 @@ async fn the_counters_travel_in_one_properties_changed_message() {
 
     // Only the messages that carry a counter: what the registration itself changed (`Path`,
     // `Source`, `State`, `LastError`) is sent by another task, and may come after the
-    // subscription above (limitations log D31).
+    // subscription above.
     let counters = ["ItemsListed", "ItemsPlaced", "SkippedCount"];
     let mut carrying = messages_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
     carrying.retain(|names| names.iter().any(|name| counters.contains(&name.as_str())));
@@ -770,8 +770,7 @@ async fn each_property_changes_under_its_own_interface() {
         seen.push((args.interface_name.to_string(), names));
     }
     // Only the messages that carry one of the properties changed here: what the registration
-    // itself changed is sent by another task, and may come after the subscription above
-    // (limitations log D31).
+    // itself changed is sent by another task, and may come after the subscription above.
     let changed = ["Count", "ItemsListed", "Directories", "PoolSize", "PendingCount"];
     seen.retain(|(_, names)| names.iter().any(|name| changed.contains(&name.as_str())));
     seen.sort();

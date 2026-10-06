@@ -69,7 +69,7 @@ impl From<ConfigError> for String {
 ///
 /// The calls do blocking file I/O on a small file, as the single-account code did. The one
 /// caller that asks before every outbox row, the write gate, calls from a blocking thread
-/// (`Engine::may_write` of `upload/engine.rs`); the others are in limitations log F231.
+/// (`Engine::may_write` of `upload/engine.rs`); the rest of its readers do not.
 pub struct ConfigStore {
     file: PathBuf,
     inner: Mutex<Inner>,
@@ -121,8 +121,8 @@ pub(super) fn write_config(file: &Path, config: &Config) -> Result<(), ConfigErr
 }
 
 impl ConfigStore {
-    /// Loads `paths.config_file` — first step of the daemon's start (design §2.2). A
-    /// version-1 file is migrated (§7.2): `legacy_token` is the wallet's presence check for
+    /// Loads `paths.config_file` — first step of the daemon's start (`docs/design/accounts.md` §3.2). A
+    /// version-1 file is migrated (§8.2): `legacy_token` is the wallet's presence check for
     /// the version-1 refresh token (no unlock; a Secret Service that does not answer counts
     /// as present), and is awaited only when nothing else says there is an account to carry
     /// over. A missing file is an empty configuration and is not written.
@@ -201,7 +201,7 @@ impl ConfigStore {
     /// returns `Err` or changes nothing. Refused while poisoned, and when the file can no
     /// longer be read or has become a version-1 file: what cannot be read is never
     /// overwritten. A missing file is an empty configuration. `change` runs under the lock,
-    /// so a check and the write it allows are one step (the identity guard of §8.2).
+    /// so a check and the write it allows are one step (the identity guard of §6.2).
     pub fn update<R, E: From<ConfigError>>(&self, change: impl FnOnce(&mut Config) -> Result<R, E>) -> Result<R, E> {
         let mut inner = self.lock();
         if let Some(why) = &inner.poisoned {
@@ -347,9 +347,9 @@ impl ConfigStore {
 
     /// Records `drive` as the account's drive when it has none yet, and returns the
     /// account's drive, which differs from `drive` when another was recorded before: the
-    /// caller's same-account check (§8.1) compares them. Writes nothing when a drive is
+    /// caller's same-account check (§6.1) compares them. Writes nothing when a drive is
     /// already recorded. Refused `DriveTaken` when another account has `drive`: a drive is
-    /// one account (§8.2), whichever way it comes to be recorded.
+    /// one account (§6.2), whichever way it comes to be recorded.
     pub fn record_drive(&self, id: &AccountId, drive: &DriveId) -> Result<DriveId, ConfigError> {
         self.update(|config| {
             let mine = config.account(id).ok_or_else(|| ConfigError::NoAccount(id.clone()))?;

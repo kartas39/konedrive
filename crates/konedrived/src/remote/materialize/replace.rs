@@ -23,8 +23,8 @@ pub enum ReplaceOutcome {
     Current,
     /// The old version stays; said, and tried again after every cycle.
     Failed(Failure),
-    /// Read-write mode: someone has the file open, so no write lease (write
-    /// design §3.7). The old version stays, and so does its base; the next
+    /// Read-write mode: someone has the file open, so no write lease (`docs/design/writes.md`
+    /// §9). The old version stays, and so does its base; the next
     /// cycle tries again. Not a failure.
     Busy,
 }
@@ -175,12 +175,25 @@ pub async fn replace_until(
 
 /// A replacement's file calls wait on the disk (`fsync`, the rename, the
 /// attributes), so none is made on a runtime thread: each run of them is one
-/// *section* on a blocking thread, with the download between the first two.
+/// *section* on a blocking thread. There are three: the check before the
+/// download, the new version made whole and put on the disk, and the swap.
+/// The download is between the first two; the waits for the tree lock and for
+/// the old file's lock are between the last two.
 ///
 /// `stop` ends the replacement only where it waits, between sections: there
-/// it could be dropped before the sections were. A section is never left
-/// behind by a stop (`docs/limitations/F232.md`); `None` is a replacement
-/// stopped.
+/// it could be dropped before the sections were. A section that has begun
+/// runs to its end, so a stop is heard only between them, and `None` is a
+/// replacement stopped. What a stop between two sections leaves:
+///
+/// - after the check, or after the new version is on the disk: the nameless
+///   file is closed and gone, no lock is held, and the old version stays;
+/// - once both locks are held, no stop is heard any more: the swap is made
+///   and said, and the stop waits for it.
+///
+/// Nothing makes a caller wait for a section. Code that drops this future (a
+/// `select!`, a timeout, an abort) leaves the section under way on its
+/// thread, the swap with the tree lock and the old file's lock until it ends:
+/// the poller's stop therefore joins the replacements and never drops them.
 async fn replace_inner(
     disk: &Disk,
     locks: &InodeLocks,
@@ -378,7 +391,7 @@ impl Work {
             return Ok(ReplaceOutcome::Current);
         }
         // Read-write mode: nobody has the old file open across the rename, or
-        // what they write would land in the unlinked inode (§3.7). The lease
+        // what they write would land in the unlinked inode (§9). The lease
         // first; then, under it, the file is looked at again — through the
         // descriptor, and by name without opening it — so that a write that
         // landed before the lease is a stamp mismatch, never swapped away.

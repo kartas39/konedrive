@@ -1,4 +1,4 @@
-//! How a file's content gets to OneDrive (§4.3, §4.8): the read, and the one
+//! How a file's content gets to OneDrive (`docs/design/writes.md` §6.1, §6.3): the read, and the one
 //! upload session.
 //!
 //! The file is read only while downloaded or unmanaged (WR1), under its
@@ -190,7 +190,7 @@ impl Job<'_> {
         }
     }
 
-    /// A file with content (§4.8): the fragments of one upload session, a
+    /// A file with content (§6.3): the fragments of one upload session, a
     /// file of one fragment's size and a larger one alike. The session a run
     /// before persisted for this very content is resumed from where the
     /// server stands; otherwise one is opened, and persisted before its
@@ -267,11 +267,11 @@ impl Job<'_> {
     }
 
     /// One fragment of the session at `url`, from `next`: read, fed to the
-    /// hash, sent, and the session's new offset persisted (§4.8 step 3).
+    /// hash, sent, and the session's new offset persisted (§6.3 step 3).
     ///
     /// - Before every fragment, the first too, the upload may stop
     ///   ([`stop_between_fragments`]).
-    /// - Before the last one (§4.8 step 4): a writer, the snapshot, and —
+    /// - Before the last one (§6.3 step 4): a writer, the snapshot, and —
     ///   for a changed file — the item in OneDrive once more, since the
     ///   session's guard was checked when it was opened, not when it
     ///   completes. Not when the opening was the request just before: its
@@ -376,7 +376,7 @@ impl Job<'_> {
     }
 
     /// The item a changed file goes into, read again before the session's
-    /// last fragment (§4.8 step 4): the refusal its opening would get now —
+    /// last fragment (§6.3 step 4): the refusal its opening would get now —
     /// another version than the guard names, or no item.
     async fn guard_broken(&self, target: &UploadTarget<'_>) -> Result<Option<WriteError>, Fail> {
         let UploadTarget::Existing { id, if_match } = *target else { return Ok(None) };
@@ -391,7 +391,7 @@ impl Job<'_> {
     /// The session ended (`404`): it completed without its answer reaching
     /// us, or it expired — while it waited (a pause, a restart, the
     /// network), or under the upload. The item holding this content is
-    /// adopted (§5); otherwise the bytes sent before are lost, and the
+    /// adopted (§10); otherwise the bytes sent before are lost, and the
     /// upload starts over with a new session — once in a run: a second
     /// session that ends leaves the row in backoff.
     async fn ended(&self, target: &UploadTarget<'_>, run: &mut Run) -> Result<Step, Fail> {
@@ -416,7 +416,7 @@ impl Job<'_> {
         Ok(self.e.store().call(move |s| s.outbox_session_ended(seq)).await?)
     }
 
-    /// `DELETE <uploadUrl>`: the session is given up (§4.3) —
+    /// `DELETE <uploadUrl>`: the session is given up (§6.1) —
     /// the content changed while it went up, or OneDrive refused it. The row
     /// points at it no more; a cancel that fails leaves it listed, and a
     /// later run cancels it.

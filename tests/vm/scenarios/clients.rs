@@ -15,7 +15,7 @@ use crate::HOSTILE_UID;
 
 /// `FAN_DENY | (errno << 24)` is accepted by the kernel for
 /// eight values and refused for every other, and a refused response leaves the
-/// opener suspended **forever** (§5). The daemon reports errnos the helper does
+/// opener suspended **forever** (`docs/kernel-behavior-7.2/interception.md` §5). The daemon reports errnos the helper does
 /// not choose, so every value it could ever produce is swept here against a
 /// live suspended opener, and the property asserted is the one that matters:
 /// nobody is left unanswered.

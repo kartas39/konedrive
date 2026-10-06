@@ -117,7 +117,7 @@ impl MoveOut<'_> {
         self.gone().await
     }
 
-    /// The helper does not hand the object over. Never "gone" (F90): the row is kept, and asked
+    /// The helper does not hand the object over. Never "gone": the row is kept, and asked
     /// again now and then — but for the two things that explain the answer.
     async fn refused(&self) -> Result<Outcome, Fail> {
         // The attributes this very row took off: its content was proved local first.
@@ -227,7 +227,7 @@ impl MoveOut<'_> {
             Err(err) => return Ok(Local::No(Outcome::backoff(Reason::NoLease(Some(err.to_string()))))),
         }
         // Reopened before the lock: the reopen is an open like any other, and is let through at
-        // once only as this daemon's own (F91). A fill it could wait for takes the same lock.
+        // once only as this daemon's own. A fill it could wait for takes the same lock.
         let reopened = {
             let object = Arc::clone(object);
             blocking(move || {
@@ -252,7 +252,7 @@ impl MoveOut<'_> {
         };
         let writable = match reopened {
             Ok(writable) => writable,
-            // Leased (`EAGAIN`, F91), or not writable by its owner: tried again later.
+            // Leased (`EAGAIN`), or not writable by its owner: tried again later.
             Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(Reason::NotOpened(Some(err.to_string()))))),
             Err(other) => return Err(other),
         };

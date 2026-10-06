@@ -13,7 +13,7 @@ pub struct AccountInfo {
     pub email: String,
 }
 
-/// The account `wanted` names (design §5.1): the one whose id is exactly `wanted`, or whose
+/// The account `wanted` names (`docs/design/desktop.md` §3): the one whose id is exactly `wanted`, or whose
 /// label or email is `wanted` whatever the case. The daemon refuses a label shaped like an id
 /// or already used, but a label may be an email, which may be another account's, and a
 /// hand-edited `config.toml` can still give two accounts one label, or one account another's
@@ -114,7 +114,7 @@ impl std::fmt::Display for NoChoice {
 
 impl std::error::Error for NoChoice {}
 
-/// The account a command acts on (design §5.1): the one `wanted` names, with where the name
+/// The account a command acts on (§3): the one `wanted` names, with where the name
 /// came from; with no name, the only account there is.
 pub fn choose<'a>(accounts: &'a [AccountInfo], wanted: Option<(&str, Source)>) -> Result<&'a AccountInfo, NoChoice> {
     let labels = || accounts.iter().map(|a| a.label.clone()).collect::<Vec<_>>();

@@ -58,8 +58,8 @@ activity_kinds! {
     /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
     Failed => "failed",
-    /// A file changed in OneDrive that could not be replaced here (spec
-    /// §7.3); the old version stays. Detail: why — exactly "not enough disk
+    /// A file changed in OneDrive that could not be replaced here (`docs/design/sync.md`
+    /// §9); the old version stays. Detail: why — exactly "not enough disk
     /// space" when the disk cannot hold both versions.
     UpdateFailed => "update-failed",
     /// Content made or changed here went up to OneDrive (a folder made

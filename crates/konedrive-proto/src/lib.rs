@@ -32,7 +32,8 @@ const MAX_CONTROL_FDS: u32 = 8;
 /// reason is a circular wait the VM suite's burst measured. Every message
 /// the daemon sends is answered with an `Ack`, and the `Ack` travels on the
 /// same socket, in order, behind whatever requests the helper had already
-/// queued. The daemon's hydration loop holds each of its four fill slots
+/// queued. The daemon's hydration loop takes up to this many requests at once, each
+/// filled in a slot of its account's transfer pool, and holds each request's place
 /// until the `Ack` for that fill's `HydrateDone` arrives, and
 /// its reader thread stops reading when its request queue is full. With
 /// more requests in flight than that queue holds, the reader stops with
@@ -51,8 +52,8 @@ const MAX_CONTROL_FDS: u32 = 8;
 /// beyond it is enrolled in the helper and held back — its openers stay
 /// suspended, exactly as they would behind a request already sent — and each
 /// `HydrateDone` that returns a credit sends the oldest one waiting. It used
-/// to be refused `EAGAIN` instead, and a desktop thumbnailing a folder of 200
-/// photos is not something that should fail two thirds of its opens.
+/// to be refused `EAGAIN` instead, which most of 3000 concurrent opens then got
+/// (`docs/design/hydration.md` §10.3).
 pub const MAX_OUTSTANDING_HYDRATIONS: usize = 64;
 
 /// The errno values the kernel accepts in a `FAN_DENY` response, measured
@@ -72,6 +73,8 @@ pub const MAX_OUTSTANDING_HYDRATIONS: usize = 64;
 /// daemon to produce a deliverable value and the helper to refuse an
 /// undeliverable one, and neither is entitled to its own copy.
 pub const ACCEPTED_DENY_ERRNOS: [i32; 8] = [
+    // Success, which `HydrateDone` reports in the same word. No failure carries it,
+    // and no `FAN_DENY` is sent with it.
     0,
     libc::EPERM,
     libc::EIO,
@@ -84,11 +87,11 @@ pub const ACCEPTED_DENY_ERRNOS: [i32; 8] = [
 
 /// Maps any errno onto one the kernel will actually deliver, defaulting to
 /// `EIO` ("something went wrong reading this file"), which is both true and
-/// the spec's default (§9).
+/// the spec's default (`docs/design/hydration.md` §6.3).
 ///
 /// This is a **clamp, not a flattening**: `ENOSPC` and `EDQUOT` are in the
 /// accepted set and are exactly what a local `pwrite` produces on a full
-/// disk or an exhausted quota, and §9 asks for `ENOSPC` by name there.
+/// disk or an exhausted quota, and §6.3 asks for `ENOSPC` by name there.
 /// Mapping them to `EIO` would throw away the one piece of information the
 /// user can act on.
 pub fn clamp_deny_errno(errno: i32) -> i32 {
@@ -143,7 +146,7 @@ pub enum ToHelper {
     /// The attached fd is a file whose ignore mark must go (before dehydration).
     ClearIgnore,
     HydrateDone { req_id: u64, errno: i32 },
-    /// A descriptor for the object this file handle names (writes design
+    /// A descriptor for the object this file handle names (`docs/design/writes.md`
     /// §8.2): one of the peer's own, gone from its folder. The attached fd is
     /// a directory of the peer's on the same filesystem, the one the handle
     /// is opened relative to. `handle_type` and `handle` are what

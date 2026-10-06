@@ -161,7 +161,9 @@ pub struct FolderStatus {
     /// The registered folder needs the helper and does not have it (HS2,
     /// HS3): a folder with interception whose link is down, or one that
     /// shows OneDrive and is not intercepted yet. `RootState` reads `error`
-    /// then, and `LastError` begins with what [`HelperState::advice`] says.
+    /// then, and `LastError` begins with what [`HelperState::advice`] says;
+    /// but a folder that is `waiting` says neither until the helper is known
+    /// to be down.
     /// A cycle that finds no helper makes sure of it (`remote::listing`).
     pub waits_for_helper: bool,
 }

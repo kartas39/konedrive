@@ -184,7 +184,7 @@ private Q_SLOTS:
     }
 
     /// Without the helper the window asks before registering a folder whose
-    /// placeholders nothing fills on open (part 1's A5). The
+    /// placeholders nothing fills on open. The
     /// window never registers a folder
     /// without interception — an unhydrated file would read as zeros for
     /// good. The prompt's only way forward is "Try Again", which retries

@@ -35,7 +35,7 @@ pub fn added_text(outcome: &str, message: &str) -> Result<String, String> {
     }
 }
 
-/// `account list` (design §5.2): a table of every account, in the order they were added —
+/// `account list` (`docs/design/desktop.md` §3): a table of every account, in the order they were added —
 /// id, label, email, sign-in state, mode, and the folder with its `Folder.State`.
 pub fn account_list_text(rows: &[AccountRow]) -> String {
     if rows.is_empty() {

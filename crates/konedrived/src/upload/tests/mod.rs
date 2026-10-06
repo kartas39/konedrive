@@ -151,7 +151,7 @@ impl World {
     }
 }
 
-/// What a commit leaves on a file (§3.5): the item id, `hydrated`, the cTag
+/// What a commit leaves on a file (§5.4): the item id, `hydrated`, the cTag
 /// OneDrive gave, the stamp of the content sent, and no upload mark.
 fn assert_committed(w: &World, rel: &str, cloud_path: &str) {
     let id = w.id_at(cloud_path).unwrap_or_else(|| panic!("{cloud_path} is not in OneDrive: {:?}", w.cloud(|c| c.paths())));
@@ -172,7 +172,7 @@ fn assert_committed(w: &World, rel: &str, cloud_path: &str) {
 }
 
 /// New folders and files go up, parents first; each is committed on the
-/// file and in the store; the examination then finds nothing (§4.1, §4.2).
+/// file and in the store; the examination then finds nothing (§5.3, §6.1).
 #[test]
 fn new_folders_and_files_go_up_and_are_committed() {
     let w = World::new(&[]);
@@ -223,7 +223,7 @@ fn edits_and_renames_go_up_guarded() {
     assert!(w.h.host.kinds().contains(&ActivityKind::CloudMoved));
 
     // Moved and changed at once: one row, the move first, then the content
-    // against the eTag the move answered with (§3.5).
+    // against the eTag the move answered with (§5.2).
     w.rename("docs/b.txt", "c.txt");
     w.edit("c.txt", b"third");
     w.examine(&[("docs", "b.txt"), ("", "c.txt")]);
@@ -234,7 +234,7 @@ fn edits_and_renames_go_up_guarded() {
     assert_committed(&w, "c.txt", "c.txt");
 }
 
-/// F55 (4): an edit of a download that is older than the base (a new
+/// An edit of a download that is older than the base (a new
 /// version not yet downloaded over it) is queued with that download's cTag
 /// and no eTag; the worker guards it with that cTag, the guard fails, and
 /// both versions are kept.
@@ -269,7 +269,7 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
     assert_committed(&w, "a-fedora.txt", "a-fedora.txt");
 }
 
-/// §5, one crash row at a time: each step replayed on a new worker reaches
+/// §10, one crash row at a time: each step replayed on a new worker reaches
 /// the same end — one item in OneDrive, adopted by hash, by place or by
 /// kind, never a copy, and the outbox empty. The points of an upload
 /// session are in `sessions.rs`
@@ -333,7 +333,7 @@ fn every_crash_point_is_replayed_to_the_same_end() {
     }
 }
 
-/// §6, the cells where both sides changed one item.
+/// §7, the cells where both sides changed one item.
 #[test]
 fn conflicts_keep_both_and_the_first_rename_wins() {
     // edit × edit: the local version becomes a copy beside OneDrive's.
@@ -467,7 +467,7 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     assert_eq!(w.content("X.TXT").unwrap(), b"theirs");
 }
 
-/// F55 (7) (d): a swap, a folder replaced by its own subfolder, and a
+/// A swap, a folder replaced by its own subfolder, and a
 /// folder wrapped in a new one of its name, end to end: each goes through
 /// a temporary name, nothing is adopted or copied, and nothing but what the
 /// user deleted is deleted.
@@ -512,7 +512,7 @@ fn swaps_and_folders_replaced_in_place_go_through_a_temporary_name() {
     assert!(w.cloud(|c| c.bin.is_empty() && c.paths().iter().all(|p| !p.contains(SWAP_PREFIX))));
 }
 
-/// §4.10: a throttle stops the whole worker for as long as OneDrive asked —
+/// §6.2: a throttle stops the whole worker for as long as OneDrive asked —
 /// `Retry-After` in seconds or as an HTTP date — and the row keeps its place.
 #[test]
 fn throttling_pauses_the_whole_worker() {

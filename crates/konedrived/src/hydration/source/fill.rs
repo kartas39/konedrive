@@ -48,8 +48,8 @@ impl FillError {
 /// per-inode lock: **look again**, and fill only a
 /// file that still needs it.
 ///
-/// A request can wait a long time before it gets here — for one of the four
-/// fill slots behind other downloads, or in the helper for credit — and the
+/// A request can wait a long time before it gets here — for a slot of its
+/// account's transfer pool behind other downloads, or in the helper for credit — and the
 /// file it names can have been filled meanwhile: by `Hydrate()`, or because a
 /// `Dehydrate` that the open itself made fail (its suspended descriptor
 /// refuses the lease) rolled the file back to `hydrated`. Filling it again
@@ -64,11 +64,11 @@ impl FillError {
 /// So a file that reads `hydrated` is answered 0 and not touched, whatever
 /// its stamp says. With a matching stamp it is simply there; with a stamp
 /// that does not match it was edited locally, and that edit is the only copy
-/// (§8); with none it was labelled by something other than this daemon — the
+/// (`docs/design/hydration.md` §6.1 step 0); with none it was labelled by something other than this daemon — the
 /// case `Hydrate()` repairs on request, and never something to do
 /// behind an opener's back, since the helper lets every opener of a
 /// `hydrated` file through anyway. The helper reads the state again itself
-/// before it lets the opener through (§5.2 step 5).
+/// before it lets the opener through (§5.1 step 5).
 pub async fn answer_request(
     fd: OwnedFd,
     source: &dyn ContentSource,
@@ -304,10 +304,10 @@ fn begin(file: &File, has_clearance: bool) -> Result<Begun, FillError> {
         tracing::debug!("{item_id}: found {found:?}, and nothing to clear its ignore mark with; not filled");
         return Err(FillError::NotCleared(NotCleared::NoWay));
     }
-    // §5.3 step 1: `state=hydrating`, `fsync`. The marker has to be durable
+    // §6.1 step 1: `state=hydrating`, `fsync`. The marker has to be durable
     // before the first byte lands, or a power loss leaves a file that looks
     // `online-only` while holding allocated blocks full of partial content,
-    // and §4.4 startup recovery has nothing to find it by.
+    // and §9 startup recovery has nothing to find it by.
     write_state(file, State::Hydrating).map_err(|e| FillError::Errno(errno_of(&e)))?;
     file.sync_all().map_err(|e| FillError::Errno(errno_of(&e)))?;
     Ok(Begun { item_id, shape: Shape { size: Some(meta.len()), times }, found, found_raw })

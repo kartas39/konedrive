@@ -453,7 +453,7 @@ async fn recover_file(
         // A managed file whose state we cannot make sense of, or cannot read
         // at all. Recovery must not punch it — `unwrap_or(None)` would have
         // called it "not one of ours" and moved on — but it must not pass
-        // over it in silence either: §5.2 has the helper deny every open of
+        // over it in silence either: §5.1 has the helper deny every open of
         // such a file with `EIO` for as long as it stays that way, and
         // recovery is the one place that walks the whole tree and could
         // notice.
@@ -562,7 +562,7 @@ async fn recover_file(
 ///
 /// # The mtime
 ///
-/// `fallocate` moves the mtime to now, and §4.2 wants an `online-only`
+/// `fallocate` moves the mtime to now, and §2.2 wants an `online-only`
 /// file's mtime to be the remote `lastModifiedDateTime`. Recovery has no
 /// remote metadata to restore, so it restores what the file had a moment
 /// before the punch — which for a `dehydrating` file is exactly the remote

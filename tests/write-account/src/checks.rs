@@ -1,5 +1,5 @@
 //! What the run checks against OneDrive itself: the service's behaviour that the write design
-//! assumes (§15) and the wiremock suites can only take as given. Every write goes through
+//! assumes (`docs/design/writes.md` §13) and the wiremock suites can only take as given. Every write goes through
 //! konedrive's own `DriveClient`, so the requests are the ones the outbox worker sends.
 
 use std::collections::{HashMap, HashSet};
@@ -196,7 +196,7 @@ impl Run {
         Ok(renamed)
     }
 
-    /// §3.6: a new empty file is a `PUT` with `conflictBehavior=fail` in its URL, because a
+    /// §6.1: a new empty file is a `PUT` with `conflictBehavior=fail` in its URL, because a
     /// `PUT`'s default is to replace.
     async fn empty_file_name_taken(&mut self) -> Outcome {
         let first = step!("the first PUT", self.put("empty.txt", Vec::new(), T0).await);
@@ -213,7 +213,7 @@ impl Run {
         }
     }
 
-    /// §15, assumed: `If-Match` is honoured on the `PUT` that empties a file.
+    /// §13, assumed: `If-Match` is honoured on the `PUT` that empties a file.
     async fn empty_file_if_match(&mut self) -> Outcome {
         let item = step!("the new file", self.put("if-match.txt", Vec::new(), T0).await);
         let old = item.e_tag.clone().unwrap_or_default();
@@ -238,7 +238,7 @@ impl Run {
         }
     }
 
-    /// §3.6: a file up to 10 MiB goes in a session of one fragment, carrying its time.
+    /// §6.1: a file up to 10 MiB goes in a session of one fragment, carrying its time.
     async fn small_file(&mut self) -> Outcome {
         let content = self.content(100 * 1024);
         let hash = quickxor(&content);
@@ -267,7 +267,7 @@ impl Run {
         }
     }
 
-    /// §15, assumed: a rename or move onto a name that is taken is refused 409.
+    /// §13, assumed: a rename or move onto a name that is taken is refused 409.
     async fn rename_to_taken_name(&mut self) -> Outcome {
         let a = step!("a.txt", self.put("a.txt", b"a".to_vec(), T0).await);
         step!("b.txt", self.put("b.txt", b"b".to_vec(), T0).await);
@@ -278,7 +278,7 @@ impl Run {
         }
     }
 
-    /// §15, assumed: OneDrive treats names without regard to case.
+    /// §13, assumed: OneDrive treats names without regard to case.
     async fn case_collisions(&mut self) -> Outcome {
         let one = step!("Case.txt", self.put("Case.txt", b"one".to_vec(), T0).await);
         match self.put("case.txt", b"two".to_vec(), T0).await {
@@ -303,7 +303,7 @@ impl Run {
         }
     }
 
-    /// §4.8: above 10 MiB a session in 10 MiB fragments; after an interruption the session's
+    /// §6.3: above 10 MiB a session in 10 MiB fragments; after an interruption the session's
     /// status says where to go on from.
     async fn large_file(&mut self) -> Outcome {
         let total = 3 * CHUNK_SIZE;
@@ -344,7 +344,7 @@ impl Run {
         ))
     }
 
-    /// §4.8 and limitations log F80, observed: `If-Match` is checked when a session is created,
+    /// §6.3 and limitations log F80, observed: `If-Match` is checked when a session is created,
     /// so an edit made in OneDrive before the last fragment is assumed to be superseded (kept in
     /// the version history). Either answer is safe; the detail records which one OneDrive gives.
     async fn edit_during_a_session(&mut self) -> Outcome {
@@ -378,7 +378,7 @@ impl Run {
         }
     }
 
-    /// §4.7: a delete goes to the recycle bin.
+    /// §13: a delete goes to the recycle bin.
     async fn recycle_bin(&mut self) -> Outcome {
         let name = format!("recycled-{}.txt", self.run_id);
         let content = b"sent to the recycle bin".to_vec();
@@ -421,7 +421,7 @@ impl Run {
         }
     }
 
-    /// §3.7, assumed: the delta feed returns the run's own changes, each with the eTag its write
+    /// §13, assumed: the delta feed returns the run's own changes, each with the eTag its write
     /// was answered with, so the reconcile finds nothing to do (echo).
     async fn delta_echo(&mut self) -> Outcome {
         const ATTEMPTS: u32 = 6;

@@ -9,7 +9,7 @@
 //! ([`DriveClient::delete_folder`]), sent with no guard at all: the whole
 //! folder goes, as on Windows, and the recycle bin is the safety net.
 //! Throttling (`429`, `503`) comes back as [`WriteError::Throttled`] with the
-//! wait Graph asked for: the worker pauses the whole account (§4.10), so
+//! wait Graph asked for: the worker pauses the whole account (`docs/design/writes.md` §6.2), so
 //! nothing here sleeps ([`Throttle::Return`]).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,11 +23,11 @@ use super::send::{Auth, Throttle};
 use super::{DriveClient, DriveError, DriveItem};
 
 /// The longest wait a `Retry-After` is taken at: a sanity bound against a
-/// garbled or hostile header, not a policy (§4.10).
+/// garbled or hostile header, not a policy (§6.2).
 pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 /// What a write can come back with, typed by what the worker does next
-/// (§3.6's table of answers).
+/// (§6.2's table of answers).
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     /// `412`: the item changed in OneDrive since the eTag or cTag the change
@@ -183,7 +183,7 @@ pub(super) async fn item_from(response: reqwest::Response) -> Result<DriveItem, 
         .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()).into()))
 }
 
-/// What an unsuccessful answer means (§3.6). Graph's error code decides where
+/// What an unsuccessful answer means (§6.2). Graph's error code decides where
 /// it is specific; the status otherwise.
 pub(super) async fn error_from(response: reqwest::Response) -> WriteError {
     let status = Status::of(&response);

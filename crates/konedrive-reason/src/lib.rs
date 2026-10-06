@@ -61,9 +61,9 @@ impl Group {
 /// has one, and as the bare key when not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Reason {
-    /// A writer has the file open (§4.3).
+    /// A writer has the file open (`docs/design/writes.md` §4.3).
     OpenForWriting,
-    /// A removal held by the mass-delete guard (§3.4).
+    /// A removal held by the mass-delete guard (§4.5).
     MassDelete,
     /// The name holds one of `" * : < > ? \ |` (§4.4).
     NameCharacters,
@@ -90,7 +90,7 @@ pub enum Reason {
     NotFound,
     /// The file is not downloaded (WR1).
     NotLocal,
-    /// Its size or time moved while it was being sent (§4.3).
+    /// Its size or time moved while it was being sent (§6.3).
     Changed,
     /// The folder it goes into is not in OneDrive (yet, or any more).
     Parent,
@@ -102,7 +102,7 @@ pub enum Reason {
     /// its handle.
     NoHelper,
     /// A moved-out object the helper will not hand over, or whose place
-    /// cannot be told: kept, never taken for gone (F90). With another errno
+    /// cannot be told: kept, never taken for gone. With another errno
     /// than `EPERM`, `moved-out-unreachable: errno <n>`.
     Unreachable(Option<String>),
     /// A moved-out object is back in the folder: the examination's.
@@ -467,7 +467,7 @@ impl From<String> for Reason {
     }
 }
 
-/// Why an examination never uploads something (`local_skipped`, §3.4 rule 2).
+/// Why an examination never uploads something (`local_skipped`, §4.2 rule 2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LocalSkip {
     Symlink,

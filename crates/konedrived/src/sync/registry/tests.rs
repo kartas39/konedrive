@@ -22,7 +22,7 @@ fn same(a: &Option<Arc<SyncService>>, b: &Arc<SyncService>) -> bool {
     a.as_ref().is_some_and(|a| Arc::ptr_eq(a, b))
 }
 
-/// Design §2.4, step 1 (test 5): the one account whose folder is on the file's
+/// `docs/design/accounts.md` §3.4, by device (test 5): the one account whose folder is on the file's
 /// filesystem is the answer — a file moved out of its folder included. Needs a second
 /// filesystem (`/dev/shm`) beside the temporary directory's.
 #[tokio::test]
@@ -69,7 +69,7 @@ async fn two_folders_on_one_filesystem_are_told_apart_by_path_then_by_item_id() 
     assert!(registry.route(&nowhere).await.is_none(), "routing never guesses");
 }
 
-/// Write design §4.6, §8.5: the fill of an object that left an account's folder goes to that
+/// `docs/design/writes.md` §8.3: the fill of an object that left an account's folder goes to that
 /// account, by its item id — even from inside another account's folder, which its path says.
 #[tokio::test]
 async fn a_moved_out_object_is_routed_by_its_item_id() {

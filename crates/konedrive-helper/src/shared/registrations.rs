@@ -107,7 +107,7 @@ const UNREGISTRATIONS_REMEMBERED: usize = 4096;
 /// as large as they like, which is as long as each walk takes — and keep
 /// every other user's hydrated files from ever being marked. A file is
 /// matched to an unregistration by its owner's uid, which is the uid of the
-/// root it is in whenever the daemon can act on it at all (§6.2); a file in
+/// root it is in whenever the daemon can act on it at all (`docs/design/hydration.md` §11); a file in
 /// someone else's root that this misses is still cleared by the registration
 /// walk before that tree is intercepted again.
 pub(crate) struct Unregistrations {

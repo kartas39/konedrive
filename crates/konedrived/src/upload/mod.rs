@@ -15,15 +15,15 @@
 //! the first byte and after every fragment, and resumed from where the
 //! server stands.
 //!
-//! **The commit** (§3.5): the file's attributes through its own descriptor
+//! **The commit** (§5.4): the file's attributes through its own descriptor
 //! (the stamp from the snapshot, the cTag, `hydrated`, then the item id),
 //! then one store transaction ([`TreeStore::outbox_commit`]), both under the
-//! per-root tree lock a cycle's stage-to-swap takes too (§3.7).
+//! per-root tree lock a cycle's stage-to-swap takes too (§9).
 //!
 //! **Guards that fail** are resolved by reading again, never by forcing
-//! (WR2): §3.6's answers and §6's conflicts, keeping both versions where
+//! (WR2): §6.2's answers and §7's conflicts, keeping both versions where
 //! both changed. A name still held by an item a live row is freeing is
-//! taken through a temporary name (`.konedrive-swap-*`, F55 (7)): never
+//! taken through a temporary name (`.konedrive-swap-*`, §5.3): never
 //! adopted, never copied.
 //!
 //! **Throttling, offline, pause, sign-in** stop the whole worker: the rows
@@ -77,15 +77,15 @@ pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) 
 }
 
 /// A name the worker gives an item in OneDrive while the name it takes is
-/// still another item's (§4.4, F55 (7)); `.konedrive-*` names are never
+/// still another item's (§5.3); `.konedrive-*` names are never
 /// uploaded from the folder, so none can be a user's.
 pub use konedrive_tree::outbox::SWAP_PREFIX;
 
 /// Retries of a row that failed for a reason expected to pass: 1 s,
-/// doubling, at most an hour (§3.6; provisional). Never dropped.
+/// doubling, at most an hour (§6.2; provisional). Never dropped.
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
-/// Throttled without `Retry-After`: 10 s, doubling, at most an hour (§4.10;
+/// Throttled without `Retry-After`: 10 s, doubling, at most an hour (§6.2;
 /// provisional).
 pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
 
@@ -97,7 +97,7 @@ pub trait OutboxHost: Send + Sync {
     fn status(&self, _status: &WorkerStatus) {}
     /// What is kept back, summed again (`NotUploadedSummary()`).
     fn kept_back(&self, _summary: &[crate::upload::kept_back::SummaryRow]) {}
-    /// OneDrive changed under a row (§6), or a folder a row needs is gone
+    /// OneDrive changed under a row (§7), or a folder a row needs is gone
     /// there: a delta cycle should run soon, so that the base catches up and
     /// the reconcile places what came back. The delta carries it: a plain
     /// cycle, not a Full reconcile, which scans the whole folder.
@@ -126,7 +126,7 @@ pub trait OutboxHost: Send + Sync {
         Ok(())
     }
     /// An item's local object was forgotten and OneDrive's version must be
-    /// placed again (§6: delete × edit), though the delta may have carried it
+    /// placed again (§7: delete × edit), though the delta may have carried it
     /// already: a cycle with a Full reconcile should run soon (the outbox on
     /// the bus).
     fn full_cycle_wanted(&self) {
@@ -216,9 +216,9 @@ pub struct WorkerConfig {
     /// The folder's per-inode locks: a read for an upload and a free-up of
     /// the same file exclude each other.
     pub locks: InodeLocks,
-    /// For conflict copies (§6): `machine_name` from the account's config.
+    /// For conflict copies (§7): `machine_name` from the account's config.
     pub machine_name: String,
-    /// The per-root tree mutex (§3.7): held across each commit; a cycle
+    /// The per-root tree mutex (§9): held across each commit; a cycle
     /// holds it from staging to swap.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     pub host: Arc<dyn OutboxHost>,
@@ -258,7 +258,7 @@ pub struct WorkerStatus {
 }
 
 /// What the outbox holds, for `PendingCount`, `PendingBytes` and
-/// `BlockedCount` (§9).
+/// `BlockedCount` (§11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutboxCounts {
     /// Rows waiting, ready, running or in backoff.
@@ -321,7 +321,7 @@ pub fn outbox_counts(store: &konedrive_tree::TreeStore, full: bool) -> Result<Ou
 }
 
 /// A point where the worker's tests make it stop as if the daemon had died
-/// there (§5). Each armed point fires once; the row stays `running` and the
+/// there (§10). Each armed point fires once; the row stays `running` and the
 /// worker takes nothing new until it is built again on the same store. Only
 /// the names are compiled into the daemon: nothing can be armed outside the
 /// crate's tests, and a point costs nothing there (`Engine::fault`).
@@ -398,8 +398,8 @@ impl OutboxHandle {
     }
 
     /// Sends nothing until [`cycle_done`](Self::cycle_done): a folder's
-    /// first delta cycle runs before its outbox (`docs/design/writes.md` §3), and so
-    /// does the one after the network came back (§4.9, `network_back`),
+    /// first delta cycle runs before its outbox, and so
+    /// does the one after the network came back (`docs/design/writes.md` §9, `network_back`),
     /// whose rows in backoff then go at once.
     pub fn wait_for_cycle(&self, network_back: bool) {
         self.engine.wait_for_cycle(network_back);
@@ -481,7 +481,7 @@ impl OutboxWorker {
     }
 
     /// Stops the worker and waits for it. A request under way is cut off;
-    /// its row stays `running` and is replayed at the next start (§5).
+    /// its row stays `running` and is replayed at the next start (§10).
     ///
     /// Cut while it waits, it may be called again: the task is waited for until it has
     /// ended.

@@ -1,4 +1,4 @@
-//! One run: the guards that must hold before anything is written (`docs/design/writes.md` §12, guards 1,
+//! One run: the guards that must hold before anything is written (`docs/design/writes.md` §12.1, guards 1,
 //! 2 and 5), the checks, and the cleanup.
 
 use std::sync::Arc;

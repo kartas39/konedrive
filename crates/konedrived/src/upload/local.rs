@@ -29,7 +29,7 @@ use crate::local::names::copy_name;
 
 use konedrive_tree::outbox::{Inode, Snapshot};
 
-/// `user.konedrive.sync` values (`docs/design/writes.md` §11).
+/// `user.konedrive.sync` values (`docs/design/writes.md` §5.4).
 pub const SYNC_PENDING: &str = "pending";
 pub const SYNC_UPLOADING: &str = "uploading";
 pub const SYNC_BLOCKED: &str = "blocked";
@@ -196,7 +196,7 @@ pub(super) enum Opened {
 
 /// Opens `found` for an upload: its state by name first (a placeholder is
 /// never opened), then the file, the mark — before the snapshot: it changes
-/// no size or time (§9) — the probe for a writer, and the snapshot.
+/// no size or time (§5.4) — the probe for a writer, and the snapshot.
 pub(super) fn open_for_upload(found: &Found) -> io::Result<Opened> {
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
@@ -302,7 +302,7 @@ pub(super) fn read(file: &File, offset: u64, len: usize, snap: Snap) -> io::Resu
     Ok(Read::Bytes(bytes))
 }
 
-/// Commit step 1, first half (§3.5): the stamp from the snapshot, the cTag,
+/// Commit step 1, first half (§5.4): the stamp from the snapshot, the cTag,
 /// `hydrated`, then `fsync`.
 pub(super) fn commit_attributes(file: &File, snap: Snap, ctag: Option<&str>) -> io::Result<()> {
     assert_under_lock();

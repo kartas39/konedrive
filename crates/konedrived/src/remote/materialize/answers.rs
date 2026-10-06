@@ -116,7 +116,7 @@ impl Materializer {
     /// The Changed scope, phase 2: whether an item whose folder is not
     /// where the tree has it asks for the scan of a Full pass. Always in a
     /// read-only folder. In a read-write one only with something to place:
-    /// only a scan can tell a folder deleted here from one moved (§3.7);
+    /// only a scan can tell a folder deleted here from one moved (`docs/design/writes.md` §9);
     /// with nothing to place, the change waits.
     pub(super) fn asks_for_the_scan(&self, id: &str) -> bool {
         self.mode.read_write().is_none_or(|rw| rw.revive.contains(id))
@@ -130,7 +130,7 @@ impl Materializer {
 
     /// A local version at `dir/name` (at `rel`) is in the way of the
     /// cloud's: rescued out of the folder, or, in a read-write folder, kept
-    /// beside it under a copy name, to be uploaded as new (§6).
+    /// beside it under a copy name, to be uploaded as new (§7).
     pub(super) fn out_of_the_way(&self, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
         match &self.mode {
             Mode::ReadOnly => self.rescue(dir, name, rel, run),
@@ -151,7 +151,7 @@ impl Materializer {
 
     /// Whether an object with no id at `rel`, where `row` is to be placed,
     /// is left there and the item waits: a create or mkdir waiting there,
-    /// which the outbox worker settles with the cloud's item (§6,
+    /// which the outbox worker settles with the cloud's item (§7,
     /// create/create); an object of the user's the cloud has nothing new
     /// for; a local folder where OneDrive has a new one (`both_folders`),
     /// which merge by the `mkdir`'s `409`, never a copy. Never in a
@@ -171,8 +171,7 @@ impl Materializer {
 
     /// Whether a downloaded file of another version than `row`'s is left as
     /// it is, its change waiting: a read-write folder's, with an outbox row
-    /// recorded since the cycle began. The worker's guard settles it (§3.7,
-    /// excluded).
+    /// recorded since the cycle began. The worker's guard settles it (§9).
     pub(super) fn changed_since_the_cycle_began(&self, row: &Row, run: &mut Run) -> Result<bool, ApplyError> {
         if self.mode.is_read_only() {
             return Ok(false);
@@ -187,7 +186,7 @@ impl Materializer {
 
     /// Whether a downloaded file that differs from OneDrive's version is
     /// kept beside it even with no local work in it: a version OneDrive may
-    /// have lost (`resyncChangesUploadDifferences`, §3.7).
+    /// have lost (`resyncChangesUploadDifferences`, §9).
     pub(super) fn keeps_every_download(&self) -> bool {
         self.mode.read_write().is_some_and(|rw| rw.upload_differences)
     }

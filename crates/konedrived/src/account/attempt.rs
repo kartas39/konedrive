@@ -93,7 +93,7 @@ impl Attempt {
     }
 }
 
-/// Who a sign-in turned out to be (design §8.2): the drive, and the email when `/me`
+/// Who a sign-in turned out to be (`docs/design/accounts.md` §6.2): the drive, and the email when `/me`
 /// answered.
 pub(crate) struct Identity {
     pub(crate) drive: DriveId,
@@ -116,7 +116,7 @@ pub(crate) enum Unconfirmed {
 }
 
 /// A token response as a sign-in: its refresh token, and whose it is, asked of `graph`
-/// with the new access token. Only the drive is needed: it is the check (§8.2). The email
+/// with the new access token. Only the drive is needed: it is the check (§6.2). The email
 /// names the account and its wallet item.
 pub(crate) async fn confirm(tokens: TokenResponse, graph: &DriveClient) -> Result<SignedIn, Unconfirmed> {
     let Some(refresh_token) = tokens.refresh_token.clone() else { return Err(Unconfirmed::NoRefreshToken) };

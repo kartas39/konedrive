@@ -99,7 +99,7 @@ fn not_a_directory(path: &Path) -> RegisterError {
 /// own into a perfectly good directory in the user's home is normally
 /// refused (`EROFS`, `EACCES`): it checks the filesystem's type with `fstatfs`
 /// (`check_filesystem_type` in `konedrive-helper/src/registration.rs`) and
-/// probes nothing (the limitations log, F234). The daemon runs unprivileged,
+/// probes nothing. The daemon runs unprivileged,
 /// in the user's own home, with no such sandbox, so this is the one place in
 /// the system where a write probe's result means something.
 pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
@@ -201,7 +201,7 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 /// fully cover is logged by the helper as degraded
 /// (`konedrive-helper/src/registration.rs` `record_walk`) and kept track of
 /// nowhere: `RegisterRoot`'s ack carries only an errno, so a degraded root
-/// still acks success here (the limitations log, F10). Nothing in this crate
+/// still acks success here (issue #219). Nothing in this crate
 /// today has anywhere to put that signal — the natural home is a later
 /// helper→daemon query (or an addition to `RootState`/`LastError` on
 /// `org.konedrive.Folder`), once one exists.
@@ -245,7 +245,7 @@ pub(crate) async fn recorded_root_id(path: &Path) -> Option<String> {
 }
 
 /// Whose files a folder holds, as far as the drive it remembers goes
-/// (`user.konedrive.drive`, design §8.3).
+/// (`user.konedrive.drive`, `docs/design/accounts.md` §6.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DriveOf {
     /// It carries no drive, or the asking account's: that account may register it.
@@ -287,7 +287,7 @@ pub(crate) async fn drive_of(path: &Path, mine: Option<String>) -> DriveOf {
 /// Takes the drive off the folder at `path`, which [`drive_of`] found [`DriveOf::Stale`]:
 /// only while it is still empty. A failure is logged and the folder is registered all the
 /// same, as it was: the drive it keeps is then replaced by nothing, and `mark_drive` leaves
-/// it (the limitations log, F276).
+/// it.
 pub(crate) async fn forget_drive(path: &Path) {
     let path = path.to_path_buf();
     let _ = tokio::task::spawn_blocking(move || {
@@ -308,7 +308,7 @@ pub(crate) async fn forget_drive(path: &Path) {
 }
 
 /// Writes `drive` on the registered root as the drive it shows
-/// (`user.konedrive.drive`, design §8.3), when it carries none yet — through a
+/// (`user.konedrive.drive`, §6.3), when it carries none yet — through a
 /// window in the read-only lock, like every attribute the daemon writes in a
 /// locked folder. Whether it was written. Blocking.
 ///
@@ -402,7 +402,7 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 /// folder full of somebody's existing data: the empty check is skipped
 /// for anything that "carries a root id", and nothing ever removes the
 /// xattr again, so one `setfattr` disarms that check for that folder
-/// permanently. It matters because §4.3's populate skips names that already
+/// permanently. It matters because `PopulateFromDirectory` skips names that already
 /// exist — those files never get an item id, never get a placeholder, and
 /// yet live inside a tree the helper now marks and this module now walks and
 /// punches.

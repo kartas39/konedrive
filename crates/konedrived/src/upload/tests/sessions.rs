@@ -72,7 +72,7 @@ fn four_fragments(update: bool) -> World {
     w
 }
 
-/// A crash at each point of a session (§10), for a new file and for a
+/// A crash at each point of a session (`docs/design/writes.md` §10), for a new file and for a
 /// changed one, and what the next start does:
 ///
 /// - the session opened, not persisted: a new session — a new file's replay
@@ -208,12 +208,12 @@ fn a_session_that_ends_under_its_upload_starts_over_once_in_a_run() {
 
 /// What OneDrive refuses for good in the middle of a session — after its
 /// opening was accepted — gives the session up, cancelled, and is decided as
-/// the same refusal at the opening is (§6):
+/// the same refusal at the opening is (§7):
 ///
 /// - a new file whose name another file took meanwhile (`409` to the last
 ///   fragment): a conflict copy, theirs untouched;
 /// - a changed file whose item was changed in OneDrive meanwhile (read again
-///   before the last fragment, §4.8 step 4): the last fragment is never
+///   before the last fragment, §6.3 step 4): the last fragment is never
 ///   sent, and both versions are kept;
 /// - a changed file whose item was deleted in OneDrive meanwhile: it goes up
 ///   again as new;
@@ -268,7 +268,7 @@ fn a_refusal_in_the_middle_of_a_session_gives_it_up_and_is_decided_as_at_the_ope
 /// A changed file's session that waited — its fragment refused for now — is
 /// completed only against the version it was opened for: the item is read
 /// again before the last fragment also when that is the session's only one
-/// (§4.8 step 4), since the guard was checked when the session was opened,
+/// (§6.3 step 4), since the guard was checked when the session was opened,
 /// not when it completes. Changed in OneDrive meanwhile, both versions are
 /// kept, as for any `412`; theirs is never overwritten.
 #[test]

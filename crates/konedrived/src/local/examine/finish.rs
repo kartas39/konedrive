@@ -89,7 +89,7 @@ impl Run<'_, '_, '_> {
     /// The mass-delete guard, then everything in one transaction.
     ///
     /// The guard counts the items removed from OneDrive — by deletes and
-    /// moves out alike, the Trash included (§4.6) — by this batch and by the
+    /// moves out alike, the Trash included (`docs/design/writes.md` §4.5) — by this batch and by the
     /// removals still waiting in the outbox, so that a trickle adds up. Each
     /// item counts once, and removals the user confirmed count no more.
     /// When it trips on something new, every removal not confirmed is

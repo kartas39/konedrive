@@ -1,4 +1,4 @@
-//! Which filesystem the recorded file handles belong to (`docs/design/writes.md` §8.1).
+//! Which filesystem the recorded file handles belong to (`docs/design/writes.md` §4.2 rule 7, §8.1).
 //!
 //! Every failure to decode a handle is `ESTALE`, so "gone" is believed only for a handle taken
 //! on the filesystem the folder is on now. The store keeps the name of that filesystem

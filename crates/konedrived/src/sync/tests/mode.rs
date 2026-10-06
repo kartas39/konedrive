@@ -151,7 +151,7 @@ async fn a_dehydration_without_interception_clears_the_mark_through_its_link() {
     assert_eq!(helper.seen(), vec![Seen::ClearIgnore], "the mark must be cleared first");
 }
 
-/// And stopped by a clear that fails, as §8 step 2 has it everywhere
+/// And stopped by a clear that fails, as `docs/design/hydration.md` §8 step 2 has it everywhere
 /// else: the file is left hydrated, content and all.
 #[tokio::test]
 async fn a_dehydration_without_interception_whose_mark_is_not_cleared_changes_nothing() {
@@ -579,7 +579,7 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
 
-/// F241: an intercepted folder whose root id is recorded nowhere cannot be named to the
+/// An intercepted folder whose root id is recorded nowhere cannot be named to the
 /// helper. It is held, and says why; a Forget takes the daemon's record of it away with no
 /// helper, and touches nothing in the folder.
 #[tokio::test]

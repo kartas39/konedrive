@@ -6,7 +6,7 @@
 #     scripts/build-rpm.sh --version X.Y.Z   # a release (the release workflow): X.Y.Z must be
 #                                            # the version in Cargo.toml
 #     scripts/build-rpm.sh --dev-tools       # a local development package: its daemon
-#                                            # serves the token export (limitations log W11)
+#                                            # serves the token export
 #
 # Everything lands under target/rpm/ in this repository (rpmbuild's _topdir);
 # the RPMs are listed at the end. Needs rpmbuild (`sudo dnf install rpm-build`)

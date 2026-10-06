@@ -2,7 +2,7 @@
 //! konedrive's own client (`konedrive_graph::drive::socket`), one small file is written in the run
 //! folder, and the check waits for the `notification` event the daemon's live task relies on.
 //! It reports how long the event took, the Engine.IO timings the service sent, and whether the
-//! endpoint said when it expires (limitations log: without it, the daemon renews after an
+//! endpoint said when it expires (without it, the daemon renews after an
 //! hour). The endpoint is a `GET` through the guard; the socket itself only reads.
 
 use std::time::{Duration, Instant, SystemTime};

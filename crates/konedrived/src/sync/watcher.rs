@@ -101,7 +101,7 @@ impl SyncService {
         }
     }
 
-    /// The ignore list changed (`docs/design/writes.md` §4.4): a Full local scan now, if a
+    /// The ignore list changed (`docs/design/writes.md` §4.2 rule 3): a Full local scan now, if a
     /// watcher runs, so that a name no longer ignored is uploaded.
     pub(super) fn rescan_for_ignore_list(&self) {
         if let Some(watcher) = self.running().as_ref().and_then(Handles::watcher) {
@@ -112,7 +112,7 @@ impl SyncService {
     /// Keeps `LastError` in step with the watcher. When the folder itself was
     /// moved or deleted, the folder is down ([`root_gone`](Self::root_gone)): it shows an
     /// error, said as a registration's trouble is (it outlasts the watcher), and its sync
-    /// stops (§3.3): nothing is deleted in the cloud because it went.
+    /// stops (§3.7): nothing is deleted in the cloud because it went.
     fn watch_hook(&self, runtime: tokio::runtime::Handle, sync: u64) -> StatusHook {
         let me = self.me.clone();
         let said = std::sync::atomic::AtomicBool::new(false);

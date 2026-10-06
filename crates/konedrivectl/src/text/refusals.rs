@@ -155,7 +155,7 @@ pub struct Context<'a> {
     /// of them is refused `OutsideRoot` before any account sees it.
     pub folders: &'a [String],
     /// The folder a registration named carries another account's drive
-    /// (`user.konedrive.drive`, design §8.3), which the daemon refuses under
+    /// (`user.konedrive.drive`, `docs/design/accounts.md` §6.3), which the daemon refuses under
     /// `NotEmpty` too.
     pub foreign: bool,
     /// How a suggested command names the account ([`command_prefix`](crate::choice::command_prefix)); empty

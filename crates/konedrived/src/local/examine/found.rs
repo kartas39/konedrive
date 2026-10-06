@@ -47,7 +47,7 @@ pub(super) enum Verdict {
     ReadIt { size_changed: bool },
 }
 
-/// The stamp rule (§3.4) for the file `e` of an item whose base size is `base_size`.
+/// The stamp rule (`docs/design/writes.md` §4.3) for the file `e` of an item whose base size is `base_size`.
 /// `being_sent`: a row of the item is running with the content as listed. `written`:
 /// the batch saw a write to it.
 pub(super) fn verdict(e: &Entry, base_size: u64, being_sent: bool, written: bool) -> Verdict {
@@ -120,7 +120,7 @@ impl Run<'_, '_, '_> {
         Ok(())
     }
 
-    /// The content check (§3.4) of item `id`'s file `e` against `base`: by
+    /// The content check (§4.3) of item `id`'s file `e` against `base`: by
     /// its marks and its stamp ([`verdict`]), and only then by reading it.
     fn content(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
         let being_sent = self.facts.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(e.snapshot()));

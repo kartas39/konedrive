@@ -31,7 +31,7 @@ async fn recover(link: &HelperLink, root: &SyncRoot) -> Result<RecoveryReport, R
 
 /// A file in the state a crash left it in: content on disk, the state
 /// xattr saying what was happening to it, and the stamp a finished
-/// hydration would have written — which §4.4 requires recovery to remove.
+/// hydration would have written — which `docs/design/hydration.md` §9 requires recovery to remove.
 fn interrupted_file(dir: &Path, name: &str, state: State, size: usize) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, vec![3u8; size]).unwrap();
@@ -564,7 +564,7 @@ async fn a_file_that_disappears_mid_walk_is_counted_and_the_walk_goes_on() {
 /// `read_state(&file).unwrap_or(None)` collapsed `Corrupt` and genuine
 /// I/O errors into "not one of ours". Safe in direction — a file whose
 /// state cannot be read must never be punched — but the file was then
-/// not counted, not logged and never noticed, while §5.2 has the helper
+/// not counted, not logged and never noticed, while §5.1 has the helper
 /// deny every open of it with `EIO` for as long as it stays that way.
 #[tokio::test]
 async fn recovery_never_punches_a_file_whose_state_it_cannot_read() {

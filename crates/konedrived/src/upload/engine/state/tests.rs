@@ -8,7 +8,7 @@ fn secs(n: u64) -> Option<Duration> {
     Some(Duration::from_secs(n))
 }
 
-/// §4.10: the wait is as long as OneDrive asked, at least a second and at most an hour,
+/// `docs/design/writes.md` §6.2: the wait is as long as OneDrive asked, at least a second and at most an hour,
 /// and is over when its second has come.
 #[test]
 fn a_throttle_lasts_as_long_as_onedrive_asked() {

@@ -24,9 +24,9 @@ const LAST_CHECKED: &str = "last_checked";
 /// The filesystem the recorded file handles were taken on.
 const HANDLES_FILESYSTEM: &str = "handles_root";
 /// The count of outbox commits: `items.local_seq` of the row a commit
-/// writes (the stale-delta guard, `docs/design/writes.md` §3.7).
+/// writes (the stale-delta guard, `docs/design/writes.md` §9).
 pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
-/// A pause's end, unix seconds; `0` until resumed (§9).
+/// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 
 /// The value of `key`, read on `conn`: a transaction's too.

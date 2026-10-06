@@ -1,6 +1,6 @@
 //! One directory entry as the examination sees it: `lstat` and the
 //! attributes read by name (`lgetxattr`), never an open — a placeholder is
-//! never filled by being looked at (§3.4).
+//! never filled by being looked at (`docs/design/writes.md` §4.2).
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;

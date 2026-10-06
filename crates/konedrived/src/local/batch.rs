@@ -1,5 +1,5 @@
-//! A batch: the places a quiet spell of events made dirty (write design
-//! §3.3, amended by §17).
+//! A batch: the places a quiet spell of events made dirty (`docs/design/writes.md`
+//! §3.4).
 //!
 //! Events are hints. The watcher resolves an event's directory handle
 //! to a path through its directory map and adds what it learnt here:

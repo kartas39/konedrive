@@ -1,6 +1,6 @@
 //! The notification group itself: `fanotify_init`, `fanotify_mark` and the
-//! events it reports, all without privilege (`docs/design/writes.md` §3 as amended
-//! by §17; `docs/kernel-behavior-7.2/notification.md` §14).
+//! events it reports, all without privilege (`docs/design/writes.md` §3.1;
+//! `docs/kernel-behavior-7.2/notification.md` §14).
 //!
 //! The group reports file handles: every event on an entry carries its
 //! directory and name (`DFID_NAME`) and the object's own handle (`FID`); a
@@ -28,7 +28,7 @@ const REPORT_NAME: u32 = 0x800;
 const REPORT_TARGET_FID: u32 = 0x1000;
 /// `FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME_TARGET | FAN_NONBLOCK |
 /// FAN_CLOEXEC`: what an unprivileged process may ask for that names both
-/// the directory entry and the object (§14.1).
+/// the directory entry and the object (notification.md §14.1).
 const INIT: u32 = CLASS_NOTIF | REPORT_DIR_FID | REPORT_NAME | REPORT_FID | REPORT_TARGET_FID | NONBLOCK | CLOEXEC;
 
 const MARK_ADD: u32 = 0x1;
@@ -47,10 +47,10 @@ pub const ONDIR: u64 = 0x4000_0000;
 
 /// Every directory of the folder. No `FAN_MOVED_FROM`/`FAN_MOVED_TO`:
 /// `FAN_RENAME` says all they do, and they would triple what a rename costs
-/// in the queue (§3.1). No `FAN_MODIFY`: a change is examined once it is
+/// in the queue (writes.md §3.1). No `FAN_MODIFY`: a change is examined once it is
 /// closed (`FAN_CLOSE_WRITE`) or its attributes move (`FAN_ATTRIB`).
 pub const DIR_MASK: u64 = CREATE | DELETE | RENAME | CLOSE_WRITE | ATTRIB | ONDIR | EVENT_ON_CHILD;
-/// The root also reports being moved or deleted (§3.3).
+/// The root also reports being moved or deleted (writes.md §3.7).
 pub const ROOT_MASK: u64 = DIR_MASK | DELETE_SELF | MOVE_SELF;
 
 const INFO_FID: u8 = 1;
@@ -63,7 +63,7 @@ const INFO_NEW_DFID_NAME: u8 = 12;
 pub type Fsid = [i32; 2];
 
 /// An object as the kernel names it: its filesystem and its file handle.
-/// Byte-equal to what `name_to_handle_at` gives (§14.6).
+/// Byte-equal to what `name_to_handle_at` gives (notification.md §14.6).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Fid {
     pub fsid: Fsid,
@@ -119,7 +119,7 @@ pub fn fsid_of(file: &File) -> io::Result<Fsid> {
 
 /// One notification group, for directories of one filesystem id: a group
 /// that marks one Btrfs subvolume refuses a mark on another with `EXDEV`
-/// (§3.6).
+/// (§14.6).
 pub struct Group {
     fd: OwnedFd,
     pub fsid: Fsid,

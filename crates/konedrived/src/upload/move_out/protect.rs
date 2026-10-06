@@ -1,5 +1,5 @@
-//! The re-marking of what left the folder, and the routing of its fills (write design §4.6,
-//! §8.5, §10): the worker's own task does it, before any row runs.
+//! The re-marking of what left the folder, and the routing of its fills (`docs/design/writes.md` §8.3,
+//! §10): the worker's own task does it, before any row runs.
 
 use std::collections::HashSet;
 use std::fs::File;

@@ -63,7 +63,7 @@ async fn a_stop_waits_for_the_section_of_a_dropped_row() {
 
 /// The `If-Match` a request carries: the eTag, the cTag where there is no
 /// eTag, and none with neither — except for an item just read, whose delete
-/// then goes out with an empty one (limitations log F235).
+/// then goes out with an empty one.
 #[test]
 fn a_guard_is_the_etag_then_the_ctag_and_empty_only_for_an_item_just_read() {
     use super::Guard;

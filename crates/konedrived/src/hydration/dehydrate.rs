@@ -111,10 +111,10 @@ fn nothing_to_free(file: &File) -> Result<bool, DehydrateError> {
 /// afterwards.
 ///
 /// With `dehydrating` already on disk the same open takes the `hydrate(...)`
-/// arm instead: it waits, and re-hydrates after we finish, which is exactly
-/// what §8's closing paragraph promises. The `fsync` is what makes the new
+/// arm instead: its fill waits for the inode lock held here, and meanwhile the lease is
+/// refused and the free-up rolls back (§8, "Races"). The `fsync` is what makes the new
 /// state survive a crash in the middle of the sequence, where startup
-/// recovery (§4.4) then finds a `dehydrating` file and cleans it up.
+/// recovery (§9) then finds a `dehydrating` file and cleans it up.
 /// # The barrier's own failure rolls back, like the two either side
 ///
 /// If the `fsync` fails, the state write before it still happened — in page
@@ -127,7 +127,7 @@ fn nothing_to_free(file: &File) -> Result<bool, DehydrateError> {
 fn mark_dehydrating(file: &File) -> Result<FileTimes, DehydrateError> {
     check_dehydratable(file)?;
     // Captured before anything touches the file: `fallocate` bumps the mtime
-    // to now, and §4.2 requires an `online-only` file's mtime to still be the
+    // to now, and §2.2 requires an `online-only` file's mtime to still be the
     // remote `lastModifiedDateTime` that `create_placeholder` set.
     let times = FileTimes::of(file).map_err(io_error)?;
     write_state(file, State::Dehydrating).map_err(io_error)?;
@@ -142,7 +142,7 @@ fn mark_dehydrating(file: &File) -> Result<FileTimes, DehydrateError> {
 ///
 /// The rollback's own failure is reported, never swallowed: it leaves a file
 /// stuck in `dehydrating` with its blocks intact, which startup recovery
-/// (§4.4) will punch and turn into `online-only` — correct, but a silent
+/// (§9) will punch and turn into `online-only` — correct, but a silent
 /// "free up space failed" that empties the file at the next start is not
 /// something to discover from a log line that was never written.
 fn roll_back(file: &File, cause: DehydrateError) -> DehydrateError {
@@ -217,9 +217,10 @@ fn punch_clean_file_watched(
     watch(Watch::UnderLease, file);
 
     // Steps 4–5. The lease is held across all of them: `lease` is dropped
-    // below, so every open arriving from here on waits for the break instead
-    // of reading a file mid-punch or a file that is empty but still says
-    // `dehydrating`.
+    // below, so no open arriving from here on reads a file mid-punch or a
+    // file that is empty but still says `dehydrating`: in an intercepted
+    // folder it is denied `EPERM` at once (`docs/design/hydration.md` §8,
+    // "Races"), and in a folder without interception it waits for the break.
     let shape = Shape { size: None, times: restore };
     match demote(file, Keep::Nothing, shape, Held::Lease(&lease)).map_err(io_error)? {
         Demoted::Done { .. } => {}
@@ -247,8 +248,8 @@ fn punch_clean_file_watched(
 ///
 /// # Why `clear_ignore`'s error must propagate — never `let _ =`
 ///
-/// The helper's ignore mark carries `FAN_MARK_IGNORED_SURV_MODIFY` (spec
-/// §5.1, invariant M3), which removed an accidental safety net: an ignore
+/// The helper's ignore mark carries `FAN_MARK_IGNORED_SURV_MODIFY` (§4.3,
+/// invariant M3), which removed an accidental safety net: an ignore
 /// mark used to be cleared by any modification to the file, so a dehydration
 /// that skipped or failed the clear used to repair itself the moment the
 /// punch modified the file. It no longer does. If this were ever weakened —
@@ -273,8 +274,8 @@ fn punch_clean_file_watched(
 /// acks `ClearIgnore` with errno 0 both when it actually removed the mark
 /// and when the mark was never there or the kernel had already evicted it
 /// (an evictable mark is designed to vanish on its own) — see
-/// `konedrive-helper/src/main.rs`'s `apply`/`ClearIgnore` handling and spec
-/// §5.1. So any non-zero errno reaching here means something genuinely went
+/// `konedrive-helper/src/connection.rs`'s `apply`/`ClearIgnore` handling and
+/// §8 step 2. So any non-zero errno reaching here means something genuinely went
 /// wrong, and stopping is always the right call.
 ///
 /// # Cancelling this leaves the file `dehydrating`
@@ -289,6 +290,15 @@ fn punch_clean_file_watched(
 /// as "hydrate it again", and [`recover`](crate::hydration::recovery::recover) punches and relabels
 /// it at the next start — but it is not a *tidy* one, so a caller that can
 /// cancel should prefer to let the sequence finish.
+///
+/// # The caller holds the per-inode lock
+///
+/// Nothing here takes it. The daemon frees a file up through
+/// `SyncService::dehydrate`, which opens the file, takes the lock of its
+/// inode and calls `dehydrate_opened`; this function is called only by
+/// this module's tests and by the scenarios of `tests/vm/`, which is why it
+/// is public. Anything else that calls it must hold the lock, or a fill of
+/// the same file can run beside the punch.
 pub async fn dehydrate(
     link: &HelperLink,
     root: &SyncRoot,

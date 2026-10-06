@@ -357,7 +357,7 @@ impl TreeStore {
 
     /// The rows that can run now, in `seq` order: `ready`, or `retry` whose
     /// time has come, with nothing to wait for. Which of them run at once is
-    /// the worker's (metadata rows one at a time, §3.5).
+    /// the worker's (metadata rows one at a time, `docs/design/writes.md` §5.3).
     #[cfg(any(test, feature = "testing"))]
     pub fn outbox_runnable(&self, now: i64) -> Result<Vec<OutboxRow>, TreeError> {
         let names = name_edges(&self.conn)?;

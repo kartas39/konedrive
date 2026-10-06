@@ -1,7 +1,6 @@
 //! The reader: one thread that walks the folder once, then drains the
 //! notification groups, keeps the directory map and the marks current, and
-//! gathers dirt until a quiet spell hands it over (`docs/design/writes.md` §3, amended
-//! by §17).
+//! gathers dirt until a quiet spell hands it over (`docs/design/writes.md` §3).
 //!
 //! **Events are hints.** A directory's events are settled against the disk,
 //! never read as a sequence: for each `(directory, name)` a `FAN_ONDIR`
@@ -110,7 +109,7 @@ impl Reader {
     }
 
     /// The bring-up walk: every directory `MarkDir`ed and marked before
-    /// anything in it is looked at, then a Full local scan (§3.3's bring-up
+    /// anything in it is looked at, then a Full local scan (§2.2's bring-up
     /// order). Runs on the reader's thread; `Watcher::walked` says when it is
     /// done, or that it was cut short (a stop, a folder it could not list).
     fn bring_up(&mut self) {

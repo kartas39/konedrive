@@ -127,7 +127,7 @@ async fn a_token_asked_for_under_another_scope_is_refreshed_down() {
     assert_eq!(tokens.access_token().await.unwrap(), "AT-RO", "cached from then on");
 }
 
-/// `TokenExport`'s token (`docs/design/writes.md` §8.2; SECURITY.md): a token that can write is never handed out. A
+/// `TokenExport`'s token (`docs/design/desktop.md` §2.7; SECURITY.md): a token that can write is never handed out. A
 /// read-write account's comes from a refresh that asks for `Files.Read` only, and the
 /// account's own token stays cached as it was; a read-only token is handed out as is.
 #[tokio::test]

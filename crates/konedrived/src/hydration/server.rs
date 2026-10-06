@@ -53,10 +53,10 @@ pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 ///
 /// # Per-inode serialization
 ///
-/// Dehydration (`docs/design/hydration.md` §8) promises "the daemon
+/// Dehydration (`docs/design/hydration.md` §8) and a fill (§6.1) take the per-inode lock: the daemon
 /// serializes operations per inode, so a
 /// hydration request for a file being dehydrated runs after the dehydration
-/// finishes". `locks` is what keeps that promise: this loop and
+/// finishes. `locks` is what keeps that promise: this loop and
 /// `SyncService::dehydrate` run in the same daemon and share the one table,
 /// so two fills of the *same* file — one a hydration, one a dehydration's
 /// punch — never run concurrently and tear it.
@@ -149,7 +149,7 @@ pub(crate) async fn serve(
         // connection ended is not filled: the helper answered
         // its opener `EIO` when the connection went (its disconnect guard
         // takes every job the connection had), so a fill would download a
-        // file for nobody — and, while four fill slots are taken, keep this
+        // file for nobody — and, while the 64 requests taken at once are all held, keep this
         // loop from noticing the end at all.
         let permit = tokio::select! {
             permit = Arc::clone(&permits).acquire_owned() => permit.expect("semaphore closed"),
@@ -173,7 +173,7 @@ pub(crate) async fn serve(
         let locks = locks.clone();
         running.spawn(async move {
             let permit = permit;
-            // Which account's file this is (design §2.4). One that is in no
+            // Which account's file this is (`docs/design/accounts.md` §3.4). One that is in no
             // account's folder is denied rather than filled from a guess;
             // the next open tries again.
             let Some((source, report, pool)) = fillers.route(&fd).await else {
@@ -233,7 +233,7 @@ pub(crate) async fn serve(
             // unanswerable event in the kernel. Unwinding out of here would
             // close the event fd and produce no errno at all, so
             // `hydrate_done` would never be called and the suspended
-            // `open()` would wait forever: §5.2's 30 s bound covers only "the
+            // `open()` would wait forever: hydration.md §5.2's 30 s bound covers only "the
             // owner's daemon is not connected", and this daemon is connected.
             // Degrading it to an `EIO` denial costs the user one failed open.
             //
@@ -273,7 +273,7 @@ pub(crate) async fn serve(
                 tracing::error!("cannot report hydration {req_id}: {e}");
             }
             // The slot goes back before anything is recorded: a record that
-            // waits (the log is SQLite) must not keep a fifth request from
+            // waits (the log is SQLite) must not keep the next request from
             // being filled.
             drop(inode_guard);
             drop(slot);

@@ -10,7 +10,8 @@
          update, move, delete, move-out. States: waiting (not quiet: open
          for writing), ready, running, retry (in backoff until next try),
          blocked (needs the user; the reason says why), held (a large delete
-         waiting for ConfirmDeletes or RestoreDeletes). Refused Unsupported
+         waiting for ConfirmDeletes or RestoreDeletes), paused (while the
+         account is paused, every row that is not blocked or held). Refused Unsupported
          for a folder that is not connected to OneDrive, NoRoot with no folder,
          and NotUp, with why, for a folder that is not up or whose sync has not
          started; ConfirmDeletes, RestoreDeletes and NotUploaded refuse the
@@ -54,7 +55,8 @@
          of the files). Everything NotUploaded lists, and the changes that
          wait with a reason (open for writing, locked, ...); removals held by
          the mass-delete guard are not. Groups, in this order:
-         one-action (one action fixes every file: quota-exceeded, forbidden),
+         one-action (one action fixes every file: waiting-for-space, too-big,
+         forbidden; quota-exceeded only for a row an older version blocked),
          per-file (each file needs the user: name-characters, name-spaces,
          name-reserved, name-not-utf8, too-large, unreadable,
          state-unreadable, refused — every

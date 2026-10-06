@@ -260,7 +260,7 @@ impl Drop for Waited<'_> {
 }
 
 impl Listing {
-    /// Issues the replacements a cycle found (spec §7.3), and again those
+    /// Issues the replacements a cycle found (`docs/design/sync.md` §9), and again those
     /// that failed.
     pub(super) fn spawn_replacements(self: &Arc<Self>, fresh: Vec<Replacement>) {
         self.replacements.admit(fresh, || Arc::clone(self).replace_queued());
@@ -293,8 +293,8 @@ impl Listing {
         }
     }
 
-    /// Replaces one file, shown in `Transfers` while it downloads (spec
-    /// §16.2), and what the activity log would say of it: `updated` or
+    /// Replaces one file, shown in `Transfers` while it downloads (`docs/design/sync.md`
+    /// §9), and what the activity log would say of it: `updated` or
     /// `update-failed`. Whether it says it is [`Replacements::record`]'s to
     /// decide. `None` when the poller stopped it.
     async fn replace_one(&self, replacement: &Replacement) -> Option<(ReplaceOutcome, Option<activity::Event>)> {

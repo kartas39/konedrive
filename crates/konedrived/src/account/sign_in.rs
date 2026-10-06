@@ -25,7 +25,7 @@ impl Refused {
     }
 }
 
-/// What the identity guard refuses whichever account signs in (§8.2): a drive that an
+/// What the identity guard refuses whichever account signs in (`docs/design/accounts.md` §6.2): a drive that an
 /// account other than `me` has, and a drive that one of `unsettled` — the others that may
 /// be this drive without saying so ([`settle`]) — cannot be told apart from.
 fn drive_is_free(config: &Config, me: Option<&AccountId>, drive: &DriveId, unsettled: &[AccountId]) -> Result<(), Refused> {
@@ -58,7 +58,7 @@ pub(crate) fn claim_new(config: &mut Config, drive: &DriveId, email: Option<&str
     Ok(account)
 }
 
-/// Of `accounts`, those the guard cannot tell apart from a drive (§8.2), by id: those with
+/// Of `accounts`, those the guard cannot tell apart from a drive (§6.2), by id: those with
 /// no drive recorded that may be signed in to one — signed in, or holding a refresh token
 /// they have not used yet (a wallet that did not answer at startup leaves an account signed
 /// out with its token still stored). Each is asked for its drive first, and is left out
@@ -109,7 +109,7 @@ impl AccountService {
             return Err(AccountError::Busy);
         }
         self.state.update(|s| s.clear_error());
-        // A read-write account signing in again asks for Files.ReadWrite again (§7).
+        // A read-write account signing in again asks for Files.ReadWrite again (§10).
         let browser = match Attempt::bind(self.oauth_client(&client_id, self.sign_in_mode())).await {
             Ok(browser) => browser,
             Err(message) => {
@@ -274,7 +274,7 @@ impl AccountService {
         if self.state.get().state != SignInState::SignedIn {
             return;
         }
-        // The drive comes with the quota (§8.1): an account that has none recorded yet —
+        // The drive comes with the quota (§6.1): an account that has none recorded yet —
         // migrated from a folder that never recorded one — records it now.
         if let Err(e) = self.record_drive(&drive.id) {
             tracing::warn!("cannot record the drive of account {:?}: {e}", self.id);
@@ -335,7 +335,7 @@ impl AccountService {
     }
 
     /// Asks Graph which drive this account is, and records it if none is recorded yet
-    /// (§8.2: asked by another account's sign-in). The drive recorded.
+    /// (§6.2: asked by another account's sign-in). The drive recorded.
     pub async fn learn_drive(&self) -> Result<DriveId, String> {
         let token = self.tokens.access_token().await.map_err(|e| e.to_string())?;
         let drive = self.graph().drive(&token).await.map_err(|e| e.to_string())?;
@@ -403,7 +403,7 @@ impl AccountService {
         settle(self.siblings().map(|s| s.others(&self.id)).unwrap_or_default()).await
     }
 
-    /// The identity guard's check and record (§8.2), in one `ConfigStore` update so that two
+    /// The identity guard's check and record (§6.2), in one `ConfigStore` update so that two
     /// sign-ins cannot pass it together: this slot is one drive, and a drive is one slot.
     /// `unsettled` are the other accounts that may be this drive without saying so
     /// ([`settle_siblings`](Self::settle_siblings)). `Err` says why the sign-in is refused;
@@ -432,7 +432,7 @@ impl AccountService {
     }
 
     /// Takes back a drive [`claim`](Self::claim) recorded for a sign-in that then failed:
-    /// a failed sign-in stores nothing (§8.2), and a slot that was never signed in must not
+    /// a failed sign-in stores nothing (§6.2), and a slot that was never signed in must not
     /// keep the identity of the account it tried.
     fn unclaim(&self, drive: &DriveId) {
         let taken_back = self.config.update_account(&self.id, |account| {
@@ -448,7 +448,7 @@ impl AccountService {
 
     /// Stores the refresh token and marks the session signed in, but only if `generation`
     /// is still the current attempt and the account still shows `signing-in`, and only once
-    /// the identity guard (§8.2) has let this drive into this slot. Otherwise (a cancel or a
+    /// the identity guard (§6.2) has let this drive into this slot. Otherwise (a cancel or a
     /// sign-out ran first, a newer `begin_sign_in` superseded this one, something else ended
     /// the `signing-in` state, or the guard refused) the tokens are discarded
     /// without ever touching Secret Service. The guard is fail-closed: a drive that cannot
@@ -470,7 +470,7 @@ impl AccountService {
         }
         // Nor does an account that is not signing in: whatever ended that state said the
         // attempt had ended. Only a refresh that found the stored token dead does so without
-        // superseding the attempt (limitations log F204), and nothing else says it.
+        // superseding the attempt, and nothing else says it.
         let state = self.state.get().state;
         if state != SignInState::SigningIn {
             tracing::warn!(
@@ -514,7 +514,7 @@ impl AccountService {
             s.state = SignInState::SignedIn;
             s.clear_error();
         });
-        // What the sign-in granted, and the drive it reached, decide the mode (§7): a
+        // What the sign-in granted, and the drive it reached, decide the mode (§10): a
         // read-write account that signed in again with Files.ReadWrite, to its own drive, is
         // read-write again.
         self.record_live_drive(&identity.drive);

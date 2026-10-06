@@ -126,8 +126,8 @@ pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
 
 /// One unreadable subdirectory must never abort a root's walk, and
 /// must never pass in silence either. Everything reachable is marked, every
-/// failure is named, and the root is said to be degraded in the log (the
-/// limitations log, F10: nothing else is told).
+/// failure is named, and the root is said to be degraded in the log
+/// (issue #219: nothing else is told).
 pub(crate) fn record_walk(root: &roots::Root, report: marks::WalkReport) {
     if !report.degraded() {
         tracing::info!(
@@ -342,7 +342,7 @@ pub(crate) fn register_root(
 
     // The type of the filesystem, from `fstatfs`: the half of the check that
     // writes nothing. The helper does not probe the filesystem's features
-    // itself (the limitations log, F234): the daemon probes the folder, as
+    // itself: the daemon probes the folder, as
     // its user, before it registers it.
     if let Err(unusable) = check_filesystem_type(&dir, &path) {
         shared.refusals.report(Refusal::RootRefused, || unusable.why);
@@ -521,7 +521,7 @@ fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<
 /// machine cannot be intercepted here at all. Whether the filesystem has
 /// what a placeholder needs (hole punching, `user.*` attributes, leases) is
 /// measured by the daemon, as its user (`konedrived/src/folder/root.rs`
-/// `check_root_dir`), and not here: the limitations log, F234.
+/// `check_root_dir`), and not here.
 ///
 /// It writes nothing itself: the reason comes back with the errno, for the
 /// caller to say — throttled for a registration, which a peer can repeat at

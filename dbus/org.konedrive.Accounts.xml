@@ -110,8 +110,8 @@
          than on each account: one helper serves every account. -->
     <property name="HelperState" type="s" access="read"/>
     <!-- Trouble that belongs to no account: config.toml cannot be read, or
-         was written by a newer version, or a migration step failed. Empty
-         when there is none. -->
+         was written by a newer version, or a migration step failed, or an
+         account in it could not be loaded. Empty when there is none. -->
     <property name="LastError" type="s" access="read"/>
     <!-- The running daemon's build: its version (X.Y.Z for a release,
          X.Y.Z-dev.N for a package built from any other commit, X.Y.Z-dev for

@@ -18,7 +18,7 @@ use crate::ROOTS_FILE;
 // ---------------------------------------------------------------------------
 
 /// `/proc/slabinfo`, summed as `active_objs × objsize` over every cache, which
-/// is what §8's figures are deltas of.
+/// is what `docs/kernel-behavior-7.2/memory.md` §8's figures are deltas of.
 fn slab_total() -> u64 {
     let Ok(text) = std::fs::read_to_string("/proc/slabinfo") else { return 0 };
     let mut total = 0u64;

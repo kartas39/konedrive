@@ -58,7 +58,7 @@ async fn refusal(answer: ResponseTemplate) -> WriteError {
     err
 }
 
-/// §3.6's answers, each to the error the worker acts on. A throttle is
+/// `docs/design/writes.md` §6.2's answers, each to the error the worker acts on. A throttle is
 /// handed back with its wait rather than waited out here.
 #[tokio::test]
 async fn every_refusal_comes_back_as_its_typed_error() {

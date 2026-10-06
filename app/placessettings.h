@@ -2,7 +2,7 @@
 
 #include <QObject>
 
-/// "Show in Places" (docs/limitations/, section 8): whether
+/// "Show in Places": whether
 /// the registered folder gets an entry in KDE's Places panel and file
 /// dialogs. Stored the same way Autostart's StartAtLogin is, under
 /// `ShowInPlaces` in konedriverc's [General] group; on by default.

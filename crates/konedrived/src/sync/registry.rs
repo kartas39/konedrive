@@ -1,4 +1,4 @@
-//! The folders of every account of one daemon, and what they share (design §2.1–§2.4).
+//! The folders of every account of one daemon, and what they share (`docs/design/accounts.md` §3.1–§3.4).
 //!
 //! [`Registry`] is the list of the daemon's accounts as their folders see each other: whose
 //! folder an open file is in (the [router](Registry::route)), whether a folder would overlap
@@ -79,13 +79,13 @@ pub struct Registry {
     accounts: Mutex<Vec<(AccountId, Weak<SyncService>)>>,
     /// Held by every new registration, whichever account makes it, from its
     /// overlap check to its end: two accounts cannot both pass the check
-    /// with folders that nest (design §8.3).
+    /// with folders that nest (§6.3).
     pub(super) registering: tokio::sync::Mutex<()>,
     /// The item ids of what left each account's folder and waits in its
     /// outbox (`move-out` rows, and what the base has inside a moved-out
     /// folder): a fill of one of these is that account's, wherever the object
-    /// is now — outside every folder, or inside another account's (write
-    /// design §4.6, §8.5).
+    /// is now — outside every folder, or inside another account's (`docs/design/writes.md`
+    /// §8.3).
     moved_out: Mutex<HashMap<AccountId, HashSet<String>>>,
     /// What every account was told last; one that is added later is told what it is then.
     told: Mutex<Told>,
@@ -226,7 +226,7 @@ impl Registry {
         }
     }
 
-    /// Whether an account other than `me` claims item `id` (write design
+    /// Whether an account other than `me` claims item `id` (`docs/design/writes.md`
     /// §8.3): its outbox waits to fetch it wherever it is
     /// (`move-out`), its tree store knows it, or the drive the id names
     /// (`<drive>!<n>`, a personal account's) is that account's. A store that
@@ -269,7 +269,7 @@ impl Registry {
     }
 
     /// The label of an account other than `me` whose folder `path` is, is
-    /// inside, or contains (design §8.3): compared by component on the
+    /// inside, or contains (`docs/design/accounts.md` §6.3): compared by component on the
     /// resolved paths, and by `(st_dev, st_ino)` for the same directory
     /// reached another way. A folder counts whether it is registered, held,
     /// or only recorded in `config.toml`.
@@ -301,7 +301,8 @@ impl Registry {
     }
 
     /// Which account the file behind a hydration request's descriptor belongs to
-    /// (design §2.4), stopping at the first answer: by device — the accounts
+    /// (§3.4), stopping at the first answer: by the item id of an object that
+    /// left an account's folder (below); by device — the accounts
     /// whose folder is on the file's filesystem (as it was when registered),
     /// and one is the answer, unless some account has a folder whose device is
     /// not known, which could be the file's; then by

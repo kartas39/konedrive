@@ -52,7 +52,9 @@ impl LoopbackListener {
     }
 
     /// Answers requests until one to `/` carries `state == expected_state` together with
-    /// `code` or `error`, or until `timeout` elapses. Every other request gets 404.
+    /// `code` or `error`, or until `timeout` elapses. Any other `GET` gets 404. A request
+    /// that is not a `GET`, or whose head does not come whole and in time, is dropped with
+    /// no answer.
     pub async fn wait(self, expected_state: &str, timeout: Duration) -> Result<Callback, LoopbackError> {
         tokio::time::timeout(timeout, self.serve(expected_state))
             .await

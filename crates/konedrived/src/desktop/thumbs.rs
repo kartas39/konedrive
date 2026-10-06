@@ -6,7 +6,7 @@
 //!
 //! Only `normal`, `large` and `x-large` (up to 512 px) are filled: one Graph
 //! request per image (`c512x512`), scaled down locally to the smaller sizes.
-//! `xx-large` (1024 px) is not filled — see limitations log entry K15.
+//! `xx-large` (1024 px) is not filled (`docs/design/desktop.md` §8).
 //!
 //! Every answer that settles whether an item has a usable thumbnail is
 //! recorded (its `thumb_key`), so the item is asked for again only once it
@@ -29,8 +29,8 @@ use konedrive_graph::drive::{DriveClient, Thumbnail};
 use konedrive_tree::{Store, Thumbnail as Wanted, ThumbnailBatch};
 
 /// The cache directories KIO consults, and the longest edge of each
-/// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent — see
-/// limitations log entry K15.
+/// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent: it would be a second
+/// request per image (`docs/design/desktop.md` §8).
 pub const SIZES: &[(&str, u32)] = &[("normal", 128), ("large", 256), ("x-large", 512)];
 /// The one size asked of Graph; the smaller ones are scaled from it.
 const GRAPH_SIZE: &str = "c512x512";
@@ -88,8 +88,7 @@ enum FillError {
     /// bytes back.
     Undecodable(String),
     /// A local problem: disk, permissions, a vanished cache directory.
-    /// Recorded like the rest: a batch of them ends the drain,
-    /// and the item is asked for again once it changes.
+    /// Recorded like the rest: the item is asked for again once it changes.
     Io(String),
 }
 

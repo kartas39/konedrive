@@ -157,7 +157,7 @@ async fn the_hold_settings_are_global_keys() {
     assert_eq!(store.current().unwrap().on_battery(), OnBattery::PowerSaver, "an unknown value falls back");
 }
 
-/// §3.1: a hand-edited file whose accounts collide loads every account, holds each
+/// `docs/design/accounts.md` §4.1: a hand-edited file whose accounts collide loads every account, holds each
 /// later one that collides, and is not rewritten.
 #[tokio::test]
 async fn colliding_accounts_are_held_and_the_file_is_not_rewritten() {
@@ -333,7 +333,7 @@ async fn a_malformed_write_list_lets_nothing_through() {
     assert_eq!(store.write_standing(&id("3f9a1c0e5b7d")), None);
 }
 
-/// A drive is one account, however it comes to be recorded (design §8.2): a
+/// A drive is one account, however it comes to be recorded (§6.2): a
 /// drive another account has is refused, one of the account's own is kept.
 #[tokio::test]
 async fn a_drive_another_account_has_is_not_recorded_again() {
@@ -346,7 +346,7 @@ async fn a_drive_another_account_has_is_not_recorded_again() {
     assert_eq!(store.record_drive(&a, &drive("DB")).unwrap(), "DA", "the drive recorded first stays");
 }
 
-/// F37: every write goes through one lock, so writers from many threads each keep
+/// Every write goes through one lock, so writers from many threads each keep
 /// their change; a fresh account gets its own valid id.
 #[tokio::test]
 async fn writers_never_save_over_each_other() {
@@ -415,7 +415,7 @@ async fn every_write_starts_from_the_file_and_never_overwrites_what_it_cannot_re
     assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), "config_version = 3\n");
 }
 
-/// §7.2 step 1: a file that cannot be read — or that a newer version wrote — loads no
+/// §8.2 step 1: a file that cannot be read — or that a newer version wrote — loads no
 /// account, is neither migrated nor written, and `LastError` names it.
 #[tokio::test]
 async fn an_unreadable_or_newer_file_poisons_the_store() {

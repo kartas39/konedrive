@@ -101,7 +101,7 @@ public:
     /// 1–40 characters, no "/" or control character, not 12 hexadecimal
     /// digits in any case (an account id's look), unique regardless of case
     /// among the accounts other than `exceptPath`); empty when it can. "@"
-    /// is allowed: an account's label is commonly its email (A14).
+    /// is allowed: an account's label is commonly its email.
     Q_INVOKABLE QString labelProblem(const QString &label, const QString &exceptPath = QString()) const;
 
     /// Sign In: SetClientId(clientId) when it is given and new, then

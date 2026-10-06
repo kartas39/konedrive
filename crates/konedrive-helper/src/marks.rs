@@ -203,7 +203,7 @@ impl Marks {
     ///
     /// `FAN_MARK_EVICTABLE` is kept: measured, a `SURV_MODIFY` ignore mark is
     /// still dropped by `drop_caches` along with its inode, so the steady
-    /// state is still free (§8) and callers still must not treat "an ignore
+    /// state is still free (memory.md §8) and callers still must not treat "an ignore
     /// mark exists" as durable.
     pub fn ignore_file(&self, file: BorrowedFd<'_>) -> io::Result<()> {
         self.group.mark(

@@ -12,8 +12,8 @@ use super::{ApplyError, Materializer, Replacement, Run};
 impl Materializer {
     /// A file already in place, and what its content needs:
     /// a placeholder takes the new size, time and cTag in place; a downloaded
-    /// file of another version is queued for replacement (§7.3), or moved out
-    /// of the way first when it holds local work (§9.3: rescued, or kept
+    /// file of another version is queued for replacement (`docs/design/sync.md` §9), or moved out
+    /// of the way first when it holds local work (§10.1: rescued, or kept
     /// beside it in a read-write folder); a file being filled or freed up
     /// right now is left for the next cycle.
     ///
@@ -49,7 +49,7 @@ impl Materializer {
                 if self.changed_since_the_cycle_began(row, run)? {
                     return Ok(());
                 }
-                // Local work in it (edit × edit, §6), or a version OneDrive
+                // Local work in it (edit × edit, `docs/design/writes.md` §7), or a version OneDrive
                 // may have lost: not replaced, but moved out of the way.
                 if self.local_work(&file) || self.keeps_every_download() {
                     drop(file);

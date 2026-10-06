@@ -9,7 +9,7 @@ use super::{OutboxRow, SWAP_PREFIX};
 /// What a row holds of the content it sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Snapshot {
-    /// The size and the time of the content being sent (§3.5). The worker
+    /// The size and the time of the content being sent (`docs/design/writes.md` §6.3). The worker
     /// writes it; the examination compares it to tell a file still being
     /// uploaded from one changed again since.
     Content { size: u64, mtime_ns: i128 },
@@ -113,7 +113,7 @@ impl OutboxRow {
     }
 
     /// The temporary name the row is taking its item through in OneDrive
-    /// (§4.4, F55 (7)), while its `target_name` is one.
+    /// (§5.3), while its `target_name` is one.
     pub fn swap_name(&self) -> Option<&str> {
         self.target_name.as_deref().filter(|name| name.starts_with(SWAP_PREFIX))
     }

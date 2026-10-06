@@ -284,7 +284,7 @@ fn a_directory_the_helper_did_not_mark_is_asked_again() {
     watcher.stop();
 }
 
-/// §3.4: a write through `O_TMPFILE` is reported under `#<inode>`, a name
+/// `docs/kernel-behavior-7.2/notification.md` §14.3: a write through `O_TMPFILE` is reported under `#<inode>`, a name
 /// that never exists; the object's handle finds it.
 #[test]
 fn an_o_tmpfile_write_is_handed_over_with_its_pseudo_name_and_its_object() {

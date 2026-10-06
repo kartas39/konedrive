@@ -2,7 +2,7 @@ use super::*;
 
 // --- Startup and the helper supervisor ----------
 
-/// §3.1's "persisted, so it survives a restart" — and §4.4's walk, which
+/// `docs/design/hydration.md` §14.1's registration, written down so that it survives a restart — and §9's walk, which
 /// without it never ran at a startup at all: recovery only ever ran
 /// inside a `RegisterRoot` call, so after a crash a file left
 /// `hydrating` stayed that way until a human registered the folder

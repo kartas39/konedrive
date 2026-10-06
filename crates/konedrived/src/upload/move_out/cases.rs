@@ -53,7 +53,7 @@ impl MoveOut<'_> {
     /// A folder moved anywhere but the Trash: every placeholder of its item downloaded where it
     /// is, the attributes taken off and every directory unmarked, then the folder deleted in
     /// OneDrive — as a folder delete is: one unguarded `DELETE` of the folder itself, whatever it
-    /// holds there by then (F82 (10)).
+    /// holds there by then.
     pub(super) async fn elsewhere_folder(&self, object: Arc<File>) -> Result<Outcome, Fail> {
         if let Err(err) = self.mo.helper.mark_dir(&object).await {
             tracing::debug!("{} is not marked again yet: {err}", self.row.rel.display());
@@ -260,14 +260,14 @@ impl MoveOut<'_> {
         Ok(Left::Local(extra))
     }
 
-    /// The item leaves OneDrive, as a delete does (§4.7): `If-Match`, `404` done — a folder,
+    /// The item leaves OneDrive, as a delete does (`docs/design/writes.md` §6.1): `If-Match`, `404` done — a folder,
     /// unguarded, whole, whatever changed inside it since.
     pub(super) async fn finish(&self) -> Result<Outcome, Fail> {
         crate::upload::steps::delete(self.e, self.row.clone()).await
     }
 
     /// The object is gone (`ESTALE`, twice, on this filesystem's handles, with nothing where it
-    /// was): the user deleted it after it left (§5), and its item is deleted as any delete is —
+    /// was): the user deleted it after it left (§8.3), and its item is deleted as any delete is —
     /// a folder only once what left it since is local where it went, or gone too.
     pub(super) async fn gone(&self) -> Result<Outcome, Fail> {
         let asked = self.id.to_owned();

@@ -43,7 +43,7 @@ systemctl --user stop konedrived.service 2>/dev/null || true
 systemctl --user daemon-reload || true
 busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null || true
 
-# "Start at login" (limitations log A4): the entry the window wrote runs the
+# "Start at login": the entry the window wrote runs the
 # program just removed. Pointed at the one the konedrive package installs, so
 # that it keeps working once the package is in.
 autostart="$config_home/autostart/org.konedrive.KOneDrive.desktop"

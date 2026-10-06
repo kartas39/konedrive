@@ -105,8 +105,8 @@ fn kinds_the_window_branches_on(cpp: &str) -> Vec<String> {
 }
 
 /// The window turns the daemon's events into
-/// notifications by their kind and by one exact detail (A2 in the
-/// limitations log), and nothing else ties the two sides together. Every
+/// notifications by their kind and by one exact detail (issue #232),
+/// and nothing else ties the two sides together. Every
 /// kind `app/activitymodel.cpp` branches on must be one the daemon sends
 /// (`Kind::as_str`), the ones its notifications hang on must be among them,
 /// and "not enough disk space" must be `activity::NO_DISK_SPACE` word for

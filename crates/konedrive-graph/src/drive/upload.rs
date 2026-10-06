@@ -1,4 +1,4 @@
-//! Microsoft Graph's upload sessions (the write design's §3.6 and §4.8): every
+//! Microsoft Graph's upload sessions (`docs/design/writes.md` §6.1 and §6.3): every
 //! non-empty file goes through one, so that a new file carries
 //! `conflictBehavior: fail`, a changed one `If-Match`, and both their time as
 //! `fileSystemInfo`. The caller opens the session

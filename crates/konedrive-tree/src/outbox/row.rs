@@ -39,7 +39,7 @@ impl OutboxKind {
     }
 
     /// Whether the row sends content (`mkdir`, `move` and `delete` are
-    /// metadata rows, run one at a time, §3.5).
+    /// metadata rows, run one at a time, `docs/design/writes.md` §5.3).
     pub fn sends_content(self) -> bool {
         matches!(self, Self::Create | Self::Update)
     }
@@ -53,7 +53,8 @@ pub enum OutboxState {
     Running,
     /// Failed; tried again at `next_try`.
     Retry,
-    /// Needs the user: a name OneDrive refuses, too large, OneDrive full.
+    /// Needs the user: a name OneDrive refuses, too large. A full OneDrive
+    /// blocks nothing: its rows stay `Ready` with a reason.
     Blocked,
     /// Held by the mass-delete guard until confirmed.
     Held,
@@ -281,7 +282,7 @@ pub enum OutboxOp {
     Remove(i64),
     /// The inode the item is now (a scan's refresh).
     SetHandle { item_id: String, handle: Option<FileHandle> },
-    /// Something never uploaded, listed under "Not uploaded" (§3.4 rule 2),
+    /// Something never uploaded, listed under "Not uploaded" (§4.2 rule 2),
     /// with its size when it is a file.
     Skip { rel: PathBuf, reason: LocalSkip, size: u64 },
     Unskip(PathBuf),

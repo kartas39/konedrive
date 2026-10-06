@@ -1,6 +1,6 @@
 //! `konedrivectl account mode` and `dev export-access-token --read-write` (a development
 //! build's, the `dev-tools` feature; a release has no `dev` command) against the daemon
-//! over a private bus (`docs/design/writes.md` §11): the mode shown; read-write, which is the
+//! over a private bus (`docs/design/writes.md` §2): the mode shown; read-write, which is the
 //! user's choice for any signed-in account, starting its sign-in with `write_test_drive_ids`
 //! empty; and the read-write token, which that list alone still refuses.
 

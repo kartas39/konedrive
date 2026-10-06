@@ -62,7 +62,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// The account a command acts on (design §5.1): the one `--account` names, else the one
+    /// The account a command acts on (`docs/design/desktop.md` §3): the one `--account` names, else the one
     /// `KONEDRIVE_ACCOUNT` names, else the only account there is.
     pub(crate) async fn chosen(&self, option: Option<&str>) -> anyhow::Result<Chosen> {
         let accounts = self.accounts().await?;

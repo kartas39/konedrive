@@ -1,5 +1,5 @@
 //! "Is this object still there, and where?" — asked of a base item missing
-//! from where it was (`docs/design/writes.md` §4 rule 7, §8).
+//! from where it was (`docs/design/writes.md` §4.2 rule 7, §8).
 //!
 //! Decided by the object, never by events: a move out of the folder whose
 //! event was lost, or that happened while the daemon was not running, is
@@ -8,7 +8,7 @@
 //! `CAP_DAC_READ_SEARCH`), so the daemon's answer is the helper's
 //! `OpenByHandle` ([`HelperLiveness`]): `ESTALE` is gone, a descriptor
 //! says where the object is, and anything else — `EPERM` above all, which a
-//! nested subvolume always gets (F90) — decides nothing. [`NoLiveness`]
+//! nested subvolume always gets — decides nothing. [`NoLiveness`]
 //! decides nothing at all: a missing item stays where it is in the outbox's
 //! eyes, and is never deleted on a guess.
 
@@ -58,7 +58,7 @@ impl Liveness for NoLiveness {
 
 /// The helper's answer: `OpenByHandle` relative to the folder's root, asked
 /// from the examination's own thread (the watcher's, never the runtime's),
-/// which waits for it — one round trip per missing item (§3.4 rule 7), and
+/// which waits for it — one round trip per missing item (§4.2 rule 7), and
 /// at most one that times out in a run.
 pub struct HelperLiveness {
     helper: Arc<dyn Helper>,
@@ -97,7 +97,7 @@ impl Liveness for HelperLiveness {
 /// on now, [`super::handles::prepare`]); a descriptor names the place, proved by
 /// opening it again ([`same_place`]: a file whose dentry the kernel could not
 /// connect reads as `/`, and decides nothing); any other refusal — `EPERM` is
-/// never gone (F90) — or no answer decides nothing. The link's own timeout
+/// never gone — or no answer decides nothing. The link's own timeout
 /// reads as [`io::ErrorKind::TimedOut`], as a refusal with `ETIMEDOUT` does.
 pub fn answered(answer: Result<OwnedFd, HelperError>) -> io::Result<Whereabouts> {
     match answer {

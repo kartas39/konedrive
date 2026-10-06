@@ -187,7 +187,7 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
         Refusal::NoAccount => "that account is gone: it was removed meanwhile. `konedrivectl \
              account list` shows the accounts there are"
             .to_owned(),
-        // Design §8.3: the folders of two accounts never nest. The daemon's
+        // `docs/design/accounts.md` §6.3: the folders of two accounts never nest. The daemon's
         // message names the other account.
         Refusal::Overlaps => format!(
             "{path} cannot be this account's folder: {detail}. The folders of two accounts cannot \

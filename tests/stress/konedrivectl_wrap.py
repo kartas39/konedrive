@@ -1,6 +1,6 @@
 """A thin wrapper around the ``konedrivectl`` binary: run a subcommand for one account, and
 parse the plain-text tables it prints (there is no ``--json``; this tool speaks the same text a
-person reading ``konedrivectl --help`` would see, per ``docs/design/writes.md`` §11). The exact
+person reading ``konedrivectl --help`` would see, per ``docs/design/desktop.md`` §3). The exact
 strings parsed here are read out of ``crates/konedrivectl/src/text/`` and
 ``crates/konedrive-tree/src/outbox/row.rs`` (the ``OutboxState`` enum: ``waiting``, ``ready``,
 ``running``, ``retry``, ``blocked``, ``held``), so a wording change there should update this file

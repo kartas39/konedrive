@@ -1,4 +1,4 @@
-//! Version 1 of `config.toml`, and its migration to version 2 (design §7).
+//! Version 1 of `config.toml`, and its migration to version 2 (`docs/design/accounts.md` §8).
 //!
 //! [`V1Config`] is the single-account file of before; only the migration reads it.
 
@@ -97,7 +97,7 @@ fn present(path: &Path) -> bool {
     !matches!(path.try_exists(), Ok(false))
 }
 
-/// Version 1 as version 2 (§7.2 steps 2 and 3). Account #1 — `Personal`, read-only,
+/// Version 1 as version 2 (§8.2 steps 2 and 3). Account #1 — `Personal`, read-only,
 /// migrated, the folder's drive as its identity, both migration flags set, the folder when
 /// there is one — when there is anything to carry over: a folder, the cached account or the
 /// tree store at version 1's paths, or the version-1 refresh token in the wallet
@@ -126,7 +126,7 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
     Config { config_version: CONFIG_VERSION, client_id: v1.client_id, accounts, ..Config::default() }
 }
 
-/// §7.2 step 4: `text` (the version-1 file) is copied to `config.toml.v1`, then version 2 is
+/// §8.2 step 4: `text` (the version-1 file) is copied to `config.toml.v1`, then version 2 is
 /// written atomically — the commit point. Before it the old layout is untouched; after it,
 /// [`finish_file_moves`] finishes the job. `Err` when either write failed.
 pub(crate) async fn migrate(
@@ -165,7 +165,7 @@ enum Moved {
     Failed(String),
 }
 
-/// §7.3, at every start, after [`ConfigStore::open`] and before any account's services open
+/// §8.3, at every start, after [`ConfigStore::open`] and before any account's services open
 /// a file: for each account whose `migrate_files` is set, moves version 1's `account.json`
 /// and `tree.sqlite` into the account's own directory, then clears the flag. Every step is
 /// idempotent — a source that is gone means the step is done — so a crash anywhere is

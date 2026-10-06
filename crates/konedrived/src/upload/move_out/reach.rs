@@ -25,7 +25,7 @@ pub(super) enum Reach {
     /// snapshot rolled back): every decode fails so, and the answer says nothing.
     Stale,
     /// `EPERM`: not handed over — it carries no item id, is another owner's, or is in a
-    /// nested subvolume. Never "gone" (F90).
+    /// nested subvolume. Never "gone".
     Refused,
     /// `EAGAIN`: leased now.
     Busy,

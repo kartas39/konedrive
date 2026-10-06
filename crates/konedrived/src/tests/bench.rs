@@ -380,8 +380,7 @@ fn a_folder_renamed() {
     within("a rebase", took, Duration::from_millis(100));
 }
 
-/// What the rarely run whole-table reads cost at 30 000 rows (no budget: the
-/// limitations log says when they run).
+/// What the rarely run whole-table reads cost at 30 000 rows (no budget).
 #[test]
 #[ignore]
 fn a_whole_table_read() {

@@ -40,7 +40,7 @@ fn clear_account_keeps_state_and_client_id() {
     assert_eq!((s.display_name.as_str(), s.email.as_str(), s.quota), ("", "", QuotaFigures::default()));
 }
 
-/// Every note's text, written out: clients read it (limitations log F64).
+/// Every note's text, written out: clients read it.
 #[test]
 fn every_mode_note_says_what_last_error_said() {
     let said = |note: ModeNote| note.text();

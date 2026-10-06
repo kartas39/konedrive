@@ -1,8 +1,8 @@
-//! The directory map (`docs/design/writes.md` §3, amended by §3.4, §3.3): for every
+//! The directory map (`docs/design/writes.md` §3.3): for every
 //! directory of the folder, its handle → its parent's handle and its name.
 //!
 //! An unprivileged daemon cannot open a handle (`open_by_handle_at` is
-//! `EPERM`, §8.2), so this is how it turns an event's directory handle into a
+//! `EPERM`), so this is how it turns an event's directory handle into a
 //! path beneath the root. It is built by the bring-up walk with
 //! `name_to_handle_at`, whose handles are byte-equal to the events', and kept
 //! current from the `FAN_ONDIR` events. A path is worked out when it is

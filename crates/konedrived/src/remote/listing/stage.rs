@@ -19,8 +19,7 @@
 //!   left as it is on disk keeps its base row, and its change is deferred
 //!   until the disk takes it or an outbox commit supersedes it. Items the
 //!   outbox committed since the last cycle, and items with no local object
-//!   on record, are looked at again too, so the disk follows the base (F82
-//!   (7), (8)).
+//!   on record, are looked at again too, so the disk follows the base.
 
 use std::sync::atomic::Ordering;
 
@@ -79,7 +78,7 @@ pub(crate) struct Staged<'a> {
 
 impl Listing {
     /// The mode of the cycle that starts now. A read-write folder's first
-    /// cycle waits for the watcher's Full local scan (write design §3.3),
+    /// cycle waits for the watcher's Full local scan (§9),
     /// and its stale-delta guard starts from the outbox's commits so far.
     pub(crate) async fn begin(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Mode<Since<'_>>, CycleError> {
         let Mode::ReadWrite(writes) = &self.ctx.mode else { return Ok(Mode::ReadOnly) };
@@ -174,7 +173,7 @@ impl Listing {
         Ok((reconciled, changes))
     }
 
-    /// The stale-delta guard (§3.7): each entry for an item the outbox
+    /// The stale-delta guard (§9): each entry for an item the outbox
     /// committed after `fetch_seq` is read again from Graph, unless it is the
     /// commit itself (the same eTag).
     async fn guard_delta(&self, turn: &Turn, changes: Vec<Change>, fetch_seq: i64, cancel: &CancellationToken) -> Result<Vec<Change>, CycleError> {

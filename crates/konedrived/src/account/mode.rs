@@ -228,7 +228,7 @@ impl AccountService {
         }
         self.recompute_mode();
         // The token that could write goes now; the next one comes from a refresh that asks
-        // for Files.Read (§7).
+        // for Files.Read (§2.2).
         self.tokens.invalidate().await;
         tracing::info!("the account {:?} is read-only now", self.id);
         Ok(())
@@ -242,7 +242,7 @@ impl AccountService {
         config.read_write_export_allowed(&drive).then_some(drive)
     }
 
-    /// `TokenExport.ReadOnly` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
+    /// `TokenExport.ReadOnly` (`docs/design/desktop.md` §2.7; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
     pub async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await

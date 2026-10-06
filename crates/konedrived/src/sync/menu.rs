@@ -171,6 +171,8 @@ impl SyncService {
                     looked.taken.push(None);
                     continue;
                 };
+                // A file's state is read here a second time: `SyncRoot::item` read it to take
+                // the path, and refused the path on an error.
                 let state = if target.is_dir { Ok(None) } else { Reach::Look.state(&target.item) };
                 let hydrated = matches!(state, Ok(Some(State::Hydrated)));
                 looked.taken.push(Some(Taken {
@@ -187,6 +189,7 @@ impl SyncService {
                         Err(_) => looked.unreadable = true,
                     }
                 } else if state.is_err() {
+                    // Reached only when the mark became unreadable between the two reads.
                     looked.unreadable = true;
                 }
                 // The descriptor closes here, before the next path is looked at.

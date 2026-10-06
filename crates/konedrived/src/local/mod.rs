@@ -1,5 +1,5 @@
-//! Local changes, from the disk to the outbox (`docs/design/writes.md` §4, amended by
-//! §17): what a read-write folder holds that the base does not.
+//! Local changes, from the disk to the outbox (`docs/design/writes.md` §4):
+//! what a read-write folder holds that the base does not.
 //!
 //! The watcher turns notification events into a [`Batch`] of dirty
 //! places — directories and names, and object handles — and hands it over
@@ -9,7 +9,7 @@
 //! ([`konedrive_tree::outbox`]); the outbox worker sends them. A
 //! [`Batch::full`] examines every directory: the Full local scan, run at
 //! bring-up, after a queue overflow, after a helper reconnect and when the
-//! ignore list shrinks.
+//! ignore list changes.
 //!
 //! Events are hints, never the truth: every decision is made from the disk,
 //! by item id, file handle and content, so a lost or merged event costs a
@@ -53,12 +53,12 @@ pub const CEILING: Duration = Duration::from_secs(30);
 /// examined again after this long (provisional).
 pub const RECHECK: Duration = Duration::from_secs(30);
 
-/// The mass-delete guard (§3.4): a batch that would remove more items than
+/// The mass-delete guard (§4.5): a batch that would remove more items than
 /// this from OneDrive is held for confirmation (provisional)...
 pub const MASS_DELETE_ITEMS: u64 = 500;
 /// ... or more than this share of the folder's items, in percent
 /// (provisional)...
 pub const MASS_DELETE_PERCENT: u64 = 20;
 /// ... counted only from this many items up, so that removing one file of a
-/// folder of four is not a mass delete (provisional; the design is silent).
+/// folder of four is not a mass delete (provisional).
 pub const MASS_DELETE_FLOOR: u64 = 10;

@@ -129,8 +129,8 @@ impl TreeStore {
         // content safe. On a 409 for a taking row it GETs the item that holds
         // the (parent, name); if that id is the `item_id` of a live row whose
         // [`frees`] is that place (any state, names without case), the name
-        // is only taken for now: it neither adopts it (§4.2, §5's replay),
-        // nor makes a create/create copy (§6), nor retries there. Comparing
+        // is only taken for now: it neither adopts it (`docs/design/writes.md` §6.2, §10's replay),
+        // nor makes a create/create copy (§7), nor retries there. Comparing
         // ids, not names, lets a replay still adopt our own folder. It takes
         // the row to `.konedrive-swap-<id>` in the target parent instead,
         // saving that name in the row before sending (WR7), and commits the

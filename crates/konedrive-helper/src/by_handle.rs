@@ -44,7 +44,7 @@
 //! writing itself, through `/proc/self/fd`
 //! (`konedrived::helper::reopen_for_writing`). `O_NONBLOCK`, because a
 //! file somebody holds a write lease on would otherwise stop this
-//! connection's thread until the lease is broken (up to 45 s; §12.4):
+//! connection's thread until the lease is broken (up to 45 s; leases.md §12.4):
 //! the daemon gets `EAGAIN` and asks again.
 
 use std::fs::File;

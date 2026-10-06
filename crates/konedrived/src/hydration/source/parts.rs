@@ -41,7 +41,7 @@ use super::{ContentSource, Fetched, Version};
 use konedrive_graph::pool::{Class, Size, Slot, TransferPool};
 use konedrive_graph::quickxor::QuickXor;
 
-/// The size of a piece. A guess (the limitations log): large enough that a request's
+/// The size of a piece. A guess: large enough that a request's
 /// round trip is nothing beside it, small enough that four streams share a file's end evenly.
 pub const PIECE: u64 = 256 * 1024 * 1024;
 

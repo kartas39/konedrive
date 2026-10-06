@@ -210,10 +210,10 @@ impl AccountManager {
         self.accounts().iter().map(|a| a.path.clone()).collect()
     }
 
-    /// Brings up every account `config.toml` holds, in file order (design §2.2, step 3):
+    /// Brings up every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
     /// the session restored from the wallet and the cache, and an intercepted folder held
     /// until the helper is back. An account that repeats an earlier one's id, label, drive
-    /// or folder is loaded but held back (§3.1); one whose id cannot name an object or a
+    /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub async fn load(&self) {
         let config = self.config.snapshot();
@@ -337,7 +337,7 @@ impl AccountManager {
         if let Err(e) = self.export(connection, &account).await {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
-            // start (which stays all the same if the file cannot be written now: F205).
+            // start (which stays all the same if the file cannot be written now).
             self.unexport(connection, &account, true).await;
             self.unlist(&account);
             self.siblings.remove(&account.id);
@@ -351,12 +351,13 @@ impl AccountManager {
         Ok(account)
     }
 
-    /// `Accounts.Remove` (design §4.2): the folder forgotten exactly as
+    /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
     /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
-    /// rule (`NoHelper` for an intercepted folder with no helper) — then a sign-in under way
-    /// cancelled, the refresh token, the cached name and quota and the tree store deleted,
-    /// the account taken out of `config.toml`, and its object off the bus. The folder's
-    /// files and the rescued files are kept.
+    /// rule (`NoHelper` for an intercepted folder with no helper), a OneDrive folder's tree
+    /// store with it — then a sign-in under way cancelled, the refresh token and the cached
+    /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
+    /// with what is left in it, and its object off the bus. The folder's files and the
+    /// rescued files are kept.
     ///
     /// A removal that fails after the account was retired — the sign-in cannot be deleted,
     /// or the account cannot be taken out of `config.toml` — leaves the account as an
@@ -455,10 +456,10 @@ impl AccountManager {
         Ok(())
     }
 
-    /// The account whose folder holds `path` (design §2.5), for `Files`: the one whose
-    /// folder is a component prefix of it, taken as given, or else with its directory part
-    /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
-    /// is never opened.
+    /// The account whose folder holds `path` (§3.5), for `Files`: the one whose
+    /// folder is a component prefix of it with its directory part resolved — a folder
+    /// reached through a link (`/home` → `/var/home`) — or, only when that cannot be
+    /// resolved, taken as given. The file itself is never opened.
     pub async fn route(&self, path: &Path) -> Option<Arc<Account>> {
         let folders = self.folders();
         let given = path.to_path_buf();
@@ -545,7 +546,7 @@ impl AccountManager {
         menu::decide(paths, &parts, account_folder)
     }
 
-    /// Brings up every folder that needs no helper (design §2.2, step 5); an intercepted one
+    /// Brings up every folder that needs no helper (§3.2, step 6); an intercepted one
     /// waits for the hub's first connection.
     pub async fn resume_all(&self) {
         for account in self.accounts() {

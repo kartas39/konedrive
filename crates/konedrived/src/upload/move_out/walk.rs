@@ -19,7 +19,7 @@ use super::place::reopen_parent;
 // ---------------------------------------------------------------------------
 
 /// The directory at `path`, opened by path — through the user's own lookups, never beneath a
-/// descriptor `OpenByHandle` gave (F90) — and only if it is still `object`.
+/// descriptor `OpenByHandle` gave — and only if it is still `object`.
 pub(super) fn reopen_dir(path: &Path, object: &File) -> io::Result<Option<File>> {
     let dir = reopen_parent(path)?;
     let (a, b) = (dir.metadata()?, object.metadata()?);

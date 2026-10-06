@@ -176,7 +176,7 @@ enum Fill {
 /// `check_dehydratable` verifies the stamp before it punches; this did not,
 /// so a file whose `user.konedrive.state` says `hydrated` over a hole —
 /// measured: 4096 bytes, 0 blocks, hand-labelled — reported success from
-/// `Hydrate` and stayed empty. §9 names that state exactly, and repairing it
+/// `Hydrate` and stayed empty. `docs/design/hydration.md` §6.5 has that case, and repairing it
 /// is what a manual "download it now" is for.
 ///
 /// The three cases are told apart deliberately:
@@ -187,7 +187,7 @@ enum Fill {
 ///   content is exactly as unproven as an `online-only` file's.
 /// - **a stamp that matches** → nothing to do.
 /// - **a stamp that does not match** → refuse with "modified locally",
-///   never fill. There is no upload in this sub-project, so a local edit is
+///   never fill. A local edit that is not uploaded is
 ///   the only copy of that data (§8), and overwriting it with remote content
 ///   would be the same class of permanent loss this whole component exists
 ///   to avoid — just pointing the other way. Refusing is loud, and it leaves
@@ -217,7 +217,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
         // `dehydrating` is not "somebody is busy with it": under the
         // per-inode lock this call holds, no dehydration of this inode can
         // be running. It is what a crash — or a cancelled `Dehydrate`
-        // (`root::dehydrate`'s) — left behind, and §5.2 says
+        // (`hydration::dehydrate`'s) — left behind, and §6.1 says
         // exactly what to do with it: treat it as "hydrate it again".
         // Reporting success over whatever the punch got to is the one thing
         // that must not happen.

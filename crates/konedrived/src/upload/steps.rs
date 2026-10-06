@@ -1,4 +1,4 @@
-//! One row, one step (§3.6, §4, §5, §6): `mkdir`, `move` and `delete` in
+//! One row, one step (`docs/design/writes.md` §6, §7, §10): `mkdir`, `move` and `delete` in
 //! [`meta`], content in [`super::content`], what they share in [`shared`] —
 //! where the row's object is, which folder it goes into, a name that is
 //! taken, the commit, the conflict copy — and the blocking sections their

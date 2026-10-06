@@ -7,8 +7,9 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// An account's id: 12 random lowercase hex characters, never reused; in object paths and
-/// file paths. One read from a hand-edited file, or taken from a caller, may be anything:
+/// An account's id: 12 random lowercase hex characters, none that an account present has
+/// (a removed account's may come again); in object paths and file paths. One read from a
+/// hand-edited file, or taken from a caller, may be anything:
 /// [`is_valid`](Self::is_valid) says whether it is an id, and an account whose id is not
 /// one is held (`Config::holds`) and has no files (`Paths::account`).
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

@@ -229,7 +229,7 @@ fn answer(
     // been read again, from the event fd itself — the exact inode the opener
     // is about to get, with no path in between and so nothing to race. A
     // hydration that reports success but does not leave the file `hydrated`
-    // has not put the content there as far as we can tell, and §5.2 is
+    // has not put the content there as far as we can tell, and `docs/design/hydration.md` §5.1 is
     // unconditional about what happens then.
     //
     // The mark then goes through `mark_while_hydrated`, like every other

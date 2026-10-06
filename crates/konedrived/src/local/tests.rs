@@ -1,5 +1,5 @@
-//! The examination, in temporary directories with injected batches (write
-//! design §11): every rule of §3.4, save-by-rename as real editors do it,
+//! The examination, in temporary directories with injected batches (`docs/design/writes.md`
+//! §12): every rule of §4.2, save-by-rename as real editors do it,
 //! copies that kept their attributes, the ignore list and refused names.
 //! The folder is placed by the real materializer, which records each item's
 //! handle; "is this object alive?" is the fake.
@@ -260,7 +260,7 @@ fn save_by_rename_in_editors_patterns_is_an_update_of_the_item() {
     fx.examine(&names(&[("", "v3.txt"), ("", "v3.txt~")]));
 
     // Kate (QSaveFile): written through O_TMPFILE, linked under a temporary
-    // name, renamed over; the write is reported under `#<inode>` (§17).
+    // name, renamed over; the write is reported under `#<inode>`.
     let fd = nix::fcntl::openat(root.as_fd(), ".", nix::fcntl::OFlag::O_TMPFILE | nix::fcntl::OFlag::O_RDWR, nix::sys::stat::Mode::from_bits_truncate(0o644)).unwrap();
     let tmp = File::from(fd);
     (&tmp).write_all(b"kate's new").unwrap();
@@ -810,7 +810,7 @@ fn a_new_folder_moved_over_one_deleted_since_waits_for_its_delete() {
 /// A folder replaced by its own subfolder (`mv F/sub F.tmp && rm -rf F
 /// && mv F.tmp F`). The move waits on the delete for the name, the delete
 /// on the move for what is inside it: the name's wait is dropped, the
-/// move runs (through a temporary name, §4.4) and the delete follows it.
+/// move runs (through a temporary name, §5.3) and the delete follows it.
 #[test]
 fn a_folder_replaced_by_its_own_subfolder_does_not_wait_for_ever() {
     let fx = Folder::new(&[folder("F", "R", "F"), folder("S", "F", "sub"), file("A", "S", "a.txt", b"a"), file("B", "F", "b.txt", b"b")]);

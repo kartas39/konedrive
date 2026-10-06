@@ -168,7 +168,7 @@ impl SyncService {
             return Ok(());
         }
         // An intercepted folder cannot be named to the helper without its id: only the
-        // daemon's record of it goes, and nothing in the folder is touched (`F241`).
+        // daemon's record of it goes, and nothing in the folder is touched.
         // The id as recorded, or else the one the folder carries now: it may have come
         // back with its attribute, or been given one by a bring-up that then failed.
         let root_id = if root::looks_like_a_root_id(&record.root.root_id) {
@@ -261,7 +261,7 @@ impl SyncService {
         }
     }
 
-    /// The folder itself was moved or deleted (the watcher saw it, §3.3): its sync stops —
+    /// The folder itself was moved or deleted (the watcher saw it, §3.7): its sync stops —
     /// nothing is deleted in the cloud because it went — and the folder is down, saying
     /// `why`, until a bring-up finds it again or it is forgotten.
     pub(super) async fn root_gone(&self, why: String) {

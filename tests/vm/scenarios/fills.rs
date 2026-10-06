@@ -38,7 +38,7 @@ pub(crate) fn open_fills(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> 
 /// "Did not reach the helper" needs a discriminator, because a second open
 /// that *did* reach it would be allowed anyway — the file is `hydrated`. So
 /// the file's state xattr is made unreadable first: an open the helper sees is
-/// denied `EIO` (§5.2 never allows what it cannot vouch for), and an open it
+/// denied `EIO` (`docs/design/hydration.md` §5.1 never allows what it cannot vouch for), and an open it
 /// does not see succeeds. The control below proves the discriminator bites.
 pub(crate) fn second_open_is_ignored(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let path = ctx.place("twice.bin", "ITEM2", b"TWICE")?;
