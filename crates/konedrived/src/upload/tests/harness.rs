@@ -21,6 +21,8 @@ pub(crate) struct Recorder {
     pub fulls: AtomicUsize,
     /// Why the write gate is closed; open while `None`.
     pub gate: Mutex<Option<String>>,
+    /// The user's pause, as the account has it: `Some(0)` until resumed.
+    pub paused: Mutex<Option<i64>>,
     /// What a test does whenever the write gate is asked — a row asks it
     /// before each fragment it sends, so this is how a test acts between two
     /// fragments.
@@ -38,6 +40,10 @@ impl OutboxHost for Recorder {
 
     fn full_cycle_wanted(&self) {
         self.fulls.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn paused(&self) -> Option<i64> {
+        *self.paused.lock().unwrap()
     }
 
     fn may_write(&self) -> Result<(), String> {

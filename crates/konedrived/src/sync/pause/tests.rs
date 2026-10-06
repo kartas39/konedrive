@@ -8,7 +8,7 @@ use crate::conditions::running::Clock;
 /// The time the scene starts at, in unix seconds.
 const START: i64 = 1_700_000_000;
 
-/// A clock with what the service gives it: a kept pause (the tree store's part), a place
+/// A clock with what the service gives it: a kept pause (the part of the account's settings), a place
 /// the pause is shown (the bus's part), and a wall clock that follows tokio's paused time,
 /// which a test can push ahead as a suspend does. The keeper of the pause reads that same
 /// clock, as the service's does.

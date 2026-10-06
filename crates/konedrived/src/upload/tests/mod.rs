@@ -537,13 +537,14 @@ fn throttling_pauses_the_whole_worker() {
     }
 }
 
-/// The user pauses the account of `engine`, until resumed.
-fn pause(engine: &Engine) {
-    crate::conditions::running::set_paused_blocking(engine.store(), Some(0)).unwrap();
+/// The user pauses the account, until resumed: the worker's host says so, as the
+/// account's settings do in the daemon, to every worker of the folder.
+fn pause(w: &World) {
+    *w.h.host.paused.lock().unwrap() = Some(0);
 }
 
-fn resume(engine: &Engine) {
-    crate::conditions::running::set_paused_blocking(engine.store(), None).unwrap();
+fn resume(w: &World) {
+    *w.h.host.paused.lock().unwrap() = None;
 }
 
 fn http_date(at: i64) -> String {
@@ -555,7 +556,7 @@ fn http_date(at: i64) -> String {
     format!("Thu, {day} {} {year} {time} GMT", months[month.parse::<usize>().unwrap() - 1])
 }
 
-/// A pause (persisted) stops the worker without touching the rows; a `403`,
+/// A pause (the account's, whichever worker asks) stops the worker without touching the rows; a `403`,
 /// a refused name and a writer each block or hold their own row, and a full
 /// OneDrive holds the content; the file's `user.konedrive.sync`
 /// says which.
@@ -565,14 +566,14 @@ fn pause_and_blocked_rows() {
     w.write("a.txt", b"a");
     w.examine(&[("", "a.txt")]);
     let engine = w.h.engine();
-    pause(&engine);
+    pause(&w);
     w.h.drain(&engine);
     assert_eq!(w.cloud(|c| c.log.len()), 0);
     assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("pending"));
     let restarted = w.h.engine();
     w.h.drain(&restarted);
     assert_eq!(w.cloud(|c| c.log.len()), 0, "the pause survives a restart");
-    resume(&restarted);
+    resume(&w);
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     w.h.drain(&restarted);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
@@ -806,7 +807,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
 /// waits for the drain to end.
 fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
     drain_stopped_mid_request(w, engine, method, fragment, || {
-        pause(engine);
+        pause(w);
         meanwhile();
     });
 }
@@ -889,7 +890,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         if expire {
             w.cloud(|c| c.expire_sessions());
         }
-        resume(&restarted);
+        resume(&w);
         w.h.drain(&restarted);
         assert!(w.rows().is_empty(), "{:?}", w.summary());
         let sent = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/")));

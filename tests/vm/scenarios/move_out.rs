@@ -33,7 +33,7 @@ use konedrived::local::{Batch, Examiner, IgnoreList};
 use konedrived::hydration::source::ContentSource;
 use konedrived::helper::linked::Linked;
 use konedrived::upload::move_out::{MoveOuts, SourceFill};
-use konedrived::upload::{Limits, NoHost, OutboxWorker, WorkerConfig};
+use konedrived::upload::{Limits, OutboxHost, OutboxWorker, WorkerConfig};
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
@@ -148,6 +148,18 @@ type Item<'a> = (&'a str, Option<&'a str>, &'a str, Kind, u64);
 struct Base {
     store: Store,
     link: konedrived::helper::LinkCell,
+    pause: Arc<Pause>,
+}
+
+/// The worker's host here: the user's pause and nothing else, as the account's settings
+/// say it in the daemon.
+#[derive(Default)]
+struct Pause(std::sync::atomic::AtomicBool);
+
+impl OutboxHost for Pause {
+    fn paused(&self) -> Option<i64> {
+        self.0.load(Ordering::SeqCst).then_some(0)
+    }
 }
 
 impl Base {
@@ -179,7 +191,7 @@ impl Base {
             let handle = handle_of(&ctx.root.join(rel))?;
             store.call_blocking({ let id = id.to_owned(); move |s| s.set_local_handle(&id, Some(&handle)) }).map_err(|e| e.to_string())?;
         }
-        Ok(Self { store, link: konedrived::helper::LinkCell::holding(Some(ctx.link()?)) })
+        Ok(Self { store, link: konedrived::helper::LinkCell::holding(Some(ctx.link()?)), pause: Arc::default() })
     }
 
     /// The examination of `names` (directory, name) with the helper's liveness: its rows.
@@ -210,7 +222,7 @@ impl Base {
             locks: ctx.locks.clone(),
             machine_name: "vm".into(),
             tree_lock: Arc::new(tokio::sync::Mutex::new(())),
-            host: Arc::new(NoHost),
+            host: self.pause.clone(),
             limits: Limits::default(),
             quota: konedrived::account::quota::Quota::detached(),
             moved_out: Some(MoveOuts {
@@ -224,9 +236,7 @@ impl Base {
                 },
             }),
         });
-        if paused {
-            konedrived::conditions::running::set_paused_blocking(&self.store, Some(0)).map_err(|e| e.to_string())?;
-        }
+        self.pause.0.store(paused, Ordering::SeqCst);
         let _runtime = ctx.runtime.enter();
         worker.start();
         Ok(worker)
@@ -234,7 +244,7 @@ impl Base {
 
     /// Ends the pause a worker was started under: the worker looks again.
     fn resume(&self, worker: &OutboxWorker) -> Result<(), String> {
-        konedrived::conditions::running::set_paused_blocking(&self.store, None).map_err(|e| e.to_string())?;
+        self.pause.0.store(false, Ordering::SeqCst);
         worker.wake();
         Ok(())
     }

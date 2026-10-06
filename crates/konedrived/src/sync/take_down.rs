@@ -253,8 +253,8 @@ impl SyncService {
     /// folder forgotten earlier when a new one is registered. Inside a change, once
     /// the folder is absent: no sync holds the store, and the change has let go of its own.
     pub(super) async fn remove_tree_store(&self) {
-        // Its pause went with it (the outbox on the bus).
-        self.forget_pause();
+        // Its pause goes with it.
+        self.drop_pause().await;
         let Some(tree_db) = self.sync_paths().map(|paths| paths.tree_db.clone()) else { return };
         if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&tree_db)).await {
             tracing::warn!("the task removing the tree store failed: {e}");

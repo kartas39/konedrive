@@ -2,15 +2,17 @@
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
 //! battery: [`Conditions`], told by `conditions`) and the settings. Every
 //! reader of the pause — the transfer pool (through `SyncService::show_pause`), the outbox
-//! worker, the poll and the replacements it runs, the thumbnail filler — asks here, not
-//! the tree store.
+//! worker, the poll and the replacements it runs, the thumbnail filler — asks here.
+//!
+//! The user's pause is one of the account's settings ([`Settings::paused_until`]), kept in
+//! its section of `config.toml`: it is there whether the account's sync runs or not.
 //!
 //! - **Paused or held back**: everything but work on demand stops — uploads, pinned downloads,
 //!   replacements of changed files, checking OneDrive for changes, thumbnails. Opening a
 //!   file and `Hydrate` go on.
 //! - **Thumbnails off**: the filler makes no request; everything else runs.
 //!
-//! The hold is not the user's pause: it is not kept in the store, never shows as `Paused`,
+//! The hold is not the user's pause: it is not kept anywhere, never shows as `Paused`,
 //! and is worked out again from the sources after a restart. The account runs only while
 //! neither is on. `SyncAnyway` lifts the hold until a source or the global
 //! `pause_on_metered` / `on_battery` changes.
@@ -26,7 +28,6 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use crate::config::{AccountConfig, Config, OnBattery};
-use konedrive_tree::{Store, TreeError};
 
 /// The clock an account's pause is kept by: the time, and a wait. Everything that asks
 /// whether a timed pause is over, or waits for it to be, has the account's one clock, so
@@ -56,21 +57,25 @@ impl Clock for SystemClock {
 }
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
-/// them (`Folder.Thumbnails`).
+/// them (`Folder.Thumbnails`, `Folder.Paused` and `PausedUntil`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub thumbnails: bool,
+    /// The user's pause (`docs/design/writes.md` §11): paused until then, unix seconds, 0
+    /// for until resumed; `None` while not paused. A time that has passed is no pause
+    /// ([`Running::user_pause`]).
+    pub paused_until: Option<i64>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { thumbnails: true }
+        Self { thumbnails: true, paused_until: None }
     }
 }
 
 impl Settings {
     pub fn of(account: &AccountConfig) -> Self {
-        Self { thumbnails: account.thumbnails_on() }
+        Self { thumbnails: account.thumbnails_on(), paused_until: account.paused_until.map(|until| until.max(0)) }
     }
 }
 
@@ -186,9 +191,21 @@ impl Running {
         &self.clock
     }
 
-    /// The user's pause kept in `store`, by the account's clock ([`user_pause`]).
-    pub fn user_pause(&self, store: &Store) -> Option<i64> {
-        user_pause(store, self.clock.now())
+    /// The user's pause: `Some(until)` while paused, unix seconds, 0 meaning until resumed;
+    /// `Paused` and `PausedUntil` show it. A timed pause that has run out by the account's
+    /// clock is no pause, and is taken off the settings in memory here; `config.toml`
+    /// keeps the time that passed until the next `Pause` or `Resume` writes the section,
+    /// and a start reads it as no pause. No lock but the settings' own, no file: callable
+    /// from anywhere.
+    pub fn user_pause(&self) -> Option<i64> {
+        let now = self.clock.now();
+        let mut inner = crate::panic::lock(&self.inner);
+        let until = inner.settings.paused_until?;
+        if until != 0 && until <= now {
+            inner.settings.paused_until = None;
+            return None;
+        }
+        Some(until)
     }
 
     pub fn settings(&self) -> Settings {
@@ -248,20 +265,20 @@ impl Running {
         Hold::of(inner.hold, inner.conditions)
     }
 
-    /// Why the account's background work stops now, if it does: the user's pause, kept in
-    /// `store`, before the hold.
-    pub fn stop(&self, store: &Store) -> Option<Stop> {
-        self.user_pause(store).map(Stop::Paused).or_else(|| self.held().map(Stop::Held))
+    /// Why the account's background work stops now, if it does: the user's pause before
+    /// the hold.
+    pub fn stop(&self) -> Option<Stop> {
+        self.user_pause().map(Stop::Paused).or_else(|| self.held().map(Stop::Held))
     }
 
     /// Whether the account's background work stops now.
-    pub fn stopped(&self, store: &Store) -> bool {
-        self.stop(store).is_some()
+    pub fn stopped(&self) -> bool {
+        self.stop().is_some()
     }
 
     /// Whether the thumbnail filler may ask Graph for thumbnails now.
-    pub fn thumbnails_go(&self, store: &Store) -> bool {
-        self.settings().thumbnails && !self.stopped(store)
+    pub fn thumbnails_go(&self) -> bool {
+        self.settings().thumbnails && !self.stopped()
     }
 
     /// Returns once thumbnails are turned on (at most one wake is kept).
@@ -270,31 +287,5 @@ impl Running {
     }
 }
 
-/// The user's pause of the account whose tree store is `store` (`docs/design/writes.md` §11):
-/// `Some(until)` while paused, unix seconds, 0 meaning until resumed; `Paused` and
-/// `PausedUntil` show it. A timed pause that has run out at `now` (unix seconds, by the
-/// account's [`Clock`]) is taken off here. Kept in the store's `meta`, so it survives a
-/// restart. The store keeps the time the pause ends and compares it with no clock of its
-/// own. Answered from the store's memory of it ([`Store::pause`]), never by a job: callable
-/// from anywhere.
-pub fn user_pause(store: &Store, now: i64) -> Option<i64> {
-    let until = store.pause()?;
-    if until != 0 && until <= now {
-        store.pause_ended(until);
-        return None;
-    }
-    Some(until)
-}
-
-/// Pauses the account whose tree store is `store` until `until` (unix
-/// seconds, 0 for until resumed), or resumes it (`None`).
-pub async fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.set_pause(until).await
-}
-
-/// [`set_paused`] for plain threads.
-pub fn set_paused_blocking(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.set_pause_blocking(until)
-}
 #[cfg(test)]
 mod tests;

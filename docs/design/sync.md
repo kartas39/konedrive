@@ -91,7 +91,7 @@ NetworkManager reports global connectivity again (limitations log F21); and at o
 socket says the drive changed. After a failed cycle it retries after 5, 15 and 30 s, then at the
 ordinary interval. A cycle is also nudged when the account becomes signed in. Cycles of one folder
 never overlap. While the account is paused (`Folder.Pause`) or holds back by itself (`HeldBack`) no
-cycle runs; the pause is kept in the tree store and outlasts a restart ([writes.md](writes.md) §11).
+cycle runs; the pause is kept in the account's section of `config.toml` and outlasts a restart ([writes.md](writes.md) §11).
 
 **Changes as they happen** (issue #54). Next to the poller, and started and stopped with it, one
 task per account (`remote/live.rs`) keeps Graph's Socket.IO endpoint for the drive open

@@ -1,10 +1,13 @@
 //! What holds an account's background work back (`docs/design/writes.md` §11): the user's
 //! pause, the automatic hold, and the clock that ends a timed pause.
 //!
-//! **The pause** is per account and kept in the tree store (`meta.paused_until`), so it
-//! survives a restart and a timed one ends by itself. It stops the outbox, the poll (and so
-//! the replacements it runs) and the thumbnails; fills on open, `Hydrate` and the watcher's
-//! detection go on, and rows keep coalescing.
+//! **The pause** is per account and kept with the account's settings, in its section of
+//! `config.toml` (`paused_until`), so it survives a restart, a timed one ends by itself, and
+//! it is set and shown whether the account's sync runs or not. It stops the outbox, the
+//! poll (and so the replacements it runs) and the thumbnails; fills on open, `Hydrate` and
+//! the watcher's detection go on, and rows keep coalescing. A pause a version before this
+//! one kept in the tree store is moved over when the store is first opened
+//! ([`SyncService::take_old_pause`]).
 //!
 //! **The hold** is worked out from the machine's sources and the global hold settings
 //! (`conditions::running`), is never kept, and shows as `HeldBack`.
@@ -18,7 +21,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::{SyncError, SyncService};
-use crate::conditions::running::{self, Clock, Conditions, HoldSettings};
+use crate::conditions::running::{Clock, Conditions, HoldSettings};
 
 /// How often at most a timed pause is looked at by the clock, in seconds: a sleep counts
 /// only the time the machine is awake, so a suspend would stretch a longer one.
@@ -152,50 +155,99 @@ impl Shared {
 impl SyncService {
     /// `Pause(seconds)`: nothing is uploaded, and OneDrive is not asked for
     /// changes, until `seconds` have passed — or until `Resume()` when 0.
-    /// Kept in the tree store, so it outlasts a restart.
+    /// Kept in the account's section of `config.toml`, so it outlasts a restart, and is
+    /// taken whether the account's sync runs or not: one that starts later starts paused.
+    /// Refused `Unsupported` for a folder not connected to OneDrive.
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
-        let store = self.outbox_store()?;
         let until = if seconds == 0 { 0 } else { self.clock.now() + i64::from(seconds) };
-        running::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Store(e.to_string()))?;
+        self.change_run_settings(move |s| s.paused_until = Some(until)).await?;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
-        self.show_pause();
         Ok(())
     }
 
     /// `Resume()`: the pause ends now; the outbox and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
-        let store = self.outbox_store()?;
-        running::set_paused(&store, None).await.map_err(|e| SyncError::Store(e.to_string()))?;
+        self.change_run_settings(|s| s.paused_until = None).await?;
         tracing::info!("syncing resumed");
-        self.show_pause();
         Ok(())
     }
 
-    /// Works out the pause and the hold and shows them: `Paused`/`PausedUntil` from the
-    /// store of the sync running now, `HeldBack` from `running`, and the transfer pool,
+    /// A forgotten folder's pause goes with it, from `config.toml` too: a folder registered
+    /// later starts unpaused, as it did while the pause was kept in the folder's store. A
+    /// `config.toml` that cannot be written keeps it, with a warning; it is the next
+    /// folder's then, shown and ended like any other.
+    pub(super) async fn drop_pause(&self) {
+        let persist = self.wiring.persist.clone();
+        let written = tokio::task::spawn_blocking(move || {
+            persist.store.update_account(&persist.account, |a| {
+                a.paused_until = None;
+                Ok::<_, crate::config::ConfigError>(())
+            })
+        })
+        .await;
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("the forgotten folder's pause stays in config.toml: {e}"),
+            Err(e) => tracing::warn!("the task taking the pause off config.toml failed: {e}"),
+        }
+        self.forget_pause();
+    }
+
+    /// A pause that a version before this one kept in the tree store (`meta.paused_until`)
+    /// becomes the account's: read once, when the folder's store is opened, and taken off
+    /// the store. It is taken only while the account has no pause of its own in
+    /// `config.toml`, and only while it has not run out. A store that cannot say, or a
+    /// `config.toml` that cannot be written, leaves the account as it is, with a warning:
+    /// the sync starts all the same.
+    pub(super) async fn take_old_pause(&self, store: &konedrive_tree::Store) {
+        let old = match store.old_pause().await {
+            Ok(Some(until)) => until.max(0),
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!("the pause kept in the tree store cannot be read: {e}");
+                return;
+            }
+        };
+        if old == 0 || old > self.clock.now() {
+            let taken = self.change_run_settings(move |s| {
+                if s.paused_until.is_none() {
+                    s.paused_until = Some(old);
+                }
+            });
+            // Not written: it stays in the store, for the next start.
+            if let Err(e) = taken.await {
+                tracing::warn!("the pause kept in the tree store is not taken over: {e}");
+                return;
+            }
+            tracing::info!("the pause kept in the tree store is the account's now");
+        }
+        if let Err(e) = store.set_old_pause(None).await {
+            tracing::warn!("the pause kept in the tree store cannot be taken off it: {e}");
+        }
+    }
+
+    /// Works out the pause and the hold and shows them: `Paused`/`PausedUntil` and
+    /// `HeldBack` from `running`, and the transfer pool,
     /// which hands out nothing but opens while the account's background work stops. When
     /// anything changed, what was held back is woken — the outbox, and the poll, which
     /// looks at the pause before each cycle. Called whenever either may have changed:
     /// `Pause`, `Resume`, a sync starting, the sources, the settings, and the clock when a
     /// timed pause has run out.
     ///
-    /// The store is the folder's: there from the folder's first sync start until the folder
-    /// goes down or is forgotten, also while the sync is stopped. Without one nothing is
-    /// paused, and only the hold stops the pool.
+    /// Neither needs the folder's sync or its store: a OneDrive folder that is registered
+    /// shows its pause in any state.
     pub(super) fn show_pause(&self) {
         // Only a OneDrive folder has background work to hold back.
         let held = match self.require_onedrive() {
             Ok(_) => self.running.held().map(|h| h.as_str().to_owned()).unwrap_or_default(),
             Err(_) => String::new(),
         };
-        let store = self.tree_store();
+        let onedrive = self.require_onedrive().is_ok();
         let mut changed = false;
         self.clock.show(|| {
             let before = self.state.get();
-            let (paused, stopped) = match &store {
-                Some(store) => (self.running.user_pause(store), self.running.stopped(store)),
-                None => (None, !held.is_empty()),
-            };
+            let paused = if onedrive { self.running.user_pause() } else { None };
+            let stopped = paused.is_some() || !held.is_empty();
             self.state.update(|s| {
                 s.pause.paused_until = paused;
                 s.pause.held_back = held.clone();
@@ -210,8 +262,10 @@ impl SyncService {
         }
     }
 
-    /// The folder is forgotten: so are its pause and its hold, on the bus.
+    /// The folder is forgotten: so are its pause and its hold, on the bus, and the pause
+    /// in memory. Taking it off `config.toml` is the caller's ([`Self::drop_pause`]).
     pub(super) fn forget_pause(&self) {
+        self.running.change(|s| s.paused_until = None);
         self.clock.forget(|| {
             self.state.update(|s| {
                 s.pause.paused_until = None;

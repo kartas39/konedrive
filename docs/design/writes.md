@@ -339,7 +339,7 @@ CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEG
 -- upload_sessions (url, parent, name, opened): the sessions open until completed or cancelled (§6.1)
 -- upload_openings (seq, parent, name, at, last), upload_openings_left: the places of sessions
 --   about to be opened; a row removed leaves its record in the second (§6.1)
--- meta: + outbox_seq, paused_until, handles_root
+-- meta: + outbox_seq, handles_root (paused_until: an older version's pause, read once and moved to config.toml, §11)
 ```
 
 The store is `0600`, and an upload URL, a credential for its one file until it expires, is kept
@@ -988,8 +988,7 @@ never the async runtime or the bus.
 **What runs is decided in one place** per account (`conditions/running.rs`), from the user's pause, the
 automatic hold (below) and the thumbnail setting (desktop.md §8). The transfer pool, the outbox
 worker (before each row and between fragments), the poll and the replacements it runs, the
-notification socket ([sync.md](sync.md) §4.2) and the thumbnail filler all ask it, never the tree
-store; `Paused`, `PausedUntil`, `HeldBack`, the rows of
+notification socket ([sync.md](sync.md) §4.2) and the thumbnail filler all ask it; `Paused`, `PausedUntil`, `HeldBack`, the rows of
 `Changes()` and the queue totals' "no time left" follow what it publishes. A pause and a hold stop
 the same work (the table below); thumbnails off stop only the thumbnail requests.
 
@@ -1042,9 +1041,10 @@ pause.
 socket (closed at once, opened again when the pause ends: meanwhile nothing is heard of changes
 in OneDrive, limitations log F184), its pinned downloads (the pool gives no slot but for opens)
 and its thumbnails;
-fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
-store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
-every account. What it does to work already under way:
+fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept with the
+account's settings (`paused_until` in its section of `config.toml`), so it outlasts a restart, a
+timed pause ends by itself, and it is set and shown whether the account's sync runs or not: a
+sync that starts later starts paused. The tray's "Pause Syncing" pauses every account. What it does to work already under way:
 
 | Work in progress | On pause |
 |---|---|

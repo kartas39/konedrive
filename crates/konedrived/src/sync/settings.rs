@@ -1,5 +1,6 @@
 //! The account's own settings, kept in its section of `config.toml` and taken at once:
-//! thumbnails, the ignore list, and the name conflict copies are made with.
+//! thumbnails, the user's pause, the ignore list, and the name conflict copies are made
+//! with.
 
 use std::sync::Arc;
 
@@ -20,9 +21,9 @@ impl SyncService {
         self.running.settings()
     }
 
-    /// `SetThumbnails`: `change` is written to the account's section of `config.toml`, and
-    /// taken at once. Refused `Unsupported` for a folder not connected to OneDrive, as
-    /// `Pause` is.
+    /// `SetThumbnails`, `Pause`, `Resume`: `change` is written to the account's section of
+    /// `config.toml`, and taken at once. Refused `Unsupported` for a folder not connected to
+    /// OneDrive. Nothing here needs the account's sync to be running.
     pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
         self.require_onedrive()?;
         // `config.toml` and the settings in memory change together, under the file's own
@@ -37,6 +38,11 @@ impl SyncService {
                     change(&mut after);
                     if after.thumbnails != before.thumbnails {
                         a.thumbnails = Some(after.thumbnails);
+                    }
+                    // By the file, not by memory: a timed pause that ran out is gone from
+                    // memory and still written there.
+                    if a.paused_until != after.paused_until {
+                        a.paused_until = after.paused_until;
                     }
                     running.change(|s| *s = after);
                     Ok::<_, ConfigError>(())

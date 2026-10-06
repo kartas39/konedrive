@@ -366,12 +366,12 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     // The re-marking does not take such an answer for "gone": it asks again at every look
     // of the same worker (paused here, so that only the re-marking asks).
     let engine = w.h.engine();
-    pause(&engine);
+    pause(&w);
     let before = w.helper.opens_asked();
     w.h.drain(&engine);
     w.h.drain(&engine);
     assert_eq!(w.helper.opens_asked() - before, 2, "asked again at the next look");
-    resume(&engine);
+    resume(&w);
 
     // The examination takes the handles again: Q, missing meanwhile, is placed again, not deleted.
     std::fs::rename(w.path("q.txt"), w.beside("gone-q.txt")).unwrap();
@@ -902,7 +902,7 @@ fn what_left_is_marked_again_first_even_while_paused() {
         moved_out.as_mut().unwrap().route = Some(Arc::new(move |ids| routed.lock().unwrap().push(ids)));
     }
     let engine = w.h.engine();
-    pause(&engine);
+    pause(&w);
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0, "paused");
     assert_eq!(w.helper.called("mark_file"), vec![q.clone()]);

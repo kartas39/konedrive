@@ -255,13 +255,13 @@ impl Engine {
     /// `Some(until)` while the user paused the account (0: until resumed): what the status
     /// shows, and when a timed pause ends.
     fn paused(&self) -> Option<i64> {
-        crate::conditions::running::user_pause(self.store(), self.cfg.host.now())
+        self.cfg.host.paused()
     }
 
     /// Whether nothing may be sent now: asked of the account's one place (`conditions::running`)
     /// through the host.
     pub(super) fn stopped(&self) -> bool {
-        self.cfg.host.stopped(self.store())
+        self.cfg.host.stopped()
     }
 
     /// Nothing is sent until the next [`cycle_done`](Self::cycle_done): the

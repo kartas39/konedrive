@@ -345,7 +345,7 @@ impl SyncService {
             ignore: settings::configured_ignore(&wiring.persist),
             running: Arc::new(running::Running::new(settings, Arc::clone(&wiring.clock))),
             clock: pause::PauseClock::new(Arc::clone(&wiring.clock), {
-                // The timed pause has run out: shown again, as the store has it now.
+                // The timed pause has run out: shown again, as it is now.
                 let me = me.clone();
                 move || {
                     if let Some(service) = me.upgrade() {

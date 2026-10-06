@@ -500,8 +500,12 @@ impl OutboxHost for Host {
     }
 
     /// The one place that decides what runs (`running`).
-    fn stopped(&self, store: &Store) -> bool {
-        self.running.stopped(store)
+    fn stopped(&self) -> bool {
+        self.running.stopped()
+    }
+
+    fn paused(&self) -> Option<i64> {
+        self.running.user_pause()
     }
 
     /// The account's clock: a pause is over for the worker when it is for the poll.

@@ -102,11 +102,16 @@ pub trait OutboxHost: Send + Sync {
     /// the reconcile places what came back. The delta carries it: a plain
     /// cycle, not a Full reconcile, which scans the whole folder.
     fn cycle_wanted(&self) {}
-    /// Whether the account's background work stops now (`conditions::running`): the user's pause,
-    /// kept in `store`, or what else the account's one place decides. Asked before each row
-    /// is taken, and between the fragments of an upload.
-    fn stopped(&self, store: &Store) -> bool {
-        crate::conditions::running::user_pause(store, self.now()).is_some()
+    /// Whether the account's background work stops now (`conditions::running`): the user's
+    /// pause, or what else the account's one place decides. Asked before each row is taken,
+    /// and between the fragments of an upload.
+    fn stopped(&self) -> bool {
+        self.paused().is_some()
+    }
+    /// `Some(until)` while the user paused the account, unix seconds by the account's clock,
+    /// 0 for until resumed (`conditions::running`): when the worker looks again.
+    fn paused(&self) -> Option<i64> {
+        None
     }
     /// The time, in unix seconds, by the account's clock (`conditions::running::Clock`): a
     /// timed pause is over for the worker when it is for everything else of the account.

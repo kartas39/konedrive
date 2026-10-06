@@ -105,10 +105,10 @@
          changes (so nothing is replaced), and no thumbnail is fetched, for
          `seconds` — or until Resume when 0. Opening a file still downloads
          it, Hydrate still works, and changes made here are still found and
-         wait. The pause outlasts a restart of the daemon. Refused
-         Unsupported for a folder that is not connected to OneDrive, NoRoot
-         with no folder, and NotUp, with why, for a folder that is not up or
-         whose sync has not started; Resume refuses the same. -->
+         wait. The pause outlasts a restart of the daemon, and is taken
+         whether the folder's sync runs or not: one that starts later starts
+         paused. Refused Unsupported for a folder that is not connected to
+         OneDrive, and NoRoot with no folder; Resume refuses the same. -->
     <method name="Pause">
       <arg name="seconds" type="u" direction="in"/>
     </method>

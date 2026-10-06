@@ -31,7 +31,7 @@ async fn the_thumbnail_setting_is_kept_in_config_toml_and_taken_at_once() {
     service.hub().set_link(None);
     drop(service);
     let restarted = connected(&w, true).await;
-    assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false });
+    assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false, paused_until: None });
 }
 
 /// With the notification socket up, a change in OneDrive gives one delta
