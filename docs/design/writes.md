@@ -1020,7 +1020,7 @@ already there takes part too (limitations log F179). `HeldBack` says why an acco
 back now — `metered`, `on-battery`, `power-saver`, or empty; with a network and a battery reason
 at once, `metered`.
 
-The hold is not the user's pause: it is not written to the store, never changes `Paused` or
+The hold is not the user's pause: it is not written anywhere, never changes `Paused` or
 `PausedUntil`, and does not outlast a restart — after one it is worked out again from the sources.
 A pause and a hold can both be on, and the account runs only when neither is: `Resume` alone does
 not start an account while it holds back, nor does the hold's end alone while it is paused. When

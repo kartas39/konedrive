@@ -259,6 +259,68 @@ async fn a_pause_kept_in_the_tree_store_becomes_the_accounts_at_the_first_start(
     }
 }
 
+/// A pause of an older version in the store, beside a time in `config.toml` that has
+/// passed: the time is no pause of the account's own, and the store's is taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_kept_in_the_tree_store_is_taken_over_a_time_that_passed() {
+    const START: i64 = 1_700_000_000;
+    let w = world().await;
+    let clock = testing::ManualClock::at(START);
+    let on_the_clock = |link| made(&w, wiring(&w, account(true), Arc::new(StaticToken::new("T"))).clock(&clock).link(Some(link)));
+    let service = on_the_clock(link(&w).await);
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    service.pause_syncing(10).await.unwrap();
+    clock.advance(20);
+    wait_until("the timed pause ran out", || service.state().get().pause.paused_until.is_none()).await;
+    let written = || {
+        let persist = persist(&w.config.path().join("config.toml"));
+        persist.store.account(&persist.account).unwrap().paused_until
+    };
+    assert_eq!(written(), Some(START + 10), "the time that passed stays in the file");
+    testing::tree_store(&service).unwrap().set_old_pause(Some(0)).await.unwrap();
+    service.stop_sync().await;
+    service.hub().set_link(None);
+    drop(service);
+
+    let restarted = on_the_clock(link(&w).await);
+    restarted.restore().await;
+    assert_eq!(restarted.state().get().pause.paused_until, None, "a time that passed is no pause");
+    restarted.resume().await;
+    wait_until("the store's pause is taken", || restarted.state().get().pause.paused_until == Some(0)).await;
+    assert_eq!(written(), Some(0));
+    assert_eq!(testing::tree_store(&restarted).unwrap().old_pause().await.unwrap(), None);
+    restarted.stop_sync().await;
+}
+
+/// A `Pause` or a `Resume` that `config.toml` does not take changes nothing: it is
+/// refused, and neither the workers nor the bus take the account for paused or resumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_that_cannot_be_written_pauses_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let writable = |on: bool| std::fs::set_permissions(w.config.path(), std::fs::Permissions::from_mode(if on { 0o700 } else { 0o500 })).unwrap();
+
+    writable(false);
+    let refused = service.pause_syncing(0).await;
+    writable(true);
+    assert!(matches!(refused, Err(SyncError::Config(_))), "{refused:?}");
+    assert_eq!((service.run_settings().paused_until, service.state().get().pause.paused_until), (None, None));
+    assert!(!service.state().get().stopped());
+
+    service.pause_syncing(0).await.unwrap();
+    writable(false);
+    let refused = service.resume_syncing().await;
+    writable(true);
+    assert!(matches!(refused, Err(SyncError::Config(_))), "{refused:?}");
+    assert_eq!((service.run_settings().paused_until, service.state().get().pause.paused_until), (Some(0), Some(0)));
+    service.resume_syncing().await.unwrap();
+    service.stop_sync().await;
+}
+
 /// the outbox on the bus: the outbox as the bus shows it — `Changes()`, `NotUploaded()`, the
 /// mass-delete guard's two answers — and a free-up of a file whose change
 /// waits to be uploaded, refused `NotUploaded`.

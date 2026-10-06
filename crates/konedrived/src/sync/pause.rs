@@ -195,10 +195,11 @@ impl SyncService {
 
     /// A pause that a version before this one kept in the tree store (`meta.paused_until`)
     /// becomes the account's: read once, when the folder's store is opened, and taken off
-    /// the store. It is taken only while the account has no pause of its own in
-    /// `config.toml`, and only while it has not run out. A store that cannot say, or a
-    /// `config.toml` that cannot be written, leaves the account as it is, with a warning:
-    /// the sync starts all the same.
+    /// the store. It is taken only while the account has no pause of its own that still
+    /// stands, and only while it has not run out itself. A store that cannot say leaves the
+    /// account as it is, with a warning. A `config.toml` that cannot be written leaves the
+    /// pause in the store for the next start, and this run is paused all the same: the
+    /// user's pause is not dropped because a file could not be written.
     pub(super) async fn take_old_pause(&self, store: &konedrive_tree::Store) {
         let old = match store.old_pause().await {
             Ok(Some(until)) => until.max(0),
@@ -208,15 +209,17 @@ impl SyncService {
                 return;
             }
         };
-        if old == 0 || old > self.clock.now() {
-            let taken = self.change_run_settings(move |s| {
-                if s.paused_until.is_none() {
+        let now = self.clock.now();
+        if old == 0 || old > now {
+            // A time that has passed is no pause of the account's own.
+            let take = move |s: &mut crate::conditions::running::Settings| {
+                if !s.paused_until.is_some_and(|until| until == 0 || until > now) {
                     s.paused_until = Some(old);
                 }
-            });
-            // Not written: it stays in the store, for the next start.
-            if let Err(e) = taken.await {
-                tracing::warn!("the pause kept in the tree store is not taken over: {e}");
+            };
+            if let Err(e) = self.change_run_settings(take).await {
+                tracing::warn!("the pause kept in the tree store stays there, and holds for this run: {e}");
+                self.running.change(take);
                 return;
             }
             tracing::info!("the pause kept in the tree store is the account's now");

@@ -26,16 +26,19 @@ impl SyncService {
     /// OneDrive. Nothing here needs the account's sync to be running.
     pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
         self.require_onedrive()?;
-        // `config.toml` and the settings in memory change together, under the file's own
-        // lock: two calls at once leave both the same. Only what changed is written.
+        // `config.toml` first, and the settings in memory only once it is written: a change
+        // that is refused changes nothing, here or on the bus. One change at a time
+        // ([`Running::changing`]), so two calls at once leave the file and memory the same.
+        // Only what changed is written.
         let (running, persist) = (Arc::clone(&self.running), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
+            let _one = running.changing();
+            let before = running.settings();
+            let mut after = before;
+            change(&mut after);
             persist
                 .store
                 .update_account(&persist.account, |a| {
-                    let before = running.settings();
-                    let mut after = before;
-                    change(&mut after);
                     if after.thumbnails != before.thumbnails {
                         a.thumbnails = Some(after.thumbnails);
                     }
@@ -44,10 +47,11 @@ impl SyncService {
                     if a.paused_until != after.paused_until {
                         a.paused_until = after.paused_until;
                     }
-                    running.change(|s| *s = after);
                     Ok::<_, ConfigError>(())
                 })
-                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))
+                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))?;
+            running.change(|s| *s = after);
+            Ok::<_, SyncError>(())
         })
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;

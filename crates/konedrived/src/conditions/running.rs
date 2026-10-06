@@ -163,6 +163,9 @@ pub struct Running {
     inner: Mutex<Inner>,
     /// Woken when thumbnails are turned on: the filler asks for what is missing.
     thumbnails_on: Notify,
+    /// Held by whoever writes the settings to `config.toml` and then takes them here
+    /// ([`changing`](Self::changing)).
+    changing: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -183,7 +186,13 @@ impl Default for Running {
 
 impl Running {
     pub fn new(settings: Settings, clock: Arc<dyn Clock>) -> Self {
-        Self { clock, inner: Mutex::new(Inner { settings, ..Inner::default() }), thumbnails_on: Notify::new() }
+        Self { clock, inner: Mutex::new(Inner { settings, ..Inner::default() }), thumbnails_on: Notify::new(), changing: Mutex::new(()) }
+    }
+
+    /// One change of the settings at a time, from reading them to taking what was written:
+    /// held across the write of `config.toml`, on a blocking thread, and never by a reader.
+    pub fn changing(&self) -> std::sync::MutexGuard<'_, ()> {
+        crate::panic::lock(&self.changing)
     }
 
     /// The account's clock.

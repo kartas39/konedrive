@@ -552,10 +552,12 @@ async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
         let first = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
         first.register_root(w.folder.path()).await.unwrap();
         listed(&first).await;
+        first.pause_syncing(0).await.unwrap();
         first.stop_sync().await;
     }
     let restarted = service(&w, true);
     restarted.restore().await;
+    assert_eq!(restarted.state().get().pause.paused_until, Some(0), "the account's pause is shown from the start, with no sync");
     let before = requests(&w).await;
 
     let refused = restarted.refresh().await;
@@ -567,10 +569,10 @@ async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
     let waits = |refused: SyncError| matches!(&refused, SyncError::NotUp(why) if why.contains("waits for the konedrive helper"));
     assert!(waits(restarted.outbox(0).await.unwrap_err()));
     // The pause is the account's, and needs no sync: taken and shown while the folder waits.
-    restarted.pause_syncing(0).await.unwrap();
-    assert_eq!(restarted.state().get().pause.paused_until, Some(0));
     restarted.resume_syncing().await.unwrap();
     assert_eq!(restarted.state().get().pause.paused_until, None);
+    restarted.pause_syncing(0).await.unwrap();
+    assert_eq!(restarted.state().get().pause.paused_until, Some(0));
     restarted.stop_sync().await;
 }
 

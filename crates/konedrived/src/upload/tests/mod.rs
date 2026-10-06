@@ -572,7 +572,7 @@ fn pause_and_blocked_rows() {
     assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("pending"));
     let restarted = w.h.engine();
     w.h.drain(&restarted);
-    assert_eq!(w.cloud(|c| c.log.len()), 0, "the pause survives a restart");
+    assert_eq!(w.cloud(|c| c.log.len()), 0, "the account's pause holds another worker too");
     resume(&w);
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     w.h.drain(&restarted);
