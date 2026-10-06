@@ -102,7 +102,7 @@ the #104 test gaps filled first. `RE4` waits for these.
 - **Fixed 2026-10-04** in `cc0ee68` (#152): three blocking sections (the look before the download, the
   sealing after it, the swap under both locks); a stop ends a replacement only at its waits, so
   `Poller::stop` still returns when no replacement code runs. `record_replaced_async`'s file
-  calls are still on the runtime thread (`docs/limitations/F232.md`).
+  calls are still on the runtime thread.
 
 ## RE6. One store failure is blocking or not by the line — **defect?**
 

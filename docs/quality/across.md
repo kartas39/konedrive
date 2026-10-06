@@ -54,7 +54,7 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
 - **Fixed 2026-10-04** in `a9779f8` (#149, the fill), `cc0ee68` (#152, the replacement), `8a4a9a6` (#153,
   the hub and the write gate) and `e9b716a` (#155, the upload steps). A section that has begun runs
   to its end, and a stop of the poller and of the outbox waits for the sections under way. What
-  the replacement leaves is in `docs/limitations/F232.md`.
+  the replacement leaves is said at `remote/materialize/replace.rs`.
 
 ## X3. One small thing written several times across areas
 
@@ -83,7 +83,7 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
 - **Fix:** one `lock()` helper per crate and one policy. **Size:** S. **Risk:** none.
 - **Fixed 2026-10-05** in `0d59ccd` (#191): one policy (recover) through `panic::lock`, `read`, `write`,
   kept by rule 7 of `scripts/check-structure.sh`; `clock::unix_now`. `local/` in `ec8f6d76` (#194). Left: the helper
-  (`docs/limitations/D58.md`).
+  (`CONTRIBUTING.md`, the rule for locks).
 
 ## X5. Test hooks and test doubles in production code
 
@@ -99,4 +99,4 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
   `SY12`, `HE12`, `AC8`, `UP12`.
 - **Size:** S. **Risk:** none.
 - **Fixed 2026-10-05** in `b1c4ed10` (#195): a reading pass over the comments; rustdoc with a broken link as an error on
-  every pull request. What is left is in `docs/limitations/D59.md`.
+  every pull request. What is left is in `CONTRIBUTING.md`, under the doc-links check.

@@ -11,9 +11,8 @@ belongs in the code and in `docs/design/`.
 lines: why the limit exists, what follows from it, why it stays, and where to look. No retelling of
 the code. Ids do not change.
 
-Until 2026-10-05 the log recorded every weak spot, 366 entries. The design documents and comments
-in the code still name some of those by id (F245, D33): an id with no file here was removed then,
-and `git log --diff-filter=D -- docs/limitations/<id>.md` finds its text.
+Until 2026-10-05 the log recorded every weak spot, 366 entries. An id with no file here (F245,
+D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md` finds its text.
 
 ## What the kernel and the filesystem decide
 
