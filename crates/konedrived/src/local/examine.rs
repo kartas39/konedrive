@@ -128,11 +128,13 @@ pub struct Examined {
     /// (the cloud wins, nothing is uploaded).
     pub restored: Vec<PathBuf>,
     /// Base items missing with no recorded handle: never deleted in OneDrive
-    /// (WR4); the reconcile places them again.
+    /// (WR4); the reconcile places them again. Nothing but the tests reads it.
+    #[cfg(test)]
     pub unproven: Vec<String>,
     /// Items whose whereabouts could not be asked or placed (no helper, a
     /// path that says nothing): their places are in `recheck`, and examined
-    /// again until an answer decides them.
+    /// again until an answer decides them. Nothing but the tests reads it.
+    #[cfg(test)]
     pub undecided: Vec<String>,
     /// Items the mass-delete guard held (0 when it did not trip).
     pub held: u64,
@@ -454,15 +456,16 @@ impl<'l> Run<'_, '_, 'l> {
     }
 
     /// Item `id` is decided without a row: remembered for a folder it is
-    /// in, and reported as undecided or unproven. One that is elsewhere in
-    /// the folder is neither: the next run finds it there.
+    /// in, and, for the tests, reported as undecided or unproven. One that
+    /// is elsewhere in the folder is neither: the next run finds it there.
     fn hold_back(&mut self, id: &str, settle: Settle) {
         self.decisions.settle(id, settle);
+        #[cfg(test)]
         match settle {
             Settle::Wait => self.outcome.out.undecided.push(id.to_owned()),
             Settle::Unproven => self.outcome.out.unproven.push(id.to_owned()),
             Settle::Elsewhere | Settle::Done => {}
-        }
+        };
     }
 }
 

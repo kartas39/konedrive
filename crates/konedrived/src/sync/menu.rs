@@ -171,8 +171,8 @@ impl SyncService {
                     looked.taken.push(None);
                     continue;
                 };
-                let state = if target.is_dir { Ok(None) } else { Reach::Look.state(&target.item) };
-                let hydrated = matches!(state, Ok(Some(State::Hydrated)));
+                // A file's state was read without error to take the path (`SyncRoot::item`).
+                let hydrated = !target.is_dir && matches!(Reach::Look.state(&target.item), Ok(Some(State::Hydrated)));
                 looked.taken.push(Some(Taken {
                     is_dir: target.is_dir,
                     own: target.own,
@@ -186,8 +186,6 @@ impl SyncService {
                         Ok(object) => looked.downloaded.push(object),
                         Err(_) => looked.unreadable = true,
                     }
-                } else if state.is_err() {
-                    looked.unreadable = true;
                 }
                 // The descriptor closes here, before the next path is looked at.
                 looked.places.push(target.into_place());

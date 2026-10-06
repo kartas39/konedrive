@@ -289,6 +289,15 @@ fn punch_clean_file_watched(
 /// as "hydrate it again", and [`recover`](crate::hydration::recovery::recover) punches and relabels
 /// it at the next start — but it is not a *tidy* one, so a caller that can
 /// cancel should prefer to let the sequence finish.
+///
+/// # The caller holds the per-inode lock
+///
+/// Nothing here takes it. The daemon frees a file up through
+/// `SyncService::dehydrate`, which opens the file, takes the lock of its
+/// inode and calls `dehydrate_opened`; this function is called only by
+/// this module's tests and by the scenarios of `tests/vm/`, which is why it
+/// is public. Anything else that calls it must hold the lock, or a fill of
+/// the same file can run beside the punch.
 pub async fn dehydrate(
     link: &HelperLink,
     root: &SyncRoot,
