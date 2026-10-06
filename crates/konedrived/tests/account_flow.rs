@@ -112,7 +112,7 @@ async fn profile_failure_does_not_undo_sign_in() {
         })))
         .mount(&server)
         .await;
-    // The drive answers — the sign-in is refused without it (§8.2) — and the profile fails.
+    // The drive answers — the sign-in is refused without it (`docs/design/accounts.md` §6.2) — and the profile fails.
     Mock::given(method("GET"))
         .and(path("/me/drive"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -489,7 +489,7 @@ async fn cancel_after_callback_signs_out() {
     assert_eq!(svc.state().get().state, SignInState::SignedOut);
 }
 
-// --- The identity guard (design §8.2, test 6) -------------------------------
+// --- The identity guard (`docs/design/accounts.md` §6.2, test 6) -------------------------------
 
 /// Two accounts of one daemon, `A` and `B`, and a Microsoft that knows two drives: the
 /// browser's `code-a` signs in to drive `DA`, `code-b` to `DB`.
@@ -755,8 +755,7 @@ async fn a_sign_in_that_answered_a_url_is_shown_as_signing_in() {
 
 /// Finding AC1, the commit's side: an attempt whose account no longer shows `signing-in`
 /// stores nothing, even when nothing superseded it. Here the state is ended as a token
-/// refresh that found the stored token dead ends it, which bumps no generation
-/// (limitations log F204).
+/// refresh that found the stored token dead ends it, which bumps no generation.
 #[tokio::test]
 async fn a_sign_in_commits_only_while_the_account_is_signing_in() {
     use konedrive_graph::token::RefreshReport;

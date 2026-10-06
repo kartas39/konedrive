@@ -12,8 +12,8 @@
 %global debug_package %{nil}
 
 # `rpmbuild --with dev_tools` (scripts/build-rpm.sh --dev-tools): a local
-# development package whose daemon serves the token export (limitations log
-# W11). A release is never built with it.
+# development package whose daemon serves the token export.
+# A release is never built with it.
 %bcond dev_tools 0
 
 # What the window, the daemon and konedrivectl show: the commit built, and the
@@ -31,8 +31,8 @@ Release:        1%{?dist}
 Summary:        OneDrive client for KDE Plasma with files on demand
 
 # Only the project's own license. The binaries also link the vendored crates,
-# each under its own license (MIT, Apache-2.0 and others); the limitations log
-# (R4) says what a public build would have to add.
+# each under its own license (MIT, Apache-2.0 and others); issue #13
+# says what a public build would have to add.
 License:        GPL-3.0-or-later
 URL:            https://github.com/kartas39/konedrive
 Source0:        %{name}-%{version}.tar.gz
@@ -78,7 +78,8 @@ KOneDrive shows your OneDrive as a folder of real files at their real sizes,
 each one an empty placeholder until something opens it; opening it downloads
 it first. It has a daemon that runs as your user, a small root-owned helper
 that intercepts opens with fanotify, a window with a tray icon, and the
-konedrivectl command line. It is read-only for now: nothing is uploaded.
+konedrivectl command line. An account is read-only until you switch it to
+upload the changes made on this computer.
 
 %package        kde
 Summary:        Dolphin integration for KOneDrive: file state emblems and menu actions
@@ -86,8 +87,10 @@ Requires:       dolphin
 
 %description    kde
 Two Dolphin plugins for the KOneDrive folder: an emblem on each file that
-shows whether it is online-only, downloading or downloaded, and "Download" and
-"Free up space" in its context menu. Neither plugin opens a file in the folder.
+shows whether it is online-only, downloading, downloaded or kept on this
+device, or has a change waiting to be uploaded, and "Always Keep on This
+Device", "Free Up Space" and "Open in OneDrive" in its context menu. Neither
+plugin opens a file in the folder.
 
 %prep
 %autosetup -a 1
@@ -96,8 +99,8 @@ shows whether it is online-only, downloading or downloaded, and "Download" and
 # The Rust workspace, offline. The vendored .cargo/config.toml replaces
 # crates.io with vendor/. Cargo's home and output stay in the build directory.
 # RUSTFLAGS come from Fedora's build flags. fault-injection is the VM suite's
-# alone and never packaged (limitations log W8); dev-tools (the token export)
-# only with `--with dev_tools`, a local development package (W11).
+# alone and never packaged; dev-tools (the token export)
+# only with `--with dev_tools`, a local development package.
 export CARGO_HOME="$PWD/.cargo-home"
 export CARGO_TARGET_DIR="$PWD/target"
 # The version and the commit the binaries show; the tree has no .git to ask.

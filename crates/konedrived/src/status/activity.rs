@@ -25,8 +25,8 @@ pub use konedrive_tree::ActivityKind as Kind;
 /// four fields, the kind by its name.
 pub type Event = ActivityRow;
 
-/// An incremental cycle logs at most this many events of each kind (spec
-/// §16.1), plus one "and N more".
+/// An incremental cycle logs at most this many events of each kind (`docs/design/desktop.md`
+/// §2.4), plus one "and N more".
 pub const PER_KIND: usize = 50;
 
 /// An event that happens now.

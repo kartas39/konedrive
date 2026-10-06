@@ -85,7 +85,7 @@ impl Checks {
 
 /// One inode mark, as `/proc/<helper>/fdinfo/<group>` reports it. This is the
 /// only honest source of truth for whether a mark exists: `fanotify_mark`
-/// returns 0 for a mark it did not create (§2.1).
+/// returns 0 for a mark it did not create (`docs/kernel-behavior-7.2/interception.md` §2.1).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Mark {
     pub(crate) ino: u64,

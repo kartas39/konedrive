@@ -72,7 +72,7 @@ async fn handle(w: &World, id: &str) -> Option<konedrive_fs::handle::FileHandle>
     w.store.call(move |s| s.local_handle(&id)).await.unwrap()
 }
 
-/// §3.7: an item of ours away from where the base has it — a local move the
+/// §9: an item of ours away from where the base has it — a local move the
 /// examination has not seen yet — is left where it is, never made again
 /// where the base has it; the delta's change to it waits, and the base keeps
 /// the version the file holds.
@@ -122,7 +122,7 @@ async fn an_item_forgotten_while_its_move_was_staged_is_moved_and_not_placed_twi
     assert_eq!(handle(&w, "T").await, Some(there), "and recorded again");
 }
 
-/// §3.7: an item with a live outbox row — in any state — is not moved,
+/// §9: an item with a live outbox row — in any state — is not moved,
 /// replaced or removed, nor is anything below a folder a row moves; their
 /// changes wait. A disagreement those rows explain never turns a Changed
 /// scope Full. Below a folder a `delete` row removes, nothing is placed, and
@@ -148,9 +148,9 @@ async fn rows_keep_the_reconcile_off_their_items_and_a_changed_scope_does_not_tu
     assert!(fx.deferred("T").is_none());
 }
 
-/// §3.7: a tree item missing here is made again only with something to
+/// §9: a tree item missing here is made again only with something to
 /// place — new, or with no local object on record (the outbox forgot it once
-/// OneDrive's change won, delete × edit, §6). One whose local object is on
+/// OneDrive's change won, delete × edit, §7). One whose local object is on
 /// record and changed in OneDrive is not placed again, in either scope: its
 /// object may be alive out of the folder, and the
 /// examination decides first, from its base place.
@@ -173,14 +173,14 @@ async fn a_missing_item_is_placed_again_only_with_something_to_place() {
     assert_eq!(id_at(&fx.path("top.txt")).as_deref(), Some("T"), "changed in OneDrive: it comes back");
     assert_eq!(placeholder::read_state(&File::open(fx.path("top.txt")).unwrap()).unwrap(), Some(State::OnlineOnly));
 
-    // F82 (8): an item the outbox forgot (its local object dropped) is placed again.
+    // An item the outbox forgot (its local object dropped) is placed again.
     fx.store.call(move |s| s.set_local_handle("F", None)).await.unwrap();
     cycle(&fx, &[], false).await.unwrap();
     assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"));
     assert!(fx.store.call(move |s| s.local_handle("F")).await.unwrap().is_some(), "and its object recorded again");
 }
 
-/// §3.7, §6 create/create: a file of the user's where a new item arrives is
+/// §9, §7 create/create: a file of the user's where a new item arrives is
 /// kept beside it, `name-<machine>`, stripped, for the outbox to upload; the
 /// item takes the name. A pending `create` there is the outbox's to settle:
 /// the item waits. And a save not examined yet at an item OneDrive did not
@@ -222,7 +222,7 @@ async fn a_local_file_in_the_way_is_kept_beside_the_clouds_but_a_pending_create_
     assert!(fx.deferred("P").is_some() && fx.deferred("Q").is_some(), "they wait for the merge");
 }
 
-/// §6 edit × edit, found by the reconcile: the changed download is kept as
+/// §7 edit × edit, found by the reconcile: the changed download is kept as
 /// `name-<machine>`, stripped, and OneDrive's version takes the name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_edit_here_and_in_onedrive_keeps_both() {
@@ -475,7 +475,7 @@ async fn a_stop_after_the_unlink_leaves_the_other_name_to_the_user() {
     }
 }
 
-/// F82 (5): an item OneDrive has under the outbox's temporary name (a store
+/// An item OneDrive has under the outbox's temporary name (a store
 /// rebuilt before its final move) keeps its local object where it is: the
 /// examination moves it back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

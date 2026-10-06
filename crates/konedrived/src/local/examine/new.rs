@@ -46,7 +46,7 @@ impl Run<'_, '_, '_> {
         }
         let is_dir = e.ty == Type::Dir;
         // A file over a name whose delete is still pending: save-by-rename
-        // across batches (§3.5).
+        // across batches (`docs/design/writes.md` §5.2).
         if !is_dir && pending.is_none() {
             let delete = self.facts.rows.at(&e.rel).find(|r| r.kind == OutboxKind::Delete && r.state != OutboxState::Running).and_then(|r| r.item_id.clone());
             if let Some(id) = delete {

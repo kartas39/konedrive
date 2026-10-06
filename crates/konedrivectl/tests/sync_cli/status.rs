@@ -131,7 +131,7 @@ async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
 /// `sync skipped` with no folder registered at all: there is nothing to be
 /// signed in about, and nothing OneDrive-related to say either — a plain
 /// statement of the actual reason, not the empty "Nothing is skipped."
-/// that would otherwise print (§4's "an unrecognised state shows no
+/// that would otherwise print (`docs/design/desktop.md` §10.1's "an unrecognised state shows no
 /// emblem" kind of silent-looking success).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_skipped_with_no_folder_registered_says_so() {

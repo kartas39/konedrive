@@ -59,7 +59,7 @@ impl SyncService {
         Ok(())
     }
 
-    /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §4.4).
+    /// `IgnorePatterns`: the account's ignore list (`docs/design/writes.md` §4.2 rule 3).
     pub fn ignore_patterns(&self) -> Vec<String> {
         crate::panic::read(&self.ignore).patterns().to_vec()
     }

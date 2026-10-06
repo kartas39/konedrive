@@ -1,5 +1,5 @@
 //! A folder replaced offline by a new one that keeps one of its files: the examination's
-//! rows, and the worker's side of the name rule on them (F55).
+//! rows, and the worker's side of the name rule on them.
 
 use konedrive_tree::outbox::{frees, takes};
 
@@ -9,7 +9,7 @@ use crate::upload::SWAP_PREFIX;
 
 use OutboxKind::Delete;
 
-/// **The fixture the outbox worker proves its side of the name rule on** (F55 (7)): a
+/// **The fixture the outbox worker proves its side of the name rule on**: a
 /// folder replaced offline by a new one holding one of its files — `mkdir
 /// exports.new; mv exports/keep.txt exports.new/; cp … exports.new/`, and
 /// later `rm -rf exports; mv exports.new exports`. The new folder's `mkdir`

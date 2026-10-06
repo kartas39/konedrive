@@ -55,7 +55,7 @@ pub(crate) fn new_directory_covered(ctx: &Ctx, checks: &mut Checks) -> Result<()
 
 pub(crate) fn moved_out_still_covered(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     // The control first: a placeholder moved out of the tree with nothing
-    // done about it. §1 of the kernel notes expects this to escape the
+    // done about it. `docs/kernel-behavior-7.2/interception.md` §1 expects this to escape the
     // parent's mark entirely, and that is exactly why `MarkFile` exists.
     let loose = ctx.place("loose.bin", "ITEM_LOOSE", b"LOOSE")?;
     let moved_loose = ctx.outside.join("loose.bin");

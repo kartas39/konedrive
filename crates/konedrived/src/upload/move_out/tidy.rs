@@ -38,7 +38,7 @@ pub(super) async fn inside_of(store: &Store, id: &str) -> Result<HashSet<String>
 }
 
 /// A folder that left, as it stands outside: opened again by its path — through the user's
-/// own lookups, never beneath a descriptor `OpenByHandle` gave (F90) — and walked, with the
+/// own lookups, never beneath a descriptor `OpenByHandle` gave — and walked, with the
 /// ids the base has inside its item.
 pub(super) struct Walked {
     /// Where it was proved to be.
@@ -89,8 +89,7 @@ pub(super) enum Fate {
     /// Not downloaded — never filled, a fill cut short, or a free-up cut short: it goes.
     /// OneDrive has the content the daemon last knew of. A free-up cut short before its
     /// punch still holds the whole content, and an edit made in place since then, which
-    /// no examination records (the state reads as unknown content), goes with the file
-    /// (limitations log F237).
+    /// no examination records (the state reads as unknown content), goes with the file.
     Goes,
     /// No state that can be read: nothing is decided.
     Unsure,

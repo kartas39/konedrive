@@ -24,7 +24,7 @@ use super::item::parse_graph_time;
 use super::{DriveClient, DriveError};
 
 /// How long an endpoint is taken to live when Graph leaves `expirationDateTime` out. A
-/// guess: the documentation names no lifetime (limitations log).
+/// guess: the documentation names no lifetime.
 pub const DEFAULT_LIFETIME: Duration = Duration::from_secs(3600);
 
 /// How long before its expiry an endpoint is replaced by a new one.
@@ -249,7 +249,7 @@ impl NotificationSocket {
     /// Safe to cancel between events (in a `select!`): no event is lost that has not been
     /// read. A pong is not safe: when this future is dropped while a pong is being sent,
     /// that pong may be lost, and the server then ends the connection when its
-    /// `pingTimeout` runs out (limitations log F182).
+    /// `pingTimeout` runs out.
     pub async fn notification(&mut self) -> Result<(), SocketEnd> {
         loop {
             if let Heard::Notification = self.heard().await? {
@@ -302,7 +302,7 @@ impl NotificationSocket {
                 // The server pings, the client answers with the same payload. When the
                 // caller drops `heard()` / `notification()` while this send is under way,
                 // the pong may be lost; the server then ends the connection by its
-                // `pingTimeout` (limitations log F182).
+                // `pingTimeout`.
                 self.last_ping = Instant::now();
                 let pong = format!("3{}", chars.as_str());
                 self.ws.send(Message::text(pong)).await.map_err(|e| SocketEnd::Transport(redacted(&e)))?;

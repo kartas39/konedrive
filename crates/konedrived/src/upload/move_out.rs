@@ -28,7 +28,7 @@
 //! content was proved local (or the object was in the Trash), and the `EPERM` that follows our own
 //! stripping of the attributes is the expected answer.
 //!
-//! **A crash at each step converges** (§5): before a marker, the row starts again from the object
+//! **A crash at each step converges** (§10): before a marker, the row starts again from the object
 //! (a fill resumes from its checkpoint); after it, the attributes are taken off what is still
 //! reachable (what was stripped already answers `EPERM`, which the marker explains) and the item
 //! deleted; a delete whose answer was lost finds `404`.
@@ -36,7 +36,7 @@
 //! **Descriptors from `OpenByHandle`** are used for what the object is (`fstat`, its attributes),
 //! where it is (`/proc/self/fd`, proved by opening that path again), `MarkFile`/`MarkDir`/
 //! `UnmarkDir`, and a file's own reopen for writing. A directory's is never an anchor for anything
-//! below it (SECURITY.md, F90): the walk opens the directory again by its path, through the user's
+//! below it (SECURITY.md): the walk opens the directory again by its path, through the user's
 //! own lookups, checks that it is the same inode, and goes down one name at a time from there,
 //! never following a symlink.
 //!
@@ -115,8 +115,8 @@ pub type Roots = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 pub struct MoveOuts {
     pub helper: Arc<dyn Helper>,
     pub filler: Arc<dyn Filler>,
-    /// Told the item ids whose fills belong to this account wherever the objects are now (write
-    /// design §4.6, §8.5): each moved-out object's, and what the base has inside a moved-out folder.
+    /// Told the item ids whose fills belong to this account wherever the objects are now
+    /// (§8.3): each moved-out object's, and what the base has inside a moved-out folder.
     pub route: Option<Arc<dyn Fn(HashSet<String>) + Send + Sync>>,
     /// The user's own Trash (`$XDG_DATA_HOME/Trash`). A mount's `.Trash-<uid>` and `.Trash/<uid>`
     /// are recognised at the mount's top only.

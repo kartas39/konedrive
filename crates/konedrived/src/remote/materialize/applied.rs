@@ -47,7 +47,7 @@ impl Counts {
 pub struct OnDisk {
     /// Local versions moved out of the way, each a conflict.
     pub rescued: Vec<Rescued>,
-    /// Read-write mode: local versions kept beside the cloud's (§6).
+    /// Read-write mode: local versions kept beside the cloud's (`docs/design/writes.md` §7).
     pub copies: Vec<Copied>,
     /// Read-write mode: places for the examination to look at, relative to
     /// the root (`true`: with everything below) — files and folders this
@@ -55,7 +55,7 @@ pub struct OnDisk {
     /// watcher keeps says (the daemon's own changes are dropped by pid).
     pub examine: Vec<(PathBuf, bool)>,
     /// Read-write mode: folders gone from OneDrive whose directory stays
-    /// here, holding local work, to be made again there (F116).
+    /// here, holding local work, to be made again there.
     pub recreated: Vec<String>,
     /// Items whose change the base takes in this cycle whatever a local
     /// change holds — removed in OneDrive, or no longer placed here, and
@@ -170,8 +170,8 @@ pub struct Applied {
     pub counts: Counts,
     pub on_disk: OnDisk,
     pub pending: Pending,
-    /// What a Changed scope did, item by item, for the activity log (spec
-    /// §16.1). A Full scope leaves it empty: it is one `listed` event, not
+    /// What a Changed scope did, item by item, for the activity log (`docs/design/desktop.md`
+    /// §2.4). A Full scope leaves it empty: it is one `listed` event, not
     /// one per item.
     pub changes: Vec<Changed>,
     /// Files made, and files or folders moved, inside a folder a pin keeps
@@ -193,8 +193,8 @@ impl Applied {
     }
 }
 
-/// A local version kept beside the cloud's under a new name (write design
-/// §6): what read-write mode does where the read phase rescued.
+/// A local version kept beside the cloud's under a new name (`docs/design/writes.md`
+/// §7): what read-write mode does where the read phase rescued.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Copied {
     /// Its name before, relative to the root: now the cloud's version.
@@ -203,8 +203,7 @@ pub struct Copied {
     pub copy: PathBuf,
 }
 
-/// A local version a reconcile moved out of the way (§16.3: "the
-/// daemon records what the materializer rescued").
+/// A local version a reconcile moved out of the way (`docs/design/sync.md` §10.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rescued {
     /// Where it was, relative to the root.

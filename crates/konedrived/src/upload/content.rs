@@ -1,4 +1,4 @@
-//! A file's content going up (§4.1, §4.3, §4.8): a `create` or an `update`.
+//! A file's content going up (`docs/design/writes.md` §6.1, §6.3): a `create` or an `update`.
 //!
 //! Here is what is decided: which of the two it is, what a name that is
 //! taken or an item that changed in OneDrive means, what an earlier attempt
@@ -95,7 +95,7 @@ mod session;
 /// What an upload came to, for [`Job::create`] and [`Job::update`] to decide.
 enum Sent {
     /// OneDrive holds an item for it — the last fragment's answer, or the
-    /// item a session that ended left there with this content (§5) — and
+    /// item a session that ended left there with this content (§10) — and
     /// the hash of what was read here for it.
     Landed(Box<DriveItem>, String),
     /// OneDrive refused it for good: the name is taken (`409`), the item
@@ -148,7 +148,7 @@ impl Job<'_> {
     ///   ([`name_taken`]).
     /// - With no tag remembered (a row an older version wrote, an answer
     ///   that carried none) it is deleted as that version deleted it: with
-    ///   the tag just read, whatever happened to it meanwhile (F200).
+    ///   the tag just read, whatever happened to it meanwhile.
     /// - It is adopted only while nothing here knows it (no outbox row of
     ///   the item, no local object: the test of `steps::shared::taken`): one the delta
     ///   feed listed and a cycle placed here is that local file's.
@@ -210,7 +210,7 @@ impl Job<'_> {
                 let hash = self.hash().await?;
                 match name_taken(self.e, self.disk, self.row, Some(self.found), self.parent, self.name, Ours::File(&hash)).await? {
                     // The same content is there: its own earlier request, or
-                    // create/create with equal files (§6). Nothing is sent.
+                    // create/create with equal files (§7). Nothing is sent.
                     Named::Adopt(item) => self.commit(*item).await,
                     Named::Settled(outcome) => Ok(outcome),
                 }
@@ -326,13 +326,13 @@ impl Job<'_> {
         let row = self.row;
         let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked(Reason::NoItem)) };
         let base = row.base.clone().unwrap_or_default();
-        // F55 (4): a row queued against another version than the base's
+        // A row queued against another version than the base's
         // carries that version's cTag, and no eTag.
         let Some(mut guard) = Guard::of_base(&base) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
         let new_name = (Some(self.name) != base.name.as_deref()).then_some(self.name);
         let new_parent = (Some(self.parent) != base.parent.as_deref()).then_some(self.parent);
         if new_name.is_some() || new_parent.is_some() {
-            // Moved as well: the move first, then the content (§3.5).
+            // Moved as well: the move first, then the content (§5.2).
             let change = ItemChange { name: new_name, parent_id: new_parent, modified: None };
             match self.e.drive().update_item(id, guard.as_str(), &change).await {
                 Ok(item) => guard = guard.renewed(item.e_tag),
@@ -354,21 +354,21 @@ impl Job<'_> {
             Sent::Landed(item, hash) => self.finish(*item, hash).await,
             Sent::Settled(outcome) => Ok(outcome),
             Sent::Refused(WriteError::Changed) => self.changed().await,
-            // Deleted in OneDrive while changed here: local wins (§6).
+            // Deleted in OneDrive while changed here: local wins (§7).
             Sent::Refused(WriteError::NotFound) => self.gone_or_new(id).await,
             Sent::Refused(other) => Err(other.into()),
         }
     }
 
     /// The item is gone from OneDrive. Changed here, it goes up again as new
-    /// (§6: local wins), wherever it is.
+    /// (§7: local wins), wherever it is.
     async fn gone_or_new(&self, id: &str) -> Result<Outcome, Fail> {
         upload_as_new(self.e, self.row, self.found, self.parent, id).await
     }
 
     /// A `412` on the move before the content: has OneDrive the item where
     /// this row takes it already, its content still the version the change
-    /// was made against? Then the move landed before (§5), and the content
+    /// was made against? Then the move landed before (§10), and the content
     /// goes against the fresh eTag.
     async fn landed(&self, id: &str, base: &Base) -> Result<Option<String>, Fail> {
         let remote = match self.e.drive().item(id).await {
@@ -380,8 +380,8 @@ impl Job<'_> {
         Ok(if there && remote.c_tag.is_some() && remote.c_tag == base.ctag { remote.e_tag } else { None })
     }
 
-    /// `412` for a change (§3.6, §6): read the item again. Its content is
-    /// this file's → adopted (its own earlier request, §5). Its content is
+    /// `412` for a change (§6.2, §7): read the item again. Its content is
+    /// this file's → adopted (its own earlier request, §10). Its content is
     /// the version this change was made against → again with the fresh eTag;
     /// a rename made there first stands. Otherwise both changed: a copy.
     async fn changed(&self) -> Result<Outcome, Fail> {
@@ -457,7 +457,7 @@ impl Job<'_> {
     }
 
     /// The answer's content is compared with what was sent: other content
-    /// means the server holds something else (§4.8 step 5). It is never
+    /// means the server holds something else (§6.3 step 5). It is never
     /// committed as this file's: it is sent again from zero, against
     /// the version it made — a new file's is deleted first, so that the
     /// name is free again.
@@ -481,7 +481,7 @@ impl Job<'_> {
                 tracing::warn!("what OneDrive holds for {} with other content could not be recorded ({err})", self.found.rel.display());
             }
             // The answer's own tag: nothing came between. Neither tag in the
-            // answer: an empty guard, and what OneDrive makes of it (F200, F235).
+            // answer: an empty guard, and what OneDrive makes of it.
             match self.e.drive().delete_item(&item.id, Guard::of_item(&item).as_str()).await {
                 Ok(()) | Err(WriteError::NotFound) => {
                     if remembered.is_ok() {
@@ -510,7 +510,7 @@ impl Job<'_> {
         Ok(Outcome::backoff(Reason::Hash))
     }
 
-    /// The commit (§3.5): step 1 on the file's own descriptor, under its
+    /// The commit (§5.4): step 1 on the file's own descriptor, under its
     /// inode lock — stamp from the snapshot, cTag, `hydrated`, `fsync`, then
     /// the item id and `fsync` — and step 2 in one store transaction.
     ///

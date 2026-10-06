@@ -230,7 +230,7 @@ impl Reading<'_, '_, '_> {
                 match self.read_entry(&dir, rel, name)? {
                     Some(e) => read.push(e),
                     // Not there (a delete, a rename's old side, an O_TMPFILE
-                    // pseudo-name, a merged event): the whole directory (§17).
+                    // pseudo-name, a merged event): the whole directory.
                     None if !self.listing.unread_set.contains(&rel.join(name)) => {
                         whole = true;
                         break;

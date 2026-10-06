@@ -28,7 +28,7 @@ pub struct Config {
     /// (`TokenExport.ReadWrite`; `docs/design/writes.md` §2.3, §12.1): the test accounts'. It decides
     /// nothing else — an account's mode is the user's choice, whatever its drive. Empty, the
     /// default, hands none out: the developer install sets it to the test account's drive by
-    /// hand, and nothing in the daemon writes it (limitations log F60).
+    /// hand, and nothing in the daemon writes it.
     #[serde(default, deserialize_with = "drives", skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<DriveId>,
     /// Whether every account holds its background work back on a metered connection
@@ -145,7 +145,7 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub login_hint: String,
     /// Set only until the refresh token of version 1 is moved to this account's own
-    /// Secret Service item (design §7.4).
+    /// Secret Service item (`docs/design/accounts.md` §8.4).
     #[serde(default, skip_serializing_if = "is_false")]
     pub legacy_token: bool,
     /// Set only until `account.json` and `tree.sqlite` of version 1 are moved into this
@@ -155,7 +155,7 @@ pub struct AccountConfig {
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootConfig>,
-    /// Names of local files that are never uploaded (`docs/design/writes.md` §4.4), shell globs;
+    /// Names of local files that are never uploaded (`docs/design/writes.md` §4.2 rule 3), shell globs;
     /// `None` for the defaults (`local::DEFAULT_PATTERNS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore: Option<Vec<String>>,
@@ -292,7 +292,7 @@ pub struct RootConfig {
     pub intercepted: bool,
     /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
     /// `PopulateFromDirectory`). A missing key reads as `"local"`; any other value is kept
-    /// as it is, and the folder is not brought up (`SyncService`, limitations log F211).
+    /// as it is, and the folder is not brought up (`SyncService`).
     #[serde(default = "local_source")]
     pub source: String,
     /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an
@@ -475,7 +475,7 @@ impl Config {
         self.write_test_drive_ids.contains(drive)
     }
 
-    /// The validation at load (design §3.1): one entry per account, in file order, `Some`
+    /// The validation at load (`docs/design/accounts.md` §4.1): one entry per account, in file order, `Some`
     /// with the reason when the account is *held* — loaded, but its folder is not brought
     /// up. An account is held when its id is not an account id (it would not fit an object
     /// path or a file path), or when it repeats an earlier account's id, label (whatever

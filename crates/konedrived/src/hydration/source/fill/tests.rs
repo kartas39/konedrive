@@ -210,8 +210,8 @@ async fn a_file_with_no_item_id_is_refused_with_an_errno_the_kernel_accepts() {
     assert_eq!(hydrate_file(&file, &source).await, libc::EIO);
 }
 
-/// A full disk must reach the application as `ENOSPC`, which §5.2
-/// step 5 and §9 both ask for by name and which the kernel does accept —
+/// A full disk must reach the application as `ENOSPC`, which `docs/design/hydration.md` §5.3
+/// and §6.3 both ask for by name and which the kernel does accept —
 /// flattening every local failure to `EIO` throws away the one thing the
 /// user can act on. Everything outside the accepted set still has to
 /// become `EIO`, because the alternative is an opener that never wakes.

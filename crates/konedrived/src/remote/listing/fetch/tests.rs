@@ -314,8 +314,8 @@ async fn a_folder_that_already_shows_the_drive_is_reconciled_once_the_listing_is
     assert_eq!(fresh.call(move |t| t.delta_link()).await.unwrap(), Some(s.link_to("L2")));
 }
 
-/// A rescue made while a page is placed is a conflict at once (spec
-/// §16.2), not at the end of the listing: a listing that never ends must
+/// A rescue made while a page is placed is a conflict at once (`docs/design/sync.md`
+/// §10.3), not at the end of the listing: a listing that never ends must
 /// still say where the file went.
 #[tokio::test]
 async fn a_rescue_made_by_a_page_is_a_conflict_before_the_listing_ends() {

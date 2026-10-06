@@ -71,8 +71,8 @@ pub fn refused(name: &OsStr) -> Option<Refused> {
     None
 }
 
-/// `name` with the machine's name added before its extension (write design
-/// §6): `Report.docx` → `Report-fedora.docx`, `archive.tar.gz` →
+/// `name` with the machine's name added before its extension (`docs/design/writes.md`
+/// §7): `Report.docx` → `Report-fedora.docx`, `archive.tar.gz` →
 /// `archive.tar-fedora.gz`, `.bashrc` → `.bashrc-fedora`; the `n`th try adds
 /// `-n` (`Report-fedora-2.docx`). The stem is shortened to keep the name
 /// within 255 bytes.

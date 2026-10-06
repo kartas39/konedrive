@@ -202,7 +202,7 @@ fn a_placeholder_is_removed_not_rescued_at_any_depth() {
 /// A directory set to mode `000` fails at the look its parent takes at it, as it did
 /// before the scan had one rule. What the rule adds — a directory that can be looked at
 /// and then not opened or listed (`EIO`, `EMFILE`, a swap mid-walk) — no unprivileged test
-/// can make happen (the limitations log, D51).
+/// can make happen.
 #[test]
 fn a_scan_that_cannot_read_a_directory_fails_and_names_it() {
     let (_dir, path, disk) = unlocked_root();

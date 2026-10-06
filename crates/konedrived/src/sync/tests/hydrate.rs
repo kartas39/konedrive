@@ -214,7 +214,7 @@ async fn hydrate_now_reports_a_source_that_could_not_serve_the_file() {
     assert!(std::fs::metadata(&file).unwrap().blocks() < 8, "and holding nothing");
 }
 
-/// A file labelled `hydrated` over a hole is §9's named
+/// A file labelled `hydrated` over a hole (`docs/design/hydration.md` §6.5) is a
 /// failure, and a manual "download it now" is what repairs it — so
 /// `Hydrate` must not believe the label on its own.
 #[tokio::test]

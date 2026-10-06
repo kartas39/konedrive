@@ -124,8 +124,10 @@ find_package(KF6KirigamiAddons 1.0 REQUIRED)
 # The window's QML, a module of its own that qmlcachegen compiles into the
 # binary: the window never runs a unit from Qt's disk cache, which trusts a
 # resource file's unit for as long as the executable's modification time is
-# unchanged, and a package's is that of its changelog day
-# (docs/limitations/R12.md). The C++ types stay registered imperatively in
+# unchanged, and a package's is that of its changelog day: rpmbuild gives
+# every file that date, which has no time of day, so a second package built on
+# one day installed the program with the same time, and the window went on
+# running the first one's QML. The C++ types stay registered imperatively in
 # org.konedrive.app (qmlregistration.h), which the files import; qmlcachegen
 # cannot see them, and compiles what uses them to bytecode only.
 qt_policy(SET QTP0001 NEW)

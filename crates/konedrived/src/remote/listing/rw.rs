@@ -6,7 +6,7 @@
 //! conflict copies it made, hands the watcher what it kept or copied — the
 //! daemon's own changes raise no event the watcher keeps — lets rows wait
 //! for a folder made again, and says the cycle went through, so that the
-//! outbox worker sends (§4.9).
+//! outbox worker sends (§9).
 
 use std::sync::Arc;
 
@@ -23,19 +23,19 @@ pub struct Writes {
     /// The per-root tree lock (`SyncService::tree_lock`): held from staging
     /// to the swap, as the outbox worker holds it across each commit.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// For conflict copies (§6): `name-<machine>.ext`.
+    /// For conflict copies (§7): `name-<machine>.ext`.
     pub machine_name: String,
     /// The account's ignore list: what a removal keeps under an ignored
     /// name stays on this computer only.
     pub ignore: crate::local::SharedIgnore,
     /// Says when the watcher has examined the folder once (its Full local
-    /// scan): the folder's first cycle waits for it (§3.3). `None`, or a
+    /// scan): the folder's first cycle waits for it (§9). `None`, or a
     /// watcher that stopped first, holds nothing back.
     pub scanned: Option<tokio::sync::watch::Receiver<bool>>,
     /// Hands the watcher places to examine: what the reconcile kept,
     /// copied or made local.
     pub examine: Arc<dyn Fn(Batch) + Send + Sync>,
-    /// A cycle went through: the outbox worker may send (§4.9).
+    /// A cycle went through: the outbox worker may send (§9).
     pub cycled: Arc<dyn Fn() + Send + Sync>,
     /// A cycle cleared trouble that stopped the folder ([`CycleError::blocking`]) — it
     /// went through, or failed with trouble that is only said: the write gate that

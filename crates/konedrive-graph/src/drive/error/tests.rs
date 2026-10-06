@@ -16,7 +16,7 @@ fn a_status_alone_decides_when_graph_names_no_code() {
     assert_eq!(kind(410, ""), Kind::Gone);
     assert_eq!(kind(408, ""), Kind::Timeout);
     assert_eq!(kind(416, ""), Kind::RangeNotSatisfiable);
-    // What a write tells apart (`docs/design/writes.md` §3.6).
+    // What a write tells apart (`docs/design/writes.md` §6.2).
     assert_eq!(kind(412, ""), Kind::Changed);
     assert_eq!(kind(409, ""), Kind::NameExists);
     assert_eq!(kind(507, ""), Kind::QuotaExceeded);

@@ -66,7 +66,7 @@ pub use replacements::REPLACE_WORKERS;
 /// A delta with more changes than this is reconciled in full.
 pub const FULL_THRESHOLD: usize = 5000;
 
-/// The account's drive, as `config.toml` keeps it (design §8.1): the
+/// The account's drive, as `config.toml` keeps it (`docs/design/accounts.md` §6.1): the
 /// same-account check then survives a tree store rebuilt empty, whose `meta`
 /// has forgotten it.
 #[derive(Clone)]
@@ -145,7 +145,7 @@ pub enum CycleError {
     )]
     OtherAccount(String),
     /// The account is signed in to a drive another account of this daemon has
-    /// (design §8.2); that account's label. Two folders of one drive would
+    /// (`docs/design/accounts.md` §6.1); that account's label. Two folders of one drive would
     /// download everything twice.
     #[error(
         "this account is signed in to the Microsoft account already connected as '{0}'; sign it \
@@ -160,8 +160,7 @@ pub enum CycleError {
     /// the cycle: at a store call of the cycle's own ([`From<TreeError>`](CycleError::from))
     /// or inside the materializer ([`applying`]); both are this, and stop the folder
     /// (quality finding `RE6`). Not every store failure ends a cycle: those the
-    /// read-write reconcile only logs and passes over after its commit do not come
-    /// here (limitations log F212).
+    /// read-write reconcile only logs and passes over after its commit do not come here.
     #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]
@@ -405,8 +404,8 @@ impl Listing {
         let now = crate::clock::unix_now();
         self.on_store(turn, move |s| s.set_last_checked(now)).await?;
         self.ctx.state.update(|s| s.cycle.last_checked = now);
-        // A conflict whose rescued file is gone drops off by itself (spec
-        // §16.1), whether or not anyone asks for the list: a batch of them
+        // A conflict whose rescued file is gone drops off by itself (`docs/design/sync.md`
+        // §10.3), whether or not anyone asks for the list: a batch of them
         // looked over each cycle. Not through `on_store`: the
         // activity log takes the store's lock itself.
         let (report, held) = (self.ctx.report.clone(), Arc::clone(turn));
@@ -481,7 +480,7 @@ impl Listing {
             }
             return Err(CycleError::OtherAccount(recorded));
         }
-        // A drive is one account (§8.2): one another account has recorded is not
+        // A drive is one account (`docs/design/accounts.md` §6.1): one another account has recorded is not
         // listed a second time into this folder.
         if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
             let config = record.store.snapshot();

@@ -159,7 +159,7 @@ pub fn tree_moved_in_marked(ctx: &Ctx, checks: &mut Checks) -> Result<(), String
     (batch == expected).then_some(()).ok_or_else(|| format!("handed over {batch:?}, expected {expected:?}"))
 }
 
-/// §3.2, end to end: a placeholder filled through the helper (the daemon's
+/// `docs/design/writes.md` §3.2, end to end: a placeholder filled through the helper (the daemon's
 /// commit changes size, time and attributes) raises only events with this
 /// process's pid, and nothing is handed over to be examined.
 pub fn own_fill_is_silent(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {

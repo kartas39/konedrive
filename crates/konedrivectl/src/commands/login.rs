@@ -11,7 +11,7 @@ use crate::wait;
 /// How long a command waits for a sign-in in the browser.
 pub(crate) const SIGN_IN_WAIT: Duration = Duration::from_secs(6 * 60);
 
-/// `login` (design §5.2): the chosen account's sign-in, for an account that is signed out. It
+/// `login` (`docs/design/desktop.md` §3): the chosen account's sign-in, for an account that is signed out. It
 /// adds none: with no account at all it is refused, and the refusal names `account add`.
 pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
     // An unreadable configuration first, then a name that fits no account, several accounts

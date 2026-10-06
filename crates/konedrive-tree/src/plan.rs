@@ -98,7 +98,7 @@ impl Plan {
 
 impl TreeStore {
     /// The plan of every item of `ids`: its base row and place, its new row
-    /// and place. Four queries an item (F244).
+    /// and place. Four queries an item.
     pub fn plan(&self, ids: &[String]) -> Result<Plan, TreeError> {
         let root = self.root_item_id()?;
         let mut items = HashMap::with_capacity(ids.len());

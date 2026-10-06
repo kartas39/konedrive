@@ -10,7 +10,7 @@ fn account(id: &str, label: &str, email: &str) -> AccountInfo {
     }
 }
 
-/// Design §5.1: an exact id, else a label, else an email, the last two
+/// `docs/design/desktop.md` §3: an exact id, else a label, else an email, the last two
 /// whatever the case; with no name, the only account; several and no
 /// name is a mistake on the command line (exit status 2).
 #[test]

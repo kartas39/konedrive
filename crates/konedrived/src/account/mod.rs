@@ -33,7 +33,7 @@
 //!      read or one assignment, under either of the two above (`install_oauth`).
 //!
 //! The file writes of the leaves are blocking and `fsync`ed, also where they run under the
-//! refresh lock on a runtime thread (limitations log F231, F249).
+//! refresh lock on a runtime thread.
 
 pub(crate) mod attempt;
 pub mod cache;
@@ -87,7 +87,7 @@ impl From<ConfigError> for AccountError {
     }
 }
 
-/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/writes.md` §11), each under its own
+/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/writes.md` §2.2, §2.3), each under its own
 /// D-Bus error name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModeError {
@@ -133,8 +133,8 @@ pub const DRIVE_NOT_KNOWN: &str = "This account's OneDrive drive is not known ye
 pub const NO_DRIVE_RECORDED: &str = "config.toml sets this account to read-write, but records no \
      OneDrive drive for it; it runs read-only until a sign-in records one";
 
-/// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (write
-/// design §7). It runs read-only until it signs in with that permission.
+/// `LastError` of a read-write account whose token does not carry `Files.ReadWrite` (`docs/design/writes.md`
+/// §2.3). It runs read-only until it signs in with that permission.
 pub const SIGN_IN_TO_WRITE: &str = "Changes made here are not uploaded: this account's sign-in does \
      not allow konedrive to change files in OneDrive. Switch it to read-write again to sign in with \
      that permission.";
@@ -249,7 +249,7 @@ pub struct AccountService {
     tokens: Arc<TokenManager>,
     sign_in_timeout: Duration,
     session: Mutex<Session>,
-    /// The daemon's other accounts, for the identity guard (§8.2). Empty until a
+    /// The daemon's other accounts, for the identity guard (`docs/design/accounts.md` §6.2). Empty until a
     /// [`Siblings`] adds this account.
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
     /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
@@ -539,7 +539,7 @@ impl AccountService {
                     if let Some(info) = &cached {
                         apply_info(s, info);
                         // What the last token was valid for decides whether a read-write
-                        // account's first refresh may ask for Files.ReadWrite again (§7). No
+                        // account's first refresh may ask for Files.ReadWrite again (`docs/design/writes.md` §2.1). No
                         // cache, or one from before it was kept: nothing granted, read-only.
                         s.granted_scopes = info.granted_scopes.clone();
                         // And the drive the token reached, which must be the one
@@ -580,7 +580,7 @@ impl AccountService {
     }
 }
 
-/// The accounts of one daemon, as the identity guard sees them (design §8.2): a sign-in
+/// The accounts of one daemon, as the identity guard sees them (`docs/design/accounts.md` §6.2): a sign-in
 /// compares its drive with every other account's.
 #[derive(Default)]
 pub struct Siblings(std::sync::Mutex<Vec<Weak<AccountService>>>);

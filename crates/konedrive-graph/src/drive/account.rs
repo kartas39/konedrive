@@ -16,7 +16,7 @@ pub struct Profile {
     pub email: String,
 }
 
-/// `GET /me/drive`: the drive's id — the account's identity (design §8) — and its quota:
+/// `GET /me/drive`: the drive's id — the account's identity (`docs/design/accounts.md` §2) — and its quota:
 /// `used` and `total` for the account page, Graph's `remaining` and `state` for the outbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Drive {

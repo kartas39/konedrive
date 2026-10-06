@@ -465,7 +465,7 @@ async fn the_drive_kept_beside_the_root_outlives_a_rebuilt_store() {
     assert!(matches!(&err, CycleError::OtherAccount(drive) if drive == "D0"), "{err:?}");
 }
 
-/// A drive is one account (design §8.2): an account with no drive recorded
+/// A drive is one account (`docs/design/accounts.md` §6.1): an account with no drive recorded
 /// yet, signed in to a drive another account has, does not list it into a second folder
 /// — the folder is blocked, naming that account, and nothing is placed.
 #[tokio::test]

@@ -97,7 +97,7 @@ pub(super) fn identify(id: &str, known: Known<'_>, carriers: &[Seen<'_>], at_pla
                 } else if !seen.pending {
                     // Not surely nobody's: another account's folder may
                     // have it, and wait to download it where it went. (One
-                    // with a pending row is adopted by its replay, §5.)
+                    // with a pending row is adopted by its replay, `docs/design/writes.md` §10.)
                     out.copies.push(seen.ix);
                 }
             }

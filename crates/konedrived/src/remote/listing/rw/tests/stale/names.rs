@@ -432,7 +432,7 @@ async fn run(case: Case) -> Vec<String> {
     }
     // I-d: only what the user did is sent. An upload only where content
     // waits, of that file; the user's rename or delete once; and the one
-    // request of limitations log F259, once, where `f.txt` has content
+    // request nobody made (the name sent back), once, where `f.txt` has content
     // waiting and OneDrive exchanged its name with `g.txt`'s.
     let content = matches!(case.local, 2 | 4);
     let f259 = case.other == FILES && case.local == 2 && id != "F";
@@ -458,7 +458,7 @@ async fn run(case: Case) -> Vec<String> {
         wrong.push(format!("sent more than once: the known request {known}, the user's {own}, upload sessions {sessions}"));
     }
     // OneDrive is as the listing left it, but for what the user did, the
-    // content that waited, and the copy of F259.
+    // content that waited, and the conflict copy that request ends in.
     let now = in_onedrive(&w);
     for (item, was) in &staged {
         match now.get(item) {

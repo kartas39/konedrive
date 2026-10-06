@@ -80,7 +80,7 @@ fn forget_below_unplaced(conn: &Connection) -> Result<(), TreeError> {
 /// #84, #89), whose first trigger deleted a record with its row;
 /// `leaving.handle`; a bad item's columns, with the id an
 /// earlier build kept in the reason (`hash-mismatch:<item id>`) moved to
-/// its column — such a row has no tag (limitations log F200).
+/// its column — such a row has no tag.
 fn unnumbered_additions(conn: &Connection) -> Result<(), TreeError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS deferred (

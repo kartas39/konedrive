@@ -38,7 +38,7 @@ async fn migrated(dir: &std::path::Path, wallet: &Arc<MemoryWallet>) -> (Arc<Con
     (config, id, secrets)
 }
 
-/// Design §7.4 (test 3): version 1's item counts before the move, moves into the
+/// `docs/design/accounts.md` §8.4 (test 3): version 1's item counts before the move, moves into the
 /// account's own item on the first load and is deleted, and the flag is cleared.
 #[tokio::test]
 async fn the_token_of_version_1_moves_into_the_account_on_the_first_load() {

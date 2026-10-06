@@ -156,7 +156,7 @@ impl Engine {
         &self.cfg.locks
     }
 
-    /// The per-root tree mutex (§3.7).
+    /// The per-root tree mutex (`docs/design/writes.md` §9).
     pub(super) fn tree_lock(&self) -> &Arc<tokio::sync::Mutex<()>> {
         &self.cfg.tree_lock
     }
@@ -266,7 +266,7 @@ impl Engine {
 
     /// Nothing is sent until the next [`cycle_done`](Self::cycle_done): the
     /// folder's first cycle, and the one after the network came back, run
-    /// before the outbox (`docs/design/writes.md` §3, §9).
+    /// before the outbox (`docs/design/writes.md` §2.2, §9).
     pub(super) fn wait_for_cycle(&self, network_back: bool) {
         self.shared().cycle.wait(network_back);
         self.publish();

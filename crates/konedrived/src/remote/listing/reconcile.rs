@@ -218,7 +218,7 @@ impl Listing {
                     dropped_removed: Arc::clone(&writes.dropped_removed),
                 };
                 // Read-write mode sets nothing aside: an object whose id the base does not
-                // know is left alone (F115), or goes with what OneDrive removed (F116).
+                // know is left alone, or goes with what OneDrive removed.
                 (Some(tree), None, Mode::ReadWrite(writing))
             }
         };
@@ -265,7 +265,7 @@ impl Reconcile {
     }
 
     /// The account's drive written into `config.toml` and onto the
-    /// folder (design §8.3), when this is the reconcile that learnt it.
+    /// folder (`docs/design/accounts.md` §6.1, §6.3), when this is the reconcile that learnt it.
     fn record_drive(&mut self) {
         let Some((record, id)) = self.drive.take() else { return };
         let recorded = crate::config::DriveId::new(id.as_str()).map(|drive| record.store.record_drive(&record.account, &drive));

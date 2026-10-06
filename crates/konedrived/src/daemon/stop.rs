@@ -16,7 +16,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use futures_util::future::BoxFuture;
 
 /// How long a stop waits for the requests in flight: systemd's own
-/// `TimeoutStopSec` is far longer. A guess (limitations log F177).
+/// `TimeoutStopSec` is far longer. A guess.
 pub const STOP_BOUND: Duration = Duration::from_secs(10);
 
 /// How a stop ended.

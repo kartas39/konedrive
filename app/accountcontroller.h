@@ -32,7 +32,7 @@ class AccountController : public QObject
     Q_PROPERTY(QString switchingTo READ switchingTo NOTIFY modeSwitchChanged)
     /// A switch to read-write waits for its sign-in, whose link is signInUrl: until Mode
     /// turns "read-write", LastError says why not, the account leaves "signed-in", or
-    /// cancelModeSwitch(). Account says nothing while it waits (limitations log F64).
+    /// cancelModeSwitch(). Account says nothing while it waits.
     Q_PROPERTY(bool modeSignInPending READ modeSignInPending NOTIFY modeSwitchChanged)
     Q_PROPERTY(QString state READ state NOTIFY accountChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY accountChanged)

@@ -26,7 +26,7 @@
 # A file under a `generated` directory is written by a generator
 # (crates/konedrive-text): the size advice leaves it out.
 #
-# What it does not see is in docs/limitations/D30.md.
+# What it does not see is in CONTRIBUTING.md, "The structure of the code".
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -98,7 +98,7 @@ function uses(file, number, line, own, top,    text, name) {
 # Whether rule 7 is asked of a file: not of the files that hold the one
 # function, not of test doubles (`testing.rs`, `testing/`), and not of the helper
 # (it has its own `lock`, and root code is not changed for tidiness):
-# docs/limitations/D58.md.
+# CONTRIBUTING.md, rule 7.
 function locks_checked(file) {
     if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
         return 0

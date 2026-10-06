@@ -3,7 +3,7 @@ use crate::sync::outbox::KeptBack;
 use crate::config::Mode;
 use crate::sync::menu::FreeUpWhy;
 
-/// Write design §3.9: the account turning read-write takes the read-only lock off
+/// `docs/design/writes.md` §2.2: the account turning read-write takes the read-only lock off
 /// its folder — files `0644`, directories `0755`, the folder itself last — and the
 /// sync that starts again leaves it off through a Full reconcile; turning read-only
 /// puts it back on at once. A folder brought up read-write with the lock still on — a
@@ -588,7 +588,7 @@ async fn an_ignored_directory_keeps_everything_in_it_local() {
 
 /// the outbox on the bus: a new file whose folder OneDrive no longer has asks
 /// for a cycle, not a Full reconcile — which, before the read-write reconcile, put a rename
-/// still waiting to go up back where the base has it (F63, closed). The
+/// still waiting to go up back where the base has it. The
 /// rename waiting beside it stands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_folder_asks_for_a_cycle_that_leaves_waiting_renames_alone() {
@@ -704,7 +704,7 @@ async fn an_unlisted_drive_is_sent_to_and_a_token_seen_to_reach_another_drive_se
     service.stop_sync().await;
 }
 
-/// §4.10: while OneDrive asks the uploads to wait, the folder's `LastError` says so, with
+/// §6.2: while OneDrive asks the uploads to wait, the folder's `LastError` says so, with
 /// the time they go on; when the wait is over the change goes up and the note is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_throttle_is_said_in_last_error_until_it_ends() {
@@ -981,7 +981,7 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
     restarted.stop_sync().await;
 }
 
-/// The folder itself moved away under a read-write sync (§3.3): the folder reads `error`
+/// The folder itself moved away under a read-write sync (§3.7): the folder reads `error`
 /// and says so, its sync stops, what needs the sync is refused `NotUp`, and OneDrive is
 /// asked for nothing more — nothing is deleted there because the folder went. `Refresh()`
 /// tries to bring it up again: refused while it is gone, refused too while another directory

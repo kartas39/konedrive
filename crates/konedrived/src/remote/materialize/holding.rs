@@ -99,7 +99,7 @@ impl Materializer {
         Ok(!known && claimed(id))
     }
 
-    /// Another account's object, moved here from its folder (write design
+    /// Another account's object, moved here from its folder (`docs/design/writes.md`
     /// §8.3): moved out of the folder like a rescue, but alive, attributes
     /// and all, so that the other account's move out finds it by its handle
     /// and downloads it where it is now. Never removed: that account's

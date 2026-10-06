@@ -51,7 +51,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             let sync = daemon.sync(&target.path).await?;
             let folder = sync.folder.path().await.unwrap_or_default();
             // Read first: the list goes with the account. Where each listed file was rescued
-            // to is the one thing about rescues this can know (F51).
+            // to is the one thing about rescues this can know (issue #231).
             let conflicts = sync.conflicts.list().await.unwrap_or_default();
             let result = daemon.manager.remove(&target.path.as_ref()).await;
             if let Err(error) = result {
@@ -67,7 +67,7 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
     Ok(())
 }
 
-/// `account mode` (`docs/design/writes.md` §11): the chosen account's mode, or a switch. A switch to
+/// `account mode` (`docs/design/writes.md` §2.2): the chosen account's mode, or a switch. A switch to
 /// read-write opens the sign-in the daemon answers with, as `login` does, and waits until the
 /// account is read-write or says why it is not.
 async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>, force: bool) -> anyhow::Result<()> {

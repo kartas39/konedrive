@@ -220,7 +220,7 @@ impl Cloud {
             .find(|i| i.parent.as_deref() == Some(parent) && i.name.to_lowercase() == lower && Some(i.id.as_str()) != except)
     }
 
-    /// A change inside a folder changes its cTag, and its parents' (§3.6).
+    /// A change inside a folder changes its cTag, and its parents'.
     fn touch_above(&mut self, parent: Option<String>) {
         let mut at = parent;
         while let Some(id) = at {

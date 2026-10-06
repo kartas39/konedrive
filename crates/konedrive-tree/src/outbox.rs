@@ -4,7 +4,7 @@
 //! forgotten deletes, never a byte.
 //!
 //! **One live row per item.** A detection merges into the item's row (the
-//! table in §3.5) unless that row is `running`; then one follow-up row waits
+//! table in §5.2) unless that row is `running`; then one follow-up row waits
 //! behind it. An item is its item id; something not uploaded yet is its local
 //! object, by file handle (or inode where there is no handle).
 //!
@@ -19,7 +19,7 @@
 //! 4 closes a circle, its edges in the circle are dropped (`name_edges`
 //! in [`pick`]).
 //!
-//! Also here: `local_skipped` (what is never uploaded, §3.4 rule 2) and the
+//! Also here: `local_skipped` (what is never uploaded, §4.2 rule 2) and the
 //! item's local object (`items.local_handle`).
 
 use std::collections::{HashMap, HashSet};
@@ -72,7 +72,7 @@ pub use sums::{OutboxGroup, SkippedGroup};
 pub use worker::ConflictCopy;
 
 /// A name the outbox worker gives an item in OneDrive while the name its
-/// row takes is still another item's (§4.4, F55 (7)).
+/// row takes is still another item's (§5.3).
 pub const SWAP_PREFIX: &str = ".konedrive-swap-";
 
 /// How long a record of an opening whose row left is kept: a
@@ -457,7 +457,7 @@ impl TreeStore {
     }
 
     /// An upload session's progress, persisted before the first byte and
-    /// after each fragment (§4.8).
+    /// after each fragment (§6.3).
     pub fn outbox_set_session(&self, seq: i64, url: Option<&SessionUrl>, expires: Option<i64>, next: Option<u64>) -> Result<(), TreeError> {
         self.conn.execute(
             "UPDATE outbox SET session_url = ?2, session_expires = ?3, session_next = ?4 WHERE seq = ?1",
@@ -516,7 +516,7 @@ impl TreeStore {
         Ok(gone)
     }
 
-    /// Commit step 2 (§3.5), after the attributes are on the file: in one
+    /// Commit step 2 (§5.4), after the attributes are on the file: in one
     /// transaction, the base takes Graph's answer and the local object, with
     /// `local_seq = ++outbox_seq`; follow-ups behind a create learn its item
     /// id and base; the row goes; the activity event is written. Returns the

@@ -107,12 +107,12 @@ pub enum SyncError {
     ModifiedLocally,
     #[error("not a plain file inside this sync root")]
     OutsideRoot,
-    /// A folder that remembers another account's drive (design §8.3);
+    /// A folder that remembers another account's drive (`docs/design/accounts.md` §6.3);
     /// `Folder` answers it `NotEmpty`.
     #[error("this folder holds another OneDrive account's files; choose an empty folder")]
     ForeignFolder,
     /// A folder that is, is inside, or contains another account's folder
-    /// (design §8.3); the other account's label.
+    /// (§6.3); the other account's label.
     #[error("this folder is, is inside, or contains the folder of the account '{0}'")]
     Overlaps(String),
     #[error("a sync root is already registered; forget it first")]
@@ -127,8 +127,8 @@ pub enum SyncError {
     /// [`pin::refusal`]'s, naming the path refused and what pins it.
     #[error("{0}")]
     NotAllowed(String),
-    /// A free-up of a file with a change waiting to be uploaded (write design
-    /// §3.8): the message names it.
+    /// A free-up of a file with a change waiting to be uploaded (`docs/design/writes.md`
+    /// §11): the message names it.
     #[error("{0} is not uploaded yet, so freeing it up would lose the changes made here")]
     NotUploaded(String),
     /// `WebUrl` of a file or folder that carries no item id: OneDrive does not
@@ -294,7 +294,7 @@ pub struct SyncService {
     /// This service, for the watcher's status hook, which may have to stop
     /// the sync from the watcher's thread (the folder moved or deleted).
     me: std::sync::Weak<SyncService>,
-    /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
+    /// The account's ignore list (`docs/design/writes.md` §4.2 rule 3), from `config.toml`: the
     /// watcher's examination reads it, `SetIgnorePatterns` changes it.
     ignore: local::SharedIgnore,
     /// The pause as it is shown, and the timer that ends a timed one (`pause`).

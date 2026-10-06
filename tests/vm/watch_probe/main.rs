@@ -51,7 +51,7 @@ mod fan {
     pub const REPORT_MNT: u32 = 0x4000;
     pub const REPORT_DFID_NAME: u32 = REPORT_DIR_FID | REPORT_NAME;
     pub const REPORT_DFID_NAME_TARGET: u32 = REPORT_DFID_NAME | REPORT_FID | REPORT_TARGET_FID;
-    /// The design's group (§3.3).
+    /// The design's group (§3.1).
     pub const DESIGN_INIT: u32 = CLASS_NOTIF | REPORT_DFID_NAME_TARGET | NONBLOCK | CLOEXEC;
 
     pub const MARK_ADD: u32 = 0x1;
@@ -82,7 +82,7 @@ mod fan {
     pub const RENAME: u64 = 0x1000_0000;
     pub const ONDIR: u64 = 0x4000_0000;
 
-    /// The design's mask for every directory (§3.3).
+    /// The design's mask for every directory (§3.1).
     pub const DESIGN_MASK: u64 = CREATE
         | DELETE
         | RENAME

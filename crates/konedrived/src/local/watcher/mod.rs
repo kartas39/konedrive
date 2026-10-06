@@ -6,7 +6,7 @@
 //!   an inode mark on every directory (`FAN_CREATE | FAN_DELETE |
 //!   FAN_RENAME | FAN_CLOSE_WRITE | FAN_ATTRIB`, on children and on
 //!   directories), the root also `FAN_DELETE_SELF | FAN_MOVE_SELF`. A group
-//!   per filesystem id (§3.6); but a directory on another device than the
+//!   per filesystem id (`docs/kernel-behavior-7.2/notification.md` §14.6); but a directory on another device than the
 //!   folder's (a nested Btrfs subvolume, a mount) is not watched at all:
 //!   nothing in it is uploaded (the examination's `other-device`), and the
 //!   helper cannot mark it.
@@ -74,7 +74,7 @@ use crate::local::{Batch, ScanReason};
 use crate::folder::root::SyncRoot;
 
 /// While part of the folder cannot be watched, a Full local scan and a walk
-/// this often find what its events would have shown (provisional, §3.3).
+/// this often find what its events would have shown (provisional, `docs/design/writes.md` §3.1).
 pub const DEGRADED_SCAN: Duration = Duration::from_secs(600);
 /// A batch the examination could not take yet (no completed listing) is
 /// offered again after this long; one it failed on, after this long doubled
@@ -382,13 +382,12 @@ pub struct WatchHandle {
 }
 
 impl WatchHandle {
-    /// A Full local scan, as soon as the examiner is free (§4.11: the ignore
-    /// list shrank), for `reason`.
+    /// A Full local scan, as soon as the examiner is free (§4.6), for `reason`.
     pub fn full_scan(&self, reason: ScanReason) {
         let _ = self.tx.send(ToExaminer::Full(reason));
     }
 
-    /// The helper is back (§3.3): its registration walk marked every
+    /// The helper is back (§3.5): its registration walk marked every
     /// directory there is, so what it did not mark before is asked again,
     /// and a Full local scan finds what changed while it was away.
     pub fn helper_back(&self) {

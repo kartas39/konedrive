@@ -13,7 +13,7 @@ use crate::sync::SyncError;
 ///
 /// Every interface refuses through this one type, each error of the daemon through its own
 /// `From`: the folder's and `Files` under the daemon's own names, `SetMode` and
-/// `TokenExport` under theirs (`docs/design/writes.md` §11), and an argument that is not
+/// `TokenExport` under theirs (`docs/design/desktop.md` §2.6), and an argument that is not
 /// one (a label, a client id, a mode, an ignore pattern) under the bus's own `InvalidArgs`.
 #[derive(Debug)]
 pub enum Fault {
@@ -123,7 +123,7 @@ impl From<SyncError> for Fault {
     }
 }
 
-/// The named refusals of `SetMode` and `TokenExport` (`docs/design/writes.md` §11); a mode
+/// The named refusals of `SetMode` and `TokenExport` (`docs/design/desktop.md` §2.6); a mode
 /// that is not one is refused under the bus's own `InvalidArgs`, as `SetLabel` refuses a
 /// label.
 impl From<ModeError> for Fault {

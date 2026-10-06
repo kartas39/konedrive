@@ -46,8 +46,9 @@
     </method>
     <!-- Unchecking "Always keep on this device": removes each path's own pin
          and nothing else — files stay downloaded, as on Windows. A path pinned
-         only by a folder above it is refused (NotAllowed, naming that
-         folder). Routed as Pin, and every path checked for a pin by a folder
+         by a folder above it is refused (NotAllowed, naming that folder),
+         also when it carries a pin of its own under that folder: it would
+         stay pinned. Routed as Pin, and every path checked for a pin by a folder
          above it before anything is unpinned. Returns how many pins were
          removed, summed over the accounts. -->
     <method name="Unpin">

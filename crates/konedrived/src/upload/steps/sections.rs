@@ -1,5 +1,4 @@
-//! The blocking sections of a row's step, and the worker's count of them
-//! (limitations log F233).
+//! The blocking sections of a row's step, and the worker's count of them.
 
 use std::io;
 use std::sync::Arc;
@@ -51,7 +50,7 @@ pub(in crate::upload) async fn share() -> Option<crate::folder::locks::Carried> 
 /// follow each other with no wait between them. None of them runs on a
 /// runtime thread. A section that has begun runs to its end, whatever
 /// becomes of the row's task, and the worker's stop waits for it
-/// ([`Sections`]; limitations log F233). A failure to run it is an
+/// ([`Sections`]). A failure to run it is an
 /// `io::Error`, like its own.
 pub(in crate::upload) async fn off<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
     let running = match SECTIONS.try_with(Sections::clone) {

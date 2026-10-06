@@ -9,7 +9,7 @@ use super::now;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Class {
-    /// `mkdir`, `move`, `delete`: one at a time (§3.5).
+    /// `mkdir`, `move`, `delete`: one at a time (`docs/design/writes.md` §5.3).
     Meta,
     /// `create`, `update`: as many as the account's transfer pool gives, small or large.
     Content,
@@ -39,7 +39,7 @@ pub(in crate::upload) enum Outcome {
     /// It needs the user: blocked with `reason`, and said once as an event. A `403` is one
     /// ([`Reason::Forbidden`]): it blocks its own row, and the others go on.
     Blocked(Reason),
-    /// OneDrive asked the whole account to wait (§4.10).
+    /// OneDrive asked the whole account to wait (§6.2).
     Throttled(Option<Duration>),
     SignedOut,
     /// A fault point fired: the row stays `running`, as after a crash.
@@ -132,7 +132,7 @@ impl From<nix::errno::Errno> for Fail {
     }
 }
 
-/// What §3.6's table does with an answer no step settled itself; a refusal for lack of
+/// What §6.2's table does with an answer no step settled itself; a refusal for lack of
 /// space is the quota's to settle ([`NoSpace`]).
 pub(in crate::upload) fn outcome_of(fail: Fail) -> Result<Outcome, NoSpace> {
     Ok(match fail {

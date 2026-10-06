@@ -22,7 +22,7 @@
 //! `--graph-max-bytes <n>` (default 32 MiB, no minimum since it has a
 //! sensible default of its own). G3 and G4, which download a file of up to
 //! that size twice, run only with `--graph-resume-checks`
-//! (W15: never by default). No thumbnail filler runs: it would fetch a
+//! (never by default). No thumbnail filler runs: it would fetch a
 //! thumbnail of every image in the drive.
 
 use std::io;
@@ -395,7 +395,7 @@ async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>,
         );
     }
 
-    // W15: never by default against the real account —
+    // Never by default against the real account —
     // each downloads a file of up to `--graph-max-bytes`, twice.
     if !scope.resume_checks {
         let why = || Ok(Some("not asked for: pass --graph-resume-checks to run it against the real account".to_owned()));

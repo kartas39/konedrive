@@ -59,7 +59,7 @@ async fn the_cycle_holds_the_tree_lock_from_staging_to_the_swap() {
     assert_eq!(w.cycles.load(Ordering::SeqCst), 2, "each cycle tells the outbox");
 }
 
-/// §3.7's stale-delta guard, and the read-write reconcile must, items 1 and 4: a delta fetched
+/// §9's stale-delta guard: a delta fetched
 /// before an upload's commit does not take the item back to the version
 /// before it; a change OneDrive made after the commit is taken — read again
 /// — and the file is replaced, its base kept at the version it holds until
@@ -107,7 +107,7 @@ async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
     assert_eq!(w.store.call(move |s| s.local_handle("F")).await.unwrap(), Some(handle), "the new version's inode is the item's");
 }
 
-/// WR6, §3.7 echo: the outbox's own create, edit and delete come back in the
+/// WR6, §9 echo: the outbox's own create, edit and delete come back in the
 /// delta and change nothing here — no download, no replacement, no removal,
 /// nothing said.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -154,7 +154,7 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     assert!(!said.iter().any(|kind| matches!(kind, ActivityKind::Added | ActivityKind::Updated | ActivityKind::Removed)), "{said:?}");
 }
 
-/// §3.7 `410`: `resyncChangesUploadDifferences` keeps what the new listing
+/// §9 `410`: `resyncChangesUploadDifferences` keeps what the new listing
 /// left out and was downloaded here — its attributes off, for the outbox to
 /// upload again — keeps a download whose version differs from the listing's
 /// beside it, as a copy, and removes placeholders, which hold nothing;
@@ -194,7 +194,7 @@ async fn the_two_resyncs_differ_in_what_the_listing_left_out() {
     }
 }
 
-/// §3.7 replacement under a lease, and the read-write reconcile must, item 4: a file open for
+/// §9, a replacement under a lease: a file open for
 /// writing is not replaced — nothing is downloaded — and its base keeps the
 /// version it holds; once closed, the next cycle replaces it and the base
 /// follows.
@@ -220,7 +220,7 @@ async fn a_replacement_waits_for_a_file_open_for_writing() {
     assert!(w.deferred("F").is_none());
 }
 
-/// F82 (7): an outbox commit that adopted OneDrive's answer with a newer
+/// An outbox commit that adopted OneDrive's answer with a newer
 /// cTag than the file holds (a move whose earlier PATCH landed, or whose
 /// place OneDrive won) — the delta then brings nothing new — is looked at
 /// again by the next cycle, and the unchanged file is replaced.
@@ -261,7 +261,7 @@ async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
     Disk::open(&w.root, false).unwrap().unlock_tree().unwrap();
 }
 
-/// §3.3, §4.9: the folder's first cycle waits for the watcher's Full local
+/// §9: the folder's first cycle waits for the watcher's Full local
 /// scan, and the outbox for a cycle: nothing is sent before one went through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle() {
@@ -296,7 +296,7 @@ async fn the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle() {
     worker.stop().await;
 }
 
-/// §3.7: an item with a live row keeps its base at the swap, and OneDrive's
+/// §9: an item with a live row keeps its base at the swap, and OneDrive's
 /// change waits; once the row is gone, the next cycle applies it — the delta
 /// cursor never sends it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -770,7 +770,7 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
     assert_eq!(dropped[0].item_id.as_deref(), Some("D"));
 }
 
-/// §5, §6 echo, with the delta ahead of the commit: an upload landed, and the
+/// §10, WR6 echo, with the delta ahead of the commit: an upload landed, and the
 /// worker stopped before its commit (its row stays `running`). The cycle
 /// meanwhile brings the new version: it is not downloaded over the file, nor
 /// is the new file taken for a create/create conflict. The replay adopts it,

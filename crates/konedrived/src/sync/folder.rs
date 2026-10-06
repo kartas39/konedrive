@@ -40,7 +40,7 @@ pub(super) struct Folder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Standing {
     Active,
-    /// `config.toml` gives the account what an earlier account has (design §3.1): its
+    /// `config.toml` gives the account what an earlier account has (`docs/design/accounts.md` §4.1): its
     /// folder is not brought up and no registration is made. The sentence that says why.
     HeldBack(String),
     /// `Accounts.Remove` is taking the account away: nothing is registered or brought up
@@ -223,7 +223,7 @@ pub(super) struct OneDriveFolder {
     pub watcher_ended: Option<String>,
 }
 
-/// What the recovery walk of the bring-up left behind (design §4.4).
+/// What the recovery walk of the bring-up left behind (`docs/design/hydration.md` §9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Recovery {
     /// Nothing to say.

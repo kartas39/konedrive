@@ -1,4 +1,4 @@
-//! The `user.konedrive.sync` attribute of the files the outbox's rows name (§9): what the
+//! The `user.konedrive.sync` attribute of the files the outbox's rows name (`docs/design/writes.md` §5.4): what the
 //! worker last wrote for each row, and writing it again where a row changed.
 
 use std::collections::{HashMap, HashSet};
@@ -34,7 +34,7 @@ impl Marks {
     }
 }
 
-/// The `user.konedrive.sync` value for a row's file (§9).
+/// The `user.konedrive.sync` value for a row's file (§5.4).
 fn wanted_mark(row: &OutboxRow) -> Option<&'static str> {
     if !matches!(row.kind, OutboxKind::Create | OutboxKind::Update | OutboxKind::Move) {
         return None;

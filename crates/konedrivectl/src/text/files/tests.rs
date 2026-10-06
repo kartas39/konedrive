@@ -23,8 +23,8 @@ fn removal_says_where_the_listed_rescues_are() {
     assert!(said.contains("It had no folder.") && !said.contains("Rescued"), "{said}");
 }
 
-/// The path refused and what pins it travel inside the daemon's sentences (limitations
-/// log D35): what the daemon writes today is read back here, so a sentence reworded on
+/// The path refused and what pins it travel inside the daemon's sentences (issue #232):
+/// what the daemon writes today is read back here, so a sentence reworded on
 /// one side fails this test.
 #[test]
 fn the_daemons_sentences_are_read_back() {

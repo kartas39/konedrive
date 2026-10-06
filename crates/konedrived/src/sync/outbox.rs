@@ -251,7 +251,7 @@ impl SyncService {
     pub async fn restore_deletes(&self) -> Result<u32, SyncError> {
         // The store and the tree lock as last published, and no state lock: a cycle holds
         // the tree lock while it waits for the state, so nothing that holds the state may
-        // wait for the tree lock (`F198`).
+        // wait for the tree lock.
         let store = self.outbox_store()?;
         let view = self.view();
         let dropped = {

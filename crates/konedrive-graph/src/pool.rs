@@ -26,7 +26,7 @@
 //! metadata operations; then background downloads and uploads, one to each in turn while both
 //! have work. A pause holds back everything but opens.
 //!
-//! Every number here is a guess (the limitations log, section 5).
+//! Every number here is a guess.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;

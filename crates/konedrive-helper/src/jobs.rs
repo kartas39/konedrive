@@ -226,7 +226,7 @@ impl<W: AsFd> Jobs<W> {
     /// before that connection's cleanup ran would otherwise create a job
     /// nobody is left to finish: usually the send that follows fails and
     /// drains it, but when the connection ended on a *deserialisation* error
-    /// the peer socket is still open, the send succeeds, and — because §5.2
+    /// the peer socket is still open, the send succeeds, and — because hydration.md §5.1
     /// deliberately puts no time limit on a hydration — the waiters stay
     /// suspended until the helper exits.
     ///

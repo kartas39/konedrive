@@ -181,8 +181,8 @@ async fn a_request_for_a_file_filled_meanwhile_is_answered_without_touching_it()
 }
 
 /// The same stale request when the re-fetch would *succeed*: the file was
-/// edited in place after it was filled, and there is no upload in this
-/// sub-project, so that edit is the only copy (§8). Before the fix the
+/// edited in place after it was filled, and that edit, not uploaded,
+/// is the only copy (`docs/design/hydration.md` §6.1 step 0). Before the fix the
 /// request overwrote it with the remote content and reported success.
 #[tokio::test]
 async fn a_request_never_overwrites_a_hydrated_file_edited_in_place() {

@@ -100,7 +100,7 @@ async fn service_with_account(
     (testing::service(Some(link), Some(account), None), sockets, helper)
 }
 
-/// §3.1 refuses a registration "when nobody is signed in", which nothing
+/// `docs/design/hydration.md` §14.1 refuses a registration when the account is not signed in, which nothing
 /// checked: both interfaces live on the same object, and this is what
 /// wires the one to the other.
 #[tokio::test]
@@ -120,7 +120,7 @@ async fn register_root_is_refused_while_nobody_is_signed_in() {
     service.register_root(root_dir.path()).await.unwrap();
 }
 
-/// §3.1 refuses a registration that "overlaps another root". A second
+/// §14.1 refuses a registration when the account already has a folder. A second
 /// one used to be accepted and to replace the first silently: the first
 /// stayed registered with the helper — still marked, still walked — and
 /// `ItemState` started calling its files `not-managed`.

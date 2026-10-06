@@ -190,7 +190,7 @@ const TRIED: [(&str, libc::c_int); 4] = [
 ];
 
 /// Every flag set is tried with these too: the helper's own choice for a
-/// regular file (design §4.6).
+/// regular file (`docs/design/writes.md` §8.2).
 const ALWAYS: libc::c_int = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
 
 fn serve_report(request: &str, anchor: OwnedFd) -> String {

@@ -1,4 +1,4 @@
-//! The ignore list (`docs/design/writes.md` §4.4): names that stay local.
+//! The ignore list (`docs/design/writes.md` §4.2 rule 3): names that stay local.
 //!
 //! Shell globs (`*`, `?`, `[...]`, `\` to escape) match the name, not the
 //! path, case-sensitively, and `*` matches a leading dot too (a vim swap file

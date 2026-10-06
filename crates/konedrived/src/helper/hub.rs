@@ -1,4 +1,4 @@
-//! The one link to konedrive-helper, shared by every account (design §2.1–§2.4).
+//! The one link to konedrive-helper, shared by every account (`docs/design/accounts.md` §3.1, §3.3).
 //!
 //! The helper sends a uid's opens to that uid's newest connection only, so one daemon keeps
 //! one link for all its accounts. [`HelperHub`] holds it, with the helper's socket and

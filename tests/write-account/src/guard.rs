@@ -1,4 +1,4 @@
-//! What every request must pass before the proxy forwards it to OneDrive (`docs/design/writes.md` §12,
+//! What every request must pass before the proxy forwards it to OneDrive (`docs/design/writes.md` §12.1,
 //! guards 3 and 4). The guard knows three things: which phase the run is in, which items lie
 //! inside the run's own folder, and how much of the run's budget is used. A request it refuses
 //! never leaves this machine, and after the first refusal it admits nothing but the cleanup.

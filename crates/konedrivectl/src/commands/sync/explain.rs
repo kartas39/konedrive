@@ -101,7 +101,7 @@ impl PathAction {
     }
 }
 
-/// Whether the folder at `path` carries a drive (`user.konedrive.drive`, design §8.3): a
+/// Whether the folder at `path` carries a drive (`user.konedrive.drive`, `docs/design/accounts.md` §6.3): a
 /// registration of it refused `NotEmpty` was refused because it is another account's
 /// folder. An empty value is no drive, as the daemon reads it. The link itself, if it is
 /// one: the daemon refuses links anyway.

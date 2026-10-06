@@ -210,10 +210,10 @@ impl AccountManager {
         self.accounts().iter().map(|a| a.path.clone()).collect()
     }
 
-    /// Brings up every account `config.toml` holds, in file order (design §2.2, step 3):
+    /// Brings up every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
     /// the session restored from the wallet and the cache, and an intercepted folder held
     /// until the helper is back. An account that repeats an earlier one's id, label, drive
-    /// or folder is loaded but held back (§3.1); one whose id cannot name an object or a
+    /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub async fn load(&self) {
         let config = self.config.snapshot();
@@ -337,7 +337,7 @@ impl AccountManager {
         if let Err(e) = self.export(connection, &account).await {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
-            // start (which stays all the same if the file cannot be written now: F205).
+            // start (which stays all the same if the file cannot be written now).
             self.unexport(connection, &account, true).await;
             self.unlist(&account);
             self.siblings.remove(&account.id);
@@ -351,7 +351,7 @@ impl AccountManager {
         Ok(account)
     }
 
-    /// `Accounts.Remove` (design §4.2): the folder forgotten exactly as
+    /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
     /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
     /// rule (`NoHelper` for an intercepted folder with no helper) — then a sign-in under way
     /// cancelled, the refresh token, the cached name and quota and the tree store deleted,
@@ -455,7 +455,7 @@ impl AccountManager {
         Ok(())
     }
 
-    /// The account whose folder holds `path` (design §2.5), for `Files`: the one whose
+    /// The account whose folder holds `path` (§3.5), for `Files`: the one whose
     /// folder is a component prefix of it, taken as given, or else with its directory part
     /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
     /// is never opened.
@@ -545,7 +545,7 @@ impl AccountManager {
         menu::decide(paths, &parts, account_folder)
     }
 
-    /// Brings up every folder that needs no helper (design §2.2, step 5); an intercepted one
+    /// Brings up every folder that needs no helper (§3.2, step 6); an intercepted one
     /// waits for the hub's first connection.
     pub async fn resume_all(&self) {
         for account in self.accounts() {

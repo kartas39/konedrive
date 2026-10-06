@@ -59,7 +59,7 @@ fn kinds(store: &TreeStore) -> Vec<(OutboxKind, String)> {
     store.outbox_rows().unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
 }
 
-/// §3.5's coalescing table, row by row.
+/// `docs/design/writes.md` §5.2's coalescing table, row by row.
 #[test]
 fn detections_coalesce_into_one_live_row_per_item() {
     use OutboxKind::*;
@@ -185,7 +185,7 @@ fn rows_wait_for_their_parents_mkdir_and_a_folder_delete_for_what_is_inside() {
 
 /// A swap (`a` and `b` exchanged) is a circle of names only: its waits
 /// are dropped and both rows can run, the first through a temporary
-/// name (§4.4). A name freed by a later row is still waited for.
+/// name (§5.3). A name freed by a later row is still waited for.
 #[test]
 fn a_swap_waits_on_nothing_and_a_later_freer_is_still_waited_for() {
     use OutboxKind::*;

@@ -7,7 +7,7 @@
 # - the links in the doc comments: rustdoc over the workspace, private items
 #   included, with a link that does not resolve as an error. This one builds
 #   the dependencies (checked, not linked) before it reads the comments.
-#   What it does not catch is in docs/limitations/D59.md.
+#   What it does not catch is in CONTRIBUTING.md, "The structure of the code".
 #
 # And one that runs the tests of one small crate:
 #

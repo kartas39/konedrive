@@ -14,7 +14,7 @@ pub const READ_WRITE_SCOPES: &str = "Files.ReadWrite User.Read offline_access";
 /// The scope an account signs in and refreshes with: `read_write` says whether its mode is
 /// read-write. A read-only account keeps
 /// asking for `Files.Read` at every refresh, so its access tokens cannot write even when
-/// its grant is wider (design §9): Microsoft allows a refresh to ask for "equivalent to or
+/// its grant is wider (§2.1): Microsoft allows a refresh to ask for "equivalent to or
 /// a subset of" what was granted, and so keeps enforcing that nothing is written.
 pub fn scopes_for(read_write: bool) -> &'static str {
     if read_write {

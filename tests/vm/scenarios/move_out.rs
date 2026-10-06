@@ -315,7 +315,7 @@ fn wait_for(what: &str, within: Duration, mut done: impl FnMut() -> bool) -> Res
     Err(format!("{what} did not happen within {within:?}"))
 }
 
-/// §4.6, §11: a placeholder moved out of the folder is marked again before anything else runs —
+/// §8.3, §12: a placeholder moved out of the folder is marked again before anything else runs —
 /// here by a paused worker, which sends nothing — so a reader gets its content, never zeros; the
 /// item is deleted in OneDrive only once the file is local and an ordinary file.
 pub fn placeholder_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -359,7 +359,7 @@ pub fn placeholder_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), Strin
     Ok(())
 }
 
-/// §4.6: a directory moved out has each placeholder of its item downloaded where it went by the
+/// §8.3: a directory moved out has each placeholder of its item downloaded where it went by the
 /// worker itself, every directory unmarked, the attributes taken off, and only then the folder is
 /// deleted in OneDrive, whole and with no guard at all.
 pub fn directory_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -417,7 +417,7 @@ pub fn directory_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), String>
     Ok(())
 }
 
-/// §4.6, the Trash: a placeholder sent to the Trash is removed from it with its `.trashinfo`, and
+/// §8.3, the Trash: a placeholder sent to the Trash is removed from it with its `.trashinfo`, and
 /// deleted in OneDrive, without a download.
 pub fn placeholder_to_the_trash(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     ctx.place("mo-trash/t.bin", "ITEM_MO_TRASH", b"NEVER DOWNLOADED")?;
@@ -456,7 +456,7 @@ pub fn placeholder_to_the_trash(ctx: &Ctx, checks: &mut Checks) -> Result<(), St
     Ok(())
 }
 
-/// §5: a download that stops part-way deletes nothing; after a restart (a new worker, the helper
+/// §10: a download that stops part-way deletes nothing; after a restart (a new worker, the helper
 /// restarted, so every mark is gone) the placeholder is marked again first — the new worker is
 /// paused — and then downloaded whole, and only then deleted.
 pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {

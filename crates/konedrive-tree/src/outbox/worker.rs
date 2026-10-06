@@ -128,7 +128,7 @@ impl TreeStore {
         Ok(())
     }
 
-    /// Commit step 2 of a temporary step (F55 (7)): the item landed under a
+    /// Commit step 2 of a temporary step (§5.3): the item landed under a
     /// temporary name because the one it takes is still another's. In one
     /// transaction: the base takes the answer (placed, although its name is
     /// the daemon's own), `local_seq` goes up, the rows behind this one
@@ -383,7 +383,7 @@ impl TreeStore {
         Ok(rows.into_iter().filter(|(_, n, _)| n.as_deref().is_some_and(|n| n.to_lowercase() == lower)).map(|(url, _, seq)| (SessionUrl::new(url), seq)).collect())
     }
 
-    /// Row `seq` goes without a commit: OneDrive decided otherwise (§6: a
+    /// Row `seq` goes without a commit: OneDrive decided otherwise (§7: a
     /// delete of something changed there). In one transaction: `forget` (an
     /// item) and what is inside it lose their local object, so that what is
     /// missing here is placed again rather than deleted in OneDrive; the
@@ -435,7 +435,7 @@ impl TreeStore {
     }
 
     /// Item `id` is gone from OneDrive while this machine still holds its
-    /// content (§6: edit/delete, move/delete): the base forgets it and what
+    /// content (§7: edit/delete, move/delete): the base forgets it and what
     /// was inside it, and its row becomes, through `amend`, the create or
     /// mkdir that uploads the local object as new — in one transaction.
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
@@ -449,7 +449,7 @@ impl TreeStore {
         Ok(())
     }
 
-    /// A conflict copy (§6): the local version renamed beside the cloud's,
+    /// A conflict copy (§7): the local version renamed beside the cloud's,
     /// recorded as a conflict of kind `copy` ([`ConflictCopy`]). The row
     /// becomes, through `amend`, the copy's create; the item the copy came
     /// from loses its local object, so that its name is placed again from

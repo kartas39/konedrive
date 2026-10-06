@@ -57,7 +57,7 @@ fn check_standing(folder: &Folder) -> Result<(), SyncError> {
     }
 }
 
-/// §3.1's refusal on overlap, which holds whichever way a root is registered: an account
+/// `docs/design/hydration.md` §14.1's refusal on overlap, which holds whichever way a root is registered: an account
 /// keeps exactly one folder, up or not.
 fn check_absent(folder: &Folder) -> Result<(), SyncError> {
     match folder.is {
@@ -73,7 +73,7 @@ impl SyncService {
     /// file left `dehydrating` mid-`ClearIgnore` can still be cleaned up).
     ///
     /// Refused before anything is touched when nobody is signed in, or when
-    /// a folder is already recorded (§3.1). Refused without a helper, too: no helper means
+    /// a folder is already recorded (§14.1). Refused without a helper, too: no helper means
     /// no interception, and a placeholder nobody intercepts reads as zeros.
     /// [`register_root_without_interception`](Self::register_root_without_interception)
     /// is the explicit way to ask for that anyway.
@@ -125,8 +125,8 @@ impl SyncService {
     ///
     /// # Why this one does not ask whether anybody is signed in
     ///
-    /// `RegisterRoot` does, because §3.1 binds a folder "to the signed-in
-    /// drive". This method is the developer's, for a machine with no drive
+    /// `RegisterRoot` does, because §14.1 binds a folder to the account's
+    /// drive. This method is the developer's, for a machine with no drive
     /// and no helper: the folder is driven from a local directory
     /// (`PopulateFromDirectory`) rather than from OneDrive. Nothing in this mode touches
     /// the account: the content comes from a directory the caller names.
@@ -154,7 +154,7 @@ impl SyncService {
         registered
     }
 
-    /// Holds this account's folder back (design §3.1): `config.toml` gives
+    /// Holds this account's folder back (`docs/design/accounts.md` §4.1): `config.toml` gives
     /// the account an id, a label, a drive or a folder an earlier account
     /// has. The folder is not brought up, `State` reads `error`,
     /// `LastError` says why, and a registration is refused the same way. The folder it
@@ -168,7 +168,7 @@ impl SyncService {
         self.restore_in(&mut stopped).await;
     }
 
-    /// Design §8.3: a folder that is, is inside, or contains another
+    /// `docs/design/accounts.md` §6.3: a folder that is, is inside, or contains another
     /// account's folder is refused, naming that account. Called with the
     /// registry's `registering` held, so that two accounts cannot both pass it.
     /// The helper would refuse an intercepted overlap anyway (`EINVAL`);
@@ -188,7 +188,7 @@ impl SyncService {
         persist.store.account(&persist.account).map(|account| account.label).unwrap_or_else(|| "another account".into())
     }
 
-    /// §3.1: a root is bound to the signed-in drive, so there has to be one.
+    /// `docs/design/hydration.md` §14.1: a root is bound to the signed-in drive, so there has to be one.
     fn require_sign_in(&self) -> Result<(), SyncError> {
         if self.wiring.account.snapshot().state != SignInState::SignedIn {
             return Err(SyncError::NotSignedIn);
@@ -241,7 +241,7 @@ impl SyncService {
     /// helper: not registered, not marked, not unregistered. What its recovery may still
     /// ask is `ClearIgnore`, by the same local rule every punch follows.
     async fn register(&self, stopped: &mut Stopped<'_>, path: &Path, link: Option<HelperLink>) -> Result<(), SyncError> {
-        // A OneDrive folder remembers its account's drive (design §8.3):
+        // A OneDrive folder remembers its account's drive (`docs/design/accounts.md` §6.3):
         // one forgotten by another account is that account's files, and a
         // folder carrying a root id may be registered again without being
         // empty — so it is refused unless the drive is this account's, or
@@ -343,7 +343,7 @@ impl SyncService {
         }
     }
 
-    /// §4.4's recovery walk on `root`, or why it could not run at all.
+    /// `docs/design/hydration.md` §9's recovery walk on `root`, or why it could not run at all.
     async fn recover(&self, clearance: &Clearance, root: &SyncRoot) -> Result<RecoveryReport, SyncError> {
         recovery::recover(clearance, root, &self.locks).await.map_err(|e| {
             tracing::error!("startup recovery on {}: {e}", root.path.display());
@@ -434,7 +434,7 @@ impl SyncService {
     }
 
     /// The folder remembers its account's drive once the drive is known
-    /// (design §8.3): from its registration on, and at the first
+    /// (`docs/design/accounts.md` §6.3): from its registration on, and at the first
     /// bring-up of a folder from before multiple accounts.
     async fn mark_drive(&self, root: &SyncRoot) {
         let Some(drive) = self.account_drive() else { return };
@@ -448,7 +448,7 @@ impl SyncService {
 
     /// Brings the sync folder up, or back up: re-registers the root with the
     /// helper — which re-marks the whole tree a restarted helper has
-    /// forgotten — and re-runs §4.4's recovery walk; a folder registered without the
+    /// forgotten — and re-runs `docs/design/hydration.md` §9's recovery walk; a folder registered without the
     /// helper is brought up without one, and switched to interception when one is
     /// connected.
     ///
@@ -523,7 +523,7 @@ impl SyncService {
             }
         }
         // What left the folder is marked again first (`docs/design/writes.md` §10), then the
-        // helper marked nothing new while it was away (§3.3).
+        // helper marked nothing new while it was away (§3.5).
         self.outbox_helper_back();
         self.watcher_helper_back();
     }

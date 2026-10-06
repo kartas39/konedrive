@@ -295,8 +295,8 @@ impl HelperLink {
         self.call(ToHelper::HydrateDone { req_id, errno }, None, self.call_timeout).await
     }
 
-    /// A descriptor for the object `handle` names (`OpenByHandle`, writes
-    /// design §4.6): only the helper can open a file handle. `dir` is any
+    /// A descriptor for the object `handle` names (`OpenByHandle`, `docs/design/writes.md`
+    /// §8.2): only the helper can open a file handle. `dir` is any
     /// directory of this user's on the object's filesystem — the folder's
     /// root does — and on a device the helper has a root of this user's on.
     ///

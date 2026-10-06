@@ -3,7 +3,7 @@
 //!
 //! **I1. The base records a local object only for an item it places.** A
 //! record of an object that is not there is what an examination proves a
-//! delete with (`docs/design/writes.md` §3.4), so a row keeps none once the
+//! delete with (`docs/design/writes.md` §4.2 rule 7), so a row keeps none once the
 //! base does not place it — the item itself, or a folder above it:
 //!
 //! - whatever writes a row into `items` that the base then does not place,

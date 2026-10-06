@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     // `config.toml` migrated, every account brought up as far as it can be
     // without the helper, every object exported, and only then the bus name
     // claimed: a D-Bus-activated client's first call is never answered from
-    // stale state (design §2.2). Held for the life of the process: dropping
+    // stale state (`docs/design/accounts.md` §3.2). Held for the life of the process: dropping
     // the connection would drop the bus name and every object with it.
     // A stop before the daemon is up has nothing in flight to wait for.
     let daemon = tokio::select! {

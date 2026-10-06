@@ -239,7 +239,7 @@ async fn open(drive: &DriveClient) -> Result<(SocketEndpoint, NotificationSocket
 }
 
 /// Said once per run of failures, then only at `debug`: a machine without a direct route (a
-/// proxy, limitations log) fails every minute for good.
+/// proxy, issue #209) fails every minute for good.
 fn said(failures: u32, why: &str) {
     if failures == 0 {
         tracing::warn!("{why}; changes from OneDrive are polled for meanwhile");

@@ -32,7 +32,7 @@ pub(super) async fn mkdir(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
         }
         Err(WriteError::NameExists) => match name_taken(e, disk, &row, Some(&found), &parent, &name, Ours::Folder).await? {
             // A folder of that name: adopted, and the contents merge file by
-            // file (§4.2).
+            // file (`docs/design/writes.md` §6.2).
             Named::Adopt(item) => commit_dir(e, &row, &found, dir, &item, &parent).await,
             Named::Settled(outcome) => Ok(outcome),
         },
@@ -101,11 +101,11 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             };
             let (remote_parent, remote_name) = place(&remote);
             if remote_parent.as_deref() == Some(parent.as_str()) && remote_name == name {
-                // It went through before (§5: a PATCH sent, no answer).
+                // It went through before (§10: a PATCH sent, no answer).
                 return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
             }
             if remote_parent.as_deref() != base.parent.as_deref() || Some(remote_name.as_str()) != base.name.as_deref() {
-                // Moved there as well: the first to reach OneDrive wins (§6).
+                // Moved there as well: the first to reach OneDrive wins (§7).
                 if let Some(found) = &found {
                     let tree = tree(e).await;
                     if let Some(to_rel) = follow_cloud(e, disk, &tree, found, &remote).await? {
@@ -127,7 +127,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             }
             // Changed there, not moved (or its place cannot be followed here,
             // such as its own temporary name): the move goes again against
-            // the fresh eTag; the delta brings the content (§6).
+            // the fresh eTag; the delta brings the content (§7).
             // Where the folder cannot hold OneDrive's place, only what the
             // user changed is sent: a rename here is no move back.
             let held = super::shared::holds(e, &remote).await?;
@@ -165,7 +165,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
     Ok(Outcome::Done)
 }
 
-/// A `404` for a move: gone from OneDrive meanwhile (§6, move/delete).
+/// A `404` for a move: gone from OneDrive meanwhile (§7, move/delete).
 /// Content decides: a downloaded file, or a folder, is uploaded again as
 /// new at its new place; a placeholder, which holds nothing here, follows
 /// the delete.
@@ -217,7 +217,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
             e.fault(Fault::AfterSend)?;
             gone(e, &row, &id, "to OneDrive's recycle bin").await
         }
-        // Gone already (§5: a DELETE sent, no answer).
+        // Gone already (§10: a DELETE sent, no answer).
         Err(WriteError::NotFound) => gone(e, &row, &id, "to OneDrive's recycle bin").await,
         Err(WriteError::Changed) => file_changed(e, &row, &id, &base).await,
         Err(other) => Err(other.into()),
@@ -235,7 +235,7 @@ async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcom
 }
 
 /// OneDrive's version comes back: the delete is dropped, and the item is
-/// placed again by the reconcile (§6, delete × edit: remote wins). Under the
+/// placed again by the reconcile (§7, delete × edit: remote wins). Under the
 /// tree lock, so that a cycle's swap cannot give the item its old local
 /// object back.
 async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
@@ -252,7 +252,7 @@ async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Ou
 
 /// `412` on a file's delete: only its name or place changed there — it is
 /// the content the user deleted, and goes with the fresh eTag — or its
-/// content changed, and OneDrive's version comes back (§6).
+/// content changed, and OneDrive's version comes back (§7).
 async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Result<Outcome, Fail> {
     for _ in 0..3 {
         let remote = match e.drive().item(id).await {
@@ -272,7 +272,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
     Ok(Outcome::backoff(Reason::ChangedAgain))
 }
 
-/// A folder's delete (§4.7): one `DELETE` of the whole folder, unguarded —
+/// A folder's delete (§6.1): one `DELETE` of the whole folder, unguarded —
 /// no `If-Match`, whatever changed inside it in OneDrive since. As on
 /// Windows, the folder goes to the recycle bin whole; the recycle bin is the
 /// safety net ([decisions.md](../../../../docs/design/decisions.md), "A
@@ -283,7 +283,7 @@ async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome,
             e.fault(Fault::AfterSend)?;
             gone(e, row, id, "to OneDrive's recycle bin").await
         }
-        // Gone already (§5: a DELETE sent, no answer).
+        // Gone already (§10: a DELETE sent, no answer).
         Err(WriteError::NotFound) => gone(e, row, id, "to OneDrive's recycle bin").await,
         Err(other) => Err(other.into()),
     }

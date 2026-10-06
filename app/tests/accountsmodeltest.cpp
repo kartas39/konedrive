@@ -526,7 +526,7 @@ private Q_SLOTS:
         QVERIFY(!model.labelProblem(QStringLiteral("   ")).isEmpty());
         QVERIFY(!model.labelProblem(QString(41, QLatin1Char('a'))).isEmpty());
         QVERIFY(!model.labelProblem(QStringLiteral("a/b")).isEmpty());
-        // "@" is allowed: an account's name is commonly its email (A14).
+        // "@" is allowed: an account's name is commonly its email.
         QCOMPARE(model.labelProblem(QStringLiteral("ann@home")), QString());
         QVERIFY(!model.labelProblem(QStringLiteral("a\tb")).isEmpty());
         // What an account id looks like, in any case, is not a name…

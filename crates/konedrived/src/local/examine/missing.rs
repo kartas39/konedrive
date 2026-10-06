@@ -188,7 +188,7 @@ impl Run<'_, '_, '_> {
     /// Item `id` leaves OneDrive; `how` says which way. A folder takes
     /// along what the base has inside it — except what left it first, which
     /// leaves on its own and is ordered in front of it (rule 3). Every item
-    /// still with the folder is asked where it is (§3.4 rule 7: by the
+    /// still with the folder is asked where it is (`docs/design/writes.md` §4.2 rule 7: by the
     /// object, not the events); while any cannot be placed, the folder waits.
     /// Rows that already say an item left are kept. What never reached the
     /// cloud goes; an item moved in from elsewhere, which the cloud has

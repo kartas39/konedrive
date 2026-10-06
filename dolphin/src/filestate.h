@@ -24,7 +24,7 @@ inline constexpr char RootAttribute[] = "user.konedrive.root";
 /// root carries this (isEffectivelyPinned / pinnedBy below).
 inline constexpr char PinAttribute[] = "user.konedrive.pin";
 /// Written by the daemon on an item with changes waiting to be uploaded
-/// (an outbox row, `docs/design/writes.md` §11): "pending", "uploading" or "blocked";
+/// (an outbox row, `docs/design/writes.md` §5.4): "pending", "uploading" or "blocked";
 /// removed once the upload is committed.
 inline constexpr char SyncAttribute[] = "user.konedrive.sync";
 

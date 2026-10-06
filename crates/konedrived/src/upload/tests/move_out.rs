@@ -153,7 +153,7 @@ fn a_move_out_waits_while_the_worker_has_no_helper_for_it() {
     assert!(!konedrive_attrs(&to).is_empty());
 }
 
-/// §4.6, WR5: a placeholder moved anywhere but the Trash is marked again, downloaded where it
+/// §8.3, WR5: a placeholder moved anywhere but the Trash is marked again, downloaded where it
 /// went, stripped of konedrive's attributes, and only then deleted in OneDrive.
 #[test]
 fn a_placeholder_moved_out_is_downloaded_where_it_went_then_deleted() {
@@ -229,7 +229,7 @@ fn a_half_filled_file_moved_out_waits_for_a_link_to_clear_its_mark() {
     assert!(konedrive_attrs(&to).is_empty() && w.in_bin("P") && w.rows().is_empty());
 }
 
-/// §5, WR5: the item is deleted only once the file outside holds OneDrive's content, checked
+/// §8.4, WR5: the item is deleted only once the file outside holds OneDrive's content, checked
 /// against its hash. A download that brings other bytes deletes nothing and leaves the file not
 /// downloaded; the row stays, and the next run — a restart — downloads it and only then deletes.
 #[test]
@@ -258,7 +258,7 @@ fn a_download_that_is_not_the_items_content_deletes_nothing() {
     assert!(w.rows().is_empty());
 }
 
-/// F90: an object the helper does not hand over is never taken for gone, whatever the answer:
+/// An object the helper does not hand over is never taken for gone, whatever the answer:
 /// the row stays, with the reason, and nothing is deleted in OneDrive. Neither is one stripped
 /// by someone else where it went (`EPERM`, with no marker of this row's to explain it).
 #[test]
@@ -300,7 +300,7 @@ fn an_object_that_cannot_be_reached_is_never_taken_for_gone() {
     assert!(to.exists() && w.base("P").is_some());
 }
 
-/// §5: an object deleted by the user after it left is gone, and its item is deleted — a file,
+/// §8.3: an object deleted by the user after it left is gone, and its item is deleted — a file,
 /// and a folder with what it held — but only when the helper says so twice, and with nothing
 /// where the object was last proved to be: an inode that cannot be read answers `ESTALE` every
 /// time, and stands there.
@@ -567,7 +567,7 @@ fn what_left_is_marked_again_while_other_rows_run() {
     assert!(w.in_bin("P") && w.in_bin("Q"));
 }
 
-/// §5: a crash after the attributes came off and before the delete converges — the replay meets
+/// §10: a crash after the attributes came off and before the delete converges — the replay meets
 /// `EPERM` (no item id any more), the marker says why, and the item is deleted.
 #[test]
 fn a_crash_between_the_strip_and_the_delete_converges() {
@@ -589,7 +589,7 @@ fn a_crash_between_the_strip_and_the_delete_converges() {
     assert!(w.rows().is_empty());
 }
 
-/// §4.6: a folder moved out has every placeholder of its item downloaded where it went, the
+/// §8.3: a folder moved out has every placeholder of its item downloaded where it went, the
 /// attributes taken off every file and directory, every directory unmarked, and only then the
 /// folder deleted in OneDrive, with one `DELETE`. Its directories stay, the user's own.
 #[test]
@@ -620,7 +620,7 @@ fn a_folder_moved_out_is_downloaded_whole_then_deleted() {
     assert!(w.rows().is_empty());
 }
 
-/// §4.6, the Trash: nothing is downloaded. A placeholder is removed with its `.trashinfo`, and
+/// §8.3, the Trash: nothing is downloaded. A placeholder is removed with its `.trashinfo`, and
 /// so is a file whose free-up was cut short, which holds nothing whole either; a downloaded
 /// file stays as the user's own; every item goes to OneDrive's recycle bin.
 #[test]
@@ -646,7 +646,7 @@ fn the_trash_takes_placeholders_without_a_download() {
     assert!(w.rows().is_empty());
 }
 
-/// §4.6, the Trash, for folders: nothing is downloaded into it. A folder of placeholders leaves
+/// §8.3, the Trash, for folders: nothing is downloaded into it. A folder of placeholders leaves
 /// the Trash whole, with its `.trashinfo`; a folder holding a downloaded file keeps that file, as
 /// the user's own, and loses its placeholders; a folder of placeholders put inside an entry of
 /// the Trash goes, and the entry stays. OneDrive gets one `DELETE` for each folder and none for
@@ -703,7 +703,7 @@ fn a_folder_delete_sends_one_delete_and_none_for_what_is_inside() {
     w.examine(&[("", "d")]);
     assert_eq!(w.rows().len(), 1);
     // 21 items out of 21 trips the mass-delete guard; confirming it is a
-    // separate mechanism (write design §4.5).
+    // separate mechanism (§4.5).
     w.store.call_blocking(move |s| s.outbox_release_held()).unwrap();
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.rows());
@@ -863,7 +863,7 @@ fn what_left_a_moved_out_folder_since_is_downloaded_where_it_went() {
     assert!(w.in_bin("D") && w.in_bin("Q"));
 }
 
-/// §4.6: an object back inside the folder before its row ran is the examination's: nothing is
+/// §8.3: an object back inside the folder before its row ran is the examination's: nothing is
 /// downloaded, stripped or deleted, whether or not the row had begun (its marker stays).
 #[test]
 fn an_object_back_in_the_folder_is_left_to_the_examination() {
@@ -884,7 +884,7 @@ fn an_object_back_in_the_folder_is_left_to_the_examination() {
     }
 }
 
-/// §4.6, §5: what left is marked again before anything else, whatever the rows' states — here a
+/// §8.3, §10: what left is marked again before anything else, whatever the rows' states — here a
 /// paused worker, which sends nothing — once per helper connection, and again after the helper
 /// comes back; and the router is told whose the ids are.
 #[test]

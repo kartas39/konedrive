@@ -1,5 +1,5 @@
-// Measures what KIO does to files in a folder Dolphin shows (read-phase spec
-// §10, limitation K1). Every finding is one line: RESULT <name>: <observed>.
+// Measures what KIO does to files in a folder Dolphin shows (docs/kio-behavior.md,
+// limitation K1). Every finding is one line: RESULT <name>: <observed>.
 // Run through tests/kio/run.sh, never directly: it writes into $HOME and
 // $XDG_CACHE_HOME.
 

@@ -24,7 +24,7 @@ pub const XATTR_PROGRESS: &str = "user.konedrive.progress";
 /// pin, so a pin survives a rebuild of the daemon's tree store, and the
 /// Dolphin plugin reads it directly.
 pub const XATTR_PIN: &str = "user.konedrive.pin";
-/// On a file with a change waiting to go up (`docs/design/writes.md` §11): `pending`,
+/// On a file with a change waiting to go up (`docs/design/writes.md` §5.4): `pending`,
 /// `uploading` or `blocked`. The daemon writes it and takes it off at the
 /// commit; Dolphin's emblem plugin reads it as it reads the state.
 pub const XATTR_SYNC: &str = "user.konedrive.sync";
@@ -162,7 +162,7 @@ fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
 /// whose `user.konedrive.state` had been truncated, half-written or set by
 /// hand to something we do not recognise would be handed to the application
 /// with its body still missing: zeros where the content should be. The whole
-/// point of §5.2's last rule is that an unreadable or unintelligible state on
+/// point of hydration.md §5.1's last rule is that an unreadable or unintelligible state on
 /// a file that looks managed must deny, never allow.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -384,7 +384,7 @@ pub fn stamp_matches(file: &File) -> io::Result<bool> {
 /// A zero-length file has no blocks to release, and `fallocate` with `len ==
 /// 0` returns `EINVAL` unconditionally at the VFS level (not filesystem
 /// specific), so that case is short-circuited before the syscall rather than
-/// surfaced as an error. Dehydration and startup recovery (§4.4)
+/// surfaced as an error. Dehydration and startup recovery (hydration.md §9)
 /// both call this unconditionally, including on the zero-byte placeholders
 /// this crate already treats as a first-class case (see `create_placeholder`).
 pub fn punch_all(file: &File) -> io::Result<()> {

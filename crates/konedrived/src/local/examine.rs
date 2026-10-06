@@ -111,7 +111,7 @@ pub enum ExamineError {
     #[error("the folder has no completed listing yet, so there is no base to compare with")]
     NoBase,
     /// The root was deleted, or no longer carries its root id: nothing is
-    /// examined, so nothing is deleted in the cloud because it went (§3.3).
+    /// examined, so nothing is deleted in the cloud because it went (§3.7).
     #[error("the OneDrive folder was moved or deleted")]
     RootGone,
 }

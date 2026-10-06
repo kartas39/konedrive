@@ -33,7 +33,7 @@ pub(in crate::upload) fn local_name(row: &OutboxRow) -> Result<String, Fail> {
     Ok(name.to_owned())
 }
 
-/// Whether the row is taking its item to a temporary name (F55 (7)).
+/// Whether the row is taking its item to a temporary name.
 pub(super) fn in_swap(row: &OutboxRow) -> bool {
     row.swap_name().is_some()
 }
@@ -165,7 +165,7 @@ pub(super) fn place(item: &DriveItem) -> (Option<String>, String) {
     (item.parent_reference.as_ref().and_then(|p| p.id.clone()), item.name.clone().unwrap_or_default())
 }
 
-/// Commit step 2 (§3.5), or its temporary form: the item landed under a
+/// Commit step 2 (`docs/design/writes.md` §5.4), or its temporary form: the item landed under a
 /// temporary name, and a `move` row takes it on to the local name.
 pub(in crate::upload) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &Row, handle: Option<&FileHandle>, parent: &str, event: ActivityRow) -> Result<(), Fail> {
     let (seq, answer, handle, parent, stored) = (row.seq, answer.clone(), handle.cloned(), parent.to_owned(), event.clone());
@@ -180,7 +180,7 @@ pub(in crate::upload) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &
 }
 
 /// The `If-Match` of a guarded request (WR2): an item's eTag, or its cTag
-/// where no eTag is known (F55 (4): a row queued against another version than
+/// where no eTag is known (a row queued against another version than
 /// the base's carries that version's cTag, and no eTag).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::upload) struct Guard(String);
@@ -200,7 +200,7 @@ impl Guard {
     /// The guard of an item as OneDrive just answered it, for the delete
     /// that follows the read. An answer with neither tag gives an empty
     /// guard, and the request goes out with an empty `If-Match`: what
-    /// OneDrive makes of that was not measured (limitations log F235).
+    /// OneDrive makes of that was not measured.
     pub(in crate::upload) fn of_item(item: &DriveItem) -> Self {
         Self::of(item.e_tag.as_deref(), item.c_tag.as_deref()).unwrap_or(Self(String::new()))
     }
@@ -230,11 +230,11 @@ pub(in crate::upload) enum Ours<'a> {
 pub(super) enum Taken {
     /// Nothing holds the name any more: send again.
     Free,
-    /// Held by an item a live row is taking away (F55 (7)): take this
+    /// Held by an item a live row is taking away: take this
     /// temporary name instead.
     Temporary(String),
     /// What stands there is what the row makes: its own earlier request, or
-    /// the same content (§5, §6 create/create).
+    /// the same content (§10, §7 create/create).
     Adopt(Box<DriveItem>),
     /// An empty file the delta feed never listed: as far as anything here
     /// can tell, the placeholder of an upload session — another device's,
@@ -242,14 +242,14 @@ pub(super) enum Taken {
     /// around, never deleted (a delete ends its session): the row waits
     /// ([`Reason::NameHeld`]).
     Held,
-    /// Something else: keep both (§6).
+    /// Something else: keep both (§7).
     Copy,
 }
 
 /// A `409` for a row that takes (`parent`, `name`) in OneDrive: what holds
 /// it? An item that a live row frees from that place — in any state, the
 /// names compared without case — holds it only for now: it is never
-/// adopted, never copied, and the name is not tried again (F55 (7)). Only
+/// adopted, never copied, and the name is not tried again. Only
 /// then is what stands there compared with what the row makes, by id, so a
 /// replay still adopts its own folder. An item this machine already knows
 /// (one with a live row, or placed here) is never adopted by another local
@@ -368,7 +368,7 @@ pub(in crate::upload) async fn name_taken(
     })
 }
 
-/// §6's copy: the local object renamed beside what OneDrive holds at its
+/// §7's copy: the local object renamed beside what OneDrive holds at its
 /// name (`<stem>-<machine><.ext>`, never over anything), konedrive's
 /// attributes taken off, recorded as a conflict of kind `copy`. The row
 /// becomes the copy's create (or mkdir) — or, for a move, the move to the
@@ -480,7 +480,7 @@ pub(in crate::upload) fn base_after_a_change(base: &Base, parent: &str, name: &s
     }
 }
 
-/// Rename × rename (§6): the first to reach OneDrive wins, so the local
+/// Rename × rename (§7): the first to reach OneDrive wins, so the local
 /// object goes where OneDrive has it. `None` where it cannot or must not:
 /// OneDrive's folder is not placed here, the name is taken here, or it is a
 /// name no listing places — the daemon's own `.konedrive-*` (a temporary
@@ -522,7 +522,7 @@ pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: 
     }
 }
 
-/// Uploads the local object again as new (§6: edit/delete, move/delete —
+/// Uploads the local object again as new (§7: edit/delete, move/delete —
 /// local wins): the base forgets the item, the file loses konedrive's
 /// attributes and becomes a `create` at its local place; the id changes.
 ///

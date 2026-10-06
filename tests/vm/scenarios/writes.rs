@@ -1,5 +1,5 @@
-//! The write phase end to end (`docs/design/writes.md` §12, "VM, `quick` (Btrfs), with a fake Graph server
-//! in the guest"): a read-write folder brought up by the daemon's own `SyncService` —
+//! The write phase end to end (`docs/design/writes.md` §12, with a fake Graph server
+//! in the guest): a read-write folder brought up by the daemon's own `SyncService` —
 //! the real helper, the watcher, the examination and the outbox worker — against the fake
 //! OneDrive the worker's host tests use (`konedrived::fake_onedrive`, on wiremock, listening
 //! on the guest's loopback; `fault-injection` builds it).
@@ -83,7 +83,7 @@ impl<'c> World<'c> {
         }
         let persist = ctx.runtime.block_on(crate::registration::one_account(&base))?;
         // The write gate open for the fake drive, as a read-write account has it
-        // (write design §2.3): `config.toml` says read-write and records the drive as
+        // (§2.3): `config.toml` says read-write and records the drive as
         // the account's; the account runs read-write, its token can write, and was seen to reach
         // that drive. The worker asks all of it before each row.
         persist
@@ -195,7 +195,7 @@ fn with_world(
     Ok(())
 }
 
-/// §3.8, §11: a write open of a placeholder is intercepted and filled first; the write lands on
+/// `docs/design/hydration.md` §5.1: a write open of a placeholder is intercepted and filled first; the write lands on
 /// the whole content, and the upload carries it, to the same item.
 pub fn write_open_fills_then_uploads(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let cloud = b"CLOUD VERSION\n".as_slice();
@@ -222,7 +222,7 @@ pub fn write_open_fills_then_uploads(ctx: &Ctx, checks: &mut Checks) -> Result<(
     }, checks, "writes: write open")
 }
 
-/// Z2, §3.3, §11: a directory made and at once given a placeholder is marked (`MarkDir`) before
+/// Z2, `docs/design/writes.md` §3.5, §12: a directory made and at once given a placeholder is marked (`MarkDir`) before
 /// the placeholder is opened, so the open is filled; OneDrive gets the folder and the move.
 pub fn new_directory_marked_then_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let content = b"PLACEHOLDER MOVED IN".as_slice();
@@ -242,7 +242,7 @@ pub fn new_directory_marked_then_uploaded(ctx: &Ctx, checks: &mut Checks) -> Res
     }, checks, "writes: new directory")
 }
 
-/// §3.3, §4.5, §11: a tree moved into the folder from outside has every directory marked, and
+/// §3.5, §12: a tree moved into the folder from outside has every directory marked, and
 /// everything in it uploaded.
 pub fn tree_moved_in_marked_and_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     with_world(ctx, "tree-in", Seed { folders: &[], files: &[] }, |w| {
@@ -262,7 +262,7 @@ pub fn tree_moved_in_marked_and_uploaded(ctx: &Ctx, checks: &mut Checks) -> Resu
     }, checks, "writes: tree moved in")
 }
 
-/// §4.8, §5: an upload session left half sent — the daemon stopped after its first fragment was
+/// §6.3, §10: an upload session left half sent — the daemon stopped after its first fragment was
 /// accepted — resumes where OneDrive stands when the daemon starts again: the same session, the
 /// fragments not sent yet, the whole content in OneDrive.
 pub fn stopped_mid_session_resumes(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -295,8 +295,8 @@ pub fn stopped_mid_session_resumes(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     }, checks, "writes: session")
 }
 
-/// §3.3, §5, §11: after a helper restart, a Full local scan finds a change no event reported —
-/// here a write through a hard link outside the folder (F73) — and uploads it.
+/// §4.6, §10, §12: after a helper restart, a Full local scan finds a change no event reported —
+/// here a write through a hard link outside the folder — and uploads it.
 pub fn helper_restart_full_scan_finds_a_change(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     with_world(ctx, "restart", Seed { folders: &[], files: &[] }, |w| {
         w.sh("printf 'first' > h.txt")?;
@@ -321,7 +321,7 @@ pub fn helper_restart_full_scan_finds_a_change(ctx: &Ctx, checks: &mut Checks) -
     }, checks, "writes: helper restart")
 }
 
-/// §4.1–§4.7, §3.7: a whole round trip through the real helper, watcher and worker — create,
+/// §6.1, §9: a whole round trip through the real helper, watcher and worker — create,
 /// edit, rename, move, delete — after which OneDrive holds what the folder holds, and a delta
 /// cycle echoing it all back changes nothing.
 pub fn round_trip(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {

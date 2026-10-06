@@ -70,7 +70,7 @@ impl SyncService {
     /// the file, so nothing else in it is lost. `Err` when the file could not
     /// be written — or could not be read: what could not be read is never
     /// overwritten. The account's drive stays: it is the account's, not the
-    /// folder's (design §8.1).
+    /// folder's (`docs/design/accounts.md` §6.1).
     pub(super) fn save_root(&self, root: Option<&Persisted>) -> Result<(), SyncError> {
         let persist = &self.wiring.persist;
         let root = root.map(|root| RootConfig {
@@ -89,7 +89,7 @@ impl SyncService {
     /// [`save_root`](Self::save_root) where a failure cannot be undone
     /// anyway. The registration itself stands — the root is bound and
     /// usable right now, or forgotten — but the next start will not know,
-    /// and §4.4's recovery walk is what the next start owes this folder.
+    /// and `docs/design/hydration.md` §9's recovery walk is what the next start owes this folder.
     pub(super) fn persist_or_log(&self, root: Option<&Persisted>) {
         if let Err(e) = self.save_root(root) {
             tracing::error!("{e}");

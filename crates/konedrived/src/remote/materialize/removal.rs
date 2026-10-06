@@ -36,13 +36,12 @@ pub(super) enum Policy {
     /// ignored name that holds anything; a download changed here (its
     /// stamp differs, it is open for writing, or an `update` waits for
     /// it); a download whose id is not of what was removed. It goes up as
-    /// new, unless its name, or a folder's above it, is one nothing
-    /// uploads (F243).
+    /// new, unless its name, or a folder's above it, is one nothing uploads.
     /// Read-only mode: what holds local work is rescued out of the folder,
     /// and another account's object is set aside.
     Removed,
     /// Read-write mode, a `resyncChangesUploadDifferences` listing that
-    /// left its item out (§3.7): as [`Policy::Removed`], and every download
+    /// left its item out (`docs/design/writes.md` §9): as [`Policy::Removed`], and every download
     /// stays too, changed or not: the listing may have lost the item.
     Resync,
     /// Read-write mode: OneDrive still has its item, where the folder

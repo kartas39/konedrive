@@ -217,7 +217,7 @@ impl TokenManager {
         Ok((response.access_token, granted))
     }
 
-    /// An access token that can change nothing (`docs/design/writes.md` §8.2; SECURITY.md): `TokenExport.ReadOnly`'s,
+    /// An access token that can change nothing (`docs/design/desktop.md` §2.7; SECURITY.md): `TokenExport.ReadOnly`'s,
     /// whatever the account's mode. The account's own token when it is read-only already;
     /// otherwise one obtained by a refresh that asks for `Files.Read` only — a subset of what
     /// was granted, which Microsoft allows — kept apart from the account's own, which stays

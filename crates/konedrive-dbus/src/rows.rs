@@ -1,8 +1,7 @@
 //! What the daemon's methods and properties answer with more than one value in a row, by
 //! name. Each is the D-Bus structure its interface's XML gives (`dbus/org.konedrive.*.xml`),
 //! field for field in the order written here. A client reads every one of them; the daemon
-//! answers with [`Conflict`] and [`Event`], and with tuples of the same fields for the rest
-//! (limitations log F252).
+//! answers with [`Conflict`] and [`Event`], and with tuples of the same fields for the rest.
 
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::{OwnedValue, Type, Value};

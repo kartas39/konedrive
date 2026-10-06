@@ -96,7 +96,7 @@ async fn a_folder_registered_while_signed_in_shows_onedrive_read_only() {
     service.stop_sync().await;
 }
 
-/// Design §8.3 (test 7): a OneDrive folder remembers its account's
+/// `docs/design/accounts.md` §6.3 (test 7): a OneDrive folder remembers its account's
 /// drive — written once the first cycle has recorded it, and at the
 /// bring-up of a folder from before multiple accounts, which carries
 /// none — and, forgotten, it is refused `NotEmpty` to another account,
@@ -291,7 +291,7 @@ async fn forgetting_a_onedrive_folder_stops_its_sync_unlocks_it_and_drops_its_tr
     }
     service.unregister_root().await.unwrap();
     let file = w.folder.path().join("docs/f.txt");
-    assert!(file.is_file(), "the files stay (spec §3.1)");
+    assert!(file.is_file(), "the files stay (hydration.md §14.5)");
     assert_eq!((mode(&file), mode(&w.folder.path().join("docs"))), (0o644, 0o755));
     for name in ["tree.sqlite", "tree.sqlite-wal", "tree.sqlite-shm"] {
         assert!(!w.config.path().join(name).exists(), "{name} was left");
@@ -507,7 +507,7 @@ async fn a_registration_refused_after_a_bring_up_leaves_its_sync_running() {
     service.stop_sync().await;
 }
 
-/// A folder whose sync could not start (F18: its tree store could not
+/// A folder whose sync could not start (its tree store could not
 /// be opened) is not reported as refreshed: `Refresh()` tries to start
 /// it again, says why when it still cannot, and starts it once it can.
 #[tokio::test]
@@ -729,7 +729,7 @@ async fn skipped_asked_during_a_forget_waits_for_it() {
 }
 
 /// Whose file an open is, and whose item an id is, by the tree store of a running sync
-/// (design §2.4 step 3, write design §8.3): with two folders on one filesystem, a file
+/// (`docs/design/accounts.md` §3.4, by item id, `docs/design/writes.md` §8.3): with two folders on one filesystem, a file
 /// unlinked while its open waits is routed to the account whose tree knows its item id;
 /// and that id, and any id that names that account's drive, is claimed for every other
 /// account, never for its own.

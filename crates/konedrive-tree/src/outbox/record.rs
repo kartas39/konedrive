@@ -32,7 +32,7 @@ fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
 }
 
 /// The kind a row of kind `row` becomes with a detection of kind `d`, or
-/// `None` when the two cancel out (§3.5's table).
+/// `None` when the two cancel out (`docs/design/writes.md` §5.2's table).
 fn merged_kind(row: OutboxKind, d: &Detection) -> Option<OutboxKind> {
     use OutboxKind::*;
     Some(match (row, d.kind) {
@@ -75,7 +75,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     }
     // On its way through a temporary name: the row keeps it while the
     // detection still sees the object where the row was taking it, so that
-    // a replay looks for the item there (F55 (7) (b)).
+    // a replay looks for the item there.
     let swapping = existing.swap_name().is_some();
     if swapping && kind == existing.kind && d.rel == existing.rel && d.target_parent.as_ref().is_none_or(|p| existing.target_parent.as_ref() == Some(p)) {
         row.target_parent = existing.target_parent.clone();

@@ -12,7 +12,7 @@ use super::marks::Marks;
 use super::outcome::Class;
 use crate::upload::{OutboxCounts, Upload, BACKOFF_MAX, THROTTLE_FIRST};
 
-/// OneDrive asked the whole account to wait (§4.10).
+/// OneDrive asked the whole account to wait (`docs/design/writes.md` §6.2).
 pub(super) struct Throttle {
     /// Nothing is sent before this (Unix seconds).
     until: i64,
@@ -128,7 +128,7 @@ impl Trouble {
     }
 }
 
-/// The delta cycle the outbox waits for (`docs/design/writes.md` §3 and §4.9: the cycle
+/// The delta cycle the outbox waits for (`docs/design/writes.md` §9: the cycle
 /// before the outbox).
 pub(super) struct Cycle {
     /// A cycle has gone through since the worker was told to wait for one.

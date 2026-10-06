@@ -3,7 +3,7 @@
 //!
 //! Each account keeps its token in an item of its own ([`Slot::Account`]); version 1's one
 //! item ([`Slot::V1`]) is moved into the migrated account's the first time its token is
-//! loaded ([`AccountSecrets`], design §7.4).
+//! loaded ([`AccountSecrets`], `docs/design/accounts.md` §8.4).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -39,7 +39,7 @@ pub trait Wallet: Send + Sync {
 #[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
 pub(super) const V1_LABEL: &str = "KOneDrive refresh token";
 
-/// One account's refresh token (design §7.4): its own item, and — while the account's
+/// One account's refresh token (§8.4): its own item, and — while the account's
 /// `legacy_token` is set in `config.toml` — version 1's too.
 ///
 /// - [`load`](SecretStore::load) prefers the account's own item; without one it moves
