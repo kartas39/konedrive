@@ -138,9 +138,10 @@ now is.** The protocol has `MarkFile` for this, and it works: a placeholder give
 then renamed out of the tree is intercepted and filled (*kernel* §1). In a read-only account's
 folder nothing can be moved out (its directories are `0555`). In a read-write one the daemon finds
 what left by its file handle and sends `MarkFile` for a file that is not downloaded (a downloaded
-one needs none), or `MarkDir` for a directory and every directory below it. It does so after the
-watcher's quiet spell, and again after every restart of the daemon or the helper
-([writes.md](writes.md) §8.3); until then the object is not covered (limitations log Z3, F120).
+one needs none), or `MarkDir` for a directory and every directory below it. It does so once the
+watcher's quiet spell has made the `move-out` row, before any row runs, and again at each connection
+to the helper ([writes.md](writes.md) §8.3); until then the object is not covered (limitations log
+Z3, F120).
 
 ## 4. What the kernel watches
 
@@ -525,8 +526,8 @@ changes: freed up with nothing intercepting, the file would read zeros. Then:
    that descriptor. Every step below uses this one descriptor; nothing re-opens the file by name,
    because a rename in between — an editor's atomic save, say — would otherwise send the punch to
    another file. In a folder that shows OneDrive, a downloaded file with a change waiting to upload
-   is refused `NotUploaded`, and one whose outbox cannot be asked is refused too
-   ([writes.md](writes.md) §11). A zero-byte file that is `hydrated` and has no stamp has nothing to
+   is refused `NotUploaded` ([writes.md](writes.md) §11), and one whose outbox cannot be asked is
+   refused too. A zero-byte file that is `hydrated` and has no stamp has nothing to
    free: the call succeeds and changes nothing. Otherwise require `state=hydrated` and a stamp
    matching the current size and time, or refuse: no konedrive state → `NotManaged`; another state →
    `NotHydrated`; a stamp mismatch → `ModifiedLocally` (a local edit not uploaded is the only copy).

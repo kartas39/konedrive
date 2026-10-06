@@ -167,7 +167,7 @@ does what the call does, beneath its own root. A path in no account's folder is 
 
 `Pin`, `Unpin` and `FreeUp` take many paths. Every path is routed before anything changes, so one
 path in no account's folder refuses the whole call. Every account's paths are then checked as that
-account would check them before any account acts ([pinning.md](pinning.md) §5), so a refusal the
+account would check them before any account acts ([pinning.md](pinning.md) §3, §5), so a refusal the
 checks can give is given for the whole call, before anything changed. The accounts then act one
 after another: a failure in a later account leaves what the earlier ones did. The counts in the
 answer are summed over the accounts.
@@ -230,9 +230,9 @@ Keys the example leaves out, each absent until it is set:
   `power-saver`), the hold's settings for every account ([writes.md](writes.md) §11); `[transfers]`
   with `max` and `large` ([hydration.md](hydration.md) §6.4); `write_test_drive_ids`, the drives a
   development build may export a read-write token for (§10): it decides no account's mode;
-- in an account: `login_hint` (the email its sign-in is pinned to, §10), `ignore` and `machine_name`
-  ([writes.md](writes.md) §4.2, §7), `thumbnails` (absent: on, [desktop.md](desktop.md) §8) and
-  `paused_until` (the user's pause, which outlasts a restart).
+- in an account: `login_hint` (the email its sign-in is pinned to, §7.2, §10), `ignore` and
+  `machine_name` ([writes.md](writes.md) §4.2, §7), `thumbnails` (absent: on,
+  [desktop.md](desktop.md) §8) and `paused_until` (the user's pause, which outlasts a restart).
 
 The file is written whole from what the daemon read, with mode `0600`: a key the daemon does not
 know, and every comment, is gone at the next write.

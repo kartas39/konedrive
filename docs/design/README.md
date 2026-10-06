@@ -76,7 +76,7 @@ denied open to carry a meaningful errno, Linux 6.14; the design was measured on 
 | `konedrived` | the user; systemd user service, D-Bus activated | Everything else, for each of the user's accounts: sign-in and tokens, listing the drive, the tree store, placing and updating placeholders, filling and freeing up files, recovery, rescues, thumbnails, the D-Bus API; for a read-write account, watching the folder and uploading its changes | Run with any privilege |
 | `konedrive` (KOneDrive) | the user | The window and tray icon: shows what the daemon publishes and calls its methods | Touch the sync folder itself |
 | `konedrivectl` | the user | The command line for every feature of the window, plus developer commands | — |
-| Dolphin plugins | inside Dolphin | Emblems from each file's state, pin and upload attributes; "Always keep on this device", "Free up space" and "Open in OneDrive" in the context menu, as the daemon says they may be offered | Open a file in the sync folder |
+| Dolphin plugins | inside Dolphin | Emblems from the state, pin and upload attributes of a file or a folder; "Always keep on this device", "Free up space" and "Open in OneDrive" in the context menu, as the daemon says they may be offered | Open a file in the sync folder |
 
 The helper exists because only a fanotify group of class `FAN_CLASS_PRE_CONTENT` can hold an open
 until the file has content, and creating one needs `CAP_SYS_ADMIN`. Everything that does not need
