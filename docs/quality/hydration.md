@@ -74,8 +74,7 @@ hour-sized.
 - **Fixed 2026-10-04** in `a9779f8` (#149): each run of a fill's file calls is one blocking section
   (`hydration/source/target.rs`), single stream and in parts, and the checkpoint of a fill in
   parts is not under the state's mutex. The two `fstat`s and the `readlink` in `server.rs` stay
-  on the runtime thread. A section that has begun runs to its end; what that changes when a fill
-  is dropped is in `docs/limitations/F230.md`.
+  on the runtime thread. A section that has begun runs to its end.
 
 ## HY5. `server.rs::serve`: one closure, an undeliverable errno, stale docs — **defect?**
 
@@ -159,8 +158,7 @@ hour-sized.
   - **A fix must:** roll back on the `Err` arm as on `None`. The same gap exists if the
     `spawn_blocking` at `:386–388` fails to join.
 - **Fixed 2026-10-03** in `6d9cdb6` (#141), the error path: a lease that cannot be asked for rolls
-  the state back to `hydrated`. What can still leave a file `dehydrating` is in
-  `docs/limitations/F203.md`.
+  the state back to `hydrated`.
 
 ## HY9. `disk.rs`: a process-global lock kept by convention; walks that disagree on errors
 

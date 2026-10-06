@@ -40,8 +40,7 @@ A correction to an earlier measurement: there is no 350-line `commit` in
     second name would change the bus contract for the window too.
 - **Fixed 2026-10-03** in `a62d487` (#134), the neighbouring defect: an outbox command says "no
   sync folder is registered" only when `Folder.Path` was read and is empty. For that the daemon
-  publishes the path of a folder without interception before it is brought up; what that
-  start-up window shows is in `docs/limitations/F199.md`.
+  publishes the path of a folder without interception before it is brought up.
 - **Fixed 2026-10-04** in `4a0919c` (#157), the hazard: a reply is read once into a `Refusal`, the sentences are
   grouped by action (`text/refusals/folder.rs`) and each group is a match over every `Refusal`
   with no wildcard; the detail is cut out in one place (`read_error`). Every sentence is as
@@ -56,7 +55,7 @@ A correction to an earlier measurement: there is no 350-line `commit` in
 - **Fixed in part 2026-10-04** in `695fe1a` (#150): `text/uploads.rs` parses a reason into `Reason` or
   `LocalSkip` and matches it whole. The refusals are `B2`'s.
 - **Fixed 2026-10-04** in `4a0919c` (#157), the enum. The refused path and the pinning folder are still cut out of
-  the daemon's sentence (`docs/limitations/D35.md`).
+  the daemon's sentence (issue #232).
 
 ## CL5. The label rule is stated in five places; four contradict the code — **defect?**
 
@@ -126,5 +125,4 @@ A correction to an earlier measurement: there is no 350-line `commit` in
 - **Found 2026-10-04, by reading; not run.** **Status: open.**
 - **Fixed 2026-10-04** in `8fb6ac2` (#146): `TestBus` gives `dbus-daemon` a configuration of its
   own with no service directories; the test `the_bus_can_start_no_program` holds it.
-  `tests/kio/run.sh` still starts its bus with the stock configuration
-  (`docs/limitations/D32.md`).
+  `tests/kio/run.sh` still starts its bus with the stock configuration.

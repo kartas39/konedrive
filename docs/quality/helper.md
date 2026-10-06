@@ -36,7 +36,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
     general promise is the one not kept.
 - **Fixed 2026-10-04** in `d6bd569` (#138): each uid's waiting opens are counted over all its
   connections and jobs, and past `MAX_SUSPENDED_OPENS_PER_UID` an open is answered `EAGAIN`.
-  An open is charged to the file's owner. What is still open is in `docs/limitations/F208.md`.
+  An open is charged to the file's owner.
 
 ## HE2. Roots unbounded per uid; `root_id` not validated — **defect?**
 
@@ -72,8 +72,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
 - **Fixed 2026-10-04** in `d6bd569` (#138): a root id is a version 4 UUID or is refused; 32 roots for a
   uid; the list is decided on a copy and saved outside the `roots` lock; a displaced root is
   unmarked, and an id is not moved onto a directory that overlaps its old one; the refusals a
-  peer can cause are throttled and its paths and ids printed escaped and cut. The limits left
-  are in `docs/limitations/F208.md`.
+  peer can cause are throttled and its paths and ids printed escaped and cut.
 
 ## HE3. "Every open is answered exactly once" is held by convention
 
@@ -94,7 +93,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
 - **What:** two to four `dup` and `close` pairs per intercepted open; the cause of F7.
 - **Fix:** the readers take `impl AsFd`. **Size:** S. **Risk:** low.
 - **Fixed 2026-10-04** in `b0ee394` (#147): the readers take `&impl AsFd`, and the helper decides an open
-  on the event fd itself; `docs/limitations/F7.md` is closed.
+  on the event fd itself.
 
 ## HE5. `events.rs` mixes three responsibilities
 
@@ -111,8 +110,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   (F10); `ConnectionSlot` and `WaiterSlot` (`:378–447`) are one guard twice.
 - **Fix:** split by subject; methods instead of exposed mutexes. **Size:** M. **Risk:** low.
 - **Fixed 2026-10-04** in `a4391d6` (#151): `Registrations`, `Daemons`, `Hydrations`, `UidSlots` and
-  `Refusals` under `shared/`, each with methods and its own lock; `degraded_roots` is gone
-  (`docs/limitations/F10.md`); one guard, `UidSlot`, for what were two.
+  `Refusals` under `shared/`, each with methods and its own lock; `degraded_roots` is gone; one guard, `UidSlot`, for what were two.
 
 ## HE7. The helper's write probe is privileged code the shipped unit always refuses
 
@@ -122,7 +120,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   scenarios that expect the helper's refusal would change.
 - **Fixed 2026-10-04** in `e00366c` (#154): the probe is removed from the helper; `check_filesystem_type`
   stays. Under the unit the probe's write was refused almost everywhere, not everywhere (a
-  filesystem mounted after the helper started): `docs/limitations/F234.md`.
+  filesystem mounted after the helper started).
 
 ## HE8. Only workers and connection readers contain a panic
 
@@ -133,8 +131,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   denied; a restart loop around accept. **Size:** S.
 - **Fixed 2026-10-04** in `e00366c` (#154): a panic over a batch denies that open and the rest of the
   batch `EIO` and the loop reads on; the accept thread starts again; a writer thread ends its
-  connection however it stops. A panic outside the batch still ends the process
-  (`docs/limitations/F234.md`).
+  connection however it stops. A panic outside the batch still ends the process.
 
 ## PR1. The protocol: an advisory version, unbounded fields, one long unsafe function
 
@@ -148,8 +145,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   close on a version mismatch. **Size:** S to M.
 - **Fixed 2026-10-04** in `e00366c` (#154): a raw receive and a parse, an aligned control buffer,
   `MSG_CMSG_CLOEXEC`, `MSG_TRUNC` checked, `ToHelper::validate()`, a `Hello` with another version
-  closes the connection, the design document says JSON. `Hello` stays optional
-  (`docs/limitations/F234.md`).
+  closes the connection, the design document says JSON. `Hello` stays optional.
 
 ## HE10. Error types are inconsistent
 
@@ -188,8 +184,7 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   - **A fix must:** change both copies of `set_mtime` (`placeholder.rs:228`, the daemon's
     `hydration/source/fill.rs:808`); if real earlier times are wanted, drop the three clamps too.
 - **Fixed 2026-10-03** in `b5cffd9` (#142), the function: `set_mtime` takes a time before 1970, and the
-  daemon's copy is gone. The three clamps to 1970 for OneDrive items stay
-  (`docs/limitations/F220.md`).
+  daemon's copy is gone. The three clamps to 1970 for OneDrive items stay.
 
 ## HE12. Comments and dead code
 

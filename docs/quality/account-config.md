@@ -43,7 +43,7 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
 - **Fixed 2026-10-03** in `9cbcecf` (#140): the start of an attempt is one step under the session
   lock, after an unlocked check that answers what `dev` answered at once; `commit_sign_in`
   refuses unless the account still shows `signing-in`. A refresh that reports signed-out during
-  a sign-in now ends it in silence but for a warning: `docs/limitations/F204.md`.
+  a sign-in now ends it in silence but for a warning.
 
 ## AC4. `LastError` is one string with many writers, cleared by prefix matching
 
@@ -92,8 +92,8 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
 - **Fix:** `paths.rs`, `model.rs`, `store.rs`, `atomic.rs`; `AccountId` and `DriveId` newtypes; a
   `WriteStanding` struct. **Size:** M. **Risk:** low to medium.
 - **Fixed in part 2026-10-04** in `8a4a9a6` (#153), the re-read on the write path: the upload worker asks
-  the write gate in one blocking section. The file is still read and parsed at every asking;
-  the other readers on runtime threads are in `docs/limitations/F231.md`. The split of the file,
+  the write gate in one blocking section. The file is still read and parsed at every asking,
+  and other readers stay on runtime threads. The split of the file,
   the newtypes and `WriteStanding` are `B12`'s.
 - **Fixed 2026-10-04** in `1f7e3d7` (#176): `config/` is `paths.rs`, `ids.rs`, `model.rs`, `store.rs`,
   `atomic.rs`; `AccountId` and `DriveId` are types; `write_standing` answers one `WriteStanding`.

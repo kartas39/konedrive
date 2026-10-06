@@ -59,8 +59,7 @@ risky one.
 - **Fixed 2026-10-03** in `e3d9f89` (#135): a forced drop stops the tasks, takes `lifecycle` for
   writing, then the tree lock, and turns the folder read-only itself; the only holder of the tree
   lock that waits for `lifecycle` is the cycle, which a stop cancels. The `free_one` variant goes
-  with it, by reading. The order is in `docs/design/writes.md` §9; that it is kept by hand, and
-  what a forced switch now costs, in `docs/limitations/F198.md`.
+  with it, by reading. The order is in `docs/design/writes.md` §9; it is kept by hand.
 
 ## SY2. The lifecycle protocol is kept by comments
 
@@ -129,8 +128,7 @@ risky one.
 - **Fixed 2026-10-03** in `57216c9` (#139): a removal that fails at its second or third step takes both
   retirements back, and its refusal says what failed and what became of the folder; the folder's
   retirement is its own flag, `SyncService::retiring`; an `Add` whose export fails takes its
-  objects, its entry and its directory back. What is still left behind is in
-  `docs/limitations/F205.md`. The standing enum of the "Fix" line is not started.
+  objects, its entry and its directory back. The standing enum of the "Fix" line is not started.
 
 ## SY6. States and refusals as strings — **defect?** in part
 
@@ -153,8 +151,7 @@ risky one.
   - **A fix must:** let a Forget of such a folder still reach the helper (`hold`, `bind` and
     `recorded_for_forget` all read `persisted_root()`).
 - **Fixed 2026-10-03** in `2cdf5dd` (#144): a `source` that is neither word refuses the bring-up and
-  is said in `LastError`; a folder held for it never comes up on a guess. What a folder in that
-  state can and cannot do is in `docs/limitations/F211.md`.
+  is said in `LastError`; a folder held for it never comes up on a guess.
 - **Fixed 2026-10-04** in `4a0919c` (#157), the notes: the note of a failed switch and the outbox's note are slots of
   the folder's snapshot (`status/snapshot.rs`). `SyncError::Io(String)` and the
   `Result<_, String>` stay.
@@ -182,8 +179,7 @@ risky one.
   holds an answer until released, a fake account, a clock moved by hand and a builder. One clock
   for the pause (`conditions::running::Clock`). Left for parts 3 and 4 of `B5`: a dozen tests
   still reach `lifecycle`, `syncing`, `store` or a private method, listed in the pull request;
-  the upload engine's retry and throttle times are still on the system clock
-  (`docs/limitations/F100.md`, `D37.md`).
+  the upload engine's retry and throttle times are still on the system clock.
 
 ## SY8. `HelperHub` has two jobs; the daemon keeps two account lists
 
@@ -243,7 +239,7 @@ risky one.
   `queries.rs` and `populate.rs`. Fixed with it: a shorter pause set over a longer one was shown
   as paused up to a minute after it ended. Left for the later parts of `B5`: the comments in
   `resume.rs`, `registration.rs`, `hydrate.rs`, `sync/mod.rs` and `dbus/`. Only `sync/` takes
-  its time from a function (`docs/limitations/F100.md`).
+  its time from a function.
 
 ## SY13. The daemon's first call can be lost at start — **defect?**
 
@@ -273,5 +269,5 @@ risky one.
   (the test `a_call_that_reaches_the_daemon_before_its_objects_is_answered` failed on `dev`
   with `TimedOut`). The window named above, after the name is claimed, was not reproduced, and
   by the code of zbus 5.19 it should not exist; whether a lost call is what hung the test is
-  still only supposed (`docs/limitations/D31.md`). The tests' connection has a method timeout
-  of 120 s now; `konedrivectl` and the window still have none (`docs/limitations/D32.md`).
+  still only supposed (issue #227). The tests' connection has a method timeout
+  of 120 s now; `konedrivectl` and the window still have none.

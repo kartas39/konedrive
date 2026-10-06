@@ -52,7 +52,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   methods and `online` are gone. `LastError` still says nothing of a `403`:
   `docs/design/writes.md` §6.2 was changed to say so. What the user sees beyond this finding
   (a request, an event and a notification for each row when OneDrive refuses everything; the
-  release at every worker start) the user accepted on 2026-10-03; `docs/limitations/F197.md`.
+  release at every worker start) the user accepted on 2026-10-03; issue #223.
 
 ## UP2. Row string columns are overloaded as control state — **defect?**
 
@@ -87,7 +87,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   only while its content tag is still the upload's. The rest of this finding (strings as control
   state) is done in `695fe1a` (#150): `too-big` and `gone-once` are variants of `Reason`, and the
   snapshot and the target name have typed accessors; the fields themselves are still strings
-  the store's code sets (`docs/limitations/D34.md`). What is left is in `docs/limitations/F200.md`.
+  the store's code sets (issue #232).
 
 ## UP3. `kept_back::known_group` does not know the reasons the worker writes — **defect?**
 
@@ -128,7 +128,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   replace the one `Again { … }`; `NoSpace` is gone. The scheduling is stated on `drain` and
   changed on purpose: a row that falls due no longer waits for another upload to end; a
   throttle is never cut short and a time OneDrive names replaces a guessed one; the worker no
-  longer wakes each second while held (`docs/limitations/F236.md`).
+  longer wakes each second while held.
 
 ## UP5. `content.rs` models control flow through error channels and duplicates the upload loop
 
@@ -140,7 +140,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   nested results. A defect found and fixed with it: a changed file of one fragment whose
   session was resumed (after a `429`, a network failure, a stop) went up with no look at the
   item, so a version saved in OneDrive meanwhile was overwritten; a resumed session now reads
-  the item again before its last fragment. Left (`docs/limitations/F239.md`): a last fragment
+  the item again before its last fragment. Left (issue #231): a last fragment
   sent again inside `upload_chunk` is not preceded by a new read of the item; nothing of the
   new shape was measured against real OneDrive.
 
@@ -152,7 +152,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **Fixed 2026-10-04** in `e9b716a` (#155): every listed place is a blocking section, and the worker's stop
   waits for the sections under way. Left on runtime threads, outside the task's files:
   `upload/engine/drain.rs` (`Disk::open`, `local::size_at`), `upload/space.rs` `release_fitting`,
-  `handles_current_async` (`docs/limitations/F233.md`).
+  `handles_current_async`.
 
 ## UP7. Two `strip` functions with different crash guarantees
 
@@ -170,7 +170,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `local/examine/classify.rs`. A crash there can leave an id with no state inside the folder,
   which the helper refuses with `EIO`.
 - **Fixed 2026-10-05** in `c384937e` (#192), what was left: the six sites of the reconcile call
-  `placeholder::strip` too (`docs/limitations/F292.md`, `F293.md`).
+  `placeholder::strip` too.
 
 ## UP8. The move-out Trash case is written twice
 
@@ -193,7 +193,7 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **Fixed 2026-10-04** in `b075bb3` (#159): `steps.rs` keeps `run`; `steps/meta.rs`,
   `steps/shared.rs` and `steps/sections.rs` hold the rest. `name_taken` is the one match on a
   taken name, `Guard` the one `If-Match` value, `OutboxRow::reset_for_resend()` the one reset.
-  The five empty `If-Match` are sent as before (`docs/limitations/F235.md`); what OneDrive
+  The five empty `If-Match` are sent as before; what OneDrive
   answers to one was not measured.
 
 ## UP10. `Engine` is one type over four files, with `cfg` open to all

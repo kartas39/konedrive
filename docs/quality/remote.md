@@ -126,8 +126,7 @@ the #104 test gaps filled first. `RE4` waits for these.
     (`listing.rs:168`) is the only place that says.
 - **Fixed 2026-10-03** in `2cdf5dd` (#144): a store failure while a listing is applied is
   `CycleError::Store`, blocking like the one at the commit, and the outbox worker is woken when
-  blocking trouble clears. The store failures that are still passed over or only warned about
-  are in `docs/limitations/F212.md`.
+  blocking trouble clears. Some store failures are still passed over or only warned about.
 
 ## RE7. `sync_once` does everything
 

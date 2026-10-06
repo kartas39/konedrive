@@ -1,548 +1,75 @@
-# Limitations, workarounds and weak spots
+# Limitations
 
-One place for everything in konedrive that is limited, worked around, fragile, or knowingly
-below the quality we want. It is kept current: an entry is added whenever a decision accepts
-a limitation, builds a workaround, picks a number without measuring it, or parks a finding.
-Detail lives elsewhere (`docs/design/`, `docs/kernel-behavior-7.2/`, the code); this log is the
-index of what is weak and why. "The write design" is `docs/design/writes.md`.
+The technical limits konedrive has and cannot simply remove: the kernel, the filesystem, OneDrive
+or the desktop decides, or removing the limit would give up something we chose to keep. The log is
+for whoever implements: it says what does not work, why, and why it stays.
 
-**Kinds.** LIMIT — imposed by the kernel or the platform; we cannot change it, only live with
-it. WORKAROUND — something built to route around a limit. FRAGILE — works, but rests on
-something delicate. PROVISIONAL — a number chosen, not measured. DEBT — knowingly below the
-quality we want.
+What a change in our code would remove is not a limit: it is an issue on GitHub. How the code works
+belongs in the code and in `docs/design/`.
 
-**Evidence.** *measured* — observed in a test or in a run on real hardware. *reasoned* — argued from
-the code or the documentation and not yet observed. This project has shipped plausible
-mechanisms that turned out false; treat *reasoned* entries accordingly.
+**An entry** is a file named by its id (`F53.md`) and a line here. It has a title and four short
+lines: why the limit exists, what follows from it, why it stays, and where to look. No retelling of
+the code. Ids do not change.
 
-**Status.** *open*, *mitigated* (made rare or loud, not gone), *planned* (with where), *fix in
-progress* (with the commit).
+Until 2026-10-05 the log recorded every weak spot, 366 entries. The design documents and comments
+in the code still name some of those by id (F245, D33): an id with no file here was removed then,
+and `git log --diff-filter=D -- docs/limitations/<id>.md` finds its text.
 
-**Layout.** Every entry is a file in this directory, named by its id (`F71.md`). This file is
-the index: each section has its own text and a line for every entry in it. A new entry is a new
-file and a line for it in its section here. Ids do not change.
+## What the kernel and the filesystem decide
 
----
+- [P2](P2.md) — Opening a file while it is leased fails with "operation not permitted"
+- [Z1](Z1.md) — When the helper stops, every waiting open reads zeros
+- [Z2](Z2.md) — A placeholder moved into a just-created directory can read zeros
+- [Z3](Z3.md) — A hard link or a move out of the folder escapes interception
+- [Z5](Z5.md) — Freeing a file's space while it is still exempt leaves zeros forever
+- [F53](F53.md) — A move is told from a copy only by the recorded inode
+- [F54](F54.md) — A local delete reaches OneDrive only when the helper proves it
+- [F72](F72.md) — A subvolume or mount inside the folder is not synced
+- [F74](F74.md) — Every change in a read-write folder must come from the daemon process
+- [F75](F75.md) — A truncate by path and a write through a mapping are not seen
+- [F120](F120.md) — A placeholder moved out of the folder reads zeros until marked again
+- [F121](F121.md) — A move out is finished only when the object can be reached
+- [F187](F187.md) — A program holding a file open can lose writes when OneDrive removes it
+- [F193](F193.md) — A file saved by rename and moved at once loses its history
+- [F261](F261.md) — After the folder's filesystem changes, an unfinished move out is given up
+- [F16](F16.md) — A rescue fails when the sync folder is itself a mount point
 
-## 1. Anything that can hand an application zeros or lose data
+## What OneDrive and Microsoft decide
 
-These come first because the property that outranks everything in this project is that an
-application must never read zeros where real content should be.
+- [P7](P7.md) — Some OneDrive items are never placed in the folder
+- [F34](F34.md) — A file OneDrive gives without a hash is downloaded unverified
+- [F39](F39.md) — An upload cannot tell OneDrive its size up front
+- [F66](F66.md) — Consent to write stays with Microsoft after the account turns read-only
+- [F80](F80.md) — A finishing upload can replace an edit just made in OneDrive
+- [F124](F124.md) — A move between two accounts is a download, a delete and an upload
+- [F172](F172.md) — An unfinished upload holds its name in OneDrive with an empty file
 
-- [Z1](Z1.md) — The helper's death releases every suspended open as zeros
-- [Z2](Z2.md) — A placeholder moved into a directory the user just created is not covered
-- [Z3](Z3.md) — A hardlink, or a file moved out of the folder, escapes interception
-- [Z4](Z4.md) — A tool that re-sparsifies a downloaded file behind our back
-- [Z5](Z5.md) — Punching a file that still carries an ignore mark
-- [Z6](Z6.md) — Lost or hand-edited `config.toml` while the helper holds a root
-- [Z7](Z7.md) — `UnregisterRoot` is best effort
-- [Z8](Z8.md) — Names too long for Linux
+## What the desktop and the package decide
 
----
+- [K1](K1.md) — Dolphin opens some files just to show them, which downloads them
+- [W14](W14.md) — No desktop search inside a OneDrive folder
+- [F175](F175.md) — No automatic pause without NetworkManager, UPower or power-profiles-daemon
+- [R3](R3.md) — Removing the package does not refuse while a folder is registered
 
-## 2. Platform limits that cost function, not data
+## What we chose
 
-- [P1](P1.md) — Opening through a read-only mount is refused when the helper would be asked
-- [P8](P8.md) — An executable kept in the folder cannot run twice at once
-- [P2](P2.md) — Opening a file during a lease gets `EPERM` instead of waiting
-- [P3](P3.md) — Every directory needs its own mark, so the tree is walked
-- [P4](P4.md) — Kernel memory per directory
-- [P5](P5.md) — Only a fixed set of errnos can reach an application
-- [P6](P6.md) — Eager hydration
-- [P7](P7.md) — Items in OneDrive that are not synced
-- [P9](P9.md) — `Skipped()` returns the whole list in one D-Bus message
-- [P10](P10.md) — Pinning a big folder downloads everything in it, with no prompt
+- [P6](P6.md) — Anything that opens a placeholder downloads the whole file
+- [F47](F47.md) — Removing an account leaves undownloaded files as empty placeholders
+- [F140](F140.md) — A read-only folder with changes waiting to upload stops following OneDrive
+- [F255](F255.md) — A local-only file keeps a folder that OneDrive no longer has
+- [F38](F38.md) — Finding pins means walking the whole folder
+- [F43](F43.md) — All accounts of one user share one link to the helper
+- [F208](F208.md) — The helper caps each user at 32 folders and 8192 waiting opens
+- [D36](D36.md) — An older build rebuilds a store written by a newer build
+- [A31](A31.md) — While a wallet prompt is open at the end of a sign-in, other account changes wait
 
----
+## Kept because the code points at them
 
-## 3. Workarounds we built
+Not limits either: the code, a script or `CONTRIBUTING.md` names these files. They go when those
+lines are changed.
 
-- [W1](W1.md) — The no-interception mode
-- [W2](W2.md) — The read-only folder in the read phase
-- [W3](W3.md) — Non-blocking event descriptors
-- [W4](W4.md) — The registration walk clears ignore marks on every file
-- [W5](W5.md) — A credit limit between helper and daemon
-- [W6](W6.md) — Silence, not a blocked send, ends a connection
-- [W7](W7.md) — Lease tests run in threads, not subprocesses
-- [W8](W8.md) — Fault injection lives behind a cargo feature
-- [W9](W9.md) — The helper clears an ignore mark for whoever owns the file
-- [W10](W10.md) — Recovery does not wait for a busy file
-- [W11](W11.md) — `TokenExport.ReadOnly` and `konedrivectl dev export-access-token`
-- [W12](W12.md) — One skip-reason wording, kept identical in Rust and C++ by a test
-- [W13](W13.md) — Day-to-day VM runs cover btrfs only
-- [W14](W14.md) — A OneDrive folder is excluded from KDE's Baloo indexer
-- [W15](W15.md) — A real-account VM run lists the whole drive, but downloads only in one named folder, capped in size
-- [W16](W16.md) — The helper's unit is hardened, and runs under systemd only in a VM check you start by hand
-- [W17](W17.md) — The VM's two-account scenario uses two local folders, signed in by hand
-- [W18](W18.md) — The VM's write scenarios run the daemon against a fake OneDrive in the guest
-- [W19](W19.md) — The upload stress tool confirms every held delete, and can miss a fast upload's "running" moment
-
----
-
-## 4. Fragile spots
-
-- [F3](F3.md) — Long walks behind short timeouts
-- [F4](F4.md) — Startup holds the lifecycle lock through the helper's walk
-- [F5](F5.md) — During a transient connection only the top of the stack is exempt
-- [F6](F6.md) — A dying transient connection's queued jobs are denied `EIO`
-- [F7](F7.md) — Under descriptor exhaustion, a filled file can be denied `EIO`
-- [F8](F8.md) — The offline content source is held in memory
-- [F9](F9.md) — A download whose name is removed mid-flight
-- [F10](F10.md) — A degraded root is only logged
-- [F11](F11.md) — A helper that is running but unreachable blocks the no-interception folder
-- [F12](F12.md) — "Is a helper running" assumes the daemon sees the helper's `/run`
-- [F13](F13.md) — A file stuck mid-download or mid-free-up makes every sync cycle a Full reconcile
-- [F14](F14.md) — A replacement's swap and a reconcile can race on a locked directory's write window
-- [F15](F15.md) — Stopping the sync waits for a reconcile stuck on the helper
-- [F16](F16.md) — A rescue needs a directory on the folder's own filesystem
-- [F17](F17.md)
-- [F18](F18.md) — A tree store that cannot be opened stops the sync until something asks again
-- [F19](F19.md) — A Forget that cannot take the lock off the folder only logs it
-- [F20](F20.md) — What a folder shows is decided when it is registered
-- [F21](F21.md) — "The network is back" means NetworkManager's `CONNECTED_GLOBAL`
-- [F22](F22.md) — A sign-in is noticed as a change of state, not as an event
-- [F23](F23.md) — A OneDrive folder registered again while signed out keeps its read-only lock
-- [F24](F24.md) — The activity log keeps 200 events, and they go with the tree store
-- [F25](F25.md) — The activity log is a summary, not a record of every file
-- [F26](F26.md) — `LocalBytes` is a walk, so it lags up to 5 s behind a download
-- [F27](F27.md) — `FreeUpSpace` skips busy files
-- [F28](F28.md) — A conflict is recorded only for a reconcile that goes through
-- [F29](F29.md) — A fill on open is shown under the name the file had when it was opened
-- [F30](F30.md) — A failed switch the helper may still hold is kept intercepted, and waits for the next connect
-- [F31](F31.md) — A folder that already carries its root id is not probed again
-- [F32](F32.md) — `ItemsPlaced + SkippedCount` can be less than `ItemsListed`, by design, not a race
-- [F33](F33.md) — Partial downloads are kept, not erased
-- [F34](F34.md) — A file Graph hands out with no hash is only logged
-- [F35](F35.md) — The first listing is placed page by page — only the first, and only into a folder that holds nothing of ours
-- [F36](F36.md) — `HelperState` is what systemd says, asked every 30 s
-- [F37](F37.md) — `config.toml` has two independent writers.
-- [F38](F38.md) — Pins: the sweep, and what waits for it
-- [F39](F39.md) — The Graph write client rests on answers only wiremock has given
-- [F40](F40.md) — Moving version 1's tree store into its account can give up
-- [F41](F41.md) — Version 2 of `config.toml` has no way back
-- [F42](F42.md) — A sign-in is refused when the daemon cannot check which drive it reached
-- [F43](F43.md) — Every account shares one helper link
-- [F44](F44.md) — An open that cannot be matched to an account is refused `EIO`
-- [F45](F45.md) — A folder forgotten before multiple accounts can be adopted by another account
-- [F46](F46.md) — Nothing answers at `/org/konedrive/Daemon` any more
-- [F47](F47.md) — What removing an account keeps
-- [F48](F48.md) — An account that collides with an earlier one in a hand-edited `config.toml` is held back
-- [F49](F49.md) — Personal Microsoft accounts only
-- [F50](F50.md) — `konedrivectl` explains some refusals from its own view of the folders
-- [F51](F51.md) — Choosing the account on the command line
-- [F52](F52.md) — An edit that kept both size and time, made while nothing watched, is not found
-- [F53](F53.md) — A copy and a move are told apart by the file handle the store recorded
-- [F54](F54.md) — A missing item is deleted in OneDrive only on the helper's word
-- [F55](F55.md) — The examination's shortcuts
-- [F60](F60.md) — `write_test_drive_ids` limits the read-write token export, and nothing else
-- [F61](F61.md) — A read-write account is read-write only while its last token carried `Files.ReadWrite`
-- [F62](F62.md) — The lock walks of a mode switch
-- [F64](F64.md) — The switch to read-write ends in `Mode` or `LastError`, and nothing says it is under way
-- [F65](F65.md) — A mode the user gave a file does not survive a round trip through read-only
-- [F66](F66.md) — Consent to write stays with Microsoft, and a read-only request may be answered with it
-- [F70](F70.md) — A full notification queue costs a Full local scan
-- [F71](F71.md) — The watcher's marks come from a budget every account shares
-- [F72](F72.md) — Nothing on another device than the folder is uploaded
-- [F73](F73.md) — A write through a hard link outside the folder raises no event
-- [F74](F74.md) — The watcher's shortcuts
-- [F75](F75.md) — A size change by path, and a write through a mapping, raise nothing the watcher reads
-- [F80](F80.md) — The last fragment of a large upload can supersede an edit made in OneDrive meanwhile
-- [F81](F81.md) — A file kept open for writing is not uploaded until it is closed
-- [F82](F82.md) — The outbox worker's shortcuts
-- [F90](F90.md) — `OpenByHandle` gives a user their own object wherever it went
-- [F91](F91.md) — A moved-out file is handed over read-only, and the daemon reopens it for writing itself
-- [F92](F92.md) — The helper lets its own opens through without deciding them
-- [F100](F100.md) — The pause is the tree store's
-- [F101](F101.md) — A coalesced property that changes and changes back is not signalled
-- [F102](F102.md) — The outbox on the bus: what it simplifies
-- [F110](F110.md) — A replacement waits while the file is open anywhere
-- [F111](F111.md) — The `410` upload variant removes placeholders the service lost
-- [F112](F112.md) — What waits for a local change is staged again at every cycle
-- [F113](F113.md) — The stale-delta guard reads again, under the tree lock, what the outbox committed during a fetch
-- [F114](F114.md) — The reconcile's conflict copies go up through the examination
-- [F115](F115.md) — A missing item is placed again only with something to place
-- [F116](F116.md) — What OneDrive removed goes from the disk in the cycle, but for what it never had
-- [F117](F117.md) — The order of a read-write folder's cycle, and what it cannot close
-- [F120](F120.md) — A placeholder moved out of the folder reads zeros until the daemon marks it again
-- [F121](F121.md) — Moves out of the folder: downloaded first, and only then deleted in OneDrive
-- [F122](F122.md) — Fills of moved-out objects are routed by item id
-- [F123](F123.md) — Dropped moves out are tidied, never finished
-- [F124](F124.md) — A move between two accounts keeps the file
-- [F130](F130.md) — The test-account harness guards every request, and leaves a few things to be done by hand
-- [F131](F131.md) — What the uploads assume of OneDrive, until the test-account run
-- [F140](F140.md) — A read-only folder that holds changes waiting to upload is not kept in step with OneDrive
-- [F141](F141.md) — A Forget and `Accounts.Remove` are refused while changes wait to be uploaded
-- [F142](F142.md) — A held or pending removal is dropped only at the swap of a cycle that reaches one
-- [F143](F143.md) — The transfer pool's numbers are guesses, and only a throttle stops its growth
-- [F147](F147.md) — A transfer's size class is read once, before its first request
-- [F148](F148.md) — Pinned downloads go in alphabetical order batch by batch, small and large apart
-- [F144](F144.md) — An open holds background work back for as long as it runs
-- [F145](F145.md) — Only the sync's Graph client reports to the pool
-- [F146](F146.md) — A hydration request waits for its account's slot in a task of its own
-- [F149](F149.md) — A file or folder removed here before its upload finished leaves the outbox at once
-- [F150](F150.md) — A full OneDrive is decided by one quota read, and some edges are taken on trust
-- [F151](F151.md) — The local scan's "about N" is the base's count, not the disk's
-- [F152](F152.md) — Queue totals: what "left", "done" and "time left" count, and where they are approximate
-- [F155](F155.md) — A large pinned download in parts keeps only its gap-free start
-- [F156](F156.md) — Only pinned large files go in parts, and extra streams give way one piece at a time
-- [F157](F157.md) — An upload stops when its file is under none of its names — a move not recorded yet included
-- [F158](F158.md) — The outbox's budgets at scale are guesses, measured once on one machine
-- [F159](F159.md) — The worker picks rows a hundred at a time, and stops looking at 32
-- [F160](F160.md) — The counts and the Not Uploaded summary lag the outbox by up to a second
-- [F161](F161.md) — The bus's lists read the last committed state
-- [F162](F162.md) — One thread owns each tree store; everyone sends it jobs
-- [F163](F163.md) — Whole-table reads kept, and when they run
-- [F164](F164.md) — The cloud side's budgets at scale are guesses, measured once on one machine
-- [F165](F165.md) — A delta is staged over `items`; a full listing is staged whole
-- [F166](F166.md) — Thumbnails are picked a page at a time, and each is looked at once per drain
-- [F167](F167.md) — The counts are walked once per cycle that may have changed the tree
-- [F168](F168.md) — `Skipped()` climbs from the skipped rows; the window shows 200
-- [F169](F169.md) — Replacements go through one queue worked by 8 tasks
-- [F170](F170.md) — The conflicts are looked over 200 at a time; the window shows 200
-- [F171](F171.md) — A reconcile records what it placed 500 at a time
-- [F172](F172.md) — An open upload session holds its name with an empty file
-- [F173](F173.md) — One quota per account, cached only at a read
-- [F174](F174.md) — The files moving and the pool line count from two sources
-- [F175](F175.md) — Without NetworkManager, UPower or power-profiles-daemon, no hold for that source
-- [F176](F176.md) — NetworkManager's guess of a metered connection is trusted as it is
-- [F177](F177.md) — A stop waits 10 s at most for the requests in flight
-- [F178](F178.md) — An uploaded file's page cache is dropped only by advice
-- [F179](F179.md) — The move of the hold settings to the whole app takes the strictest value
-- [F180](F180.md) — The notification endpoint's lifetime is Graph's undocumented `expirationDateTime`, or a guess of one hour
-- [F181](F181.md) — The notification socket ignores proxies
-- [F182](F182.md) — The Socket.IO client is written from the protocol and one other client, not observed against the service
-- [F183](F183.md) — While the notification socket is up the poll runs every 5 minutes
-- [F184](F184.md) — While the account is paused or holds back, changes made in OneDrive are not seen
-- [F185](F185.md) — Every change in the drive asks for a cycle, the account's own uploads too
-- [F186](F186.md) — The live task's waits are chosen, not measured
-- [F187](F187.md) — What is lost when OneDrive removes an item
-- [F188](F188.md) — A folder that can no longer be placed stays on disk while anything in it waits
-- [F189](F189.md) — A row placed again carries no local object
-- [F191](F191.md) — A stopped download is dropped where it is
-- [F192](F192.md) — An item moved here into a folder that OneDrive then removes is removed here, and stays in OneDrive where it was
-- [F193](F193.md) — A file saved by rename and then moved before any examination is deleted in OneDrive and uploaded as new
-- [F194](F194.md) — What still fails a whole cycle when something is taken off the disk
-- [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
-- [F198](F198.md) — The order of the tree lock and the folder's state lock is kept by hand on the cycle's side
-- [F199](F199.md) — A folder without interception is recorded and not up while the daemon starts
-- [F200](F200.md) — A bad upload's item is remembered beside its row, and blocked rows are listed per file whatever their reason
-- [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
-- [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
-- [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed add can leave its entry
-- [F208](F208.md) — What the helper's bounds per uid on waiting opens and on roots leave open
-- [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over; it is listed as not uploaded, by its name alone
-- [F211](F211.md) — A folder whose `source` in `config.toml` is neither word is held, not repaired
-- [F212](F212.md) — Some failures of the tree store inside a reconcile still do not stop the folder
-- [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
-- [F221](F221.md) — One refresh at a time, and a cached token handed out beside it
-- [F230](F230.md) — A fill's file calls run in blocking sections, and a section that has begun ends by itself
-- [F231](F231.md) — The write gate and the registry's file calls run on blocking threads; the rest of `config.toml`'s readers do not
 - [F232](F232.md) — A replacement's file calls run in three blocking sections, and a stop is heard only between them
-- [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
-- [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
-- [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
-- [F236](F236.md) — What the upload worker's waits leave: the throttle's rules are reasoned, its note is not said again after a closed gate, and two looks wait for a wake
-- [F237](F237.md) — What the one shape of the move out leaves: a file in the Trash whose free-up was cut short goes without a second look, and the Trash rule was not run against the real helper again
-- [F238](F238.md) — A file with other names that is taken off the disk: what a stop between its unlink and the removal of its id leaves
-- [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
-- [F240](F240.md) — What the outbox worker is told without waiting is done only on the daemon's runtime, and its fault points are in the tests' build alone
-- [F241](F241.md) — An intercepted folder whose root id is recorded nowhere is forgotten on the daemon's side alone
-- [F242](F242.md) — Every change of a folder stops its sync, and a helper's reconnect starts it again with a Full reconcile
-- [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
-- [F244](F244.md) — The plan of a reconcile is four queries for each item, inside one store job
-- [F245](F245.md) — The base records a local object only for an item it places: where the store keeps that, and where it does not
-- [F247](F247.md) — An activity event of a kind this version does not name is left out of the log
-- [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
-- [F249](F249.md) — The order of an account's locks is a written rule, and two of them are held across slow work
-- [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
-- [F252](F252.md) — The rows on the bus are named where `dbus/` builds them; three come to it as tuples
-- [F255](F255.md) — A file under an ignored name keeps a folder that can no longer be placed on disk
-- [F256](F256.md) — The step to schema 8: what of a leave under way is carried over, and what is not
-- [F257](F257.md) — What the skipped list says of an item that is still here, and what it does not
-- [F258](F258.md) — The outbox worker writes every file's upload mark again when it starts
-- [F259](F259.md) — A file changed here whose name OneDrive exchanged with another file's: one request nobody made, which OneDrive refuses, and then both versions are kept
-- [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
-- [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
-- [F262](F262.md) — Taking the marks off a copy waits for the disk, with the folder's tree lock held
-- [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
-- [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
-- [F267](F267.md) — A notification group that cannot be read is tried again without a pause
-- [F268](F268.md) — A roll-back that fails leaves the file `hydrating`, not `online-only`
-- [F269](F269.md) — What must hold before a file is emptied is the caller's word, for all but the lease
-- [F270](F270.md) — The two downloads share their checks, not their loop
-- [F271](F271.md) — A folder's lock on its directories' modes is found through a table, and two callers take it by hand
-- [F272](F272.md) — A directory of the folder that cannot be read stops the sync of the whole folder
-- [F273](F273.md) — The daemon exits when a task it needs is gone, and counts on systemd to start it again
-- [F274](F274.md) — The properties the daemon announces are one table; four properties are outside it, and the check is by name
-- [F275](F275.md) — What changed at a name between the listing and the act waits for the next look at that name
-- [F276](F276.md) — A stale drive that cannot be taken off an empty folder stays, and the folder is registered all the same
-- [F277](F277.md) — A placeholder that is in the way is removed, not rescued, also when it is being filled
-- [F278](F278.md) — Where the one pass over the folder still differs by scope, and where the mode is still asked outside its questions
-- [F279](F279.md) — What an examination says in Activity is written after its rows, in a call of its own
-- [F281](F281.md) — A line of the "not uploaded" list inside a place that cannot be read stays until the place is read again
-- [F286](F286.md) — What cannot be read is one line in Not Uploaded with one sentence for every cause, and the line goes only when its place is looked at again
-- [F287](F287.md) — A file whose marks are damaged is listed in Not Uploaded and left as it is; nothing repairs it
-- [F288](F288.md) — An item this daemon may not read that is renamed is looked at every 30 s for as long as it stays unreadable
-- [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
-- [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
-- [F292](F292.md) — What the reconcile makes the user's own waits for the disk once for each object with an id
-- [F293](F293.md) — Three crash windows of a rescue, a conflict copy and a removal that keeps something stay open
-- [F294](F294.md) — Once an account is read-write, nothing but the user's own switch stands between a change in its folder and the user's real OneDrive
-
----
-
-## 5. Provisional numbers
-
-| Constant | Value | State |
-|---|---|---|
-| Worker pool / event queue | 64 / 1024 | measured comfortable at 3000 concurrent opens |
-| Outbox depth | 256 | measured as the binding constraint, correctly |
-| Credit per connection | 64 | equal to the daemon's queue depth; pinned by a test |
-| Waiters per user | 8 | measured binding |
-| Waiters in total | 32 | **guess** — a single-user machine never reaches it |
-| Opens waiting for one uid's daemons to answer (`MAX_SUSPENDED_OPENS_PER_UID`) | 8192 | **guess** — above the 3000-open burst twice over, an eighth of the unit's `LimitNOFILE` (F208) |
-| Roots per uid (`MAX_ROOTS_PER_UID`) | 32 | **guess** — one root per intercepted account (F208) |
-| Liveness window | 60 s | **guess** — nothing in the suite reaches it |
-| Delta size reconciled in full (`FULL_THRESHOLD`) | 5000 changes | **guess** — above it one scan is assumed cheaper than item by item |
-| Sync interval / waits after failures in a row | 60 s / 5, 15, 30 s | 60 s is the design's; the retry steps are a **guess** |
-| A fill's checkpoint, every N bytes (`CHECKPOINT_EVERY`) | 16 MiB | **guess** |
-| `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
-| Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
-| The daemon's stop: the longest wait for the requests in flight (`STOP_BOUND`) | 10 s | **guess** (issue #84, F177) |
-| A placeholder taken for a recorded opening's: created between the first recording and the latest attempt with an unknown outcome, each widened by (`CLOCK_SLACK`) | 5 min | **guess** (issues #84, #89, F172) |
-| A record of an opening whose row left, kept without a row (`OPENING_LEFT_KEEP`) | 7 days | **guess** (issue #89, F172) |
-| Upload fragment, and the most sent in one request (`CHUNK_SIZE`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
-| One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
-| Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |
-| Transfers at once — fills on open, `Hydrate`, pinned downloads, replacements, thumbnails, uploads, metadata rows | **adaptive**, one pool per account (`crates/konedrive-graph/src/pool.rs`, issue #3): the numbers below | see below |
-| Transfer pool: start (`START`) / ceiling (`[transfers] max`, `DEFAULT_CEILING`, clamped to 1–256) | 16 / 32, each account's pool separately | **guess** |
-| Transfer pool growth | +1 slot per successful transfer while work waits and every slot is busy; +1 per round (as many successes as slots) at and above the size the last `429`/`503` came at | **guess** |
-| Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
-| A large file, from (`LARGE_FROM`) / streams of large sync transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened outside it | 100 MiB / 4 | **guess** |
-| Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
-| A large pinned download's piece (`hydration::source::parts::PIECE`) / how often a download in parts looks for a free slot to add a stream in (`LOOK_AGAIN`) | 256 MiB / 100 ms | **guess** (issue #28): large enough that a request's round trip is nothing beside it, small enough that the streams share a file's end |
-| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs, and until nothing has moved for 10 s | **guess** |
-| A queue's time left (`DownloadTimeLeft`, `UploadTimeLeft`): the speed it is worked out from is the average of (`AVERAGE_SPAN`) / none once nothing has moved that way for (`STILL_AFTER`) | 30 s, or the run so far when shorter (never under 1 s) / 10 s | **guess** (F152) |
-| Queue totals counted at most every (`PUBLISH_EVERY`) | 1 s | the speeds' own rate |
-| Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
-| Window's transfer charts | the last 2 min, one sample a second | **guess** |
-| Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/desktop/thumbs.rs`) |
-| Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrive-tree/src/thumbs.rs`, issue #39) |
-| Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/remote/listing/replacements.rs`, issue #39) |
-| Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/remote/materialize.rs`, issue #39) |
-| Items whose plan, or whose rows, a reconcile reads in one store call (`PLAN_BATCH`) | 500 | **guess** (`crates/konedrived/src/remote/materialize.rs`, F244) |
-| Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/status/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
-| Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
-| Shortest time between two `LocalBytes` walks | 5 s | **guess** |
-| Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers.Downloads`) | 250 ms, at most 4 signals a second | the design's four a second |
-| Notifications per event kind (A3) | one per 10 s, the rest as one summary | **guess** |
-| Window's "checked N s ago" refresh | every 10 s, from the clock | **guess** |
-| Window's "Recent" list | 50 rows | **guess**; the daemon keeps 200 |
-| Files of one reason the window lists, and `sync not-uploaded` without `--all` (`PerFileCap`, `PER_FILE_SHOWN`) | 20 | **guess** (A24) |
-| Shortest time between two reads of what is kept back (`NotUploadedSummary`) while a page shows it | 1 s | **guess** |
-| Quiet spell before a batch of local changes is examined, and its ceiling during continuous activity (`QUIET`, `CEILING`) | 2 s / 30 s | the write design's; **guess** |
-| A busy file (open for writing, being filled or freed) examined again after (`RECHECK`) | 30 s | **guess** |
-| A folder the watcher cannot watch in full is scanned and walked every (`DEGRADED_SCAN`) | 10 min | the write design's; **guess** |
-| A batch the examination could not take yet is offered again after (`watcher::RETRY`) | 5 s with no completed listing; after an error 5 s doubled at each error in a row, up to 10 min | **guess** |
-| A `MarkDir` the helper did not answer is asked again after (`MARK_RETRY`) | 60 s, and when the helper is back | **guess** |
-| Shortest time between two walks for a directory the map lost (`UNKNOWN_WALK`) | 60 s | **guess** |
-| Mass-delete guard (`MASS_DELETE_ITEMS`, `MASS_DELETE_PERCENT`, `MASS_DELETE_FLOOR`) | more than 500 items, or more than 20 % of the folder's items once at least 10, counting removals still waiting | 500 and 20 % the write design's, the floor of 10 ours; all **guesses** |
-| Outbox rows sent at once | 1 metadata row (`mkdir`, `move`, `delete`); files, small or large alike, as many as the account's transfer pool gives | the write design's one metadata row; the rest adaptive |
-| `move-out` rows run at once (`Class::Out`) / how long the examination waits for the helper's `OpenByHandle` (`ASK_WITHIN`) / a first `ESTALE` for a row's object is asked again after (`GONE_AGAIN`) | 1, beside the others / 45 s, past the link's own 30 s / 5 s | **guess** |
-| A failed row's backoff / a throttle without `Retry-After` (`BACKOFF_FIRST`/`BACKOFF_MAX`, `THROTTLE_FIRST`) | 1 s doubling to 1 h / 10 s doubling to 1 h; `Retry-After` taken up to 1 h | the write design's; **guess** |
-| A full OneDrive, or a file too big for the space left: the quota read again by itself (`space::QUOTA_RECHECK`) | every 30 min, one request, never the uploads themselves | **guess** (issue #2) |
-| Less free space than this is none: the account is full (`space::NO_SPACE`) | 1 MiB | **guess** (issue #2) |
-| A quota read shared by refusals of rows running together (`space::REUSE`) | 10 s | **guess** |
-| A row rewritten and sent again at once before it backs off (`AGAIN_LIMIT`) / the worker's idle look at the outbox | 20 / every 300 s | **guess** |
-| Due rows a pick reads at a time (`PORTION`) / rows it looks for before it stops reading (`PICK_WANT`) / portions before rule 1 is asked only of rows that share a key (`PORTIONS_ASKED`) | 100 / 32 / 8 | **guess** (F159) |
-| The counts and the Not Uploaded summary summed again at most every (`TALLY_EVERY`) | 1 s | **guess** (F160) |
-| Changed outbox rows remembered one by one for the marks (`DIRTY_MAX`) | 100 000; past it, every row once | **guess** (F163) |
-| The outbox's budgets at scale (`tests/bench.rs`) | see F158 | **guess** |
-| Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
-| The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
-| The poll while the notification socket is up (`Schedule::live_interval`) | 5 min | the user's choice; how often the service drops an event is not known (F183) |
-| The live task's debounce / retries / shortest endpoint life / look at a stopped account / time before a connection counts as up (`live::Timing`) | 2 s / 1, 2, 4 … 60 s / 60 s / 60 s / first ping or 30 s | **guess** (F186) |
-
----
-
-## 6. Quality debt
-
-- [D1](D1.md)
-- [D2](D2.md)
-- [D3](D3.md)
-- [D4](D4.md)
-- [D5](D5.md)
-- [D6](D6.md)
-- [D7](D7.md)
-- [D9](D9.md)
-- [D10](D10.md)
-- [D11](D11.md)
-- [D12](D12.md)
-- [D13](D13.md)
-- [D14](D14.md)
-- [D15](D15.md)
-- [D16](D16.md)
-- [D17](D17.md)
-- [D18](D18.md)
-- [D19](D19.md)
-- [D20](D20.md) — A failed upload's reason is one of four coarse keys
-- [D21](D21.md) — `konedrivectl` opens no browser when stdout is not a terminal
-- [D22](D22.md)
-- [D23](D23.md)
-- [D24](D24.md) — The tree store's test helpers are behind a feature.
-- [D25](D25.md) — The token manager's tests use a stand-in for the account's state.
-- [D26](D26.md) — The journal lines of the Graph client and the tree store carry the new crates' targets.
-- [D27](D27.md) — The daemon's journal lines carry its new module paths.
-- [D28](D28.md)
-- [D29](D29.md) — Some items moved down a layer sit lower than their name suggests, and one lower than its users need.
+- [R12](R12.md) — The window's QML is compiled into the binary, because Qt's disk cache kept a same-day build's.
 - [D30](D30.md) — The structure guard reads lines, not Rust.
-- [D31](D31.md) — Some tests fail now and then when the machine is busy.
-- [D32](D32.md) — The tests' private bus has a configuration of its own, and only a test's own connection gives up on a call.
-- [D33](D33.md) — What the one `send` of `konedrive-graph` left as it was, and what it rests on
-- [D34](D34.md) — Outbox reasons and local skips are types over the strings they were.
-- [D35](D35.md) — Refusals and the notes of `LastError` are types over the strings they were.
-- [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
-- [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
-- [D39](D39.md) — An item OneDrive moved where the folder cannot hold it: what the upload worker knows, and when.
-- [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
-- [D41](D41.md) — What the one fixture of `local/`'s tests leaves
-- [D42](D42.md) — What the running sync as an object leaves by hand.
-- [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
-- [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
-- [D45](D45.md) — The test of a version 7 store through the daemon makes its store by rewriting one.
-- [D46](D46.md) — No test has the real helper hang while the examination asks it
-- [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
-- [D49](D49.md) — Test support that is still in the code of `hydration/`
-- [D50](D50.md) — What `dbus/` and `daemon/` still share by hand
-- [D51](D51.md) — The helper's stand-ins are one module for the daemon's own tests, not for the tests outside the crate
-- [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
-- [D53](D53.md) — The enumeration of local acts is held to a small model of the rule, a second writing of it; what the examination's four parts left as it was
-- [D55](D55.md) — The enumeration of local acts has no act that makes something unreadable, and one act for damaged marks
-- [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but the helper keeps its own
 - [D58](D58.md) — The rule for locks is not asked of the helper or of test doubles
 - [D59](D59.md) — The check of the doc links sees a broken link, not a wrong one
-- [D60](D60.md) — The words for the codes are written once, except those still written for one client.
-
----
-
-## 7. Dolphin integration
-
-The two plugins in `dolphin/`: emblems for each file's state and pin, and "Always keep on this
-device" / "Free up space" / "Open in OneDrive" in the context menu. The emblems are read from a
-file's extended attributes; what the menu offers is the daemon's answer (`Files.Menu`). Neither
-plugin ever opens a file.
-
-- [K1](K1.md) — Dolphin opens some files itself, and that downloads them.
-- [K2](K2.md) — No emblems in search results or Recent Files.
-- [K3](K3.md) — Live updates cover the 256 most recently shown folders.
-- [K4](K4.md) — Unverified: an emblem after a download triggered by opening a file.
-- [K5](K5.md) — Reading state on Dolphin's UI thread.
-- [K6](K6.md) — At most 1000 paths wait at once, per window.
-- [K7](K7.md) — A root mark set or removed by hand.
-- [K8](K8.md) — Messages can be lost.
-- [K9](K9.md) — A renamed folder that Dolphin immediately asks about stops updating live.
-- [K10](K10.md) — An unrecognised state value
-- [K11](K11.md) — After a failed on-demand start
-- [K12](K12.md) — Cosmetic:
-- [K13](K13.md) — Build assumptions:
-- [K14](K14.md) — Memory:
-- [K15](K15.md) — `xx-large` (1024 px) thumbnails are not filled.
-- [K16](K16.md) — The thumbnail filler runs one request at a time, half a second apart.
-- [K17](K17.md) — Thumbnail body and decode caps are fixed, not configurable.
-- [K18](K18.md) — A renamed or deleted file's old thumbnail cache entries are never cleaned up.
-- [K19](K19.md) — `thumbnail_candidates` scans every image/video row on each call.
-- [K20](K20.md) — A renamed or moved file's thumbnail is fetched again from OneDrive.
-- [K21](K21.md) — The outline-check icon name is one letter from picking the filled one instead.
-- [K22](K22.md) — A pin set or removed on a folder Dolphin has only passed through, not browsed on its own, does not update emblems live.
-- [K23](K23.md) — "Always keep" and "Free up space" act on the selection as it was when the menu was built, not as it is when the button is clicked.
-- [K24](K24.md) — `inTheContextMenuKioBuilds` does not prove KIO's real MimeTypes-based plugin filtering.
-- [K25](K25.md) — A directory's own pin bit is not cached.
-- [K26](K26.md) — Upload emblems read an attribute kept in step with the daemon by hand.
-- [K27](K27.md) — A file OneDrive refuses a thumbnail for has none, so Dolphin with previews on downloads it.
-- [K28](K28.md) — "Open in OneDrive" asks OneDrive for the address on every click.
-- [K29](K29.md) — An item that is in OneDrive but not in the folder cannot be opened in OneDrive from here.
-- [K30](K30.md) — Whether the menu section's heading "OneDrive" is drawn depends on the widget style.
-- [K31](K31.md) — "Open in OneDrive" opens only an `https` address.
-- [K32](K32.md) — KOneDrive's entries in the context menu wait for the daemon, and are hidden when it does not answer.
-- [K33](K33.md) — What the menu's answer does not say.
-
----
-
-## 8. Window and tray
-
-The app in `app/` (`docs/design/desktop.md` §4–§6): the tray icon, KDE notifications, and the
-window's status, activity and conflicts, all read from the folder's interfaces (`org.konedrive.Folder`, `Transfers`, `UploadQueue`, `Conflicts`, `LocalScan`, `ActivityLog`) and `Account`.
-
-- [A1](A1.md) — Notifications need the app running.
-- [A2](A2.md) — Exact strings from the daemon still steer the app.
-- [A3](A3.md) — At most one notification per kind in 10 s.
-- [A4](A4.md) — The autostart entry runs the installed program.
-- [A5](A5.md) — A sign-out the user asked for elsewhere still notifies.
-- [A6](A6.md) — The "Recent" list merges a load with what arrives during it.
-- [A7](A7.md) — The desktop side of the tray and notifications is untested.
-- [A8](A8.md) — A signed-in account without a folder shows the "offline" icon.
-- [A9](A9.md) — Single instance under the name `org.konedrive.konedrive`; closing quits only without a tray.
-- [A10](A10.md) — Free Up Space waits for as long as it takes.
-- [A11](A11.md) — A held removal correlates a failure by path and a 1.5 s window, not by waiting out the daemon's actual order.
-- [A12](A12.md) — Places: a folder registered only through `konedrivectl` while the app is not running gets its entry when the app next starts.
-- [A13](A13.md) — The window shows one account at a time.
-- [A14](A14.md) — Account names are checked in the window too, by a copy of the daemon's rules.
-- [A16](A16.md) — The upload switch keeps its own "waiting for sign-in"; the client ID is one for all.
-- [A17](A17.md) — The tray sums up every account.
-- [A18](A18.md) — Notifications and download progress name the account, only once there are several.
-- [A19](A19.md) — Places: one entry per account folder; the single-account entry taken over in place.
-- [A20](A20.md) — Held removals: the notification's baseline and its default.
-- [A21](A21.md) — Upload progress reuses the download jobs' rules, and a retry looks finished.
-- [A22](A22.md) — The kinds and copies are read by their codes; the reasons' words are the catalogue's.
-- [A23](A23.md) — Pausing from the tray pauses every account that can be paused.
-- [A24](A24.md) — What is kept back is shown by reason; files only where each needs something done, 20 at most.
-- [A25](A25.md) — The account's own hold shows as paused, and the tray lifts it for every account.
-- [A26](A26.md) — "· live" hides when the last check ran.
-- [A27](A27.md) — An account left under the label "Signing in…" by an older window is not removed any more.
-- [A28](A28.md) — A client that goes away in the middle of a sign-in leaves it under way.
-- [A29](A29.md) — The fallback label "Personal" is the daemon's, and is not translated.
-- [A30](A30.md) — A daemon that stops while it makes the account of a sign-in leaves what it had made.
-- [A31](A31.md) — While a wallet prompt is open at the end of a sign-in, the other changes of the accounts wait.
-- [A32](A32.md) — The window words the status line itself, and reads offline with a daemon that has no `Overall`.
-
----
-
-## 9. Packaging
-
-The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive.spec`
-(`docs/design/packaging.md`).
-
-- [R1](R1.md) — Upgrading the package restarts the helper.
-- [R2](R2.md) — The developer install and the packages must not be installed together.
-- [R3](R3.md) — Removing the package does not refuse while a folder is registered.
-- [R4](R4.md) — The spec is for local builds, not yet for a public repository.
-- [R5](R5.md) — Nothing tests the scriptlets.
-- [R6](R6.md) — The packages are not signed.
-- [R7](R7.md) — Only Fedora 44 on x86_64 is built.
-- [R8](R8.md) — The version is one line in `Cargo.toml`, bumped by hand after each release.
-- [R9](R9.md) — A merge into `main` can go without a release of its own.
-- [R10](R10.md) — The tests run on Ubuntu, the RPMs are built on Fedora.
-- [R11](R11.md) — A window or a Dolphin left open across the upgrade that renamed the D-Bus interfaces talks to names that are gone.
-- [R12](R12.md) — The window's QML is compiled into the binary, because Qt's disk cache kept a same-day build's.
-
----
-
-## Closed
-
-Kept briefly so the history of a weak spot is findable; details are in the commits.
-
-- **Recovery racing a download after a reconnect** could punch a file just filled and marked —
-  fixed in commit `86dbf93`.
-- **A populate source leading into the folder** could fill a placeholder with zeros stamped as
-  downloaded — fixed in commit `3d5c183`.
-- **The helper exiting on an event the kernel could not hand over** — fixed in commit
-  `28ff3e6`; what remains is P1 and P8.
-- **The kernel document's header named only kernel 7.2.5** — corrected with this log's first commit.
-- **F63. A read-write folder reconciled by the read phase's rules** — a Full reconcile
-  rescued new local files out of the folder, put back local moves and rescued local edits before a
-  remote change. Closed by the read-write reconcile (F110–F117, commit `60be43d`).
-- **A15. Sign In is several calls in a row, not one** — the window and `konedrivectl login` each
-  chained `Accounts.Add`, `Account.BeginSignIn` and `Account.SetLabel`, and the window hid and
-  removed the half-made account itself. Closed by `Accounts.SignIn` (issue #199): one call, an
-  account the daemon makes only once the sign-in has succeeded, and one signal that says how it
-  ended. What remains is A27 to A30.

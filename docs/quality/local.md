@@ -24,7 +24,7 @@ inside it. `LO5` after these.
   output; newtypes for the indexes. **Size:** L. **Risk:** medium; well covered.
 - **Fixed 2026-10-05** in `e6d9db9` (#186): `Run` holds `Listing`, `Facts`, `Decisions` and `Outcome` (10 fields);
   entries are read by `EntryIx`, none is cloned; identity is the pure `identity::identify`. Not done: the
-  steps are still methods of `Run` (`docs/limitations/D53.md`).
+  steps are still methods of `Run`.
 
 ## LO2. The examination writes to the store and the disk while it is still deciding
 
@@ -72,10 +72,9 @@ inside it. `LO5` after these.
     confirm it with a vfat mount.
 - **Fixed 2026-10-04** in `5af7191` (#143), the narrow form: one policy (`Run::entry_io`) for an entry
   that cannot be opened, stripped or read; an entry's own error passes it over, any other fails
-  the batch, and a batch that keeps failing reaches `LastError`. What a passed-over entry costs is
-  in `docs/limitations/F210.md`.
+  the batch, and a batch that keeps failing reaches `LastError`.
 - **2026-10-05**, `01edf3d5` (#189): an entry passed over, and a file with damaged marks, are listed under
-  "Not uploaded" and asked for again (`docs/limitations/F286.md`, `F287.md`).
+  "Not uploaded" and asked for again.
 
 ## LO4. The examiner thread can die unnoticed — **defect?**
 
@@ -100,8 +99,7 @@ inside it. `LO5` after these.
     shut down (`service.rs:133`), and any future bug in the examination.
   - **A fix must:** put a guard on the examiner like the reader's `Ending`; the guard runs during
     unwinding, so it takes poisoned locks and must not panic itself; wake the reader so it ends.
-- **Fixed 2026-10-03** in `eba0828` (#132): the examiner has the guard `ExaminerEnding`; what an
-  unasked end leaves is in `docs/limitations/F74.md` (11).
+- **Fixed 2026-10-03** in `eba0828` (#132): the examiner has the guard `ExaminerEnding`.
 
 ## LO5. `Reader::visit` and the settle path are hard to change safely
 
@@ -123,7 +121,7 @@ inside it. `LO5` after these.
 - **Fix:** `enum Leaves { Deleted, MovedOut { object, to } }`; the termination rule stated next to
   `decided`. **Size:** M. **Risk:** medium.
 - **Fixed 2026-10-05** in `36f0f22` (#190): `Leaves`, `Settle::Elsewhere`, the termination rule once at
-  `Decisions::settle`. What remains is in `docs/limitations/D53.md`.
+  `Decisions::settle`.
 
 ## LO8. The same small logic written several times
 
@@ -188,5 +186,5 @@ inside it. `LO5` after these.
 - **Verified 2026-10-04: confirmed, in the VM** (a vfat mount inside the folder: a file beside it
   was never uploaded, `LastError` read "Operation not supported"). **Fixed** in `5af7191` (#143):
   `EOPNOTSUPP` reads as "no attribute" where an attribute is read by name, and the mount is
-  listed as `other-device`. What the safety of that rests on is in `docs/limitations/F210.md`.
+  listed as `other-device`.
 

@@ -130,13 +130,18 @@ and before a release is built.
 
 ## The limitations log
 
-`docs/limitations/` is the one place for everything in KOneDrive that is
-limited, worked around, fragile, or knowingly below the quality the project wants. If your
-change accepts a limitation, builds a workaround, picks a number without measuring it, or
-leaves something fragile on purpose, add an entry: a file named by its id (`F71.md`) and a line
-for it in the index, `docs/limitations/README.md` — the index explains the format (kind,
-evidence, status) at the top. A change is not really finished until the corner it cut is
-written down there.
+`docs/limitations/` holds the technical limits KOneDrive has and cannot simply remove: the
+kernel, the filesystem, OneDrive or the desktop decides, or removing the limit would give up
+something the project chose to keep. It is written for whoever implements.
+
+- If your change meets such a limit, add an entry: a file named by its id (`F53.md`) and a line
+  for it in the index, `docs/limitations/README.md`. An entry is a title and four short lines:
+  why the limit exists, what follows from it, why it stays, where to look. No retelling of the
+  code.
+- What a change in the code would remove is not a limit. Open an issue for it, written as what a
+  person does and what happens then, and set `priority: low` when it can wait.
+- How the code works, a decision that harms nobody and a detail of a test belong in the code and
+  in `docs/design/`, not in the log.
 
 ## Commit style
 

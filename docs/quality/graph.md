@@ -26,7 +26,7 @@ the rest 4.
   **Left open, a defect to fix apart:** `remote/listing.rs` `refused()` still takes any
   `DriveError::Failed(_)` as "Graph refused the link": a 400, a 403, a token rejected twice, an
   unparsable or foreign-host link and a page with neither link all drop the delta link. Known
-  by reading only. The rest is in `docs/limitations/D33.md`.
+  by reading only.
 
 ## GR2. `GraphClient` duplicates `DriveClient`
 
@@ -54,8 +54,7 @@ the rest 4.
     `invalid_grant` path; never hand it out from `access_token`; keep the "refused if it can
     write" check; keep the refresh-token rotation (`token.rs:213–221`) under the lock.
 - **Fixed 2026-10-03** in `b5cffd9` (#142): the cache has a slot for the read-only token; refreshes are
-  one at a time under a refresh lock, and a fresh cached token is handed out during one. The
-  windows this opens are in `docs/limitations/F221.md`.
+  one at a time under a refresh lock, and a fresh cached token is handed out during one.
 
 ## GR6. Smaller
 
@@ -65,4 +64,4 @@ the rest 4.
   `WALLET_LOCKED` are user-facing sentences in this crate; `lib.rs` has nine `pub mod` lines and
   no curated surface.
 - **Fixed 2026-10-04** in `ddaee60` (#148), except `SESSION_EXPIRED` and `WALLET_LOCKED`, which stay in
-  the crate (`docs/limitations/D33.md`).
+  the crate.
