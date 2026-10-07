@@ -774,7 +774,9 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
   edited: the window's sentence for every reason, and how a reason is cut into its parts.
 - `notifier.h`, `notifier.cpp` — the notifications.
 - `konedrive.notifyrc` — the notification events.
-- `trayicon.h`, `trayicon.cpp` — the tray icon.
+- `trayicon.h`, `trayicon.cpp` — the app in the tray: one icon for every account, or one each.
+- `trayitem.h`, `trayitem.cpp` — one tray icon and its menu.
+- `traysettings.h`, `traysettings.cpp` — the setting for an icon per account.
 - `downloadprogresscontroller.h`, `downloadprogresscontroller.cpp` — long downloads reported
   to Plasma as jobs.
 - `downloadjob.h`, `downloadjob.cpp` — one such job.

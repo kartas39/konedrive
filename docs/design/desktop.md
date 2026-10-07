@@ -498,7 +498,7 @@ app's:
 | **Not in the Folder** | the skipped items and why, in the words `sync skipped` uses: the first 200, then "and N more" naming `konedrivectl sync skipped`. Read when shown, and while shown at most once a second however often `SkippedCount` moves |
 | **Not Uploaded** | what stays on this computer and why (`NotUploadedSummary()`), in four groups: "Needs You" (a reason one action fixes: its count, size and button — "Refresh" for a full OneDrive or a file too big for the space left, "Sign In Again" for a sign-in that does not allow writes), "Needs You for Each File" (each reason with its count; opened, its files — `NotUploadedFiles(reason, 20)`, asked only then — a file whose own reason says more than the group's with that reason, OneDrive's own words for a refused one; clicking one shows it in Dolphin; past 20, "and N more" names `konedrivectl sync not-uploaded --all`), "Never Uploaded" (a line per reason with its count) and "Waiting" (one line, "N changes wait and will go up by themselves", its reasons when opened). Read when shown and when a count moves while it is, at most once a second. A count badge while changes are blocked |
 | **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); for a OneDrive folder, "Thumbnails" below it: the switch "Download thumbnails" (`SetThumbnails`, §8; while off, a line says that Dolphin, with its previews on, downloads a cloud-only file in full to make its preview), showing what the daemon says; sign in or out, the Microsoft account's name, email and quota, and the account's own `LastError`; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
-| **Settings** | "App": "Start at login", "Show download and upload progress", "Show in Places"; "Sync", for every account: the switch "Pause on metered connections" (`Accounts.SetPauseOnMetered`) and the combo box "On battery" — "Sync as usual", "Pause in power-saver mode", "Pause" (`Accounts.SetOnBattery`) — each showing what the daemon says and disabled while it is not running; "Quit KOneDrive" |
+| **Settings** | "App": "Start at login", "Show download and upload progress", "Show in Places", "Show a tray icon for each account" (§5); "Sync", for every account: the switch "Pause on metered connections" (`Accounts.SetPauseOnMetered`) and the combo box "On battery" — "Sync as usual", "Pause in power-saver mode", "Pause" (`Accounts.SetOnBattery`) — each showing what the daemon says and disabled while it is not running; "Quit KOneDrive" |
 
 The Conflicts and Not in the Folder pages list their rows in a `ListView`, which builds only the
 rows in sight, so thousands of entries cost a handful of delegates; both keep a fixed height, since
@@ -595,10 +595,12 @@ quits.
 
 ## 5. The tray icon
 
-Each account has one of five states, decided by the daemon (`Folder.Overall`, §2.4), and the icon
-shows the **worst** of them across the accounts, in this order. Choosing the worst is the window's
-(`AppStatus::rank`): it compares states the daemon gave, across accounts, which no single account's
-object knows.
+Each account has one of five states, decided by the daemon (`Folder.Overall`, §2.4). With several
+accounts and the setting "Show a tray icon for each account" on (as it is unless turned off), each
+account has **its own icon** with its own state. Otherwise — one account or none, or the setting
+off — there is **one icon**, and it shows the **worst** state across the accounts, in this order.
+Choosing the worst is the window's (`AppStatus::rank`): it compares states the daemon gave, across
+accounts, which no single account's object knows.
 
 | State | Icon | `Overall` | An account is in it when |
 |---|---|---|---|
@@ -625,6 +627,19 @@ counts against every account with an intercepted folder.
   "Quit".
 - **Click.** Shows the window, or hides it when it is the active one; on the account that needs
   attention when exactly one does, and otherwise on the account the window last showed.
+
+An account's own icon is that account's alone:
+
+- **Tooltip.** The account's label as the title, then its status line, and what needs attention on
+  a second line. The icons look alike; the tooltip tells them apart.
+- **Menu.** The same entries, acting on that account only: "Open OneDrive Folder", "Open KOneDrive"
+  (on that account), "Refresh Now", "Pause Syncing", "Resume Syncing", "Sync Anyway" and "Quit".
+- **Click.** Shows the window on that account. When the window is the active one, a click hides it
+  if it shows that account, and turns it to that account if it shows another.
+
+An account added or removed gains or loses its icon at once, and so does a change of the setting.
+The setting is the window's, `TrayIconPerAccount` in `konedriverc`'s `[General]` group, beside "Show
+in Places" on the Settings page (§4); the daemon knows nothing of it.
 
 The tray decides nothing by itself: the state is `Overall`'s, and the words are the window's (§4).
 

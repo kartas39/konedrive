@@ -2,10 +2,13 @@
 #include "accountsmodel.h"
 #include "accountstatus.h"
 #include "appstatus.h"
+#include "currentaccount.h"
 #include "daemoncontroller.h"
 #include "fakedaemon.h"
 #include "synccontroller.h"
 #include "trayicon.h"
+#include "trayitem.h"
+#include "traysettings.h"
 
 #include <KStatusNotifierItem>
 
@@ -93,8 +96,13 @@ private:
 
     static QStringList menuTexts(const TrayIcon &tray)
     {
+        return menuTexts(tray.one());
+    }
+
+    static QStringList menuTexts(const TrayItem *icon)
+    {
         QStringList texts;
-        for (QAction *action : tray.item()->contextMenu()->actions()) {
+        for (QAction *action : icon->item()->contextMenu()->actions()) {
             if (!action->isSeparator() && action->isVisible()) {
                 texts << action->text();
             }
@@ -245,8 +253,8 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
         QCOMPARE(m_status->text(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
         QTRY_COMPARE(m_app->state(), QStringLiteral("paused"));
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
-        QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("media-playback-pause"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
 
         m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("on-battery")}});
         QTRY_COMPARE(m_status->text(), QStringLiteral("Paused: on battery · checked 20 s ago"));
@@ -265,7 +273,7 @@ private Q_SLOTS:
         m_daemon->sync->folder->Resume();
         decide("ok", "up-to-date", {{QStringLiteral("HeldBack"), QString()}});
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-ok"));
     }
 
     /// "Sync Anyway" in the tray: shown while an account holds back by itself and is not paused
@@ -277,23 +285,23 @@ private Q_SLOTS:
         FakeAccountObject *work = addFamily();
         QTRY_COMPARE(m_accounts->count(), 3);
         TrayIcon tray(m_app.get());
-        QVERIFY(!tray.syncAnywayAction()->isVisible());
+        QVERIFY(!tray.one()->syncAnywayAction()->isVisible());
 
         // Work is paused by the user and held too: Resume Syncing is its way back.
         work->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
         work->sync->folder->Pause(0);
-        QTRY_VERIFY(tray.resumeAction()->isVisible());
-        QVERIFY(!tray.syncAnywayAction()->isVisible());
+        QTRY_VERIFY(tray.one()->resumeAction()->isVisible());
+        QVERIFY(!tray.one()->syncAnywayAction()->isVisible());
 
         m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
         family->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("on-battery")}});
-        QTRY_VERIFY(tray.syncAnywayAction()->isVisible());
+        QTRY_VERIFY(tray.one()->syncAnywayAction()->isVisible());
         QVERIFY(menuTexts(tray).contains(QStringLiteral("Sync Anyway")));
 
-        tray.syncAnywayAction()->trigger();
+        tray.one()->syncAnywayAction()->trigger();
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("SyncAnyway")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("SyncAnyway")));
-        QTRY_VERIFY(!tray.syncAnywayAction()->isVisible());
+        QTRY_VERIFY(!tray.one()->syncAnywayAction()->isVisible());
         QVERIFY(!work->sync->calls.contains(QStringLiteral("SyncAnyway")));
         QCOMPARE(work->sync->folder->heldBack(), QStringLiteral("metered"));
     }
@@ -546,18 +554,18 @@ private Q_SLOTS:
     {
         startSynced();
         TrayIcon tray(m_app.get());
-        QCOMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
-        QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
+        QCOMPARE(tray.one()->item()->iconName(), QStringLiteral("state-ok"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         decide("warning", "conflicts");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-warning"));
-        QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 changed files were moved out of the way"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago\n2 changed files were moved out of the way"));
 
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         decide("offline", "signed-out");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-offline"));
-        QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Signed out of OneDrive"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-offline"));
+        QCOMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Signed out of OneDrive"));
     }
 
     /// A click on the icon shows the hidden window, and hides it again.
@@ -568,10 +576,10 @@ private Q_SLOTS:
         QWindow window;
         tray.setWindow(&window);
         QVERIFY(!window.isVisible());
-        tray.item()->activate();
+        tray.one()->item()->activate();
         QTRY_VERIFY(window.isVisible());
         QTRY_VERIFY(window.isActive());
-        tray.item()->activate();
+        tray.one()->item()->activate();
         QTRY_VERIFY(!window.isVisible());
     }
 
@@ -584,21 +592,21 @@ private Q_SLOTS:
 
         QCOMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
 
-        QVERIFY(tray.openFolderAction()->isEnabled());
-        tray.refreshAction()->trigger();
+        QVERIFY(tray.one()->openFolderAction()->isEnabled());
+        tray.one()->refreshAction()->trigger();
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Refresh")));
 
-        tray.openWindowAction()->trigger();
+        tray.one()->openWindowAction()->trigger();
         QTRY_VERIFY(window.isVisible());
 
         QSignalSpy quit(&tray, &TrayIcon::quitRequested);
-        tray.quitAction()->trigger();
+        tray.one()->quitAction()->trigger();
         QCOMPARE(quit.count(), 1);
 
         // Without a folder there is nothing to open or refresh.
         m_daemon->sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}, {QStringLiteral("Source"), QString()}});
-        QTRY_VERIFY(!tray.openFolderAction()->isEnabled());
-        QVERIFY(!tray.refreshAction()->isEnabled());
+        QTRY_VERIFY(!tray.one()->openFolderAction()->isEnabled());
+        QVERIFY(!tray.one()->refreshAction()->isEnabled());
     }
 
     /// With no account the tray is offline and has nothing to open; its
@@ -611,13 +619,13 @@ private Q_SLOTS:
         QTRY_VERIFY(m_manager->serviceAvailable());
         TrayIcon tray(m_app.get());
         QCOMPARE(m_app->state(), QStringLiteral("offline"));
-        QCOMPARE(tray.item()->iconName(), QStringLiteral("state-offline"));
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("No OneDrive account yet"));
-        QVERIFY(!tray.openFolderAction()->isEnabled());
-        QVERIFY(!tray.refreshAction()->isEnabled());
+        QCOMPARE(tray.one()->item()->iconName(), QStringLiteral("state-offline"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("No OneDrive account yet"));
+        QVERIFY(!tray.one()->openFolderAction()->isEnabled());
+        QVERIFY(!tray.one()->refreshAction()->isEnabled());
 
         m_daemon->stop();
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("The KOneDrive service is not running"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("The KOneDrive service is not running"));
     }
 
     /// Several accounts: the icon is the worst state — needs attention, then
@@ -629,34 +637,34 @@ private Q_SLOTS:
         FakeAccountObject *family = addFamily();
         QTRY_COMPARE(m_accounts->count(), 2);
         TrayIcon tray(m_app.get());
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(),
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
                      QStringLiteral("Personal — Up to date · checked 20 s ago\nFamily — Up to date · checked 1 min ago"));
-        QCOMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
+        QCOMPARE(tray.one()->item()->iconName(), QStringLiteral("state-ok"));
 
         m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}});
         decide("syncing", "transferring");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-sync"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-sync"));
 
         // A paused account is worse than one syncing, and one offline worse than both.
         family->sync->folder->decide("paused", "held-back", {{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("media-playback-pause"));
 
         family->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         family->sync->folder->decide("offline", "signed-out", {{QStringLiteral("HeldBack"), QString()}});
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-offline"));
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(),
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-offline"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
                      QStringLiteral("Personal — Downloading 1 file · checked 20 s ago\nFamily — Signed out of OneDrive"));
 
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         decide("warning", "conflicts");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-warning"));
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(),
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-warning"));
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
                      QStringLiteral("Personal — 2 changed files were moved out of the way\nFamily — Signed out of OneDrive"));
         QCOMPARE(AppStatus::rank(QStringLiteral("warning")) < AppStatus::rank(QStringLiteral("offline")), true);
 
         // Renaming an account renames its line.
         family->account->set({{QStringLiteral("Label"), QStringLiteral("Home")}});
-        QTRY_VERIFY(tray.item()->toolTipSubTitle().endsWith(QStringLiteral("\nHome — Signed out of OneDrive")));
+        QTRY_VERIFY(tray.one()->item()->toolTipSubTitle().endsWith(QStringLiteral("\nHome — Signed out of OneDrive")));
     }
 
     /// "Pause Syncing" pauses every OneDrive folder; the tray shows the pause,
@@ -670,26 +678,26 @@ private Q_SLOTS:
         // The second account's properties load after its row is there, and the
         // tray passes over an account with no folder loaded yet: its line says
         // when it has one.
-        QTRY_COMPARE(tray.item()->toolTipSubTitle(),
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(),
                      QStringLiteral("Personal — Up to date · checked 20 s ago\nFamily — Up to date · checked 1 min ago"));
-        QVERIFY(!tray.resumeAction()->isVisible());
-        QCOMPARE(tray.pauseMenu()->actions().size(), 4);
+        QVERIFY(!tray.one()->resumeAction()->isVisible());
+        QCOMPARE(tray.one()->pauseMenu()->actions().size(), 4);
 
-        tray.pauseMenu()->actions().at(0)->trigger(); // for 2 hours
+        tray.one()->pauseMenu()->actions().at(0)->trigger(); // for 2 hours
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Pause:7200")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Pause:7200")));
         decide("paused", "paused");
         family->sync->folder->decide("paused", "paused");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
-        QTRY_VERIFY(tray.resumeAction()->isVisible());
-        QVERIFY(!tray.pauseMenuAction()->isVisible());
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("media-playback-pause"));
+        QTRY_VERIFY(tray.one()->resumeAction()->isVisible());
+        QVERIFY(!tray.one()->pauseMenuAction()->isVisible());
 
-        tray.resumeAction()->trigger();
+        tray.one()->resumeAction()->trigger();
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Resume")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Resume")));
         decide("ok", "up-to-date");
         family->sync->folder->decide("ok", "up-to-date");
-        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
+        QTRY_COMPARE(tray.one()->item()->iconName(), QStringLiteral("state-ok"));
     }
 
     /// Several accounts: "Open Folder" lists the folders; Refresh Now asks every OneDrive folder.
@@ -701,19 +709,19 @@ private Q_SLOTS:
         QTRY_COMPARE(m_accounts->count(), 3);
         TrayIcon tray(m_app.get());
         QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
-        QVERIFY(!tray.openFolderAction()->isVisible());
+        QVERIFY(!tray.one()->openFolderAction()->isVisible());
 
         // Work has no folder: no entry.
-        QTRY_COMPARE(tray.openFolderMenu()->actions().size(), 2);
-        QCOMPARE(tray.openFolderMenu()->actions().at(0)->text(), QStringLiteral("Personal"));
-        QCOMPARE(tray.openFolderMenu()->actions().at(1)->text(), QStringLiteral("Family"));
-        QCOMPARE(tray.openFolderMenu()->actions().at(1)->toolTip(), QStringLiteral("/home/u/Family"));
-        QVERIFY(tray.openFolderMenuAction()->isEnabled());
+        QTRY_COMPARE(tray.one()->openFolderMenu()->actions().size(), 2);
+        QCOMPARE(tray.one()->openFolderMenu()->actions().at(0)->text(), QStringLiteral("Personal"));
+        QCOMPARE(tray.one()->openFolderMenu()->actions().at(1)->text(), QStringLiteral("Family"));
+        QCOMPARE(tray.one()->openFolderMenu()->actions().at(1)->toolTip(), QStringLiteral("/home/u/Family"));
+        QVERIFY(tray.one()->openFolderMenuAction()->isEnabled());
         // An "&" in a label is shown, not taken for a mnemonic.
         family->account->set({{QStringLiteral("Label"), QStringLiteral("Kids & Me")}});
-        QTRY_COMPARE(tray.openFolderMenu()->actions().at(1)->text(), QStringLiteral("Kids && Me"));
+        QTRY_COMPARE(tray.one()->openFolderMenu()->actions().at(1)->text(), QStringLiteral("Kids && Me"));
 
-        tray.refreshAction()->trigger();
+        tray.one()->refreshAction()->trigger();
         QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Refresh")));
         QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Refresh")));
         QVERIFY(!work->sync->calls.contains(QStringLiteral("Refresh")));
@@ -722,7 +730,7 @@ private Q_SLOTS:
         m_daemon->removeAccount(family->path);
         m_daemon->removeAccount(work->path);
         QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
-        QVERIFY(tray.openFolderAction()->isEnabled());
+        QVERIFY(tray.one()->openFolderAction()->isEnabled());
     }
 
     /// A click opens the window on the one account needing attention, when
@@ -740,7 +748,7 @@ private Q_SLOTS:
         family->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
         family->sync->folder->decide("warning", "conflicts");
         QTRY_COMPARE(m_accounts->at(1)->status()->state(), QStringLiteral("warning"));
-        tray.item()->activate();
+        tray.one()->item()->activate();
         QTRY_VERIFY(window.isVisible());
         QCOMPARE(toShow.count(), 1);
         QCOMPARE(toShow.at(0).at(0).toString(), family->path);
@@ -749,9 +757,98 @@ private Q_SLOTS:
         m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
         decide("warning", "conflicts");
         QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
-        tray.item()->activate();
+        tray.one()->item()->activate();
         QTRY_VERIFY(window.isVisible());
         QCOMPARE(toShow.count(), 1);
+    }
+
+    /// The setting on and several accounts: an icon each, with the account's
+    /// own state, its label in the tooltip and a menu that acts on it alone;
+    /// a click shows the window on it. Off, or back to one account: one icon.
+    void eachAccountHasItsOwnTrayIcon()
+    {
+        startSynced();
+        FakeAccountObject *family = addFamily();
+        QTRY_COMPARE(m_accounts->count(), 2);
+        TraySettings settings;
+        settings.setPerAccount(true);
+        TrayIcon tray(m_app.get(), &settings);
+        QVERIFY(!tray.one());
+        QCOMPARE(tray.perAccount().size(), 2);
+        TrayItem *personal = tray.perAccount().at(0);
+        TrayItem *familys = tray.perAccount().at(1);
+        QTRY_COMPARE(familys->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 1 min ago"));
+        QCOMPARE(familys->item()->toolTipTitle(), QStringLiteral("Family"));
+        QCOMPARE(personal->item()->toolTipTitle(), QStringLiteral("Personal"));
+        QCOMPARE(personal->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
+        QVERIFY(personal->item()->id() != familys->item()->id());
+        QCOMPARE(menuTexts(familys), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
+
+        // Its menu pauses its account, and its icon alone shows the pause.
+        familys->pauseMenu()->actions().at(0)->trigger(); // for 2 hours
+        QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Pause:7200")));
+        QVERIFY(!m_daemon->sync->calls.contains(QStringLiteral("Pause:7200")));
+        family->sync->folder->decide("paused", "paused");
+        QTRY_COMPARE(familys->item()->iconName(), QStringLiteral("media-playback-pause"));
+        QCOMPARE(personal->item()->iconName(), QStringLiteral("state-ok"));
+
+        // A click shows the window on the icon's account.
+        QWindow window;
+        tray.setWindow(&window);
+        QSignalSpy toShow(&tray, &TrayIcon::accountToShow);
+        familys->item()->activate();
+        QTRY_VERIFY(window.isVisible());
+        QCOMPARE(toShow.count(), 1);
+        QCOMPARE(toShow.at(0).at(0).toString(), family->path);
+
+        // Off: one icon with the worst state and a line per account. On again: two.
+        settings.setPerAccount(false);
+        QVERIFY(tray.perAccount().isEmpty());
+        QVERIFY(tray.one());
+        QCOMPARE(tray.one()->item()->iconName(), QStringLiteral("media-playback-pause"));
+        QVERIFY(tray.one()->item()->toolTipSubTitle().startsWith(QStringLiteral("Personal — ")));
+        settings.setPerAccount(true);
+        QVERIFY(!tray.one());
+        QCOMPARE(tray.perAccount().size(), 2);
+
+        // One account left: one icon again, as with the setting off.
+        m_daemon->removeAccount(family->path);
+        QTRY_VERIFY(tray.one());
+        QVERIFY(tray.perAccount().isEmpty());
+        QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
+    }
+
+    /// A second account splits the one icon in two. A click on the icon of the
+    /// account the window in front does not show turns the window to it; a
+    /// click on the icon of the one it shows hides the window.
+    void aSecondAccountSplitsTheIconAndAClickTurnsTheWindow()
+    {
+        startSynced();
+        TraySettings settings;
+        settings.setPerAccount(true);
+        TrayIcon tray(m_app.get(), &settings);
+        QVERIFY(tray.one());
+        FakeAccountObject *family = addFamily();
+        QTRY_COMPARE(tray.perAccount().size(), 2);
+        QVERIFY(!tray.one());
+
+        CurrentAccount current(m_accounts.get());
+        connect(&tray, &TrayIcon::accountToShow, &current, &CurrentAccount::select);
+        tray.setCurrentAccount(&current);
+        QWindow window;
+        tray.setWindow(&window);
+        current.select(m_accounts->at(0)->path());
+
+        tray.perAccount().at(0)->item()->activate();
+        QTRY_VERIFY(window.isVisible() && window.isActive());
+        QCOMPARE(current.path(), m_accounts->at(0)->path());
+
+        tray.perAccount().at(1)->item()->activate();
+        QCOMPARE(current.path(), family->path);
+        QVERIFY(window.isVisible());
+
+        tray.perAccount().at(1)->item()->activate();
+        QTRY_VERIFY(!window.isVisible());
     }
 };
 

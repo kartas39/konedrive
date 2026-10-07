@@ -2,13 +2,12 @@
 
 #include "accountsmodel.h"
 #include "appstatus.h"
+#include "currentaccount.h"
+#include "trayitem.h"
+#include "traysettings.h"
 
-#include <KIO/OpenUrlJob>
-#include <KLocalizedString>
-#include <KStatusNotifierItem>
 #include <KWindowSystem>
 
-#include <QAction>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
@@ -16,8 +15,6 @@
 #include <QDBusServiceWatcher>
 #include <QDBusVariant>
 #include <QEvent>
-#include <QMenu>
-#include <QUrl>
 #include <QWindow>
 
 Q_LOGGING_CATEGORY(KONEDRIVE_APP, "konedrive.app", QtInfoMsg)
@@ -28,96 +25,22 @@ const QString WatcherService = QStringLiteral("org.kde.StatusNotifierWatcher");
 const QString WatcherPath = QStringLiteral("/StatusNotifierWatcher");
 }
 
-TrayIcon::TrayIcon(AppStatus *status, QObject *parent)
+TrayIcon::TrayIcon(AppStatus *status, TraySettings *settings, QObject *parent)
     : QObject(parent)
     , m_status(status)
-    , m_item(new KStatusNotifierItem(QStringLiteral("konedrive"), this))
-    , m_menu(new QMenu)
-    , m_folderMenu(new QMenu(i18nc("@action:inmenu", "Open Folder"), m_menu))
-    , m_pauseMenu(new QMenu(i18nc("@action:inmenu", "Pause Syncing"), m_menu))
+    , m_settings(settings)
 {
-    m_item->setCategory(KStatusNotifierItem::ApplicationStatus);
-    m_item->setStatus(KStatusNotifierItem::Active);
-    m_item->setTitle(i18nc("@title", "KOneDrive"));
-    m_item->setToolTipTitle(i18nc("@title", "KOneDrive"));
-    m_item->setToolTipIconByName(QStringLiteral("folder-cloud"));
-    // Our own "Quit" and no "Restore"/"Minimize": the window is not the item's
-    // associated window, so a click comes to toggleWindow().
-    m_item->setStandardActionsEnabled(false);
-
-    m_openFolder = m_menu->addAction(QIcon::fromTheme(QStringLiteral("folder-cloud")), i18nc("@action:inmenu", "Open OneDrive Folder"));
-    m_folderMenu->setIcon(QIcon::fromTheme(QStringLiteral("folder-cloud")));
-    m_openFolderMenuAction = m_menu->addMenu(m_folderMenu);
-    m_openWindow = m_menu->addAction(QIcon::fromTheme(QStringLiteral("window")), i18nc("@action:inmenu", "Open KOneDrive"));
-    m_refresh = m_menu->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18nc("@action:inmenu", "Refresh Now"));
-    // As Windows offers it: 2, 8 or 24 hours, and here also until resumed.
-    m_pauseMenu->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-pause")));
-    const QList<QPair<QString, uint>> pauses{
-        {i18nc("@action:inmenu pause syncing", "For 2 Hours"), 2 * 3600},
-        {i18nc("@action:inmenu pause syncing", "For 8 Hours"), 8 * 3600},
-        {i18nc("@action:inmenu pause syncing", "For 24 Hours"), 24 * 3600},
-        {i18nc("@action:inmenu pause syncing", "Until Resumed"), 0},
-    };
-    for (const auto &[text, seconds] : pauses) {
-        const uint forSeconds = seconds;
-        connect(m_pauseMenu->addAction(text), &QAction::triggered, this, [this, forSeconds] {
-            for (AccountItem *item : m_status->accounts()->items()) {
-                if (!item->sync()->rootPath().isEmpty() && item->sync()->rootSource() == QLatin1String("onedrive") && !item->sync()->paused()) {
-                    item->sync()->pause(forSeconds);
-                }
-            }
-        });
-    }
-    m_pauseMenuAction = m_menu->addMenu(m_pauseMenu);
-    m_resume = m_menu->addAction(QIcon::fromTheme(QStringLiteral("media-playback-start")), i18nc("@action:inmenu", "Resume Syncing"));
-    connect(m_resume, &QAction::triggered, this, [this] {
-        for (AccountItem *item : m_status->accounts()->items()) {
-            if (item->sync()->paused()) {
-                item->sync()->resume();
-            }
-        }
-    });
-    // The account's own hold (metered connection, battery): the tray is the whole app's, so
-    // its Sync Anyway is the whole app's too (writes.md §11), as `sync anyway --all`.
-    m_syncAnyway = m_menu->addAction(QIcon::fromTheme(QStringLiteral("media-playback-start")), i18nc("@action:inmenu", "Sync Anyway"));
-    connect(m_syncAnyway, &QAction::triggered, this, [this] {
-        for (AccountItem *item : m_status->accounts()->items()) {
-            if (!item->sync()->heldBack().isEmpty() && !item->sync()->paused()) {
-                item->sync()->syncAnyway();
-            }
-        }
-    });
-    m_menu->addSeparator();
-    m_quit = m_menu->addAction(QIcon::fromTheme(QStringLiteral("application-exit")), i18nc("@action:inmenu", "Quit"));
-    m_item->setContextMenu(m_menu); // the item owns the menu
-
-    // M2: unlike a click on the item itself (toggleWindow), these came
-    // straight from a QAction::triggered, with no chance yet to hand over
-    // the menu click's own xdg-activation token.
-    connect(m_openFolder, &QAction::triggered, this, [this] {
-        if (!m_folders.isEmpty()) {
-            openFolder(m_folders.constFirst().second);
-        }
-    });
-    connect(m_openWindow, &QAction::triggered, this, &TrayIcon::openWindowWithToken);
-    connect(m_refresh, &QAction::triggered, this, [this] {
-        for (AccountItem *item : m_status->accounts()->items()) {
-            if (!item->sync()->rootPath().isEmpty() && item->sync()->rootSource() == QLatin1String("onedrive")) {
-                item->sync()->refresh();
-            }
-        }
-    });
-    connect(m_quit, &QAction::triggered, this, &TrayIcon::quitRequested);
-    connect(m_item, &KStatusNotifierItem::activateRequested, this, &TrayIcon::toggleWindow);
-
-    connect(m_status, &AppStatus::changed, this, &TrayIcon::update);
-    // A folder or a label can change without the state or the tooltip.
+    // Before any icon's own connections to the model: an account that went
+    // loses its icon before that icon hears of the model's change.
     AccountsModel *accounts = m_status->accounts();
-    connect(accounts, &QAbstractItemModel::dataChanged, this, &TrayIcon::update);
-    connect(accounts, &QAbstractItemModel::rowsInserted, this, &TrayIcon::update);
-    connect(accounts, &QAbstractItemModel::rowsRemoved, this, &TrayIcon::update);
-    connect(accounts, &QAbstractItemModel::rowsMoved, this, &TrayIcon::update);
-    update();
+    connect(accounts, &QAbstractItemModel::rowsInserted, this, &TrayIcon::reconcile);
+    connect(accounts, &QAbstractItemModel::rowsRemoved, this, &TrayIcon::reconcile);
+    connect(accounts, &QAbstractItemModel::rowsMoved, this, &TrayIcon::reconcile);
+    connect(accounts, &QAbstractItemModel::modelReset, this, &TrayIcon::reconcile);
+    if (m_settings) {
+        connect(m_settings, &TraySettings::perAccountChanged, this, &TrayIcon::reconcile);
+    }
+    reconcile();
 
     // Is there a system tray to show the icon (and to come back from)?
     auto bus = QDBusConnection::sessionBus();
@@ -147,57 +70,58 @@ void TrayIcon::setWindow(QWindow *window)
     }
 }
 
-void TrayIcon::update()
+void TrayIcon::setCurrentAccount(const CurrentAccount *current)
 {
-    m_item->setIconByName(m_status->iconName());
-    m_item->setToolTipSubTitle(m_status->toolTip());
+    m_current = current;
+}
 
+void TrayIcon::reconcile()
+{
     const QList<AccountItem *> &items = m_status->accounts()->items();
-    QList<QPair<QString, QString>> folders;
-    bool refreshable = false;
-    bool pausable = false;
-    bool paused = false;
-    bool held = false;
-    for (const AccountItem *item : items) {
-        paused = paused || item->sync()->paused();
-        held = held || (!item->sync()->heldBack().isEmpty() && !item->sync()->paused());
-        const QString root = item->sync()->rootPath();
-        if (root.isEmpty()) {
-            continue;
+    // One account or none: one icon says it all, and there is always an icon
+    // to come back from.
+    const bool perAccount = m_settings && m_settings->perAccount() && items.size() > 1;
+    if (!perAccount) {
+        qDeleteAll(m_perAccount);
+        m_perAccount.clear();
+        if (!m_one) {
+            m_one = add(nullptr);
         }
-        folders.append({item->account()->label(), root});
-        const bool onedrive = item->sync()->rootSource() == QLatin1String("onedrive");
-        refreshable = refreshable || onedrive;
-        pausable = pausable || (onedrive && !item->sync()->paused());
-    }
-
-    // One account: "Open OneDrive Folder", as ever. Several: "Open Folder", a
-    // submenu with the accounts that have a folder.
-    const bool several = items.size() > 1;
-    m_openFolder->setVisible(!several);
-    m_openFolder->setEnabled(!several && !folders.isEmpty());
-    m_openFolderMenuAction->setVisible(several);
-    m_openFolderMenuAction->setEnabled(several && !folders.isEmpty());
-    m_refresh->setEnabled(refreshable);
-    m_pauseMenuAction->setVisible(pausable || !paused);
-    m_pauseMenuAction->setEnabled(pausable);
-    m_resume->setVisible(paused);
-    m_syncAnyway->setVisible(held);
-
-    if (folders == m_folders) {
         return;
     }
-    m_folders = folders;
-    m_folderMenu->clear();
-    for (const auto &[label, root] : std::as_const(m_folders)) {
-        // A label may hold "&", which a menu would take for a mnemonic.
-        QAction *open = m_folderMenu->addAction(QIcon::fromTheme(QStringLiteral("folder-cloud")), QString(label).replace(QLatin1Char('&'), QStringLiteral("&&")));
-        open->setToolTip(root);
-        const QString path = root;
-        connect(open, &QAction::triggered, this, [this, path] {
-            openFolder(path);
-        });
+
+    delete m_one;
+    m_one = nullptr;
+    QList<TrayItem *> kept;
+    for (AccountItem *item : items) {
+        TrayItem *icon = nullptr;
+        for (TrayItem *have : std::as_const(m_perAccount)) {
+            if (have->account() == item) {
+                icon = have;
+                break;
+            }
+        }
+        kept.append(icon ? icon : add(item));
     }
+    for (TrayItem *have : std::as_const(m_perAccount)) {
+        if (!kept.contains(have)) {
+            delete have;
+        }
+    }
+    m_perAccount = kept;
+}
+
+TrayItem *TrayIcon::add(AccountItem *only)
+{
+    auto *icon = new TrayItem(m_status, only, this);
+    connect(icon, &TrayItem::activated, this, [this, icon] {
+        toggleWindow(icon);
+    });
+    connect(icon, &TrayItem::openWindowRequested, this, [this, icon] {
+        openWindowWithToken(icon);
+    });
+    connect(icon, &TrayItem::quitRequested, this, &TrayIcon::quitRequested);
+    return icon;
 }
 
 bool TrayIcon::eventFilter(QObject *watched, QEvent *event)
@@ -232,22 +156,30 @@ void TrayIcon::setTrayAvailable(bool available)
     Q_EMIT trayAvailableChanged();
 }
 
-void TrayIcon::toggleWindow()
+void TrayIcon::toggleWindow(TrayItem *clicked)
 {
     if (!m_window) {
         return;
     }
+    // An account's own icon shows that account; the icon of them all, the one
+    // account needing attention when exactly one does.
+    const AccountItem *toShow = clicked->account() ? clicked->account() : m_status->onlyAccountNeedingAttention();
     if (m_window->isVisible() && m_window->isActive()) {
+        if (clicked->account() && m_current && m_current->path() != toShow->path()) {
+            qCDebug(KONEDRIVE_APP) << "turning the window to another account";
+            Q_EMIT accountToShow(toShow->path());
+            return;
+        }
         qCDebug(KONEDRIVE_APP) << "hiding the window";
         m_window->hide();
         return;
     }
     // The click hands over the right to raise a window (xdg-activation on Wayland).
-    if (const QString token = m_item->providedToken(); !token.isEmpty()) {
+    if (const QString token = clicked->token(); !token.isEmpty()) {
         KWindowSystem::setCurrentXdgActivationToken(token);
     }
-    if (const AccountItem *item = m_status->onlyAccountNeedingAttention()) {
-        Q_EMIT accountToShow(item->path());
+    if (toShow) {
+        Q_EMIT accountToShow(toShow->path());
     }
     showWindow();
 }
@@ -264,24 +196,13 @@ void TrayIcon::showWindow()
     m_window->requestActivate();
 }
 
-void TrayIcon::openWindowWithToken()
+void TrayIcon::openWindowWithToken(TrayItem *clicked)
 {
-    if (const QString token = m_item->providedToken(); !token.isEmpty()) {
+    if (const QString token = clicked->token(); !token.isEmpty()) {
         KWindowSystem::setCurrentXdgActivationToken(token);
     }
+    if (clicked->account()) {
+        Q_EMIT accountToShow(clicked->account()->path());
+    }
     showWindow();
-}
-
-void TrayIcon::openFolder(const QString &path)
-{
-    if (path.isEmpty()) {
-        return;
-    }
-    const QByteArray token = m_item->providedToken().toUtf8();
-    if (!token.isEmpty()) {
-        KWindowSystem::setCurrentXdgActivationToken(QString::fromUtf8(token));
-    }
-    auto *job = new KIO::OpenUrlJob(QUrl::fromLocalFile(path));
-    job->setStartupId(token);
-    job->start();
 }

@@ -99,6 +99,8 @@ add_library(konedrive_core STATIC
     notifier.cpp
     autostart.cpp
     trayicon.cpp
+    trayitem.cpp
+    traysettings.cpp
     downloadjob.cpp
     downloadjobtracker.cpp
     downloadprogresssettings.cpp

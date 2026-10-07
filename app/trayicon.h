@@ -3,69 +3,58 @@
 #include <QList>
 #include <QLoggingCategory>
 #include <QObject>
-#include <QPair>
 #include <QPointer>
 
 /// The app's own log: konedrive.app, debug off unless QT_LOGGING_RULES turns it on.
 Q_DECLARE_LOGGING_CATEGORY(KONEDRIVE_APP)
 
+class AccountItem;
 class AppStatus;
-class KStatusNotifierItem;
-class QAction;
-class QMenu;
+class CurrentAccount;
+class TrayItem;
+class TraySettings;
 class QWindow;
 
-/// The tray icon: its icon is the worst state across the accounts and its
-/// tooltip has a line per account (AppStatus); a click shows or hides the
-/// window — on the one account needing attention, when exactly one does —
-/// and its menu opens a folder or the window, refreshes, pauses or resumes
-/// every account, lifts every account's own hold, or quits.
+/// The app in the tray. With several accounts and TraySettings saying so,
+/// each account has its own icon (TrayItem): its state, its tooltip and a
+/// menu that acts on it alone; a click shows the window on that account.
+/// Otherwise — one account or none, the setting off, or no settings given —
+/// there is one icon for them all: the worst state across the accounts, a
+/// tooltip line per account, a menu that acts on every account, and a click
+/// that shows the window on the one account needing attention, when exactly
+/// one does. A click on an icon whose window is in front hides the window.
 class TrayIcon : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit TrayIcon(AppStatus *status, QObject *parent = nullptr);
+    explicit TrayIcon(AppStatus *status, TraySettings *settings = nullptr, QObject *parent = nullptr);
     ~TrayIcon() override;
 
     void setWindow(QWindow *window);
+    /// The account the window shows: a click on another account's icon then
+    /// turns the window in front to that account instead of hiding it.
+    void setCurrentAccount(const CurrentAccount *current);
 
-    KStatusNotifierItem *item() const { return m_item; }
-    /// A system tray shows the icon (a StatusNotifierWatcher with a host).
+    /// The icon of every account; null while each account has its own.
+    TrayItem *one() const { return m_one; }
+    /// The accounts' own icons, in account order; empty while one icon stands for them all.
+    QList<TrayItem *> perAccount() const { return m_perAccount; }
+    /// A system tray shows the icons (a StatusNotifierWatcher with a host).
     /// Without one, closing the window quits the app.
     bool trayAvailable() const { return m_trayAvailable; }
-    /// "Open OneDrive Folder", shown while there is at most one account.
-    QAction *openFolderAction() const { return m_openFolder; }
-    /// "Open Folder", shown with several accounts: a submenu with an entry
-    /// for each account that has a folder.
-    QAction *openFolderMenuAction() const { return m_openFolderMenuAction; }
-    QMenu *openFolderMenu() const { return m_folderMenu; }
-    QAction *openWindowAction() const { return m_openWindow; }
-    /// "Refresh Now": every account whose folder shows OneDrive.
-    QAction *refreshAction() const { return m_refresh; }
-    /// "Pause Syncing": a submenu that pauses every account whose folder shows
-    /// OneDrive and is not paused, for 2, 8 or 24 hours or until resumed.
-    QAction *pauseMenuAction() const { return m_pauseMenuAction; }
-    QMenu *pauseMenu() const { return m_pauseMenu; }
-    /// "Resume Syncing": shown while any account is paused by the user; resumes each of them.
-    QAction *resumeAction() const { return m_resume; }
-    /// "Sync Anyway": shown while any account holds back by itself (HeldBack) and is not
-    /// paused by the user; lifts the hold of each of them (konedrivectl sync anyway --all).
-    QAction *syncAnywayAction() const { return m_syncAnyway; }
-    QAction *quitAction() const { return m_quit; }
 
 public Q_SLOTS:
-    /// Shows the window if it is hidden or behind others, hides it if it is in front.
-    void toggleWindow();
     void showWindow();
 
 Q_SIGNALS:
-    /// "Quit" in the menu, or the window closed with no tray to return to;
+    /// "Quit" in a menu, or the window closed with no tray to return to;
     /// main() quits the application on it.
     void quitRequested();
     void trayAvailableChanged();
-    /// A click is about to show the window, and this account (its object
-    /// path) is the only one needing attention: the window shows it.
+    /// A click is about to show the window on this account (its object path):
+    /// the account of the icon clicked, or with one icon for them all the only
+    /// account needing attention.
     void accountToShow(const QString &path);
 
 protected:
@@ -74,30 +63,23 @@ protected:
 private Q_SLOTS:
     /// Asks the StatusNotifierWatcher whether a host (a tray) is registered.
     void checkTrayHost();
-    /// "Open KOneDrive": hands the menu click's activation token to the window (M2).
-    void openWindowWithToken();
 
 private:
-    void update();
+    /// Brings the icons in line with the setting and the accounts.
+    void reconcile();
+    TrayItem *add(AccountItem *only);
+    /// A click on this icon: shows the window if it is hidden or behind
+    /// others, hides it if it is in front.
+    void toggleWindow(TrayItem *clicked);
+    /// "Open KOneDrive": hands the menu click's activation token to the window (M2).
+    void openWindowWithToken(TrayItem *clicked);
     void setTrayAvailable(bool available);
-    /// Opens a folder with the menu click's token, passed to KIO::OpenUrlJob (M2).
-    void openFolder(const QString &path);
 
     AppStatus *m_status;
-    KStatusNotifierItem *m_item;
-    QMenu *m_menu;
-    QMenu *m_folderMenu;
-    QAction *m_openFolder;
-    QAction *m_openFolderMenuAction;
-    QAction *m_openWindow;
-    QAction *m_refresh;
-    QMenu *m_pauseMenu;
-    QAction *m_pauseMenuAction;
-    QAction *m_resume;
-    QAction *m_syncAnyway;
-    QAction *m_quit;
-    /// (label, folder) of each account that has a folder, in account order.
-    QList<QPair<QString, QString>> m_folders;
+    TraySettings *m_settings;
+    TrayItem *m_one = nullptr;
+    QList<TrayItem *> m_perAccount;
     QPointer<QWindow> m_window;
+    QPointer<const CurrentAccount> m_current;
     bool m_trayAvailable = false;
 };
