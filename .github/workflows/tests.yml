@@ -121,7 +121,7 @@ jobs:
   # The suite that needs root: the helper, fanotify, a filesystem of its own.
   # One machine per filesystem, all at once; each reports for itself.
   root-suite:
-    if: github.event_name == 'workflow_dispatch' || github.base_ref == 'main' || github.head_ref == 'release-f45' # TEMPORARY: the last part goes before the merge
+    if: github.event_name == 'workflow_dispatch' || github.base_ref == 'main'
     strategy:
       fail-fast: false
       matrix:
