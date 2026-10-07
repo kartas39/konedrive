@@ -6,7 +6,7 @@ line. What it is, in short: [the README](../README.md). How it works inside:
 
 ## Install
 
-On Fedora 44 (x86_64), KOneDrive installs as two packages (there is no package repository yet):
+On Fedora 44 and 45 (x86_64), KOneDrive installs as two packages (there is no package repository yet):
 
 - `konedrive` — the daemon, `konedrivectl`, the KOneDrive window, and the helper with its system
   service, which is enabled and started when the package is installed;
@@ -14,9 +14,10 @@ On Fedora 44 (x86_64), KOneDrive installs as two packages (there is no package r
   so `dnf` installs it too; `sudo dnf remove konedrive-kde` removes it alone.
 
 **From a release.** Every release is on the Releases page of the repository on GitHub
-(`kartas39/konedrive`). Download the two binary RPMs of the latest one,
-`konedrive-X.Y.Z-1.fc44.x86_64.rpm` and `konedrive-kde-X.Y.Z-1.fc44.x86_64.rpm` — not the
-`.src.rpm`, which the command below would pick up too. Its `SHA256SUMS` lists their checksums
+(`kartas39/konedrive`). Download the two binary RPMs of the latest one for your Fedora — for Fedora 45,
+`konedrive-X.Y.Z-1.fc45.x86_64.rpm` and `konedrive-kde-X.Y.Z-1.fc45.x86_64.rpm`; `.fc44` for
+Fedora 44 — and not the other Fedora's or the `.src.rpm`, which the command below would pick up
+too. Its `SHA256SUMS` lists their checksums
 (`sha256sum -c --ignore-missing SHA256SUMS`). Then, in the directory they are in:
 
 ```

@@ -1,6 +1,6 @@
 # A release on every push to main: the daemon's tests (on the runner itself),
-# then the RPMs (in a fedora:44 container), then the tag vX.Y.Z and a GitHub
-# Release with the packages. Run by hand
+# then the RPMs for each Fedora below (in its container), then the tag vX.Y.Z
+# and a GitHub Release with the packages. Run by hand
 # (workflow_dispatch) it is a dry run by default: the RPMs are kept as the
 # run's artifacts, and nothing is tagged or released. docs/releasing.md.
 name: Release
@@ -25,9 +25,9 @@ permissions:
   contents: read
 
 env:
-  # The Rust the tests run with: Fedora 44's `rust` package, which the RPMs are
-  # built with. The build job stops if the two differ; when Fedora updates the
-  # package, move this to the version it prints (docs/releasing.md).
+  # The Rust the tests run with: the `rust` package of every Fedora the RPMs
+  # are built for. A build stops if its Fedora's differs; when Fedora updates
+  # the package, move this to the version it prints (docs/releasing.md).
   RUST_VERSION: "1.98.1"
 
 jobs:
@@ -88,7 +88,13 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
-    container: fedora:44
+    # The Fedoras the packages are built for: one build each, the same commit
+    # and the same version, told apart by the dist tag (.fc44, .fc45).
+    strategy:
+      fail-fast: true
+      matrix:
+        fedora: [44, 45]
+    container: fedora:${{ matrix.fedora }}
     timeout-minutes: 120
     env:
       # A release only from main: a push, or a run by hand with the dry run
@@ -96,6 +102,7 @@ jobs:
       RELEASE: >-
         ${{ github.ref == 'refs/heads/main' &&
         (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
+    # The same from every build of the matrix.
     outputs:
       release: ${{ steps.version.outputs.release }}
       version: ${{ steps.version.outputs.version }}
@@ -124,7 +131,7 @@ jobs:
           have=$(rustc --version | cut -d' ' -f2)
           echo "rustc $have; the tests ran with $RUST_VERSION"
           if [ "$have" != "$RUST_VERSION" ]; then
-            echo "::error::Fedora 44's rustc is $have, the tests ran with $RUST_VERSION: move RUST_VERSION in this workflow to $have (docs/releasing.md)"
+            echo "::error::Fedora ${{ matrix.fedora }}'s rustc is $have, the tests ran with $RUST_VERSION: see \"The Rust version is pinned\" in docs/releasing.md"
             exit 1
           fi
 
@@ -163,13 +170,12 @@ jobs:
           mkdir dist
           cp target/rpm/RPMS/*/*.rpm target/rpm/SRPMS/*.src.rpm dist/
           cd dist
-          sha256sum -- *.rpm >SHA256SUMS
-          cat SHA256SUMS
+          sha256sum -- *.rpm
 
       - name: Keep them as the run's artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: konedrive-${{ steps.version.outputs.version }}
+          name: konedrive-${{ steps.version.outputs.version }}-fc${{ matrix.fedora }}
           path: dist/
           if-no-files-found: error
 
@@ -187,11 +193,19 @@ jobs:
       VERSION: ${{ needs.build.outputs.version }}
       PREVIOUS_TAG: ${{ needs.build.outputs.previous_tag }}
     steps:
+      # Every Fedora's, into one directory: their names differ by the dist tag.
       - name: Fetch the RPMs
         uses: actions/download-artifact@v8
         with:
-          name: konedrive-${{ needs.build.outputs.version }}
+          pattern: konedrive-${{ needs.build.outputs.version }}-fc*
           path: dist
+          merge-multiple: true
+
+      - name: List their checksums
+        run: |
+          cd dist
+          sha256sum -- *.rpm >SHA256SUMS
+          cat SHA256SUMS
 
       # A rerun after the tag was pushed finds it on this commit and reuses
       # it; the build job chose the same version (the file's). The tag on

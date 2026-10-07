@@ -19,13 +19,15 @@ Every push to `main` runs the release workflow
    sentences (`cargo test -p konedrive-text`), one of which fails when a generated C++ file in
    git is not what the catalogue gives.
    A failing test stops the run; nothing is built or tagged.
-2. In a `fedora:44` container, it installs the spec's build dependencies, checks that the
-   container's Rust is the one the tests ran with (below), chooses the version (below) and builds
-   the RPMs with `scripts/build-rpm.sh --version X.Y.Z`, the same script a local build uses:
-   `konedrive` and `konedrive-kde` for Fedora 44 x86_64, and the source RPM.
-3. It keeps them, with a `SHA256SUMS` file, as the run's artifacts.
+2. For Fedora 44 and for Fedora 45, each in its own container (`fedora:44`, `fedora:45`), it
+   installs the spec's build dependencies, checks that the container's Rust is the one the tests
+   ran with (below), chooses the version (below) and builds the RPMs with
+   `scripts/build-rpm.sh --version X.Y.Z`, the same script a local build uses: `konedrive` and
+   `konedrive-kde` for x86_64, and the source RPM. The dist tag in the file names tells the two
+   apart (`.fc44`, `.fc45`). If either build fails, nothing is tagged or released.
+3. It keeps each Fedora's RPMs as the run's artifacts.
 4. It tags the commit it built `vX.Y.Z` and publishes a GitHub Release, "KOneDrive X.Y.Z", with the
-   three RPMs and `SHA256SUMS`. The release notes list the pull requests merged since the previous
+   six RPMs and one `SHA256SUMS` for them all. The release notes list the pull requests merged since the previous
    tag.
 
 It uses only the workflow's own token, with `contents: write` for the last step. Runs go one at a
@@ -42,7 +44,7 @@ already released) — merge the bump into `dev` and `dev` into `main` again.
 ## Where the tests run
 
 The tests run directly on GitHub's `ubuntu-latest` runner — a virtual machine with its own kernel —
-as the runner's own unprivileged user, not in the `fedora:44` container the RPMs are built in:
+as the runner's own unprivileged user, not in the Fedora containers the RPMs are built in:
 Docker's default seccomp profile refuses `fanotify_init`, so in a container every test of the
 notification watcher, and every flow that relies on it, fails. `sudo` sets the runner up (it
 installs `dbus-daemon` for the tests' private buses and lifts Ubuntu's AppArmor restriction on
@@ -51,15 +53,18 @@ themselves. Only the daemon's unit tests and the catalogue's tests run there: no
 (#21), not the tests that
 need root, and not the VM suite (#44).
 
-**The Rust version is pinned.** The tests use the Rust of Fedora 44's `rust` package, the compiler
-the RPMs are built with, installed with rustup from `RUST_VERSION` at the top of the workflow. The
-build job prints the container's `rustc --version` and stops if it differs from the pin, so the
-compiler that was tested and the one that built the packages cannot drift apart unnoticed.
+**The Rust version is pinned.** The tests use the Rust of Fedora's `rust` package, the compiler
+the RPMs are built with, installed with rustup from `RUST_VERSION` at the top of the workflow. Each
+build prints its container's `rustc --version` and stops if it differs from the pin, so the
+compiler that was tested and the one that built the packages cannot drift apart unnoticed. There is
+one pin: Fedora 44 and Fedora 45 carry the same `rust`.
 
-**When Fedora 44 updates `rust`**, every run stops at that check, with an error naming the new
-version, until the pin moves: set `RUST_VERSION` in `.github/workflows/release.yml` to the version
-the error names (what `dnf info rust` shows in a `fedora:44` container), in a pull request into
-`dev` like any other change. The tests then run with the new compiler before anything is built.
+**When Fedora updates `rust`**, every run stops at that check, with an error naming the Fedora and
+its new version, until the pin moves: set `RUST_VERSION` in `.github/workflows/release.yml` to that
+version (what `dnf info rust` shows in the container), in a pull request into `dev` like any other
+change. The tests then run with the new compiler before anything is built. If the two Fedoras come
+to carry different versions for more than a few days, the tests need a run per Fedora, each with
+its own pin; until that is built, the Fedora that differs is taken out of the build's list.
 
 ## The version
 
