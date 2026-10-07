@@ -669,10 +669,11 @@ descriptor, not a path.
 
 - **`RegisterRoot`** — the directory is owned by the peer (`EPERM` otherwise), on a filesystem the
   helper accepts (§14.2), and neither inside nor containing another registered root, whatever that
-  root's id. An entry that stands in the way and whose directory is gone — its stored path leads to
-  another directory, or to nothing and the entry is the peer's own — is dropped instead of refusing:
-  a folder removed without being unregistered leaves such an entry. One whose path leads to nothing
-  and that is another user's stays and refuses, since its disk may only be detached. A root id that another uid registered is refused `EPERM` (ids are chosen by the client,
+  root's id. An entry of the peer's own that stands in the way is dropped instead of refusing when
+  its directory is gone: its stored path leads nowhere or to another directory, or it is an entry
+  from before handles were kept (§12) on the offered directory's device and inode. A folder removed
+  without being unregistered leaves such an entry. Another user's entry always refuses: a peer who
+  can write above another's root could otherwise have its entry dropped. A root id that another uid registered is refused `EPERM` (ids are chosen by the client,
   so without this one user could replace another's registration). A path that is not valid UTF-8 is
   refused. The id must have the form the daemon mints (a version 4 UUID in its canonical text), or
   the request is refused `EINVAL`; a uid that already holds 32 roots is refused another (`EDQUOT`;
@@ -737,8 +738,10 @@ The walk resolves each component beneath a held `/` descriptor with
 `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`, and below the root additionally
 with `RESOLVE_NO_XDEV`. `RESOLVE_NO_XDEV` is deliberately not applied on the way *to* the root: the
 sync folder normally lives under `/home`, a separate mount or subvolume. The directory reached must
-also be the registered one: its device and inode, and its file handle, because ext4 and xfs give a
-deleted directory's inode number to the next one made. A directory that cannot be opened or marked never ends a walk:
+also have the registered device and inode. That is not proof that it is the registered directory,
+because ext4 and xfs give a deleted directory's inode number to the next one made; the file handle
+is, and a registration goes by it. A start covers a directory whose handle differs all the same,
+and says so: a root left unmarked reads zeros, and the directory is its owner's either way. A directory that cannot be opened or marked never ends a walk:
 everything reachable is marked, each failure is logged, and the root is flagged degraded in the
 helper's log, the only place that says so (issue #219). Measured against 57 766 directory renames
 racing the walk: the helper never followed a symlink out of the root and marked every directory that

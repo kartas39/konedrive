@@ -92,8 +92,8 @@ pub struct Accepted {
     /// made from.
     pub roots: Roots,
     /// Entries that stood in the new root's way and whose directories are
-    /// gone ([`Roots::with_gone`]): dropped with this registration. There is
-    /// nothing of theirs to unmark.
+    /// gone ([`Roots::with_gone`]): dropped with this registration. Nothing
+    /// is unmarked for them: their stored paths lead to no tree of theirs.
     pub dropped: Vec<Root>,
     /// The entry the same user held under the same id, which the new one
     /// replaces. Its directory is the caller's to unmark when it is another
@@ -168,11 +168,6 @@ impl Root {
         self.is_directory(other.dev, other.ino, other.handle.as_deref())
     }
 
-    /// How a directory at `path` would overlap this root's, going by the two
-    /// paths: inside it, containing it, or at the same path. This is the
-    /// question [`Roots::nesting_conflict`] asks of every *other* root; the
-    /// helper asks it of an id's own previous directory before it lets the
-    /// id move there (see `register_root`).
     /// How a directory would conflict with this root: the same directory, or
     /// one whose path lies inside this root's or contains it.
     fn conflict(&self, path: &str, dev: u64, ino: u64, handle: Option<&[u8]>) -> Option<Nesting> {
@@ -182,6 +177,11 @@ impl Root {
         self.overlap_with(path)
     }
 
+    /// How a directory at `path` would overlap this root's, going by the two
+    /// paths: inside it, containing it, or at the same path. This is the
+    /// question [`Roots::nesting_conflict`] asks of every *other* root; the
+    /// helper asks it of an id's own previous directory before it lets the
+    /// id move there (see `register_root`).
     pub fn overlap_with(&self, path: &str) -> Option<Nesting> {
         if is_within(path, &self.path) {
             return Some(Nesting::Inside(self.root_id.clone()));

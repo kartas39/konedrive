@@ -92,11 +92,11 @@ fn open_beneath(path: &str) -> io::Result<File> {
 /// `(st_dev, st_ino)` comparison then requires that what was reached is the
 /// very directory that was registered.
 ///
-/// The second check is deliberately not load-bearing on its own. Measured on
-/// ext4, deleting a directory and creating another in the same parent reused
-/// the same inode number on the first attempt (Btrfs and XFS did not), so
-/// `(dev, ino)` equality is not proof of identity on every filesystem — which
-/// is exactly why resolution is no longer allowed to wander.
+/// The second check is deliberately not load-bearing on its own. ext4 and xfs
+/// give a removed directory's inode number to the next one made (Btrfs does
+/// not), so `(dev, ino)` equality is not proof of identity on every
+/// filesystem — which is exactly why resolution is no longer allowed to
+/// wander, and why [`open_root`] also asks the directory's file handle.
 fn reopen_and_verify(path: &str, dev: u64, ino: u64) -> io::Result<File> {
     let dir = open_beneath(path)?;
     let meta = dir.metadata()?;
@@ -114,7 +114,37 @@ fn reopen_and_verify(path: &str, dev: u64, ino: u64) -> io::Result<File> {
     Ok(dir)
 }
 
+/// A registered root's directory, found by its stored path and proved to be
+/// the registered one: device and inode, owner, and file handle.
+///
+/// The inode number alone is not the directory — ext4 and xfs give a removed
+/// directory's number to the next one made — so a directory with another
+/// handle than the entry's is another directory. This is what a registration
+/// goes by when it asks whether an entry's directory is still there.
 pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
+    let dir = open_root_by_number(root)?;
+    if is_another_directory(root, &dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is another directory now: it has the registered one's inode number and not \
+                 its file handle",
+                roots::shown_path(&root.path)
+            ),
+        ));
+    }
+    Ok(dir)
+}
+
+/// [`open_root`] without the file handle: the directory at the stored path,
+/// with the registered device, inode and owner. For covering a root at a
+/// start and for unmarking one, where taking another directory for the
+/// root's costs little — it is its owner's, and a mark on it, or none, does
+/// no harm — and leaving the root's own unmarked means zeros. A handle can
+/// differ for the same directory: xfs writes it another way under another
+/// mount option, and a Btrfs subvolume put back from a snapshot is another
+/// subvolume with the same inode numbers.
+pub(crate) fn open_root_by_number(root: &roots::Root) -> io::Result<File> {
     let dir = reopen_and_verify(&root.path, root.dev, root.ino)?;
     if dir.metadata()?.uid() != root.uid {
         return Err(io::Error::new(
@@ -122,22 +152,16 @@ pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
             format!("{} is no longer owned by uid {}", roots::shown_path(&root.path), root.uid),
         ));
     }
-    // The inode number alone is not the directory: ext4 and xfs hand a
-    // removed directory's number to the next one made. The handle the entry
-    // was registered with tells the two apart.
-    if let Some(registered) = &root.handle {
-        if handle_of(&dir).is_some_and(|now| now != *registered) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "{} is another directory now: it has the registered one's inode number and \
-                     not its file handle",
-                    roots::shown_path(&root.path)
-                ),
-            ));
-        }
-    }
     Ok(dir)
+}
+
+/// Whether `dir` has another file handle than the one `root` was registered
+/// with. False where either has none.
+pub(crate) fn is_another_directory(root: &roots::Root, dir: &File) -> bool {
+    match (&root.handle, handle_of(dir)) {
+        (Some(registered), Some(now)) => now != *registered,
+        _ => false,
+    }
 }
 
 /// The directory's file handle, as an entry keeps it (`roots::Root::handle`).
@@ -147,23 +171,40 @@ pub(crate) fn handle_of(dir: &File) -> Option<Vec<u8>> {
     FileHandle::of(dir).ok().filter(FileHandle::is_well_formed).map(|handle| handle.encode())
 }
 
-/// Whether the directory of an entry that stands in a registration's way is
-/// gone, so that the entry can be dropped instead of refusing the
-/// registration (`roots::Roots::with_gone`).
+/// Whether the directory of an entry that stands in `new`'s way is gone, so
+/// that the entry can be dropped instead of refusing the registration
+/// (`roots::Roots::with_gone`).
 ///
-/// Gone means the stored path no longer leads to it. When the path leads to
-/// something else — another directory, or the same one under another owner —
-/// the entry is nobody's any more: no start of the helper will cover it. When
-/// the path leads nowhere, the directory may be on a disk that is not
-/// attached now, so only the user asking may have their own entry dropped for
-/// that; another user's stays and refuses.
-fn is_gone(old: &roots::Root, asking: u32) -> bool {
+/// Only the asking user's own entries: whoever can write to a directory
+/// above another user's root could otherwise put a directory of their own at
+/// its path for a moment and have that user's entry dropped — and with it
+/// the root's cover at the helper's next start. Another user's entry refuses
+/// as it always did.
+///
+/// Of the user's own, an entry is gone when
+/// - its stored path leads nowhere, or to something that is not its
+///   directory ([`open_root`]): a folder removed, or replaced at its path; or
+/// - it carries no handle and the offered directory has its device and
+///   inode. It is this very directory, or one that got its number: either
+///   way the registration under way is the one that covers it. The daemon
+///   announces a folder under the id the folder carries, so the same
+///   directory under another id is not a daemon announcing it again.
+///
+/// A path that cannot be looked at for another reason — too many open files,
+/// a link put in its way — leaves the entry, and the registration refused.
+fn is_gone(old: &roots::Root, new: &roots::Root) -> bool {
+    if old.uid != new.uid {
+        return false;
+    }
+    if old.handle.is_none() && (old.dev, old.ino) == (new.dev, new.ino) {
+        return true;
+    }
     match open_root(old) {
         Ok(_) => false,
-        Err(e) if e.kind() == io::ErrorKind::InvalidData => true,
-        Err(e) => {
-            old.uid == asking && matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
-        }
+        Err(e) => matches!(
+            e.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ),
     }
 }
 
@@ -237,7 +278,7 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> Resul
     // Outside the roots lock: the walk opens and marks its way through a whole
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
-    uncover_root(shared, &root, open_root(&root), "unregistered");
+    uncover_root(shared, &root, open_root_by_number(&root), "unregistered");
     Ok(())
 }
 
@@ -418,7 +459,7 @@ pub(crate) fn register_root(
     // above, and dropped by the decision below if they are still what was
     // looked at.
     let gone: Vec<roots::Root> =
-        shared.roots.conflicting(&root).into_iter().filter(|old| is_gone(old, uid)).collect();
+        shared.roots.conflicting(&root).into_iter().filter(|old| is_gone(old, &root)).collect();
 
     let displaced = {
         let change = shared.roots.change();
@@ -488,7 +529,8 @@ pub(crate) fn register_root(
         }
         for old in &dropped {
             tracing::info!(
-                "root {} ({}) is dropped: its directory is gone, and it stood in the way of root {}",
+                "root {} ({}) is dropped: its directory is not at that path any more, and it stood \
+                 in the way of root {}",
                 roots::shown_id(&old.root_id),
                 roots::shown_path(&old.path),
                 roots::shown_id(&root.root_id)

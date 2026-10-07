@@ -23,7 +23,7 @@ use nix::sys::socket::{
 
 use connection::serve;
 use events::event_loop;
-use registration::{check_filesystem_type, handle_of, open_root, record_walk};
+use registration::{check_filesystem_type, handle_of, is_another_directory, open_root_by_number, record_walk};
 use shared::{Shared, EVENT_QUEUE_DEPTH, EVENT_WORKERS, FLUSH_EVERY, ROOTS_FILE};
 
 fn main() -> anyhow::Result<ExitCode> {
@@ -131,7 +131,7 @@ fn adopt_handles(shared: &Shared, covered: &roots::Roots) {
     let found: Vec<(roots::Root, Vec<u8>)> = covered
         .iter()
         .filter(|root| root.handle.is_none())
-        .filter_map(|root| Some((root.clone(), handle_of(&open_root(root).ok()?)?)))
+        .filter_map(|root| Some((root.clone(), handle_of(&open_root_by_number(root).ok()?)?)))
         .collect();
     if found.is_empty() {
         return;
@@ -161,13 +161,24 @@ fn overlap_with(covered: &roots::Roots, root: &roots::Root) -> Option<String> {
 /// Re-opens, re-checks and walks one registered root. Returns whether it is
 /// now covered, so the caller knows whether to compare later roots against it.
 fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
-    let dir = match open_root(root) {
+    let dir = match open_root_by_number(root) {
         Ok(dir) => dir,
         Err(e) => {
             tracing::error!("root {} is not covered: {e}", roots::shown_id(&root.root_id));
             return false;
         }
     };
+    // Covered all the same: a root left unmarked reads zeros, and a
+    // directory that only got its inode number is its owner's own, with
+    // nothing in it a mark could harm (`open_root_by_number`).
+    if is_another_directory(root, &dir) {
+        tracing::warn!(
+            "root {} ({}) has the registered inode number and another file handle; covered, and \
+             its registration is as it was until its daemon registers it again",
+            roots::shown_id(&root.root_id),
+            roots::shown_path(&root.path)
+        );
+    }
     // The filesystem check is re-run too — a root can have been
     // moved onto a filesystem that cannot host placeholders since it was
     // registered.
