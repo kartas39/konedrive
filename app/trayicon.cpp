@@ -31,7 +31,7 @@ TrayIcon::TrayIcon(AppStatus *status, TraySettings *settings, QObject *parent)
     , m_settings(settings)
 {
     // Before any icon's own connections to the model: an account that went
-    // loses its icon before that icon would look at it again.
+    // loses its icon before that icon hears of the model's change.
     AccountsModel *accounts = m_status->accounts();
     connect(accounts, &QAbstractItemModel::rowsInserted, this, &TrayIcon::reconcile);
     connect(accounts, &QAbstractItemModel::rowsRemoved, this, &TrayIcon::reconcile);

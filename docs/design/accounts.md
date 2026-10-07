@@ -16,7 +16,7 @@ How one folder follows its drive is in [sync.md](sync.md); how a file is filled 
 - Every account is read-only until the user switches it to read-write, which any signed-in account
   can be (§10).
 - The window shows one account at a time, chosen in a switcher at the top of its sidebar; the tray
-  icon sums them all up ([desktop.md](desktop.md) §4, §5).
+  has an icon for each, or one that sums them all up ([desktop.md](desktop.md) §4, §5).
 - A Microsoft account can be connected once. An account signed in again as a different Microsoft
   account than its own is refused: that one is added as a new account.
 - Two accounts cannot share a folder, and one account's folder cannot be inside another's.
@@ -36,8 +36,8 @@ How one folder follows its drive is in [sync.md](sync.md); how a file is filled 
 | Origin | `migrated` for the account carried over from a single-account installation (§8), `added` for every other. A missing or unknown value reads as `migrated` |
 | Folder | At most one registered folder, with its source (`onedrive` or `local`) and its registration mode ([sync.md](sync.md) §3, [hydration.md](hydration.md) §14) |
 
-Accounts keep the order in which they were added: the order of the window's switcher, of the tray's
-tooltip and of every list of accounts. They cannot be reordered.
+Accounts keep the order in which they were added: the order of the window's switcher, of the one
+tray icon's tooltip and of every list of accounts. They cannot be reordered.
 
 ## 3. One daemon, several accounts
 

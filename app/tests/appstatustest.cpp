@@ -2,6 +2,7 @@
 #include "accountsmodel.h"
 #include "accountstatus.h"
 #include "appstatus.h"
+#include "currentaccount.h"
 #include "daemoncontroller.h"
 #include "fakedaemon.h"
 #include "synccontroller.h"
@@ -815,6 +816,39 @@ private Q_SLOTS:
         QTRY_VERIFY(tray.one());
         QVERIFY(tray.perAccount().isEmpty());
         QTRY_COMPARE(tray.one()->item()->toolTipSubTitle(), QStringLiteral("Up to date · checked 20 s ago"));
+    }
+
+    /// A second account splits the one icon in two. A click on the icon of the
+    /// account the window in front does not show turns the window to it; a
+    /// click on the icon of the one it shows hides the window.
+    void aSecondAccountSplitsTheIconAndAClickTurnsTheWindow()
+    {
+        startSynced();
+        TraySettings settings;
+        settings.setPerAccount(true);
+        TrayIcon tray(m_app.get(), &settings);
+        QVERIFY(tray.one());
+        FakeAccountObject *family = addFamily();
+        QTRY_COMPARE(tray.perAccount().size(), 2);
+        QVERIFY(!tray.one());
+
+        CurrentAccount current(m_accounts.get());
+        connect(&tray, &TrayIcon::accountToShow, &current, &CurrentAccount::select);
+        tray.setCurrentAccount(&current);
+        QWindow window;
+        tray.setWindow(&window);
+        current.select(m_accounts->at(0)->path());
+
+        tray.perAccount().at(0)->item()->activate();
+        QTRY_VERIFY(window.isVisible() && window.isActive());
+        QCOMPARE(current.path(), m_accounts->at(0)->path());
+
+        tray.perAccount().at(1)->item()->activate();
+        QCOMPARE(current.path(), family->path);
+        QVERIFY(window.isVisible());
+
+        tray.perAccount().at(1)->item()->activate();
+        QTRY_VERIFY(!window.isVisible());
     }
 };
 
