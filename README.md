@@ -256,7 +256,8 @@ removes it all again, apart from the helper.
   Places panel and in file dialogs ("Show in Places" in Settings, on by default).
   The foot of the sidebar names the build, `Version 0.1.1-dev.57 · commit 5254595` (selectable,
   for a bug report), and adds a line when the running service is another build — installed but
-  not restarted; `konedrivectl --version` prints the same for itself and the daemon.
+  not restarted; `konedrivectl --version` prints the same for itself and the daemon. After a newer
+  package is installed, the window restarts by itself once the service is back.
 
 - **The helper.** A small privileged service that makes a placeholder download the moment a
   program opens it, instead of that program reading zeros. The `konedrive` package installs and

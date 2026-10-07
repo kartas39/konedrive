@@ -98,6 +98,7 @@ add_library(konedrive_core STATIC
     appstatus.cpp
     notifier.cpp
     autostart.cpp
+    selfrestart.cpp
     trayicon.cpp
     trayitem.cpp
     traysettings.cpp
@@ -216,4 +217,9 @@ if(BUILD_TESTING)
     konedrive_test(singleinstancetest)
     add_dependencies(singleinstancetest konedrive)
     target_compile_definitions(singleinstancetest PRIVATE KONEDRIVE_PROGRAM="$<TARGET_FILE:konedrive>")
+
+    # Starts a copy of the real program, replaces the copy and brings the fake daemon back.
+    konedrive_test(selfrestarttest)
+    add_dependencies(selfrestarttest konedrive)
+    target_compile_definitions(selfrestarttest PRIVATE KONEDRIVE_PROGRAM="$<TARGET_FILE:konedrive>")
 endif()

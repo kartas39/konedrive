@@ -521,6 +521,15 @@ says "Service: 0.1.1-dev.55 · commit 1a2b3c4 — restart it to use this version
 version — …" for a daemon without those properties). `konedrivectl --version` says the same from a
 terminal.
 
+**After an update.** A newer package replaces the window's program file and restarts the daemon,
+but not the window, which would go on as the old program with libraries in memory that no longer
+match what is installed. So when the daemon comes back as another build and the window's own program
+file is no longer the one it started from, the window ends as "Quit" would and starts the installed
+program in its place, in the same process (`SelfRestart`): hidden in the tray if it was hidden,
+shown on the same account if it was shown. A window whose file was not replaced — one built by hand
+and run against an installed daemon — stays, with the line above. An update of Qt or KDE Frameworks
+alone restarts nothing.
+
 **No account yet.** Of the account's pages only Status is available, and it shows "Connect your
 OneDrive" with "Sign in…".
 

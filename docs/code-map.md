@@ -785,6 +785,7 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `placescontroller.h`, `placescontroller.cpp` — one entry per folder in KDE's Places.
 - `placessettings.h`, `placessettings.cpp` — the setting for it.
 - `autostart.h`, `autostart.cpp` — start at login.
+- `selfrestart.h`, `selfrestart.cpp` — the window restarts as the installed program after an update.
 - `org.konedrive.KOneDrive.desktop.in` — the desktop entry.
 
 ### `app/qml/`
@@ -815,6 +816,7 @@ Design: `desktop.md`. Each `x.h` and `x.cpp` is one class.
 - `placescontrollertest.cpp` — `PlacesController`.
 - `autostarttest.cpp` — `Autostart`.
 - `singleinstancetest.cpp` — a second launch shows the first one's window.
+- `selfrestarttest.cpp` — the window restarts once its program file is replaced and the daemon is back.
 - `qmlcachetest.cpp` — the QML runs from the binary, never from Qt's disk cache.
 - `CacheProbe.qml` — a file of that test.
 

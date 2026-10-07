@@ -14,6 +14,7 @@
 #include "placescontroller.h"
 #include "placessettings.h"
 #include "qmlregistration.h"
+#include "selfrestart.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 #include "trayicon.h"
@@ -26,6 +27,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QFile>
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -33,9 +35,23 @@
 #include <QUrl>
 #include <QtQml>
 
-int main(int argc, char *argv[])
+#include <unistd.h>
+
+namespace
+{
+/// What main() does once everything of this run is gone: start the installed
+/// program in this one's place (SelfRestart), hidden if the window was.
+struct Restart {
+    bool wanted = false;
+    bool hidden = false;
+    QByteArray program;
+};
+
+int run(int argc, char *argv[], Restart *restart)
 {
     QApplication app(argc, argv);
+    // Before anything is installed over it: Qt reads the path once, from /proc.
+    const QString program = QCoreApplication::applicationFilePath();
     // The window closes to the tray; only the tray's "Quit" ends the app.
     QApplication::setQuitOnLastWindowClosed(false);
     KLocalizedString::setApplicationDomain("konedrive");
@@ -134,9 +150,38 @@ int main(int argc, char *argv[])
         tray.showWindow();
     });
 
+    // A newer package was installed and its daemon is back: this run ends as
+    // "Quit" would, and main() starts the installed program in its place.
+    SelfRestart selfRestart(&daemon, program);
+    QObject::connect(&selfRestart, &SelfRestart::wanted, &app, [&] {
+        qCInfo(KONEDRIVE_APP) << "restarting as the installed program";
+        restart->wanted = true;
+        restart->hidden = !window->isVisible();
+        restart->program = QFile::encodeName(program);
+        QCoreApplication::quit();
+    });
+
     if (!parser.isSet(background)) {
         tray.showWindow();
     }
     qCDebug(KONEDRIVE_APP) << "ready, window" << (window && window->isVisible() ? "shown" : "hidden");
     return app.exec();
+}
+}
+
+int main(int argc, char *argv[])
+{
+    Restart restart;
+    const int code = run(argc, argv, &restart);
+    if (!restart.wanted) {
+        return code;
+    }
+    // In this process, not a new one: the session started this one as a unit
+    // of its own, and a child would go with it. The bus connection is gone
+    // with the application, and with it the single-instance name.
+    QByteArray backgroundOption = QByteArrayLiteral("--background");
+    char *arguments[] = {restart.program.data(), restart.hidden ? backgroundOption.data() : nullptr, nullptr};
+    ::execv(restart.program.constData(), arguments);
+    qCWarning(KONEDRIVE_APP) << "could not start" << restart.program << ":" << qt_error_string(errno);
+    return 1;
 }
