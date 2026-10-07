@@ -517,20 +517,101 @@ pub(crate) fn helper_stop_denies(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     // Long enough that every opener is still suspended when the helper is
     // told to stop.
     ctx.set_source_delay(Duration::from_secs(30));
-    let log = ctx.helper.lock().unwrap().log.clone();
-    let said_before = count_in_log(&log, STOP_LINE);
-
-    let stopper = {
-        let pid = ctx.helper_pid();
-        let source = Arc::clone(&ctx.source);
-        let before = ctx.fetches();
-        std::thread::spawn(move || {
+    let source = Arc::clone(&ctx.source);
+    let before = ctx.fetches();
+    sigterm_mid_burst(
+        ctx,
+        checks,
+        "helper stop",
+        "suspended on a delayed source",
+        &dir,
+        count,
+        0x53,
+        move || {
             // As the death scenario does: once openers are suspended.
             let deadline = Instant::now() + Duration::from_secs(30);
             while Instant::now() < deadline && source.fetches() <= before {
                 std::thread::sleep(Duration::from_millis(20));
             }
             std::thread::sleep(Duration::from_millis(500));
+        },
+    )?;
+
+    let after = ctx.place("after-stop.bin", "ITEM_AFTERSTOP", b"BACK")?;
+    if ctx.read(&after)? != b"BACK" {
+        return Err("interception did not come back after the helper was restarted".into());
+    }
+    Ok(())
+}
+
+/// The other place a stop finds opens: **no daemon is connected**, and each
+/// open is in a worker's hands, parked until one connects (`DAEMON_WAIT`,
+/// 30 s). Nothing is in the table of hydrations for the stop to take: it
+/// has to wake the workers, and wait until each has written its answer
+/// before the group closes. Eight opens, which is what one uid may park.
+pub(crate) fn helper_stop_wakes_parked(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    let dir = ctx.root.join("stop-parked");
+    let _ = std::fs::remove_dir_all(&dir);
+    ctx.ensure_dir(&dir)?;
+    let count = 8usize;
+    let payload = vec![0x57u8; 4096];
+    for i in 0..count {
+        ctx.place(&format!("stop-parked/burst-{i}"), &format!("ITEM_STOP_PARKED_{i}"), &payload)?;
+    }
+    ctx.kill_daemon();
+    let report = sigterm_mid_burst(
+        ctx,
+        checks,
+        "helper stop, no daemon",
+        "parked with no daemon connected",
+        &dir,
+        count,
+        0x57,
+        // No fetch says the openers are parked: there is no daemon to ask.
+        || std::thread::sleep(Duration::from_millis(1500)),
+    )?;
+    // An opener that waited out `DAEMON_WAIT` got its `EIO` from the wait,
+    // not from the stop.
+    let longest = report.waits_ms.iter().copied().max().unwrap_or(0);
+    if longest >= 10_000 {
+        return Err(format!("an opener waited {longest} ms: the stop did not wake it"));
+    }
+    let shortest = report.waits_ms.iter().copied().min().unwrap_or(0);
+    if shortest < 500 {
+        return Err(format!(
+            "an opener was answered after {shortest} ms, before the signal: it was not parked"
+        ));
+    }
+
+    let after = ctx.place("after-stop-parked.bin", "ITEM_AFTERSTOPPARKED", b"BACK")?;
+    if ctx.read(&after)? != b"BACK" {
+        return Err("interception did not come back after the helper was restarted".into());
+    }
+    Ok(())
+}
+
+/// Runs a burst of `count` opens in `dir`, sends the helper `SIGTERM` once
+/// `held` returns, and starts a helper again. Fails unless every opener got
+/// `EIO` and none read anything, and the helper exited with status 0 within
+/// its bound and said so in its log. `how` says how the opens were held.
+#[allow(clippy::too_many_arguments)]
+fn sigterm_mid_burst(
+    ctx: &Ctx,
+    checks: &mut Checks,
+    name: &str,
+    how: &str,
+    dir: &Path,
+    count: usize,
+    expect: u8,
+    held: impl FnOnce() + Send + 'static,
+) -> Result<BurstReport, String> {
+    let log = ctx.helper.lock().unwrap().log.clone();
+    let said_before = count_in_log(&log, STOP_LINE);
+
+    let stopper = {
+        let pid = ctx.helper_pid();
+        std::thread::spawn(move || {
+            held();
             let signalled = Instant::now();
             // SAFETY: a plain kill on a pid this process owns.
             unsafe { libc::kill(pid as i32, libc::SIGTERM) };
@@ -548,7 +629,7 @@ pub(crate) fn helper_stop_denies(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
             None
         })
     };
-    let report = run_burst(ctx, &dir, count, 0x53);
+    let report = run_burst(ctx, dir, count, expect);
     let took = stopper.join().ok().flatten();
     if took.is_none() {
         // Still running: it must not be waited for below.
@@ -560,10 +641,10 @@ pub(crate) fn helper_stop_denies(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
 
     checks.note(
         ctx.fs,
-        "helper stop",
+        name,
         &format!(
-            "{count} concurrent opens suspended on a delayed source, then SIGTERM on the helper: \
-             {report}; the helper ended {} after the signal with {status}, and said: {}",
+            "{count} concurrent opens {how}, then SIGTERM on the helper: {report}; the helper \
+             ended {} after the signal with {status}, and said: {}",
             took.map_or("more than 10 s".to_owned(), |took| format!("{took:?}")),
             said.as_deref().unwrap_or("nothing about its stop"),
         ),
@@ -579,7 +660,7 @@ pub(crate) fn helper_stop_denies(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     }
     let eio = report.errors.get(&libc::EIO).copied().unwrap_or(0);
     if report.ok != 0 || eio != count {
-        return Err(format!("every suspended opener should have got EIO: {report}"));
+        return Err(format!("every held opener should have got EIO: {report}"));
     }
     let Some(took) = took else {
         return Err("the helper was still running 10 s after SIGTERM".into());
@@ -593,12 +674,7 @@ pub(crate) fn helper_stop_denies(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     if said.is_none() {
         return Err("the helper's log has no line about its stop".into());
     }
-
-    let after = ctx.place("after-stop.bin", "ITEM_AFTERSTOP", b"BACK")?;
-    if ctx.read(&after)? != b"BACK" {
-        return Err("interception did not come back after the helper was restarted".into());
-    }
-    Ok(())
+    Ok(report)
 }
 
 /// What the helper's line about its stop begins with (`events/stop.rs`).

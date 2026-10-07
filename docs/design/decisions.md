@@ -226,8 +226,9 @@ security](#account-and-security), [the desktop](#the-desktop), [testing](#testin
   `EAGAIN` to most of 3000 concurrent opens. Queuing means every suspended open is exposed if the
   helper dies, because the kernel then allows them all onto unfilled files; the answer to that is a
   helper that does not die, not a smaller queue, which would only bring the refusals back.
-- **Trade-off.** A helper crash, update or stop hands zeros to every open in flight (limitations
-  log Z1). Measured with 3000 concurrent opens: all filled, none refused.
+- **Trade-off.** A helper that crashes or is killed hands zeros to every open in flight; an ordinary
+  stop, as at an update, fails each with an error instead, and a file opened while no helper runs
+  reads zeros (limitations log Z1). Measured with 3000 concurrent opens: all filled, none refused.
 
 ### Free-up runs on one descriptor, under a write lease
 

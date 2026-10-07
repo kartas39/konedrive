@@ -200,11 +200,12 @@ fi
 
 %postun
 # Upgrade only: the helper, and the daemon of every logged-in user, restart
-# once the transaction ends, so that the new binaries run together. The cost is
-# limitations log Z1: stopping the helper closes its fanotify group, and the
-# kernel lets every open still waiting for a download through, so a program
-# waiting for a file at that moment reads the placeholder's zeros, and the
-# download it waited for is cut off.
+# once the transaction ends, so that the new binaries run together. The cost:
+# at this ordinary stop the helper fails every open still waiting for a
+# download with an error, and the download it waited for is cut off; a file
+# opened in the moment no helper runs reads the placeholder's zeros
+# (limitations log Z1). Only a helper that crashes or is killed lets a waiting
+# open through to zeros.
 %systemd_postun_with_restart konedrive-helper.service
 %systemd_user_postun_with_restart konedrived.service
 

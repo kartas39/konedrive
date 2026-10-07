@@ -65,12 +65,14 @@ confirm() {
     esac
 }
 
-# The Z1 warning: stopping the helper hands every open it holds back unfilled.
+# The Z1 warning: at an ordinary stop the helper fails every open it holds with
+# an error, and what is opened while no helper runs reads zeros.
 warn_if_running() {
     if "$systemctl" is-active --quiet konedrive-helper.service 2>/dev/null; then
         echo
         echo "The helper is running and will be $1. A program waiting for a file to download"
-        echo "at that moment gets it as empty (docs/limitations/, Z1): close"
+        echo "at that moment gets an error, and a file that is not downloaded reads as zeros"
+        echo "if it is opened in the moment no helper runs (docs/limitations/, Z1): close"
         echo "programs that are opening files in the sync folder first."
     fi
 }

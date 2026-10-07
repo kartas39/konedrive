@@ -778,20 +778,33 @@ requirement is that the helper does not exit with an open unanswered. What defen
 upgrade — are blocked in every thread and read by the event loop from a descriptor. On either, the
 loop hands nothing more to a worker and, before it lets go of the group:
 
-- denies every open the helper holds `EIO`: the ones waiting for a daemon's answer are taken out of
-  the table, which enrolls nobody from then on; the ones queued for a worker are denied by the
-  workers; a worker waiting for a daemon that is not connected stops waiting and denies its own;
+- answers every open the helper holds, and those the stop answers itself are denied `EIO`: the ones
+  waiting for a daemon's answer are taken out of the table, which enrolls nobody from then on; the
+  ones queued for a worker are denied by the workers; a worker waiting for a daemon that is not
+  connected stops waiting and denies its own. An open a worker had begun deciding, or one a
+  connection thread took on its daemon's answer, is answered as usual, and may be allowed because
+  the content is there;
 - reads what is still in the kernel's queue and denies each of those `EIO`, until a read finds the
-  queue empty;
+  queue empty. `EAGAIN` from a read is not taken for that while the group still has something to
+  read: it is also what the read of a leased file's open returns (§4.3). The helper's own opens, for
+  a daemon's `OpenByHandle`, are allowed as the loop allows them;
 - exits with status 0, once no open read from the group is without its answer. Every such open is
   counted from the read to the written answer, in whichever thread holds it, and the stop ends on
   that count, not on having asked.
 
-It waits for nothing outside the helper — not for a daemon, not for a download. If the count is not
-zero after 5 seconds, the helper logs how many opens are left and exits with status 1; the kernel
-lets those through. One line in the log says how many opens were answered at the stop. Measured:
+It waits for nothing outside the helper — not for a daemon, not for a download. The helper exits
+with status 1 instead, after at most 5 seconds, when the count is not zero by then, when no read
+found the kernel's queue empty by then (a program that reopens in a loop can keep it so), when a
+read of the group failed for good, or when the stop panicked: the panic is contained and the stop
+run once more. The kernel lets through what has no answer. One line in the log says how many opens
+were answered at the stop and, at status 1, which of these it was.
+
+The two signals are blocked from the helper's first instruction, so a stop that comes during the
+walk at startup (§12) is seen only when the event loop begins; a walk longer than systemd allows a
+stop ends in a kill, with the outcome of a kill. Measured:
 200 opens suspended on a slow source, `SIGTERM`, all 200 denied `EIO` and none reading zeros, the
-helper gone with status 0 within 20 ms (*kernel* §11.6). The daemon is told nothing: it sees its link drop, as at any other
+helper gone with status 0 within 20 ms; 8 opens parked with no daemon connected, all 8 denied `EIO`
+at the signal, the helper gone with status 0 within 5 ms (*kernel* §11.6). The daemon is told nothing: it sees its link drop, as at any other
 end of the helper (§10.2).
 
 The VM suite proves the panics of a worker, a connection, the event loop and the accept thread, the
