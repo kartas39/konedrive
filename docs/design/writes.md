@@ -880,8 +880,9 @@ The hold is not the user's pause: it is not written anywhere, never changes `Pau
 neither is on. `SyncAnyway()` (`sync anyway`, the window's **Sync anyway**) lifts the hold until
 what a source says changes or one of the two settings does. It is per account: lifting every
 account's hold from one account's Status page would sync accounts the user did not look at. The
-whole app's action is the tray's **Sync Anyway** and `konedrivectl sync anyway --all`, which call it
-on every account that holds back by itself and is not paused by the user.
+whole app's action is `konedrivectl sync anyway --all` and the **Sync Anyway** of the tray icon that
+stands for every account, which call it on every account that holds back by itself and is not paused
+by the user. An account's own tray icon lifts that account's hold only.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement), its notification
 socket, its pinned downloads (the pool gives a slot only for opens) and its thumbnails; fills on

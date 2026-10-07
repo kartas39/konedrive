@@ -587,7 +587,8 @@ is the way back, by hand.
 - **The window** shows one account at a time. An account switcher heads the sidebar; its account
   pages show the account chosen there, and Settings is the whole app's ([desktop.md](desktop.md)
   §4).
-- **The tray icon** shows the worst state across the accounts, and its tooltip has a line per
+- **The tray** has an icon per account, each with its account's state and menu; with the setting
+  for that off, one icon shows the worst state across the accounts and its tooltip has a line per
   account ([desktop.md](desktop.md) §5).
 - **Notifications and download progress** name the account once there are several
   ([desktop.md](desktop.md) §6, §7).

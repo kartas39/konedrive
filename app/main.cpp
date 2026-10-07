@@ -71,6 +71,7 @@ int main(int argc, char *argv[])
     autostart.applyFirstRunDefault();
     DownloadProgressSettings downloadProgressSettings;
     PlacesSettings placesSettings;
+    TraySettings traySettings;
     // Before the accounts: each account's download progress unregisters its
     // jobs from it when the account goes, including at exit.
     KUiServerDownloadJobTracker downloadJobTracker;
@@ -83,7 +84,7 @@ int main(int argc, char *argv[])
     AppStatus appStatus(&accounts);
     PlacesController placesController(&accounts, &placesSettings);
 
-    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings);
+    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings, &traySettings);
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);
@@ -93,10 +94,12 @@ int main(int argc, char *argv[])
     }
     auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
 
-    TrayIcon tray(&appStatus);
+    TrayIcon tray(&appStatus, &traySettings);
     tray.setWindow(window);
+    tray.setCurrentAccount(&current);
     QObject::connect(&tray, &TrayIcon::quitRequested, &app, &QCoreApplication::quit);
-    // A click with exactly one account needing attention shows that one.
+    // A click on an account's own icon shows that account; on the icon of them
+    // all, the one account needing attention when exactly one does.
     QObject::connect(&tray, &TrayIcon::accountToShow, &current, &CurrentAccount::select);
 
     // A click on a notification opens the window on its account.

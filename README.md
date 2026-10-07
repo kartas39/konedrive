@@ -240,13 +240,16 @@ removes it all again, apart from the helper.
   why) and **Account** (the account's name with **Rename…**; sign in or out, and the quota; the
   folder, with **Choose Folder…** and **Forget Folder**; and **Remove Account…**). **Settings**
   is the whole app's: "Start at login", "Show download progress" (a download that takes more
-  than 2 s shows in Plasma's notifications), and "Show in Places". While the helper is not
+  than 2 s shows in Plasma's notifications), "Show in Places", and "Show a tray icon for each
+  account". While the helper is not
   connected, a card on the Status page says so, with the same instruction as the `Helper:` line
   of `konedrivectl sync status` (below). A tray icon
-  shows the worst state across your accounts — needs attention, signed out, paused, syncing,
-  synced — with a line per account in its tooltip (an account that pauses by itself on a metered
-  connection or on battery shows as paused, and the tray's **Sync Anyway** lifts that for every
-  account; `konedrivectl sync anyway --all` does the same), and keeps KOneDrive running in the background so
+  shows an account's state — needs attention, signed out, paused, syncing, synced. With several
+  accounts each has its own icon, named in its tooltip, with a menu for that account; with the
+  setting off, one icon shows the worst state across your accounts, with a line per account in its
+  tooltip (an account that pauses by itself on a metered
+  connection or on battery shows as paused, and the one icon's **Sync Anyway** lifts that for every
+  account, as `konedrivectl sync anyway --all` does; an account's own icon lifts its own), and keeps KOneDrive running in the background so
   notifications still reach you with the window closed; with more than one account,
   notifications and download progress name the account. "Start at login" is on by default after
   the first run. Each account's folder also gets an entry named `OneDrive — <name>` in Dolphin's

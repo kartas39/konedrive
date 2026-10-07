@@ -99,10 +99,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -174,10 +175,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -243,10 +245,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -289,10 +292,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -342,10 +346,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -410,10 +415,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -462,10 +468,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -542,10 +549,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
@@ -638,10 +646,11 @@ private Q_SLOTS:
         Autostart autostart;
         DownloadProgressSettings progress;
         PlacesSettings places;
+        TraySettings trayIcons;
         DaemonController daemon;
         AccountsModel accounts(&daemon);
         CurrentAccount current(&accounts);
-        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places, &trayIcons);
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);

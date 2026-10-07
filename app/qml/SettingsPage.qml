@@ -69,6 +69,15 @@ FormCard.FormCardPage {
             checked: Places.enabled
             onToggled: Places.enabled = checked
         }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormSwitchDelegate {
+            id: trayIconPerAccount
+            objectName: "trayIconPerAccount"
+            text: i18n("Show a tray icon for each account")
+            description: i18n("With several accounts, each has its own icon with its own state and menu. When off, one icon shows the most serious state of them all.")
+            checked: Tray.perAccount
+            onToggled: Tray.perAccount = checked
+        }
     }
 
     // When every account holds back by itself (issue #95): the daemon's settings, written

@@ -14,6 +14,7 @@
 #include "downloadprogresssettings.h"
 #include "placessettings.h"
 #include "transfermodel.h"
+#include "traysettings.h"
 
 #include <QtQml>
 
@@ -22,7 +23,8 @@ inline void registerKonedriveQml(DaemonController *daemon,
                                  CurrentAccount *current,
                                  Autostart *autostart,
                                  DownloadProgressSettings *downloadProgress,
-                                 PlacesSettings *places)
+                                 PlacesSettings *places,
+                                 TraySettings *tray)
 {
     const char *uri = "org.konedrive.app";
     qmlRegisterSingletonInstance(uri, 1, 0, "Daemon", daemon);
@@ -31,6 +33,7 @@ inline void registerKonedriveQml(DaemonController *daemon,
     qmlRegisterSingletonInstance(uri, 1, 0, "Autostart", autostart);
     qmlRegisterSingletonInstance(uri, 1, 0, "DownloadProgress", downloadProgress);
     qmlRegisterSingletonInstance(uri, 1, 0, "Places", places);
+    qmlRegisterSingletonInstance(uri, 1, 0, "Tray", tray);
     qmlRegisterUncreatableType<AccountItem>(uri, 1, 0, "AccountItem", QStringLiteral("owned by Accounts"));
     qmlRegisterUncreatableType<AccountController>(uri, 1, 0, "AccountController", QStringLiteral("owned by Accounts"));
     qmlRegisterUncreatableType<SyncController>(uri, 1, 0, "SyncController", QStringLiteral("owned by Accounts"));

@@ -854,8 +854,9 @@ client has an answer a user already knows, it is followed.
 
 ### The tray shows the worst account; notifications and Places name the account
 
-- **Decision.** The tray icon shows the worst state across the accounts, and with several accounts
-  its tooltip has a line per account. Notifications and transfer progress name the account once
+- **Decision.** The one tray icon shows the worst state across the accounts, and with several
+  accounts its tooltip has a line per account. A setting, on by default, gives each account its own
+  icon instead, so that which account is paused or in trouble shows without hovering. Notifications and transfer progress name the account once
   there are several. Every Places entry is named `OneDrive — <label>`, with a single account too.
 - **Why.** One icon cannot show several states, and trouble must not hide behind an account that is
   fine. A single account's notifications stay as they were, and a second account renames no Places
