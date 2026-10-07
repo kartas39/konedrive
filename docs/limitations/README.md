@@ -42,6 +42,7 @@ D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md`
 - [F80](F80.md) — A finishing upload can replace an edit just made in OneDrive
 - [F124](F124.md) — A move between two accounts is a download, a delete and an upload
 - [F172](F172.md) — An unfinished upload holds its name in OneDrive with an empty file
+- [F295](F295.md) — "Open in OneDrive" opens under whichever personal account the browser is signed in to
 
 ## What the desktop and the package decide
 
