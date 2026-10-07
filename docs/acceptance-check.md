@@ -164,8 +164,8 @@ folder yourself before this run, it is still listed too; registering or forgetti
 folder never touches an exclusion you did not add.
 
 ## 12. Without the helper: what you are told (needs sudo)
-Close any program that has a file in the folder open first: stopping the helper hands a file that
-is still downloading to its program empty (limitations log Z1). Do not open files in the folder
+Close any program that has a file in the folder open first: stopping the helper fails the open of
+a file that is still downloading with an error. Do not open files in the folder
 while the helper is stopped: nothing intercepts the open, and a file that is not downloaded reads
 as zeros.
     sudo systemctl stop konedrive-helper

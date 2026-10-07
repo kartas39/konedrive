@@ -10,9 +10,12 @@ use konedrive_helper::{marks, roots};
 
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use konedrive_proto::SOCKET_PATH;
+use nix::sys::signal::{SigSet, Signal};
+use nix::sys::signalfd::{SfdFlags, SignalFd};
 use nix::sys::socket::{
     bind, connect, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType,
     UnixAddr,
@@ -23,7 +26,19 @@ use events::event_loop;
 use registration::{check_filesystem_type, open_root, record_walk};
 use shared::{Shared, EVENT_QUEUE_DEPTH, EVENT_WORKERS, FLUSH_EVERY, ROOTS_FILE};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<ExitCode> {
+    // Before any thread exists, so that every thread inherits it: the two
+    // signals that ask the helper to stop are blocked everywhere and read by
+    // the event loop from a descriptor. Left to their default they end the
+    // process at once, and the kernel lets every open it holds through, onto
+    // a placeholder nobody filled (`events/stop.rs`).
+    let mut stop_signals = SigSet::empty();
+    stop_signals.add(Signal::SIGTERM);
+    stop_signals.add(Signal::SIGINT);
+    stop_signals.thread_block()?;
+    let signals =
+        SignalFd::with_flags(&stop_signals, SfdFlags::SFD_NONBLOCK | SfdFlags::SFD_CLOEXEC)?;
+
     tracing_subscriber::fmt().init();
     let shared = Arc::new(Shared::new(marks::Marks::new()?, load_roots()));
     // The last count of a burst of refusals is written by this thread, a
@@ -84,7 +99,7 @@ fn main() -> anyhow::Result<()> {
     // Nothing that can fail stands between the walk and the event loop but
     // the loop itself (`docs/design/hydration.md` §12).
     let _ = walked.send(());
-    event_loop(&shared, &pool)
+    event_loop(&shared, &pool, &signals)
 }
 
 /// A helper that cannot read its registrations must still come up: with no

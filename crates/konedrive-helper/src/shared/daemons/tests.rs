@@ -157,3 +157,25 @@ fn connection_order_is_compared_only_within_one_uid() {
     assert_eq!(registered(&daemons, 1000), Some(3));
     assert_eq!(registered(&daemons, 1001), Some(5));
 }
+
+/// The helper's stop ends a wait for a daemon at once, and no wait begins
+/// after it: a worker parked here holds an open that must be answered
+/// before the process ends, and `DAEMON_WAIT` is longer than a stop may take.
+#[test]
+fn a_stop_ends_the_wait_for_a_daemon() {
+    let daemons = Arc::new(Daemons::new());
+    let waiting = Arc::clone(&daemons);
+    let started = Instant::now();
+    let waiter = std::thread::spawn(move || waiting.wait_for(1000, || true).map(|d| d.conn));
+    // Long enough for the waiter to be parked; the stop is seen either way.
+    std::thread::sleep(Duration::from_millis(50));
+    daemons.stop();
+
+    assert_eq!(waiter.join().unwrap(), Err(NoDaemon::Stopping));
+    assert!(started.elapsed() < DAEMON_WAIT / 2, "it did not wait for a daemon");
+    assert_eq!(
+        daemons.wait_for(1000, || true).map(|d| d.conn),
+        Err(NoDaemon::Stopping),
+        "and a later open is not made to wait either"
+    );
+}

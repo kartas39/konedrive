@@ -266,6 +266,14 @@ pub(crate) fn count_in_log(log: &Path, needle: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The last thing the helper said that begins with `needle`: from `needle`
+/// to the end of its line.
+pub(crate) fn last_in_log(log: &Path, needle: &str) -> Option<String> {
+    let text = std::fs::read_to_string(log).ok()?;
+    let line = text.lines().rev().find(|line| line.contains(needle))?;
+    line.find(needle).map(|at| line[at..].to_owned())
+}
+
 /// How many times the helper did something it reports through a throttle.
 /// A throttled line stands for as many occurrences as it says
 /// it does; any other line stands for itself, which is also what every line

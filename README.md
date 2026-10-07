@@ -123,7 +123,8 @@ developer install". After the install, open **KOneDrive** from the launcher. The
 to the helper within half a minute; `konedrivectl sync status` then says `Helper: connected`.
 
 - **Upgrading** is the same `dnf install` with the newer RPMs. It restarts the helper when it
-  finishes, and a program waiting for a file to download at that moment reads it as zeros
+  finishes: a program waiting for a file to download at that moment gets an error from its open,
+  and a file that is not downloaded reads as zeros if it is opened in the moment no helper runs
   (`docs/limitations/`, Z1 and R1): close programs that are opening files in
   the sync folder first. `dnf` treats a rebuild with the same version and release as the package
   already installed; install such a rebuild with `sudo dnf reinstall` and the same paths.
@@ -439,7 +440,10 @@ installs that same copy. It always says exactly what it is about to do and
 asks before doing it — pass `--yes` to skip the question. Running it again
 updates the helper in place; if it is already running, the installer restarts
 it and says so before it asks (see `docs/limitations/`, Z1:
-a program waiting for a file to download at that moment gets it as empty).
+a program waiting for a file to download at that moment gets an error, and a
+file that is not downloaded reads as zeros if it is opened in the moment no
+helper runs; a helper that crashes or is killed still lets a waiting open
+through to zeros).
 
 If it says the binary is older than its sources right after a build, cargo
 had nothing to relink; this makes it:
@@ -462,7 +466,8 @@ while a folder is registered with the helper (it reads the helper's own
 are not downloaded would read as zeros, and `konedrivectl sync forget` would
 then be refused (`NoHelper`). Run `konedrivectl sync forget` first, for each
 account with a folder (`--account`); `--force` uninstalls anyway. Like an update, it warns first if the helper is running
-(Z1).
+(Z1): a program waiting for a file to download when the helper stops gets an
+error.
 
 See [SECURITY.md](SECURITY.md) for what the helper can do as root and how its
 systemd unit narrows that down.

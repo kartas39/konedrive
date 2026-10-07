@@ -63,7 +63,9 @@ use konedrived::folder::root::{self, SyncRoot};
 use konedrived::folder::locks::InodeLocks;
 
 use crate::accounts::two_accounts_one_link;
-use crate::burst::{burst, helper_death_allows, waiter_caps};
+use crate::burst::{
+    burst, helper_death_allows, helper_stop_denies, helper_stop_wakes_parked, waiter_caps,
+};
 use crate::child::{
     child_burst, child_connections, child_hold, child_hostile, child_pipeline, child_read,
 };
@@ -723,5 +725,10 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
         ("the waiter caps bound how many opens may wait for a daemon", waiter_caps),
         ("a burst of several thousand concurrent opens loses nobody", burst),
         ("killing the helper mid-flight allows every suspended open", helper_death_allows),
+        ("SIGTERM to the helper mid-flight denies every suspended open", helper_stop_denies),
+        (
+            "SIGTERM to the helper denies every open parked with no daemon connected",
+            helper_stop_wakes_parked,
+        ),
     ]
 }

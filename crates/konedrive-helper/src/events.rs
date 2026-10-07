@@ -1,12 +1,15 @@
-//! The answers to intercepted opens, in three files: the loop that reads
-//! the fanotify group (here), what an open is answered (`decision`), and
-//! asking the owner's daemon for the content (`hydration`).
+//! The answers to intercepted opens, in four files: the loop that reads
+//! the fanotify group (here), what an open is answered (`decision`),
+//! asking the owner's daemon for the content (`hydration`), and what the
+//! opens the helper holds are answered when it is told to stop (`stop`).
 
 mod decision;
 mod hydration;
+mod stop;
 
 use std::os::fd::AsFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use konedrive_helper::errno;
@@ -15,6 +18,7 @@ use konedrive_helper::pending::PendingOpen;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::fanotify::{FanotifyEvent, MaskFlags};
+use nix::sys::signalfd::SignalFd;
 
 pub(crate) use decision::handle_open;
 pub(crate) use hydration::{dispatch, settle, Finish};
@@ -125,12 +129,28 @@ fn classify_read_failure(e: Errno) -> ReadFailure {
 /// loop with no wait in between would be a busy spin pinning a CPU core for
 /// as long as the helper runs, which is not acceptable for a permanent
 /// system service.
-pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
+///
+/// The one other thing the loop waits on is `signals`, which becomes
+/// readable when the helper is told to stop (`SIGTERM`, `SIGINT`; `main`
+/// blocks both for every thread, so they arrive nowhere else). It is looked
+/// at before every read of the group, so that neither a queue that never
+/// empties nor the wait for descriptors keeps the stop waiting; the loop
+/// then ends in [`stop::stop`], which answers every open the helper holds,
+/// and returns the status the process exits with. It returns no other way
+/// but with an error.
+pub(crate) fn event_loop(
+    shared: &Arc<Shared>,
+    pool: &pool::Pool,
+    signals: &SignalFd,
+) -> anyhow::Result<ExitCode> {
     let mut exhaustion = Throttle::new();
     let mut panics = Throttle::new();
     let own_pid = std::process::id() as i32;
     loop {
-        let mut fds = [PollFd::new(shared.marks.group().as_fd(), PollFlags::POLLIN)];
+        let mut fds = [
+            PollFd::new(shared.marks.group().as_fd(), PollFlags::POLLIN),
+            PollFd::new(signals.as_fd(), PollFlags::POLLIN),
+        ];
         match poll(&mut fds, PollTimeout::NONE) {
             Ok(_) => {}
             Err(Errno::EINTR) => continue,
@@ -138,6 +158,9 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
         }
         let mut first_read = true;
         loop {
+            if let Ok(Some(signal)) = signals.read_signal() {
+                return Ok(stop::stop(shared, signal.ssi_signo));
+            }
             // Before the read, so that an event is never given a count later
             // than one it could have been queued under (see
             // `mark_while_hydrated`).

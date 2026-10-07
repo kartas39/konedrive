@@ -54,6 +54,8 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                          EIO"
                     )
                 }),
+                // Counted in the stop's own line (`stop`).
+                NoDaemon::Stopping => {}
             }
             open.deny(Errno::EIO);
             return;
@@ -89,6 +91,8 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                 });
                 Errno::EAGAIN
             }
+            // Counted in the stop's own line (`stop`).
+            Enrolled::Stopping => Errno::EIO,
             _ => {
                 tracing::warn!(
                     target: LOG,
@@ -102,8 +106,8 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
     }
     // `New` comes with its request to send. `Queued` has none yet: the
     // opener is enrolled and stays suspended until a returning credit sends
-    // it. `Existing` asked for nothing, and `ConnectionGone` and `TooMany`
-    // were answered above.
+    // it. `Existing` asked for nothing, and `ConnectionGone`, `TooMany` and
+    // `Stopping` were answered above.
     dispatch(shared, &daemon.outbox, owner, enrollment.dispatch);
 }
 

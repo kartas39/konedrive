@@ -1,5 +1,7 @@
 use super::*;
 
+use std::os::fd::AsRawFd;
+
 fn fd() -> OwnedFd {
     tempfile::tempfile().unwrap().into()
 }
@@ -454,3 +456,67 @@ fn every_suspended_open_counts_against_its_uid_until_it_is_answered() {
     assert_eq!(jobs.suspended_for(1001), 0, "a connection that ends takes its openers with it");
 }
 
+
+/// The helper's stop: every opener comes out, once — of a sent job and of a
+/// queued one, on every connection of every uid — and nothing is left for a
+/// later answer to find.
+#[test]
+fn a_stop_takes_every_opener_of_every_job_once() {
+    let mut jobs = Jobs::default();
+    let a = owner(1000, 1);
+    let b = owner(1001, 2);
+    let mut held = Vec::new();
+    let mut enroll = |jobs: &mut Jobs<OwnedFd>, inode, owner| {
+        let fd = fd();
+        held.push(fd.as_raw_fd());
+        jobs.enroll(inode, owner, fd, 0).outcome
+    };
+    // The whole of connection 1's credit, sent; one more, queued; a second
+    // opener of a sent job and of the queued one; another uid's job.
+    for ino in 0..MAX_OUTSTANDING_HYDRATIONS as u64 {
+        assert!(matches!(enroll(&mut jobs, (42, ino), a), Enrolled::New { .. }));
+    }
+    let Enrolled::Queued { req_id: queued } = enroll(&mut jobs, (42, 1000), a) else {
+        panic!("expected a queued job")
+    };
+    assert!(matches!(enroll(&mut jobs, (42, 0), a), Enrolled::Existing { .. }));
+    assert!(matches!(enroll(&mut jobs, (42, 1000), a), Enrolled::Existing { .. }));
+    let Enrolled::New { req_id: other } = enroll(&mut jobs, (43, 1), b) else {
+        panic!("expected a new job")
+    };
+
+    let mut taken: Vec<_> = jobs.stop().iter().map(|fd| fd.as_raw_fd()).collect();
+    taken.sort_unstable();
+    held.sort_unstable();
+    assert_eq!(taken, held, "every opener, and each once");
+
+    assert_eq!(jobs.in_flight(), 0);
+    assert_eq!(jobs.suspended_for(1000), 0);
+    assert_eq!(jobs.suspended_for(1001), 0);
+    assert_eq!(jobs.outstanding_for(1), 0);
+    assert!(jobs.stop().is_empty(), "a second look finds nothing");
+    assert!(jobs.finish(other, b).is_none(), "an answer that comes now finds no opener");
+    assert!(jobs.finish(queued, a).is_none());
+    assert!(jobs.retire(1).is_empty(), "and neither does a connection that ends");
+}
+
+/// An open a worker brings after the stop has taken the table's is not
+/// enrolled: it comes straight back, to be answered, and nothing is asked of
+/// a daemon. Left in the table, it would be let through when the process
+/// ends.
+#[test]
+fn nothing_is_enrolled_once_the_helper_is_stopping() {
+    let mut jobs = Jobs::default();
+    let a = owner(1000, 1);
+    let _ = jobs.enroll((42, 7), a, fd(), 0);
+    assert_eq!(jobs.stop().len(), 1);
+
+    for inode in [(42, 7), (42, 8)] {
+        let late = jobs.enroll(inode, a, fd(), 0);
+        assert_eq!(late.outcome, Enrolled::Stopping);
+        assert_eq!(late.evicted.len(), 1, "the opener's own descriptor, to be answered");
+        assert!(late.dispatch.is_none());
+    }
+    assert_eq!(jobs.in_flight(), 0);
+    assert_eq!(jobs.suspended_for(1000), 0);
+}

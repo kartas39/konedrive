@@ -98,11 +98,14 @@ a start that fails says so in `dnf`'s output, naming `systemctl status konedrive
 not fail the install. No test installs the RPMs: the scriptlets first run on the user's machine.
 
 **What an upgrade costs.** The helper is restarted so that the new binary runs, and the daemons with
-it, so that the two sides always run the same version. Stopping the helper closes its fanotify
-group, and the kernel then lets every open still waiting for a download through: a program that
-waits for a file at that moment reads the placeholder's zeros, and that download is cut off
-(limitations log Z1). `scripts/install-helper.sh` warns before it does the same; the package cannot,
-as `dnf` asks once for the whole transaction. Upgrade when nothing is opening files in the folder.
+it, so that the two sides always run the same version. The helper, stopped by systemd with
+`SIGTERM`, answers every open still waiting for a download with an error before it closes its
+fanotify group ([hydration.md](hydration.md) §13): a program that waits for a file at that moment
+gets `EIO` from its `open`, which it can see and try again, and that download is cut off. Between
+the old helper's exit and the new one's start nothing is intercepted, and a file that is not
+downloaded reads as zeros if it is opened then (limitations log Z1). `scripts/install-helper.sh`
+warns before it restarts the helper; the package cannot, as `dnf` asks once for the whole
+transaction. Upgrade when nothing is opening files in the folder.
 
 The first upgrade from a single-account version to one with multiple accounts also migrates each
 user's configuration, when the restarted daemon starts ([accounts.md](accounts.md) §8), and moves

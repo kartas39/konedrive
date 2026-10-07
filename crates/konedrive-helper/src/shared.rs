@@ -8,6 +8,7 @@ mod refusals;
 mod registrations;
 mod slots;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -207,6 +208,12 @@ impl Hydrations {
         let stranded = jobs.retire(conn);
         (stranded, jobs.in_flight())
     }
+
+    /// Takes every open waiting for a daemon's answer and enrolls nobody
+    /// from here on (`Jobs::stop`).
+    pub(crate) fn stop(&self) -> Vec<PendingOpen> {
+        lock(&self.0).stop()
+    }
 }
 
 pub(crate) struct Shared {
@@ -225,6 +232,9 @@ pub(crate) struct Shared {
     pub(crate) connections: Arc<UidSlots>,
     /// The throttled log of refused opens.
     pub(crate) refusals: Refusals,
+    /// Set when the helper is told to stop (`events/stop.rs`): a worker
+    /// denies the opens it takes off its queue instead of deciding them.
+    pub(crate) stopping: AtomicBool,
 }
 
 impl Shared {
@@ -237,6 +247,7 @@ impl Shared {
             daemons: Daemons::new(),
             connections: daemons::connection_slots(),
             refusals: Refusals::new(),
+            stopping: AtomicBool::new(false),
         }
     }
 }

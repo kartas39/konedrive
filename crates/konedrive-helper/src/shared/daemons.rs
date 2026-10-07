@@ -120,6 +120,9 @@ pub(crate) struct Daemon {
 struct Registry {
     /// Oldest first, so the top is the last. No uid holds an empty stack.
     by_uid: HashMap<u32, Vec<Daemon>>,
+    /// The helper is stopping: no open waits for a daemon any more
+    /// ([`Daemons::stop`]).
+    stopping: bool,
 }
 
 impl Registry {
@@ -169,6 +172,8 @@ pub(crate) enum NoDaemon {
     TooManyWaiters,
     /// Waited the full [`DAEMON_WAIT`] and no daemon connected.
     TimedOut,
+    /// The helper is stopping ([`Daemons::stop`]); the wait ended there.
+    Stopping,
 }
 
 /// The connected daemons, and the opens waiting for one to connect: the
@@ -223,6 +228,15 @@ impl Daemons {
         lock(&self.live).deregister(uid, conn);
     }
 
+    /// Ends every wait for a daemon, now and from here on
+    /// ([`NoDaemon::Stopping`]): the helper is stopping, and a worker parked
+    /// in [`wait_for`](Self::wait_for) holds an open that must be answered
+    /// before the process ends.
+    pub(crate) fn stop(&self) {
+        lock(&self.live).stopping = true;
+        self.arrived.notify_all();
+    }
+
     /// Waits for `uid`'s daemon to connect, up to [`DAEMON_WAIT`]. Woken by
     /// [`register`](Self::register) the instant one registers, rather than
     /// polling. `has_root` says whether the uid has a registered root; it is
@@ -245,8 +259,9 @@ impl Daemons {
     ///   uid pinned against its own cap, and not for the machine as a whole no
     ///   matter how many uids are waiting at once.
     ///
-    /// The refusal says which of the three happened. The caller logs it; the
-    /// reason never changes the answer, which is always `EIO`.
+    /// The refusal says which of the three happened, or that the helper is
+    /// stopping. The caller logs it; the reason never changes the answer,
+    /// which is always `EIO`.
     pub(crate) fn wait_for(
         &self,
         uid: u32,
@@ -269,6 +284,9 @@ impl Daemons {
         loop {
             if let Some(daemon) = live.top(uid) {
                 return Ok(daemon.clone());
+            }
+            if live.stopping {
+                return Err(NoDaemon::Stopping);
             }
             let now = Instant::now();
             if now >= deadline {

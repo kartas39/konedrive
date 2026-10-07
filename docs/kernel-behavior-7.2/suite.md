@@ -238,6 +238,24 @@ file that kept its content shows its whole size.
   rather than quoted, and it is the whole reason the worker pool is bounded and a
   panicking worker is caught rather than allowed to unwind: **the helper exiting is
   silent data loss, and the helper denying is not.** Identical on Btrfs and ext4.
+- **Stopping the helper with `SIGTERM` denies every suspended open instead.** The
+  same 200 opens suspended on the same delayed source, and `SIGTERM` in place of
+  `SIGKILL` (2026-10-07, Btrfs only): **all 200 openers got `EIO`** — filled: 0,
+  read-wrong: 0, errno 5 × 200 — each within 529 ms of its open, as in the kill.
+  The helper said it had answered 200 opens in 17.8 ms and was gone, with exit
+  status 0, 19.3 ms after the signal. It reads the signal from a descriptor in its
+  event loop and answers what it holds before the group closes
+  (`docs/design/hydration.md` §13); what the kernel does at the close is unchanged,
+  there is only nothing left for it to allow. A crash or a `SIGKILL` runs none of
+  this, and the bullet above still describes them.
+- **So does a stop that finds the opens parked with no daemon connected.** Eight
+  opens — what one uid may park — each in a worker's hands, waiting up to 30 s for
+  a daemon to connect, and `SIGTERM` 1.5 s later (2026-10-07, Btrfs only): **all
+  8 openers got `EIO`** — filled: 0, read-wrong: 0, errno 5 × 8 — each 1491 ms
+  after its open, not after the 30 s. Nothing is in the table of hydrations here:
+  the stop wakes the workers and waits for each to write its answer. The helper
+  said it had answered 8 opens in 2.1 ms and was gone, with exit status 0, 4.3 ms
+  after the signal.
 - **`SO_PEERCRED` on `SOCK_SEQPACKET` reports the pid the event reports.**
   Observable because the exemption is: the harness's own open of an
   `online-only` placeholder went straight through with no fetch and left the

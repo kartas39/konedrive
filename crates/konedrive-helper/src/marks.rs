@@ -17,6 +17,7 @@ use std::ffi::{CStr, CString};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use konedrive_fs::MAX_DEPTH;
 use nix::dir::Dir;
@@ -52,6 +53,10 @@ fn tolerate_missing_mark(result: nix::Result<()>) -> io::Result<()> {
 
 pub struct Marks {
     group: Fanotify,
+    /// How many opens read from the group still owe an answer, in whoever's
+    /// hands: kept by [`PendingOpen`](crate::pending::PendingOpen), read by
+    /// the helper's stop.
+    unanswered: AtomicUsize,
 }
 
 /// The group's flags.
@@ -99,7 +104,22 @@ impl Marks {
                 | EventFFlags::O_CLOEXEC
                 | EventFFlags::O_NONBLOCK,
         )?;
-        Ok(Self { group })
+        Ok(Self { group, unanswered: AtomicUsize::new(0) })
+    }
+
+    /// How many opens read from the group have not been answered yet.
+    pub fn unanswered(&self) -> usize {
+        self.unanswered.load(Ordering::SeqCst)
+    }
+
+    /// One more open owes an answer (`PendingOpen::take`).
+    pub(crate) fn owes_one_more(&self) {
+        self.unanswered.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// One open has its answer (`PendingOpen`'s drop).
+    pub(crate) fn owes_one_less(&self) {
+        self.unanswered.fetch_sub(1, Ordering::SeqCst);
     }
 
     pub fn group(&self) -> &Fanotify {

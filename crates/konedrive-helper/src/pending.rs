@@ -54,6 +54,7 @@ impl PendingOpen {
         // `event`; forgetting `event` just above means nothing else will close
         // it, so this `OwnedFd` becomes its sole owner.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        marks.owes_one_more();
         Some(Self { fd, marks: Arc::clone(marks), answered: false })
     }
 
@@ -90,16 +91,19 @@ impl AsFd for PendingOpen {
 /// unwind drops it, and whatever a later change forgets.
 impl Drop for PendingOpen {
     fn drop(&mut self) {
-        if self.answered {
-            return;
+        if !self.answered {
+            // A panic has its own line, where it is caught.
+            if !std::thread::panicking() {
+                tracing::error!("an intercepted open was dropped with no answer; denying it EIO");
+            }
+            // Contained: this can run while a panic unwinds, where a second
+            // panic let out of a destructor would end the process, and with
+            // it release every suspended open as allowed.
+            let _ = catch_unwind(AssertUnwindSafe(|| self.write_denial(Errno::EIO)));
         }
-        // A panic has its own line, where it is caught.
-        if !std::thread::panicking() {
-            tracing::error!("an intercepted open was dropped with no answer; denying it EIO");
-        }
-        // Contained: this can run while a panic unwinds, where a second
-        // panic let out of a destructor would end the process, and with it
-        // release every suspended open as allowed.
-        let _ = catch_unwind(AssertUnwindSafe(|| self.write_denial(Errno::EIO)));
+        // After the answer is written, whichever way it was: the helper's
+        // stop exits once this count is zero, and an open counted out before
+        // its answer would be released by that exit as allowed.
+        self.marks.owes_one_less();
     }
 }
