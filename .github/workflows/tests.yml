@@ -88,20 +88,35 @@ jobs:
       - name: Check out
         uses: actions/checkout@v7
 
-      - name: Install the build dependencies
-        run: dnf -y builddep packaging/rpm/konedrive.spec
+      # What the build needs, and what the window loads when it runs: the
+      # packages the spec requires for its QML (packaging/rpm/konedrive.spec).
+      - name: Install the build dependencies and the window's QML modules
+        run: |
+          dnf -y builddep packaging/rpm/konedrive.spec
+          dnf -y install kf6-kirigami kf6-kirigami-addons kf6-kquickcharts kf6-qqc2-desktop-style qt6-qtdeclarative
+
+      # Not as root, which the container's steps run as: a test of a file that
+      # cannot be written means nothing to root.
+      - name: Make a user for the tests
+        run: |
+          useradd --create-home tester
+          chown -R tester: .
 
       - name: Test the window
         run: |
-          cmake -S app -B build/app -DBUILD_TESTING=ON
-          cmake --build build/app -j "$(nproc)"
-          ctest --test-dir build/app --output-on-failure
+          runuser -u tester -- sh -ec '
+            cmake -S app -B build/app -DBUILD_TESTING=ON
+            cmake --build build/app -j "$(nproc)"
+            ctest --test-dir build/app --output-on-failure
+          '
 
       - name: Test the Dolphin plugins
         run: |
-          cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON
-          cmake --build build/dolphin -j "$(nproc)"
-          ctest --test-dir build/dolphin --output-on-failure
+          runuser -u tester -- sh -ec '
+            cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON
+            cmake --build build/dolphin -j "$(nproc)"
+            ctest --test-dir build/dolphin --output-on-failure
+          '
 
   # The suite that needs root: the helper, fanotify, a filesystem of its own.
   # One machine per filesystem, all at once; each reports for itself.
