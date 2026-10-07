@@ -52,7 +52,7 @@ Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `kon
 | The outbox at scale | `cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1` | `crates/konedrived/src/tests/bench.rs`: ignored tests, run by hand |
 | The window | `cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure` | `app/tests/` |
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
-| The VM suite | `tests/vm/run.sh quick` (btrfs); `tests/vm/run.sh full` (btrfs, ext4, xfs) | `tests/vm/scenarios/`: the real helper as root. Only when a change touches the helper path |
+| The VM suite | `tests/vm/run.sh quick` (ext4); `tests/vm/run.sh full` (btrfs, ext4, xfs) | `tests/vm/scenarios/`: the real helper as root. Only when a change touches the helper path |
 | The helper's unit | `tests/vm/run.sh unit` | `tests/vm/helper_unit_test.sh`: the shipped systemd unit, under systemd in the VM |
 | The helper's installer | `tests/vm/run.sh tests/vm/install_helper_test.sh` | `scripts/install-helper.sh`, as root in the VM |
 | The kernel measurements | `tests/vm/run.sh measure`; `tests/vm/run.sh <binary>` for the built `poc-marks`, `vm-ignore-mark` and `watch-probe` | The probes behind `docs/kernel-behavior-7.2/` |
@@ -869,7 +869,7 @@ the probes measured.
 
 - `Cargo.toml` — the crate and its four programs.
 - `run.sh` — boots the VM and runs a program in it as root; `quick`, `full`, `unit`,
-  `measure`.
+  `measure`; `host` runs the suite as root on a GitHub runner, with no VM.
 - `helper_unit_test.sh` — the helper as systemd starts it from the shipped unit.
 - `install_helper_test.sh` — `scripts/install-helper.sh`, as root.
 - `poc_marks.rs` — `poc-marks`: the proof of concept of the interception.

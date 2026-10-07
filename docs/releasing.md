@@ -6,7 +6,8 @@ By hand, two steps:
 
 1. Merge `dev` into `main`, with a pull request and a merge commit (not a squash: `main` must hold
    `dev`'s own commits, or the next merge finds them all again). The pull request runs the suite
-   that needs root (below). The workflow below then releases `X.Y.Z`, the version in `Cargo.toml`,
+   that needs root (below): merge only when all three of its jobs are green — nothing but the
+   person merging holds a release back on them. The workflow below then releases `X.Y.Z`, the version in `Cargo.toml`,
    and tags the commit `vX.Y.Z`.
 2. At once, a one-line pull request into `dev` that moves `version` in `[workspace.package]` of the
    root `Cargo.toml` from `X.Y.Z` to `X.Y.(Z+1)` (or to the next minor or major version, when that
@@ -44,8 +45,9 @@ making a second one. A tag `vX.Y.Z` that already exists on another commit stops 
 what happens when step 2 above was forgotten (the next merge into `main` still carries the version
 already released) — merge the bump into `dev` and `dev` into `main` again.
 
-Run by hand (`gh workflow run release.yml --ref <branch>`), the workflow is a dry run: it builds
-and tries the packages, and tags and publishes nothing.
+Run by hand (`gh workflow run release.yml --ref <branch>`), the workflow is a dry run unless it is
+run on `main` with the dry run turned off: it builds and tries the packages, and tags and publishes
+nothing. A dry run never takes the place of a release that waits its turn.
 
 ## Where the tests run
 
@@ -135,7 +137,7 @@ passes it.
 ## A dry run
 
 On GitHub, **Actions → Release → Run workflow**, on any branch. `dry_run` is on by default: the run
-tests, builds and keeps the RPMs as its artifacts (downloadable from the run's page for 90 days),
+builds the RPMs, tries them in a clean container and keeps them as its artifacts (downloadable from the run's page for 90 days),
 and tags and releases nothing. Its RPMs carry a local build's version, not the release's: the
 file's version with a suffix that sorts below it (`0.1.2~dev.57`, as `scripts/version.sh local`
 prints it), so a machine that installs them is upgraded by the release with a plain `dnf

@@ -2,7 +2,8 @@
 # Boots the host kernel in a virtme-ng VM and runs $1 as root inside it, with
 # one or more loop-backed filesystems mounted. Extra arguments are forwarded
 # to the binary. Nothing here touches the host session: vng needs no
-# privileges and everything privileged happens inside the guest.
+# privileges and everything privileged happens inside the guest. The one
+# exception is `host`, which only a GitHub Actions runner may use.
 #
 # Usage: tests/vm/run.sh <binary> [args...]
 #        tests/vm/run.sh quick [args...]     # the suite, ext4 only, one VM

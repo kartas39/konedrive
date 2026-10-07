@@ -17,10 +17,12 @@ on:
         type: boolean
         default: true
 
-# One run at a time; a release in progress is never cancelled. GitHub keeps
-# one waiting run per group: a newer one replaces it (docs/releasing.md).
+# One release at a time; a release in progress is never cancelled. GitHub keeps
+# one waiting run per group: a newer one replaces it (docs/releasing.md). A
+# dry run tags and publishes nothing, so it has a group of its own and never
+# takes a waiting release's place.
 concurrency:
-  group: release
+  group: ${{ github.event_name == 'push' && 'release' || format('release-dry-{0}', github.ref) }}
   cancel-in-progress: false
 
 permissions:
@@ -242,9 +244,15 @@ jobs:
             echo "release $tag existed: its files were replaced"
           else
             if gh api "repos/$GH_REPO/contents/docs/release-notes/$VERSION.md?ref=$GITHUB_SHA" \
-                -H 'Accept: application/vnd.github.raw' >notes.md 2>/dev/null; then
+                -H 'Accept: application/vnd.github.raw' >notes.md 2>notes.err; then
               echo "notes: docs/release-notes/$VERSION.md"
               set -- --notes-file notes.md
+            elif ! grep -q 'HTTP 404' notes.err; then
+              # Not "no such file": the notes could not be asked for. Nothing
+              # is published with the wrong ones; the run is rerun.
+              cat notes.err
+              echo "::error::could not read docs/release-notes/$VERSION.md"
+              exit 1
             else
               echo "notes: the pull requests since ${PREVIOUS_TAG:-the start}"
               set -- --generate-notes

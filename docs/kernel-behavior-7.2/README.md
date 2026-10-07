@@ -60,7 +60,7 @@ cargo build --release --manifest-path tests/vm/Cargo.toml
 tests/vm/run.sh tests/vm/target/release/poc-marks
 tests/vm/run.sh tests/vm/target/release/poc-marks --measure 10000
 tests/vm/run.sh tests/vm/target/release/vm-ignore-mark
-tests/vm/run.sh quick        # the suite on btrfs only: the normal run
+tests/vm/run.sh quick        # the suite on ext4 only: the normal run
 tests/vm/run.sh full         # btrfs, ext4 and xfs in three VMs at once: the full, slower run
 tests/vm/run.sh scenarios    # all three in one VM, in sequence
 tests/vm/run.sh measure
