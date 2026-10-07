@@ -231,8 +231,9 @@ jobs:
           fi
 
       # A rerun finds the release and replaces its files instead of making a
-      # second one. The notes list the pull requests merged since the
-      # previous tag.
+      # second one. The notes are docs/release-notes/X.Y.Z.md of the released
+      # commit when it has one; else they list the pull requests merged since
+      # the previous tag.
       - name: Publish the release
         run: |
           tag="v$VERSION"
@@ -240,9 +241,16 @@ jobs:
             gh release upload "$tag" dist/* --clobber
             echo "release $tag existed: its files were replaced"
           else
-            set -- --generate-notes
-            if [ -n "$PREVIOUS_TAG" ]; then
-              set -- "$@" --notes-start-tag "$PREVIOUS_TAG"
+            if gh api "repos/$GH_REPO/contents/docs/release-notes/$VERSION.md?ref=$GITHUB_SHA" \
+                -H 'Accept: application/vnd.github.raw' >notes.md 2>/dev/null; then
+              echo "notes: docs/release-notes/$VERSION.md"
+              set -- --notes-file notes.md
+            else
+              echo "notes: the pull requests since ${PREVIOUS_TAG:-the start}"
+              set -- --generate-notes
+              if [ -n "$PREVIOUS_TAG" ]; then
+                set -- "$@" --notes-start-tag "$PREVIOUS_TAG"
+              fi
             fi
             gh release create "$tag" dist/* --verify-tag --title "KOneDrive $VERSION" "$@"
           fi

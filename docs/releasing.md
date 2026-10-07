@@ -27,8 +27,9 @@ the code:
    `konedrivectl --version` run, and that the window loads its interface and comes up hidden, with
    no display, on a bus of its own. A missing dependency of the package shows here.
 4. It tags the commit it built `vX.Y.Z` and publishes a GitHub Release, "KOneDrive X.Y.Z", with the
-   six RPMs and one `SHA256SUMS` for them all. The release notes list the pull requests merged
-   since the previous tag.
+   six RPMs and one `SHA256SUMS` for them all. The release notes are `docs/release-notes/X.Y.Z.md`, written by hand
+   and merged with the rest before the release; without that file they list the pull requests
+   merged since the previous tag.
 
 If a build or an install check fails for either Fedora, nothing is tagged or released.
 
