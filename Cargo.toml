@@ -10,7 +10,7 @@ default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedri
 # the one-line pull request right after a release changes it. A build that is not a release shows
 # it with `-dev` (a plain `cargo build`) or `-dev.N` (scripts/build-rpm.sh), which writes the
 # build's version here and into Cargo.lock. The window reads it from here too (app/CMakeLists.txt).
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
