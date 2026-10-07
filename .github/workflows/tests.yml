@@ -83,7 +83,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Install the tools
-        run: dnf -y install git dbus-daemon 'dnf-command(builddep)'
+        run: dnf -y install git dbus-daemon util-linux shadow-utils 'dnf-command(builddep)'
 
       - name: Check out
         uses: actions/checkout@v7
