@@ -17,7 +17,7 @@ D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md`
 ## What the kernel and the filesystem decide
 
 - [P2](P2.md) — Opening a file while it is leased fails with "operation not permitted"
-- [Z1](Z1.md) — When the helper stops, every waiting open reads zeros
+- [Z1](Z1.md) — When the helper crashes or is killed, every waiting open reads zeros; while none runs, nothing is intercepted
 - [Z2](Z2.md) — A placeholder moved into a just-created directory can read zeros
 - [Z3](Z3.md) — A hard link or a move out of the folder escapes interception
 - [Z5](Z5.md) — Freeing a file's space while it is still exempt leaves zeros forever

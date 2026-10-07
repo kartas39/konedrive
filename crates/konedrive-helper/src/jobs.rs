@@ -103,6 +103,10 @@ pub enum Enrolled {
     /// the descriptor comes back in `Enrollment::evicted`, and the caller
     /// must answer it (`EAGAIN`).
     TooMany,
+    /// The helper is stopping ([`Jobs::stop`]). Nothing was enrolled; the
+    /// descriptor comes back in `Enrollment::evicted`, and the caller must
+    /// answer it.
+    Stopping,
 }
 
 /// A hydration whose request must go to its daemon now, because it was just
@@ -127,8 +131,8 @@ pub struct Dispatch {
 ///
 /// `evicted` carries the waiters of a job another uid's daemon was asked for
 /// on the same inode — see `Jobs::enroll` — or, for
-/// [`Enrolled::ConnectionGone`] and [`Enrolled::TooMany`], the opener's own
-/// descriptor and nothing else. The caller must
+/// [`Enrolled::ConnectionGone`], [`Enrolled::TooMany`] and
+/// [`Enrolled::Stopping`], the opener's own descriptor and nothing else. The caller must
 /// answer them: they are handed back because only the caller knows which
 /// errno each is owed.
 #[must_use]
@@ -198,6 +202,8 @@ pub struct Jobs<W> {
     /// entry. Kept in step by [`hold`](Self::hold) and
     /// [`release`](Self::release), wherever a waiter enters or leaves a job.
     suspended: HashMap<u32, usize>,
+    /// Set by [`stop`](Self::stop): nothing is enrolled any more.
+    stopping: bool,
 }
 
 impl<W> Default for Jobs<W> {
@@ -211,6 +217,7 @@ impl<W> Default for Jobs<W> {
             outstanding: HashMap::new(),
             queued: HashMap::new(),
             suspended: HashMap::new(),
+            stopping: false,
         }
     }
 }
@@ -247,6 +254,9 @@ impl<W: AsFd> Jobs<W> {
     /// creates the job.
     pub fn enroll(&mut self, inode: (u64, u64), owner: Owner, fd: W, since: u64) -> Enrollment<W> {
         let mut evicted = Vec::new();
+        if self.stopping {
+            return Enrollment { outcome: Enrolled::Stopping, evicted: vec![fd], dispatch: None };
+        }
         if self.retired.contains(&owner.conn) {
             return Enrollment {
                 outcome: Enrolled::ConnectionGone,
@@ -475,6 +485,24 @@ impl<W: AsFd> Jobs<W> {
             .into_iter()
             .filter_map(|req_id| Some(self.remove_job(req_id)?.waiters))
             .filter(|waiters| !waiters.is_empty())
+            .collect()
+    }
+
+    /// Takes every opener of every hydration, sent and queued, of every
+    /// connection, and enrolls nobody from here on
+    /// ([`Enrolled::Stopping`]): the helper is stopping, and the caller
+    /// answers them.
+    ///
+    /// The refusal begins **before** the drain and under the same lock, as
+    /// in [`retire`](Self::retire), so no open can join the table behind
+    /// the drain and be left in it when the process ends.
+    pub fn stop(&mut self) -> Vec<W> {
+        self.stopping = true;
+        self.queued.clear();
+        let all: Vec<u64> = self.jobs.keys().copied().collect();
+        all.into_iter()
+            .filter_map(|req_id| self.remove_job(req_id))
+            .flat_map(|job| job.waiters)
             .collect()
     }
 

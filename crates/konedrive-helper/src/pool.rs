@@ -19,9 +19,11 @@
 
 use std::io;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
+use konedrive_helper::errno::Errno;
 use konedrive_helper::pending::PendingOpen;
 
 use crate::shared::Shared;
@@ -64,6 +66,12 @@ impl Pool {
                         // Every sender is gone: the event loop has stopped.
                         break;
                     };
+                    // The helper is stopping (`events/stop.rs`): what is
+                    // still queued is answered, not decided.
+                    if shared.stopping.load(Ordering::SeqCst) {
+                        event.open.deny(Errno::EIO);
+                        continue;
+                    }
                     // A panic below drops the open wherever it had got to, and
                     // an open dropped with no answer denies `EIO`
                     // (`PendingOpen`), through the exact fd number the kernel

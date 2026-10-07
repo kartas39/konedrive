@@ -746,12 +746,12 @@ descriptor, which belongs to the opener's mount (*kernel* §11.6).
 
 ## 13. The helper must not die
 
-When the helper's fanotify group closes — the process exits, is killed or crashes — **the kernel
-answers every suspended open with "allow"**, and every opener reads whatever the placeholder holds:
-zeros. Measured: 200 opens suspended on a slow source, `SIGKILL`, all 200 released within 525 ms,
+When the helper's fanotify group closes with opens still suspended — the process is killed or
+crashes — **the kernel answers every one of them with "allow"**, and every opener reads whatever the
+placeholder holds: zeros. Measured: 200 opens suspended on a slow source, `SIGKILL`, all 200 released within 525 ms,
 every one reading zeros (*kernel* §11.6). Nothing the helper does can change what the kernel does on
 close, and queuing beyond the credit (§10.3) means every open in flight is exposed. So the
-requirement is that the helper does not exit. What defends it:
+requirement is that the helper does not exit with an open unanswered. What defends it:
 
 - a bounded worker pool, so running out of threads is `EAGAIN`, not a panic in the event loop;
 - a panic on a worker is caught, its opener denied `EIO`, and the pool kept at strength; a panic on
@@ -774,11 +774,33 @@ requirement is that the helper does not exit. What defends it:
 - the fault-injection hooks the suite uses to prove the unwind paths exist only in builds with the
   `fault-injection` cargo feature; the installer refuses a helper that contains them.
 
+**An ordinary stop answers first.** `SIGTERM` and `SIGINT` — what systemd sends at a restart or an
+upgrade — are blocked in every thread and read by the event loop from a descriptor. On either, the
+loop hands nothing more to a worker and, before it lets go of the group:
+
+- denies every open the helper holds `EIO`: the ones waiting for a daemon's answer are taken out of
+  the table, which enrolls nobody from then on; the ones queued for a worker are denied by the
+  workers; a worker waiting for a daemon that is not connected stops waiting and denies its own;
+- reads what is still in the kernel's queue and denies each of those `EIO`, until a read finds the
+  queue empty;
+- exits with status 0, once no open read from the group is without its answer. Every such open is
+  counted from the read to the written answer, in whichever thread holds it, and the stop ends on
+  that count, not on having asked.
+
+It waits for nothing outside the helper — not for a daemon, not for a download. If the count is not
+zero after 5 seconds, the helper logs how many opens are left and exits with status 1; the kernel
+lets those through. One line in the log says how many opens were answered at the stop. Measured:
+200 opens suspended on a slow source, `SIGTERM`, all 200 denied `EIO` and none reading zeros, the
+helper gone with status 0 within 20 ms (*kernel* §11.6). The daemon is told nothing: it sees its link drop, as at any other
+end of the helper (§10.2).
+
 The VM suite proves the panics of a worker, a connection, the event loop and the accept thread, the
-exhaustion of descriptors, the two events that cannot be opened and a daemon's death. Nothing in it
-reaches the writer thread's panic, the full pool, or the caps of 16 connections and 8192 opens. The
-remaining exposure is recorded as limitations log Z1: updating or stopping the helper releases every
-open waiting at that moment.
+exhaustion of descriptors, the two events that cannot be opened, a daemon's death and the ordinary
+stop. Nothing in it reaches the writer thread's panic, the full pool, the caps of 16 connections and
+8192 opens, or a stop that runs into its bound. The remaining exposure is recorded as limitations
+log Z1: a helper that crashes or is killed releases every open waiting at that moment, an open that
+arrives between an ordinary stop's last read and the group closing is let through, and while no
+helper runs nothing is intercepted.
 
 ## 14. Registration and modes
 
@@ -878,7 +900,7 @@ What an opener receives is in §5.3; this table adds what follows it.
 - **Moves into a new directory and out of a read-write folder are covered after the fact** (M1, M4):
   a new directory within milliseconds, a placeholder that left the folder after a quiet spell of
   2 s. Opened in between, it reads zeros (limitations log Z2, Z3, F120).
-- **Fail-open windows.** The helper not yet running, and the moment it dies (Z1). The blast radius
+- **Fail-open windows.** The helper not running, and the moment it crashes or is killed (Z1). The blast radius
   is the sync folder only.
 - **Eager hydration.** Anything that opens a placeholder downloads it — thumbnailers, indexers,
   `open(O_TRUNC)`; there is no way to tell them from a person (P6).
