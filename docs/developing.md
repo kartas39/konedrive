@@ -266,7 +266,7 @@ The fanotify helper needs a real kernel and root, so its end-to-end suite runs i
 everything privileged inside it:
 
 ```
-tests/vm/run.sh quick   # the normal run: the end-to-end suite on btrfs (one VM)
+tests/vm/run.sh quick   # the normal run: the end-to-end suite on ext4 (one VM)
 tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for changes that
                          # may behave differently per filesystem
 ```

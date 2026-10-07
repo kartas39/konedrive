@@ -5,7 +5,7 @@
 # privileges and everything privileged happens inside the guest.
 #
 # Usage: tests/vm/run.sh <binary> [args...]
-#        tests/vm/run.sh quick [args...]     # the suite, btrfs only, one VM
+#        tests/vm/run.sh quick [args...]     # the suite, ext4 only, one VM
 #        tests/vm/run.sh full [args...]      # the suite, three VMs in parallel
 #        tests/vm/run.sh scenarios [args...] # the suite, all three FS, one VM
 #        tests/vm/run.sh measure [args...]   # the measurement mode
@@ -18,8 +18,9 @@
 #                                            # which only a development install has
 #                                            # (scripts/dev-install.sh, the dev-tools feature)
 #
-# `quick` is the normal run, every time: one filesystem (the user's own,
-# btrfs), one VM, so the loop is short. `full` runs only when the user asks for
+# `quick` is the normal run, every time: one filesystem, one VM, so the loop is
+# short. It is ext4, which hands a removed directory's inode number to the next
+# one made, as xfs does and btrfs never does: what depends on that shows here. `full` runs only when the user asks for
 # it — never as a routine step, not at a merge: btrfs, ext4 and xfs, each in
 # its own VM, all three booted at once — the wall time of the slowest one, not
 # the sum. `scenarios` is the original all-three-in-one-VM-in-sequence run,
@@ -212,11 +213,11 @@ case $mode in
         work=$(mktemp -d)
         trap 'rm -rf "$work"' EXIT
         # Forced last, so it always wins over anything forwarded on the
-        # command line: the guest below mounts btrfs only, and `--fs` must
+        # command line: the guest below mounts ext4 only, and `--fs` must
         # match or the suite fails its own filesystem check rather than
         # silently testing tmpfs.
-        write_inner "$work" "$vm_scenarios" btrfs \
-            --helper "$helper" "$@" --fs btrfs
+        write_inner "$work" "$vm_scenarios" ext4 \
+            --helper "$helper" "$@" --fs ext4
         run_vm "$work" "$memory"
         cat "$work/out.txt"
         exit "$(cat "$work/rc")"

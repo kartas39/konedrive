@@ -40,7 +40,7 @@ cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolp
 inside a `virtme-ng` VM, never on the host:
 
 ```
-tests/vm/run.sh quick   # the routine run: the end-to-end suite on btrfs (one VM)
+tests/vm/run.sh quick   # the routine run: the end-to-end suite on ext4 (one VM)
 tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for changes that may
                          # behave differently per filesystem
 ```
