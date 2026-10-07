@@ -23,7 +23,7 @@ use crate::errno::Errno;
 /// again. Chosen, not measured.
 pub const MAX_ROOTS_PER_UID: usize = 32;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Root {
     pub uid: u32,
     pub dev: u64,
@@ -34,6 +34,14 @@ pub struct Root {
     /// whatever the path opens before marking anything.
     pub path: String,
     pub root_id: String,
+    /// The directory's file handle (`konedrive_fs::handle::FileHandle::encode`), which is what
+    /// says that a directory is this one. An inode number does not: ext4 and xfs hand a removed
+    /// directory's number to the next one made, and the handle carries the generation that
+    /// tells the two apart. `None` in an entry written before handles were kept, until the
+    /// helper finds its directory again at a start (`main`); such an entry is compared by
+    /// device and inode alone, as it always was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -83,6 +91,10 @@ pub struct Accepted {
     /// caller saves it and then puts it in place of the registrations it was
     /// made from.
     pub roots: Roots,
+    /// Entries that stood in the new root's way and whose directories are
+    /// gone ([`Roots::with_gone`]): dropped with this registration. There is
+    /// nothing of theirs to unmark.
+    pub dropped: Vec<Root>,
     /// The entry the same user held under the same id, which the new one
     /// replaces. Its directory is the caller's to unmark when it is another
     /// directory than the new root's — and the caller's to compare with the
@@ -137,6 +149,23 @@ impl Root {
         (self.uid, self.dev, self.ino) == (other.uid, other.dev, other.ino)
             && self.path == other.path
             && self.root_id == other.root_id
+            && self.handle == other.handle
+    }
+
+    /// Whether a directory with this device, inode and handle is this root's
+    /// directory. With a handle on both sides the handles decide; an entry
+    /// or a directory without one is told by device and inode alone.
+    pub fn is_directory(&self, dev: u64, ino: u64, handle: Option<&[u8]>) -> bool {
+        (self.dev, self.ino) == (dev, ino)
+            && match (self.handle.as_deref(), handle) {
+                (Some(mine), Some(theirs)) => mine == theirs,
+                _ => true,
+            }
+    }
+
+    /// Whether `other` names the same directory as this root.
+    pub fn same_directory(&self, other: &Root) -> bool {
+        self.is_directory(other.dev, other.ino, other.handle.as_deref())
     }
 
     /// How a directory at `path` would overlap this root's, going by the two
@@ -144,6 +173,15 @@ impl Root {
     /// question [`Roots::nesting_conflict`] asks of every *other* root; the
     /// helper asks it of an id's own previous directory before it lets the
     /// id move there (see `register_root`).
+    /// How a directory would conflict with this root: the same directory, or
+    /// one whose path lies inside this root's or contains it.
+    fn conflict(&self, path: &str, dev: u64, ino: u64, handle: Option<&[u8]>) -> Option<Nesting> {
+        if self.is_directory(dev, ino, handle) {
+            return Some(Nesting::SameDirectory(self.root_id.clone()));
+        }
+        self.overlap_with(path)
+    }
+
     pub fn overlap_with(&self, path: &str) -> Option<Nesting> {
         if is_within(path, &self.path) {
             return Some(Nesting::Inside(self.root_id.clone()));
@@ -191,6 +229,15 @@ impl Roots {
     /// - a root that replaces none of the user's must leave the user within
     ///   [`MAX_ROOTS_PER_UID`].
     pub fn with(&self, root: Root) -> Result<Accepted, Refused> {
+        self.with_gone(root, &[])
+    }
+
+    /// [`with`](Self::with), after dropping the entries in `gone` — ones the
+    /// caller found standing in `root`'s way with their directories gone
+    /// ([`conflicting`](Self::conflicting)). Each is dropped only if it is
+    /// still the entry the caller looked at; one that changed since is
+    /// compared like any other, and refuses the registration if it conflicts.
+    pub fn with_gone(&self, root: Root, gone: &[Root]) -> Result<Accepted, Refused> {
         if !is_root_id(&root.root_id) {
             return Err(Refused::NotAnId);
         }
@@ -199,14 +246,20 @@ impl Roots {
         }
         let mut roots = self.clone();
         let displaced = roots.by_id.remove(&root.root_id);
-        if let Some(conflict) = roots.nesting_conflict(&root.path, root.dev, root.ino) {
+        let mut dropped = Vec::new();
+        for old in gone {
+            if roots.by_id.get(&old.root_id).is_some_and(|now| now.same_entry(old)) {
+                dropped.extend(roots.by_id.remove(&old.root_id));
+            }
+        }
+        if let Some(conflict) = roots.conflict_with(&root) {
             return Err(Refused::Overlap(conflict));
         }
         if displaced.is_none() && roots.held_by(root.uid) >= MAX_ROOTS_PER_UID {
             return Err(Refused::TooMany);
         }
         roots.insert(root);
-        Ok(Accepted { roots, displaced })
+        Ok(Accepted { roots, dropped, displaced })
     }
 
     /// The entry registered under this id, whoever holds it.
@@ -283,19 +336,42 @@ impl Roots {
     /// re-announcing its own root has its previous entry taken out before
     /// the question is asked, so it is still never compared
     /// against itself ([`with`](Self::with) lifts it out).
+    ///
+    /// "The same directory" is a matter of the file handle where both sides
+    /// have one ([`Root::is_directory`]): a directory that only got a removed
+    /// root's inode number is not that root.
     pub fn nesting_conflict(&self, path: &str, dev: u64, ino: u64) -> Option<Nesting> {
-        self.by_id.values().find_map(|root| {
-            if root.dev == dev && root.ino == ino {
-                return Some(Nesting::SameDirectory(root.root_id.clone()));
+        self.by_id.values().find_map(|root| root.conflict(path, dev, ino, None))
+    }
+
+    /// [`nesting_conflict`](Self::nesting_conflict) for a root about to be
+    /// registered or covered, its handle included.
+    pub fn conflict_with(&self, new: &Root) -> Option<Nesting> {
+        self.by_id.values().find_map(|root| root.conflict(&new.path, new.dev, new.ino, new.handle.as_deref()))
+    }
+
+    /// Every entry under another id that stands in `new`'s way: the caller
+    /// looks at each one's directory, with no lock held, before it asks
+    /// [`with_gone`](Self::with_gone).
+    pub fn conflicting(&self, new: &Root) -> Vec<Root> {
+        self.by_id
+            .values()
+            .filter(|root| root.root_id != new.root_id)
+            .filter(|root| root.conflict(&new.path, new.dev, new.ino, new.handle.as_deref()).is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// Gives the entry under `root_id` its directory's handle, if it is
+    /// still `seen` and has none. Returns whether anything changed.
+    pub fn adopt_handle(&mut self, seen: &Root, handle: Vec<u8>) -> bool {
+        match self.by_id.get_mut(&seen.root_id) {
+            Some(root) if root.same_entry(seen) && root.handle.is_none() => {
+                root.handle = Some(handle);
+                true
             }
-            if is_within(path, &root.path) {
-                return Some(Nesting::Inside(root.root_id.clone()));
-            }
-            if is_within(&root.path, path) {
-                return Some(Nesting::Contains(root.root_id.clone()));
-            }
-            None
-        })
+            _ => false,
+        }
     }
 
     /// Loads the registered roots, and never lets a damaged file stop the

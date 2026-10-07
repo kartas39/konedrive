@@ -12,6 +12,7 @@ fn a_root_id_held_by_another_user_is_refused() {
         ino: 7,
         path: "/home/alice/OneDrive".into(),
         root_id: "shared-id".into(),
+        handle: None,
     });
     let refused = |uid: u32| roots.owner_of("shared-id").is_some_and(|other| other != uid);
     assert!(refused(1001), "another user must not take over the id");

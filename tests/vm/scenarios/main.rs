@@ -104,7 +104,7 @@ use crate::races::{
     leased_file_does_not_stall_others, stale_request_after_direct_fill,
 };
 use crate::registration::{
-    displaced_root_is_unmarked, forget_without_link_refused, no_interception_forget_is_local,
+    a_removed_roots_entry_does_not_refuse_the_next_folder, displaced_root_is_unmarked, forget_without_link_refused, no_interception_forget_is_local,
     no_interception_populate_marks_nothing, no_interception_with_helper_connected,
     pending_root_not_downgraded, upgraded_when_the_helper_starts,
 };
@@ -711,6 +711,11 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             "a root is registered only under a root id, and an id registered onto another \
              directory unmarks the old one",
             displaced_root_is_unmarked,
+        ),
+        (
+            "a folder removed without being unregistered does not make the helper refuse the \
+             next one, with its inode number or at its path",
+            a_removed_roots_entry_does_not_refuse_the_next_folder,
         ),
         ("a real EMFILE does not end the helper", emfile_survived),
         ("a panic in a worker is contained", worker_panic_contained),
