@@ -11,7 +11,7 @@ There is no package repository yet: a COPR one needs a Fedora account and comes 
 
 | Package | Contents | Relations |
 |---|---|---|
-| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`, `/usr/bin/konedrive` (the window); `/usr/libexec/konedrive-helper`; the system unit `/usr/lib/systemd/system/konedrive-helper.service` and its preset `/usr/lib/systemd/system-preset/80-konedrive.preset`; the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; README, SECURITY.md, LICENSE and `docs/` | `Recommends: konedrive-kde` of the same version and release; `Requires:` the Kirigami, Kirigami Addons, KQuickCharts and Qt Quick QML modules, which no library dependency pulls in |
+| `konedrive` | `/usr/bin/konedrived`, `/usr/bin/konedrivectl`, `/usr/bin/konedrive` (the window); `/usr/libexec/konedrive-helper`; the system unit `/usr/lib/systemd/system/konedrive-helper.service` and its preset `/usr/lib/systemd/system-preset/80-konedrive.preset`; the user unit `/usr/lib/systemd/user/konedrived.service`; the D-Bus activation file `/usr/share/dbus-1/services/org.konedrive.Daemon.service`; the launcher entry `/usr/share/applications/org.konedrive.KOneDrive.desktop`; the notification events `/usr/share/knotifications6/konedrive.notifyrc`; README, SECURITY.md, LICENSE and `docs/` | `Recommends: konedrive-kde` of the same version and release; `Requires:` the Kirigami, Kirigami Addons, KQuickCharts and Qt Quick QML modules and the desktop style of Qt Quick Controls (`kf6-qqc2-desktop-style`), which no library dependency pulls in |
 | `konedrive-kde` | the Dolphin plugins, `/usr/lib64/qt6/plugins/kf6/overlayicon/konedriveoverlay.so` and `/usr/lib64/qt6/plugins/kf6/kfileitemaction/konedriveactions.so`; LICENSE | `Requires: dolphin`; not `konedrive` |
 
 There are no icons of our own: the launcher entry and the autostart entry use the theme's
@@ -50,7 +50,7 @@ and a `%changelog` entry) that Source0 and the source RPM hold; the spec's `Vers
 placeholder. It stops if a line it rewrites is not there, and `cargo vendor --locked` stops it if
 the rewritten lock file does not fit.
 
-Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` container, and
+Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a `fedora:45` container, each then installed in a clean one, and
 published on GitHub Releases.
 
 Inside the spec:

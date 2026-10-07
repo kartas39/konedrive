@@ -177,7 +177,9 @@ pub(crate) fn running_executable_open_survived(ctx: &Ctx, checks: &mut Checks) -
     let slow = ctx.place("exec/slow.bin", "ITEM_EXEC_SLOW", &slow_payload)?;
     let pid = ctx.helper_pid();
     let dir_ino = ctx.ino_of(&ctx.root.join("exec"))?;
-    let exe = ctx.root.join("exec/sleeper");
+    // Under its own name: where coreutils is one multi-call program (Ubuntu 26.04), a copy
+    // runs as `sleep` only if it is called `sleep`.
+    let exe = ctx.root.join("exec/sleep");
     let _ = std::fs::remove_file(&exe);
     std::fs::copy("/usr/bin/sleep", &exe).map_err(|e| format!("cannot copy sleep: {e}"))?;
     let log = ctx.helper.lock().unwrap().log.clone();

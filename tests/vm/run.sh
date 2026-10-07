@@ -2,22 +2,26 @@
 # Boots the host kernel in a virtme-ng VM and runs $1 as root inside it, with
 # one or more loop-backed filesystems mounted. Extra arguments are forwarded
 # to the binary. Nothing here touches the host session: vng needs no
-# privileges and everything privileged happens inside the guest.
+# privileges and everything privileged happens inside the guest. The one
+# exception is `host`, which only a GitHub Actions runner may use.
 #
 # Usage: tests/vm/run.sh <binary> [args...]
-#        tests/vm/run.sh quick [args...]     # the suite, btrfs only, one VM
+#        tests/vm/run.sh quick [args...]     # the suite, ext4 only, one VM
 #        tests/vm/run.sh full [args...]      # the suite, three VMs in parallel
 #        tests/vm/run.sh scenarios [args...] # the suite, all three FS, one VM
 #        tests/vm/run.sh measure [args...]   # the measurement mode
 #        tests/vm/run.sh unit                # the shipped systemd unit, under systemd
+#        tests/vm/run.sh host <fs> [args...] # the suite on one filesystem, as root on THIS
+#                                            # machine, with no VM: GitHub Actions only
 #        tests/vm/run.sh quick --graph-token <file> --graph-folder <folder>
 #                                            # against the real account; the token comes
 #                                            # from `konedrivectl dev export-access-token`,
 #                                            # which only a development install has
 #                                            # (scripts/dev-install.sh, the dev-tools feature)
 #
-# `quick` is the normal run, every time: one filesystem (the user's own,
-# btrfs), one VM, so the loop is short. `full` runs only when the user asks for
+# `quick` is the normal run, every time: one filesystem, one VM, so the loop is
+# short. It is ext4, which hands a removed directory's inode number to the next
+# one made, as xfs does and btrfs never does: what depends on that shows here. `full` runs only when the user asks for
 # it — never as a routine step, not at a merge: btrfs, ext4 and xfs, each in
 # its own VM, all three booted at once — the wall time of the slowest one, not
 # the sum. `scenarios` is the original all-three-in-one-VM-in-sequence run,
@@ -210,11 +214,11 @@ case $mode in
         work=$(mktemp -d)
         trap 'rm -rf "$work"' EXIT
         # Forced last, so it always wins over anything forwarded on the
-        # command line: the guest below mounts btrfs only, and `--fs` must
+        # command line: the guest below mounts ext4 only, and `--fs` must
         # match or the suite fails its own filesystem check rather than
         # silently testing tmpfs.
-        write_inner "$work" "$vm_scenarios" btrfs \
-            --helper "$helper" "$@" --fs btrfs
+        write_inner "$work" "$vm_scenarios" ext4 \
+            --helper "$helper" "$@" --fs ext4
         run_vm "$work" "$memory"
         cat "$work/out.txt"
         exit "$(cat "$work/rc")"
@@ -291,6 +295,36 @@ case $mode in
             fi
         done
         exit "$overall"
+        ;;
+    host)
+        # A GitHub runner is itself a throwaway VM, with sudo and a kernel new
+        # enough for the suite: there the guest's script runs as root on the
+        # machine, in a mount namespace of its own, so its tmpfs over /mnt and
+        # /var/lib and its loop mount go with it. Anywhere else this is refused:
+        # root is used only inside the VM (CONTRIBUTING.md).
+        shift
+        if [ "${GITHUB_ACTIONS:-}" != true ]; then
+            echo "run.sh: host runs the suite as root on this machine; only a GitHub Actions runner may. Use quick or full." >&2
+            exit 2
+        fi
+        fs=${1:-}
+        case $fs in
+            btrfs | ext4 | xfs) shift ;;
+            *) echo "run.sh: host needs a filesystem: btrfs, ext4 or xfs" >&2; exit 2 ;;
+        esac
+        build_scenarios
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        write_inner "$work" "$vm_scenarios" "$fs" \
+            --helper "$helper" "$@" --fs "$fs"
+        sudo unshare --mount sh "$work/inner.sh" < /dev/null > "$work/out.txt" 2>&1 || true
+        rc=$(sed -n 's/^inner-exit=\([0-9]\{1,\}\)$/\1/p' "$work/out.txt" | tail -1)
+        cat "$work/out.txt"
+        if [ -z "$rc" ]; then
+            echo "run.sh: the suite never reported an exit status" >&2
+            exit 125
+        fi
+        exit "$rc"
         ;;
     scenarios | measure)
         shift

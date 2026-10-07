@@ -40,7 +40,7 @@ cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolp
 inside a `virtme-ng` VM, never on the host:
 
 ```
-tests/vm/run.sh quick   # the routine run: the end-to-end suite on btrfs (one VM)
+tests/vm/run.sh quick   # the routine run: the end-to-end suite on ext4 (one VM)
 tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for changes that may
                          # behave differently per filesystem
 ```
@@ -55,6 +55,11 @@ tests/vm/run.sh tests/vm/install_helper_test.sh
 
 Whenever you change the helper's unit or the syscalls it makes, run `tests/vm/run.sh unit`: it
 boots the VM with systemd and starts the real unit.
+
+**What runs by itself.** A pull request into `dev` runs the daemon's unit tests, the window's and
+the Dolphin plugins' tests and the structure checks; a pull request into `main` runs the suite
+above on btrfs, ext4 and xfs, as root on GitHub's runner (`tests/vm/run.sh host`, which refuses to
+run where `GITHUB_ACTIONS` is not set). A release runs no test of the code: `docs/releasing.md`, "Where the tests run".
 
 Root is never used outside that VM. If a change needs anything privileged to exercise or debug
 (mounting a filesystem, running as root to poke at fanotify directly), do it inside
@@ -152,7 +157,7 @@ It sees a broken link, not a wrong one. What it does not catch:
 - **What rustdoc does not read**: a `//` comment, and a name in backticks that is not a link,
   can name a file, a function or a test that is gone.
 - **The compiler's version**: the workflow's `RUST_VERSION` is a second copy of the one in
-  `release.yml`, and the two are moved together by hand.
+  `tests.yml`, and the two are moved together by hand.
 
 ## A new reason or refusal
 

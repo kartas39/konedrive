@@ -36,7 +36,7 @@ opens it.
 
 ## Status
 
-Alpha. Built and tested on Fedora with KDE Plasma 6. Personal Microsoft accounts only; work and
+Alpha. Built for Fedora 44 and 45 with KDE Plasma 6. Personal Microsoft accounts only; work and
 school accounts are not supported yet.
 
 ## Install
@@ -44,8 +44,9 @@ school accounts are not supported yet.
 Needs Linux 6.0 or later (6.14 for exact error messages when a download fails), KDE Plasma 6, Qt
 6.8+ and KDE Frameworks 6.8+.
 
-Download the two RPMs of the latest release from the Releases page — `konedrive` and
-`konedrive-kde` (the Dolphin plugins), not the `.src.rpm` — and install them:
+Download the two RPMs of the latest release for your Fedora (`.fc44` or `.fc45` in the name) from
+the Releases page — `konedrive` and `konedrive-kde` (the Dolphin plugins), not the `.src.rpm` — and
+install them:
 
 ```
 sudo dnf install ./konedrive-*.rpm
