@@ -481,7 +481,7 @@ rescues of a reconcile that then fails are recorded too.
 A read-only account's OneDrive folder is locked: files `r--r--r--` (`0444`), directories `r-xr-xr-x`
 (`0555`). Directories are locked too, because editors save by writing a new file and renaming it
 over the old one, which needs write permission on the directory, not the file. The window and the
-README say the folder is read-only.
+user guide say the folder is read-only.
 
 The daemon lifts write permission only for the moment of its own operation. File content needs no
 window: it is written through a descriptor already open, which works on a `0444` file. But a

@@ -5,7 +5,8 @@ the README), so expect things to move. A few practical notes before you send a c
 
 ## Building
 
-See the README's "Build dependencies (Fedora)" and "Install for your user" sections, and
+See [`docs/developing.md`](docs/developing.md) for the build dependencies, the development install
+and the tests in full, and
 [`docs/design/`](docs/design/README.md) for how the system works and why. In short:
 
 ```

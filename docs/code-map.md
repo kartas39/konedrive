@@ -977,7 +977,9 @@ Design: `packaging.md`; `docs/releasing.md`.
 
 ## Documents
 
-- `README.md` — what KOneDrive is, how to install and use it.
+- `README.md` — what KOneDrive is and does, in short, and where to read more.
+- `docs/user-guide.md` — installing and using it, in the window and from the command line.
+- `docs/developing.md` — building, the development install, the helper, the tests.
 - `CONTRIBUTING.md` — building, the tests, the structure rules, the limitations log.
 - `SECURITY.md` — the helper's security model.
 - `docs/design/` — how the system works and why; its `README.md` is the index.

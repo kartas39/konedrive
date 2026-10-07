@@ -146,5 +146,5 @@ echo
 echo "Built ($version$([ "$dev_tools" = yes ] && echo ", with dev-tools")):"
 find "$top/RPMS" "$top/SRPMS" -name '*.rpm' | sort
 echo
-echo "Install both packages (see README, \"Install from RPM\"):"
+echo "Install both packages (see docs/user-guide.md, \"Install\"):"
 echo "    sudo dnf install $top/RPMS/*/konedrive-*$version-*.rpm"

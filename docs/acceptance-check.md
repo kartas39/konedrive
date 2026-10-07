@@ -6,8 +6,8 @@ tray and notifications. Anyone testing a build can follow it; it takes about hal
 short run log: the build's commit, the kernel and filesystem, and, for each step, whether it
 matched "Expected" and anything that did not.
 
-What you need: a Fedora (or similar) machine with KDE Plasma 6, the build dependencies from the
-README, `sudo`, and a Microsoft account you can sign in with (a test account is fine). konedrive
+What you need: a Fedora (or similar) machine with KDE Plasma 6, the build dependencies from
+`docs/developing.md`, `sudo`, and a Microsoft account you can sign in with (a test account is fine). konedrive
 signs in with its own application registration, so there is nothing to register beforehand.
 
 Everything here is read-only against OneDrive: nothing is uploaded, renamed or deleted in the
@@ -17,7 +17,7 @@ rather than losing it. Steps 6 and 8 ask you to change a file on onedrive.com yo
 you do not mind renaming or editing.
 
 A OneDrive folder is kept in step only while the helper is connected, so the helper comes first
-(step 2). The no-interception mode is a developer's mode and is not part of this check (README,
+(step 2). The no-interception mode is a developer's mode and is not part of this check (`docs/developing.md`,
 "A folder without OneDrive or the helper").
 
 ## 1. Install this build (as yourself), and sign in
@@ -38,7 +38,7 @@ Places entry is now called "OneDrive — Personal"; and `~/.config/konedrive/con
 the old configuration. Skip `account add` then.
 
 `dev-install.sh` does not install the Dolphin plugins. For the emblems in steps 3 and 5, install
-them for your user as the README's "Dolphin integration" says, then log out and back in.
+them for your user as "The Dolphin plugins" in `docs/developing.md` says, then log out and back in.
 
 ## 2. The helper, then a scratch folder (needs sudo)
     cargo build --release -p konedrive-helper

@@ -3,8 +3,9 @@
 KOneDrive installs on Fedora as two RPM packages, built from one spec
 (`packaging/rpm/konedrive.spec`) by `scripts/build-rpm.sh`: on the user's own machine, or, for a
 release, by the release workflow, which publishes them on GitHub Releases (`docs/releasing.md`).
-There is no package repository yet: a COPR one needs a Fedora account and comes later. The README's
-"Install from RPM" and "Switching from the developer install" are the user's side of this page.
+There is no package repository yet: a COPR one needs a Fedora account and comes later. "Install" in
+`docs/user-guide.md` and "Switching from the developer install to the packages" in
+`docs/developing.md` are the user's side of this page.
 
 ## The two packages
 
@@ -132,7 +133,7 @@ package's:
 | `/etc/systemd/system/konedrive-helper.service` (from `scripts/install-helper.sh`), running `/usr/local/libexec/konedrive-helper` | `/usr/lib/systemd/system/konedrive-helper.service` |
 | Dolphin plugins installed for the user by hand, with `QT_PLUGIN_PATH` | the `konedrive-kde` plugins |
 
-So the switch removes the developer install first (README, "Switching from the developer install"):
+So the switch removes the developer install first (`docs/developing.md`, "Switching from the developer install to the packages"):
 
 1. `scripts/dev-uninstall.sh`, as the user, removes exactly the files `scripts/dev-install.sh`
    installs, stops the daemon, then reloads the user's systemd and D-Bus. It leaves the settings,

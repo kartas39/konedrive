@@ -463,7 +463,7 @@ signing a signed-out account in again (`konedrivectl login`) and renaming use th
 folder (`Folder.Register`) is a separate call on the account's own object.
 
 There is no adding a signed-out account under a chosen name. Only a development build (`dev-tools`)
-can still make one, for a folder that shows a local directory (README, "A folder without OneDrive or
+can still make one, for a folder that shows a local directory (`docs/developing.md`, "A folder without OneDrive or
 the helper"): `org.konedrive.DevTools.AddAccount(s label) → o`, which
 `konedrivectl dev add-account <label>` calls. A label the rules refuse (§2) is `InvalidArgs`, with
 the reason. An account whose objects cannot be put on the bus is refused `Failed`, and what was made

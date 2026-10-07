@@ -1,8 +1,8 @@
 #!/bin/sh
 # Removes what scripts/dev-install.sh installed for the current user, as
 # yourself: no root. Run it before installing the RPM packages, whose files
-# the ones under ~/.local and ~/.config would otherwise override (README,
-# "Switching from the developer install").
+# the ones under ~/.local and ~/.config would otherwise override
+# (docs/developing.md, "Switching from the developer install to the packages").
 #
 # It stops the daemon, removes exactly the files dev-install.sh puts in place,
 # and reloads the user's systemd and D-Bus. It never touches your settings
@@ -60,7 +60,7 @@ elif [ -f "$autostart" ] && grep -qF "$prefix/bin/konedrive" "$autostart"; then
 fi
 
 # Not dev-install.sh's, so only pointed out: the Dolphin plugins installed for
-# this user by hand (README, "Dolphin integration"), which would be loaded
+# this user by hand (docs/developing.md, "The Dolphin plugins"), which would be loaded
 # instead of the konedrive-kde package's.
 for plugin in "$prefix/lib64/plugins/kf6/overlayicon/konedriveoverlay.so" \
         "$prefix/lib64/plugins/kf6/kfileitemaction/konedriveactions.so" \
