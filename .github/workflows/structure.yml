@@ -25,8 +25,8 @@ permissions:
   contents: read
 
 env:
-  # The Rust the release's tests run with (release.yml, RUST_VERSION): a newer
-  # rustdoc may bring lints this workflow has not seen. Moved with that one.
+  # The Rust the tests run with (tests.yml, RUST_VERSION): a newer rustdoc may
+  # bring lints this workflow has not seen. Moved with that one.
   RUST_VERSION: "1.98.1"
 
 jobs:

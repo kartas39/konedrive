@@ -1,8 +1,10 @@
-# A release on every push to main: the daemon's tests (on the runner itself),
-# then the RPMs for each Fedora below (in its container), then the tag vX.Y.Z
-# and a GitHub Release with the packages. Run by hand
-# (workflow_dispatch) it is a dry run by default: the RPMs are kept as the
-# run's artifacts, and nothing is tagged or released. docs/releasing.md.
+# A release on every push to main: the RPMs for each Fedora below (each built
+# in that Fedora's container, with its own compiler), each installed in a clean
+# container of that Fedora, where the programs must start; then the tag vX.Y.Z
+# and a GitHub Release with the packages. No test of the code runs here: the
+# pull requests ran them (tests.yml). Run by hand (workflow_dispatch) it is a
+# dry run by default: the RPMs are kept as the run's artifacts, and nothing is
+# tagged or released. docs/releasing.md.
 name: Release
 
 on:
@@ -24,69 +26,8 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # The Rust the tests run with: the `rust` package of every Fedora the RPMs
-  # are built for. A build stops if its Fedora's differs; when Fedora updates
-  # the package, move this to the version it prints (docs/releasing.md).
-  RUST_VERSION: "1.98.1"
-
 jobs:
-  # The daemon's unit tests, directly on the runner (a VM with its own kernel),
-  # as its unprivileged user: a container's seccomp profile refuses
-  # fanotify_init, which the watcher's tests need. A failure stops the run
-  # before anything is built or tagged. Not the workspace (#21); not the tests
-  # that need root (#44).
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      # No incremental build: nothing is rebuilt in place, and the cache
-      # stays smaller.
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - name: Check out
-        uses: actions/checkout@v7
-
-      # rustup is on the runner's image; the toolchain is pinned, not the
-      # image's.
-      - name: Install Rust ${{ env.RUST_VERSION }}
-        run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
-          rustup default "$RUST_VERSION"
-          rustc --version
-
-      # dbus-daemon for the tests' private buses. Unprivileged user
-      # namespaces, which Ubuntu restricts through AppArmor, for the test
-      # that mounts a tmpfs in one (a_subtree_on_another_filesystem_is_...).
-      # Setup only: the tests themselves run without sudo.
-      - name: Set up the runner
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends dbus-daemon
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-      - name: Cache the crates and the test build
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: runner-rust-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: runner-rust-${{ env.RUST_VERSION }}-
-
-      - name: Test the daemon
-        run: cargo test --locked -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools
-
-      # All its tests, not --lib alone: the one that fails when a generated
-      # C++ file in git is not what the catalogue gives is an integration test.
-      - name: Test the catalogue of sentences and the generated files
-        run: cargo test --locked -p konedrive-text
-
   build:
-    needs: test
     runs-on: ubuntu-latest
     # The Fedoras the packages are built for: one build each, the same commit
     # and the same version, told apart by the dist tag (.fc44, .fc45).
@@ -125,15 +66,8 @@ jobs:
       - name: Install the build dependencies
         run: dnf -y builddep packaging/rpm/konedrive.spec
 
-      # The RPMs are built with the Rust the tests ran with, or not at all.
-      - name: Check the compiler against the tests'
-        run: |
-          have=$(rustc --version | cut -d' ' -f2)
-          echo "rustc $have; the tests ran with $RUST_VERSION"
-          if [ "$have" != "$RUST_VERSION" ]; then
-            echo "::error::Fedora ${{ matrix.fedora }}'s rustc is $have, the tests ran with $RUST_VERSION: see \"The Rust version is pinned\" in docs/releasing.md"
-            exit 1
-          fi
+      - name: Say which compiler builds them
+        run: rustc --version
 
       # A release is X.Y.Z, the version in Cargo.toml. A dry run takes a local
       # build's version, X.Y.Z~dev.N (N: the commit count of HEAD's history,
@@ -179,9 +113,76 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # The packages a person would download, installed where nothing was built:
+  # a missing dependency or a program that does not start stops the release
+  # before anything is tagged.
+  install:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        fedora: [44, 45]
+    container: fedora:${{ matrix.fedora }}
+    timeout-minutes: 30
+    steps:
+      - name: Fetch this Fedora's RPMs
+        uses: actions/download-artifact@v8
+        with:
+          name: konedrive-${{ needs.build.outputs.version }}-fc${{ matrix.fedora }}
+          path: dist
+
+      # Both packages, as "sudo dnf install ./konedrive-*.rpm" does, without
+      # the source RPM; dbus-daemon for the private bus below.
+      - name: Install them
+        run: |
+          rm -f dist/*.src.rpm
+          ls -l dist
+          dnf -y install dbus-daemon dist/*.rpm
+
+      - name: The programs find their libraries
+        run: |
+          missing=0
+          for file in /usr/bin/konedrived /usr/bin/konedrivectl /usr/bin/konedrive /usr/libexec/konedrive-helper \
+                      $(rpm -ql konedrive-kde | grep '\.so$'); do
+            echo "== $file"
+            if ldd "$file" | grep 'not found'; then
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: The daemon and the command line start
+        run: |
+          konedrived --version
+          dbus-run-session -- konedrivectl --version
+
+      # The window, with no display, on a bus of its own: it must load its
+      # QML and come up hidden, and is then stopped. "ready" is its last line
+      # of a start (app/main.cpp).
+      - name: The window starts
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_LOGGING_RULES: konedrive.app.debug=true
+          QT_FORCE_STDERR_LOGGING: "1"
+          HOME: /tmp/home
+          XDG_RUNTIME_DIR: /tmp/runtime
+        run: |
+          mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          set +e
+          dbus-run-session -- timeout 30 konedrive --background >window.log 2>&1
+          rc=$?
+          set -e
+          cat window.log
+          if ! grep -q 'ready, window hidden' window.log; then
+            echo "::error::the window did not come up (exit $rc)"
+            exit 1
+          fi
+
   # Only a release (the build job's RELEASE).
   publish:
-    needs: build
+    needs: [build, install]
     if: needs.build.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

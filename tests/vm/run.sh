@@ -10,6 +10,8 @@
 #        tests/vm/run.sh scenarios [args...] # the suite, all three FS, one VM
 #        tests/vm/run.sh measure [args...]   # the measurement mode
 #        tests/vm/run.sh unit                # the shipped systemd unit, under systemd
+#        tests/vm/run.sh host <fs> [args...] # the suite on one filesystem, as root on THIS
+#                                            # machine, with no VM: GitHub Actions only
 #        tests/vm/run.sh quick --graph-token <file> --graph-folder <folder>
 #                                            # against the real account; the token comes
 #                                            # from `konedrivectl dev export-access-token`,
@@ -291,6 +293,36 @@ case $mode in
             fi
         done
         exit "$overall"
+        ;;
+    host)
+        # A GitHub runner is itself a throwaway VM, with sudo and a kernel new
+        # enough for the suite: there the guest's script runs as root on the
+        # machine, in a mount namespace of its own, so its tmpfs over /mnt and
+        # /var/lib and its loop mount go with it. Anywhere else this is refused:
+        # root is used only inside the VM (CONTRIBUTING.md).
+        shift
+        if [ "${GITHUB_ACTIONS:-}" != true ]; then
+            echo "run.sh: host runs the suite as root on this machine; only a GitHub Actions runner may. Use quick or full." >&2
+            exit 2
+        fi
+        fs=${1:-}
+        case $fs in
+            btrfs | ext4 | xfs) shift ;;
+            *) echo "run.sh: host needs a filesystem: btrfs, ext4 or xfs" >&2; exit 2 ;;
+        esac
+        build_scenarios
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        write_inner "$work" "$vm_scenarios" "$fs" \
+            --helper "$helper" "$@" --fs "$fs"
+        sudo unshare --mount sh "$work/inner.sh" < /dev/null > "$work/out.txt" 2>&1 || true
+        rc=$(sed -n 's/^inner-exit=\([0-9]\{1,\}\)$/\1/p' "$work/out.txt" | tail -1)
+        cat "$work/out.txt"
+        if [ -z "$rc" ]; then
+            echo "run.sh: the suite never reported an exit status" >&2
+            exit 125
+        fi
+        exit "$rc"
         ;;
     scenarios | measure)
         shift
