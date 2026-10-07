@@ -122,9 +122,9 @@ pub(crate) fn forget_without_link_refused(ctx: &Ctx, checks: &mut Checks) -> Res
 /// Tells the helper to drop `folder`'s registration under the id the folder
 /// carries, whatever the daemon under test did. A scenario that goes red can
 /// leave the helper holding a folder the daemon no longer knows — that is
-/// what these scenarios are about — and on ext4 the next folder created
-/// reuses the removed one's inode number, which the helper then refuses as
-/// the same directory (`EINVAL`), turning one red scenario into two.
+/// what these scenarios are about — and that entry would count towards the
+/// roots the user may hold, and stand at its path until a folder is
+/// registered there again.
 pub(crate) fn release_at_the_helper(ctx: &Ctx, link: &HelperLink, folder: &Path) {
     if let Ok(Some(id)) = xattr::get(folder, "user.konedrive.root") {
         if let Ok(id) = String::from_utf8(id) {
@@ -637,6 +637,95 @@ fn upgraded_steps(
     }
     if after.as_deref() != Ok(payload.as_slice()) || state != Some(State::Hydrated) {
         return Err(format!("{}. The reader did not get the file's content", trace.join("; ")));
+    }
+    Ok(())
+}
+
+/// Issue #251: a folder removed without being unregistered leaves its entry
+/// with the helper, and ext4 and xfs hand its inode number to the next
+/// directory made. The helper took that directory for the removed root and
+/// refused to register it (`EINVAL`), under any id. It tells a directory by
+/// its file handle now, and drops an entry that stands in the way with its
+/// directory gone.
+///
+/// Two ways the new folder meets the old entry: beside it, with the same
+/// inode number (when the filesystem hands it out again: Btrfs does not), and
+/// at the very path the old one had.
+pub(crate) fn a_removed_roots_entry_does_not_refuse_the_next_folder(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
+    let link = ctx.link()?;
+    let (left, beside, again) = (
+        "5e7a1e00-0000-4000-8000-000000000001",
+        "5e7a1e00-0000-4000-8000-000000000002",
+        "5e7a1e00-0000-4000-8000-000000000003",
+    );
+    let parent = ctx.root.parent().ok_or("the suite root has no parent")?.to_path_buf();
+    let result = removed_root_steps(ctx, &link, &parent, left, beside, again);
+    for id in [left, beside, again] {
+        let _ = ctx.runtime.block_on(link.unregister_root(id));
+    }
+    for name in ["removed-root", "removed-root-next"] {
+        let _ = std::fs::remove_dir_all(parent.join(name));
+    }
+    result
+}
+
+fn removed_root_steps(
+    ctx: &Ctx,
+    link: &HelperLink,
+    parent: &Path,
+    left: &str,
+    beside: &str,
+    again: &str,
+) -> Result<(), String> {
+    let stored = || std::fs::read_to_string(ROOTS_FILE).unwrap_or_default();
+    let register = |folder: &Path, id: &str| -> Result<(), String> {
+        let dir = File::open(folder).map_err(|e| e.to_string())?;
+        ctx.runtime.block_on(link.register_root(&dir, id)).map_err(|e| format!("cannot register {folder:?}: {e}"))
+    };
+
+    let first = scenario_folder(ctx, "removed-root")?;
+    let old_ino = ctx.ino_of(&first)?;
+    register(&first, left)?;
+    std::fs::remove_dir(&first).map_err(|e| e.to_string())?;
+    if !stored().contains(left) {
+        return Err("the removed folder's entry is not with the helper; nothing is tested".into());
+    }
+
+    // Beside it. The number comes back at once on ext4 and xfs when nothing
+    // else took it; a few tries, since something else may.
+    let next = parent.join("removed-root-next");
+    let mut reused = false;
+    for _ in 0..16 {
+        let _ = std::fs::remove_dir(&next);
+        std::fs::create_dir(&next).map_err(|e| e.to_string())?;
+        if ctx.ino_of(&next)? == old_ino {
+            reused = true;
+            break;
+        }
+    }
+    register(&next, beside)?;
+    let marked = dir_mark_present(ctx.helper_pid(), ctx.ino_of(&next)?);
+    println!(
+        "    a folder beside the removed one, with its inode number: {reused}; registered, and          marked: {marked}"
+    );
+    if !marked {
+        return Err("the folder beside the removed one was registered and not marked".into());
+    }
+
+    // At the removed folder's own path, under another id: the old entry's
+    // path leads to this directory, which is not its own.
+    std::fs::create_dir(&first).map_err(|e| e.to_string())?;
+    register(&first, again)?;
+    let marked = dir_mark_present(ctx.helper_pid(), ctx.ino_of(&first)?);
+    let kept = stored().contains(left);
+    println!(
+        "    a folder at the removed one's path: registered, marked: {marked}; roots.json still          names the removed folder's id: {kept}"
+    );
+    if !marked {
+        return Err("the folder at the removed one's path was registered and not marked".into());
+    }
+    if kept {
+        return Err("the removed folder's entry is still with the helper".into());
     }
     Ok(())
 }

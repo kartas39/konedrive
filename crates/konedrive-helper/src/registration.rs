@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
+use konedrive_fs::handle::FileHandle;
 use konedrive_helper::errno::Errno;
 use konedrive_helper::{marks, roots};
 use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
@@ -91,11 +92,11 @@ fn open_beneath(path: &str) -> io::Result<File> {
 /// `(st_dev, st_ino)` comparison then requires that what was reached is the
 /// very directory that was registered.
 ///
-/// The second check is deliberately not load-bearing on its own. Measured on
-/// ext4, deleting a directory and creating another in the same parent reused
-/// the same inode number on the first attempt (Btrfs and XFS did not), so
-/// `(dev, ino)` equality is not proof of identity on every filesystem — which
-/// is exactly why resolution is no longer allowed to wander.
+/// The second check is deliberately not load-bearing on its own. ext4 and xfs
+/// give a removed directory's inode number to the next one made (Btrfs does
+/// not), so `(dev, ino)` equality is not proof of identity on every
+/// filesystem — which is exactly why resolution is no longer allowed to
+/// wander, and why [`open_root`] also asks the directory's file handle.
 fn reopen_and_verify(path: &str, dev: u64, ino: u64) -> io::Result<File> {
     let dir = open_beneath(path)?;
     let meta = dir.metadata()?;
@@ -113,7 +114,37 @@ fn reopen_and_verify(path: &str, dev: u64, ino: u64) -> io::Result<File> {
     Ok(dir)
 }
 
+/// A registered root's directory, found by its stored path and proved to be
+/// the registered one: device and inode, owner, and file handle.
+///
+/// The inode number alone is not the directory — ext4 and xfs give a removed
+/// directory's number to the next one made — so a directory with another
+/// handle than the entry's is another directory. This is what a registration
+/// goes by when it asks whether an entry's directory is still there.
 pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
+    let dir = open_root_by_number(root)?;
+    if is_another_directory(root, &dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is another directory now: it has the registered one's inode number and not \
+                 its file handle",
+                roots::shown_path(&root.path)
+            ),
+        ));
+    }
+    Ok(dir)
+}
+
+/// [`open_root`] without the file handle: the directory at the stored path,
+/// with the registered device, inode and owner. For covering a root at a
+/// start and for unmarking one, where taking another directory for the
+/// root's costs little — it is its owner's, and a mark on it, or none, does
+/// no harm — and leaving the root's own unmarked means zeros. A handle can
+/// differ for the same directory: xfs writes it another way under another
+/// mount option, and a Btrfs subvolume put back from a snapshot is another
+/// subvolume with the same inode numbers.
+pub(crate) fn open_root_by_number(root: &roots::Root) -> io::Result<File> {
     let dir = reopen_and_verify(&root.path, root.dev, root.ino)?;
     if dir.metadata()?.uid() != root.uid {
         return Err(io::Error::new(
@@ -122,6 +153,59 @@ pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
         ));
     }
     Ok(dir)
+}
+
+/// Whether `dir` has another file handle than the one `root` was registered
+/// with. False where either has none.
+pub(crate) fn is_another_directory(root: &roots::Root, dir: &File) -> bool {
+    match (&root.handle, handle_of(dir)) {
+        (Some(registered), Some(now)) => now != *registered,
+        _ => false,
+    }
+}
+
+/// The directory's file handle, as an entry keeps it (`roots::Root::handle`).
+/// `None` where the filesystem gives none: the directory is then told by
+/// device and inode alone.
+pub(crate) fn handle_of(dir: &File) -> Option<Vec<u8>> {
+    FileHandle::of(dir).ok().filter(FileHandle::is_well_formed).map(|handle| handle.encode())
+}
+
+/// Whether the directory of an entry that stands in `new`'s way is gone, so
+/// that the entry can be dropped instead of refusing the registration
+/// (`roots::Roots::with_gone`).
+///
+/// Only the asking user's own entries: whoever can write to a directory
+/// above another user's root could otherwise put a directory of their own at
+/// its path for a moment and have that user's entry dropped — and with it
+/// the root's cover at the helper's next start. Another user's entry refuses
+/// as it always did.
+///
+/// Of the user's own, an entry is gone when
+/// - its stored path leads nowhere, or to something that is not its
+///   directory ([`open_root`]): a folder removed, or replaced at its path; or
+/// - it carries no handle and the offered directory has its device and
+///   inode. It is this very directory, or one that got its number: either
+///   way the registration under way is the one that covers it. The daemon
+///   announces a folder under the id the folder carries, so the same
+///   directory under another id is not a daemon announcing it again.
+///
+/// A path that cannot be looked at for another reason — too many open files,
+/// a link put in its way — leaves the entry, and the registration refused.
+fn is_gone(old: &roots::Root, new: &roots::Root) -> bool {
+    if old.uid != new.uid {
+        return false;
+    }
+    if old.handle.is_none() && (old.dev, old.ino) == (new.dev, new.ino) {
+        return true;
+    }
+    match open_root(old) {
+        Ok(_) => false,
+        Err(e) => matches!(
+            e.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ),
+    }
 }
 
 /// One unreadable subdirectory must never abort a root's walk, and
@@ -194,7 +278,7 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> Resul
     // Outside the roots lock: the walk opens and marks its way through a whole
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
-    uncover_root(shared, &root, open_root(&root), "unregistered");
+    uncover_root(shared, &root, open_root_by_number(&root), "unregistered");
     Ok(())
 }
 
@@ -349,7 +433,7 @@ pub(crate) fn register_root(
         return Err(unusable.errno);
     }
 
-    let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id };
+    let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id, handle: handle_of(&dir) };
 
     // The id may be the user's already, on another directory. That directory
     // is found again here, by its stored path, with no lock held: every
@@ -362,11 +446,20 @@ pub(crate) fn register_root(
     let held = shared
         .roots
         .get(&root.root_id)
-        .filter(|old| old.uid == uid && (old.dev, old.ino) != (root.dev, root.ino));
+        .filter(|old| old.uid == uid && !old.same_directory(&root));
     let mut opened = held.map(|old| {
         let dir = open_root(&old);
         (old, dir)
     });
+
+    // Entries under other ids that stand in this root's way — the same
+    // directory, or a path inside it or around it — and whose own directories
+    // are gone: a folder removed without being unregistered leaves one. They
+    // are looked at here, with no lock held, like the id's own old directory
+    // above, and dropped by the decision below if they are still what was
+    // looked at.
+    let gone: Vec<roots::Root> =
+        shared.roots.conflicting(&root).into_iter().filter(|old| is_gone(old, &root)).collect();
 
     let displaced = {
         let change = shared.roots.change();
@@ -377,8 +470,8 @@ pub(crate) fn register_root(
         // Asking here, with the change begun so that nothing is registered
         // or unregistered until this is saved and in place, is what makes a
         // refusal airtight rather than merely likely.
-        let decided = change.with(root.clone());
-        let roots::Accepted { roots: next, displaced } = match decided {
+        let decided = change.with_gone(root.clone(), &gone);
+        let roots::Accepted { roots: next, dropped, displaced } = match decided {
             Ok(accepted) => accepted,
             Err(refused) => return Err(refuse(shared, uid, &refused, &root.root_id, &root.path)),
         };
@@ -405,7 +498,7 @@ pub(crate) fn register_root(
         // replaced at its path by a copy, or gone — there is nothing to
         // unmark by that path, so nothing the new root needs can be dropped,
         // and the registration goes on.
-        let displaced = match displaced.filter(|old| (old.dev, old.ino) != (root.dev, root.ino)) {
+        let displaced = match displaced.filter(|old| !old.same_directory(&root)) {
             None => None,
             Some(old) => match opened.take() {
                 Some((seen, dir)) if seen.same_entry(&old) => Some((old, dir)),
@@ -433,6 +526,15 @@ pub(crate) fn register_root(
         // leaves nothing to put back.
         if let Err(e) = change.commit(next) {
             return Err(not_saved(shared, &e));
+        }
+        for old in &dropped {
+            tracing::info!(
+                "root {} ({}) is dropped: its directory is not at that path any more, and it stood \
+                 in the way of root {}",
+                roots::shown_id(&old.root_id),
+                roots::shown_path(&old.path),
+                roots::shown_id(&root.root_id)
+            );
         }
         displaced
     };

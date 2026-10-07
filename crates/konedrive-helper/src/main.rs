@@ -23,7 +23,7 @@ use nix::sys::socket::{
 
 use connection::serve;
 use events::event_loop;
-use registration::{check_filesystem_type, open_root, record_walk};
+use registration::{check_filesystem_type, handle_of, is_another_directory, open_root_by_number, record_walk};
 use shared::{Shared, EVENT_QUEUE_DEPTH, EVENT_WORKERS, FLUSH_EVERY, ROOTS_FILE};
 
 fn main() -> anyhow::Result<ExitCode> {
@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<ExitCode> {
             covered.insert(root.clone());
         }
     }
+    adopt_handles(&shared, &covered);
 
     // Nothing that can fail stands between the walk and the event loop but
     // the loop itself (`docs/design/hydration.md` §12).
@@ -119,12 +120,40 @@ fn load_roots() -> roots::Roots {
     }
 }
 
+/// Gives each covered root that was registered before handles were kept its
+/// directory's file handle (`roots::Root::handle`), and saves them. The
+/// directory is the one the root was just covered through, found by its
+/// stored path with its device and inode: all such an entry has to go by.
+/// One that was not covered keeps none, and is told by device and inode as
+/// before. A save that fails is said and changes nothing: the next start
+/// asks again.
+fn adopt_handles(shared: &Shared, covered: &roots::Roots) {
+    let found: Vec<(roots::Root, Vec<u8>)> = covered
+        .iter()
+        .filter(|root| root.handle.is_none())
+        .filter_map(|root| Some((root.clone(), handle_of(&open_root_by_number(root).ok()?)?)))
+        .collect();
+    if found.is_empty() {
+        return;
+    }
+    let change = shared.roots.change();
+    let mut next = change.current();
+    let adopted = found.into_iter().filter(|(seen, handle)| next.adopt_handle(seen, handle.clone())).count();
+    if adopted == 0 {
+        return;
+    }
+    match change.commit(next) {
+        Ok(()) => tracing::info!("{adopted} root(s) registered by an older helper now carry their file handle"),
+        Err(e) => tracing::error!("cannot save the file handles of {adopted} root(s): {e}"),
+    }
+}
+
 /// Whether `root` overlaps anything already covered this startup: the
 /// nesting rule (`docs/design/hydration.md` §11) applies at every boot, not
 /// only at registration, because what a stored path leads to can change in
 /// between.
 fn overlap_with(covered: &roots::Roots, root: &roots::Root) -> Option<String> {
-    covered.nesting_conflict(&root.path, root.dev, root.ino).map(|conflict| match conflict {
+    covered.conflict_with(root).map(|conflict| match conflict {
         roots::Nesting::Inside(id) | roots::Nesting::Contains(id) | roots::Nesting::SameDirectory(id) => id,
     })
 }
@@ -132,13 +161,24 @@ fn overlap_with(covered: &roots::Roots, root: &roots::Root) -> Option<String> {
 /// Re-opens, re-checks and walks one registered root. Returns whether it is
 /// now covered, so the caller knows whether to compare later roots against it.
 fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
-    let dir = match open_root(root) {
+    let dir = match open_root_by_number(root) {
         Ok(dir) => dir,
         Err(e) => {
             tracing::error!("root {} is not covered: {e}", roots::shown_id(&root.root_id));
             return false;
         }
     };
+    // Covered all the same: a root left unmarked reads zeros, and a
+    // directory that only got its inode number is its owner's own, with
+    // nothing in it a mark could harm (`open_root_by_number`).
+    if is_another_directory(root, &dir) {
+        tracing::warn!(
+            "root {} ({}) has the registered inode number and another file handle; covered, and \
+             its registration is as it was until its daemon registers it again",
+            roots::shown_id(&root.root_id),
+            roots::shown_path(&root.path)
+        );
+    }
     // The filesystem check is re-run too — a root can have been
     // moved onto a filesystem that cannot host placeholders since it was
     // registered.

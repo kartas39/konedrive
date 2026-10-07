@@ -9,6 +9,7 @@ fn root(uid: u32, dev: u64, ino: u64) -> Root {
         ino,
         path: format!("/home/u{uid}/OneDrive"),
         root_id: format!("r{ino}"),
+        handle: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn a_root_may_not_nest_in_or_contain_another() {
         ino: 7,
         path: "/home/u/OneDrive".into(),
         root_id: "a".into(),
+        handle: None,
     });
 
     assert_eq!(
@@ -146,6 +148,7 @@ fn reusing_another_users_root_id_no_longer_hides_an_overlap() {
         ino: 7,
         path: "/home/alice/OneDrive".into(),
         root_id: "shared-id".into(),
+        handle: None,
     });
     assert_eq!(
         roots.nesting_conflict("/home/alice/OneDrive/Sub", 42, 8),
@@ -165,6 +168,7 @@ fn a_sibling_with_a_similar_name_is_not_nested() {
         ino: 7,
         path: "/home/u/OneDrive".into(),
         root_id: "a".into(),
+        handle: None,
     });
     assert_eq!(roots.nesting_conflict("/home/u/OneDrive2", 42, 9), None);
     assert_eq!(roots.nesting_conflict("/home/u/One", 42, 9), None);
@@ -195,7 +199,7 @@ fn id(n: u32) -> String {
 }
 
 fn registered(uid: u32, ino: u64) -> Root {
-    Root { uid, dev: 42, ino, path: format!("/home/u{uid}/folder{ino}"), root_id: id(ino as u32) }
+    Root { uid, dev: 42, ino, path: format!("/home/u{uid}/folder{ino}"), root_id: id(ino as u32), handle: None }
 }
 
 /// `root_id` is whatever string a peer sends, up to a whole datagram, and it
@@ -318,4 +322,63 @@ fn an_entry_is_the_same_only_with_the_same_owner_directory_and_path() {
     let roots = Roots::default().with(registered(1000, 7)).unwrap().roots;
     assert!(roots.get(&id(7)).is_some_and(|held| held.same_entry(&entry)));
     assert!(roots.get(&id(8)).is_none());
+}
+
+/// ext4 and xfs hand a removed directory's inode number to the next one
+/// made. With a handle on both sides the handles say whether it is the same
+/// directory; an entry without one is still told by device and inode.
+#[test]
+fn a_directory_that_only_got_a_roots_inode_number_is_not_that_root() {
+    let old = Root { handle: Some(vec![1, 2, 3]), ..registered(1000, 7) };
+    let mut roots = Roots::default();
+    roots.insert(old.clone());
+
+    let reused = Root { handle: Some(vec![9, 9, 9]), path: "/home/u1000/other".into(), root_id: id(8), ..old.clone() };
+    assert_eq!(roots.conflict_with(&reused), None);
+    assert!(roots.conflicting(&reused).is_empty());
+    assert!(roots.with(reused.clone()).is_ok());
+
+    let same = Root { path: "/home/u1000/other".into(), root_id: id(8), ..old.clone() };
+    assert_eq!(roots.conflict_with(&same), Some(Nesting::SameDirectory(id(7))));
+
+    // An entry from before handles were kept: the number is all there is.
+    let mut older = Roots::default();
+    older.insert(registered(1000, 7));
+    assert_eq!(older.conflict_with(&reused), Some(Nesting::SameDirectory(id(7))));
+    assert!(!old.same_entry(&registered(1000, 7)), "the handle is part of the entry");
+}
+
+/// An entry that stands in the way and whose directory the caller found gone
+/// is dropped with the registration — but only the entry that was looked at.
+#[test]
+fn an_entry_found_gone_is_dropped_with_the_registration_it_stood_in_the_way_of() {
+    let old = registered(1000, 7);
+    let mut roots = Roots::default();
+    roots.insert(old.clone());
+    // A new folder made at the removed one's path, under an id of its own.
+    let new = Root { ino: 8, root_id: id(8), ..old.clone() };
+    assert_eq!(roots.conflicting(&new), vec![old.clone()]);
+    assert_eq!(roots.with(new.clone()).unwrap_err(), Refused::Overlap(Nesting::Inside(id(7))));
+
+    let accepted = roots.with_gone(new.clone(), &[old.clone()]).unwrap();
+    assert_eq!(accepted.dropped, vec![old.clone()]);
+    assert!(accepted.roots.get(&id(7)).is_none());
+    assert!(accepted.roots.get(&id(8)).is_some());
+
+    // Registered anew since it was looked at: it is another entry, and refuses.
+    let mut changed = Roots::default();
+    changed.insert(Root { handle: Some(vec![4]), ..old.clone() });
+    assert_eq!(changed.with_gone(new, &[old]).unwrap_err(), Refused::Overlap(Nesting::Inside(id(7))));
+}
+
+/// An entry written before handles were kept is given its directory's once,
+/// and only if it is still the entry that was looked at.
+#[test]
+fn an_older_entry_adopts_its_handle_once() {
+    let old = registered(1000, 7);
+    let mut roots = Roots::default();
+    roots.insert(old.clone());
+    assert!(roots.adopt_handle(&old, vec![1, 2]));
+    assert_eq!(roots.get(&id(7)).unwrap().handle.as_deref(), Some(&[1u8, 2][..]));
+    assert!(!roots.adopt_handle(&old, vec![3]), "it has one now");
 }

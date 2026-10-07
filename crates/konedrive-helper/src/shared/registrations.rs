@@ -47,6 +47,12 @@ impl Registrations {
         (roots.owner_of(root_id), roots.held_by(uid))
     }
 
+    /// The entries under other ids that stand in `new`'s way, as they are
+    /// now (`Roots::conflicting`).
+    pub(crate) fn conflicting(&self, new: &Root) -> Vec<Root> {
+        lock(&self.roots).conflicting(new)
+    }
+
     pub(crate) fn has_root_for(&self, uid: u32) -> bool {
         lock(&self.roots).has_root_for(uid)
     }
@@ -71,9 +77,15 @@ pub(crate) struct Change<'a> {
 }
 
 impl Change<'_> {
-    /// The roots with `root` added, or why it is refused (`Roots::with`).
-    pub(crate) fn with(&self, root: Root) -> Result<Accepted, Refused> {
-        lock(self.roots).with(root)
+    /// The roots with `root` added and the entries of `gone` dropped, or why
+    /// it is refused (`Roots::with_gone`).
+    pub(crate) fn with_gone(&self, root: Root, gone: &[Root]) -> Result<Accepted, Refused> {
+        lock(self.roots).with_gone(root, gone)
+    }
+
+    /// The roots as they are now, to change and [`commit`](Self::commit).
+    pub(crate) fn current(&self) -> Roots {
+        lock(self.roots).clone()
     }
 
     /// The roots without `uid`'s `root_id`, and the root that left; `None`
