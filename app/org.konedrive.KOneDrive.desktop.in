@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KOneDrive
+Comment=OneDrive account for KDE
+Exec=@KDE_INSTALL_FULL_BINDIR@/konedrive
+Icon=folder-cloud
+Terminal=false
+Categories=Qt;KDE;Network;FileTransfer;

@@ -1,0 +1,11 @@
+{
+    "KPlugin": {
+        "Description": "Always keep a OneDrive file on this device, free up the space it takes, or open its page in OneDrive, from the context menu",
+        "Icon": "window-pin",
+        "MimeTypes": [
+            "application/octet-stream",
+            "inode/directory"
+        ],
+        "Name": "KOneDrive: Always Keep on This Device, Free Up Space and Open in OneDrive"
+    }
+}

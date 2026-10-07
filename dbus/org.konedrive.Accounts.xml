@@ -1,0 +1,128 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts: the accounts of this user. The same object
+       implements org.konedrive.Files and org.freedesktop.DBus.ObjectManager,
+       which announces each account object below it (InterfacesAdded once it
+       is exported, InterfacesRemoved when it goes). Each account is the
+       object /org/konedrive/Accounts/<id>, with org.konedrive.Account,
+       org.konedrive.Folder, org.konedrive.Transfers,
+       org.konedrive.UploadQueue, org.konedrive.Conflicts,
+       org.konedrive.LocalScan, org.konedrive.ActivityLog and
+       org.konedrive.TokenExport. Personal Microsoft accounts only in this
+       version. Nothing is served at /org/konedrive/Daemon any more. -->
+  <interface name="org.konedrive.Accounts">
+    <!-- Starts a sign-in for a new account, the only way to add one, and
+         returns its number and the URL to open in a browser. The sign-in
+         belongs to no account: until it has succeeded and its drive is known
+         not to be another account's, nothing exists for it (no entry in
+         config.toml, no directory, no stored token, no object). Numbers are
+         not reused while the daemon runs. Refused, with nothing started, when
+         config.toml cannot be read (Failed, before the browser is opened: the
+         account could not be written at the end), no client ID can be had or
+         the listener cannot be bound. One at a time: a SignIn while one is
+         under way ends that one as "cancelled" first, and so does
+         SetClientId; a SignIn or a SetClientId that is refused ends nothing.
+         How a sign-in ends is said by SignInFinished. -->
+    <method name="SignIn">
+      <arg name="sign_in" type="u" direction="out"/>
+      <arg name="url" type="s" direction="out"/>
+    </method>
+    <!-- Cancels the sign-in with that number, and says whether it did. Never
+         refused. cancelled is true when this call ended the sign-in:
+         SignInFinished "cancelled" follows. It is false, and nothing changes,
+         when the number is not under way, which includes a sign-in whose
+         account is being made at that moment: its own SignInFinished says how
+         it ended ("signed-in" when the account was made). -->
+    <method name="CancelSignIn">
+      <arg name="sign_in" type="u" direction="in"/>
+      <arg name="cancelled" type="b" direction="out"/>
+    </method>
+    <!-- Sent exactly once for every sign-in SignIn answered, unless the
+         daemon stopped first. outcome:
+         "signed-in": the account was made and is in List; message is its
+           label: its email; "<email> 2", "<email> 3", ... when another
+           account has that label; "Personal", "Personal 2", ... when there
+           is no email or it cannot be a label; account is its path. List
+           changes before this is sent;
+         "cancelled": CancelSignIn, a newer SignIn, or SetClientId; message
+           is empty and account is "/";
+         "already-added": the drive is another account's; message is that
+           account's label and account its path;
+         "failed": anything else, the timeout included; message says why and
+           account is "/".
+         Only "signed-in" made an account. -->
+    <signal name="SignInFinished">
+      <arg name="sign_in" type="u"/>
+      <arg name="outcome" type="s"/>
+      <arg name="message" type="s"/>
+      <arg name="account" type="o"/>
+    </signal>
+    <!-- Removes an account: forgets its folder exactly as Folder.Unregister
+         does (so refused NoHelper under the same rule, before anything
+         changes), cancels a sign-in under way, deletes its refresh token, its
+         cached name and quota and its tree store, then removes the object.
+         The folder's files and the rescued files are kept. NoAccount for a
+         path that names no account. Refused PendingUploads, as
+         Folder.Unregister is, while changes made here wait to be
+         uploaded. Failed when the token cannot be deleted or config.toml
+         cannot be written after the folder was forgotten: the account stays,
+         and the message says what was done to its folder and its sign-in. -->
+    <method name="Remove">
+      <arg name="account" type="o" direction="in"/>
+    </method>
+    <!-- The Entra application every account signs in with. InvalidArgs for a
+         malformed id; refused Failed while any account is signing in or
+         signed in. -->
+    <method name="SetClientId">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+    <!-- The hold's settings (issues #57, #95), one pair for every account:
+         each is written to config.toml and taken by every account at once,
+         and a change ends every account's Folder.SyncAnyway.
+         SetPauseOnMetered: whether every account holds back on a metered
+         connection. -->
+    <method name="SetPauseOnMetered">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!-- What every account does on battery: "sync" (nothing), "power-saver"
+         (holds back while on battery in the power-saver profile) or "pause"
+         (holds back whenever on battery). Refused
+         org.freedesktop.DBus.Error.InvalidArgs for anything else. -->
+    <method name="SetOnBattery">
+      <arg name="choice" type="s" direction="in"/>
+    </method>
+    <!-- Every account, in the order it was added: the order of the window's
+         switcher, the tray's tooltip and `konedrivectl account list`. -->
+    <property name="List" type="ao" access="read"/>
+    <property name="ClientId" type="s" access="read"/>
+    <!-- See SetPauseOnMetered and SetOnBattery; true and "power-saver" until
+         they are called. -->
+    <property name="PauseOnMetered" type="b" access="read"/>
+    <property name="OnBattery" type="s" access="read"/>
+    <!-- The privileged helper, as the daemon sees it: "connected" (files
+         download when opened), "not-installed" (no konedrive-helper service
+         on this system), "stopped" (installed, not running: systemctl start
+         konedrive-helper), "failed" (the service failed: systemctl status
+         konedrive-helper), "unknown" (systemd cannot be asked, or the helper
+         has started but the daemon has no link to it yet). A OneDrive
+         folder is kept in step only while this is "connected". Here rather
+         than on each account: one helper serves every account. -->
+    <property name="HelperState" type="s" access="read"/>
+    <!-- Trouble that belongs to no account: config.toml cannot be read, or
+         was written by a newer version, or a migration step failed, or an
+         account in it could not be loaded. Empty when there is none. -->
+    <property name="LastError" type="s" access="read"/>
+    <!-- The running daemon's build: its version (X.Y.Z for a release,
+         X.Y.Z-dev.N for a package built from any other commit, X.Y.Z-dev for
+         a plain cargo build) and the full hash of its commit, or "unknown"
+         (docs/releasing.md). A client built from another commit shows that
+         the daemon should be restarted. Never change while the daemon runs. -->
+    <property name="Version" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+    <property name="Commit" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+  </interface>
+</node>

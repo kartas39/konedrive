@@ -1,0 +1,80 @@
+[package]
+name = "konedrived"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Test-only, like the helper's feature of the same name: one
+# stall the VM suite arms to widen a race window too narrow to hit by chance
+# (startup recovery between its `ClearIgnore` and its lease). Off
+# by default; never enable it in a build that ships. `tests/vm/Cargo.toml`
+# turns it on for the suite's own build of this crate. It also builds the fake
+# OneDrive (`crate::fake_onedrive`, on wiremock), which the suite's write scenarios
+# run the daemon against inside the VM, and the test support of `sync/`
+# (`sync::testing`), which makes a service with a `config.toml` in a temporary
+# directory.
+fault-injection = ["dep:wiremock", "dep:tempfile"]
+# Development builds only (issue #79): each account's `org.konedrive.TokenExport`, which
+# hands out access tokens for the VM tests against real Graph, the stress tests and the
+# test-account harness. Off by default: the released package has no such interface, and
+# its `%build` refuses a daemon that names it. `scripts/dev-install.sh` turns it on.
+dev-tools = []
+# Tests only: the test support of `account/` (`account::testing`: a wallet in memory, one
+# account with no accounts manager). The crate's own tests, `konedrivectl`'s and the VM
+# suite turn it on; no build that ships has it.
+testing = []
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+image.workspace = true
+konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
+konedrive-proto = { path = "../konedrive-proto" }
+konedrive-tree = { path = "../konedrive-tree" }
+libc.workspace = true
+md-5.workspace = true
+nix = { workspace = true, features = ["fs", "mount", "socket"] }
+oo7.workspace = true
+png.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "signal"] }
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+xattr.workspace = true
+zbus.workspace = true
+# Only with `fault-injection`: the fake OneDrive of the VM suite, and the temporary
+# `config.toml` of `sync::testing`.
+wiremock = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Tests only: the private session bus.
+konedrive-dbus = { path = "../konedrive-dbus", features = ["testing"] }
+# Tests only: the crate itself with its test support, for the tests under `tests/`.
+konedrived = { path = ".", features = ["testing"] }
+# Tests only: the secret store in memory and the pool's test helpers.
+konedrive-graph = { path = "../konedrive-graph", features = ["testing"] }
+# Tests only: the catalogue's words for the menu's reasons, checked against the reasons.
+konedrive-text = { path = "../konedrive-text" }
+# Tests only: the store's test helpers (`konedrive_tree::off_runtime` and the bench's).
+konedrive-tree = { path = "../konedrive-tree", features = ["testing"] }
+tempfile.workspace = true
+# Tests only: the paused clock, which drives the 5 s spacing of `LocalBytes`
+# and the coalescing of `PropertiesChanged` without a real wait.
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true

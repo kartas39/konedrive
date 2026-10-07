@@ -1,0 +1,81 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: one Microsoft account, its sign-in state
+       and account info. Tokens are never exposed. The client id every
+       account signs in with is Accounts.ClientId. -->
+  <interface name="org.konedrive.Account">
+    <!-- A sign-in as a different Microsoft account than this one's, or as one
+         already connected as another account, ends in State "signed-out"
+         with the reason in LastError, like any failed sign-in. -->
+    <method name="BeginSignIn">
+      <arg name="url" type="s" direction="out"/>
+    </method>
+    <method name="CancelSignIn"/>
+    <method name="SignOut"/>
+    <method name="RefreshInfo"/>
+    <!-- Renames the account. InvalidArgs for a label that is empty, longer
+         than 40 characters, contains "/" or a control character, is 12
+         hexadecimal digits (the shape of an account's id), or is already used
+         (regardless of case); the message says which. "@" is allowed: a label
+         may be an email. The label is trimmed first. -->
+    <method name="SetLabel">
+      <arg name="label" type="s" direction="in"/>
+    </method>
+    <!-- Switches the mode: "read-only" or "read-write" (InvalidArgs
+         otherwise). Answers the URL of the sign-in the switch needs, empty
+         when it needs none; the caller opens it, as for BeginSignIn.
+         To read-write: any account may be, it is the user's choice; refused
+         NotSignedIn unless it is signed in, and Failed, before any URL,
+         when no drive is recorded for it and it cannot be asked for now.
+         The sign-in asks for
+         Files.ReadWrite; only once its token response grants that, for this
+         account's own drive, does Mode become "read-write". A refused or
+         failed sign-in changes nothing but LastError, a cancelled one
+         (CancelSignIn) nothing at all; State stays "signed-in" throughout.
+         To read-only: refused PendingUploads while changes wait to be
+         uploaded, unless force, which drops them (the files stay; a rename
+         half-done in OneDrive under a temporary name stays until the
+         account is read-write again). No sign-in: the next token refresh
+         asks for Files.Read. Any other way to read-only (a sign-out, the
+         write gate, config.toml) keeps the changes: the folder is locked
+         and not kept in step with OneDrive while they wait, and its
+         LastError says so; they go once the account is read-write again,
+         and force drops them then too, read-only already or not. -->
+    <method name="SetMode">
+      <arg name="mode" type="s" direction="in"/>
+      <arg name="force" type="b" direction="in"/>
+      <arg name="sign_in_url" type="s" direction="out"/>
+    </method>
+    <!-- The last element of this object's path: 12 lowercase hex
+         characters, no other account's (a removed account's may come
+         again). -->
+    <property name="Id" type="s" access="read"/>
+    <property name="Label" type="s" access="read"/>
+    <!-- The mode the account runs in: "read-only" | "read-write". It is
+         "read-write" only while config.toml says so, and its token carries
+         Files.ReadWrite and reaches the drive config.toml records for the
+         account; otherwise "read-only", with LastError saying why when
+         config.toml says read-write. -->
+    <property name="Mode" type="s" access="read"/>
+    <!-- signed-out | signing-in | signed-in -->
+    <property name="State" type="s" access="read"/>
+    <property name="LastError" type="s" access="read"/>
+    <property name="DisplayName" type="s" access="read"/>
+    <property name="Email" type="s" access="read"/>
+    <!-- The account's one quota, whoever reads it: the account's info (a
+         sign-in, RefreshInfo) or the uploads' space check (Folder.Refresh,
+         an upload OneDrive refused for lack of space, the check every 30
+         minutes while full or while a file is too big). Every read updates
+         all four; what it did not give keeps its last value. Between reads
+         the bytes uploaded come off QuotaRemaining and are added to
+         QuotaUsed. Bytes: used and total; QuotaRemaining is Graph's
+         quota.remaining, never total - used. QuotaState is Graph's
+         quota.state: normal, nearing, critical or exceeded. 0 and empty until
+         read; kept across restarts. -->
+    <property name="QuotaUsed" type="t" access="read"/>
+    <property name="QuotaTotal" type="t" access="read"/>
+    <property name="QuotaRemaining" type="t" access="read"/>
+    <property name="QuotaState" type="s" access="read"/>
+  </interface>
+</node>

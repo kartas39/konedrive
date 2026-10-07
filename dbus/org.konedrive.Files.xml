@@ -1,0 +1,141 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts. Per-file calls, each routed by path to the
+       account whose folder holds the path: the directory part is resolved
+       first (`..` and links to directories), and the account is the one
+       whose folder is a component prefix of it. Routing never opens the
+       file. A path in no account's folder is
+       refused OutsideRoot (ItemState answers "not-managed"). Once routed,
+       each call acts in that account's folder. -->
+  <interface name="org.konedrive.Files">
+    <!-- Downloads one file now. A file already downloaded is left as it is.
+         A file in any state but online-only may still carry the helper's
+         ignore mark, which has to be cleared before a download that could
+         fail empties the file: in a folder registered with interception and
+         no helper connected, or in any folder while a helper runs that the
+         daemon is not connected to, that is refused NoHelper. -->
+    <method name="Hydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Frees up one downloaded file's space. The helper's ignore mark on it
+         is cleared first, in either registration mode: refused NoHelper in a
+         folder registered with interception and no helper connected, and in
+         any folder while a helper runs that the daemon is not connected to;
+         with no helper running at all, a folder registered without
+         interception frees it up anyway. A file with a change waiting to be
+         uploaded is refused NotUploaded: freeing it up would lose the
+         change. -->
+    <method name="Dehydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <method name="ItemState">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="state" type="s" direction="out"/>
+    </method>
+    <!-- "Always keep on this device": pins each path (a file or a folder;
+         a folder pins everything under it, now and later) and queues the
+         download of every file under it that is online-only. A path already
+         pinned by a folder above it is left as it is. Every path is routed
+         before anything is pinned: one path in no folder refuses the whole
+         call and changes nothing. Returns how many files were queued, summed
+         over the accounts. -->
+    <method name="Pin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="queued" type="u" direction="out"/>
+    </method>
+    <!-- Unchecking "Always keep on this device": removes each path's own pin
+         and nothing else — files stay downloaded, as on Windows. A path pinned
+         by a folder above it is refused (NotAllowed, naming that folder),
+         also when it carries a pin of its own under that folder: it would
+         stay pinned. Routed as Pin, and every path checked for a pin by a folder
+         above it before anything is unpinned. Returns how many pins were
+         removed, summed over the accounts. -->
+    <method name="Unpin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="unpinned" type="u" direction="out"/>
+    </method>
+    <!-- "Free up space" for chosen paths: an explicitly pinned path is
+         unpinned, then everything under it is freed; a path pinned only by a
+         folder above it is refused (NotAllowed, naming that folder); an
+         unpinned path is freed. Files in use are skipped and counted as busy;
+         files pinned by their own pin below a freed folder stay and are
+         counted as skipped_pinned. A file named itself that has a change
+         waiting to be uploaded refuses the call NotUploaded; one inside a
+         folder is left and counted as busy. Routed as Pin, and every path checked for
+         a pin by a folder above it before anything is freed. Counts are
+         summed over the accounts. -->
+    <method name="FreeUp">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="files" type="u" direction="out"/>
+      <arg name="bytes" type="t" direction="out"/>
+      <arg name="busy" type="u" direction="out"/>
+      <arg name="skipped_pinned" type="u" direction="out"/>
+    </method>
+    <!-- "Open in OneDrive": the address of the page OneDrive's web interface
+         has for the file or folder at the path. The path is opened as Pin
+         opens it (nothing is downloaded) for its item id, and OneDrive is
+         asked for that item: one GET, with the client's usual retries, so
+         the answer can take as long as they do. Nothing is changed, on disk
+         or in OneDrive, and no browser is started: the caller opens the
+         address. The path of an account's folder itself is answered too,
+         with the address of the drive's root.
+         Refused NotManaged for a file of the user's own or a reserved name,
+         NotUploaded for an item with no id (OneDrive does not have it yet),
+         NotSignedIn for an account that is signed out, Unreachable when
+         OneDrive does not answer (the message is the cause), and Failed otherwise (the item is gone
+         from OneDrive, or the answer carries no address). -->
+    <method name="WebUrl">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="url" type="s" direction="out"/>
+    </method>
+    <!-- What a file manager's context menu may offer for a selection: one
+         call per menu, so that the rules of Pin, Unpin, FreeUp and WebUrl are
+         decided here and nowhere else. Nothing is changed and no file is
+         opened (nothing is downloaded): the answer comes from what the
+         daemon knows and the marks on the paths, and does not wait for a
+         sync that is writing to the account's store. The keys:
+           paths (as): the selected paths Pin takes, in the order given;
+             what Pin, Unpin or FreeUp is then called with. A path in no
+             account's folder, a link, a file of the user's own, a reserved
+             name and an account's folder itself are left out.
+           always-keep (s): "hidden" (paths is empty); "off"; "on" (every
+             path is pinned, by itself or by a folder above); "on-locked"
+             (the same, and Unpin of paths would be refused).
+           free-up (s): "hidden" (no path is a folder, a downloaded file or
+             one with a pin of its own); "enabled"; "disabled" (FreeUp of
+             paths would be refused: free-up-why says for what).
+           free-up-why (s): why free-up is "disabled"; empty otherwise. One
+             reason: the first of these that holds, in this order.
+             "no-helper": the folder is intercepted and its helper is not
+             connected. "pinned-above": a folder above keeps a path pinned
+             (blocked-by names it). "unknown": the daemon cannot tell now
+             whether a downloaded file among the paths has a change waiting
+             to be uploaded: a mark on a file among them cannot be read, or
+             the account's sync has not started, or its store cannot be
+             read. "not-uploaded": one has such a change. The last two are
+             answered only for a folder that shows OneDrive.
+             A mark that cannot be read is found before the store is asked,
+             so the answer is then "unknown" even when another file of the
+             selection has a change waiting; FreeUp goes file by file, and
+             refuses for whichever of the two it meets first.
+             Over several accounts' folders each account finds its own
+             first reason, and the answer is that of the first account that
+             refuses, in the order the accounts' paths first come in the
+             selection: not the reason that comes first in the order above.
+           blocked-by (s): the name of the folder above that keeps a path
+             pinned, when that is why always-keep is "on-locked" or
+             free-up-why is "pinned-above"; empty otherwise.
+           open-online (s): "hidden" (not exactly one path selected, or one
+             that is neither in paths nor an account's folder itself);
+             "enabled"; "disabled" (the item is not in OneDrive yet).
+           open-online-path (s): the path WebUrl is then called with; empty
+             when open-online is "hidden".
+         Never refused for a path it does not take. The answer is about the
+         moment it was asked: a call made after it can still be refused. -->
+    <method name="Menu">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="menu" type="a{sv}" direction="out"/>
+    </method>
+  </interface>
+</node>

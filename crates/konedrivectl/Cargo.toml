@@ -1,0 +1,40 @@
+[package]
+name = "konedrivectl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Development builds only (issue #79): `konedrivectl dev`, the token export, beside the
+# daemon's `org.konedrive.TokenExport`. Off by default, as the daemon's is; its tests run the
+# daemon with the same feature.
+dev-tools = ["konedrived/dev-tools"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-reason = { path = "../konedrive-reason" }
+konedrive-text = { path = "../konedrive-text" }
+libc.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+zbus.workspace = true
+
+[dev-dependencies]
+# Tests only: the private session bus.
+konedrive-dbus = { path = "../konedrive-dbus", features = ["testing"] }
+# Tests only: the daemon in the test's process, with the wallet in memory (`account::testing`).
+konedrived = { path = "../konedrived", features = ["testing"] }
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
+konedrive-proto = { path = "../konedrive-proto" }
+# Tests only: the store in memory (`TreeStore::in_memory`).
+konedrive-tree = { path = "../konedrive-tree", features = ["testing"] }
+nix = { workspace = true, features = ["socket"] }
+serde_json.workspace = true
+tempfile.workspace = true
+url.workspace = true
+wiremock.workspace = true
+xattr.workspace = true

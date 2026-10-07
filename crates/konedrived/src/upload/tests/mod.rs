@@ -1,0 +1,1360 @@
+//! The worker, end to end (`docs/design/writes.md` §12): rows made by the real
+//! examination from a real folder, sent to a fake OneDrive (wiremock, never
+//! a network), and the folder, the store and the drive compared afterwards.
+//! Crashes are fault points: the worker stops at the step, and a new one is
+//! built on the same store and folder.
+
+use konedrive_tree::ActivityKind;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::Write;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use konedrive_fs::handle::FileHandle;
+use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_ROOT, XATTR_STAMP, XATTR_STATE, XATTR_SYNC};
+use tokio_util::sync::CancellationToken;
+use wiremock::ResponseTemplate;
+
+use super::*;
+use crate::fake_onedrive::{self as fake, qx};
+use harness::Harness;
+use crate::folder::disk::Disk;
+use crate::helper::testing::FakeHelper;
+use crate::helper::LinkCell;
+use crate::local::testing::{file, folder, row, Folder};
+use crate::local::{Batch, Examined};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::{Change, Kind, Row, Table, TreeStore};
+
+use OutboxKind::{Create, Mkdir, Move, Update};
+
+/// A folder placed from a listing by the real materializer, a fake
+/// OneDrive holding the same, and a worker for it. The folder is `OneDrive`
+/// in a temporary directory; what leaves it goes beside it, where the fake
+/// helper finds it (`move_out`).
+struct World {
+    /// The folder, its store and what an examination needs (`local::testing`).
+    folder: Folder,
+    helper: FakeHelper,
+    /// The worker's link to [`helper`](Self::helper); empty while the helper is down.
+    link: LinkCell,
+    h: Harness,
+}
+
+impl std::ops::Deref for World {
+    type Target = Folder;
+
+    fn deref(&self) -> &Folder {
+        &self.folder
+    }
+}
+
+impl World {
+    fn new(changes: &[Change]) -> Self {
+        let folder = Folder::new(changes);
+        let h = Harness::new(&folder.root, &folder.store, &folder.locks);
+        let helper = FakeHelper::standalone();
+        helper.finding_beneath(folder.dir.path().canonicalize().unwrap());
+        let link = LinkCell::holding(Some(h.block_on(helper.connect())));
+        World { folder, helper, link, h }
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.root.path.join(rel)
+    }
+
+    /// The helper is not running: the worker has no link to it.
+    fn helper_down(&self) {
+        self.link.set(None);
+    }
+
+    /// The helper is back, on a new link.
+    fn helper_up(&self) {
+        self.link.set(Some(self.h.block_on(self.helper.connect())));
+    }
+
+    fn examine_batch(&self, batch: &Batch) -> Examined {
+        self.folder.examine_at(batch, crate::clock::unix_now())
+    }
+
+    fn examine(&self, pairs: &[(&str, &str)]) -> Examined {
+        let mut batch = Batch::new();
+        for (dir, name) in pairs {
+            batch.name(Path::new(dir), OsStr::new(name));
+        }
+        self.examine_batch(&batch)
+    }
+
+    fn rows(&self) -> Vec<OutboxRow> {
+        konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_rows())).unwrap()
+    }
+
+    fn summary(&self) -> Vec<(OutboxKind, String, OutboxState)> {
+        self.rows().into_iter().map(|r| (r.kind, r.rel.display().to_string(), r.state)).collect()
+    }
+
+    /// Downloaded, as a fill leaves it.
+    fn hydrate(&self, rel: &str, content: &[u8]) {
+        let file = File::options().write(true).open(self.path(rel)).unwrap();
+        file.set_len(0).unwrap();
+        (&file).write_all(content).unwrap();
+        placeholder::write_state(&file, State::Hydrated).unwrap();
+        placeholder::write_stamp(&file).unwrap();
+    }
+
+    /// An edit in place of a downloaded file: new content, a later time.
+    fn edit(&self, rel: &str, content: &[u8]) {
+        let file = File::options().write(true).truncate(true).open(self.path(rel)).unwrap();
+        (&file).write_all(content).unwrap();
+        placeholder::set_mtime(&file, std::time::SystemTime::now() + Duration::from_secs(5)).unwrap();
+    }
+
+    fn write(&self, rel: &str, content: &[u8]) {
+        std::fs::write(self.path(rel), content).unwrap();
+    }
+
+    fn rename(&self, from: &str, to: &str) {
+        std::fs::rename(self.path(from), self.path(to)).unwrap();
+    }
+
+    fn handle(&self, rel: &str) -> FileHandle {
+        let path = self.path(rel);
+        FileHandle::at(&File::open(path.parent().unwrap()).unwrap(), path.file_name().unwrap()).unwrap()
+    }
+
+    fn attr(&self, rel: &str, name: &str) -> Option<String> {
+        xattr::get(self.path(rel), name).unwrap().map(|v| String::from_utf8(v).unwrap())
+    }
+
+    fn run(&self) -> Arc<Engine> {
+        self.h.run()
+    }
+
+    fn cloud<T>(&self, f: impl FnOnce(&mut fake::Cloud) -> T) -> T {
+        self.h.graph.with(f)
+    }
+
+    fn base(&self, id: &str) -> Option<Row> {
+        { let id = id.to_owned(); self.store.call_blocking(move |s| s.get(Table::Items, &id)).unwrap() }
+    }
+
+    /// The cloud's content at `path`.
+    fn content(&self, path: &str) -> Option<Vec<u8>> {
+        self.cloud(|c| c.at(path).map(|i| i.content.clone()))
+    }
+
+    fn id_at(&self, path: &str) -> Option<String> {
+        self.cloud(|c| c.at(path).map(|i| i.id.clone()))
+    }
+}
+
+/// What a commit leaves on a file (§5.4): the item id, `hydrated`, the cTag
+/// OneDrive gave, the stamp of the content sent, and no upload mark.
+fn assert_committed(w: &World, rel: &str, cloud_path: &str) {
+    let id = w.id_at(cloud_path).unwrap_or_else(|| panic!("{cloud_path} is not in OneDrive: {:?}", w.cloud(|c| c.paths())));
+    assert_eq!(w.attr(rel, XATTR_ITEM_ID).as_deref(), Some(id.as_str()), "{rel}");
+    let is_file = std::fs::metadata(w.path(rel)).unwrap().is_file();
+    if is_file {
+        let meta = std::fs::metadata(w.path(rel)).unwrap();
+        assert_eq!(w.attr(rel, XATTR_STATE).as_deref(), Some("hydrated"), "{rel}");
+        assert_eq!(w.attr(rel, XATTR_CTAG), w.cloud(|c| c.at(cloud_path).map(|i| i.ctag.clone())), "{rel}");
+        assert_eq!(w.attr(rel, XATTR_STAMP), Some(format!("{} {}.{}", meta.len(), meta.mtime(), meta.mtime_nsec())), "{rel}");
+        let here = qx(&std::fs::read(w.path(rel)).unwrap());
+        assert_eq!(w.cloud(|c| c.at(cloud_path).and_then(|i| i.hash.clone())), Some(here), "{rel}: the content");
+    }
+    assert_eq!(w.attr(rel, XATTR_SYNC), None, "{rel}");
+    let base = w.base(&id).unwrap();
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle(&id)).unwrap(), Some(w.handle(rel)), "{rel}");
+    assert_eq!(Some(base.name.as_str()), cloud_path.rsplit('/').next());
+}
+
+/// New folders and files go up, parents first; each is committed on the
+/// file and in the store; the examination then finds nothing (§5.3, §6.1).
+#[test]
+fn new_folders_and_files_go_up_and_are_committed() {
+    let w = World::new(&[]);
+    std::fs::create_dir_all(w.path("docs/deep")).unwrap();
+    w.write("docs/deep/a.txt", b"alpha");
+    w.write("docs/empty", b"");
+    w.write("top.txt", b"top");
+    w.examine(&[("", "docs"), ("", "top.txt")]);
+    let mut kinds: Vec<OutboxKind> = w.rows().iter().map(|r| r.kind).collect();
+    kinds.sort();
+    assert_eq!(kinds, vec![Create, Create, Create, Mkdir, Mkdir]);
+    assert_eq!(w.attr("top.txt", XATTR_SYNC), None);
+
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["docs", "docs/deep", "docs/deep/a.txt", "docs/empty", "top.txt"]);
+    for (rel, path) in [("docs", "docs"), ("docs/deep", "docs/deep"), ("docs/deep/a.txt", "docs/deep/a.txt"), ("docs/empty", "docs/empty"), ("top.txt", "top.txt")] {
+        assert_committed(&w, rel, path);
+    }
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::Uploaded).count(), 5);
+    assert_eq!(w.store.call_blocking(move |s| s.outbox_seq()).unwrap(), 5);
+    // Echo, locally: the next examination of everything finds nothing to send.
+    w.examine_batch(&Batch::full());
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+}
+
+/// An edit goes up guarded by the base's eTag, a rename is a PATCH, and a
+/// row behind a running one is sent after it.
+#[test]
+fn edits_and_renames_go_up_guarded() {
+    let w = World::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"new content");
+    w.examine(&[("", "a.txt")]);
+    assert_eq!(w.summary(), vec![(Update, "a.txt".into(), OutboxState::Ready)]);
+    w.run();
+    assert!(w.rows().is_empty());
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_eq!(w.id_at("a.txt").as_deref(), Some("A"), "the item keeps its id");
+
+    w.rename("a.txt", "docs/b.txt");
+    w.examine(&[("", "a.txt"), ("docs", "b.txt")]);
+    assert_eq!(w.summary(), vec![(Move, "docs/b.txt".into(), OutboxState::Ready)]);
+    w.run();
+    assert!(w.rows().is_empty());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["docs", "docs/b.txt"]);
+    assert_eq!(w.base("A").map(|r| (r.parent_id, r.name)), Some((Some("D".into()), "b.txt".into())));
+    assert!(w.h.host.kinds().contains(&ActivityKind::CloudMoved));
+
+    // Moved and changed at once: one row, the move first, then the content
+    // against the eTag the move answered with (§5.2).
+    w.rename("docs/b.txt", "c.txt");
+    w.edit("c.txt", b"third");
+    w.examine(&[("docs", "b.txt"), ("", "c.txt")]);
+    assert_eq!(w.summary(), vec![(Update, "c.txt".into(), OutboxState::Ready)]);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["c.txt", "docs"]);
+    assert_committed(&w, "c.txt", "c.txt");
+}
+
+/// An edit of a download that is older than the base (a new
+/// version not yet downloaded over it) is queued with that download's cTag
+/// and no eTag; the worker guards it with that cTag, the guard fails, and
+/// both versions are kept.
+#[test]
+fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    // A newer version came in the delta; the file is not replaced yet.
+    w.cloud(|c| c.edit("A", b"newer"));
+    let newer = w.cloud(|c| c.item("A").cloned().unwrap());
+    w.store
+        .call_blocking(move |s| {
+            let mut base = s.get(Table::Items, "A")?.unwrap();
+            base.etag = Some(newer.etag.clone());
+            base.ctag = Some(newer.ctag.clone());
+            base.quickxor = newer.hash.clone();
+            base.size = newer.size;
+            s.begin_staging(konedrive_tree::NewTree::Delta)?;
+            s.stage(&[Change::Upsert(base)])?;
+            s.commit_staging("link-2")
+        })
+        .unwrap();
+    w.edit("a.txt", b"mine, from the old one");
+    w.examine(&[("", "a.txt")]);
+    let row = &w.rows()[0];
+    assert_eq!((row.kind, row.base.as_ref().and_then(|b| b.etag.clone()), row.base.as_ref().and_then(|b| b.ctag.clone())), (Update, None, Some("c-A".into())));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert!(w.cloud(|c| c.guards.iter().any(|(path, tag)| path.ends_with("items/A/createUploadSession") && tag == "c-A")), "{:?}", w.cloud(|c| c.guards.clone()));
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
+    assert_eq!(w.content("a.txt").unwrap(), b"newer");
+    assert_committed(&w, "a-fedora.txt", "a-fedora.txt");
+}
+
+/// §10, one crash row at a time: each step replayed on a new worker reaches
+/// the same end — one item in OneDrive, adopted by hash, by place or by
+/// kind, never a copy, and the outbox empty. The points of an upload
+/// session are in `sessions.rs`
+/// (`a_crash_at_each_point_of_a_session_is_replayed_to_the_same_item`).
+#[test]
+fn every_crash_point_is_replayed_to_the_same_end() {
+    let cases: Vec<(&str, Fault)> = vec![
+        ("create", Fault::CommitStep1Partial),
+        ("create", Fault::AfterCommitStep1),
+        ("update", Fault::AfterCommitStep1),
+        ("mkdir", Fault::AfterSend),
+        ("move", Fault::AfterSend),
+        ("delete", Fault::AfterSend),
+    ];
+    for (what, fault) in cases {
+        let w = World::new(&[file("A", "R", "a.txt", b"old"), file("B", "R", "b.txt", b"b")]);
+        w.hydrate("a.txt", b"old");
+        w.hydrate("b.txt", b"b");
+        let (rel, expect): (&str, Vec<&str>) = match what {
+            "create" => {
+                w.write("n.txt", b"new file");
+                w.examine(&[("", "n.txt")]);
+                ("n.txt", vec!["a.txt", "b.txt", "n.txt"])
+            }
+            "update" => {
+                w.edit("a.txt", b"edited");
+                w.examine(&[("", "a.txt")]);
+                ("a.txt", vec!["a.txt", "b.txt"])
+            }
+            "mkdir" => {
+                std::fs::create_dir(w.path("dir")).unwrap();
+                w.examine(&[("", "dir")]);
+                ("dir", vec!["a.txt", "b.txt", "dir"])
+            }
+            "move" => {
+                w.rename("b.txt", "c.txt");
+                w.examine(&[("", "b.txt"), ("", "c.txt")]);
+                ("c.txt", vec!["a.txt", "c.txt"])
+            }
+            _ => {
+                std::fs::remove_file(w.path("b.txt")).unwrap();
+                w.examine(&[("", "b.txt")]);
+                ("", vec!["a.txt"])
+            }
+        };
+        assert_eq!(w.rows().len(), 1, "{what}: {:?}", w.summary());
+        let engine = w.h.engine();
+        engine.arm(fault);
+        w.h.drain(&engine);
+        assert_eq!(w.rows()[0].state, OutboxState::Running, "{what} {fault:?}: stopped at the step");
+
+        w.run();
+        assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
+        assert!(!w.h.host.kinds().contains(&ActivityKind::Conflict), "{what} {fault:?}: no conflict copy");
+        assert!(w.cloud(|c| c.placeholders()).is_empty(), "{what} {fault:?}: no placeholder left");
+        assert_eq!(w.cloud(|c| c.paths()), expect, "{what} {fault:?}");
+        if !rel.is_empty() {
+            assert_committed(&w, rel, rel);
+        }
+        assert!(w.cloud(|c| c.bin.keys().all(|id| id == "B")), "{what} {fault:?}: nothing else deleted");
+    }
+}
+
+/// §7, the cells where both sides changed one item.
+#[test]
+fn conflicts_keep_both_and_the_first_rename_wins() {
+    // edit × edit: the local version becomes a copy beside OneDrive's.
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.edit("A", b"theirs"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
+    assert_eq!(w.content("a.txt").unwrap(), b"theirs");
+    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+    assert_committed(&w, "a-fedora.txt", "a-fedora.txt");
+    assert!(!w.path("a.txt").exists(), "the cloud's version is placed at the name by the reconcile");
+    let copy = w.path("a-fedora.txt").display().to_string();
+    assert_eq!(w.store.call_blocking(move |s| s.conflict_kind(&copy)).unwrap().as_deref(), Some("copy"));
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "never taken for a delete");
+    assert!(w.h.host.kinds().contains(&ActivityKind::Conflict));
+    assert!(w.h.host.cycles.load(Ordering::SeqCst) > 0);
+    // the outbox on the bus: the delta carries OneDrive's version; no Full
+    // reconcile, which until the read-write reconcile puts waiting renames back.
+    assert_eq!(w.h.host.fulls.load(Ordering::SeqCst), 0, "a copy asks for no Full reconcile");
+
+    // edit × rename there: the content goes to the renamed item, and the
+    // file takes OneDrive's name.
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.rename("A", "R", "c.txt"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["c.txt"]);
+    assert_committed(&w, "c.txt", "c.txt");
+
+    // edit × delete there: uploaded again as new (local wins).
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| {
+        let gone = c.items.remove("A").unwrap();
+        c.bin.insert("A".into(), gone);
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_ne!(w.id_at("a.txt").as_deref(), Some("A"), "a new item");
+    assert_committed(&w, "a.txt", "a.txt");
+    assert!(w.base("A").is_none());
+    assert!(w.h.host.kinds().contains(&ActivityKind::Restored));
+
+    // rename × edit there: the rename goes again with the fresh eTag.
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.rename("a.txt", "b.txt");
+    w.examine(&[("", "a.txt"), ("", "b.txt")]);
+    w.cloud(|c| c.edit("A", b"theirs"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["b.txt"]);
+    assert_eq!(w.content("b.txt").unwrap(), b"theirs");
+
+    // rename × rename: the first to reach OneDrive wins; the file follows.
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.rename("a.txt", "b.txt");
+    w.examine(&[("", "a.txt"), ("", "b.txt")]);
+    w.cloud(|c| c.rename("A", "R", "c.txt"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["c.txt"]);
+    assert!(w.path("c.txt").exists() && !w.path("b.txt").exists());
+    assert_eq!(w.base("A").unwrap().name, "c.txt");
+
+    // rename × delete: a downloaded file goes up as new; a placeholder
+    // follows the delete.
+    let w = World::new(&[file("A", "R", "a.txt", b"old"), file("P", "R", "p.bin", b"only there")]);
+    w.hydrate("a.txt", b"old");
+    w.rename("a.txt", "b.txt");
+    w.rename("p.bin", "q.bin");
+    w.examine(&[("", "a.txt"), ("", "b.txt"), ("", "p.bin"), ("", "q.bin")]);
+    w.cloud(|c| {
+        for id in ["A", "P"] {
+            let gone = c.items.remove(id).unwrap();
+            c.bin.insert(id.into(), gone);
+        }
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["b.txt"]);
+    assert_committed(&w, "b.txt", "b.txt");
+    assert!(!w.path("q.bin").exists(), "a placeholder holds nothing here");
+    assert!(w.base("P").is_none());
+
+    // delete × edit: OneDrive's version comes back; nothing is deleted.
+    let w = World::new(&[file("A", "R", "a.txt", b"old"), file("B", "R", "b.txt", b"b"), file("C", "R", "c.txt", b"c")]);
+    for rel in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::remove_file(w.path(rel)).unwrap();
+    }
+    w.examine(&[("", "a.txt"), ("", "b.txt"), ("", "c.txt")]);
+    w.cloud(|c| {
+        c.edit("A", b"theirs");
+        c.rename("B", "R", "b2.txt");
+        let gone = c.items.remove("C").unwrap();
+        c.bin.insert("C".into(), gone);
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    // edit: kept, and placed again (its local handle forgotten);
+    // rename: the content the user deleted, deleted with the fresh eTag;
+    // delete: done.
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"]);
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None);
+    assert!(w.base("A").is_some() && w.base("B").is_none() && w.base("C").is_none());
+    assert!(w.h.host.kinds().contains(&ActivityKind::Restored));
+    assert!(w.h.host.fulls.load(Ordering::SeqCst) > 0, "placed again by a Full reconcile");
+
+    // create × create: the same content is adopted, other content copied.
+    let w = World::new(&[]);
+    w.write("same.txt", b"same");
+    w.write("x.txt", b"mine");
+    w.examine(&[("", "same.txt"), ("", "x.txt")]);
+    w.cloud(|c| {
+        c.add_file("S", "R", "same.txt", b"same");
+        c.add_file("X", "R", "X.TXT", b"theirs");
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["X.TXT", "same.txt", "x-fedora.txt"]);
+    assert_eq!(w.attr("same.txt", XATTR_ITEM_ID).as_deref(), Some("S"), "adopted: nothing sent");
+    assert_eq!(w.content("x-fedora.txt").unwrap(), b"mine");
+    assert_eq!(w.content("X.TXT").unwrap(), b"theirs");
+}
+
+/// A swap, a folder replaced by its own subfolder, and a
+/// folder wrapped in a new one of its name, end to end: each goes through
+/// a temporary name, nothing is adopted or copied, and nothing but what the
+/// user deleted is deleted.
+#[test]
+fn swaps_and_folders_replaced_in_place_go_through_a_temporary_name() {
+    // The subfolder: mv F/sub F.tmp && rm -rf F && mv F.tmp F.
+    let w = World::new(&[folder("F", "R", "F"), folder("S", "F", "sub"), file("A", "S", "a.txt", b"a"), file("B", "F", "b.txt", b"b")]);
+    w.rename("F/sub", "F.tmp");
+    std::fs::remove_dir_all(w.path("F")).unwrap();
+    w.rename("F.tmp", "F");
+    w.examine(&[("F", "sub"), ("", "F.tmp"), ("F", "b.txt"), ("", "F")]);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["F", "F/a.txt"]);
+    assert_eq!(w.id_at("F").as_deref(), Some("S"));
+    assert!(w.cloud(|c| c.bin.contains_key("F") && c.bin.contains_key("B") && !c.bin.contains_key("A")));
+    assert!(w.cloud(|c| c.count("PATCH", "items/S")) >= 2, "through the temporary name");
+
+    // The wrap: mkdir t && mv d t/ && mv t d.
+    let w = World::new(&[folder("D", "R", "d"), file("X", "D", "x.txt", b"x")]);
+    std::fs::create_dir(w.path("t")).unwrap();
+    w.rename("d", "t/d");
+    w.rename("t", "d");
+    w.examine(&[("", "t"), ("", "d"), ("t", "d")]);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["d", "d/d", "d/d/x.txt"]);
+    assert_eq!(w.id_at("d/d").as_deref(), Some("D"));
+    assert!(w.cloud(|c| c.bin.is_empty()));
+    assert_committed(&w, "d", "d");
+
+    // A swap: a and b exchanged.
+    let w = World::new(&[file("A", "R", "a", b"a"), file("B", "R", "b", b"b")]);
+    w.rename("a", "tmp");
+    w.rename("b", "a");
+    w.rename("tmp", "b");
+    w.examine(&[("", "a"), ("", "b"), ("", "tmp")]);
+    assert_eq!(w.rows().len(), 2, "{:?}", w.summary());
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!((w.id_at("a").as_deref(), w.id_at("b").as_deref()), (Some("B"), Some("A")));
+    assert!(w.cloud(|c| c.bin.is_empty() && c.paths().iter().all(|p| !p.contains(SWAP_PREFIX))));
+}
+
+/// §6.2: a throttle stops the whole worker for as long as OneDrive asked —
+/// `Retry-After` in seconds or as an HTTP date — and the row keeps its place.
+#[test]
+fn throttling_pauses_the_whole_worker() {
+    for header in ["120", "date"] {
+        let w = World::new(&[]);
+        w.write("a.txt", b"a");
+        w.examine(&[("", "a.txt")]);
+        let now = crate::clock::unix_now();
+        let value = if header == "date" { http_date(now + 300) } else { header.to_owned() };
+        w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(429).insert_header("Retry-After", value.as_str()), 1));
+        let engine = w.run();
+        let until = engine.status().throttled_until.expect("throttled");
+        let wanted = if header == "date" { now + 300 } else { now + 120 };
+        assert!((until - wanted).abs() <= 3, "{header}: {until} vs {wanted}");
+        assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Ready)]);
+        assert_eq!(w.rows()[0].attempts, 0, "a throttle is no failure of the row");
+        w.write("b.txt", b"b");
+        w.examine(&[("", "b.txt")]);
+        let asked = w.cloud(|c| c.log.len());
+        w.h.drain(&engine);
+        assert_eq!(w.cloud(|c| c.log.len()), asked, "nothing is sent while throttled");
+    }
+}
+
+/// The user pauses the account, until resumed: the worker's host says so, as the
+/// account's settings do in the daemon, to every worker of the folder.
+fn pause(w: &World) {
+    *w.h.host.paused.lock().unwrap() = Some(0);
+}
+
+fn resume(w: &World) {
+    *w.h.host.paused.lock().unwrap() = None;
+}
+
+fn http_date(at: i64) -> String {
+    let text = konedrive_graph::drive::item::format_graph_time(at); // 2026-09-25T10:00:00Z
+    let (date, time) = text.trim_end_matches('Z').split_once('T').unwrap();
+    let mut parts = date.split('-');
+    let (year, month, day) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("Thu, {day} {} {year} {time} GMT", months[month.parse::<usize>().unwrap() - 1])
+}
+
+/// A pause (the account's, whichever worker asks) stops the worker without touching the rows; a `403`,
+/// a refused name and a writer each block or hold their own row, and a full
+/// OneDrive holds the content; the file's `user.konedrive.sync`
+/// says which.
+#[test]
+fn pause_and_blocked_rows() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    let engine = w.h.engine();
+    pause(&w);
+    w.h.drain(&engine);
+    assert_eq!(w.cloud(|c| c.log.len()), 0);
+    assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("pending"));
+    let restarted = w.h.engine();
+    w.h.drain(&restarted);
+    assert_eq!(w.cloud(|c| c.log.len()), 0, "the account's pause holds another worker too");
+    resume(&w);
+    w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
+    w.h.drain(&restarted);
+    assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
+    assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("blocked"));
+    // The worker a sign-in starts lets the row go.
+    let restarted = w.h.engine();
+    w.h.drain(&restarted);
+    assert!(w.rows().is_empty());
+    assert_eq!(w.attr("a.txt", XATTR_SYNC), None);
+
+    // Refused by the service, OneDrive full, open for writing.
+    // The refused one goes first and alone: once OneDrive is taken for full, no other row is
+    // tried, so taken after `full.txt` it would wait for space instead of being refused.
+    w.write("refused.txt", b"r");
+    w.examine(&[("", "refused.txt")]);
+    w.cloud(|c| {
+        c.script("POST", "refused.txt", ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": {"code": "invalidRequest", "message": "bad name"}})), 1);
+    });
+    w.h.drain(&restarted);
+    w.write("full.txt", b"f");
+    w.write("open.txt", b"o");
+    w.examine(&[("", "full.txt"), ("", "open.txt")]);
+    let writer = File::options().append(true).open(w.path("open.txt")).unwrap();
+    w.cloud(|c| c.script("POST", "full.txt", ResponseTemplate::new(507), 1));
+    w.h.drain(&restarted);
+    let state = |rel: &str| w.rows().into_iter().find(|r| r.rel == Path::new(rel)).map(|r| (r.state, r.reason_text().unwrap_or_default()));
+    assert_eq!(state("refused.txt"), Some((OutboxState::Blocked, "refused: bad name".into())));
+    // No quota to read: taken for full, and waiting for space in its place.
+    assert_eq!(state("full.txt"), Some((OutboxState::Ready, Reason::WaitingForSpace.key().into())));
+    assert_eq!(state("open.txt").map(|s| s.0), Some(OutboxState::Waiting));
+    assert_eq!(w.attr("refused.txt", XATTR_SYNC).as_deref(), Some("blocked"));
+    assert_eq!(w.attr("open.txt", XATTR_SYNC).as_deref(), Some("pending"));
+    let counts = restarted.status().counts;
+    assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (2, 1, 2));
+    assert_eq!((counts.space_waiting, restarted.status().quota_full), (2, true));
+    assert_eq!(w.h.host.kinds().iter().filter(|k| **k == ActivityKind::UploadFailed).count(), 2, "forbidden, refused: once each; full: none per file");
+    drop(writer);
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &restarted);
+    w.h.block_on(restarted.retry_now()).unwrap();
+    w.h.drain(&restarted);
+    assert_eq!(w.summary(), vec![(Create, "refused.txt".into(), OutboxState::Blocked)]);
+    assert_committed(&w, "full.txt", "full.txt");
+    assert_committed(&w, "open.txt", "open.txt");
+}
+
+/// `Refresh()`'s quota read (`SyncService::refresh_quota`), applied.
+fn refresh(w: &World, engine: &Arc<Engine>) {
+    let quota = w.h.runtime.block_on(w.h.graph.client().quota()).unwrap();
+    w.h.block_on(engine.apply_quota(&quota));
+}
+
+/// The contents of every request that sent `name`'s content.
+fn content_requests(w: &World, name: &str) -> usize {
+    w.cloud(|c| c.log.iter().filter(|(m, p)| p.contains(name) && (m == "PUT" || p.ends_with("createUploadSession"))).count())
+}
+
+fn reason_of(w: &World, rel: &str) -> Option<String> {
+    w.rows().into_iter().find(|r| r.rel == Path::new(rel)).and_then(|r| r.reason_text())
+}
+
+/// No space left: the first refusal reads the quota, the account
+/// turns full and sends no more content, while a rename and a delete still
+/// go. A Refresh that finds space lets everything go.
+#[test]
+fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
+    let w = World::new(&[file("A", "R", "old.txt", b"old"), file("B", "R", "gone.txt", b"gone")]);
+    w.cloud(|c| c.free = Some(0));
+    w.write("n1.txt", b"one");
+    w.write("n2.txt", b"two");
+    w.examine(&[("", "n1.txt"), ("", "n2.txt")]);
+    // One transfer at a time: the first refusal comes before the second starts.
+    let engine = w.h.engine();
+    engine.drive().pool().set_limits(1, 1);
+    w.h.drain(&engine);
+    assert!(engine.space_full());
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1, "one read for the refusal");
+    assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
+    assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(Reason::WaitingForSpace.key()));
+    assert!(w.rows().iter().all(|r| r.state == OutboxState::Ready), "{:?}", w.summary());
+    let counts = engine.status().counts;
+    assert_eq!((counts.space_waiting, counts.space_waiting_bytes, counts.blocked), (2, 6, 0));
+
+    w.rename("old.txt", "moved.txt");
+    std::fs::remove_file(w.path("gone.txt")).unwrap();
+    w.examine(&[("", "old.txt"), ("", "moved.txt"), ("", "gone.txt")]);
+    w.h.drain(&engine);
+    assert!(w.content("moved.txt").is_some() || w.id_at("moved.txt").is_some(), "{:?}", w.cloud(|c| c.paths()));
+    assert!(w.id_at("gone.txt").is_none());
+    assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1);
+    assert_eq!(w.rows().len(), 2, "{:?}", w.summary());
+
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &engine);
+    assert!(!engine.space_full());
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "n1.txt", "n1.txt");
+    assert_committed(&w, "n2.txt", "n2.txt");
+}
+
+/// Space left: the refused big file waits as too big while the
+/// small ones go; it is not sent again until a quota read shows it fits —
+/// the automatic read every 30 minutes, on a fake clock.
+#[test]
+fn a_file_too_big_for_the_space_left_waits_alone() {
+    let w = World::new(&[]);
+    let big = vec![7u8; 1536 * 1024];
+    w.cloud(|c| c.free = Some(1280 * 1024));
+    w.write("big.bin", &big);
+    w.write("a.txt", b"a");
+    w.write("b.txt", b"b");
+    w.examine(&[("", "big.bin"), ("", "a.txt"), ("", "b.txt")]);
+    let engine = w.run();
+    assert!(!engine.space_full());
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_committed(&w, "b.txt", "b.txt");
+    let reason = reason_of(&w, "big.bin").unwrap();
+    assert_eq!(Reason::parse(&reason).sizes().map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(engine.status().counts.too_big, 1);
+    let sent = content_requests(&w, "big.bin");
+
+    w.h.drain(&engine);
+    let now = engine::now();
+    w.h.runtime.block_on(engine.space_check(now));
+    assert_eq!((w.cloud(|c| c.quota_reads()), content_requests(&w, "big.bin")), (1, sent), "neither read again nor sent");
+
+    // Thirty minutes on: read again, still too big.
+    w.h.runtime.block_on(engine.space_check(now + 31 * 60));
+    w.h.drain(&engine);
+    assert_eq!((w.cloud(|c| c.quota_reads()), content_requests(&w, "big.bin")), (2, sent));
+
+    // Space freed elsewhere: the next read lets it go.
+    w.cloud(|c| c.free = Some(5 << 20));
+    w.h.runtime.block_on(engine.space_check(now + 62 * 60));
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "big.bin", "big.bin");
+}
+
+/// The quota is the account's one: a read the account's info made a moment
+/// ago is what a refusal uses instead of asking again, a read the worker makes shows in it,
+/// and what goes up comes off what is left and onto what is used.
+#[test]
+fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
+    let w = World::new(&[]);
+    let quota = |s: &crate::account::state::AccountSnapshot| (s.quota.used, s.quota.total, s.quota.remaining, s.quota.state.clone());
+    w.h.quota.read(&konedrive_graph::drive::DriveQuota { total: 10 << 20, used: 1 << 20, remaining: Some(1280 * 1024), state: "normal".into() });
+    let big = vec![7u8; 1536 * 1024];
+    w.cloud(|c| c.free = Some(1280 * 1024));
+    w.write("big.bin", &big);
+    w.write("a.txt", b"abc");
+    w.examine(&[("", "big.bin"), ("", "a.txt")]);
+    let engine = w.run();
+    assert_eq!(w.cloud(|c| c.quota_reads()), 0, "the account's read of a moment ago decided the refusal");
+    let reason = reason_of(&w, "big.bin").unwrap();
+    assert_eq!(Reason::parse(&reason).sizes().map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(quota(&w.h.quota.state().get()), ((1 << 20) + 3, 10 << 20, 1280 * 1024 - 3, "normal".into()), "a.txt went up");
+
+    w.cloud(|c| c.free = Some(5 << 20));
+    w.h.runtime.block_on(engine.space_check(engine::now() + 31 * 60));
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1);
+    assert_eq!(quota(&w.h.quota.state().get()), ((1 << 20) + 3, 10 << 20, 5 << 20, "normal".into()), "the worker's read");
+    w.h.drain(&engine);
+    assert_committed(&w, "big.bin", "big.bin");
+    let used = (1 << 20) + 3 + big.len() as u64;
+    assert_eq!(quota(&w.h.quota.state().get()), (used, 10 << 20, (5 << 20) - big.len() as u64, "normal".into()));
+}
+
+/// Outside full, a file never refused is sent even when the free
+/// space known says it does not fit — OneDrive has the last word.
+#[test]
+fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
+    let w = World::new(&[]);
+    let engine = w.h.engine();
+    w.h.block_on(engine.apply_quota(&konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() }));
+    w.write("big.bin", &vec![1u8; 1536 * 1024]);
+    w.examine(&[("", "big.bin")]);
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "big.bin", "big.bin");
+}
+
+/// Rows an earlier version blocked on a full OneDrive wait for
+/// space from the start, and one quota read decides them.
+#[test]
+fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
+    let w = World::new(&[]);
+    w.write("full.txt", b"f");
+    w.examine(&[("", "full.txt")]);
+    let seq = w.rows()[0].seq;
+    w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(&Reason::Quota), Some(engine::now() + 1800))).unwrap();
+    w.cloud(|c| c.free = Some(10 << 20));
+    let engine = w.h.engine();
+    w.h.block_on(engine.space_start());
+    assert!(engine.space_full(), "waiting rows keep the worker full until the quota is read");
+    assert_eq!(w.rows()[0].state, OutboxState::Ready);
+    w.h.drain(&engine);
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "full.txt", "full.txt");
+}
+
+/// A file removed while its upload was under way — the
+/// daemon stopped mid-session, the removal examined (a `delete` behind the
+/// `running` create) — leaves the outbox at once although OneDrive is full
+/// and content rows are not taken: the session cancelled, nothing sent, one
+/// `not-uploaded` event, and the account still full.
+#[test]
+fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
+    let w = World::new(&[]);
+    w.write("big.bin", &vec![3u8; 1024 * 1024 + 77]);
+    w.examine(&[("", "big.bin")]);
+    let crashed = w.h.engine();
+    crashed.arm(Fault::MidSession(1));
+    w.h.drain(&crashed);
+    let session = w.rows()[0].session_url.clone().expect("a session is open");
+    std::fs::remove_file(w.path("big.bin")).unwrap();
+    w.examine(&[("", "big.bin")]);
+    assert_eq!(w.summary(), vec![(Create, "big.bin".into(), OutboxState::Running), (OutboxKind::Delete, "big.bin".into(), OutboxState::Ready)]);
+
+    let engine = w.h.engine();
+    w.h.block_on(engine.apply_quota(&konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() }));
+    let from = w.cloud(|c| c.log.len());
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert!(engine.space_full(), "still full: only a quota read ends it");
+    let sid = session.as_str().rsplit('/').next().unwrap();
+    assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
+    assert!(w.h.host.kinds().contains(&ActivityKind::NotUploaded), "{:?}", w.h.host.kinds());
+}
+
+/// Drains `engine` in the background, pauses it while the first request of
+/// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
+/// waits for the drain to end.
+fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
+    drain_stopped_mid_request(w, engine, method, fragment, || {
+        pause(w);
+        meanwhile();
+    });
+}
+
+/// Drains `engine` in the background, runs `stop` while the first request
+/// of `method` whose path holds `fragment` is in flight, and waits for the
+/// drain to end.
+fn drain_stopped_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, stop: impl FnOnce()) {
+    w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+    let task = w.h.runtime.spawn({
+        let engine = Arc::clone(engine);
+        async move { engine.drain(&CancellationToken::new()).await }
+    });
+    let mut waited = 0;
+    while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+    assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+    stop();
+    w.h.runtime.block_on(task).unwrap();
+}
+
+/// OneDrive turning full while an upload in
+/// fragments is under way stops it after the fragment in flight, as a pause
+/// does, but the row waits for space — ready, its session kept. Space again
+/// resumes it from its offset.
+#[test]
+fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
+    let w = World::new(&[]);
+    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+    w.write("big.bin", &content);
+    w.examine(&[("", "big.bin")]);
+    let engine = w.h.engine();
+    let exceeded = konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
+    drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || w.h.block_on(engine.apply_quota(&exceeded)));
+    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+    let row = w.rows().remove(0);
+    assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Ready, Some(Reason::WaitingForSpace.key())));
+    assert_eq!(row.session_next, Some(320 * 1024), "the session is kept");
+
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &engine);
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not started over");
+    assert_eq!(w.content("big.bin").unwrap(), content);
+}
+
+/// A pause stops an upload in fragments after the fragment in flight.
+/// The row waits as `paused` — no failure, nothing uploading — with its
+/// session and offset kept, through a restart too. Resumed, a session still
+/// open goes on from that offset; an expired one starts over.
+#[test]
+fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
+    for expire in [false, true] {
+        let w = World::new(&[]);
+        let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+        w.write("big.bin", &content);
+        w.examine(&[("", "big.bin")]);
+        let engine = w.h.engine();
+        drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {});
+        assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+        let row = w.rows().remove(0);
+        assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Waiting, Some(Reason::Paused.key())));
+        assert!(row.session_url.is_some(), "the session is kept");
+        assert_eq!(row.session_next, Some(320 * 1024));
+        let status = engine.status();
+        assert!(status.uploads.is_empty(), "nothing shows as uploading: {status:?}");
+        assert_eq!(w.attr("big.bin", XATTR_SYNC).as_deref(), Some("pending"));
+
+        // A restart while paused: nothing is sent, the session stays.
+        let asked = w.cloud(|c| c.log.len());
+        let restarted = w.h.engine();
+        w.h.drain(&restarted);
+        assert_eq!(w.cloud(|c| c.log.len()), asked, "nothing is sent while paused");
+        let kept = w.rows().remove(0);
+        assert_eq!((kept.session_url, kept.session_next), (row.session_url, row.session_next));
+
+        if expire {
+            w.cloud(|c| c.expire_sessions());
+        }
+        resume(&w);
+        w.h.drain(&restarted);
+        assert!(w.rows().is_empty(), "{:?}", w.summary());
+        let sent = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/")));
+        // 1 MiB + 77 is four fragments of 320 KiB.
+        let wanted = if expire { (2, 1 + 4) } else { (1, 4) };
+        assert_eq!(sent, wanted, "expired: {expire}");
+        assert_eq!(w.content("big.bin").unwrap(), content);
+        assert_committed(&w, "big.bin", "big.bin");
+        assert!(!w.h.host.kinds().contains(&ActivityKind::UploadFailed), "a pause is no failure: {:?}", w.h.host.kinds());
+    }
+}
+
+/// A file's only fragment in flight when the pause comes finishes, and
+/// the file is committed; a row that comes meanwhile does not start.
+#[test]
+fn a_fragment_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    let engine = w.h.engine();
+    drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {
+        w.write("b.txt", b"b");
+        w.examine(&[("", "b.txt")]);
+        engine.wake();
+    });
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_eq!(w.summary(), vec![(Create, "b.txt".into(), OutboxState::Ready)]);
+    assert_eq!(w.cloud(|c| c.count("POST", "b.txt")), 0, "nothing new starts while paused");
+    assert!(engine.status().uploads.is_empty());
+}
+
+/// The daemon's stop while a new file's session is being opened:
+/// the worker takes nothing more, waits for the answer and persists the
+/// session before its task ends; the upload in fragments stops before its
+/// first fragment, and the next start resumes the same session.
+#[test]
+fn a_stop_while_a_session_opens_waits_for_it_and_persists_it() {
+    let w = World::new(&[]);
+    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+    w.write("big.bin", &content);
+    w.examine(&[("", "big.bin")]);
+    w.cloud(|c| c.delay("POST", "createUploadSession", Duration::from_millis(400), 1));
+    let worker = OutboxWorker::new(w.h.config());
+    w.h.runtime.block_on(async {
+        worker.start();
+        let mut waited = 0;
+        while w.cloud(|c| c.count("POST", "createUploadSession")) == 0 && waited < 500 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 1, "the opening is in flight");
+        worker.close().await;
+    });
+    let row = w.rows().remove(0);
+    assert_eq!(row.state, OutboxState::Ready, "{:?}", row.reason);
+    assert!(row.session_url.is_some(), "the session is persisted");
+    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 0, "nothing sent after the stop");
+
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not opened again");
+    assert_eq!(w.content("big.bin").unwrap(), content);
+    assert!(!w.h.host.kinds().contains(&ActivityKind::Conflict));
+}
+
+/// Four independent small files run at once, and a child waits for its
+/// parent's `mkdir`: the row only sends once the folder it goes into is in
+/// OneDrive. What is checked is that all four are in flight together, not how
+/// many uploads there are at that moment: nothing caps them at four (the
+/// account's transfer pool starts at 16 slots), and the child's own upload,
+/// which starts as soon as its `mkdir` is answered, runs while the four are
+/// still held — a sample that falls during it counts five.
+#[test]
+fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
+    let w = World::new(&[]);
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    for name in names {
+        w.write(name, name.as_bytes());
+    }
+    std::fs::create_dir_all(w.path("dir")).unwrap();
+    w.write("dir/child.txt", b"child");
+    w.examine(&[("", "a.txt"), ("", "b.txt"), ("", "c.txt"), ("", "d.txt"), ("", "dir")]);
+    assert_eq!(w.rows().len(), 6, "{:?}", w.summary());
+
+    // Each small file opens an upload session first (`POST
+    // createUploadSession`), answered late here: each of the four stays in
+    // flight for at least that long from its start, a margin far wider than
+    // the worker takes to start the other three. It holds up neither the
+    // mkdir nor the child behind it.
+    w.cloud(|c| {
+        for name in names {
+            c.delay("POST", name, Duration::from_secs(1), 1);
+        }
+    });
+
+    let worker = OutboxWorker::new(w.h.config());
+    let (together, seen) = w.h.runtime.block_on(async {
+        worker.start();
+        worker.wake();
+        let mut seen = Vec::new();
+        let mut together = false;
+        let mut waited = 0;
+        while waited < 500 {
+            seen = worker.engine.status().uploads.into_iter().map(|u| u.rel).collect::<Vec<_>>();
+            together = names.iter().all(|name| seen.iter().any(|rel| rel == Path::new(name)));
+            if together {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        waited = 0;
+        while !konedrive_tree::off_runtime(|| w.rows()).is_empty() && waited < 500 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        worker.stop().await;
+        (together, seen)
+    });
+
+    assert!(together, "the four independent small files were never in flight together; last seen: {seen:?}");
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    for (rel, path) in [("a.txt", "a.txt"), ("b.txt", "b.txt"), ("c.txt", "c.txt"), ("d.txt", "d.txt"), ("dir", "dir"), ("dir/child.txt", "dir/child.txt")] {
+        assert_committed(&w, rel, path);
+    }
+    let position = |fragment: &str| w.cloud(|c| c.log.iter().position(|(_, p)| p.contains(fragment)));
+    let mkdir_at = position("children").expect("the mkdir request");
+    let child_at = position("child.txt").expect("the child's content request");
+    assert!(mkdir_at < child_at, "the child's row waits for its parent's mkdir: {mkdir_at} vs {child_at}");
+}
+
+// Fix round 1 (the outbox worker review): one test per Critical and Important finding.
+
+/// A swap where one side was also edited. The edited file goes through
+/// a temporary name; its content is throttled after the PATCH to that name
+/// landed, and the replay meets `412`. The file keeps its name here, and
+/// OneDrive ends with both files swapped and nothing under a temporary name.
+/// Then the same for a move whose PATCH answer was lost and whose row an
+/// examination merged into before the replay: it keeps its temporary name.
+#[test]
+fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
+    for edited in [true, false] {
+        let w = World::new(&[file("A", "R", "a", b"a"), file("B", "R", "b", b"b")]);
+        w.hydrate("a", b"a");
+        w.hydrate("b", b"b");
+        w.rename("a", "tmp");
+        w.rename("b", "a");
+        w.rename("tmp", "b");
+        if edited {
+            w.edit("b", b"a, edited");
+        }
+        w.examine(&[("", "a"), ("", "b"), ("", "tmp")]);
+        let of = |id: &str| w.rows().into_iter().find(|r| r.item_id.as_deref() == Some(id)).unwrap();
+        // B's move is held back, so that A's row meets b still taken.
+        let b_seq = of("B").seq;
+        w.store.call_blocking(move |s| s.outbox_set_state(b_seq, OutboxState::Held, None, None)).unwrap();
+        let engine = w.h.engine();
+        if edited {
+            w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(429).insert_header("Retry-After", "1"), 1));
+        } else {
+            engine.arm(Fault::AfterSend);
+        }
+        w.h.drain(&engine);
+        let a = of("A");
+        assert!(a.target_name.as_deref().is_some_and(|n| n.starts_with(SWAP_PREFIX)), "{edited}: {a:?}");
+        assert!(w.cloud(|c| c.item("A").unwrap().name.starts_with(SWAP_PREFIX)), "the PATCH to the temporary name landed");
+        if !edited {
+            // Backed off, then examined: the merge keeps the temporary name.
+            w.store.call_blocking(move |s| s.outbox_set_state(a.seq, OutboxState::Retry, Some(&"test".into()), Some(0))).unwrap();
+            w.examine(&[("", "a"), ("", "b")]);
+            assert_eq!(of("A").target_name, a.target_name, "a replay looks for it there");
+        }
+        w.store.call_blocking(move |s| s.outbox_set_state(b_seq, OutboxState::Ready, None, None)).unwrap();
+        w.run();
+        assert!(w.rows().is_empty(), "{edited}: {:?}", w.summary());
+        let here: Vec<String> = std::fs::read_dir(&w.root.path).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(here.iter().all(|n| !n.starts_with(SWAP_PREFIX)), "{edited}: {here:?}");
+        assert_eq!((w.id_at("a").as_deref(), w.id_at("b").as_deref()), (Some("B"), Some("A")), "{edited}");
+        assert_eq!((w.attr("a", XATTR_ITEM_ID).as_deref(), w.attr("b", XATTR_ITEM_ID).as_deref()), (Some("B"), Some("A")));
+        assert!(w.cloud(|c| c.bin.is_empty() && c.paths().iter().all(|p| !p.contains(SWAP_PREFIX))), "{edited}");
+        if edited {
+            assert_eq!(w.content("b").unwrap(), b"a, edited");
+            assert_committed(&w, "b", "b");
+        }
+    }
+}
+
+/// A large upload stopped mid-session, then the file saved again with
+/// the same size, and the worker stopped while it cancels the old session.
+/// That session is never resumed with the new bytes: what OneDrive ends
+/// with is exactly the new content.
+#[test]
+fn a_session_is_never_resumed_with_other_content() {
+    let w = World::new(&[]);
+    let first: Vec<u8> = (0..(700 * 1024)).map(|i| (i % 251) as u8).collect();
+    let second: Vec<u8> = (0..(700 * 1024)).map(|i| (i % 241) as u8).collect();
+    w.write("big.bin", &first);
+    w.examine(&[("", "big.bin")]);
+    let engine = w.h.engine();
+    engine.arm(Fault::MidSession(1));
+    w.h.drain(&engine);
+    assert!(w.rows()[0].session_url.is_some());
+
+    let file = File::options().write(true).open(w.path("big.bin")).unwrap();
+    (&file).write_all(&second).unwrap();
+    placeholder::set_mtime(&file, std::time::SystemTime::now() + Duration::from_secs(5)).unwrap();
+    drop(file);
+    // The cancel of the old session hangs, and the worker is stopped then.
+    w.cloud(|c| c.script("DELETE", "upload/", ResponseTemplate::new(204).set_delay(Duration::from_secs(5)), 1));
+    let worker = OutboxWorker::new(w.h.config());
+    w.h.runtime.block_on(async {
+        worker.start();
+        let mut waited = 0;
+        while w.cloud(|c| c.count("DELETE", "upload/")) == 0 && waited < 250 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            waited += 1;
+        }
+        worker.stop().await;
+    });
+    let row = &w.rows()[0];
+    assert_eq!(row.session_url, None, "the session went with the content it was opened for");
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.content("big.bin").unwrap(), second);
+    assert_committed(&w, "big.bin", "big.bin");
+}
+
+/// A delete × edit dropped while a cycle is between staging and swap.
+/// The drop waits for the cycle's swap (the tree lock), so the swap cannot
+/// give the item back the local object it forgot — which would make the
+/// next examination delete OneDrive's newer version.
+#[test]
+fn delete_commits_wait_for_the_cycles_swap() {
+    let w = World::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b")]);
+    std::fs::remove_file(w.path("a.txt")).unwrap();
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.edit("A", b"theirs"));
+    let lock = w.h.runtime.block_on(Arc::clone(&w.h.tree_lock).lock_owned());
+    w.store.call_blocking(move |s| s.begin_staging(konedrive_tree::NewTree::Delta)).unwrap();
+    let engine = w.h.engine();
+    let task = w.h.runtime.spawn({
+        let engine = Arc::clone(&engine);
+        async move { engine.drain(&CancellationToken::new()).await }
+    });
+    let mut waited = 0;
+    while w.cloud(|c| c.count("GET", "items/A")) == 0 && waited < 500 {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(w.rows().len(), 1, "the drop waits for the cycle");
+    w.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
+    drop(lock);
+    w.h.runtime.block_on(task).unwrap();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "forgotten after the swap, not before");
+    assert!(w.cloud(|c| c.item("A").is_some() && c.bin.is_empty()));
+}
+
+// Lost deletes (the stress tool's soak, seed 1745610129): a local delete must
+// reach OneDrive once the object is really gone.
+
+/// A worker draining in the background, with the first request whose path
+/// holds `fragment` held for a while: a test acts on the folder while that
+/// request is in flight, then [`finish`](InFlight::finish)es the drain.
+struct InFlight(tokio::task::JoinHandle<()>);
+
+impl InFlight {
+    fn start(w: &World, method: &str, fragment: &str) -> Self {
+        w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+        let engine = w.h.engine();
+        let task = w.h.runtime.spawn(async move { engine.drain(&CancellationToken::new()).await });
+        let mut waited = 0;
+        while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += 1;
+        }
+        assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+        InFlight(task)
+    }
+
+    fn finish(self, w: &World) {
+        w.h.runtime.block_on(self.0).unwrap();
+    }
+}
+
+/// A new file renamed, then moved out of the folder and back while its
+/// last fragment goes up (`shutil.move` across filesystems: a copy at the
+/// same name, the original unlinked), then deleted before the next
+/// examination. The item is committed as the object that was sent, so its
+/// absence is proved and it is deleted in OneDrive — not left there for the
+/// reconcile to place again as a placeholder. (Replaced before a fragment,
+/// the upload ends there instead: `removed.rs`.)
+#[test]
+fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedrive() {
+    let w = World::new(&[folder("D", "R", "d")]);
+    w.write("d/n.bin", b"new content");
+    w.examine(&[("d", "n.bin")]);
+    w.rename("d/n.bin", "d/renamed-n.bin");
+    w.examine(&[("d", "n.bin"), ("d", "renamed-n.bin")]);
+    assert_eq!(w.summary(), vec![(Create, "d/renamed-n.bin".into(), OutboxState::Ready)]);
+
+    let upload = InFlight::start(&w, "PUT", "upload/");
+    let outside = w.dir.path().join("renamed-n.bin");
+    std::fs::copy(w.path("d/renamed-n.bin"), &outside).unwrap();
+    std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
+    std::fs::copy(&outside, w.path("d/renamed-n.bin")).unwrap();
+    upload.finish(&w);
+    let id = w.id_at("d/renamed-n.bin").expect("created");
+    assert!(w.store.call_blocking(move |s| s.local_handle(&id)).unwrap().is_some(), "committed with the object that was sent");
+
+    std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
+    let out = w.examine(&[("d", "renamed-n.bin")]);
+    assert!(out.unproven.is_empty() && out.undecided.is_empty(), "{:?} {:?}", out.unproven, out.undecided);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["d"]);
+}
+
+/// A new folder removed while its `mkdir` is in flight: the folder made in
+/// OneDrive is committed all the same, and deleted there — whether the
+/// removal is examined before the commit (a delete behind the running row)
+/// or after it. A failed commit used to leave it in OneDrive, unknown to the
+/// base, for the reconcile to bring back as new.
+#[test]
+fn a_folder_removed_while_its_mkdir_goes_up_is_deleted_in_onedrive() {
+    for examined_first in [false, true] {
+        let w = World::new(&[folder("D", "R", "d")]);
+        std::fs::create_dir(w.path("d/new")).unwrap();
+        w.examine(&[("d", "new")]);
+        let mkdir = InFlight::start(&w, "POST", "children");
+        std::fs::remove_dir(w.path("d/new")).unwrap();
+        if examined_first {
+            w.examine(&[("d", "new")]);
+        }
+        mkdir.finish(&w);
+        w.examine(&[("d", "new")]);
+        w.run();
+        assert!(w.rows().is_empty(), "examined first {examined_first}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["d"], "examined first {examined_first}");
+    }
+}
+
+/// The soak's sequences around the two lost deletes, with the worker before
+/// the removals or after them: a file renamed then deleted; a new folder
+/// that got a file moved in and renamed, and a new file, all removed with
+/// it; a folder made, filled and removed within one quiet spell. OneDrive
+/// ends as the disk is.
+#[test]
+fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
+    for sent_between in [false, true] {
+        let w = World::new(&[
+            folder("A", "R", "a"),
+            file("F", "A", "f.txt", b"f"),
+            file("K", "A", "k.txt", b"k"),
+            folder("B", "R", "b"),
+            file("H", "B", "h.txt", b"h"),
+        ]);
+        w.rename("a/f.txt", "a/renamed-f.txt");
+        std::fs::create_dir(w.path("n")).unwrap();
+        w.rename("a/k.txt", "n/k.txt");
+        w.rename("n/k.txt", "n/renamed-k.txt");
+        w.write("n/new.bin", b"new");
+        w.examine(&[("a", "f.txt"), ("a", "renamed-f.txt"), ("a", "k.txt"), ("", "n")]);
+        if sent_between {
+            w.run();
+            assert_eq!(w.cloud(|c| c.paths()), vec!["a", "a/renamed-f.txt", "b", "b/h.txt", "n", "n/new.bin", "n/renamed-k.txt"]);
+        }
+
+        std::fs::remove_file(w.path("a/renamed-f.txt")).unwrap();
+        std::fs::remove_dir_all(w.path("n")).unwrap();
+        std::fs::create_dir(w.path("q")).unwrap();
+        w.write("q/y.txt", b"y");
+        std::fs::remove_dir_all(w.path("q")).unwrap();
+        let out = w.examine(&[("a", "renamed-f.txt"), ("", "n"), ("", "q")]);
+        assert!(out.unproven.is_empty() && out.undecided.is_empty(), "{:?} {:?}", out.unproven, out.undecided);
+        w.run();
+        assert!(w.rows().is_empty(), "sent between {sent_between}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["a", "b", "b/h.txt"], "sent between {sent_between}");
+    }
+}
+
+pub(crate) mod harness;
+mod stops;
+
+/// A file or folder removed before its upload finished.
+mod removed;
+
+mod sessions;
+
+mod move_out;
+
+mod candidates;
+
+mod worker;
+
+mod foreign_parent;
+
+mod replaced_folder;
+
+/// An answer no step settles is stored on its row as a stable key, never as
+/// the error's own text, and the row goes again after its backoff.
+#[test]
+fn an_answer_nothing_settles_waits_as_upload_error() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(418), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Failed.key()));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "a.txt", "a.txt");
+}
+
+/// An answer that says the request went through and names no item that can be kept (here: the
+/// new folder, as deleted) is OneDrive's failure, not the disk's: the row waits as
+/// `upload-error`, and goes again.
+#[test]
+fn an_answer_that_names_no_usable_item_waits_as_upload_error() {
+    let w = World::new(&[]);
+    std::fs::create_dir(w.path("d")).unwrap();
+    w.examine(&[("", "d")]);
+    let answer = serde_json::json!({ "id": "X", "name": "d", "folder": {}, "deleted": {} });
+    w.cloud(|c| c.script("POST", "children", ResponseTemplate::new(201).set_body_json(answer), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Mkdir, "d".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "d").as_deref(), Some(Reason::Failed.key()));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "d", "d");
+}
+
+/// The journal line of a failure carries no address.
+#[test]
+fn the_journal_gets_no_url() {
+    use super::engine::without_urls;
+    assert_eq!(
+        without_urls("error sending request for url (https://graph.microsoft.com/v1.0/me/drive?x=1) and http://a.b/c done"),
+        "error sending request for url (<url> and <url> done"
+    );
+    assert_eq!(without_urls("no address here"), "no address here");
+}
+
+/// An upload whose step meets a network failure waits with
+/// `network`, and goes up once OneDrive answers again.
+#[test]
+fn a_network_failure_waits_as_network() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(502), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Network.key()));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "a.txt", "a.txt");
+}

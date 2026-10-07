@@ -1,0 +1,33 @@
+[package]
+name = "konedrive-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Test-only: `secret::MemoryStore`, and `TransferPool::starting_at`, `try_acquire` and
+# `large_held`. The daemon's tests turn it on; never enable it in a build that ships.
+testing = []
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+# Tests only: the paused clock of the transfer pool's tests.
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true

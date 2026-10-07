@@ -1,0 +1,10 @@
+pub(crate) mod account;
+pub(crate) mod add;
+pub(crate) mod browser;
+#[cfg(feature = "dev-tools")]
+pub(crate) mod dev;
+pub(crate) mod login;
+pub(crate) mod settings;
+pub(crate) mod status;
+pub(crate) mod sync;
+pub(crate) mod version;

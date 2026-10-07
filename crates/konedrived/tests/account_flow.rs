@@ -1,0 +1,787 @@
+mod common;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use common::*;
+use konedrived::account::testing::single_account;
+use konedrived::account::{AccountError, AccountService};
+use konedrived::account::cache::AccountInfo;
+use konedrived::account::quota::QuotaFigures;
+use konedrived::config::{ConfigStore, Paths, DEFAULT_CLIENT_ID};
+use konedrive_graph::oauth::TokenResponse;
+use konedrive_graph::secret::MemoryStore;
+use konedrived::account::secret::SecretStore;
+use konedrived::account::state::SignInState;
+use konedrive_graph::token::SESSION_EXPIRED;
+use wiremock::matchers::{body_string_contains, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[tokio::test]
+async fn sign_in_with_no_client_id_set_uses_the_built_in_one() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = single_account(dir.path(), endpoints(&server), Arc::new(MemoryStore::default()), Duration::from_secs(5)).await.unwrap();
+    let url = svc.begin_sign_in().await.unwrap();
+    assert!(url.contains(&format!("client_id={DEFAULT_CLIENT_ID}")), "{url}");
+    assert_eq!(svc.state().get().state, SignInState::SigningIn);
+}
+
+#[tokio::test]
+async fn sign_in_happy_path() {
+    let f = Fixture::new(Duration::from_secs(10)).await;
+    let url = f.svc.begin_sign_in().await.unwrap();
+    assert!(url.contains(&format!("client_id={CLIENT_ID}")), "{url}");
+    assert_eq!(f.svc.state().get().state, SignInState::SigningIn);
+    assert_eq!(f.svc.begin_sign_in().await, Err(AccountError::Busy));
+
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+
+    let s = wait_for(f.svc.state(), |s| s.quota.total != 0).await;
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert_eq!(s.display_name, "Test User");
+    assert_eq!(s.email, "test@outlook.com");
+    assert_eq!((s.quota.used, s.quota.total), (1073741824, 5368709120));
+    assert_eq!(s.published_error(), "");
+    assert_eq!(f.store.current().as_deref(), Some("RT1"));
+    assert!(f.cache().exists());
+    assert_eq!(f.svc.config().account(f.svc.id()).unwrap().drive_id.as_deref(), Some("D1"), "the sign-in recorded its drive");
+}
+
+#[tokio::test]
+async fn denied_consent_returns_to_signed_out() {
+    let f = Fixture::new(Duration::from_secs(10)).await;
+    let url = f.svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "error=access_denied&error_description=cancelled").await;
+    let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
+    assert!(s.last_error.contains("denied"), "{}", s.last_error);
+    assert_eq!(f.store.current(), None);
+}
+
+#[tokio::test]
+async fn sign_in_times_out() {
+    let f = Fixture::new(Duration::from_millis(300)).await;
+    f.svc.begin_sign_in().await.unwrap();
+    let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
+    assert!(s.last_error.contains("Timed out"), "{}", s.last_error);
+}
+
+#[tokio::test]
+async fn cancel_returns_to_signed_out_without_error() {
+    let f = Fixture::new(Duration::from_secs(10)).await;
+    f.svc.begin_sign_in().await.unwrap();
+    f.svc.cancel_sign_in().await;
+    let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
+    assert_eq!(s.published_error(), "");
+}
+
+#[tokio::test]
+async fn rejected_code_returns_to_signed_out() {
+    let f = Fixture::new(Duration::from_secs(10)).await;
+    let url = f.svc.begin_sign_in().await.unwrap();
+    // The mock token endpoint only knows `good-code`; anything else gets a 404.
+    simulate_browser(&url, "code=unknown-code").await;
+    let s = wait_for(f.svc.state(), |s| s.state == SignInState::SignedOut).await;
+    assert!(s.last_error.starts_with("Sign-in failed"), "{}", s.last_error);
+    assert_eq!(f.store.current(), None);
+}
+
+#[tokio::test]
+async fn sign_out_forgets_everything() {
+    let f = Fixture::new(Duration::from_secs(10)).await;
+    let url = f.svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "code=good-code").await;
+    wait_for(f.svc.state(), |s| s.quota.total != 0).await;
+
+    f.svc.sign_out().await.unwrap();
+    let s = f.svc.state().get();
+    assert_eq!(s.state, SignInState::SignedOut);
+    assert_eq!((s.display_name.as_str(), s.quota.total), ("", 0));
+    assert_eq!(s.client_id, CLIENT_ID);
+    assert_eq!(f.store.current(), None);
+    assert!(!f.cache().exists());
+}
+
+#[tokio::test]
+async fn profile_failure_does_not_undo_sign_in() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+        })))
+        .mount(&server)
+        .await;
+    // The drive answers — the sign-in is refused without it (`docs/design/accounts.md` §6.2) — and the profile fails.
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "D1", "quota": {"used": 1u64, "total": 2u64}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    let url = svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "code=any").await;
+    let s = wait_for(svc.state(), |s| !s.last_error.is_empty()).await;
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert!(s.last_error.contains("account info"), "{}", s.last_error);
+    assert_eq!(store.current().as_deref(), Some("RT1"));
+}
+
+/// `startup`'s wallet check must not clobber a sign-in that is already under way, e.g. one
+/// answered from a D-Bus call that arrived in the window before the daemon finished
+/// starting up (the daemon claims its bus name before this runs; see `main.rs`).
+#[tokio::test]
+async fn startup_does_not_clobber_an_in_progress_sign_in() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    // A token already in the wallet, as if a previous session had signed in.
+    let store = Arc::new(MemoryStore::with_token("RT-OLD"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    svc.begin_sign_in().await.unwrap();
+    assert_eq!(svc.state().get().state, SignInState::SigningIn);
+
+    svc.startup().await;
+
+    assert_eq!(svc.state().get().state, SignInState::SigningIn);
+}
+
+/// A cached access token can look fresh to `Instant`-based expiry (e.g. the daemon was
+/// suspended past the token's real lifetime) while Microsoft Graph already rejects it.
+/// `refresh_account_info` must invalidate the cache and retry once with a freshly
+/// refreshed token instead of reporting the 401 forever.
+#[tokio::test]
+async fn graph_401_invalidates_the_cached_token_and_retries_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "token_type": "Bearer", "access_token": "AT-FRESH", "expires_in": 3600, "refresh_token": "RT1"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // The stale (but not-yet-`Instant`-expired) cached token is rejected on both routes,
+    // whichever `try_join!` happens to poll first.
+    Mock::given(method("GET"))
+        .and(header("authorization", "Bearer AT-STALE"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer AT-FRESH"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "displayName": "Test User", "mail": null, "userPrincipalName": "test@outlook.com"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .and(header("authorization", "Bearer AT-FRESH"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "quota": {"used": 1u64, "total": 2u64}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    svc.state().update(|s| s.state = SignInState::SignedIn);
+    svc.tokens()
+        .seed(&TokenResponse { access_token: "AT-STALE".into(), expires_in: 3600, refresh_token: None, scope: None })
+        .await;
+
+    svc.refresh_account_info().await;
+
+    let s = svc.state().get();
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert_eq!(s.display_name, "Test User");
+    assert_eq!((s.quota.used, s.quota.total), (1, 2));
+    assert_eq!(s.published_error(), "");
+}
+
+/// With no client ID configured (e.g. `config.toml` was lost while a wallet item survives)
+/// the account stays signed in: its token is refreshed with the built-in client ID.
+#[tokio::test]
+async fn refresh_with_no_client_id_set_uses_the_built_in_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains(format!("client_id={DEFAULT_CLIENT_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "displayName": "Test User", "mail": null, "userPrincipalName": "test@outlook.com"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "quota": {"used": 1u64, "total": 2u64}
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    // As `startup` would after a lost config.toml: the wallet still holds a token, so the
+    // service is signed in, but no client ID is configured.
+    svc.state().update(|s| s.state = SignInState::SignedIn);
+
+    svc.refresh_account_info().await;
+
+    let s = svc.state().get();
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert_eq!(s.published_error(), "");
+    assert_eq!((s.display_name.as_str(), s.quota.total), ("Test User", 2));
+}
+
+/// The other `SignedOut` case from `access_token`: no refresh token in the wallet at all
+/// (e.g. it was removed outside the daemon), with a client ID configured.
+#[tokio::test]
+async fn refresh_with_missing_wallet_item_signs_out_and_explains_why() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    svc.state().update(|s| s.state = SignInState::SignedIn);
+
+    svc.refresh_account_info().await;
+
+    let s = svc.state().get();
+    assert_eq!(s.state, SignInState::SignedOut);
+    assert_eq!(s.last_error, "The stored sign-in was lost. Sign in again.");
+}
+
+/// `refresh_account_info` must not overwrite the token manager's own `SESSION_EXPIRED`
+/// message with its generic "lost sign-in" text: the invalid_grant path already moved the
+/// state to `SignedOut` itself, so the "still signed-in" guard must see nothing to do.
+#[tokio::test]
+async fn refresh_after_invalid_grant_keeps_the_session_expired_message() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "invalid_grant", "error_description": "expired"
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    svc.state().update(|s| s.state = SignInState::SignedIn);
+
+    svc.refresh_account_info().await;
+
+    let s = svc.state().get();
+    assert_eq!(s.state, SignInState::SignedOut);
+    assert_eq!(s.last_error, SESSION_EXPIRED);
+}
+
+#[tokio::test]
+async fn startup_restores_session_from_wallet_and_cache() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::in_dir(dir.path());
+    let config = ConfigStore::open(&paths, async { false }).await;
+    config.set_client_id(CLIENT_ID).unwrap();
+    let account = config.add_account("Personal").unwrap();
+    konedrived::account::cache::save(
+        &paths.account(&account.id).unwrap().account_cache,
+        &AccountInfo {
+            display_name: "Cached User".into(),
+            email: "cached@example.com".into(),
+            quota: QuotaFigures { used: 1, total: 2, remaining: 3, state: "nearing".into(), read_at: 100 },
+            fetched_at: 0,
+            granted_scopes: String::new(),
+            drive_id: String::new(),
+        },
+    )
+    .unwrap();
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(5)).await.unwrap();
+    assert_eq!(*svc.id(), account.id);
+
+    svc.startup().await;
+    let s = svc.state().get();
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert_eq!(s.display_name, "Cached User");
+    // The quota survives the restart through the cache, all four figures of it.
+    assert_eq!((s.quota.used, s.quota.total, s.quota.remaining, s.quota.state.as_str()), (1, 2, 3, "nearing"));
+
+    wait_for(svc.state(), |s| s.display_name == "Test User").await;
+    assert_eq!(store.current().as_deref(), Some("RT1"));
+    // The refresh's read gave used and total, not what is left nor the state: those keep
+    // their last values, and the cache has the quota as it stands now.
+    let s = wait_for(svc.state(), |s| s.quota.total == 5368709120).await;
+    assert_eq!((s.quota.used, s.quota.remaining, s.quota.state.as_str()), (1073741824, 3, "nearing"));
+    let cached = konedrived::account::cache::load(&paths.account(&account.id).unwrap().account_cache).unwrap();
+    let cached = cached.quota;
+    assert_eq!((cached.used, cached.total, cached.remaining, cached.state.as_str()), (1073741824, 5368709120, 3, "nearing"));
+    assert!(cached.read_at > 100);
+}
+
+#[tokio::test]
+async fn startup_without_token_stays_signed_out_and_drops_stale_cache() {
+    let f = Fixture::new(Duration::from_secs(5)).await;
+    let cache = f.cache();
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, "{}").unwrap();
+    f.svc.startup().await;
+    assert_eq!(f.svc.state().get().state, SignInState::SignedOut);
+    assert!(!cache.exists());
+}
+
+/// A background refresh (from `refresh_account_info`) that is in flight when `sign_out`
+/// runs must never leave a rotated refresh token behind in the wallet.
+#[tokio::test]
+async fn sign_out_during_refresh_keeps_wallet_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+                }))
+                .set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "displayName": "Test User", "mail": null, "userPrincipalName": "test@outlook.com"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "quota": {"used": 1u64, "total": 2u64}
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    // Without a client ID no OAuth client is installed and `access_token()` would return
+    // `SignedOut` without ever making a request, making this test pass vacuously.
+    // As `startup` would: the wallet already holds a token, so the service is signed in.
+    svc.state().update(|s| s.state = SignInState::SignedIn);
+
+    let refreshing = svc.clone();
+    let refresh = tokio::spawn(async move { refreshing.refresh_account_info().await });
+    // Give the refresh a chance to start its (300ms-delayed) request before signing out.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    svc.sign_out().await.unwrap();
+    refresh.await.unwrap();
+
+    assert_eq!(store.current(), None);
+    assert_eq!(svc.state().get().state, SignInState::SignedOut);
+}
+
+/// A `sign_out` that runs while a sign-in's token exchange is still in flight must win:
+/// once the exchange completes, its (now stale) attempt must discard the tokens instead
+/// of storing them and re-declaring the session signed in.
+#[tokio::test]
+async fn sign_out_during_token_exchange_discards_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=authorization_code"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+                }))
+                .set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    let url = svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "code=good-code").await;
+    // The exchange is now in flight (delayed 300ms); sign out before it completes.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    svc.sign_out().await.unwrap();
+    assert_eq!(svc.state().get().state, SignInState::SignedOut);
+
+    // Give the delayed exchange time to finish and attempt (and fail) its commit.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(store.current(), None);
+    assert_eq!(svc.state().get().state, SignInState::SignedOut);
+}
+
+/// `cancel_sign_in` after the browser callback arrived must return to signed-out right
+/// away, without waiting for the in-flight token exchange, and that exchange's eventual
+/// result must not resurrect the session.
+#[tokio::test]
+async fn cancel_after_callback_signs_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=authorization_code"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+                }))
+                .set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(MemoryStore::default());
+    let svc = single_account(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
+        .unwrap();
+    let url = svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "code=good-code").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    svc.cancel_sign_in().await;
+    // Immediate: does not wait for the delayed exchange.
+    assert_eq!(svc.state().get().state, SignInState::SignedOut);
+    assert_eq!(store.current(), None);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(store.current(), None);
+    assert_eq!(svc.state().get().state, SignInState::SignedOut);
+}
+
+// --- The identity guard (`docs/design/accounts.md` §6.2, test 6) -------------------------------
+
+/// Two accounts of one daemon, `A` and `B`, and a Microsoft that knows two drives: the
+/// browser's `code-a` signs in to drive `DA`, `code-b` to `DB`.
+struct Two {
+    _server: MockServer,
+    _dir: tempfile::TempDir,
+    config: Arc<ConfigStore>,
+    a: Arc<AccountService>,
+    a_wallet: Arc<MemoryStore>,
+    b: Arc<AccountService>,
+    b_wallet: Arc<MemoryStore>,
+}
+
+async fn two_accounts() -> Two {
+    let server = MockServer::start().await;
+    for (who, drive) in [("a", "DA"), ("b", "DB")] {
+        let tokens = serde_json::json!({
+            "token_type": "Bearer", "access_token": format!("AT-{who}"), "expires_in": 3600, "refresh_token": format!("RT-{who}")
+        });
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains(format!("code=code-{who}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains(format!("refresh_token=RT-{who}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me/drive"))
+            .and(header("authorization", format!("Bearer AT-{who}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": drive, "quota": {"used": 1u64, "total": 2u64}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me"))
+            .and(header("authorization", format!("Bearer AT-{who}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "displayName": who, "mail": format!("{who}@outlook.com")
+            })))
+            .mount(&server)
+            .await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::in_dir(dir.path());
+    let config = Arc::new(ConfigStore::open(&paths, async { false }).await);
+    config.set_client_id(CLIENT_ID).unwrap();
+    let siblings = Arc::new(konedrived::account::Siblings::default());
+    let account = |label: &str| {
+        let id = config.add_account(label).unwrap().id;
+        let wallet = Arc::new(MemoryStore::default());
+        let service = AccountService::new(
+            Arc::clone(&config),
+            &id,
+            paths.account(&id).unwrap(),
+            endpoints(&server),
+            wallet.clone(),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        siblings.add(&service);
+        (service, wallet)
+    };
+    let (a, a_wallet) = account("A");
+    let (b, b_wallet) = account("B");
+    Two { _server: server, _dir: dir, config, a, a_wallet, b, b_wallet }
+}
+
+/// Signs `account` in with the browser's `code`, and waits until the sign-in is over.
+async fn sign_in_with(account: &Arc<AccountService>, code: &str) -> konedrived::account::state::AccountSnapshot {
+    let url = account.begin_sign_in().await.unwrap();
+    simulate_browser(&url, &format!("code={code}")).await;
+    wait_for(account.state(), |s| s.state == SignInState::SignedOut || s.quota.total != 0).await
+}
+
+/// The drive `config.toml` records for `account`; empty for none.
+fn drive_of(two: &Two, account: &AccountService) -> String {
+    two.config.account(account.id()).unwrap().drive_id.map(|drive| drive.into_string()).unwrap_or_default()
+}
+
+/// A Microsoft account already connected as one account is refused to another, which
+/// stores nothing and records nothing.
+#[tokio::test]
+async fn a_drive_connected_as_one_account_is_refused_to_another() {
+    let two = two_accounts().await;
+    assert_eq!(sign_in_with(&two.a, "code-a").await.state, SignInState::SignedIn);
+    assert_eq!(drive_of(&two, &two.a), "DA");
+
+    let b = sign_in_with(&two.b, "code-a").await;
+
+    assert_eq!(b.state, SignInState::SignedOut);
+    assert_eq!(b.last_error, "This Microsoft account is already connected as 'A'.");
+    assert_eq!(two.b_wallet.current(), None, "a refused sign-in stores nothing");
+    assert_eq!(drive_of(&two, &two.b), "");
+    assert_eq!(two.b.set_label(" a "), Err(AccountError::InvalidLabel("the label \"A\" is already used".into())));
+}
+
+/// A slot is one drive: an account signed in again as another Microsoft account is refused.
+#[tokio::test]
+async fn an_account_signed_in_again_as_someone_else_is_refused() {
+    let two = two_accounts().await;
+    sign_in_with(&two.a, "code-a").await;
+    two.a.sign_out().await.unwrap();
+
+    let a = sign_in_with(&two.a, "code-b").await;
+
+    assert_eq!(a.state, SignInState::SignedOut);
+    assert!(a.last_error.starts_with("This account is 'A'. You signed in as a different Microsoft account"), "{}", a.last_error);
+    assert_eq!(two.a_wallet.current(), None);
+    assert_eq!(drive_of(&two, &two.a), "DA", "the slot keeps its drive");
+}
+
+/// A signed-in account with no drive recorded yet — one migrated from a folder that never
+/// recorded one — is asked for its drive before another account's sign-in is let through;
+/// when it cannot be asked, the sign-in is refused (fail-closed).
+#[tokio::test]
+async fn an_account_with_no_drive_recorded_is_asked_first() {
+    let two = two_accounts().await;
+    two.a.state().update(|s| s.state = SignInState::SignedIn);
+    two.a_wallet.store("RT-unknown").await.unwrap();
+
+    let b = sign_in_with(&two.b, "code-b").await;
+    assert_eq!(b.state, SignInState::SignedOut, "A could not be asked");
+    assert_eq!(b.last_error, "Could not check which account this is; try again.");
+    assert_eq!(two.b_wallet.current(), None);
+
+    // An account signed out while its token is still stored — a wallet that did
+    // not answer at startup — may be any drive too.
+    two.a.state().update(|s| s.state = SignInState::SignedOut);
+    let b = sign_in_with(&two.b, "code-b").await;
+    assert_eq!(b.last_error, "Could not check which account this is; try again.", "A holds a token it could not use");
+
+    two.a_wallet.store("RT-a").await.unwrap();
+    let b = sign_in_with(&two.b, "code-b").await;
+    assert_eq!(b.state, SignInState::SignedIn, "{}", b.last_error);
+    assert_eq!((drive_of(&two, &two.a), drive_of(&two, &two.b)), ("DA".to_owned(), "DB".to_owned()));
+    assert_eq!(two.b_wallet.current().as_deref(), Some("RT-b"));
+}
+
+/// A wallet that refuses to store: its unlock prompt refused.
+struct RefusingWallet;
+
+#[async_trait::async_trait]
+impl SecretStore for RefusingWallet {
+    async fn exists(&self) -> Result<bool, konedrived::account::secret::SecretError> {
+        Ok(false)
+    }
+    async fn load(&self) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        Ok(None)
+    }
+    async fn store(&self, _: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        Err(konedrived::account::secret::SecretError::Locked)
+    }
+    async fn delete(&self) -> Result<(), konedrived::account::secret::SecretError> {
+        Ok(())
+    }
+}
+
+/// A sign-in that passes the guard and then cannot store its token stores
+/// nothing — the drive it recorded for the slot is taken back, so the slot can still be
+/// signed in as another Microsoft account.
+#[tokio::test]
+async fn a_sign_in_whose_token_cannot_be_stored_records_no_drive() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = single_account(dir.path(), endpoints(&server), Arc::new(RefusingWallet), Duration::from_secs(10))
+        .await
+        .unwrap();
+    let url = svc.begin_sign_in().await.unwrap();
+    simulate_browser(&url, "code=good-code").await;
+    let s = wait_for(svc.state(), |s| s.state == SignInState::SignedOut && !s.last_error.is_empty()).await;
+    assert!(s.last_error.contains("locked"), "{}", s.last_error);
+    assert_eq!(svc.config().account(svc.id()).unwrap().drive_id, None, "the drive is taken back");
+}
+
+/// An account being removed begins no sign-in from then on.
+#[tokio::test]
+async fn a_retired_account_begins_no_sign_in() {
+    let f = Fixture::new(Duration::from_secs(5)).await;
+    f.svc.retire().await.unwrap();
+    assert_eq!(f.svc.begin_sign_in().await, Err(AccountError::Failed("this account is being removed".into())));
+}
+
+/// A wallet whose `delete` waits, once it has said it was entered, until the test lets it go:
+/// a sign-out held inside the wallet, with the session locked.
+#[derive(Default)]
+struct HeldWallet {
+    inner: MemoryStore,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl SecretStore for HeldWallet {
+    async fn exists(&self) -> Result<bool, konedrived::account::secret::SecretError> {
+        self.inner.exists().await
+    }
+
+    async fn load(&self) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        self.inner.load().await
+    }
+
+    async fn store(&self, refresh_token: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        self.inner.store(refresh_token).await
+    }
+
+    async fn delete(&self) -> Result<(), konedrived::account::secret::SecretError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.delete().await
+    }
+}
+
+/// Finding AC1. The start of a sign-in is one step under the session lock: the state, the
+/// generation and the cancel channel change together. A sign-out that holds the lock (here
+/// across the wallet's delete) while a sign-in begins therefore ends before the attempt
+/// starts, and cannot put the state back to `signed-out` under a live attempt.
+///
+/// The sign-out is of a signed-out account, so the sign-in passes what is asked without the
+/// lock and reaches the lock while the sign-out holds it.
+///
+/// Right is either answer that keeps the two together: the sign-in refused, or the account
+/// shown as `signing-in` for as long as its attempt can still sign it in.
+#[tokio::test]
+async fn a_sign_in_that_answered_a_url_is_shown_as_signing_in() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = Arc::new(HeldWallet::default());
+    let svc = single_account(dir.path(), endpoints(&server), wallet.clone(), Duration::from_secs(10)).await.unwrap();
+
+    // A sign-out of the signed-out account, now inside the wallet with the session locked.
+    let signing_out = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move { svc.sign_out().await }
+    });
+    wallet.entered.notified().await;
+    // The sign-in, begun meanwhile, as far as it goes: to the session lock. (Before the fix
+    // it was `signing-in` by now, and the sign-out then put it back with the attempt live.)
+    let mut beginning = std::pin::pin!(svc.begin_sign_in());
+    assert!(futures_util::poll!(beginning.as_mut()).is_pending(), "the sign-in waits for the sign-out");
+    wallet.release.notify_one();
+    signing_out.await.unwrap().unwrap();
+    // Refused is right too: then there is no attempt.
+    let Ok(url) = beginning.await else { return };
+
+    let shown = svc.state().get().state;
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    assert_eq!(
+        shown,
+        SignInState::SigningIn,
+        "begin_sign_in answered a sign-in URL and the account showed {shown:?}"
+    );
+    wait_for(svc.state(), |s| s.state == SignInState::SignedIn).await;
+    assert_eq!(wallet.inner.current().as_deref(), Some("RT1"));
+}
+
+/// Finding AC1, the commit's side: an attempt whose account no longer shows `signing-in`
+/// stores nothing, even when nothing superseded it. Here the state is ended as a token
+/// refresh that found the stored token dead ends it, which bumps no generation.
+#[tokio::test]
+async fn a_sign_in_commits_only_while_the_account_is_signing_in() {
+    use konedrive_graph::token::RefreshReport;
+    let f = Fixture::new(Duration::from_secs(5)).await;
+    let url = f.svc.begin_sign_in().await.unwrap();
+    f.svc.state().signed_out(SESSION_EXPIRED);
+
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    // The commit has the tokens and has asked who they are for: the last it asks of
+    // Microsoft before it decides.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let asked = f.server.received_requests().await.unwrap_or_default();
+            let got = |p: &str| asked.iter().any(|r| r.method.as_str() == "GET" && r.url.path() == p);
+            if got("/me") && got("/me/drive") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the commit asks which account the tokens are for");
+    // Time for it to decide, and to store if it wrongly would.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(f.store.current(), None);
+    // The commit, had it gone through, would have made it `signed-in`.
+    let s = f.svc.state().get();
+    assert_eq!((s.state, s.last_error.as_str()), (SignInState::SignedOut, SESSION_EXPIRED));
+}

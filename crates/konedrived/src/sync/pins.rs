@@ -1,0 +1,263 @@
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::folder::root::{Reach, SyncRoot};
+use crate::hydration::source::{Answered, FillError};
+use crate::helper::NotCleared;
+use crate::folder::locks::InodeKey;
+use crate::sync::{SyncError, SyncService};
+use crate::hydration::pin;
+
+impl SyncService {
+    /// Puts a pin on each of `targets`, or takes it off ([`pin::set_pin`]), stopping at the
+    /// first failure: the paths done, and that failure. A file's pin is
+    /// written under its per-inode lock, since a fill lifts the same write
+    /// bit around its own attribute writes; each descriptor is closed once
+    /// its write is done.
+    pub(super) async fn set_pins(&self, targets: Vec<PinTarget>, on: bool) -> (Vec<PathBuf>, Option<SyncError>) {
+        let mut done = Vec::new();
+        for PinTarget { item, shown, is_dir, modes, .. } in targets {
+            let guard = if is_dir {
+                None
+            } else {
+                match InodeKey::of(&item) {
+                    Ok(key) => Some(self.locks.lock(key).await),
+                    Err(e) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
+                }
+            };
+            let written = tokio::task::spawn_blocking(move || pin::set_pin(&item, on, &modes)).await;
+            drop(guard);
+            match written {
+                Ok(Ok(())) => done.push(shown),
+                Ok(Err(e)) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
+                Err(e) => return (done, Some(SyncError::Io(format!("the pin task failed: {e}")))),
+            }
+        }
+        (done, None)
+    }
+
+    /// Every one of `paths` opened and looked at ([`pin_targets`]), on a
+    /// blocking thread.
+    pub(super) async fn pin_targets(&self, root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
+        let (root, paths) = (root.clone(), paths.to_vec());
+        tokio::task::spawn_blocking(move || pin_targets(&root, &paths, Reach::Open))
+            .await
+            .map_err(|e| SyncError::Io(format!("the pin task failed: {e}")))?
+    }
+
+    /// `Pin(paths)`, "Always keep on this device": each path — a file, a
+    /// folder, or the folder itself — gets a pin, and every online-only file
+    /// under it is queued for download ([`pin::Pins`]); how many were queued
+    /// by this call.
+    ///
+    /// The pin is written first and the downloads follow, so a crash in
+    /// between loses nothing: the next sweep finds them. A path a folder
+    /// above it pins already is left as it is. Every path is checked before
+    /// any is pinned: one outside the folder, a `.konedrive-*` name, or a
+    /// file that is not ours refuses the call.
+    pub async fn pin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        let reg = self.require_record()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        let (mut again, mut write) = (Vec::new(), Vec::new());
+        for target in targets {
+            if !target.above.is_empty() {
+                continue;
+            }
+            if target.own {
+                again.push(target.shown);
+            } else {
+                write.push(target);
+            }
+        }
+        let (pinned, failed) = self.set_pins(write, true).await;
+        for shown in &pinned {
+            self.pins.pinned(shown.clone());
+        }
+        // What is pinned is queued, even when a later path could not be; a
+        // path pinned already is looked through again.
+        again.extend(pinned);
+        let queued = self.pins.queue_under(again).await;
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(queued),
+        }
+    }
+
+    /// What `Unpin` and `FreeUp` check of every path before they change
+    /// anything, on its own: each path is in the folder and one of ours, and
+    /// no folder above it pins it and stays pinned (`NotAllowed`). `Files`
+    /// asks every account whose folder a call's paths are in first, so that
+    /// a call that spans accounts is refused as a whole or not at all.
+    pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
+        let reg = self.require_record()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        match kept_by_folder(&targets) {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+
+    /// What `Pin` checks of every path before it pins any, on its own: each
+    /// path is in the folder, and one of ours. `Files` asks every account
+    /// first, as for [`check_unpinnable`](Self::check_unpinnable).
+    pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
+        let reg = self.require_record()?;
+        self.pin_targets(&reg.root, paths).await.map(drop)
+    }
+
+    /// `Unpin(paths)`, unchecking "Always keep on this device": each path's
+    /// own pin comes off, and nothing else changes — its files stay
+    /// downloaded. How many pins came off. A path a folder above it pins is
+    /// refused `NotAllowed`, naming the folder, as `FreeUp` refuses it
+    /// ([`kept_by_folder`]); every path is checked before any pin comes off.
+    pub async fn unpin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        let reg = self.require_record()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        if let Some(refusal) = kept_by_folder(&targets) {
+            return Err(refusal);
+        }
+        let own: Vec<PinTarget> = targets.into_iter().filter(|target| target.own).collect();
+        let (unpinned, failed) = self.set_pins(own, false).await;
+        for shown in &unpinned {
+            self.pins.unpinned(shown);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(unpinned.len() as u32),
+        }
+    }
+}
+
+/// A path `Pin`, `Unpin` or `FreeUp` was given, opened beneath the root
+/// (`SyncRoot::open_item`) and looked at, before anything changes — or one
+/// `Files.Menu` asks about, only looked at ([`Reach::Look`]).
+pub(super) struct PinTarget {
+    pub(super) item: File,
+    /// How `item` was reached, and so how its marks are read.
+    pub(super) reach: Reach,
+    /// Its full path as the activity log names it.
+    pub(super) shown: PathBuf,
+    pub(super) is_dir: bool,
+    /// It carries a pin of its own.
+    pub(super) own: bool,
+    /// The folders above it, up to the root, that carry a pin: nearest first.
+    above: Vec<PathBuf>,
+    /// The folder's lock on its directories' modes, under which a folder's pin is written.
+    modes: Arc<crate::folder::disk::Modes>,
+}
+
+impl PinTarget {
+    /// Whether a folder above it pins it.
+    pub(super) fn pinned_above(&self) -> bool {
+        !self.above.is_empty()
+    }
+
+    /// Where it stands among the pins, for [`kept`].
+    fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
+
+    /// What is left of it once it has been looked at and its descriptor is closed.
+    pub(super) fn into_place(self) -> Place {
+        Place { shown: self.shown, own: self.own, above: self.above }
+    }
+}
+
+/// Where a path stands among the pins: the path, whether it carries a pin of its own, and
+/// the folders above it that carry one, nearest first.
+pub(super) type Standing<'a> = (&'a Path, bool, &'a [PathBuf]);
+
+/// A [`PinTarget`] without its descriptor: what [`kept`] goes by, for `Files.Menu`, which
+/// holds no descriptor of a selection longer than it looks at the path.
+pub(super) struct Place {
+    shown: PathBuf,
+    own: bool,
+    above: Vec<PathBuf>,
+}
+
+impl Place {
+    pub(super) fn standing(&self) -> Standing<'_> {
+        (&self.shown, self.own, &self.above)
+    }
+}
+
+/// Opens and looks at each of `paths`; one that cannot be — outside the
+/// root, a `.konedrive-*` name, a file that is not ours — refuses them all.
+/// Blocking.
+pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf], reach: Reach) -> Result<Vec<PinTarget>, SyncError> {
+    let modes = root_modes(root)?;
+    paths.iter().map(|path| pin_target(root, path, reach, &modes)).collect()
+}
+
+/// The lock on the modes of `root`'s directories, for [`pin_target`].
+pub(super) fn root_modes(root: &SyncRoot) -> Result<Arc<crate::folder::disk::Modes>, SyncError> {
+    crate::folder::disk::Modes::of_root(root).map_err(|e| SyncError::Io(format!("{}: {e}", root.path.display())))
+}
+
+/// One path of [`pin_targets`]: taken, or why not.
+pub(super) fn pin_target(root: &SyncRoot, path: &Path, reach: Reach, modes: &Arc<crate::folder::disk::Modes>) -> Result<PinTarget, SyncError> {
+    let (item, shown) = root.item(path, reach)?;
+    let io = |e: io::Error| SyncError::Io(format!("{}: {e}", shown.display()));
+    let is_dir = item.metadata().map_err(io)?.is_dir();
+    let own = reach.pin(&item).map_err(io)?;
+    let above = pin::pinned_ancestors(&root.path, &shown);
+    Ok(PinTarget { item, reach, shown, is_dir, own, above, modes: Arc::clone(modes) })
+}
+
+/// Why pins cannot come off `targets`: a folder above one of them pins it
+/// and stays pinned — it is not itself one of them with its own pin, which
+/// the same call takes off. A path with a pin of its own under a pinned
+/// folder is refused too: taking its pin off would leave it pinned.
+pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
+    kept(targets.iter().map(PinTarget::standing)).map(|(shown, folder)| SyncError::NotAllowed(pin::refusal(shown, folder)))
+}
+
+/// The rule of [`kept_by_folder`]: the first of `targets` a folder keeps pinned, and that
+/// folder.
+pub(super) fn kept<'a>(targets: impl Iterator<Item = Standing<'a>> + Clone) -> Option<(&'a Path, &'a Path)> {
+    let coming_off: std::collections::HashSet<&Path> = targets.clone().filter(|(_, own, _)| *own).map(|(shown, _, _)| shown).collect();
+    targets
+        .flat_map(|(shown, _, above)| above.iter().map(move |folder| (shown, folder.as_path())))
+        .find(|(_, folder)| !coming_off.contains(folder))
+}
+
+/// A pinned download is an ordinary fill ([`SyncService::fill_now`]):
+/// verified, checkpointed, shown in `Transfers` and recorded as
+/// `downloaded` or `failed`. A file whose pin was taken off since it was
+/// queued, or whose folder was forgotten, is passed over.
+#[async_trait]
+impl pin::PinFill for SyncService {
+    async fn fill_pinned(&self, path: &Path) -> pin::Filled {
+        let Some(reg) = self.record() else { return pin::Filled::Skipped };
+        let (root, target) = (reg.root.path.clone(), path.to_path_buf());
+        let still = tokio::task::spawn_blocking(move || pin::pinned_by(&root, &target).is_some())
+            .await
+            .unwrap_or(false);
+        if !still {
+            return pin::Filled::Skipped;
+        }
+        // The pins' worker holds a slot of the pool for it.
+        match self.fill_now(path, None).await {
+            Ok(Answered::Failed(FillError::Errno(errno))) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
+                pin::Filled::NoSpace
+            }
+            // No link to the helper for a file that may carry an ignore mark.
+            Ok(Answered::Failed(FillError::NotCleared(NotCleared::NoWay))) => {
+                tracing::info!("{} is kept on this device but was not downloaded: {}", path.display(), SyncError::NoHelper);
+                pin::Filled::Failed
+            }
+            Ok(Answered::Failed(_)) => pin::Filled::Failed,
+            Ok(Answered::Filled) => pin::Filled::Done,
+            // Found downloaded already: nothing was transferred.
+            Ok(Answered::AlreadyThere | Answered::NotOurs) => pin::Filled::Skipped,
+            Err(e) => {
+                tracing::info!("{} is kept on this device but was not downloaded: {e}", path.display());
+                pin::Filled::Failed
+            }
+        }
+    }
+}

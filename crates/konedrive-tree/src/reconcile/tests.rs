@@ -1,0 +1,305 @@
+use super::*;
+
+fn file(id: &str, parent: &str, name: &str, ctag: &str) -> Row {
+    Row {
+        id: id.into(),
+        parent_id: Some(parent.into()),
+        name: name.into(),
+        kind: Kind::File,
+        size: 3,
+        mtime: 0,
+        etag: Some(format!("e-{ctag}")),
+        ctag: Some(ctag.into()),
+        quickxor: None,
+        mime: None,
+        placement: Placement::Placed,
+    }
+}
+
+fn root() -> Row {
+    Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed }
+}
+
+/// A deferred change waits in `deferred` while the base keeps its row, is
+/// staged again later, and goes once an outbox commit after its fetch
+/// supersedes it.
+#[test]
+fn a_deferred_change_waits_and_a_later_commit_supersedes_it() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    s.commit_staging("L1").unwrap();
+
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &["X".to_owned()], content: &[], fetched_at: 5, waits: &[] }).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base keeps the disk's version");
+    assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(file("X", "R", "x", "c2"))]);
+
+    // A commit at 6 (after the fetch at 5): the deferred change is older.
+    s.conn.execute("UPDATE items SET local_seq = 6 WHERE id = 'X'", []).unwrap();
+    assert!(s.live_deferred().unwrap().is_empty());
+    assert!(s.deferred_ids().unwrap().is_empty(), "dropped for good");
+}
+
+/// A replacement that landed with the deferred version makes it the base,
+/// and records the new inode; another version leaves the base alone.
+#[test]
+fn a_landed_replacement_takes_its_deferred_version_into_the_base() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    s.commit_staging("L1").unwrap();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &["X".to_owned()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+
+    assert!(!s.land_deferred("X", Some("c3"), None).unwrap(), "another version");
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"));
+    assert!(s.land_deferred("X", Some("c2"), None).unwrap());
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"));
+    assert!(s.deferred_ids().unwrap().is_empty());
+}
+
+/// Tombstones say what the outbox deleted after a commit count, and go
+/// with the first cycle whose fetch started after them.
+#[test]
+fn a_tombstone_is_committed_since_until_a_later_fetch_commits() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root())]).unwrap();
+    s.commit_staging("L1").unwrap();
+    {
+        let tx = s.conn.transaction().unwrap();
+        tombstone(&tx, &["X"], 4).unwrap();
+        tx.commit().unwrap();
+    }
+    assert_eq!(s.committed_since(3).unwrap().get("X"), Some(&Committed { etag: None, gone: true }));
+    assert!(s.committed_since(4).unwrap().is_empty());
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &[], content: &[], fetched_at: 4, waits: &[] }).unwrap();
+    assert!(s.committed_since(0).unwrap().is_empty(), "pruned");
+}
+
+fn folder(id: &str, parent: &str, name: &str) -> Row {
+    Row { kind: Kind::Folder, size: 0, ..file(id, parent, name, "c") }
+}
+
+fn handle(n: u8) -> FileHandle {
+    FileHandle { kind: 1, bytes: vec![n, n, n] }
+}
+
+/// One call forgets the local objects of an item
+/// and of everything below it — by `items` and by the new tree — in both
+/// tables, and of whatever records one of the objects given.
+#[test]
+fn forgetting_an_item_forgets_everything_below_it_in_both_tables() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(folder("D", "R", "d")), Change::Upsert(file("F", "D", "f", "c1")), Change::Upsert(file("T", "R", "t", "c1")), Change::Upsert(file("U", "R", "u", "c1"))]).unwrap();
+    s.commit_staging("L1").unwrap();
+    for (id, n) in [("D", 1), ("F", 2), ("T", 3), ("U", 4)] {
+        s.set_local_handle(id, Some(&handle(n))).unwrap();
+    }
+    // A delta staged meanwhile moves `T` into `D`.
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(file("T", "D", "t", "c1"))]).unwrap();
+    s.forget_local_objects(&["D".to_owned()], &[handle(4)]).unwrap();
+    for id in ["D", "F", "T", "U"] {
+        assert_eq!(s.local_handle(id).unwrap(), None, "{id} in items");
+        let staged: Option<Vec<u8>> = s.conn.query_row("SELECT local_handle FROM staging WHERE id = ?1", [id], |r| r.get(0)).optional().unwrap().flatten();
+        assert_eq!(staged, None, "{id} in staging");
+    }
+    s.commit_staging("L2").unwrap();
+    assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
+}
+
+/// Many subtree roots and handles at once —
+/// thousands, some unknown — are forgotten together, each subtree whole.
+#[test]
+fn forgetting_takes_many_roots_and_handles_at_once() {
+    let mut s = TreeStore::in_memory().unwrap();
+    let mut changes = vec![Change::Root(root())];
+    for n in 0..300 {
+        changes.push(Change::Upsert(folder(&format!("D{n}"), "R", &format!("d{n}"))));
+        changes.push(Change::Upsert(file(&format!("F{n}"), &format!("D{n}"), "f", "c1")));
+    }
+    changes.push(Change::Upsert(file("K", "R", "k", "c1")));
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&changes).unwrap();
+    s.commit_staging("L1").unwrap();
+    for n in 0..300u16 {
+        s.set_local_handle(&format!("F{n}"), Some(&FileHandle { kind: 1, bytes: n.to_be_bytes().to_vec() })).unwrap();
+    }
+    s.set_local_handle("K", Some(&handle(200))).unwrap();
+    let mut roots: Vec<String> = (0..300).map(|n| format!("D{n}")).collect();
+    roots.extend((0..2000).map(|n| format!("unknown-{n}")));
+    s.forget_local_objects(&roots, &[handle(200), handle(201)]).unwrap();
+    for n in [0, 150, 299] {
+        assert_eq!(s.local_handle(&format!("F{n}")).unwrap(), None);
+    }
+    assert_eq!(s.local_handle("K").unwrap(), None, "by its handle");
+}
+
+/// A row that turns placed again over an `items`
+/// row that is not placed carries no local object — staged by a delta,
+/// swapped in whole, landed from what waited, or applied by a folder
+/// turned read-only.
+#[test]
+fn a_row_placed_again_carries_no_local_object() {
+    let skipped = || Row { placement: Placement::Skipped(super::super::SkipReason::NameTooLong), ..file("X", "R", "long", "c1") };
+    let base = || {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(crate::NewTree::Whole).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(skipped())]).unwrap();
+        s.commit_staging("L1").unwrap();
+        s.set_local_handle("X", Some(&handle(9))).unwrap();
+        s
+    };
+    // A delta.
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    assert_eq!(s.unplaced(Table::Staging).unwrap(), vec!["X".to_owned()], "placed again, with no object");
+    s.commit_staging("L2").unwrap();
+    assert_eq!(s.local_handle("X").unwrap(), None);
+    // A full listing.
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    s.commit_staging("L2").unwrap();
+    assert_eq!(s.local_handle("X").unwrap(), None);
+    // What waited, applied by a folder turned read-only, or landed.
+    for land in [false, true] {
+        let mut s = base();
+        s.begin_staging(crate::NewTree::Delta).unwrap();
+        s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+        s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &["X".to_owned()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+        s.set_local_handle("X", Some(&handle(9))).unwrap();
+        if land {
+            assert!(s.land_deferred("X", Some("c2"), None).unwrap());
+        } else {
+            s.apply_deferred().unwrap();
+        }
+        assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().placement, Placement::Placed, "land={land}");
+        assert_eq!(s.local_handle("X").unwrap(), None, "land={land}");
+    }
+}
+
+/// I1: a row the base does not place keeps no local object, and nothing
+/// below it does — whatever wrote it into `items`: a delta's swap, a full
+/// listing's, a page of a first listing, what waited and is applied. A row
+/// OneDrive moves below a folder that is not placed is one of them. What
+/// stays placed keeps its object.
+#[test]
+fn a_row_the_base_does_not_place_keeps_no_local_object() {
+    let unplaced = |row: Row| Row { placement: Placement::Skipped(super::super::SkipReason::NameTooLong), ..row };
+    let base = || {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(crate::NewTree::Whole).unwrap();
+        s.stage(&[
+            Change::Root(root()),
+            Change::Upsert(folder("D", "R", "d")),
+            Change::Upsert(file("F", "D", "f", "c1")),
+            Change::Upsert(file("X", "R", "x", "c1")),
+            Change::Upsert(file("K", "R", "k", "c1")),
+            Change::Upsert(unplaced(folder("V", "R", "v"))),
+        ])
+        .unwrap();
+        s.commit_staging("L1").unwrap();
+        for (id, n) in [("D", 1), ("F", 2), ("X", 3), ("K", 4)] {
+            s.set_local_handle(id, Some(&handle(n))).unwrap();
+        }
+        s
+    };
+    // What OneDrive says next: the folder and the file cannot be held any
+    // more, and `K` goes into a folder that is not placed.
+    let says = || [Change::Upsert(unplaced(folder("D", "R", "d"))), Change::Upsert(unplaced(file("X", "R", "x", "c1"))), Change::Upsert(file("K", "V", "k", "c1"))];
+    let forgotten = |s: &TreeStore, how: &str| {
+        for id in ["D", "F", "X", "K"] {
+            assert_eq!(s.local_handle(id).unwrap(), None, "{id}, {how}");
+        }
+    };
+
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&says()).unwrap();
+    s.commit_staging("L2").unwrap();
+    forgotten(&s, "a delta");
+
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(unplaced(folder("V", "R", "v"))), Change::Upsert(file("F", "D", "f", "c1"))]).unwrap();
+    s.stage(&says()).unwrap();
+    s.commit_staging("L2").unwrap();
+    forgotten(&s, "a full listing");
+
+    let mut s = base();
+    s.commit_page(&says(), "next").unwrap();
+    forgotten(&s, "a page");
+
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&says()).unwrap();
+    let whole: Vec<String> = ["D", "X", "K"].map(str::to_owned).to_vec();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    assert_eq!(s.local_handle("F").unwrap(), Some(handle(2)), "what waits is still placed, with its object");
+    s.apply_deferred().unwrap();
+    forgotten(&s, "what waited, applied");
+
+    // A row that was not placed already and kept an object (what an
+    // earlier build left in an installed store) loses it when next written.
+    for page in [false, true] {
+        let mut s = base();
+        s.set_local_handle("V", Some(&handle(8))).unwrap();
+        let renamed = [Change::Upsert(unplaced(folder("V", "R", "renamed")))];
+        if page {
+            s.commit_page(&renamed, "next").unwrap();
+        } else {
+            s.begin_staging(crate::NewTree::Delta).unwrap();
+            s.stage(&renamed).unwrap();
+            s.commit_staging("L2").unwrap();
+        }
+        assert_eq!(s.local_handle("V").unwrap(), None, "page={page}");
+    }
+
+    // Renamed, and placed as before: its object is its own.
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(folder("D", "R", "renamed"))]).unwrap();
+    s.commit_staging("L2").unwrap();
+    assert_eq!((s.local_handle("D").unwrap(), s.local_handle("F").unwrap()), (Some(handle(1)), Some(handle(2))));
+}
+
+/// A read-write cycle's swap is all or nothing: when it fails after the
+/// deferrals are written, the deferred changes it staged still wait, and
+/// the next cycle brings them into the base. The delta cursor never sends
+/// them again.
+#[test]
+fn a_swap_that_fails_keeps_the_deferred_changes_it_consumed() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    s.commit_staging("L1").unwrap();
+    // A cycle defers the new version of `X`: the link moves on past it.
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &["X".to_owned()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    assert_eq!(s.deferred_ids().unwrap(), vec!["X".to_owned()]);
+
+    // The next cycle stages it again, the folder takes it, and the swap
+    // fails (a full disk, a crash) once the deferrals are written.
+    let RwStaged { ids, consumed } = s.stage_rw(&[], 0, true).unwrap().unwrap();
+    assert_eq!((ids, consumed.clone()), (vec!["X".to_owned()], vec!["X".to_owned()]));
+    s.conn.execute_batch("CREATE TEMP TRIGGER fail_swap BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    assert!(s.commit_staging_deferring("L3", &Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 1, waits: &[] }).is_err());
+    s.conn.execute_batch("DROP TRIGGER fail_swap;").unwrap();
+    assert_eq!(s.delta_link().unwrap().as_deref(), Some("L2"), "the link stays");
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base stays");
+    assert_eq!(s.deferred_ids().unwrap(), vec!["X".to_owned()], "what the failed swap consumed still waits");
+
+    // The cycle after it: the same link answers with nothing new.
+    let RwStaged { consumed, .. } = s.stage_rw(&[], 0, true).unwrap().unwrap();
+    s.commit_staging_deferring("L3", &Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"), "the base has the version OneDrive has");
+}
