@@ -56,6 +56,11 @@ tests/vm/run.sh tests/vm/install_helper_test.sh
 Whenever you change the helper's unit or the syscalls it makes, run `tests/vm/run.sh unit`: it
 boots the VM with systemd and starts the real unit.
 
+**What runs by itself.** A pull request into `dev` runs the daemon's unit tests, the window's and
+the Dolphin plugins' tests and the structure checks; a pull request into `main` runs the suite
+above on btrfs, ext4 and xfs, as root on GitHub's runner (`tests/vm/run.sh host`, which refuses to
+run anywhere else). A release runs no test of the code: `docs/releasing.md`, "Where the tests run".
+
 Root is never used outside that VM. If a change needs anything privileged to exercise or debug
 (mounting a filesystem, running as root to poke at fanotify directly), do it inside
 `virtme-ng`, not on your own machine — see `tests/vm/run.sh` for how the suite boots one.

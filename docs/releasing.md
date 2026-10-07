@@ -4,31 +4,33 @@
 
 By hand, two steps:
 
-1. Merge `dev` into `main`. The workflow below releases `X.Y.Z`, the version in `Cargo.toml`, and
-   tags the commit `vX.Y.Z`.
+1. Merge `dev` into `main`, with a pull request and a merge commit (not a squash: `main` must hold
+   `dev`'s own commits, or the next merge finds them all again). The pull request runs the suite
+   that needs root (below). The workflow below then releases `X.Y.Z`, the version in `Cargo.toml`,
+   and tags the commit `vX.Y.Z`.
 2. At once, a one-line pull request into `dev` that moves `version` in `[workspace.package]` of the
    root `Cargo.toml` from `X.Y.Z` to `X.Y.(Z+1)` (or to the next minor or major version, when that
    is what comes next). No other pull request changes it (below).
 
 Every push to `main` runs the release workflow
-(`.github/workflows/release.yml`) on GitHub Actions:
+(`.github/workflows/release.yml`) on GitHub Actions. It builds and publishes; it runs no test of
+the code:
 
-1. It runs the unit tests of the daemon, the Graph client and the tree store
-   (`cargo test -p konedrived -p konedrive-graph -p konedrive-tree --lib --features konedrived/dev-tools`,
-   the token export included) on the runner itself (below), and the tests of the catalogue of
-   sentences (`cargo test -p konedrive-text`), one of which fails when a generated C++ file in
-   git is not what the catalogue gives.
-   A failing test stops the run; nothing is built or tagged.
-2. For Fedora 44 and for Fedora 45, each in its own container (`fedora:44`, `fedora:45`), it
-   installs the spec's build dependencies, checks that the container's Rust is the one the tests
-   ran with (below), chooses the version (below) and builds the RPMs with
-   `scripts/build-rpm.sh --version X.Y.Z`, the same script a local build uses: `konedrive` and
-   `konedrive-kde` for x86_64, and the source RPM. The dist tag in the file names tells the two
-   apart (`.fc44`, `.fc45`). If either build fails, nothing is tagged or released.
-3. It keeps each Fedora's RPMs as the run's artifacts.
+1. For Fedora 44 and for Fedora 45, each in its own container (`fedora:44`, `fedora:45`), it
+   installs the spec's build dependencies, chooses the version (below) and builds the RPMs with
+   `scripts/build-rpm.sh --version X.Y.Z`, the same script a local build uses, with that Fedora's
+   own Rust: `konedrive` and `konedrive-kde` for x86_64, and the source RPM. The dist tag in the
+   file names tells the two apart (`.fc44`, `.fc45`).
+2. It keeps each Fedora's RPMs as the run's artifacts.
+3. It installs each Fedora's two packages in a clean container of that Fedora, as a person would,
+   and checks that every program finds its libraries, that `konedrived --version` and
+   `konedrivectl --version` run, and that the window loads its interface and comes up hidden, with
+   no display, on a bus of its own. A missing dependency of the package shows here.
 4. It tags the commit it built `vX.Y.Z` and publishes a GitHub Release, "KOneDrive X.Y.Z", with the
-   six RPMs and one `SHA256SUMS` for them all. The release notes list the pull requests merged since the previous
-   tag.
+   six RPMs and one `SHA256SUMS` for them all. The release notes list the pull requests merged
+   since the previous tag.
+
+If a build or an install check fails for either Fedora, nothing is tagged or released.
 
 It uses only the workflow's own token, with `contents: write` for the last step. Runs go one at a
 time, and a running release is never cancelled. GitHub keeps only one run waiting behind it,
@@ -41,30 +43,38 @@ making a second one. A tag `vX.Y.Z` that already exists on another commit stops 
 what happens when step 2 above was forgotten (the next merge into `main` still carries the version
 already released) — merge the bump into `dev` and `dev` into `main` again.
 
+Run by hand (`gh workflow run release.yml --ref <branch>`), the workflow is a dry run: it builds
+and tries the packages, and tags and publishes nothing.
+
 ## Where the tests run
 
-The tests run directly on GitHub's `ubuntu-latest` runner — a virtual machine with its own kernel —
-as the runner's own unprivileged user, not in the Fedora containers the RPMs are built in:
-Docker's default seccomp profile refuses `fanotify_init`, so in a container every test of the
-notification watcher, and every flow that relies on it, fails. `sudo` sets the runner up (it
-installs `dbus-daemon` for the tests' private buses and lifts Ubuntu's AppArmor restriction on
-unprivileged user namespaces, which one test mounts a tmpfs in) and is not used for the tests
-themselves. Only the daemon's unit tests and the catalogue's tests run there: not the workspace
-(#21), not the tests that
-need root, and not the VM suite (#44).
+Not in the release: on the pull requests (`.github/workflows/tests.yml`).
 
-**The Rust version is pinned.** The tests use the Rust of Fedora's `rust` package, the compiler
-the RPMs are built with, installed with rustup from `RUST_VERSION` at the top of the workflow. Each
-build prints its container's `rustc --version` and stops if it differs from the pin, so the
-compiler that was tested and the one that built the packages cannot drift apart unnoticed. There is
-one pin: Fedora 44 and Fedora 45 carry the same `rust`.
+**A pull request into `dev`** runs the fast tests:
 
-**When Fedora updates `rust`**, every run stops at that check, with an error naming the Fedora and
-its new version, until the pin moves: set `RUST_VERSION` in `.github/workflows/release.yml` to that
-version (what `dnf info rust` shows in the container), in a pull request into `dev` like any other
-change. The tests then run with the new compiler before anything is built. If the two Fedoras come
-to carry different versions for more than a few days, the tests need a run per Fedora, each with
-its own pin; until that is built, the Fedora that differs is taken out of the build's list.
+- the unit tests of the daemon, the Graph client, the reasons and the tree store
+  (`cargo test -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools`),
+  directly on GitHub's runner — a virtual machine with its own kernel — as its unprivileged user.
+  Not in a container: Docker's default seccomp profile refuses `fanotify_init`, which the tests of
+  the notification watcher need. `sudo` only sets the runner up (`dbus-daemon` for the private
+  buses, and Ubuntu's AppArmor restriction on unprivileged user namespaces lifted for the one test
+  that mounts a tmpfs in one);
+- the window's and the Dolphin plugins' tests (`ctest`), in a `fedora:45` container, where Qt and
+  KDE Frameworks are the ones the packages are built with;
+- the catalogue of sentences and the generated files, with the structure rules
+  (`.github/workflows/structure.yml`).
+
+**A pull request into `main`** runs the suite that needs root — the helper, fanotify, a
+filesystem of its own — on btrfs, ext4 and xfs, one machine each, all three at once:
+`tests/vm/run.sh host <fs>`. A GitHub runner is itself a throwaway virtual machine with `sudo` and
+a kernel new enough (7.0 on `ubuntu-26.04`), so the suite runs as root on it with no VM inside, in
+a mount namespace of its own. That mode refuses to run anywhere else: on a developer's machine the
+suite runs only inside the `virtme-ng` VM (`quick`, `full`). The same job runs by hand:
+`gh workflow run tests.yml --ref <branch>`.
+
+**The Rust of the tests is fixed** (`RUST_VERSION` in `tests.yml` and `structure.yml`), so that a
+new compiler does not fail a pull request by itself; it is moved by hand, in a pull request. The
+packages are not tied to it: each is built with its Fedora's own `rust`, as a package is.
 
 ## The version
 

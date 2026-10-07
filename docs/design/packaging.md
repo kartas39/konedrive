@@ -50,7 +50,7 @@ and a `%changelog` entry) that Source0 and the source RPM hold; the spec's `Vers
 placeholder. It stops if a line it rewrites is not there, and `cargo vendor --locked` stops it if
 the rewritten lock file does not fit.
 
-Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a `fedora:45` container, and
+Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` and a `fedora:45` container, each then installed in a clean one, and
 published on GitHub Releases.
 
 Inside the spec:

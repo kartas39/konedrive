@@ -971,7 +971,10 @@ Design: `packaging.md`; `docs/releasing.md`.
 
 ### `.github/workflows/`
 
-- `release.yml` — a release on every push to `main`: the tests, the RPMs, the tag.
+- `release.yml` — a release on every push to `main`: the RPMs for each Fedora, each tried in a
+  clean container, then the tag and the release.
+- `tests.yml` — the tests of a pull request: the fast ones into `dev`, the suite that needs root
+  into `main`.
 - `structure.yml` — on every pull request: the guard, the check of the links in the doc comments,
   and the generated C++ against the catalogue of sentences (`cargo test -p konedrive-text`).
 
