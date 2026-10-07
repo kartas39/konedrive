@@ -585,15 +585,19 @@ fn pause_and_blocked_rows() {
     assert_eq!(w.attr("a.txt", XATTR_SYNC), None);
 
     // Refused by the service, OneDrive full, open for writing.
+    // The refused one goes first and alone: once OneDrive is taken for full, no other row is
+    // tried, so taken after `full.txt` it would wait for space instead of being refused.
     w.write("refused.txt", b"r");
-    w.write("full.txt", b"f");
-    w.write("open.txt", b"o");
-    w.examine(&[("", "refused.txt"), ("", "full.txt"), ("", "open.txt")]);
-    let writer = File::options().append(true).open(w.path("open.txt")).unwrap();
+    w.examine(&[("", "refused.txt")]);
     w.cloud(|c| {
         c.script("POST", "refused.txt", ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": {"code": "invalidRequest", "message": "bad name"}})), 1);
-        c.script("POST", "full.txt", ResponseTemplate::new(507), 1);
     });
+    w.h.drain(&restarted);
+    w.write("full.txt", b"f");
+    w.write("open.txt", b"o");
+    w.examine(&[("", "full.txt"), ("", "open.txt")]);
+    let writer = File::options().append(true).open(w.path("open.txt")).unwrap();
+    w.cloud(|c| c.script("POST", "full.txt", ResponseTemplate::new(507), 1));
     w.h.drain(&restarted);
     let state = |rel: &str| w.rows().into_iter().find(|r| r.rel == Path::new(rel)).map(|r| (r.state, r.reason_text().unwrap_or_default()));
     assert_eq!(state("refused.txt"), Some((OutboxState::Blocked, "refused: bad name".into())));
