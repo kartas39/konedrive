@@ -22,7 +22,7 @@ public:
     SelfRestart(DaemonController *daemon, const QString &program, QObject *parent = nullptr);
 
     QString program() const { return m_program; }
-    /// The file at `program` is there and is not the one this window started from.
+    /// The file at `program` can be run and is not the one this window runs.
     bool programReplaced() const;
 
 Q_SIGNALS:
@@ -34,7 +34,7 @@ private:
 
     DaemonController *m_daemon;
     QString m_program;
-    /// The file's device and inode at the start; `m_known` false when it could not be read.
+    /// The device and inode of the file this window runs; `m_known` false when they could not be read.
     quint64 m_device = 0;
     quint64 m_inode = 0;
     bool m_known = false;

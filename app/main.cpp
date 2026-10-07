@@ -156,7 +156,7 @@ int run(int argc, char *argv[], Restart *restart)
     QObject::connect(&selfRestart, &SelfRestart::wanted, &app, [&] {
         qCInfo(KONEDRIVE_APP) << "restarting as the installed program";
         restart->wanted = true;
-        restart->hidden = !window->isVisible();
+        restart->hidden = !window || !window->isVisible();
         restart->program = QFile::encodeName(program);
         QCoreApplication::quit();
     });
@@ -179,6 +179,8 @@ int main(int argc, char *argv[])
     // In this process, not a new one: the session started this one as a unit
     // of its own, and a child would go with it. The bus connection is gone
     // with the application, and with it the single-instance name.
+    // A token a second launch left here belongs to a click long past.
+    qunsetenv("XDG_ACTIVATION_TOKEN");
     QByteArray backgroundOption = QByteArrayLiteral("--background");
     char *arguments[] = {restart.program.data(), restart.hidden ? backgroundOption.data() : nullptr, nullptr};
     ::execv(restart.program.constData(), arguments);

@@ -6,6 +6,7 @@
 #include <QFile>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace
 {
@@ -26,7 +27,8 @@ SelfRestart::SelfRestart(DaemonController *daemon, const QString &program, QObje
     , m_daemon(daemon)
     , m_program(program)
 {
-    m_known = identity(m_program, &m_device, &m_inode);
+    // The file this process runs, whatever is at `program` by now.
+    m_known = identity(QStringLiteral("/proc/self/exe"), &m_device, &m_inode);
     connect(m_daemon, &DaemonController::daemonBuildChanged, this, &SelfRestart::check);
 }
 
@@ -34,8 +36,9 @@ bool SelfRestart::programReplaced() const
 {
     quint64 device = 0;
     quint64 inode = 0;
-    // A file that is not there (an update half done) is nothing to start.
-    return m_known && identity(m_program, &device, &inode) && (device != m_device || inode != m_inode);
+    // A file that is not there or cannot be run (an update half done) is nothing to start.
+    return m_known && identity(m_program, &device, &inode) && (device != m_device || inode != m_inode)
+        && ::access(QFile::encodeName(m_program).constData(), X_OK) == 0;
 }
 
 void SelfRestart::check()
