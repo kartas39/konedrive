@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID};
+use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_tree::Row;
 
 use super::shared::Shared;
@@ -20,6 +20,12 @@ pub(super) fn remove_copy(path: &Path, id: &str) -> Option<u64> {
     fs::remove_file(path).ok().map(|()| bytes)
 }
 
+/// Marks the file at `path` as the whole content of item `id`: the item's copy from here on.
+pub(super) fn mark_copy(path: &Path, id: &str) -> std::io::Result<()> {
+    xattr::set(path, XATTR_ITEM_ID, id.as_bytes())?;
+    xattr::set(path, XATTR_STATE, State::Hydrated.as_str().as_bytes())
+}
+
 impl Shared {
     /// The downloaded copy of item `id` at `rel`, if the folder under the mount holds it: a
     /// regular file that carries the item's id. Any other file there is not the item's — one
@@ -29,7 +35,10 @@ impl Shared {
         let path = self.under(rel);
         let meta = fs::symlink_metadata(&path).ok().filter(fs::Metadata::is_file)?;
         let carried = xattr::get(&path, XATTR_ITEM_ID).ok().flatten()?;
-        (carried == id.as_bytes()).then_some(meta)
+        // Whole, too: a placeholder an older konedrive left under the item's name holds
+        // nothing of it.
+        let whole = xattr::get(&path, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
+        (carried == id.as_bytes() && whole).then_some(meta)
     }
 
     pub(super) fn has_copy(&self, rel: &Path, id: &str) -> bool {

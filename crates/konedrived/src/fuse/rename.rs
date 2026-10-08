@@ -8,9 +8,9 @@
 use std::fs;
 
 use fuser::Errno;
-use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
+use super::copies::mark_copy;
 use super::changes::{based, forgotten, leaves, object, rebase, waits, Place};
 use super::local::{Dir, Entry};
 use super::shared::{errno, Shared};
@@ -147,7 +147,7 @@ impl Shared {
         }
         if let Some(id) = &taken_over {
             // The file is the item's content from here on: read as its downloaded copy.
-            let _ = xattr::set(&now, XATTR_ITEM_ID, id.as_bytes());
+            let _ = mark_copy(&now, id);
         }
         crate::panic::lock(&self.nodes).moved(src_ino, new_parent, new_name);
         Ok(())

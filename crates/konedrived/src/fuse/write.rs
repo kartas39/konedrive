@@ -12,11 +12,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use fuser::Errno;
-use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Row;
 
 use super::changes::{based, waits, Place};
+use super::copies::mark_copy;
 use super::local::Entry;
 use super::read::Handle;
 use super::shared::{errno, Shared};
@@ -34,7 +34,7 @@ impl Shared {
             }
             self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(|e| errno(&e))?;
             OpenOptions::new().write(true).create_new(true).mode(0o644).open(&path).map_err(|e| errno(&e))?;
-            xattr::set(&path, XATTR_ITEM_ID, row.id.as_bytes()).map_err(|e| errno(&e))?;
+            mark_copy(&path, &row.id).map_err(|e| errno(&e))?;
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).map_err(|e| errno(&e))
     }

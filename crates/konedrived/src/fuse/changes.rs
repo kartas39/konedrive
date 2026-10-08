@@ -76,10 +76,12 @@ impl Place<'_> {
     }
 }
 
-/// A row that waits for the last program writing its file.
+/// A row that waits for the last program writing its file: recorded ready when that one
+/// closes it, and looked at again by the worker itself in case that is never heard.
 pub(super) fn waits(d: &mut Detection) {
     d.state = OutboxState::Waiting;
     d.reason = Some(Reason::OpenForWriting);
+    d.next_try = Some(crate::clock::unix_now() + crate::local::RECHECK.as_secs() as i64);
 }
 
 /// What was at `rel` is removed: the item `row`, or an object without one (`inode`).
