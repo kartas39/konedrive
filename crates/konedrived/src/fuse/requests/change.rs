@@ -113,7 +113,7 @@ impl Requests {
         let Some((ino, file)) = crate::panic::lock(&s.handles).get(&fh.0).filter(|h| h.writes).and_then(|h| Some((h.ino, h.copy.clone()?))) else {
             return reply.error(Errno::EBADF);
         };
-        s.written(ino);
+        s.writers.written(ino);
         match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
             Err(e) => reply.error(errno(&e)),

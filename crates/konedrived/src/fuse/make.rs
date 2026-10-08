@@ -56,7 +56,7 @@ impl Shared {
         let handle = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
-            self.writer_opened(ino, true);
+            self.writers.opened(ino, true);
             let fh = self.next_handle.fetch_add(1, Ordering::SeqCst);
             crate::panic::lock(&self.handles).insert(fh, Handle { ino, id: None, rel, copy: Some(Arc::new(file)), writes: true });
             fh

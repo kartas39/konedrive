@@ -97,7 +97,7 @@ impl Mount {
                 writing,
                 wake: Mutex::new(None),
                 jobs: Mutex::new(None),
-                writers: Mutex::default(),
+                writers: Default::default(),
                 waiting: Mutex::default(),
                 runtime,
             });

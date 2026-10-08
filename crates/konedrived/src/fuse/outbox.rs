@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use konedrive_tree::outbox::OutboxKind;
+use konedrive_tree::TreeStore;
 
 use super::shared::Shared;
 
@@ -24,7 +25,8 @@ pub(super) enum Above {
 /// What the rows say, as of one version of the store.
 #[derive(Default)]
 pub(super) struct Waiting {
-    version: i64,
+    /// The store's version this was read at; `None` before the first reading.
+    version: Option<i64>,
     /// Items that stand elsewhere than the store has them: the directory, and the name there.
     pub(super) moved: HashMap<String, (Above, String)>,
     /// Items removed here and not yet in OneDrive.
@@ -33,15 +35,9 @@ pub(super) struct Waiting {
     pub(super) changed: HashSet<String>,
 }
 
-impl Shared {
-    /// What the outbox says now. Read again only when the store changed since.
-    pub(super) fn waiting(&self) -> Arc<Waiting> {
-        let store = crate::panic::lock(&self.reader);
-        let mut kept = crate::panic::lock(&self.waiting);
-        let version = store.data_version().unwrap_or(kept.version.wrapping_add(1));
-        if version == kept.version {
-            return Arc::clone(&kept);
-        }
+impl Waiting {
+    /// What the rows of `store` say, which is at `version`.
+    pub(super) fn of(store: &TreeStore, version: Option<i64>) -> Self {
         let mut now = Waiting { version, ..Waiting::default() };
         for row in store.outbox_rows().unwrap_or_default() {
             let Some(id) = row.item_id.clone() else { continue };
@@ -52,6 +48,8 @@ impl Shared {
             if row.kind == OutboxKind::Update {
                 now.changed.insert(id.clone());
             }
+            // Moved: the row takes the item elsewhere than the base has it. It stands where
+            // the row last saw it, under the name it has there.
             let base = row.base.as_ref().map(|b| (b.parent.as_deref(), b.name.as_deref()));
             let name = row.rel.file_name().and_then(|n| n.to_str());
             if let (Some(base), Some(name)) = (base, name) {
@@ -64,7 +62,23 @@ impl Shared {
                 }
             }
         }
-        *kept = Arc::new(now);
+        now
+    }
+}
+
+impl Shared {
+    /// What the outbox says now. Read again only when the store changed since.
+    pub(super) fn waiting(&self) -> Arc<Waiting> {
+        let store = crate::panic::lock(&self.reader);
+        let mut kept = crate::panic::lock(&self.waiting);
+        // A version that cannot be read is never the one kept.
+        let version = store.data_version().ok();
+        if version.is_none() || version != kept.version {
+            *kept = Arc::new(Waiting::of(&store, version));
+        }
         Arc::clone(&kept)
     }
 }
+
+#[cfg(test)]
+mod tests;

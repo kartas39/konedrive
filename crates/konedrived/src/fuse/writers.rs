@@ -3,7 +3,12 @@
 //! first writer on the outbox holds it, so that nothing from OneDrive replaces a file a
 //! program is about to write.
 
-use super::shared::Shared;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// The files open for writing, by node.
+#[derive(Default)]
+pub(super) struct Writers(Mutex<HashMap<u64, Written>>);
 
 /// One file open for writing.
 #[derive(Debug, Default, Clone, Copy)]
@@ -25,11 +30,11 @@ pub(super) enum Closed {
     Untouched,
 }
 
-impl Shared {
+impl Writers {
     /// One more handle writes node `ino`, whose content is the user's own already when
     /// `changed`. Whether it is the first: the one the outbox is told of.
-    pub(super) fn writer_opened(&self, ino: u64, changed: bool) -> bool {
-        let mut writers = crate::panic::lock(&self.writers);
+    pub(super) fn opened(&self, ino: u64, changed: bool) -> bool {
+        let mut writers = crate::panic::lock(&self.0);
         let written = writers.entry(ino).or_default();
         written.open += 1;
         written.changed |= changed;
@@ -38,14 +43,14 @@ impl Shared {
 
     /// Something was written through a handle of node `ino`.
     pub(super) fn written(&self, ino: u64) {
-        if let Some(written) = crate::panic::lock(&self.writers).get_mut(&ino) {
+        if let Some(written) = crate::panic::lock(&self.0).get_mut(&ino) {
             written.changed = true;
         }
     }
 
     /// A handle that could write node `ino` was closed.
-    pub(super) fn writer_closed(&self, ino: u64) -> Closed {
-        let mut writers = crate::panic::lock(&self.writers);
+    pub(super) fn closed(&self, ino: u64) -> Closed {
+        let mut writers = crate::panic::lock(&self.0);
         let Some(written) = writers.get_mut(&ino) else { return Closed::StillOpen };
         written.open = written.open.saturating_sub(1);
         if written.open > 0 {
@@ -58,7 +63,10 @@ impl Shared {
     }
 
     /// Whether a program holds node `ino` open for writing.
-    pub(super) fn being_written(&self, ino: u64) -> bool {
-        crate::panic::lock(&self.writers).get(&ino).is_some_and(|written| written.open > 0)
+    pub(super) fn open(&self, ino: u64) -> bool {
+        crate::panic::lock(&self.0).get(&ino).is_some_and(|written| written.open > 0)
     }
 }
+
+#[cfg(test)]
+mod tests;

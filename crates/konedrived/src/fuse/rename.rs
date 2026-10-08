@@ -48,7 +48,7 @@ impl Shared {
             return Err(Errno::EXDEV);
         }
         let src_ino = self.ino_of(&src, parent);
-        let open = self.being_written(src_ino);
+        let open = self.writers.open(src_ino);
         // The folder under the mount first: whatever the item or object has there moves, and
         // what stood at the new place goes.
         self.backing(&to_dir.rel).map_err(|e| errno(&e))?;

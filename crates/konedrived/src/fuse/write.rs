@@ -60,9 +60,9 @@ impl Shared {
         // Its content is the user's own already when the outbox holds a change of it; from
         // the first writer on the outbox holds it in any case.
         let own = truncate || entry.id().is_some_and(|id| self.waiting().changed.contains(id));
-        if self.writer_opened(ino, own) {
+        if self.writers.opened(ino, own) {
             if let Err(e) = self.content(ino, true) {
-                self.writer_closed(ino);
+                self.writers.closed(ino);
                 return Err(e);
             }
         }
@@ -106,8 +106,8 @@ impl Shared {
         self.writable_file(&entry, &rel, size == 0)?;
         let file: File = OpenOptions::new().write(true).open(self.under(&rel)).map_err(|e| errno(&e))?;
         file.set_len(size).map_err(|e| errno(&e))?;
-        if self.being_written(ino) {
-            self.written(ino);
+        if self.writers.open(ino) {
+            self.writers.written(ino);
         } else {
             self.content(ino, false)?;
         }

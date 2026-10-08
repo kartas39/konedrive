@@ -21,7 +21,7 @@ use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
 use super::outbox::Waiting;
 use super::recorder::Job;
-use super::writers::Written;
+use super::writers::Writers;
 use super::read::{Handle, Reader};
 
 pub(super) struct Shared {
@@ -80,7 +80,7 @@ pub(super) struct Shared {
     /// The way to the recorder's thread ([`super::recorder`]).
     pub(super) jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The files programs hold open for writing, by node ([`super::writers`]).
-    pub(super) writers: Mutex<HashMap<u64, Written>>,
+    pub(super) writers: Writers,
     /// What the outbox's rows say of the folder, as last read ([`super::outbox`]).
     pub(super) waiting: Mutex<Arc<Waiting>>,
     pub(super) runtime: tokio::runtime::Handle,

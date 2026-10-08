@@ -127,7 +127,7 @@ impl Requests {
         let s = &self.0;
         let closed = crate::panic::lock(&s.handles).remove(&fh.0);
         if let Some(handle) = closed.filter(|handle| handle.writes) {
-            let changed = match s.writer_closed(handle.ino) {
+            let changed = match s.writers.closed(handle.ino) {
                 Closed::StillOpen => None,
                 Closed::Changed => Some(true),
                 Closed::Untouched => Some(false),
