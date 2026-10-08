@@ -18,6 +18,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod activity;
+mod fuse;
 mod refusals;
 mod registration;
 mod settings;

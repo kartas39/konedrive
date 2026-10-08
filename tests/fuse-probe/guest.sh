@@ -404,6 +404,15 @@ service() {
     grep -v "^$" $W/logs/svc.err | tail -8
 }
 
+# The daemon on a private bus, `konedrivectl` and plain file calls on a folder served through
+# FUSE: crates/konedrivectl/tests/sync_cli/fuse.rs.
+cli() {
+    echo "==== a folder served through FUSE, driven from the command line ===="
+    ip link set lo up
+    mkdir -p $W/tmp; chown 1000:1000 $W/tmp
+    $U env TMPDIR=$W/tmp "$CLI_TEST" --ignored --exact fuse::a_folder_served_through_fuse_is_driven_from_the_command_line --nocapture 2>&1 | tail -25
+}
+
 subtype() {
     echo "==== mount type ===="
     start || return

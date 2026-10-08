@@ -8,6 +8,9 @@ work=$(mktemp -d "$here/target/run.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 {
     echo '#!/bin/sh'
+    # The CLI's end-to-end test of a folder served through FUSE, when it is built
+    # (`cargo test -p konedrivectl --test sync_cli --no-run`): the newest binary.
+    echo "export CLI_TEST='$(ls -t "$here"/../../target/debug/deps/sync_cli-* 2> /dev/null | grep -v '\.d$' | head -1)'"
     echo "bash '$here/guest.sh' '$here/target/release' $*"
 } > "$work/inner.sh"
 chmod +x "$work/inner.sh"
