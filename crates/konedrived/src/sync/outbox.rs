@@ -78,7 +78,7 @@ impl SyncService {
     }
 
     /// The outbox worker of the read-write folder at `root` (`docs/design/writes.md`
-    /// §5), built and not started: the sync being built keeps it, beside the watcher, and
+    /// §5), built and not started: the sync being built keeps it, and
     /// starts it once its poller runs. It is linked to the parts it talks to — the poller,
     /// through `poll`, told once that runs — and to nothing of the service but what it
     /// reports to.
@@ -195,7 +195,7 @@ impl SyncService {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
         // A row that says what a line of the list says already at the same place is left
-        // out: the line stays from one examination to the next while the row's state moves.
+        // out: the line stays while the row's state moves.
         let listed: std::collections::HashSet<(std::path::PathBuf, String)> = skipped.iter().map(|s| (s.rel.clone(), s.reason.key().to_owned())).collect();
         let mut out: Vec<KeptBack> =
             skipped.into_iter().map(|s| KeptBack { path: root.join(&s.rel).display().to_string(), reason: s.reason.to_string() }).collect();
@@ -272,7 +272,7 @@ impl SyncService {
     /// Inside a change of the folder's state, with every part of the folder's sync stopped
     /// and waited for: no cycle and no worker is there to share the store with, so no tree
     /// lock is taken. The store is the folder's, or the one on disk for a folder that is
-    /// not up — a folder that waits for the helper still has its rows.
+    /// not up — a folder whose bring-up failed still has its rows.
     pub(super) async fn drop_outbox(&self, stopped: &mut Stopped<'_>) {
         let Some(store) = self.store_in(stopped).await else { return };
         let Some(root) = stopped.folder().record().map(|record| record.root.clone()) else { return };

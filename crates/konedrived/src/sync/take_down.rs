@@ -26,8 +26,8 @@ fn refuse_waiting(waiting: u64) -> Result<(), SyncError> {
 impl SyncService {
     /// Takes a retirement back, for an `Accounts.Remove` whose
     /// later steps failed: the account stays, so it registers a folder again.
-    /// The folder it had is not brought back: it is forgotten, at the helper
-    /// too, and a OneDrive folder's tree store is gone. An account that was
+    /// The folder it had is not brought back: it is forgotten, and its tree store is
+    /// gone. An account that was
     /// held back is held back again, and says why.
     pub async fn unretire(&self) {
         let mut stopped = self.change().await;
@@ -88,9 +88,6 @@ impl SyncService {
             }
             return Err(SyncError::NoRoot);
         };
-        // A move out of the folder still in its store goes with it (the count above leaves
-        // none): what it left outside is tidied first, while the helper still holds the
-        // folder, and the registry stops routing its ids.
         // The folder is gone from the state, and with it everything kept with it: its
         // source and its tree store. The copy of the record this call holds gives its
         // store up too, and no reader holds one: what the view hands out carries none

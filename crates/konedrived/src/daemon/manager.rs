@@ -57,7 +57,7 @@ pub struct Options {
 /// The bus, as the daemon uses it: the manager's own objects and each account's are put on
 /// it and taken off it by `dbus/`, which the daemon's own layer cannot name; its
 /// `dbus::export::OnBus` is the one implementation outside the tests. What goes over the
-/// bus beyond that — every signal, `HelperState`'s included — is `dbus/`'s own business.
+/// bus beyond that — every signal — is `dbus/`'s own business.
 #[async_trait]
 pub trait Bus: Send + Sync {
     /// Puts `org.konedrive.Accounts` and `org.konedrive.Files` at `/org/konedrive/Accounts`,
@@ -104,7 +104,7 @@ pub enum ManagerError {
     Failed(String),
     #[error("there is no account {0}")]
     NoAccount(String),
-    /// What the account's folder refused, under the folder's names (`NoHelper`, …).
+    /// What the account's folder refused, under the folder's names (`PendingUploads`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
     /// What `Accounts.SignIn` refuses under a name of `Account.BeginSignIn`'s (`NoClientId`).
@@ -123,7 +123,7 @@ impl From<ConfigError> for ManagerError {
 }
 
 /// The accounts, in the order they were added, and what they share: `config.toml`, the
-/// registry of their folders with the helper hub, and the identity guard's view of every
+/// registry of their folders, and the identity guard's view of every
 /// account.
 pub struct AccountManager {
     pub(crate) config: Arc<ConfigStore>,
@@ -205,8 +205,8 @@ impl AccountManager {
     }
 
     /// Brings up every account `config.toml` holds, in file order (`docs/design/accounts.md` §3.2, step 4):
-    /// the session restored from the wallet and the cache, and an intercepted folder held
-    /// until the helper is back. An account that repeats an earlier one's id, label, drive
+    /// the session restored from the wallet and the cache, and its folder taken up, down
+    /// until [`resume_all`](Self::resume_all) brings it up. An account that repeats an earlier one's id, label, drive
     /// or folder is loaded but held back (§4.1); one whose id cannot name an object or a
     /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub async fn load(&self) {
@@ -346,7 +346,7 @@ impl AccountManager {
 
     /// `Accounts.Remove` (`docs/design/accounts.md` §7.3): the folder forgotten exactly as
     /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
-    /// rule (`NoHelper` for an intercepted folder with no helper), a OneDrive folder's tree
+    /// rule (`PendingUploads` while changes wait to be uploaded), its tree
     /// store with it — then a sign-in under way cancelled, the refresh token and the cached
     /// name and quota deleted, the account taken out of `config.toml`, its directory deleted
     /// with what is left in it, and its object off the bus. The folder's files and the
@@ -355,8 +355,8 @@ impl AccountManager {
     /// A removal that fails after the account was retired — the sign-in cannot be deleted,
     /// or the account cannot be taken out of `config.toml` — leaves the account as an
     /// account: listed, taking a folder, a sign-in and a mode again, and removable again.
-    /// What the steps before did is not taken back (a folder forgotten is forgotten at the
-    /// helper, and a OneDrive folder's tree store is gone), and the refusal, under the name
+    /// What the steps before did is not taken back (a folder forgotten is unmounted, and
+    /// its tree store is gone), and the refusal, under the name
     /// the failure always had, says what was done.
     pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
@@ -366,7 +366,7 @@ impl AccountManager {
         }
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
-        // forgotten (a held account's through the helper too), then the sign-in.
+        // forgotten (a held account's too), then the sign-in.
         let forgotten = account.sync.retire().await?;
         let failed = match account.account.retire().await {
             Err(e) => Some((ManagerError::Failed(format!("cannot delete the sign-in: {e}")), false)),

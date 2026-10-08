@@ -38,8 +38,8 @@ impl Default for IgnoreList {
     }
 }
 
-/// An account's ignore list as its watcher and its settings share it:
-/// `SetIgnorePatterns` changes what the next examination uses.
+/// An account's ignore list as its folder's mount and its settings share it:
+/// `SetIgnorePatterns` changes what the next change made in the folder goes by.
 pub type SharedIgnore = Arc<RwLock<IgnoreList>>;
 
 impl IgnoreList {

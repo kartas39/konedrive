@@ -4,8 +4,8 @@
 //! **The pause** is per account and kept with the account's settings, in its section of
 //! `config.toml` (`paused_until`), so it survives a restart, a timed one ends by itself, and
 //! it is set and shown whether the account's sync runs or not. It stops the outbox, the
-//! poll (and so the replacements it runs) and the thumbnails; fills on open, `Hydrate` and
-//! the watcher's detection go on, and rows keep coalescing. A pause a version before this
+//! poll and the thumbnails; reads of a file, `Hydrate` and
+//! the recording of local changes go on, and rows keep coalescing. A pause a version before this
 //! one kept in the tree store is moved over when the store is first opened
 //! ([`SyncService::take_old_pause`]).
 //!

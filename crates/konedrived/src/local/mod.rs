@@ -16,13 +16,10 @@ use std::time::Duration;
 
 pub use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
 
-/// A batch is examined when no event came for this long (provisional).
+/// A file is read for its upload only once it was not written for this long (provisional).
 pub const QUIET: Duration = Duration::from_secs(2);
-/// ... and at the latest this long after its first event, during continuous
-/// activity (provisional).
-pub const CEILING: Duration = Duration::from_secs(30);
-/// A file that is busy — open for writing, being filled or freed — is
-/// examined again after this long (provisional).
+/// A file that is busy — open for writing, being downloaded — is
+/// looked at again after this long (provisional).
 pub const RECHECK: Duration = Duration::from_secs(30);
 
 /// The mass-delete guard (§4.5): a batch that would remove more items than

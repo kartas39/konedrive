@@ -1,12 +1,12 @@
 //! The mode a folder is kept in, said once and carried down a cycle.
 //!
-//! A read-only folder shows OneDrive and is kept under the read-only lock;
+//! A read-only folder shows OneDrive and takes no change;
 //! a read-write folder also holds the user's own changes
 //! (`docs/design/writes.md` §2.2). What read-write mode brings differs by
 //! level, so the enum is one and its load is the level's: the folder's part
 //! in uploading ([`Writes`](crate::remote::listing::Writes)), what one cycle carries
-//! to its swap, the rules a pass over the folder goes by
-//! ([`Rw`](crate::remote::materialize::Rw)).
+//! to its swap, what the outbox holds of the folder
+//! ([`Rw`](crate::local::held::Rw)).
 
 /// Read-only, or read-write with what that level needs for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

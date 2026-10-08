@@ -33,7 +33,6 @@ impl SyncService {
     /// no reconcile, registration or free-up runs meanwhile. The sync then starts again, if
     /// it ran: its first cycle is a Full reconcile, in read-write mode it starts the outbox
     /// worker, and the folder's mount takes changes or refuses them as the new mode says.
-    /// A local folder only takes the mode.
     ///
     /// The accounts manager calls this once before the folder is restored, with the mode
     /// the account starts in: nothing is up then, so the folder only takes the mode.

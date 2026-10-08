@@ -13,11 +13,7 @@ impl Folder {
         Ok(self.service.register_root(Path::new(path)).await?)
     }
 
-    /// Binds a folder with **nothing intercepting opens inside it**.
-    /// Separate from `Register`, rather than a flag on it, so
-    /// that nobody enters this mode without naming it: a placeholder nobody
-    /// intercepts reads as zeros, which `State = no-interception` and
-    /// `LastError` then say in as many words.
+    /// Refused: kept for the clients that still know the call.
     async fn register_without_interception(&self, path: &str) -> Result<()> {
         Ok(self.service.register_root_without_interception(Path::new(path)).await?)
     }

@@ -48,21 +48,20 @@ fn lock_config(config_file: &Path) -> anyhow::Result<nix::fcntl::Flock<std::fs::
 ///    holds `config.toml.lock`, which is taken before the file is read and kept for the
 ///    life of the process;
 /// 2. the files of a migrated account moved, before anything opens them;
-/// 3. every account brought up: its session restored, an intercepted folder held until
-///    the helper is back;
+/// 3. every account brought up: its session restored, and the folder `config.toml`
+///    records for it taken up;
 /// 4. `/org/konedrive/Accounts` and every account's object exported, and only then
 ///    `org.konedrive.Daemon` claimed;
-/// 5. every folder that needs no helper brought up.
+/// 5. every folder brought up: mounted, and its sync started.
 ///
 /// The connection answers calls from the moment it is there: see `connect`.
 ///
-/// The caller starts the hub's supervisor ([`crate::helper::hub::supervise`]) and watchers.
+/// The caller starts the watchers of the machine's conditions.
 pub async fn start(builder: zbus::connection::Builder<'_>, paths: Paths, options: Options) -> anyhow::Result<Daemon> {
     start_on(builder, paths, options, Registry::new()).await
 }
 
-/// [`start`], on a `registry` the caller has set up already: a test's hub points at a helper
-/// socket of its own, so that no startup looks at a helper running on the machine.
+/// [`start`], on a `registry` of the caller's.
 pub async fn start_on(
     builder: zbus::connection::Builder<'_>,
     paths: Paths,

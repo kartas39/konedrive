@@ -31,7 +31,7 @@ pub(super) enum Sync {
 /// Why a OneDrive folder's sync does not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Why {
-    /// Nothing has started it yet: the folder came up a moment ago, or is not intercepted.
+    /// Nothing has started it yet: the folder came up a moment ago.
     NotStarted,
     /// A change of the folder stopped it and has not started it again: the change is
     /// under way, or was cut before its end. The next change starts it.

@@ -134,8 +134,7 @@ impl Listing {
             // and `staging` made again from `items` under it when an outbox commit wrote
             // `items` since the last page — between pages the two are the same otherwise,
             // and the swap would revert that commit. Only then: a copy per page
-            // would grow with the square of a large listing. An examination
-            // writes nothing before the listing is complete (`NoBase`).
+            // would grow with the square of a large listing.
             let tree = match mode {
                 Mode::ReadWrite(Since { writes, .. }) => {
                     let tree = self.tree_lock(writes, cancel).await?;

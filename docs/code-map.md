@@ -18,7 +18,7 @@ A change that adds, moves or removes a file changes its line here.
 
 | Part | What it is |
 |---|---|
-| `crates/konedrived` | The user's daemon: sign-in, the sync, files on demand, the D-Bus API |
+| `crates/konedrived` | The user's daemon: sign-in, the sync, the folder as a FUSE mount, the D-Bus API |
 | `crates/konedrive-helper` | The privileged helper: fanotify permission events, and nothing about OneDrive |
 | `crates/konedrivectl` | The command line: everything the window can do |
 | `crates/konedrive-graph` | Sign-in with Microsoft and everything that talks to Microsoft Graph |
@@ -49,7 +49,6 @@ Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `kon
 | The Rust workspace | `cargo test --workspace` | The unit tests of every crate and the integration tests in `crates/*/tests/`, on private buses, temporary directories and wiremock |
 | One crate, or one test binary | `cargo test -p konedrived --lib`, `cargo test -p konedrivectl --test sync_cli` | The same, narrowed while working on one part |
 | The development build's tests | `cargo test -p konedrived -p konedrivectl --features konedrived/dev-tools,konedrivectl/dev-tools` | The token export and the signed-out account (`dbus/token_export.rs`, `dbus/dev_tools.rs`, `konedrivectl dev`) |
-| The outbox at scale | `cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1` | `crates/konedrived/src/tests/bench.rs`: ignored tests, run by hand |
 | The window | `cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure` | `app/tests/` |
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
 | The VM suite | `tests/vm/run.sh quick` (ext4); `tests/vm/run.sh full` (btrfs, ext4, xfs) | `tests/vm/scenarios/`: the real helper as root. Only when a change touches the helper path |
@@ -74,15 +73,13 @@ The directories are in layer order: a directory uses only the directories before
 `remote/` does not use `upload/`.
 
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus,
-  keeps the helper link up, and stops when a task it needs is gone.
+  and stops when a task it needs is gone; `--tidy`, what the unit runs after the daemon's end.
 - `lib.rs` — the list of the directories below.
 - `clock.rs` — the wall clock, read in one place (`unix_now`).
 - `panic.rs` — what a caught panic said, and a lock taken whether or not a holder of it
   panicked (`lock`, `read`, `write`), for the places that go on after a panic. `[tests]`
-- `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
-  tests run by hand in release.
 - `tests/fake_onedrive/mod.rs` — the module `fake_onedrive`: a fake OneDrive on wiremock, for
-  the tests of every area that talks to OneDrive and for the VM suite's write scenarios
+  the tests of every area that talks to OneDrive and for the VM scenarios
   (built for tests and with `fault-injection` only).
 - `tests/fake_onedrive/sockets.rs` — the fake's notification socket.
 
@@ -114,38 +111,20 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 - `testing.rs` — test support, also for `konedrivectl`'s tests and the VM suite: a wallet in
   memory, and one account with no accounts manager. Built only under the `testing` feature.
 
-### `crates/konedrived/src/helper/`
-
-The daemon's end of the helper socket, and the helper's state. Design: `hydration.md`.
-
-- `mod.rs` — the list of the modules; `HelperError`.
-- `link.rs` — `HelperLink`: the two blocking threads that own the socket, the calls and
-  their bounds; `LinkCell`, where an account keeps the link. `[tests]`
-- `clearance.rs` — `Clearance`: the rule every punch clears a file's ignore mark by.
-- `presence.rs` — whether a helper has its socket bound, told without connecting. `[tests]`
-- `testing.rs` — test support: the stand-ins for the helper's end of the socket, over one accept
-  loop; `FakeHelper`, the one the daemon's tests share: it records, refuses, holds an answer
-  until released, and finds an object by its handle.
-- `hub.rs` — `HelperHub`: the one link every account shares, its supervisor and `HelperState`;
-  `Served`, whom it tells as the link comes and goes.
-- `linked.rs` — `Helper` and `Linked`: what the daemon asks of the helper beyond the fills, as
-  a trait.
-- `status.rs` — the helper as the daemon sees it: how systemd says its unit stands. `[tests]`
-
 ### `crates/konedrived/src/folder/`
 
 The folder on disk: the root and its registration, descriptor-based changes, the per-file
-locks, and which item of the drive has a place in it. Design: `hydration.md`, `sync.md`.
+locks, and which item of the drive has a place in it. Design: `sync.md`.
 
 - `mod.rs` — the list of the modules.
-- `root.rs` — `SyncRoot`: opening, checking and registering a root; `OpenError`,
-  `RegisterError`; `Reach`, an item of the root opened or only looked at; the drive a folder
-  remembers. `[tests]`
+- `root.rs` — `SyncRoot`: checking and registering a root, and opening it — the folder under
+  the mount for a mounted one; `RegisterError`; the drive a folder remembers. `[tests]`
 - `classify.rs` — what a Graph item becomes in the tree, and whether it has a place in the
   folder. `[tests]`
-- `disk.rs` — every change made to the folder, by descriptor; `Modes`, a folder's lock on
-  its directories' modes. `[tests]`
-- `locks.rs` — `InodeLocks`: one fill or free-up per inode at a time. `[tests]`
+- `disk.rs` — the upload worker's hands on the folder, by descriptor; `Modes`, a folder's
+  lock on its directories' modes. `[tests]`
+- `locks.rs` — `InodeLocks`: one reader or writer of a file's upload per inode at a time.
+  `[tests]`
 - `walk.rs` — a walk over the folder's files that opens none of them; the names konedrive keeps
   for itself.
 
@@ -178,111 +157,84 @@ What the sync reports. Design: `desktop.md`.
 
 ### `crates/konedrived/src/hydration/`
 
-Files on demand: answering opens, content sources, the fill, freeing up, startup recovery,
-pins. Design: `hydration.md`, `pinning.md`.
+Where a download gets its bytes from, and the download of a whole file. Design:
+`hydration.md`.
 
 - `mod.rs` — the list of the modules.
-- `server.rs` — takes hydration requests off the helper's queue and fills them; the trait
-  `Router`. `[tests]`
-- `source.rs` — `ContentSource`: where hydration gets its bytes from.
-- `source/fill.rs` — a fill of a placeholder in place: the state it is found in, the clearing
-  of its ignore mark, the commit, and the roll-back of a fill that failed. `[tests]`
-- `source/download.rs` — a download in one stream; `download_into` for a replacement.
-- `source/parts.rs` — a large pinned download in parallel parts. `[tests]`
+- `source.rs` — `ContentSource`: where a download gets its bytes from.
+- `source/download.rs` — a download in one stream, into a file that has no name yet.
+- `source/parts.rs` — a large pinned download in parallel parts.
 - `source/guards.rs` — what both downloads check: the source's answer, the breaks, the
   checkpoint a download continues from, the hash, the one start over; `Tuning`.
-- `source/target.rs` — the file a fill writes, and its blocking sections. `[tests]`
-- `source/local_dir.rs` — `LocalDir`: the content source of a folder filled from a directory.
-- `demote.rs` — turning a file back into a placeholder: the one function a failed fill, a
-  stopped download, a free-up and startup recovery empty a file with. `[tests]`
-- `testing.rs` — test support: `Faulty` (a source that counts, waits and breaks) and the
-  area's fixture.
-- `graph_source.rs` — the content source of a folder that shows OneDrive. `[tests]`
+- `source/target.rs` — the file a download writes, and its blocking sections. `[tests]`
+- `graph_source.rs` — the content source of a folder: OneDrive.
 - `tracked.rs` — `Tracked`: a content source that reports what it fetches to `Transfers`.
-- `dehydrate.rs` — freeing up a file: the checks, `dehydrating`, the clearing, the lease.
-  `[tests]`
-- `recovery.rs` — startup recovery: what an interrupted fill or free-up left behind. `[tests]`
-- `pin.rs` — "Always keep on this device": which items are pinned, and their downloads.
-  `[tests]`
+
+### `crates/konedrived/src/local/`
+
+What the user changed in the folder, on its way to the outbox: the folder's mount records
+each change (`fuse/`); here is what the recording goes by. Design: `writes.md` §4.
+
+- `mod.rs` — the list of the modules, and the limits they share.
+- `ignore.rs` — the ignore list: names that stay local. `[tests]`
+- `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
+- `record.rs` — a local change recorded in the outbox: the mass-delete guard, the order of
+  the rows, the one transaction.
+- `held.rs` — `Rw`: what the outbox's rows hold of the folder while they wait — the items a
+  cycle of the listing leaves as they are, and the ones being removed.
 
 ### `crates/konedrived/src/fuse/`
 
 A folder served as a FUSE mount laid over the folder itself: every name from the tree store,
-the folder on disk holding only what is downloaded.
+the folder on disk holding only what is downloaded and what the user made. The one way the
+daemon shows OneDrive.
 
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
 - `shared.rs` — `Shared`: the folder under the mount, the store read for the requests, and
-  what is under way; a path's row.
-- `requests.rs` — the mount's requests (`Filesystem`): looked up, listed, opened, read; every
-  change from a program refused.
+  what is under way; a path's row; `Writing`, what a folder that takes changes shares with
+  its sync.
+- `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
+  `is_writable`.
+- `requests.rs` — the mount's requests (`Filesystem`), each handed on.
+- `requests/look.rs` — the requests that look: a name, a node, a directory's content,
+  attributes.
+- `requests/read.rs` — the requests that open and read a file.
+- `requests/change.rs` — the requests that change the folder, each made on the recorder's
+  thread.
 - `nodes.rs` — the node ids the kernel knows, each an item and its place. `[tests]`
 - `attr.rs` — what the mount says of an item: kind, size, times, modes.
+- `local.rs` — what a directory holds: the store's items as the outbox's rows leave them,
+  and the files and directories OneDrive has no item for yet.
+- `outbox.rs` — the outbox's rows laid over the store: items moved, removed or changed here.
 - `copies.rs` — the downloaded copies: which file is an item's, its state, its removal.
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
   background downloads.
 - `fill.rs` — the download of a whole file into a file without a name, and its naming.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
+- `recorder.rs` — the one thread that makes and records each change a program asks for,
+  under the folder's tree lock.
+- `changes.rs` — what a change means for the outbox: the detections.
+- `make.rs` — a file or a directory a program makes.
+- `remove.rs` — a file or a directory a program removes.
+- `rename.rs` — a file or a directory a program renames or moves inside the folder.
+- `write.rs` — a file a program writes, in its downloaded copy.
+- `writers.rs` — the files held open for writing: a file is sent once its last writer closed
+  it.
 - `follow.rs` — the folder under the mount made to follow a cycle of the listing (`Step`).
+- `conflict.rs` — where a change from OneDrive meets something the user made here: what is
+  kept, and under which name.
 - `announce.rs` — changes told to the kernel through the mount, for whoever watches.
 - `lock.rs` — the folder on disk locked while no mount lies over it; `tidy`, what follows the
   daemon's end. `[tests]`
 
-### `crates/konedrived/src/local/`
-
-What the user changed on disk: the watcher that notices it and the examination that records it
-in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
-
-- `mod.rs` — local changes, from the disk to the outbox. `[tests]`
-- `batch.rs` — a batch: the places a quiet spell of events made dirty. `[tests]`
-- `entry.rs` — one directory entry as the examination sees it.
-- `examine.rs` — the examination: from a batch to the detections recorded in the outbox; a run's four parts and the order of the rules.
-- `examine/listing.rs` — what a run read of the disk: every place the batch names, read-only once built; whether a place was looked at.
-- `examine/facts.rs` — the store as a run reads it: the live rows, and each item's row, recorded object and expected place.
-- `examine/decisions.rs` — who is who in a run: which entry is which item, what is settled, what is spoken for.
-- `examine/identity.rs` — which entry is the item: one function of facts and entries, and carrying its decision out. `[tests]`
-- `examine/hands.rs` — the one type through which a run opens a listed entry and writes to the disk while deciding.
-- `examine/copies.rs` — what becomes of an entry with an id that is not its own: stripped, listed, or removed when empty.
-- `examine/found.rs` — an item found: where it is, and its content, by the stamp first.
-- `examine/missing.rs` — an item not found: removed, moved away, or moved out of the folder.
-- `examine/new.rs` — an entry with no id: a new file or folder, unless it stays local.
-- `examine/place.rs` — where an object is now, asked by its handle, and the proof that it is absent.
-- `examine/detect.rs` — the detections a run records, each shape made once; whether a file is ready to be read.
-- `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows, the one transaction.
-- `ignore.rs` — the ignore list: names that stay local. `[tests]`
-- `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
-- `liveness.rs` — whether a missing object is still there, and where; the proof that it is absent from a place.
-- `handles.rs` — which filesystem the recorded file handles belong to, and taking them again when it changed; the record of the object a replacement swapped in.
-- `testing.rs` — tests: the one fixture of this area's tests, and of the others' that run an
-  examination (`Folder`: a temporary folder, its store, the listing placed in it, the watcher on
-  it), the sinks of the watcher's tests, and the stand-in for the helper's answer about an object
-  (`FakeLiveness`).
-- `scan.rs` — how the Full local scan goes, for `org.konedrive.LocalScan`. `[tests]`
-
-### `crates/konedrived/src/local/watcher/`
-
-- `mod.rs` — the watcher: the daemon's own unprivileged fanotify group on the folder.
-  `[tests]`
-- `fan.rs` — the notification group itself: `fanotify_init`, `fanotify_mark`, reading events.
-  `[tests]`
-- `map.rs` — the directory map: which directory a file handle names. `[tests]`
-- `dirt.rs` — what the events since the last hand-over made dirty.
-- `reader.rs` — the reader thread: walks the folder once, then drains the events and settles them.
-  - `reader/tree.rs` — the folder's directories as the reader knows them: the map, what left, what waits.
-  - `reader/marks.rs` — the marks on them: the notification groups and their budget, the helper's `MarkDir`.
-  - `reader/timers.rs` — when the folder is walked again and the helper asked again. `[tests]`
-  - `reader/walk.rs` — a walk of directories, and how each kind of walk treats what it finds.
-- `examiner.rs` — the examiner thread: hands each batch to the sink and says what came of it.
-- `schedule.rs` — what the examiner examines next, and when: retries, rechecks, the periodic scan. `[tests]`
-- `service.rs` — the watcher in the daemon: hands each batch to the examination.
-
 ### `crates/konedrived/src/upload/`
 
 The outbox worker: sends the recorded changes to OneDrive; what is kept back. Design:
-`writes.md` §5, §6, §8 (moves out), §10.
+`writes.md` §5, §6, §10.
 
-- `mod.rs` — the worker and its host. `[tests]`
+- `mod.rs` — the worker and its host.
 - `engine.rs` — the worker: what it works with, whether it may send, its status, its life.
 - `engine/drain.rs` — one drain: which row is taken next, and what the worker waits for.
 - `engine/outcome.rs` — how a row's run can end, and the outcome of an answer no step settled.
@@ -299,31 +251,6 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `space.rs` — a full OneDrive: what waits for space. `[tests]`
 - `kept_back.rs` — what is kept back from OneDrive, grouped by what the user can do about it.
   `[tests]`
-- `move_out.rs` — a move out of the folder: what the worker needs for it, and where a `move-out` row's step begins.
-- `move_out/row.rs` — one `move-out` row's step: what its cases work with (`MoveOut`), and which case the helper's answer and the object's place make it.
-- `move_out/reach.rs` — the helper's answer for an object asked for by its handle (`Reach`): the one place its errnos are read.
-- `move_out/cases.rs` — the cases: a file or a folder, to the Trash or elsewhere; gone; kept for another account.
-- `move_out/place.rs` — where a moved-out object is now, proved.
-- `move_out/trash.rs` — the Trash and its entries.
-- `move_out/walk.rs` — walking a moved-out folder.
-- `move_out/tidy.rs` — what becomes of an object outside that nothing is downloaded into: the one rule of the Trash case and of dropped rows (`Fate`, `tidy_dirs`).
-- `move_out/dropped.rs` — `move-out` rows dropped before they ran: what they left outside is tidied.
-- `move_out/protect.rs` — the re-marking of what left, and the routing of its fills.
-
-### `crates/konedrived/src/upload/tests/`
-
-The tests of the worker, by topic.
-
-- `mod.rs` — the worker's steps, its order, its crash points; what the topics share: the one fixture (`World`: the folder of `local/testing.rs`, the harness and the fake helper).
-- `harness.rs` — the tests' worker around the fake OneDrive, driven by hand; also used by the bench.
-- `candidates.rs` — a `403` on one row, and a new file OneDrive holds with other content.
-- `foreign_parent.rs` — a directory that carries another folder's id: nothing is sent into that folder.
-- `move_out.rs` — moves out of the folder, on the host: each case once, with the fake helper, behind a real link, finding what left beside the folder.
-- `removed.rs` — a file or folder removed before its upload finished.
-- `replaced_folder.rs` — a folder replaced offline by a new one that keeps one of its files: the examination's rows and the worker's side of the name rule.
-- `sessions.rs` — upload sessions: a crash, a refusal, a changed file or an ended session at each step; and their placeholders.
-- `stops.rs` — a worker stopped while a section changes the folder and records it.
-- `worker.rs` — the worker's loop: when it waits, and which row goes next.
 
 ### `crates/konedrived/src/remote/`
 
@@ -332,56 +259,22 @@ reconcile in read-write mode).
 
 - `mod.rs` — the list of the modules.
 - `mode.rs` — `Mode<W>`: read-only, or read-write with what a level needs for it (the folder's
-  `Writes`, a cycle's `RwCycle`, a pass's `Rw`).
-- `testing.rs` — the one fixture of this area's tests (`World`): a temporary folder, the store, the
-  fake OneDrive and the fake helper (`helper/testing.rs`); a real cycle, or the cycle's staging and its
-  reconcile in two steps. The one place a test builds a materializer by itself.
-- `live.rs` — changes from OneDrive at once: the notification socket's task. `[tests]`
+  `Writes`, a cycle's `RwCycle`, what the outbox holds).
+- `applied.rs` — what a cycle's reconcile did to the folder: the numbers, the copies it
+  kept, each change by name (`Applied`, `OnDisk`, `Counts`, `Changed`, `Copied`).
+- `live.rs` — changes from OneDrive at once: the notification socket's task.
 - `listing.rs` — `Listing`: one folder's cycle in three steps (fetch, stage and reconcile, what
-  follows a cycle that went through). `[tests]`
-- `listing/fetch.rs` — `fetch`: a full listing and the changes since the last one, page by page.
-  `[tests]`
+  follows a cycle that went through).
+- `listing/fetch.rs` — `fetch`: a first listing shown page by page, a whole listing, and the
+  changes since the last one.
 - `listing/lease.rs` — the folder's lease a cycle holds while it changes the folder; `sync/` hands it in.
-- `listing/poller.rs` — when a cycle runs. `[tests]`
-- `listing/reconcile.rs` — the reconcile of one cycle, in either mode: `apply_with_handover`,
-  `commit_cycle` (what waits), `after_commit`; what a failed cycle still hands over and records.
-- `listing/replacements.rs` — `Replacements`: which changed files are being replaced, wait or
-  failed; the workers that replace them, several at once. `[tests]`
-- `listing/rw.rs` — `Writes`: what a read-write folder's cycle shares with its outbox worker and
-  watcher. `[tests]`
+- `listing/poller.rs` — when a cycle runs.
+- `listing/reconcile.rs` — the reconcile of one cycle, in either mode: the folder's mount
+  follows the new tree (`follow_mount`), `commit_cycle` (what waits), `after_commit`.
+- `listing/rw.rs` — `Writes`: what a read-write folder's cycle shares with its outbox worker.
 - `listing/stage.rs` — `stage`: what was fetched put into `staging`, and the reconcile it asks
-  for (scope, commit, mode); a read-write folder's tree lock, stale-delta guard and what is
+  for (commit, mode); a read-write folder's tree lock, stale-delta guard and what is
   staged again.
-- `materialize.rs` — `Materializer`: makes the folder match the tree; the Full and the Changed
-  pass, each once for both modes, and `place`. `[tests]`
-- `materialize/answers.rs` — what the mode answers: every question a pass asks where a read-only
-  and a read-write folder differ.
-- `materialize/applied.rs` — what a pass did, left for later, and how it failed (`Applied`,
-  `OnDisk`, `Pending`, `ApplyError`).
-- `materialize/file.rs` — a file already in place, and what its content needs.
-- `materialize/holding.rs` — the holding directory; rescues.
-- `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
-  (survey, forget, remove, settle), and what is kept of it.
-- `materialize/removal/unplaced.rs` — `take_off` for an item that can no longer be placed: what
-  it waits for, and its removal once nothing waits in it.
-- `materialize/replace.rs` — replacing one changed file. `[tests]`
-- `materialize/rw.rs` — `Rw`: a read-write folder's rules, read once per reconcile, and what
-  they say of a name, a missing item and a local version in the way. `[tests]`
-- `materialize/rw/holding.rs` — putting back what was held.
-- `materialize/rw/sort.rs` — phase 1 in a read-write folder: what is done with each object, by
-  the base, the new tree and what a local change holds.
-- `materialize/rw/unplaced.rs` — what can no longer be placed: `after_placement` (it goes or
-  waits whole), the step aside.
-
-### `crates/konedrived/src/remote/listing/rw/tests/`
-
-The tests of a read-write folder's cycle.
-
-- `mod.rs` — the cycle with the outbox and the examination; what the topics share.
-- `stale.rs` — what the daemon takes off the disk itself is never deleted or moved in
-  OneDrive.
-- `stale/names.rs` — names taken and given in one listing: the enumeration of small listings.
-- `stale/read_only.rs` — the same listings in a read-only folder.
 
 ### `crates/konedrived/src/desktop/`
 
@@ -389,61 +282,45 @@ Baloo and thumbnails. Design: `desktop.md`.
 
 - `mod.rs` — the list of the modules.
 - `baloo.rs` — keeps KDE's file indexer out of a OneDrive folder. `[tests]`
-- `dirnotify.rs` — telling KDE's programs to read directories again, after a mount came or went.
+- `dirnotify.rs` — telling KDE's programs to read directories again, after a mount came or
+  went or the modes it shows changed.
 - `thumbs.rs` — thumbnails from OneDrive. `[tests]`
 
 ### `crates/konedrived/src/sync/`
 
 `SyncService`, one per account's folder, a file per responsibility, and the registry. Every
-`impl SyncService` is here. Design: `hydration.md`, `sync.md`, `accounts.md`.
+`impl SyncService` is here. Design: `sync.md`, `accounts.md`.
 
-- `mod.rs` — `SyncService` and what it holds. `[tests]`
+- `mod.rs` — `SyncService` and what it holds; `SyncError`.
 - `wiring.rs` — `Wiring`: what a service is made with, given once to its constructor.
-- `testing.rs` — test support, also for the VM suite: a `Wiring` of fakes (the account, a
-  temporary `config.toml`, the content sources, the watcher, a clock moved by hand).
-- `registry.rs` — `Registry`: the folders of every account, listed by the account manager; whose
-  folder an open is in, the overlap check, the claims, what every account is told alike. `[tests]`
-- `folder.rs` — what the folder is, as a type; `change`, the one way to change it, and the view the readers read.
-- `running_sync.rs` — the running sync of a OneDrive folder as one object in that state: its parts,
-  the handles a reader may hold, and how it stops (dropped, then waited for by the next change).
-- `publish.rs` — what the bus shows of the folder's state, worked out in one place. `[tests]`
+- `testing.rs` — test support, also for the scenarios outside the workspace: a `Wiring` of
+  fakes (the account, a temporary `config.toml`, the content source, a clock moved by hand).
+- `registry.rs` — `Registry`: the folders of every account, listed by the account manager;
+  the overlap check, what every account is told alike.
+- `folder.rs` — what the folder is, as a type; `change`, the one way to change it, which
+  also says to the desktop when the folder's mount shows other modes; the view the readers read.
+- `running_sync.rs` — the running sync of a folder as one object in that state: its parts
+  (the poller, the outbox worker of a read-write folder), the handles a reader may hold, and
+  how it stops (dropped, then waited for by the next change).
+- `publish.rs` — what the bus shows of the folder's state, worked out in one place.
 - `persisted.rs` — the folder as `config.toml` records it.
-- `bring_up.rs` — a new registration, the folder taken up and brought up at startup and at the
-  helper's connect, and the switch to interception.
-- `take_down.rs` — forgetting a folder; retiring an account's folder; a folder moved away.
-- `start_stop.rs` — starting the sync (prepare, build, run) and asking it for a cycle.
-- `populate.rs` — a folder of placeholders made from a local directory.
-- `hydrate.rs` — filling a placeholder now.
-- `free_up.rs` — freeing up files and whole folders.
-- `pins.rs` — putting pins on and taking them off.
+- `bring_up.rs` — a new registration, the folder taken up and brought up at startup; the
+  two calls of the bus that are refused now (`RegisterWithoutInterception`,
+  `PopulateFromDirectory`).
+- `take_down.rs` — forgetting a folder; retiring an account's folder.
+- `start_stop.rs` — starting the sync (prepare with the mount, build, run: the mount takes
+  changes while a read-write sync runs) and asking it for a cycle.
+- `hydrate.rs` — `Hydrate`: a file downloaded now, by the mount; the mount a call needs.
+- `free_up.rs` — freeing up files and whole folders, by the mount.
+- `pins.rs` — putting pins on and taking them off, by the mount.
 - `menu.rs` — what the context menu may offer for a selection: one account's share of it, and
   the answer of `Files.Menu` put together.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
 - `mode.rs` — the folder's side of the account's mode, and its write gate.
-- `mounted.rs` — what the folder is asked for, answered by its mount (`fuse/`).
 - `outbox.rs` — the outbox worker built and woken; the rows dropped; the outbox as
   `org.konedrive.UploadQueue` shows it. `[tests]`
 - `pause.rs` — the pause, the hold, Sync Anyway, and `PauseClock`, which ends a timed pause. `[tests]`
-- `move_outs.rs` — the fills of moved-out objects.
 - `settings.rs` — the account's settings in `config.toml`: thumbnails, the ignore list, the machine name.
-- `watcher.rs` — the watcher of a read-write folder: started, flushed, and what it tells.
-
-### `crates/konedrived/src/sync/tests/`
-
-The tests of `SyncService`, by topic.
-
-- `mod.rs` — what they share: the fake helper, the services, the placeholders.
-- `registration.rs` — registering a folder.
-- `hydrate.rs` — fills through the service, and one fill per inode.
-- `pins.rs` — "Always keep on this device".
-- `mode.rs` — with and without interception.
-- `startup.rs` — startup and the helper's supervisor.
-- `reports.rs` — what a download or a free-up reports.
-- `guards.rs` — guards over behaviour found correct.
-- `onedrive/mod.rs` — what the tests of a folder that shows OneDrive share.
-- `onedrive/folder.rs` — the folder: `WebUrl`, Baloo, its drive.
-- `onedrive/read_write.rs` — a read-write folder.
-- `onedrive/settings.rs` — the settings, the hold and the pause.
 
 ### `crates/konedrived/src/daemon/`
 
@@ -473,8 +350,8 @@ The D-Bus interfaces, one file each, named like the XML in `dbus/`. Design: `des
 - `dev_tools.rs` — `org.konedrive.DevTools`, only in a development build.
 - `export.rs` — putting the objects on the bus and taking them off; `OnBus`.
 - `properties.rs` — the table of the properties the daemon announces by itself. `[tests]`
-- `signals.rs` — what the daemon announces by itself: `PropertiesChanged`, `ActivityLog.Added`,
-  `Accounts.HelperState`. `[tests]`
+- `signals.rs` — what the daemon announces by itself: `PropertiesChanged`, `ActivityLog.Added`.
+  `[tests]`
 - `fault.rs` — `Fault`: every refusal under the name of a `Refusal`. `[tests]`
 
 ### `crates/konedrived/tests/`
@@ -487,9 +364,6 @@ Integration tests: the daemon over a private bus, Microsoft as wiremock.
 - `accounts.rs` — several accounts.
 - `dbus_api.rs` — `org.konedrive.Account`, and the introspection against the XML.
 - `mode.rs` — the account's mode.
-- `sync_dbus.rs` — the interfaces of an account's folder.
-- `files_menu.rs` — `Files.Menu`: the answer case by case, held against what `Pin`, `Unpin` and
-  `FreeUp` then do.
 
 ## `crates/konedrive-helper`: the privileged helper
 

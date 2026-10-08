@@ -39,7 +39,7 @@ BEGIN {
 
     # The daemon: its directories in layer order.
     DAEMON = "crates/konedrived/src/"
-    count = split("config account helper folder conditions status hydration local upload remote desktop sync daemon dbus", order, " ")
+    count = split("config account folder conditions status hydration local fuse upload remote desktop sync daemon dbus", order, " ")
     for (i = 1; i <= count; i++)
         layer[order[i]] = i
 }

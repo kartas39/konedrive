@@ -65,22 +65,15 @@ impl Offer {
 pub enum FreeUpWhy {
     /// A folder above keeps one of them pinned: `blocked_by`.
     PinnedAbove,
-    /// The folder is intercepted and its helper is not connected.
-    NoHelper,
     /// A file among them has a change waiting to be uploaded.
     NotUploaded,
-    /// The daemon cannot tell now whether one has: the account's sync has not started,
-    /// or its store, or a mark on a file, cannot be read.
-    Unknown,
 }
 
 impl FreeUpWhy {
     pub fn as_str(self) -> &'static str {
         match self {
             FreeUpWhy::PinnedAbove => "pinned-above",
-            FreeUpWhy::NoHelper => "no-helper",
             FreeUpWhy::NotUploaded => "not-uploaded",
-            FreeUpWhy::Unknown => "unknown",
         }
     }
 }

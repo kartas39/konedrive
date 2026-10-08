@@ -1,4 +1,4 @@
-//! The materializer's hands. Every change it makes to
+//! The upload worker's hands on the folder. Every change it makes to
 //! the folder goes through a directory descriptor opened beneath the root —
 //! never a path string a rename could redirect — and every change to a locked
 //! directory through a window of its own.
@@ -29,7 +29,7 @@ pub const NEW_PREFIX: &str = ".konedrive-new-";
 
 /// Whether `name` is one the daemon uses for itself in the folder: the holding
 /// directory, or a new folder before it has its name. Nothing under such a name is
-/// the user's: the examination and the watcher both pass it over.
+/// the user's: the mount shows none of it.
 pub fn daemon_owned(name: &OsStr) -> bool {
     name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
 }
@@ -44,8 +44,7 @@ pub enum Probe {
     Unmanaged { is_dir: bool },
 }
 
-/// Cloned to go into a blocking section (`remote::materialize::replace`): the
-/// clones share the root's one descriptor.
+/// Cloned to go into a blocking section: the clones share the root's one descriptor.
 #[derive(Clone)]
 pub struct Disk {
     root: Arc<File>,
@@ -54,9 +53,8 @@ pub struct Disk {
 }
 
 /// One folder's lock on the modes of its directories, held by everything in this daemon
-/// that lifts a locked directory's write bit and puts it back: the materializer's windows
-/// ([`Disk::writable`]), its locking and unlocking walks, a pin written on a folder
-/// (`hydration::pin::set_pin`) and the drive written on the root. Two such windows on one
+/// that lifts a locked directory's write bit and puts it back: the windows of a change
+/// ([`Disk::writable`]) and the drive written on the root. Two such windows on one
 /// directory used to be able to interleave — one put the lock back while the other was
 /// still writing, which failed `EACCES`.
 ///
