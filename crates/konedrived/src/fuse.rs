@@ -495,6 +495,11 @@ impl Shared {
                 placeholder::write_item_id(&file, &id)?;
                 placeholder::write_state(&file, State::Hydrated)?;
                 file.set_modified(seconds(mtime))?;
+                // No write bit on a downloaded copy, as the mount shows it.
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(0o444))?;
+                }
                 file.sync_all()?;
                 if let Some(dir) = target.parent() {
                     fs::create_dir_all(dir)?;
@@ -649,6 +654,58 @@ impl Shared {
     }
 }
 
+/// Sets the modes of everything in the folder on disk, the folder first: `locked` takes the
+/// write bits off, so that nothing is put into it while no mount lies over it; not locked
+/// gives its owner the directories and the files back. A mode is written only where it differs. `folder`
+/// must be the folder itself, not a mount over it.
+fn set_tree(folder: &Path, locked: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::symlink_metadata(folder) else { return };
+    let wanted = match (meta.is_dir(), locked) {
+        (true, true) => 0o555,
+        (true, false) => 0o755,
+        (false, true) if meta.is_file() => 0o444,
+        (false, false) if meta.is_file() => 0o644,
+        _ => return,
+    };
+    if meta.permissions().mode() & 0o777 != wanted {
+        let _ = fs::set_permissions(folder, fs::Permissions::from_mode(wanted));
+    }
+    if meta.is_dir() {
+        for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
+            set_tree(&entry.path(), locked);
+        }
+    }
+}
+
+/// What follows the daemon's end, however it ended (the unit's `ExecStopPost`, `konedrived
+/// --tidy`): a mount the daemon left on `folder` is taken off, and the folder on disk is
+/// locked. While the daemon runs the folder is under its mount and open to it alone; from here
+/// on it is a plain directory that shows the downloaded files and takes nothing.
+pub fn tidy(folder: &Path) {
+    clear_stale(folder);
+    // Not a folder that is still mounted: its daemon runs.
+    let mounted = fs::read_to_string("/proc/self/mounts").unwrap_or_default().lines().any(|line| {
+        let mut fields = line.split(' ');
+        fields.nth(1).is_some_and(|at| Path::new(at) == folder) && fields.next().is_some_and(|kind| kind.starts_with("fuse"))
+    });
+    if !mounted {
+        set_tree(folder, true);
+    }
+}
+
+/// [`tidy`] for every folder `config_file` records as served through FUSE.
+pub fn tidy_all(config_file: &Path) {
+    let Some(config) = fs::read_to_string(config_file).ok().and_then(|text| text.parse::<toml::Table>().ok()) else { return };
+    let accounts = config.get("accounts").and_then(|accounts| accounts.as_array()).cloned().unwrap_or_default();
+    for root in accounts.iter().filter_map(|account| account.get("root")) {
+        let served = root.get("source").and_then(|source| source.as_str()) == Some("fuse");
+        if let Some(path) = root.get("path").and_then(|path| path.as_str()).filter(|_| served) {
+            tidy(Path::new(path));
+        }
+    }
+}
+
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
     shared: Arc<Shared>,
@@ -693,6 +750,12 @@ impl Mount {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             clear_stale(&root.path);
+            // `fusermount3` mounts only where its user may write; the folder was locked when the
+            // daemon last ended.
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&root.path, fs::Permissions::from_mode(0o755));
+            }
             // Before the mount: afterwards this path is the mount.
             let folder = File::open(&root.path)?;
             let _ = fs::remove_dir_all(konedrive_fs::proc_path(&folder).join(OLD_STAGING));
@@ -745,6 +808,8 @@ impl Mount {
                 }
             };
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
+            // Under the mount the folder is the daemon's alone, and open to it.
+            set_tree(&shared.under(Path::new("")), false);
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
             shared.sweep();
@@ -777,14 +842,25 @@ impl Mount {
         if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
             tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", s.root.path.display());
             // Not waited for: it ends when the last program lets go of the mount.
+            let folder = s.root.path.clone();
             std::thread::spawn(move || {
                 let _ = session.umount_and_join();
+                set_tree(&folder, true);
             });
             return;
         }
         if let Err(e) = session.umount_and_join() {
             tracing::warn!("taking the mount off {}: {e}", s.root.path.display());
         }
+        // A plain directory again: locked, so that nothing is put into it by mistake.
+        set_tree(&s.root.path, true);
+    }
+
+    /// [`stop`](Self::stop), for a folder that is forgotten: it is the user's again, to keep
+    /// or to remove, and is left unlocked.
+    pub fn forget(&self) {
+        self.stop();
+        set_tree(&self.shared.root.path, false);
     }
 
     /// The downloads that failed and can be continued: each one's size on disk and its

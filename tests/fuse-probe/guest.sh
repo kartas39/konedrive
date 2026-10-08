@@ -425,9 +425,13 @@ service() {
     echo "killed: $($U ls $f 2>&1)"
     # While nothing is mounted the user puts a file of their own where an item that is not
     # downloaded has its name.
-    $U fusermount3 -u -z $f
+    # What the unit runs after the daemon's end: the dead mount goes and the folder is locked.
+    $U "$bin/fuse-service" --tidy $f
     echo "the folder itself, the daemon dead: $($U find $f | sort | tr '\n' ' ')"
-    $U sh -c "mkdir -p $f/docs && echo 'the user own file' > $f/docs/big.bin"
+    echo "its modes: $($U stat -c '%a' $f $f/docs $f/a.txt | tr '\n' ' '); a file put into it: $($U sh -c "echo x > $f/mine.txt" 2>&1 | sed 's/.*: //'); a downloaded file read: $($U cat $f/a.txt)"
+    # Only on purpose: the user unlocks a directory and puts a file of their own where an item
+    # that is not downloaded has its name.
+    $U sh -c "chmod u+w $f/docs && echo 'the user own file' > $f/docs/big.bin"
     : > $W/logs/svc.out
     $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
     svc=$!
@@ -442,6 +446,7 @@ service() {
     echo "activity: $(ask activity | head -c 900)"
     echo "forget: $(ask forget)"; sleep 1
     mounted $f && echo "still mounted after the forget" || echo "the folder itself after the forget: $($U find $f | sort | tr '\n' ' ')"
+    echo "its modes after the forget, the user's again: $($U stat -c '%a' $f $f/docs | tr '\n' ' ')"
     echo "the user's own file after it all: $($U cat $f/docs/big.bin 2>&1)"
     exec 8>&-; wait $svc 2> /dev/null
     grep -v "^$" $W/logs/svc.err | tail -8

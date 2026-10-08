@@ -24,6 +24,12 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", line("konedrived", VERSION, COMMIT));
         return Ok(());
     }
+    // What the unit runs after the daemon's end, however it ended: a folder served through FUSE
+    // loses the mount the daemon left on it, and is locked.
+    if std::env::args().nth(1).is_some_and(|arg| arg == "--tidy") {
+        konedrived::fuse::tidy_all(&Paths::from_xdg()?.config_file);
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();

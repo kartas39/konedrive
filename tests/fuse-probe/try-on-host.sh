@@ -43,9 +43,8 @@ halt() {
         running && kill -KILL "$(cat "$pidfile")"
     fi
     rm -f "$pidfile"
-    for m in $(mounts); do
-        fusermount3 -u -z "$m" || true
-    done
+    # As the unit's ExecStopPost does: the mount it left goes, and the folder is locked.
+    XDG_CONFIG_HOME="$trial/config" XDG_STATE_HOME="$trial/state" XDG_DATA_HOME="$trial/data" "$repo/target/release/konedrived" --tidy || true
 }
 
 case ${1:-} in

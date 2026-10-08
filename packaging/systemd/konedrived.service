@@ -11,6 +11,10 @@ Restart=on-failure
 # failure that comes back at every start is tried every few seconds, not in a
 # tight loop.
 RestartSec=5
+# After the daemon's end, however it ended: a folder served through FUSE loses the mount the
+# daemon left on it and is locked, so that it shows its downloaded files and takes nothing
+# until the daemon is back.
+ExecStopPost=%h/.local/bin/konedrived --tidy
 # Startup recovery (docs/design/hydration.md §9) walks every registered root holding one file
 # descriptor at a time plus one per directory level, so the daemon's real need
 # is the tree's depth plus the 64 opens it may take from the helper at once, the helper socket
