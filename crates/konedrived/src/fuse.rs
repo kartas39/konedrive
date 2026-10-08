@@ -694,16 +694,33 @@ pub fn tidy(folder: &Path) {
     }
 }
 
-/// [`tidy`] for every folder `config_file` records as served through FUSE.
-pub fn tidy_all(config_file: &Path) {
-    let Some(config) = fs::read_to_string(config_file).ok().and_then(|text| text.parse::<toml::Table>().ok()) else { return };
+/// The directories of the folder on disk, the folder first: what a file manager is told to
+/// read again once the mount over it is gone.
+pub fn directories(folder: &Path) -> Vec<PathBuf> {
+    let mut found = vec![folder.to_owned()];
+    let mut at = 0;
+    while at < found.len() {
+        let below = fs::read_dir(&found[at]).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|kind| kind.is_dir()));
+        let below: Vec<PathBuf> = below.map(|e| e.path()).collect();
+        found.extend(below);
+        at += 1;
+    }
+    found
+}
+
+/// [`tidy`] for every folder `config_file` records as served through FUSE. The folders.
+pub fn tidy_all(config_file: &Path) -> Vec<PathBuf> {
+    let mut tidied = Vec::new();
+    let Some(config) = fs::read_to_string(config_file).ok().and_then(|text| text.parse::<toml::Table>().ok()) else { return tidied };
     let accounts = config.get("accounts").and_then(|accounts| accounts.as_array()).cloned().unwrap_or_default();
     for root in accounts.iter().filter_map(|account| account.get("root")) {
         let served = root.get("source").and_then(|source| source.as_str()) == Some("fuse");
         if let Some(path) = root.get("path").and_then(|path| path.as_str()).filter(|_| served) {
             tidy(Path::new(path));
+            tidied.push(PathBuf::from(path));
         }
     }
+    tidied
 }
 
 /// A folder served as a mount, for as long as this is held.

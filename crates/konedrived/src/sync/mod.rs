@@ -518,6 +518,15 @@ impl SyncService {
         self.view.borrow().fuse.clone()
     }
 
+    /// The daemon is stopping: a folder served through FUSE loses its mount and is locked, so
+    /// that it shows its downloaded files and takes nothing until the daemon is back. Its path.
+    pub async fn unmount(&self) -> Option<std::path::PathBuf> {
+        let mount = self.mount()?;
+        let path = self.record().map(|record| record.root.path.clone());
+        let _ = tokio::task::spawn_blocking(move || mount.stop()).await;
+        path
+    }
+
     pub(crate) fn content_source(&self) -> Option<Arc<dyn crate::hydration::source::ContentSource>> {
         self.view.borrow().source.clone()
     }

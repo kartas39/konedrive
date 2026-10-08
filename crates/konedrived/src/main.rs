@@ -27,7 +27,10 @@ async fn main() -> anyhow::Result<()> {
     // What the unit runs after the daemon's end, however it ended: a folder served through FUSE
     // loses the mount the daemon left on it, and is locked.
     if std::env::args().nth(1).is_some_and(|arg| arg == "--tidy") {
-        konedrived::fuse::tidy_all(&Paths::from_xdg()?.config_file);
+        let folders = konedrived::fuse::tidy_all(&Paths::from_xdg()?.config_file);
+        // A file manager that showed the mount reads the folder on disk now.
+        let directories = folders.iter().flat_map(|folder| konedrived::fuse::directories(folder)).collect();
+        konedrived::desktop::dirnotify::read_again(directories).await;
         return Ok(());
     }
     tracing_subscriber::fmt()
@@ -107,6 +110,14 @@ async fn main() -> anyhow::Result<()> {
         stop::Ended::Finished => tracing::info!("stopped"),
         stop::Ended::Bound => tracing::warn!("stopped: requests still in flight are cut"),
         stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
+    }
+    // Last: a folder served through FUSE loses its mount, is locked, and whoever showed the
+    // mount is told to read the folder on disk. The unit's tidy step does the same for a daemon
+    // that could not.
+    for sync in registry.accounts().iter() {
+        if let Some(folder) = sync.unmount().await {
+            konedrived::desktop::dirnotify::read_again(konedrived::fuse::directories(&folder)).await;
+        }
     }
     // Not through the runtime's drop, which would wait for blocking tasks.
     std::process::exit(code)
