@@ -1247,6 +1247,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "dirs",
+ "fuser",
  "futures-util",
  "getrandom 0.2.17",
  "image",

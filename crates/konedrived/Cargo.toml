@@ -31,6 +31,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
+# The folder as a FUSE mount (`src/fuse.rs`); `vendor/fuser` through the workspace's patch.
+fuser = { version = "0.18", default-features = false }
 getrandom.workspace = true
 image.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }

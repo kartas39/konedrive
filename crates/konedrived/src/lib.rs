@@ -7,6 +7,7 @@ pub mod folder;
 pub mod conditions;
 pub mod status;
 pub mod hydration;
+pub mod fuse;
 pub mod local;
 pub mod upload;
 pub mod remote;
