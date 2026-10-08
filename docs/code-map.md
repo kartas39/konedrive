@@ -981,7 +981,8 @@ Design: `packaging.md`; `docs/releasing.md`.
 ## Documents
 
 - `README.md` — what KOneDrive is and does, in short, and where to read more.
-- `docs/user-guide.md` — installing and using it, in the window and from the command line.
+- `docs/user-guide.md` — installing and using it: the window, the tray, Dolphin.
+- `docs/command-line.md` — the same from a terminal, with `konedrivectl`.
 - `docs/developing.md` — building, the development install, the helper, the tests.
 - `CONTRIBUTING.md` — building, the tests, the structure rules, the limitations log.
 - `SECURITY.md` — the helper's security model.

@@ -75,8 +75,9 @@ repository yet. Upgrading, removing and the details: [the user guide](docs/user-
 
 ## Documentation
 
-- [User guide](docs/user-guide.md) — installing, accounts, the window, the command line,
-  uploading, Dolphin, troubleshooting.
+- [User guide](docs/user-guide.md) — installing, the first steps, the window, the tray, Dolphin,
+  uploading, troubleshooting.
+- [Command line](docs/command-line.md) — the same with `konedrivectl`.
 - [Design](docs/design/README.md) — how the pieces fit together and why.
 - [Limitations](docs/limitations/README.md) — what does not work and cannot simply be fixed. Read
   it before filing a bug.
