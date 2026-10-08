@@ -32,6 +32,10 @@ pub struct LocalSpace {
     state: SyncStateHandle,
     measure: Measure,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Where the folder's files are, when that is not its path: the directory under the
+    /// mount of a folder served through FUSE. A walk through the mount would ask the mount
+    /// about every name of the drive.
+    at: Arc<Mutex<Option<std::path::PathBuf>>>,
     /// False for a report that reports nowhere ([`Report::nowhere`](crate::status::report::Report::nowhere)): no
     /// walker is ever started for it.
     enabled: bool,
@@ -43,7 +47,7 @@ impl LocalSpace {
     }
 
     fn measuring(state: SyncStateHandle, measure: Measure) -> Self {
-        Self { kick: Arc::new(Notify::new()), state, measure, task: Mutex::new(None), enabled: true }
+        Self { kick: Arc::new(Notify::new()), state, measure, task: Mutex::new(None), at: Arc::default(), enabled: true }
     }
 
     pub(super) fn inert(state: SyncStateHandle) -> Self {
@@ -66,6 +70,11 @@ impl LocalSpace {
 
     /// Asks for a walk. The walker starts with the first kick made on a
     /// runtime, so that nothing is spawned where there is none.
+    /// The walk measures `at` from now on, or the folder's own path again (`None`).
+    pub fn measure_at(&self, at: Option<std::path::PathBuf>) {
+        *crate::panic::lock(&self.at) = at;
+    }
+
     pub fn kick(&self) {
         if !self.enabled {
             return;
@@ -74,8 +83,8 @@ impl LocalSpace {
             let mut task = crate::panic::lock(&self.task);
             if task.is_none() {
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                    let (kick, state, measure) = (Arc::clone(&self.kick), self.state.clone(), Arc::clone(&self.measure));
-                    *task = Some(runtime.spawn(walker(kick, state, measure)));
+                    let (kick, state, measure, at) = (Arc::clone(&self.kick), self.state.clone(), Arc::clone(&self.measure), Arc::clone(&self.at));
+                    *task = Some(runtime.spawn(walker(kick, state, measure, at)));
                 }
             }
         }
@@ -89,15 +98,16 @@ impl Drop for LocalSpace {
     }
 }
 
-async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure) {
+async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure, at: Arc<Mutex<Option<std::path::PathBuf>>>) {
     loop {
         kick.notified().await;
         let root = state.get().folder.root_path;
         let bytes = if root.is_empty() {
             0
         } else {
-            let (measure, at) = (Arc::clone(&measure), root.clone());
-            match tokio::task::spawn_blocking(move || measure(Path::new(&at))).await {
+            let walked = crate::panic::lock(&at).clone().unwrap_or_else(|| std::path::PathBuf::from(&root));
+            let measure = Arc::clone(&measure);
+            match tokio::task::spawn_blocking(move || measure(&walked)).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     tracing::warn!("the walk measuring the folder's space failed: {e}");

@@ -148,6 +148,7 @@ impl SyncService {
                 record.kept.fuse = Some(Arc::clone(&mount));
             }
             self.show_pins(&mount);
+            self.report.space.measure_at(Some(mount.under()));
             fuse = Some(mount);
         }
         // A read-only folder that still holds changes waiting to upload (a switch nobody

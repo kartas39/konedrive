@@ -144,6 +144,7 @@ impl SyncService {
         // A folder served through FUSE is unmounted: the folder on disk then shows its
         // downloaded files alone.
         if let Some(mount) = kept.fuse.take() {
+            self.report.space.measure_at(None);
             let _ = tokio::task::spawn_blocking(move || mount.stop()).await;
         }
         let closing = kept.store.map(konedrive_tree::Store::close);
