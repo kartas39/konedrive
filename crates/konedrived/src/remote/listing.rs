@@ -374,7 +374,7 @@ impl Listing {
             return Err(CycleError::NoHelper);
         }
         self.check_account(turn, cancel).await?;
-        let mode = self.begin(turn, cancel).await?;
+        let mode = self.begin(turn).await?;
         let fetched = self.fetch(turn, mode, cancel).await?;
         // Whether this cycle may have changed the tree: its counts are
         // published then, and not in an idle cycle.

@@ -16,7 +16,6 @@ use crate::account::state::SignInState;
 use crate::folder::root::{self, SyncRoot};
 use crate::helper::{Clearance, HelperError, HelperLink};
 use crate::hydration::recovery::{self, RecoveryReport};
-use crate::local::ScanReason;
 
 /// Whether the helper sequence ([`SyncService::with_helper`]) is for a folder the daemon
 /// does not hold with interception yet, or for one it does.
@@ -387,20 +386,13 @@ impl SyncService {
         let record = Record { root, interception, source, baloo, dev, kept };
         let content = match source {
             RootSource::Local => Content::Local,
-            RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(Why::NotStarted), watcher_ended: None }),
+            RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(Why::NotStarted) }),
         };
         stopped.folder_mut().is = Is::Up(Up { record, recovery, switch_failed: None, content });
         stopped.publish();
         // `LocalBytes` for the folder now registered.
         self.report.space.kick();
-        self.run(stopped, ScanReason::Start).await;
-    }
-
-    /// Runs what a folder that is up needs: a OneDrive folder's sync.
-    async fn run(&self, stopped: &mut Stopped<'_>, reason: ScanReason) {
-        if stopped.folder().syncs() {
-            self.start_sync(stopped, reason).await;
-        }
+        self.start_sync(stopped).await;
     }
 
     /// A OneDrive folder is kept out of Baloo, unless it — or
@@ -517,8 +509,6 @@ impl SyncService {
                 }
             }
         }
-        // The helper marked nothing new while it was away (`docs/design/writes.md` §3.5).
-        self.watcher_helper_back();
     }
 
     /// Takes up the folder `config.toml` records, if the daemon holds none yet: an
@@ -707,7 +697,7 @@ impl SyncService {
     /// The sync the change stopped runs again, when the folder is still one that syncs.
     pub(super) async fn start_again(&self, stopped: &mut Stopped<'_>) {
         if stopped.ran() && stopped.folder().syncs() {
-            self.start_sync(stopped, ScanReason::Start).await;
+            self.start_sync(stopped).await;
         }
     }
 }

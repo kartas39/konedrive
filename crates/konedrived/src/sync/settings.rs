@@ -65,8 +65,8 @@ impl SyncService {
     }
 
     /// `SetIgnorePatterns(patterns)`: the account's ignore list from now on,
-    /// written to `config.toml`. A Full local scan follows, so that a name
-    /// no longer ignored is uploaded. Refused `InvalidArgs` for a pattern that
+    /// written to `config.toml`: the folder's mount goes by it for every change made from
+    /// now on. Refused `InvalidArgs` for a pattern that
     /// cannot match a name ([`IgnoreList::invalid`]).
     pub async fn set_ignore_patterns(&self, patterns: Vec<String>) -> Result<(), SyncError> {
         if let Some((pattern, why)) = patterns.iter().find_map(|p| IgnoreList::invalid(p).map(|why| (p, why))) {
@@ -78,7 +78,7 @@ impl SyncService {
                 unique.push(pattern);
             }
         }
-        // `config.toml` and the list the watcher reads change together, under the
+        // `config.toml` and the list the mount reads change together, under the
         // list's own lock: two calls at once leave both the same (the outbox on the bus).
         let (shared, persist) = (Arc::clone(&self.ignore), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
@@ -96,7 +96,6 @@ impl SyncService {
         })
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;
-        self.rescan_for_ignore_list();
         Ok(())
     }
 

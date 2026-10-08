@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::folder::{Down, Is, Record, Standing, Stopped};
 use super::{SyncError, SyncService};
-use crate::folder::disk;
-use crate::folder::root::{self, SyncRoot};
+use crate::folder::root;
 use crate::helper::HelperError;
 
 /// How long a Forget waits for the tree store's connections to close before it removes
@@ -75,8 +74,8 @@ impl SyncService {
     ///
     /// # A OneDrive folder
     ///
-    /// Its sync is stopped first ([`change`](Self::change)), the read-only lock is taken
-    /// off the folder once it is forgotten, and its tree store is dropped. A Forget that
+    /// Its sync is stopped first ([`change`](Self::change)), its mount is taken off, which
+    /// leaves the folder on disk the user's own again, and its tree store is dropped. A Forget that
     /// is refused leaves it registered — so it is kept in step again.
     ///
     /// # A folder that is not up
@@ -102,13 +101,12 @@ impl SyncService {
     /// [`unregister_root`](Self::unregister_root) and [`retire`](Self::retire).
     ///
     /// Refused `PendingUploads` while changes wait to be uploaded: the tree
-    /// store that holds them goes with the folder. Asked before anything changes — the
-    /// watcher hands over what it holds first — and again once the sync has stopped.
+    /// store that holds them goes with the folder. Asked before anything changes, and
+    /// again once the sync has stopped.
     /// The folder that was forgotten.
     async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
         // Before the change: a reconcile, or a switch waiting for it, must not keep
         // the Forget from stopping the sync first.
-        self.flush_watcher().await;
         refuse_waiting(self.changes_waiting(self.tree_store()).await?)?;
         let mut stopped = self.change().await;
         if let Err(refused) = self.changes_waiting(stopped.folder().store()).await.and_then(refuse_waiting) {
@@ -154,7 +152,7 @@ impl SyncService {
                     tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
                 }
             }
-            self.let_go_of_onedrive(&record.root).await;
+            self.remove_tree_store().await;
             // Only when *this daemon* is the one that excluded the folder from Baloo —
             // never a folder that arrived already excluded, and this survives a restart
             // in between (the record carries it forward from `config.toml`).
@@ -226,31 +224,6 @@ impl SyncService {
         self.let_go_of_activity().await;
     }
 
-    /// What a Forget adds for a OneDrive folder, still inside the change: the read-only
-    /// lock taken off the whole folder — whose files stay — and its tree store dropped.
-    /// The folder still carries its root id (a Forget leaves it), which is
-    /// what proves it is still this folder before anything in it is changed.
-    async fn let_go_of_onedrive(&self, root: &SyncRoot) {
-        self.unlock(root).await;
-        self.remove_tree_store().await;
-    }
-
-    /// The walk that takes the read-only lock off a folder (`docs/design/writes.md` §2.2),
-    /// on a blocking thread: files `0644`, directories `0755`, the root last.
-    pub(super) async fn unlock(&self, root: &SyncRoot) {
-        let root = root.clone();
-        let unlocked = tokio::task::spawn_blocking(move || {
-            disk::Disk::open(&root, false)
-                .and_then(|disk| disk.unlock_tree())
-                .map_err(|e| format!("cannot take the read-only lock off {}: {e}", root.path.display()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("the unlock task failed: {e}")));
-        if let Err(e) = unlocked {
-            tracing::warn!("{e}");
-        }
-    }
-
     /// Removes the tree store's files: a forgotten folder's, or one left from a
     /// folder forgotten earlier when a new one is registered. Inside a change, once
     /// the folder is absent: no sync holds the store, and the change has let go of its own.
@@ -260,17 +233,6 @@ impl SyncService {
         let Some(tree_db) = self.sync_paths().map(|paths| paths.tree_db.clone()) else { return };
         if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&tree_db)).await {
             tracing::warn!("the task removing the tree store failed: {e}");
-        }
-    }
-
-    /// The folder itself was moved or deleted (the watcher saw it, §3.7): its sync stops —
-    /// nothing is deleted in the cloud because it went — and the folder is down, saying
-    /// `why`, until a bring-up finds it again or it is forgotten.
-    pub(super) async fn root_gone(&self, why: String) {
-        let mut stopped = self.change().await;
-        let folder = stopped.folder_mut();
-        if let Is::Up(up) = &folder.is {
-            folder.is = Is::Down(up.record.clone(), Down::Failed { why });
         }
     }
 }
@@ -293,26 +255,6 @@ impl SyncService {
             record.root.path.display()
         );
         folder.is = Is::Down(record, Down::Failed { why });
-    }
-
-    /// The folder's watcher ended with nobody stopping it (its reader or its examiner
-    /// failed): the folder's sync is started again locked, as one whose watcher could not
-    /// start, and says `why`. Nothing is uploaded until the folder is brought up again or
-    /// its mode is switched, which try a watcher again.
-    ///
-    /// `sync`: the sync the watcher belonged to. When another sync runs by now — a change
-    /// came in between and started one, with a watcher of its own — nothing is done.
-    pub(super) async fn watcher_ended(&self, why: String, sync: u64) {
-        if self.view().sync.id() != Some(sync) {
-            return;
-        }
-        let mut stopped = self.change().await;
-        if stopped.took() == Some(sync) {
-            if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
-                onedrive.watcher_ended.get_or_insert(why);
-            }
-        }
-        self.start_again(&mut stopped).await;
     }
 }
 

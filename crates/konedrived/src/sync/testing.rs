@@ -9,7 +9,6 @@
 //!   tells it;
 //! - `config.toml`: a temporary one ([`persist`]), or the test's own;
 //! - the content sources: [`Sources`], the real ones until the test puts its own in;
-//! - the watcher: [`Watchers`], the real one until the test makes it fail;
 //! - the clock: [`ManualClock`], moved by hand.
 //!
 //! OneDrive itself is wiremock, or the fake OneDrive (`crate::fake_onedrive`), behind the drive a
@@ -18,7 +17,6 @@
 //! Built for the crate's tests and, with the `fault-injection` feature, for the VM suite.
 
 use std::future::Future;
-use std::io;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -27,9 +25,6 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use konedrive_graph::drive::DriveClient;
 use tokio::sync::watch;
-
-#[cfg(test)]
-pub(crate) use crate::helper::testing::{FakeHelper, Seen};
 
 use super::registry::Registry;
 use super::wiring::{self, OneDrive, Persist, SyncPaths, Wiring};
@@ -43,7 +38,6 @@ use crate::desktop::baloo::Baloo;
 use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
-use crate::local::watcher::{Sink, WatchConfig, Watcher};
 use crate::remote::listing::Schedule;
 
 impl SyncService {
@@ -251,27 +245,6 @@ impl ContentSource for Replaceable {
     }
 }
 
-/// The watcher of a test: the real one, until the test makes it fail to start
-/// ([`fail`](Self::fail)).
-#[derive(Default)]
-pub struct Watchers {
-    failing: AtomicBool,
-}
-
-impl Watchers {
-    /// Whether a watcher fails to start from now on.
-    pub fn fail(&self, failing: bool) {
-        self.failing.store(failing, Ordering::SeqCst);
-    }
-
-    fn start(&self, config: WatchConfig, sink: Box<dyn Sink>) -> io::Result<Watcher> {
-        if self.failing.load(Ordering::SeqCst) {
-            return Err(io::Error::other("failed on purpose"));
-        }
-        Watcher::start(config, sink)
-    }
-}
-
 /// What a test's service was made with, for the test to act on: found again by
 /// [`parts`].
 #[derive(Clone)]
@@ -279,7 +252,6 @@ pub struct Parts {
     pub account: Arc<Account>,
     pub persist: Persist,
     pub sources: Arc<Sources>,
-    pub watchers: Arc<Watchers>,
     /// `None`: the service runs on the system's clock.
     pub clock: Option<Arc<ManualClock>>,
     /// The directory of a `config.toml` made for the service, kept as long as its parts.
@@ -379,12 +351,10 @@ impl Builder {
                 (persist(&dir.path().join("config.toml")), Some(Arc::new(dir)))
             }
         };
-        let (sources, watchers) = (Arc::new(Sources::default()), Arc::new(Watchers::default()));
-        let starting = Arc::clone(&watchers);
+        let sources = Arc::new(Sources::default());
         let mut wiring = Wiring {
             onedrive: self.onedrive,
             sources: Arc::clone(&sources) as Arc<dyn wiring::Sources>,
-            watchers: Arc::new(move |config, sink| starting.start(config, sink)),
             ..Wiring::new(Arc::clone(&registry), Arc::clone(&account) as Arc<dyn FolderAccount>, persist.clone())
         };
         if let Some(baloo) = self.baloo {
@@ -398,7 +368,7 @@ impl Builder {
         }
         let service = SyncService::new(wiring);
         registry.add(&service);
-        let parts = Parts { account, persist, sources, watchers, clock: self.clock, _config: config };
+        let parts = Parts { account, persist, sources, clock: self.clock, _config: config };
         let mut made = MADE.lock().unwrap();
         made.retain(|(service, _)| service.strong_count() > 0);
         made.push((Arc::downgrade(&service), parts));

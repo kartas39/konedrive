@@ -9,9 +9,8 @@
 use std::sync::Arc;
 
 use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, SyncView, View};
-use super::running_sync::{Lock, RunningSync, Sync, Uploading, Why};
+use super::running_sync::{Sync, Why};
 use super::{RootSource, SyncService};
-use crate::config::Mode;
 use crate::status::snapshot::{RootState, SwitchNote, SyncSnapshot, SyncTrouble, TroubleKind};
 
 /// What a folder's state comes to on the bus, and for the readers.
@@ -28,10 +27,8 @@ pub(super) struct Published {
     /// Why a switch to interception failed, said right behind `error`.
     pub switch_note: Option<SwitchNote>,
     pub helper: Helper,
-    /// `Writable`: what is changed in the folder is uploaded now.
+    /// `Writable`: the folder takes changes, and what is changed in it is uploaded.
     pub writable: bool,
-    /// Why the folder is locked though its account is read-write.
-    pub locked_note: String,
     /// Why the folder's sync could not start: blocking trouble, until one does.
     pub cannot_start: Option<String>,
     pub view: View,
@@ -75,7 +72,6 @@ pub(super) fn publish(folder: &Folder) -> Published {
             switch_note: None,
             helper: Helper::NotNeeded,
             writable: false,
-            locked_note: String::new(),
             cannot_start: None,
             view: View { wanted: folder.wanted, ..View::default() },
         };
@@ -107,7 +103,6 @@ pub(super) fn publish(folder: &Folder) -> Published {
         switch_note: None,
         helper,
         writable: false,
-        locked_note: String::new(),
         cannot_start: None,
         view,
     };
@@ -145,7 +140,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 Interception::Intercepted => Helper::Needed,
             };
             let switch_note = up.switch_failed.clone().map(|why| SwitchNote { why });
-            let (writable, locked_note) = uploads(folder.wanted, folder.running().filter(|sync| !sync.handles().told_to_stop()).map(RunningSync::uploading));
+            let writable = up.record.kept.fuse.as_ref().is_some_and(|mount| mount.is_writable());
             let cannot_start = match &sync {
                 SyncView::Stopped(why) => why.clone(),
                 _ => None,
@@ -158,7 +153,6 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 switch_note,
                 helper,
                 writable,
-                locked_note,
                 cannot_start,
                 view: view(None),
             }
@@ -166,23 +160,9 @@ pub(super) fn publish(folder: &Folder) -> Published {
     }
 }
 
-/// `Writable`, and why a folder is locked though its account is read-write, for a folder
-/// that follows `wanted` and whose sync, if one runs, does `uploading` about local changes.
-/// Writable only once the lock is off: not while the watcher still walks the folder.
-pub(super) fn uploads(wanted: Mode, uploading: Option<Uploading>) -> (bool, String) {
-    match uploading {
-        Some(Uploading::Open(Lock::Off)) => (wanted == Mode::ReadWrite, String::new()),
-        Some(Uploading::Open(Lock::Walking)) | None => (false, String::new()),
-        Some(Uploading::Open(Lock::Stays(note))) => (false, note),
-        Some(Uploading::Locked(note)) => (false, note.unwrap_or_default()),
-    }
-}
-
 impl SyncService {
     /// Publishes `folder`: the view for the readers first, then what the bus shows, with
-    /// `also` applied in the same update. Called by a [`Stopped`](super::folder::Stopped),
-    /// and by the one task of a running sync that says its watcher's walk is over, which
-    /// holds the state for reading (`start_sync`).
+    /// `also` applied in the same update. Called by a [`Stopped`](super::folder::Stopped).
     pub(super) fn publish(&self, folder: &Folder, also: impl FnOnce(&mut SyncSnapshot)) {
         let published = publish(folder);
         self.view.send_replace(published.view);
@@ -195,11 +175,9 @@ impl SyncService {
             s.folder.switch_note = published.switch_note;
             s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;
-            s.folder.locked_note = published.locked_note;
             if let Some(text) = published.cannot_start {
                 s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true, kind: TroubleKind::Other });
             }
-            s.local.scan.follow(folder.wanted);
             also(s);
         });
     }
@@ -219,5 +197,3 @@ impl SyncService {
     }
 }
 
-#[cfg(test)]
-mod tests;

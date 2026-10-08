@@ -77,12 +77,10 @@ pub(crate) struct Staged<'a> {
 }
 
 impl Listing {
-    /// The mode of the cycle that starts now. A read-write folder's first
-    /// cycle waits for the watcher's Full local scan (§9),
-    /// and its stale-delta guard starts from the outbox's commits so far.
-    pub(crate) async fn begin(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Mode<Since<'_>>, CycleError> {
+    /// The mode of the cycle that starts now. A read-write folder's
+    /// stale-delta guard starts from the outbox's commits so far.
+    pub(crate) async fn begin(&self, turn: &Turn) -> Result<Mode<Since<'_>>, CycleError> {
         let Mode::ReadWrite(writes) = &self.ctx.mode else { return Ok(Mode::ReadOnly) };
-        writes.scanned(cancel).await?;
         let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
         Ok(Mode::ReadWrite(Since { writes, fetch_seq }))
     }

@@ -26,7 +26,6 @@ pub mod start_stop;
 pub mod take_down;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
-pub mod watcher;
 pub mod wiring;
 
 use std::sync::Arc;
@@ -291,11 +290,8 @@ pub struct SyncService {
     /// the sync starts and detached by [`change`](Self::change), after which no write
     /// holds it.
     report: Report,
-    /// This service, for the watcher's status hook, which may have to stop
-    /// the sync from the watcher's thread (the folder moved or deleted).
-    me: std::sync::Weak<SyncService>,
     /// The account's ignore list (`docs/design/writes.md` §4.2 rule 3), from `config.toml`: the
-    /// watcher's examination reads it, `SetIgnorePatterns` changes it.
+    /// folder's mount reads it, `SetIgnorePatterns` changes it.
     ignore: local::SharedIgnore,
     /// The pause as it is shown, and the timer that ends a timed one (`pause`).
     clock: pause::PauseClock,
@@ -359,7 +355,6 @@ impl SyncService {
             view: watch::Sender::new(View::default()),
             locks: registry.locks(),
             ended: running_sync::Ended::default(),
-            me: me.clone(),
             wiring,
         })
     }
@@ -527,9 +522,8 @@ impl SyncService {
         self.view.borrow().source.clone()
     }
 
-    /// `Writable`: whether what is changed in the folder is uploaded now. False for a
-    /// folder whose account is read-write and which runs locked all the same — its
-    /// watcher could not start, or did not finish walking it; `LastError` says which.
+    /// `Writable`: whether the folder takes changes now, and what is changed in it is
+    /// uploaded: its mount says ([`Mount::is_writable`](crate::fuse::Mount::is_writable)).
     pub fn writable(&self) -> bool {
         self.state.get().folder.writable
     }

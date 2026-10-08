@@ -4,7 +4,6 @@
 //!
 //! [`SyncService`]: super::SyncService
 
-use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,7 +16,6 @@ use crate::config::ConfigStore;
 use crate::desktop::baloo::Baloo;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::source::{ContentSource, LocalDir};
-use crate::local::watcher::{Sink, WatchConfig, Watcher};
 use crate::remote::listing::Schedule;
 
 /// Where a OneDrive folder's own files live.
@@ -88,9 +86,6 @@ impl Sources for RealSources {
     }
 }
 
-/// Starts the watcher of a read-write folder: [`Watcher::start`] in the daemon.
-pub type Watchers = Arc<dyn Fn(WatchConfig, Box<dyn Sink>) -> io::Result<Watcher> + Send + Sync>;
-
 /// Everything one account's folder is made with. Nothing in it is replaced while the
 /// service lives; what does change with the account (its standing, its mode) is told to
 /// the service by a call.
@@ -110,14 +105,13 @@ pub struct Wiring {
     pub schedule: Schedule,
     pub transfers: Transfers,
     pub sources: Arc<dyn Sources>,
-    pub watchers: Watchers,
     /// The clock the account's pause is kept by.
     pub clock: Arc<dyn Clock>,
 }
 
 impl Wiring {
     /// The wiring of the daemon for what has only one real answer: Graph and the
-    /// directory as sources, the real watcher, the system's clock, the default schedule
+    /// directory as sources, the system's clock, the default schedule
     /// and transfer limits, and no Baloo. The caller sets what its account has.
     pub fn new(registry: Arc<Registry>, account: Arc<dyn FolderAccount>, persist: Persist) -> Self {
         Self {
@@ -129,7 +123,6 @@ impl Wiring {
             schedule: Schedule::default(),
             transfers: Transfers::default(),
             sources: Arc::new(RealSources),
-            watchers: Arc::new(Watcher::start),
             clock: Arc::new(SystemClock),
         }
     }

@@ -11,12 +11,11 @@ use tokio_util::sync::CancellationToken;
 use crate::account::state::SignInState;
 use crate::config::Mode;
 use crate::desktop::thumbs;
-use crate::folder::root::SyncRoot;
+use crate::fuse::Mount;
 use crate::hydration::source::ContentSource;
-use crate::local::ScanReason;
 use crate::remote::listing::{self, PollHandle};
 use crate::sync::folder::{Down, Is, Record, Standing, Stopped};
-use crate::sync::running_sync::{Handles, Lock, Parts, RunningSync, Sync, Why, Writes};
+use crate::sync::running_sync::{Handles, Parts, RunningSync, Sync, Why};
 use crate::sync::{SyncError, SyncPaths, SyncService};
 
 /// What a sync is built on, once [`SyncService::prepare`] has made the folder ready.
@@ -26,19 +25,21 @@ struct Prepared {
     store: Store,
     source: Arc<dyn ContentSource>,
     tree_lock: Arc<tokio::sync::Mutex<()>>,
-    fuse: Option<Arc<crate::fuse::Mount>>,
+    mount: Arc<Mount>,
 }
 
 impl SyncService {
     /// Starts the sync of the OneDrive folder that is up now. Inside a change of the
     /// folder's state, so that no Forget can come in between, and none runs: the change
-    /// stopped it. `reason`: why the watcher of a read-write folder runs its Full local
-    /// scan (`LocalScan.Reason`).
+    /// stopped it.
     ///
     /// Three steps: the folder is made ready ([`prepare`](Self::prepare)), the parts are
     /// built and linked to each other ([`build`](Self::build)), and they are started and
     /// put into the state, from where only a change takes them out.
-    pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>, reason: ScanReason) {
+    ///
+    /// A read-write folder's mount takes changes from here on, and wakes the sync's outbox
+    /// worker for each one it records; a read-only folder's takes none.
+    pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
         if !stopped.folder().syncs() {
             return;
         }
@@ -47,15 +48,18 @@ impl SyncService {
         stopped.publish();
         let Some(reg) = stopped.folder().up().map(|up| up.record.clone()) else { return };
         let wanted = stopped.folder().wanted;
-        let prepared = match self.prepare(stopped, &reg, wanted).await {
+        let prepared = match self.prepare(stopped, &reg).await {
             Ok(prepared) => prepared,
-            Err(why) => return self.cannot_start(stopped, &reg.root, why).await,
+            Err(why) => return self.cannot_start(stopped, why),
         };
         // Before any part that asks about the pause is started.
         self.take_old_pause(&prepared.store).await;
-        let ended = stopped.folder().onedrive().and_then(|onedrive| onedrive.watcher_ended.clone());
-        let (sync, walked) = self.build(prepared, &reg, wanted, reason, ended).await;
-        let (lock, stop, tasks) = (sync.lock_cell(), sync.handles().stop.clone(), Arc::clone(&sync.handles().tidying));
+        let mount = Arc::clone(&prepared.mount);
+        let sync = self.build(prepared, &reg, wanted);
+        match sync.handles().outbox().cloned() {
+            Some(outbox) => mount.read_write(Arc::new(move || outbox.wake())),
+            None => mount.read_only(),
+        };
         if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
             onedrive.sync = Sync::Running(Box::new(sync));
         }
@@ -63,118 +67,51 @@ impl SyncService {
         stopped.publish();
         // `Paused` as the account has it, and a timer for a pause that ends.
         self.show_pause();
-        // The folder is writable only once its watcher has walked it (`Lock::Walking` until
-        // then). No directory is made in the folder before it is watched (write design Z2):
-        // a root that still has the lock loses it here, inside the change, once the walk is
-        // done and before this sync's first cycle can change the folder — the cycle takes
-        // the folder's lease, which the caller's change holds. A root that is unlocked
-        // already (a daemon start) keeps the change waiting for nothing: a task of the sync
-        // says when the walk is over.
-        let (Some(mut walked), Some(lock)) = (walked, lock) else { return };
-        if self.root_locked(&reg.root).await {
-            if let Some(now) = self.lock_after_walk(&reg.root, &mut walked, &stop).await {
-                *crate::panic::lock(&lock) = now;
-            }
-            stopped.publish();
-            return;
-        }
-        let (me, root) = (self.me.clone(), reg.root.clone());
-        let task = tokio::spawn(async move {
-            let state = tokio::select! {
-                state = walked.wait_for(|state| *state != crate::local::watcher::WalkState::Walking) => state.map_or(crate::local::watcher::WalkState::Cut, |state| *state),
-                () = stop.cancelled() => return,
-            };
-            let Some(service) = me.upgrade() else { return };
-            let now = if state == crate::local::watcher::WalkState::Done {
-                Lock::Off
-            } else if stop.is_cancelled() {
-                return;
-            } else {
-                tracing::warn!("{} is not writable: its watcher did not finish walking it", root.path.display());
-                Lock::Stays("the folder stays read-only and nothing is uploaded: local changes could not be watched (see the log)".into())
-            };
-            // Published under the state held for reading: a change that comes meanwhile
-            // has told this sync to stop, and waits for this task.
-            let folder = tokio::select! {
-                folder = service.folder.read() => folder,
-                () = stop.cancelled() => return,
-            };
-            if stop.is_cancelled() {
-                return;
-            }
-            *crate::panic::lock(&lock) = now;
-            service.publish(&folder, |_| {});
-        });
-        crate::panic::lock(&tasks).push(task);
     }
 
-    /// Makes the folder ready for a sync: the lock as the mode wants it, the tree store
-    /// open, what a read-write cycle deferred applied in a read-only folder, and the
-    /// activity log kept in the store. Why not, when the sync cannot start.
-    async fn prepare(&self, stopped: &mut Stopped<'_>, reg: &Record, wanted: Mode) -> Result<Prepared, String> {
+    /// Makes the folder ready for a sync: the tree store open, the folder mounted, what a
+    /// read-write cycle deferred applied in a read-only folder, and the activity log kept in
+    /// the store. Why not, when the sync cannot start.
+    async fn prepare(&self, stopped: &mut Stopped<'_>, reg: &Record) -> Result<Prepared, String> {
+        let wanted = stopped.folder().wanted;
         let Some(crate::sync::OneDrive { drive, paths }) = self.wiring.onedrive.clone() else {
             return Err(format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display()));
         };
         let Some(source) = reg.kept.source.clone() else {
             return Err(format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display()));
         };
-        // The lock as the mode wants it (`docs/design/writes.md` §2.2): a walk a switch did not finish —
-        // the daemon stopped, or the folder was not up — is finished here. A read-only folder
-        // is locked before anything else, never left writable until a Full reconcile, which
-        // needs Graph. A read-write one is unlocked once its watcher has marked every
-        // directory (`start_sync`).
         let tree_lock = Arc::clone(&reg.kept.tree_lock);
         // The folder's store, the one connection to it: open already, or opened now, made
         // if there is none, and kept with the folder until it is forgotten.
         let store = self.kept_store(stopped, &paths).await?;
         // The folder is mounted from its first sync on, once its store is there to read the
         // names from.
-        let mut fuse = stopped.folder().record().and_then(|record| record.kept.fuse.clone());
-        if fuse.is_none() {
-            let parts = crate::fuse::Parts {
-                root: reg.root.clone(),
-                store_path: paths.tree_db.clone(),
-                store: store.clone(),
-                source: Arc::clone(&source),
-                report: self.report.clone(),
-                pool: Arc::clone(&self.pool),
-                parts: Arc::clone(&self.parts),
-                download_after: self.wiring.transfers.download_after,
-                writing: crate::fuse::Writing { tree_lock: Arc::clone(&tree_lock), ignore: Arc::clone(&self.ignore), machine_name: self.machine_name() },
-            };
-            let mount = crate::fuse::Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
-            if let Some(record) = stopped.folder_mut().record_mut() {
-                record.kept.fuse = Some(Arc::clone(&mount));
+        let mount = match stopped.folder().record().and_then(|record| record.kept.fuse.clone()) {
+            Some(mount) => mount,
+            None => {
+                let parts = crate::fuse::Parts {
+                    root: reg.root.clone(),
+                    store_path: paths.tree_db.clone(),
+                    store: store.clone(),
+                    source: Arc::clone(&source),
+                    report: self.report.clone(),
+                    pool: Arc::clone(&self.pool),
+                    parts: Arc::clone(&self.parts),
+                    download_after: self.wiring.transfers.download_after,
+                    writing: crate::fuse::Writing { tree_lock: Arc::clone(&tree_lock), ignore: Arc::clone(&self.ignore), machine_name: self.machine_name() },
+                };
+                let mount = Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
+                if let Some(record) = stopped.folder_mut().record_mut() {
+                    record.kept.fuse = Some(Arc::clone(&mount));
+                }
+                self.show_pins(&mount);
+                // A file manager that showed the folder before this mount reads it again: its
+                // own watch ended with the mount that went.
+                stopped.read_again();
+                self.report.space.measure_at(Some(mount.under()));
+                mount
             }
-            self.show_pins(&mount);
-            // A file manager that showed the folder before this mount reads it again: its own
-            // watch ended with the mount that went. Every directory the store names is told, at
-            // most so many: which of them a program shows is not known here.
-            let (told, at) = (store.clone(), reg.root.path.clone());
-            tokio::spawn(async move {
-                const MOST: usize = 20_000;
-                let listed = told
-                    .call(move |s| {
-                        let Some(root) = s.root_item_id()? else { return Ok(Vec::new()) };
-                        let (mut directories, mut next) = (vec![at.clone()], vec![(root, at)]);
-                        while let Some((id, path)) = next.pop() {
-                            for row in s.children(konedrive_tree::Table::Items, &id)? {
-                                if row.kind == konedrive_tree::Kind::Folder && directories.len() < MOST {
-                                    let below = path.join(&row.name);
-                                    directories.push(below.clone());
-                                    next.push((row.id, below));
-                                }
-                            }
-                        }
-                        Ok(directories)
-                    })
-                    .await
-                    .unwrap_or_default();
-                crate::desktop::dirnotify::read_again(listed).await;
-            });
-            self.report.space.measure_at(Some(mount.under()));
-            fuse = Some(mount);
-        }
+        };
         // A read-only folder that still holds changes waiting to upload (a switch nobody
         // forced) runs no cycle while they wait: what a read-write cycle
         // deferred stays deferred for the read-write cycle that sends them.
@@ -202,64 +139,23 @@ impl SyncService {
         .flatten()
         .unwrap_or(0);
         self.state.update(|s| s.cycle.last_checked = last_checked);
-        Ok(Prepared { drive, paths, store, source, tree_lock, fuse })
+        Ok(Prepared { drive, paths, store, source, tree_lock, mount })
     }
 
     /// Builds the parts of a sync, linked to each other and not through the service, and
-    /// starts them: the outbox worker and the watcher of a read-write folder, the listing
-    /// and its poller, the sign-in nudge, the thumbnail filler. With the sync, what says
-    /// when a read-write folder's watcher has walked it.
+    /// starts them: the outbox worker of a read-write folder, the listing and its poller,
+    /// the sign-in nudge, the thumbnail filler.
     ///
-    /// Local changes are looked for in a read-write folder only (`docs/design/writes.md`
-    /// §3.1): by the watcher, and once in full, for what changed while nothing watched —
-    /// at every bring-up, and after a switch to read-write; the watcher's walk ends in
-    /// that Full local scan, which the folder's first delta cycle waits for. A read-write
-    /// folder whose watcher cannot start runs this sync locked, as a read-only one, and
-    /// says so: no directory is ever made in it unwatched.
-    async fn build(
-        &self,
-        prepared: Prepared,
-        reg: &Record,
-        wanted: Mode,
-        reason: ScanReason,
-        watcher_ended: Option<String>,
-    ) -> (RunningSync, Option<watch::Receiver<crate::local::watcher::WalkState>>) {
-        let Prepared { drive, paths, store, source, tree_lock, fuse } = prepared;
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// Local changes need no looking for: the folder's mount records each one as a program
+    /// makes it (`fuse::recorder`), and the worker sends what is recorded.
+    fn build(&self, prepared: Prepared, reg: &Record, wanted: Mode) -> RunningSync {
+        let Prepared { drive, paths, store, source, tree_lock, mount } = prepared;
         let stop = CancellationToken::new();
         let kept_back = Arc::new(Mutex::new(None));
-        let tidying = Arc::new(Mutex::new(Vec::new()));
         // The worker asks the poller for a cycle, and the cycle wakes the worker: the
         // worker is built first, and is told its poller once that runs.
         let poll: Arc<OnceLock<PollHandle>> = Arc::new(OnceLock::new());
-        let mut note = None;
-        let mut first_scan = None;
-        let open = if let (Mode::ReadWrite, Some(why)) = (wanted, watcher_ended) {
-            // Its watcher ended by itself: no other is started until the folder is
-            // brought up again or its mode is switched.
-            note = Some(format!("the folder stays read-only and nothing is uploaded: local changes are no longer watched ({why})"));
-            self.ensure_locked(&reg.root).await;
-            None
-        } else if wanted == Mode::ReadWrite {
-            let outbox = self.outbox_worker(&reg.root, &store, &drive, &tree_lock, Arc::clone(&kept_back), Arc::clone(&poll));
-            let (scanned, scan) = watch::channel(false);
-            match self.spawn_watcher(&reg.root, &store, &tree_lock, outbox.handle(), Some(scanned), reason, id) {
-                Ok(watcher) => {
-                    first_scan = Some(scan);
-                    Some((watcher, outbox))
-                }
-                Err(why) => {
-                    tracing::warn!("{why}; the folder stays locked");
-                    note = Some(format!("the folder stays read-only and nothing is uploaded: local changes cannot be watched ({why})"));
-                    self.ensure_locked(&reg.root).await;
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let handles = open.as_ref().map(|(watcher, outbox)| (watcher.handle(), outbox.handle()));
+        let outbox = (wanted == Mode::ReadWrite).then(|| self.outbox_worker(&reg.root, &store, &drive, &tree_lock, Arc::clone(&kept_back), Arc::clone(&poll)));
         // The account's drive, as `config.toml` keeps it (`docs/design/accounts.md` §6.1):
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = {
@@ -270,11 +166,9 @@ impl SyncService {
         // Nudges the thumbnail filler right after a cycle, rather than making
         // it wait out its own idle timer.
         let kick = Arc::new(Notify::new());
-        // A read-write folder's cycle shares the tree lock with its outbox worker, and its
-        // first one waits for the watcher's Full local scan (`docs/design/writes.md` §9).
-        let writes = handles.clone().map(|(watcher, outbox)| {
-            self.cycle_writes(first_scan, &tree_lock, watcher, outbox)
-        });
+        // A read-write folder's cycle shares the tree lock with its outbox worker and with
+        // the mount's recorder (`docs/design/writes.md` §9).
+        let writes = outbox.as_ref().map(|outbox| self.cycle_writes(&tree_lock, outbox.handle()));
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),
             intercepted: reg.intercepted(),
@@ -283,7 +177,7 @@ impl SyncService {
             drive_record,
             source,
             link: self.link.clone(),
-            fuse,
+            fuse: Some(mount),
             locks: self.locks.clone(),
             state: self.state.clone(),
             lease: listing::Lease::on(&self.folder),
@@ -308,35 +202,26 @@ impl SyncService {
         let thumbnails = paths.thumbnails.clone().map(|cache| {
             thumbs::ThumbnailFiller::new(drive, store.clone(), reg.root.clone(), cache, Arc::clone(&self.running)).spawn(kick, stop.clone())
         });
-        let walked = open.as_ref().map(|(watcher, _)| watcher.walked());
-        let writes = match open {
-            Some((watcher, outbox)) => {
-                // The folder's first delta cycle runs before the outbox
-                // (`docs/design/writes.md` §9). Rows a previous run left `running` are
-                // replayed first; the rest go as the watcher's examination records them.
-                outbox.wait_for_cycle(false);
-                outbox.start();
-                Writes::Open { watcher, outbox, lock: Arc::new(Mutex::new(Lock::Walking)) }
-            }
-            None => Writes::Locked { note },
-        };
-        let running = Handles { id, poll: poller.handle(), writes: handles, kept_back, stop, tidying };
-        (RunningSync::new(running, Parts { poller, sign_in, thumbnails, writes }, self.ended.clone()), walked)
+        if let Some(outbox) = &outbox {
+            // The folder's first delta cycle runs before the outbox
+            // (`docs/design/writes.md` §9). Rows a previous run left `running` are
+            // replayed first; the rest go as the mount records them.
+            outbox.wait_for_cycle(false);
+            outbox.start();
+        }
+        let running = Handles { poll: poller.handle(), outbox: outbox.as_ref().map(|outbox| outbox.handle()), kept_back, stop };
+        RunningSync::new(running, Parts { poller, sign_in, thumbnails, outbox }, self.ended.clone())
     }
 
     /// Why a OneDrive folder is not kept in step, said as blocking trouble:
     /// nothing retries it on its own; a `Refresh()` does, as
-    /// does bringing the folder up again. The lock is put back on
-    /// the folder, whatever its mode: with no sync, no watcher looks at it, so
-    /// a read-write folder a run left unlocked must not stay so,
-    /// and a read-only one never is.
-    async fn cannot_start(&self, stopped: &mut Stopped<'_>, root: &SyncRoot, why: String) {
+    /// does bringing the folder up again.
+    fn cannot_start(&self, stopped: &mut Stopped<'_>, why: String) {
         tracing::error!("{why}");
         if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
             onedrive.sync = Sync::Stopped(Why::CannotStart(why));
         }
         stopped.publish();
-        self.ensure_locked(root).await;
     }
 
     /// The activity log's clone of the store goes, once no write holds it, and so does
@@ -442,7 +327,7 @@ impl SyncService {
         self.require_helper_for(&record)?;
         // A bring-up has started it already.
         if stopped.folder().running().is_none() {
-            self.start_sync(stopped, ScanReason::Start).await;
+            self.start_sync(stopped).await;
         }
         Ok(true)
     }

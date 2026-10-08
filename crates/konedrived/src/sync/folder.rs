@@ -220,10 +220,6 @@ pub(super) enum Content {
 /// A folder that is up and shows OneDrive.
 pub(super) struct OneDriveFolder {
     pub sync: Sync,
-    /// The folder's watcher ended by itself, with nobody stopping it: the sentence. Until
-    /// the folder is brought up again or its mode is switched, its sync runs locked, as
-    /// one whose watcher could not start, and no other watcher is started.
-    pub watcher_ended: Option<String>,
 }
 
 /// What the recovery walk of the bring-up left behind (`docs/design/hydration.md` §9).
@@ -410,16 +406,6 @@ pub(super) enum SyncView {
     Running(Handles),
 }
 
-impl SyncView {
-    /// The number of the sync in the view, told to stop or not.
-    pub fn id(&self) -> Option<u64> {
-        match self {
-            SyncView::Running(handles) => Some(handles.id),
-            _ => None,
-        }
-    }
-}
-
 impl View {
     /// The sync running now, as far as a reader may reach it. One that has been told to
     /// stop is not running, whatever this view was made from.
@@ -441,8 +427,10 @@ pub(super) struct Stopped<'a> {
     service: &'a SyncService,
     folder: RwLockWriteGuard<'a, Folder>,
     ran: bool,
-    /// Which sync the change took out of the state, if one ran ([`Handles::id`]).
-    took: Option<u64>,
+    /// Whether the folder's mount took changes when the change began.
+    was_writable: bool,
+    /// The desktop was told to read the folder again in this change.
+    told: bool,
 }
 
 impl<'a> Stopped<'a> {
@@ -461,10 +449,18 @@ impl<'a> Stopped<'a> {
         self.ran
     }
 
+    /// Tells the desktop's programs to read the folder's directories again: its mount
+    /// came, or shows other modes now.
+    pub fn read_again(&mut self) {
+        self.told = true;
+        if let (Some(store), Some(record)) = (self.folder.store(), self.folder.record()) {
+            tokio::spawn(crate::desktop::dirnotify::read_folder_again(store, record.root.path.clone()));
+        }
+    }
 
-    /// The sync this change took out of the state, by its number.
-    pub fn took(&self) -> Option<u64> {
-        self.took
+    /// Whether the folder's mount takes changes now.
+    fn writable(&self) -> bool {
+        self.folder.record().and_then(|record| record.kept.fuse.as_ref()).is_some_and(|mount| mount.is_writable())
     }
 
     /// Publishes the state as it is now.
@@ -480,7 +476,12 @@ impl<'a> Stopped<'a> {
 }
 
 impl Drop for Stopped<'_> {
+    /// A change that leaves the folder taking changes when it took none, or the other way
+    /// round, has the desktop read it again: the modes its mount shows are others.
     fn drop(&mut self) {
+        if self.writable() != self.was_writable && !self.told {
+            self.read_again();
+        }
         self.publish();
     }
 }
@@ -517,14 +518,15 @@ impl SyncService {
         }
         let folder = self.folder.write().await;
         // Dropped from here on, the change publishes what it leaves.
-        let mut stopped = Stopped { service: self, folder, ran: false, took: None };
+        let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
+        // No sync, no uploads: the mount takes no change until a read-write sync runs again.
+        if let Some(mount) = stopped.folder.record().and_then(|record| record.kept.fuse.as_ref()) {
+            stopped.was_writable = mount.read_only();
+        }
         if let Some(onedrive) = stopped.folder.onedrive_mut() {
             match std::mem::replace(&mut onedrive.sync, Sync::Stopped(Why::Interrupted)) {
                 // Dropped here: told again, and its parts handed over to be waited for.
-                Sync::Running(sync) => {
-                    stopped.ran = true;
-                    stopped.took = Some(sync.handles().id);
-                }
+                Sync::Running(_) => stopped.ran = true,
                 Sync::Stopped(Why::Interrupted) => stopped.ran = true,
                 Sync::Stopped(why) => onedrive.sync = Sync::Stopped(why),
             }
@@ -534,11 +536,9 @@ impl SyncService {
         stopped.publish();
         self.ended.join().await;
         if stopped.ran {
-            // The worker's counts go with it (the outbox on the bus), and the watcher's
-            // note with the watcher; the next ones say their own. Also for a sync an
-            // earlier change, cut before its end, stopped.
+            // The worker's counts go with it (the outbox on the bus); the next one says its
+            // own. Also for a sync an earlier change, cut before its end, stopped.
             self.clear_outbox_counts();
-            self.state.update(|s| s.local.watch_note.clear());
             // Under the lock, where no other change can have started a sync meanwhile.
             self.let_go_of_activity().await;
         }

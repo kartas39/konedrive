@@ -1,6 +1,6 @@
 //! The running sync of a OneDrive folder, as one object in the folder's state
-//! ([`RunningSync`]): it owns its parts — the poller, the watcher and the outbox worker of a
-//! read-write folder, the thumbnail filler, the sign-in nudge. The tree store is the
+//! ([`RunningSync`]): it owns its parts — the poller, the outbox worker of a read-write
+//! folder, the thumbnail filler, the sign-in nudge. The tree store is the
 //! folder's, kept with its record until a Forget; the sync holds clones of it.
 //!
 //! # Stopping is dropping
@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::local::watcher::{WatchHandle, Watcher};
 use crate::remote::listing::{PollHandle, Poller};
 use crate::upload::kept_back::SummaryRow;
 use crate::upload::{OutboxHandle, OutboxWorker};
@@ -41,61 +40,18 @@ pub(super) enum Why {
     CannotStart(String),
 }
 
-/// What a OneDrive folder's sync does about local changes.
-pub(super) enum Writes {
-    /// The folder is under the read-only lock: nothing watches it and nothing is uploaded.
-    /// Whether a cycle runs is the poller's to say, at each one: a locked folder that
-    /// still holds changes waiting to be uploaded runs none.
-    Locked {
-        /// Why a folder whose account is read-write runs locked all the same.
-        note: Option<String>,
-    },
-    /// The folder is watched, and what its watcher records is uploaded. Neither part
-    /// exists without the other.
-    Open {
-        watcher: Watcher,
-        outbox: OutboxWorker,
-        /// Shared with the task of the sync that says when the watcher's walk is over.
-        lock: Arc<Mutex<Lock>>,
-    },
-}
-
-/// The read-only lock of a folder whose watcher and worker run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Lock {
-    /// Still on: the watcher is walking the folder, and the lock comes off when it has.
-    Walking,
-    /// Off: the folder can be changed, and what is changed is uploaded.
-    Off,
-    /// It stays on: the watcher did not finish walking the folder. The sentence.
-    Stays(String),
-}
-
-/// What a sync does about local changes, without its parts: what `publish` shows of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Uploading {
-    /// Locked, with why when the account is read-write.
-    Locked(Option<String>),
-    Open(Lock),
-}
-
 /// What a reader may reach of a running sync: what wakes its parts or tells them to stop. Nothing here can wait for a part; only the [`RunningSync`] owns them.
 #[derive(Clone)]
 pub(super) struct Handles {
-    /// The number of this sync, among those of the daemon: which sync a part belonged to.
-    pub id: u64,
     pub poll: PollHandle,
-    /// The watcher and the outbox worker of a read-write folder.
-    pub writes: Option<(WatchHandle, OutboxHandle)>,
+    /// The outbox worker of a read-write folder.
+    pub outbox: Option<OutboxHandle>,
     /// `NotUploadedSummary()` as the outbox worker last summed it: answered
     /// from memory while the worker runs.
     pub kept_back: Arc<Mutex<Option<Vec<SummaryRow>>>>,
     /// Stops the tasks that have no handle of their own: the sign-in nudge and the
     /// thumbnail filler.
     pub(super) stop: CancellationToken,
-    /// The tidying a cycle asked for (a `move-out` row dropped because its item is gone
-    /// from OneDrive): tasks of this sync, waited for with it.
-    pub(super) tidying: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Handles {
@@ -103,9 +59,8 @@ impl Handles {
     pub fn cancel(&self) {
         self.stop.cancel();
         self.poll.cancel();
-        if let Some((watcher, outbox)) = &self.writes {
+        if let Some(outbox) = &self.outbox {
             outbox.cancel();
-            watcher.cancel();
         }
     }
 
@@ -116,11 +71,7 @@ impl Handles {
     }
 
     pub fn outbox(&self) -> Option<&OutboxHandle> {
-        self.writes.as_ref().map(|(_, outbox)| outbox)
-    }
-
-    pub fn watcher(&self) -> Option<&WatchHandle> {
-        self.writes.as_ref().map(|(watcher, _)| watcher)
+        self.outbox.as_ref()
     }
 }
 
@@ -139,7 +90,10 @@ pub(super) struct Parts {
     pub sign_in: JoinHandle<()>,
     /// The thumbnail filler; none without a cache to fill.
     pub thumbnails: Option<JoinHandle<()>>,
-    pub writes: Writes,
+    /// The outbox worker of a read-write folder: what programs change in the folder is
+    /// recorded by its mount, and sent by this. A read-only folder has none, and its mount
+    /// takes no change.
+    pub outbox: Option<OutboxWorker>,
 }
 
 impl RunningSync {
@@ -151,45 +105,17 @@ impl RunningSync {
         &self.handles
     }
 
-    pub fn writes(&self) -> Option<&Writes> {
-        self.parts.as_ref().map(|parts| &parts.writes)
-    }
-
-    /// What the sync does about local changes.
-    pub fn uploading(&self) -> Uploading {
-        match self.writes() {
-            Some(Writes::Open { lock, .. }) => Uploading::Open(crate::panic::lock(lock).clone()),
-            Some(Writes::Locked { note }) => Uploading::Locked(note.clone()),
-            None => Uploading::Locked(None),
-        }
-    }
-
-    /// Where a read-write sync's lock is said, for whoever waits for the watcher's walk.
-    pub fn lock_cell(&self) -> Option<Arc<Mutex<Lock>>> {
-        match self.writes() {
-            Some(Writes::Open { lock, .. }) => Some(Arc::clone(lock)),
-            _ => None,
-        }
-    }
 }
 
 impl Drop for RunningSync {
     fn drop(&mut self) {
         self.handles.cancel();
         if let Some(parts) = self.parts.take() {
-            let (watcher, outbox) = match parts.writes {
-                Writes::Open { watcher, outbox, .. } => (Some(watcher), Some(outbox)),
-                Writes::Locked { .. } => (None, None),
-            };
             crate::panic::lock(&self.ended.0).push(Ending {
                 poller: Some(parts.poller),
-                outbox,
-                watcher,
-                watcher_stop: None,
+                outbox: parts.outbox,
                 sign_in: Some(parts.sign_in),
                 thumbnails: parts.thumbnails,
-                tidying: Arc::clone(&self.handles.tidying),
-                tidied: None,
             });
         }
     }
@@ -204,43 +130,25 @@ pub(super) struct Ended(Arc<Mutex<Vec<Ending>>>);
 struct Ending {
     poller: Option<Poller>,
     outbox: Option<OutboxWorker>,
-    watcher: Option<Watcher>,
-    /// The blocking task that joins the watcher's threads.
-    watcher_stop: Option<JoinHandle<()>>,
     sign_in: Option<JoinHandle<()>>,
     thumbnails: Option<JoinHandle<()>>,
-    tidying: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    /// The tidying task being waited for.
-    tidied: Option<JoinHandle<()>>,
 }
 
 impl Ending {
     /// Waits for every part, in the order the locks ask for. A part that has been waited
     /// for is let go; cut while it waits, this goes on from that part at the next call.
     async fn join(&mut self) {
-        // The poller first: a cycle may hold the tree lock, which the watcher's examination
-        // and the worker's commit wait for.
+        // The poller first: a cycle may hold the tree lock, which the worker's commit waits
+        // for.
         if let Some(poller) = self.poller.as_mut() {
             poller.join().await;
             self.poller = None;
         }
         // The outbox worker next: a request under way was cut off, and its row is replayed
-        // when a worker starts again (`docs/design/writes.md` §10) — and a commit it holds
-        // the tree lock for does not keep the examination below waiting.
+        // when a worker starts again (`docs/design/writes.md` §10).
         if let Some(outbox) = self.outbox.as_ref() {
             outbox.stop().await;
             self.outbox = None;
-        }
-        // The watcher: a blocking join, off the runtime; the examination under way
-        // finishes first.
-        if let Some(watcher) = self.watcher.take() {
-            self.watcher_stop = Some(tokio::task::spawn_blocking(move || watcher.stop()));
-        }
-        if let Some(stop) = self.watcher_stop.as_mut() {
-            if let Err(e) = stop.await {
-                tracing::warn!("the task stopping the watcher failed: {e}");
-            }
-            self.watcher_stop = None;
         }
         if let Some(task) = self.sign_in.as_mut() {
             let _ = task.await;
@@ -249,14 +157,6 @@ impl Ending {
         if let Some(task) = self.thumbnails.as_mut() {
             let _ = task.await;
             self.thumbnails = None;
-        }
-        loop {
-            if self.tidied.is_none() {
-                self.tidied = crate::panic::lock(&self.tidying).pop();
-            }
-            let Some(task) = self.tidied.as_mut() else { break };
-            let _ = task.await;
-            self.tidied = None;
         }
     }
 }

@@ -42,7 +42,7 @@ use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::folder::locks::InodeLocks;
 use crate::folder::root::SyncRoot;
 use crate::helper::HelperLink;
-use crate::local::{Batch, IgnoreList};
+use crate::local::IgnoreList;
 use crate::remote::mode::Mode;
 use crate::remote::materialize::{Applied, Changed, Claimed, Failed, Kept, Materializer, OnDisk, Rw, Scope};
 use crate::status::activity::{self, Kind};
@@ -142,8 +142,6 @@ struct Writing {
     ignore: IgnoreList,
     upload_differences: bool,
     waiting: Waiting,
-    /// Hands the watcher places to examine.
-    examine: Arc<dyn Fn(Batch) + Send + Sync>,
     /// Told the removals dropped because their item is already gone.
     dropped_removed: Arc<dyn Fn(Vec<OutboxRow>) + Send + Sync>,
 }
@@ -215,7 +213,6 @@ impl Listing {
                     ignore: crate::panic::read(&writes.ignore).clone(),
                     upload_differences,
                     waiting,
-                    examine: Arc::clone(&writes.examine),
                     dropped_removed: Arc::clone(&writes.dropped_removed),
                 };
                 // Read-write mode sets nothing aside: an object whose id the base does not
@@ -399,26 +396,14 @@ impl Reconcile {
     }
 
     /// Read-write mode: rows wait for the folders the reconcile made the
-    /// user's own (their `mkdir`), and the watcher is told what to examine —
-    /// the attributes are off already, and nothing else says so.
+    /// user's own (their `mkdir`).
     fn hand_over(&self, done: &OnDisk) {
-        let Mode::ReadWrite(writing) = &self.mode else { return };
-        if !done.recreated.is_empty() {
-            let recreated = done.recreated.clone();
-            if let Err(e) = self.store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
-                tracing::warn!("cannot let the outbox wait for folders made again: {e}");
-            }
+        if self.mode.is_read_only() || done.recreated.is_empty() {
+            return;
         }
-        if !done.examine.is_empty() {
-            let mut batch = Batch::new();
-            for (rel, below) in &done.examine {
-                match (below, rel.parent(), rel.file_name()) {
-                    (true, _, _) => batch.tree(rel),
-                    (false, Some(parent), Some(name)) => batch.name(parent, name),
-                    _ => {}
-                }
-            }
-            (writing.examine)(batch);
+        let recreated = done.recreated.clone();
+        if let Err(e) = self.store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
+            tracing::warn!("cannot let the outbox wait for folders made again: {e}");
         }
     }
 
