@@ -32,10 +32,6 @@ Related documents elsewhere in the repository:
 - [`../limitations/`](../limitations/) — the limits that cannot simply be removed, because the
   kernel, the filesystem, OneDrive or the desktop decides, or because we chose them. Its entries
   have short identifiers (Z1, P6, K1, …), which these documents use to point at them.
-- [`../acceptance-check.md`](../acceptance-check.md) — a manual check against a real account.
-- [../history/original-proposal.md](../history/original-proposal.md) — the original proposal for
-  the whole client. Where it and these documents differ, these documents describe what the code
-  does, and [decisions.md](decisions.md) says what changed and why.
 
 ## Status
 

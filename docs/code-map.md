@@ -991,8 +991,6 @@ Design: `packaging.md`; `docs/releasing.md`.
   its `README.md` is the index.
 - `docs/kernel-behavior-7.2/` — what fanotify, leases and the filesystems were measured to
   do, by topic; its `README.md` is the index.
-- `docs/history/original-proposal.md` — the original proposal for the whole client.
 - `docs/kio-behavior.md` — what KIO and Dolphin open.
 - `docs/releasing.md` — the version, and how a release is made.
-- `docs/acceptance-check.md` — a manual check of a build against a real account.
 - `docs/code-map.md` — this file.
