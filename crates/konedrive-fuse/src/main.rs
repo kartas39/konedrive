@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use konedrive_graph::quickxor::QuickXor;
 use konedrive_tree::{Change, Kind, NewTree, Placement, Row, TreeStore};
+use konedrive_graph::drive::DriveClient;
+use konedrive_graph::token::StaticToken;
+use konedrived::hydration::graph_source::GraphSource;
 use konedrived::hydration::source::LocalDir;
 
 fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind, size: u64, mtime: i64, quickxor: Option<String>) -> Row {
@@ -61,12 +64,29 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let done: Result<(), Box<dyn std::error::Error>> = match args.as_slice() {
         ["seed", store, dir] => seed(Path::new(store), Path::new(dir)),
-        ["mount", folder, store, "--local-dir", dir] => {
-            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        ["mount", folder, store, "--local-dir", dir] => (|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let source = Arc::new(LocalDir::new(PathBuf::from(dir)));
-            konedrive_fuse::mount(Path::new(folder), Path::new(store), source, runtime.handle().clone()).map_err(Into::into)
-        }
-        _ => Err("usage: konedrive-fuse mount <folder> <store> --local-dir <dir> | seed <store> <dir>".into()),
+            let store = TreeStore::open(Path::new(store))?;
+            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), None)?)
+        })(),
+        // OneDrive itself, or what stands in for it: Graph's root and a file holding an access token.
+        ["mount", folder, store, "--graph", base, "--token-file", token, rest @ ..] => (|| {
+            let every = match rest {
+                ["--poll-secs", n] => n.parse()?,
+                [] => 30,
+                _ => return Err("after --token-file only --poll-secs <n> may come".into()),
+            };
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            let token = std::fs::read_to_string(token)?.trim().to_owned();
+            let _in_runtime = runtime.enter();
+            let drive = DriveClient::new(url::Url::parse(base)?, Arc::new(StaticToken::new(token)))?;
+            let source = Arc::new(GraphSource::new(drive.clone()));
+            let store = TreeStore::open(Path::new(store))?;
+            let follow = konedrive_fuse::Follow { drive, every: std::time::Duration::from_secs(every) };
+            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), Some(follow))?)
+        })(),
+        _ => Err("usage: konedrive-fuse mount <folder> <store> (--local-dir <dir> | --graph <url> --token-file <file> [--poll-secs <n>]) | seed <store> <dir>".into()),
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,

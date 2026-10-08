@@ -5,6 +5,8 @@
 //! before the mount. A file with no object there is not downloaded: opening it downloads it
 //! under a staging name and renames it into place. Nothing that changes the folder is accepted.
 
+pub mod cloud;
+
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File};
@@ -12,6 +14,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +35,26 @@ use tokio::io::AsyncReadExt;
 pub const STAGING: &str = ".konedrive-staging";
 
 const TTL: Duration = Duration::from_secs(1);
+
+/// The thread that announces OneDrive's changes through the mount (0: none yet). What it asks
+/// of the mount changes nothing: the store has the change already, and the request is there for
+/// the kernel to tell whoever watches the directory.
+static ANNOUNCER: AtomicI32 = AtomicI32::new(0);
+
+/// What the announcer is telling the kernel right now. The kernel looks a name up before it
+/// passes on a create or a remove of it, and the store has the change already: so for this one
+/// name the announcer is told what was true before, a name that came as absent and one that went
+/// as still there.
+enum Told {
+    Came(String),
+    Gone { name: String, ino: u64, kind: Kind },
+}
+
+static TOLD: Mutex<Option<Told>> = Mutex::new(None);
+
+fn announcing(req: &Request) -> bool {
+    req.pid() as i32 == ANNOUNCER.load(Ordering::SeqCst)
+}
 
 /// The node ids the kernel knows, each an item of the store.
 #[derive(Default)]
@@ -74,7 +97,7 @@ impl Nodes {
 struct Shared {
     /// The folder under the mount, opened before the mount.
     folder: File,
-    store: Mutex<TreeStore>,
+    store: Arc<Mutex<TreeStore>>,
     nodes: Mutex<Nodes>,
     source: Arc<dyn ContentSource>,
     /// The downloads in progress, by item, and the opens that wait for each.
@@ -190,7 +213,9 @@ impl Shared {
             if at != fetched.size {
                 return Err(other(format!("{at} bytes came of {}", fetched.size)));
             }
-            if let Some(want) = row.quickxor.as_deref().and_then(quickxor::decode_base64) {
+            // The hash OneDrive gives with the bytes, or the listed one when it gives none.
+            let listed = row.quickxor.as_deref().and_then(quickxor::decode_base64);
+            if let Some(want) = fetched.version.as_ref().and_then(|v| v.quick_xor).or(listed) {
                 if hash.finish() != want {
                     return Err(other("the content does not match the item's hash".into()));
                 }
@@ -214,22 +239,59 @@ impl Shared {
 }
 
 impl ReadOnlyFs {
-    pub fn new(folder: File, store: TreeStore, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle) -> io::Result<Self> {
-        let root = store.root_item_id().ok().flatten().ok_or_else(|| io::Error::other("the store has no root"))?;
+    pub fn new(folder: File, store: Arc<Mutex<TreeStore>>, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle) -> io::Result<Self> {
+        let root = store.lock().unwrap().root_item_id().ok().flatten().ok_or_else(|| io::Error::other("the store has no root"))?;
         let mut nodes = Nodes { next: 1, ..Nodes::default() };
         nodes.inos.insert(root.clone(), 1);
         nodes.items.insert(1, Node { id: root, place: None });
-        let shared = Shared { folder, store: Mutex::new(store), nodes: Mutex::new(nodes), source, fills: Mutex::default() };
+        let shared = Shared { folder, store, nodes: Mutex::new(nodes), source, fills: Mutex::default() };
         Ok(Self { shared: Arc::new(shared), runtime })
     }
 }
 
-/// Mounts the store at `store` over `folder` and serves it until the mount goes.
-pub fn mount(folder: &Path, store: &Path, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle) -> io::Result<()> {
+/// What a served folder follows OneDrive with: the drive and how often it is asked.
+pub struct Follow {
+    pub drive: konedrive_graph::drive::DriveClient,
+    pub every: Duration,
+}
+
+enum Announce {
+    Came(PathBuf, Kind),
+    Gone(PathBuf, Kind, String),
+    Changed(PathBuf, String),
+}
+
+fn announcements(steps: &[cloud::Step]) -> Vec<Announce> {
+    let mut out = Vec::new();
+    for step in steps {
+        match (&step.old, &step.new) {
+            (Some((old, was)), None) => out.push(Announce::Gone(was.clone(), old.kind, step.id.clone())),
+            (None, Some((new, now))) => out.push(Announce::Came(now.clone(), new.kind)),
+            (Some((old, was)), Some((new, now))) if was != now => {
+                out.push(Announce::Gone(was.clone(), old.kind, step.id.clone()));
+                out.push(Announce::Came(now.clone(), new.kind));
+            }
+            (Some(_), Some((new, now))) if new.kind == Kind::File => out.push(Announce::Changed(now.clone(), step.id.clone())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Mounts `store` over `folder` and serves it until the mount goes. With `follow`, OneDrive is
+/// listed into the store first and asked again every so often; each change is then announced
+/// through the mount, so that an inotify watch on a directory sees it.
+pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle, follow: Option<Follow>) -> io::Result<()> {
     // Before the mount: afterwards this path is the mount.
     let under = File::open(folder)?;
-    let store = TreeStore::open_read_only(store).map_err(|e| io::Error::other(e.to_string()))?;
-    let fs = ReadOnlyFs::new(under, store, source, runtime)?;
+    let under_path = konedrive_fs::proc_path(&under);
+    let store = Arc::new(Mutex::new(store));
+    if let Some(follow) = &follow {
+        let listed = runtime.block_on(cloud::sync_once(&follow.drive, &store, &under_path))?;
+        eprintln!("konedrive-fuse: listed, {} items changed", listed.len());
+    }
+    let fs = ReadOnlyFs::new(under, store.clone(), source, runtime.clone())?;
+    let shared = fs.shared.clone();
     let mut config = Config::default();
     config.mount_options = vec![
         MountOption::FSName("konedrive".into()),
@@ -239,7 +301,64 @@ pub fn mount(folder: &Path, store: &Path, source: Arc<dyn ContentSource>, runtim
     ];
     config.n_threads = Some(4);
     config.clone_fd = true;
-    fuser::mount(fs, folder, &config)
+    let session = fuser::Session::new(fs, folder, &config)?;
+    if let Some(follow) = follow {
+        let notifier = session.notifier();
+        let (tell, told) = std::sync::mpsc::channel::<Vec<Announce>>();
+        let mount = folder.to_owned();
+        std::thread::spawn(move || {
+            ANNOUNCER.store(unsafe { libc::gettid() }, Ordering::SeqCst);
+            let path = |rel: &Path| CString::new(mount.join(rel).into_os_string().into_encoded_bytes()).unwrap();
+            for batch in told {
+                for a in batch {
+                    let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let tell = |told: Told| *TOLD.lock().unwrap() = Some(told);
+                    unsafe {
+                        match a {
+                            Announce::Came(rel, kind) => {
+                                tell(Told::Came(name(&rel)));
+                                match kind {
+                                    Kind::Folder => libc::mkdir(path(&rel).as_ptr(), 0o755),
+                                    Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
+                                };
+                            }
+                            Announce::Gone(rel, kind, id) => {
+                                // A name the kernel was never told has nobody watching it go.
+                                let Some(ino) = shared.nodes.lock().unwrap().inos.get(&id).copied() else { continue };
+                                tell(Told::Gone { name: name(&rel), ino, kind });
+                                match kind {
+                                    Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
+                                    Kind::File => libc::unlink(path(&rel).as_ptr()),
+                                };
+                            }
+                            Announce::Changed(rel, id) => {
+                                // The kernel's cached pages of the old content go first.
+                                if let Some(ino) = shared.nodes.lock().unwrap().inos.get(&id) {
+                                    let _ = notifier.inval_inode(INodeNo(*ino), 0, 0);
+                                }
+                                libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);
+                            }
+                        }
+                    }
+                    *TOLD.lock().unwrap() = None;
+                }
+            }
+        });
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(follow.every).await;
+                match cloud::sync_once(&follow.drive, &store, &under_path).await {
+                    Ok(steps) if steps.is_empty() => {}
+                    Ok(steps) => {
+                        eprintln!("konedrive-fuse: {} items changed in OneDrive", steps.len());
+                        let _ = tell.send(announcements(&steps));
+                    }
+                    Err(e) => eprintln!("konedrive-fuse: asking OneDrive failed: {e}"),
+                }
+            }
+        });
+    }
+    session.run()
 }
 
 fn borrow(fh: FileHandle) -> std::mem::ManuallyDrop<File> {
@@ -253,18 +372,18 @@ impl Filesystem for ReadOnlyFs {
         Ok(())
     }
 
-    fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let s = &self.shared;
-        let Some(dir) = s.id(parent) else { return reply.error(Errno::ENOENT) };
-        let Some(name) = name.to_str() else { return reply.error(Errno::ENOENT) };
-        let row = s.store.lock().unwrap().child(Table::Items, &dir, name).ok().flatten();
-        match row.filter(|r| r.placement == Placement::Placed) {
-            Some(row) => {
-                let ino = s.nodes.lock().unwrap().ino(&row, parent.0);
-                reply.entry(&TTL, &s.attr(&row, ino), Generation(0))
+    fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        if announcing(req) {
+            match &*TOLD.lock().unwrap() {
+                Some(Told::Came(came)) if name == came.as_str() => return reply.error(Errno::ENOENT),
+                Some(Told::Gone { name: gone, ino, kind }) if name == gone.as_str() => {
+                    let row = Row { id: String::new(), parent_id: None, name: gone.clone(), kind: *kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
+                    return reply.entry(&Duration::ZERO, &self.shared.attr(&row, *ino), Generation(0));
+                }
+                _ => {}
             }
-            None => reply.error(Errno::ENOENT),
         }
+        self.entry(parent, name, reply)
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
@@ -395,14 +514,23 @@ impl Filesystem for ReadOnlyFs {
     // mount: on one the kernel would refuse the daemon's own announcements too.
 
     fn setattr(&self, _req: &Request, _ino: INodeNo, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, _size: Option<u64>, _atime: Option<TimeOrNow>, _mtime: Option<TimeOrNow>, _ctime: Option<SystemTime>, _fh: Option<FileHandle>, _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<BsdFileFlags>, reply: ReplyAttr) {
+        if announcing(_req) {
+            return self.getattr(_req, _ino, None, reply);
+        }
         reply.error(Errno::EROFS);
     }
 
     fn mkdir(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, reply: ReplyEntry) {
+        if announcing(_req) {
+            return self.entry(_parent, _name, reply);
+        }
         reply.error(Errno::EROFS);
     }
 
     fn mknod(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {
+        if announcing(_req) {
+            return self.entry(_parent, _name, reply);
+        }
         reply.error(Errno::EROFS);
     }
 
@@ -411,10 +539,16 @@ impl Filesystem for ReadOnlyFs {
     }
 
     fn unlink(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
+        if announcing(_req) && !self.has(_parent, _name) {
+            return reply.ok();
+        }
         reply.error(Errno::EROFS);
     }
 
     fn rmdir(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
+        if announcing(_req) && !self.has(_parent, _name) {
+            return reply.ok();
+        }
         reply.error(Errno::EROFS);
     }
 
@@ -436,5 +570,29 @@ impl Filesystem for ReadOnlyFs {
 
     fn removexattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
         reply.error(Errno::EROFS);
+    }
+}
+
+impl ReadOnlyFs {
+    /// The entry `name` of `parent`, as the store has it now.
+    fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let s = &self.shared;
+        let Some(dir) = s.id(parent) else { return reply.error(Errno::ENOENT) };
+        let Some(name) = name.to_str() else { return reply.error(Errno::ENOENT) };
+        let row = s.store.lock().unwrap().child(Table::Items, &dir, name).ok().flatten();
+        match row.filter(|r| r.placement == Placement::Placed) {
+            Some(row) => {
+                let ino = s.nodes.lock().unwrap().ino(&row, parent.0);
+                reply.entry(&TTL, &s.attr(&row, ino), Generation(0))
+            }
+            None => reply.error(Errno::ENOENT),
+        }
+    }
+
+    /// Whether the store still has `name` in `parent`.
+    fn has(&self, parent: INodeNo, name: &OsStr) -> bool {
+        let s = &self.shared;
+        let row = s.id(parent).zip(name.to_str()).and_then(|(dir, name)| s.store.lock().unwrap().child(Table::Items, &dir, name).ok().flatten());
+        row.is_some_and(|r| r.placement == Placement::Placed)
     }
 }

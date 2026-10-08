@@ -11,3 +11,6 @@ publish = false
 [dependencies]
 fuser = { version = "0.18", default-features = false }
 libc = "0.2"
+# The fake OneDrive of the daemon's tests, as a process the stage 1 tests talk to.
+konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std"] }

@@ -16,4 +16,5 @@ konedrive-tree = { path = "../konedrive-tree" }
 konedrived = { path = "../konedrived" }
 libc.workspace = true
 tokio.workspace = true
+url.workspace = true
 xattr.workspace = true
