@@ -83,8 +83,8 @@ impl AccountService {
     async fn finish_read_write(&self, attempt: SignInAttempt) {
         let (generation, asked) = (attempt.generation, attempt.browser.scope());
         match self.complete_sign_in(attempt).await {
-            Ok(tokens) => self.commit_read_write(generation, asked, tokens).await,
-            Err(message) => self.abort_read_write(generation, message).await,
+            Ok((tokens, browser)) => self.commit_read_write(generation, asked, tokens, browser).await,
+            Err(message) => self.abort_read_write(generation, message, None).await,
         }
     }
 
@@ -93,24 +93,25 @@ impl AccountService {
     /// is taken. Then the refresh token is stored, the new token
     /// cached and what it was granted recorded, and only then `mode = "read-write"` written
     /// and the mode worked out again. Anything else changes nothing but
-    /// `LastError`.
-    async fn commit_read_write(&self, generation: u64, asked: &'static str, tokens: TokenResponse) {
+    /// `LastError`. `browser` is told which it was; a switch that is dropped says nothing.
+    async fn commit_read_write(&self, generation: u64, asked: &'static str, tokens: TokenResponse, browser: Answer) {
         let granted = tokens.granted(asked);
         if !grants_writes(&granted) {
             let message = format!(
                 "Microsoft did not allow konedrive to change files in OneDrive (the sign-in granted \
                  {granted:?}); the account stays read-only."
             );
-            return self.abort_read_write(generation, message).await;
+            return self.abort_read_write(generation, message, Some(browser)).await;
         }
         let SignedIn { tokens, refresh_token, identity } = match attempt::confirm(tokens, self.graph()).await {
             Ok(signed_in) => signed_in,
             Err(Unconfirmed::NoRefreshToken) => {
-                return self.abort_read_write(generation, "Microsoft did not return a refresh token; the account stays read-only.".into()).await;
+                let message = "Microsoft did not return a refresh token; the account stays read-only.".into();
+                return self.abort_read_write(generation, message, Some(browser)).await;
             }
             Err(Unconfirmed::Unidentified(e)) => {
                 let message = format!("Could not check which account this is ({e}); the account stays read-only.");
-                return self.abort_read_write(generation, message).await;
+                return self.abort_read_write(generation, message, Some(browser)).await;
             }
         };
         let session = self.session.lock().await;
@@ -125,14 +126,14 @@ impl AccountService {
         };
         if let Some(why) = refusal {
             drop(session);
-            return self.abort_read_write(generation, why).await;
+            return self.abort_read_write(generation, why, Some(browser)).await;
         }
         // The token first: one that can write, for this very drive, is harmless under a
         // read-only mode (every refresh asks for Files.Read then), and the mode is written
         // only once it is stored.
         if let Err(e) = self.secrets.store(&refresh_token).await {
             drop(session);
-            return self.abort_read_write(generation, format!("{e}; the account stays read-only.")).await;
+            return self.abort_read_write(generation, format!("{e}; the account stays read-only."), Some(browser)).await;
         }
         // All with the token manager's refresh lock held: no refresh can run between recording the
         // grant and caching the new token, so none can record its narrower grant over it. The
@@ -166,18 +167,23 @@ impl AccountService {
             .await;
         if let Err(why) = written {
             drop(session);
-            return self.abort_read_write(generation, why).await;
+            return self.abort_read_write(generation, why, Some(browser)).await;
         }
+        browser.say(&format!("{who} can change files in OneDrive now."));
         tracing::info!("the account {:?} is read-write now", self.id);
     }
 
     /// A switch to read-write that did not go through: `LastError` says why, and nothing
     /// else changes — the account stays signed in, read-only. Only for the current attempt;
-    /// an empty `message` is a cancel, which says nothing.
-    async fn abort_read_write(&self, generation: u64, message: String) {
+    /// an empty `message` is a cancel, which says nothing. `browser`, when it still waits
+    /// for its answer, is told the same.
+    async fn abort_read_write(&self, generation: u64, message: String, browser: Option<Answer>) {
         let session = self.session.lock().await;
         if session.generation != generation || message.is_empty() {
             return;
+        }
+        if let Some(browser) = browser {
+            browser.say(&message);
         }
         self.state.update(|s| s.set_error(message));
     }

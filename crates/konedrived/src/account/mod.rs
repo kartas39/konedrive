@@ -41,7 +41,7 @@ mod mode;
 pub mod quota;
 pub mod secret;
 mod sign_in;
-pub(crate) use sign_in::{claim_new, Refused};
+pub(crate) use sign_in::{claim_new, signed_in_sentence, Refused};
 pub mod state;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -57,6 +57,7 @@ use crate::account::quota::Quota;
 use crate::account::attempt::{Attempt, SignedIn};
 use crate::config::{AccountConfig, AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, Origin, WriteStanding};
 use konedrive_graph::drive::{DriveClient, Status};
+use konedrive_graph::loopback::Answer;
 use konedrive_graph::oauth::{grants_writes, is_read_only, Endpoints, OAuthClient, TokenResponse};
 use crate::account::secret::SecretStore;
 use crate::account::state::{AccountSnapshot, ModeNote, SignInState, StateHandle};

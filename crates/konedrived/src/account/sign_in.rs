@@ -16,8 +16,8 @@ impl From<ConfigError> for Refused {
 }
 
 impl Refused {
-    /// The sentence `LastError` shows.
-    fn sentence(&self) -> String {
+    /// The sentence `LastError` shows, and the browser.
+    pub(crate) fn sentence(&self) -> String {
         match self {
             Refused::AlreadyConnected { label, .. } => format!("This Microsoft account is already connected as '{label}'."),
             Refused::Other(sentence) => sentence.clone(),
@@ -37,6 +37,14 @@ fn drive_is_free(config: &Config, me: Option<&AccountId>, drive: &DriveId, unset
         return Err(Refused::Other("Could not check which account this is; try again.".into()));
     }
     Ok(())
+}
+
+/// What the browser reads when a sign-in went through: as `email` when Graph said it.
+pub(crate) fn signed_in_sentence(email: Option<&str>) -> String {
+    match email.filter(|email| !email.is_empty()) {
+        Some(email) => format!("Signed in as {email}."),
+        None => "Signed in.".into(),
+    }
 }
 
 /// The identity guard for a sign-in that belongs to no account yet (`Accounts.SignIn`),
@@ -387,14 +395,14 @@ impl AccountService {
     async fn finish_sign_in(&self, attempt: SignInAttempt) {
         let (generation, asked) = (attempt.generation, attempt.browser.scope());
         match self.complete_sign_in(attempt).await {
-            Ok(tokens) => self.commit_sign_in(generation, asked, tokens).await,
-            Err(message) => self.abort_sign_in(generation, Refused::Other(message)).await,
+            Ok((tokens, browser)) => self.commit_sign_in(generation, asked, tokens, browser).await,
+            Err(message) => self.abort_sign_in(generation, Refused::Other(message), None).await,
         }
     }
 
     /// Waits for the browser and exchanges the code, without touching shared state: the
     /// caller decides whether the result still applies.
-    pub(super) async fn complete_sign_in(&self, attempt: SignInAttempt) -> Result<TokenResponse, String> {
+    pub(super) async fn complete_sign_in(&self, attempt: SignInAttempt) -> Result<(TokenResponse, Answer), String> {
         attempt.browser.tokens(self.sign_in_timeout, attempt.cancel).await
     }
 
@@ -453,11 +461,14 @@ impl AccountService {
     /// the `signing-in` state, or the guard refused) the tokens are discarded
     /// without ever touching Secret Service. The guard is fail-closed: a drive that cannot
     /// be asked for refuses the sign-in too.
-    async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse) {
+    ///
+    /// `browser` is told what came of it: signed in, or the sentence `LastError` gets. A
+    /// sign-in that is dropped says nothing, and the browser reads to look at KOneDrive.
+    async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse, browser: Answer) {
         let signed_in = match attempt::confirm(tokens, self.graph()).await {
             Ok(signed_in) => signed_in,
             Err(unconfirmed) => {
-                self.abort_sign_in(generation, Refused::Other(unconfirmed.sentence())).await;
+                self.abort_sign_in(generation, Refused::Other(unconfirmed.sentence()), Some(browser)).await;
                 return;
             }
         };
@@ -484,7 +495,7 @@ impl AccountService {
             Ok(recorded) => recorded,
             Err(refused) => {
                 drop(session);
-                self.abort_sign_in(generation, refused).await;
+                self.abort_sign_in(generation, refused, Some(browser)).await;
                 return;
             }
         };
@@ -493,10 +504,12 @@ impl AccountService {
                 self.unclaim(&identity.drive);
             }
             drop(session);
-            self.abort_sign_in(generation, Refused::Other(e)).await;
+            self.abort_sign_in(generation, Refused::Other(e), Some(browser)).await;
             return;
         }
         drop(session);
+        // Said before the name and the quota are asked for: the sign-in is decided.
+        browser.say(&signed_in_sentence(identity.email.as_deref()));
         self.refresh_account_info().await;
     }
 
@@ -533,8 +546,9 @@ impl AccountService {
 
     /// Records a sign-in failure, but only if `generation` is still the current attempt.
     /// An empty sentence means the user cancelled; `cancel_sign_in` already updated the
-    /// state directly, and said so, so there is nothing left to do here.
-    async fn abort_sign_in(&self, generation: u64, refused: Refused) {
+    /// state directly, and said so, so there is nothing left to do here. `browser`, when
+    /// it still waits for its answer, is told the sentence that is recorded.
+    async fn abort_sign_in(&self, generation: u64, refused: Refused, browser: Option<Answer>) {
         let message = refused.sentence();
         let session = self.session.lock().await;
         if session.generation != generation || message.is_empty() {
@@ -544,5 +558,8 @@ impl AccountService {
             s.state = SignInState::SignedOut;
             s.set_error(message.clone());
         });
+        if let Some(browser) = browser {
+            browser.say(&message);
+        }
     }
 }

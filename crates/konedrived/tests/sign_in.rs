@@ -152,7 +152,8 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
     // Under way: nothing of it anywhere.
     s.there_are(0).await;
 
-    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    let page = simulate_browser(&url, "code=good-code").await.text().await.unwrap();
+    assert!(page.contains("<p>Signed in as test@outlook.com.</p>"), "the browser reads how it ended: {page}");
     let (ended, outcome, message, path) = s.next_finished().await;
     assert_eq!((ended, outcome.as_str(), message.as_str()), (sign_in, SIGNED_IN, "test@outlook.com"));
     // Listed, signed in, under its final label, by the time the signal is read.
@@ -238,7 +239,11 @@ async fn the_drive_decides_whether_an_account_is_added_and_the_email_names_it() 
     assert_eq!(outcome, SIGNED_IN);
 
     // The same Microsoft account again: the account that has the drive, and nothing made.
-    let (outcome, message, account) = s.sign_in_with("code=good-code").await;
+    let (sign_in, url) = s.manager.sign_in().await.unwrap();
+    let page = simulate_browser(&url, "code=good-code").await.text().await.unwrap();
+    assert!(page.contains("<p>This Microsoft account is already connected as &#39;test@outlook.com&#39;.</p>"), "{page}");
+    let (ended, outcome, message, account) = s.next_finished().await;
+    assert_eq!(ended, sign_in);
     assert_eq!((outcome.as_str(), message.as_str(), account.as_str()), (ALREADY_ADDED, "test@outlook.com", first.as_str()));
     s.there_are(1).await;
 

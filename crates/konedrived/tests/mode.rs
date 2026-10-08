@@ -211,7 +211,8 @@ async fn an_account_whose_drive_is_not_listed_is_read_write_once_its_sign_in_gra
     assert_eq!(query["scope"], READ_WRITE);
     assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"), "nothing before the grant");
 
-    assert_eq!(simulate_browser(&url, "code=rw-code").await.status(), 200);
+    let page = simulate_browser(&url, "code=rw-code").await.text().await.unwrap();
+    assert!(page.contains("can change files in OneDrive now.</p>"), "{page}");
     let account = &s.account;
     eventually("read-write", || async move { account.mode().await.unwrap() == "read-write" }).await;
     assert_eq!(s.configured(), Mode::ReadWrite);
@@ -252,7 +253,8 @@ async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_su
     assert_eq!(s.configured(), Mode::ReadOnly, "nothing is written before the grant");
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 
-    assert_eq!(simulate_browser(&url, "code=rw-code").await.status(), 200);
+    let page = simulate_browser(&url, "code=rw-code").await.text().await.unwrap();
+    assert!(page.contains("can change files in OneDrive now.</p>"), "{page}");
     let account = &s.account;
     eventually("read-write", || async move { account.mode().await.unwrap() == "read-write" }).await;
     assert_eq!(s.configured(), Mode::ReadWrite);
@@ -310,7 +312,8 @@ async fn a_switch_that_is_not_granted_changes_nothing() {
     unchanged(&s);
 
     let url = s.account.set_mode("read-write", false).await.unwrap();
-    simulate_browser(&url, "code=other-code").await;
+    let page = simulate_browser(&url, "code=other-code").await.text().await.unwrap();
+    assert!(page.contains("the browser signed in as a different Microsoft account; the account stays read-only.</p>"), "{page}");
     wait_for_error(&s.account, "different Microsoft account").await;
     unchanged(&s);
 
