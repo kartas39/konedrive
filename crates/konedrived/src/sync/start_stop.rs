@@ -150,6 +150,31 @@ impl SyncService {
                 record.kept.fuse = Some(Arc::clone(&mount));
             }
             self.show_pins(&mount);
+            // A file manager that showed the folder before this mount reads it again: its own
+            // watch ended with the mount that went. Every directory the store names is told, at
+            // most so many: which of them a program shows is not known here.
+            let (told, at) = (store.clone(), reg.root.path.clone());
+            tokio::spawn(async move {
+                const MOST: usize = 20_000;
+                let listed = told
+                    .call(move |s| {
+                        let Some(root) = s.root_item_id()? else { return Ok(Vec::new()) };
+                        let (mut directories, mut next) = (vec![at.clone()], vec![(root, at)]);
+                        while let Some((id, path)) = next.pop() {
+                            for row in s.children(konedrive_tree::Table::Items, &id)? {
+                                if row.kind == konedrive_tree::Kind::Folder && directories.len() < MOST {
+                                    let below = path.join(&row.name);
+                                    directories.push(below.clone());
+                                    next.push((row.id, below));
+                                }
+                            }
+                        }
+                        Ok(directories)
+                    })
+                    .await
+                    .unwrap_or_default();
+                crate::desktop::dirnotify::read_again(listed).await;
+            });
             self.report.space.measure_at(Some(mount.under()));
             fuse = Some(mount);
         }
