@@ -47,7 +47,7 @@ fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static 
         root_state: published.state,
         last_error: published.error,
         no_interception_warning: published.no_interception_warning,
-        helper_not_needed: published.helper == Helper::NotNeeded,
+        helper_not_needed: false,
         switch_note: published.switch_note,
         waits_for_helper: published.helper.waits(link),
         locked_note: published.locked_note,

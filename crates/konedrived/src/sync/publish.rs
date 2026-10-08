@@ -196,7 +196,9 @@ impl SyncService {
             s.folder.root_state = published.state;
             s.folder.last_error = published.error;
             s.folder.no_interception_warning = published.no_interception_warning;
-            s.folder.helper_not_needed = published.helper == Helper::NotNeeded;
+            // Only a folder that is up and served through FUSE: for every other the helper's
+            // trouble is told as it was.
+            s.folder.helper_not_needed = folder.up().is_some_and(|up| up.record.source == RootSource::Fuse);
             s.folder.switch_note = published.switch_note;
             s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;

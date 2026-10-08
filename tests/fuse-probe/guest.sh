@@ -387,6 +387,10 @@ service() {
     echo "-- the daemon killed and started again"
     kill -KILL $svc; wait $svc 2> /dev/null; exec 8>&-
     echo "killed: $($U ls $f 2>&1)"
+    # While nothing is mounted the user puts a file of their own where an item that is not
+    # downloaded has its name.
+    $U fusermount3 -u -z $f
+    $U sh -c "mkdir -p $f/docs && echo 'the user own file' > $f/docs/big.bin"
     : > $W/logs/svc.out
     $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
     svc=$!
@@ -396,10 +400,12 @@ service() {
     mounted $f && echo "mounted again: $($U ls $f | tr '\n' ' ')" || echo "NOT MOUNTED AGAIN: $(tail -5 $W/logs/svc.err)"
     echo "a downloaded file after the restart: state $(ask state $f/a.txt), content: $($U cat $f/a.txt)"
     echo "status: $(ask status)"
+    echo "an item whose name the user's own file took: state $(ask state $f/docs/big.bin), size $($U stat -c %s $f/docs/big.bin), read: $($U cat $f/docs/big.bin 2>&1 | head -c 80)"
     echo "free-up-space: $(ask free-up-space)"
     echo "activity: $(ask activity | head -c 900)"
     echo "forget: $(ask forget)"; sleep 1
     mounted $f && echo "still mounted after the forget" || echo "the folder itself after the forget: $($U find $f | sort | tr '\n' ' ')"
+    echo "the user's own file after it all: $($U cat $f/docs/big.bin 2>&1)"
     exec 8>&-; wait $svc 2> /dev/null
     grep -v "^$" $W/logs/svc.err | tail -8
 }

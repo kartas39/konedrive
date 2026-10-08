@@ -369,7 +369,9 @@ impl SyncService {
     ) {
         let recovery = Recovery::of(&report);
         let baloo = self.keep_out_of_baloo(&root, source, fresh).await;
-        if source.shows_onedrive() {
+        // Through a mount that is up the folder takes no attribute, and has its drive already.
+        let mounted = stopped.folder().record().is_some_and(|record| record.kept.fuse.is_some());
+        if source.shows_onedrive() && !mounted {
             self.mark_drive(&root).await;
         }
         // `config.toml` names what is registered now: a fresh root without

@@ -102,8 +102,10 @@ impl Step {
 }
 
 enum Announce {
-    Came(PathBuf, Kind),
-    Gone(PathBuf, Kind, String),
+    /// A name that came: its place, its kind, and the item it lies in.
+    Came(PathBuf, Kind, Option<String>),
+    /// A name that went: its place, its kind, its item, and the item it lay in.
+    Gone(PathBuf, Kind, String, Option<String>),
     Changed(PathBuf, String),
 }
 
@@ -112,14 +114,25 @@ enum Announce {
 /// name the announcer is told what was true before, a name that came as absent and one that went
 /// as still there.
 enum Told {
-    Came(String),
-    Gone { name: String, ino: u64, kind: Kind },
+    Came { parent: u64, name: String },
+    Gone { parent: u64, name: String, ino: u64, kind: Kind },
 }
 
 /// Who waits for a download: an open of the mount, by its request, or a caller in the daemon.
 enum Waiter {
     Open(u64, ReplyOpen),
     Caller(oneshot::Sender<Result<(), i32>>),
+}
+
+impl Waiter {
+    fn fail(self, errno: i32) {
+        match self {
+            Waiter::Open(_, reply) => reply.error(Errno::from_i32(errno)),
+            Waiter::Caller(tell) => {
+                let _ = tell.send(Err(errno));
+            }
+        }
+    }
 }
 
 /// What a free-up did.
@@ -162,8 +175,11 @@ struct Shared {
     announcer: AtomicI32,
     told: Mutex<Option<Told>>,
     tell: Mutex<Option<mpsc::Sender<Vec<Announce>>>>,
-    /// What the cycle now committing changed, announced once it is committed.
-    pending: Mutex<Vec<Announce>>,
+    /// What the cycle now committing changed: announced, and the pins of what went taken off,
+    /// once it is committed.
+    pending: Mutex<(Vec<Announce>, Vec<String>)>,
+    /// The mount is being taken off: the announcer says nothing more through it.
+    stopping: std::sync::atomic::AtomicBool,
     runtime: tokio::runtime::Handle,
 }
 
@@ -215,9 +231,19 @@ impl Shared {
         crate::panic::lock(&self.nodes).rel(ino)
     }
 
-    /// Whether the folder under the mount holds the file at `rel`.
-    fn has_copy(&self, rel: &Path) -> bool {
-        fs::symlink_metadata(self.under(rel)).is_ok_and(|m| m.is_file())
+    /// The downloaded copy of item `id` at `rel`, if the folder under the mount holds it: a
+    /// regular file that carries the item's id. Any other file there is not the item's — one
+    /// the user put in the folder while nothing was mounted, or the copy of another item —
+    /// and is never shown as its content.
+    fn copy(&self, rel: &Path, id: &str) -> Option<fs::Metadata> {
+        let path = self.under(rel);
+        let meta = fs::symlink_metadata(&path).ok().filter(fs::Metadata::is_file)?;
+        let carried = xattr::get(&path, XATTR_ITEM_ID).ok().flatten()?;
+        (carried == id.as_bytes()).then_some(meta)
+    }
+
+    fn has_copy(&self, rel: &Path, id: &str) -> bool {
+        self.copy(rel, id).is_some()
     }
 
     /// What the mount shows of a row: the downloaded file's own size and blocks when the folder
@@ -248,11 +274,9 @@ impl Shared {
             attr.size = 0;
             return attr;
         }
-        if let Some(meta) = self.rel_of_ino(ino).and_then(|rel| fs::symlink_metadata(self.under(&rel)).ok()) {
-            if meta.is_file() {
-                attr.size = meta.size();
-                attr.blocks = meta.blocks();
-            }
+        if let Some(meta) = self.rel_of_ino(ino).and_then(|rel| self.copy(&rel, &row.id)) {
+            attr.size = meta.size();
+            attr.blocks = meta.blocks();
         }
         attr
     }
@@ -307,15 +331,27 @@ impl Shared {
         let done = async {
             download_into(&file, &row.id, &tracked).await?;
             let size = tracked.fetched().unwrap_or(row.size);
-            placeholder::write_item_id(&file, &row.id).map_err(io_errno)?;
-            placeholder::write_state(&file, State::Hydrated).map_err(io_errno)?;
-            file.set_modified(seconds(row.mtime)).map_err(io_errno)?;
-            file.sync_all().map_err(io_errno)?;
-            let target = self.under(rel);
-            if let Some(dir) = target.parent() {
-                fs::create_dir_all(dir).map_err(io_errno)?;
-            }
-            fs::rename(&name, target).map_err(io_errno)?;
+            let (id, mtime, target, staged) = (row.id.clone(), row.mtime, self.under(rel), name.clone());
+            // The file's own steps wait for the disk: not on the runtime's threads.
+            tokio::task::spawn_blocking(move || {
+                placeholder::write_item_id(&file, &id)?;
+                placeholder::write_state(&file, State::Hydrated)?;
+                file.set_modified(seconds(mtime))?;
+                file.sync_all()?;
+                if let Some(dir) = target.parent() {
+                    fs::create_dir_all(dir)?;
+                }
+                // What stands at the item's place and carries no item's id is the user's own
+                // file, put there while nothing was mounted: it is never replaced. A copy of
+                // another item left there can be downloaded again, and goes.
+                if fs::symlink_metadata(&target).is_ok() && xattr::get(&target, XATTR_ITEM_ID).ok().flatten().is_none() {
+                    return Err(io::Error::from_raw_os_error(libc::EEXIST));
+                }
+                fs::rename(&staged, target)
+            })
+            .await
+            .map_err(|_| libc::EIO)?
+            .map_err(io_errno)?;
             Ok(size)
         }
         .await;
@@ -343,6 +379,16 @@ impl Shared {
         self.announce(vec![Announce::Changed(rel.clone(), row.id.clone())]);
         let s = Arc::clone(self);
         self.runtime.spawn(async move {
+            // A download that panics still leaves no open waiting for it for ever.
+            struct Ended(Arc<Shared>, String);
+            impl Drop for Ended {
+                fn drop(&mut self) {
+                    for waiter in crate::panic::lock(&self.0.fills).remove(&self.1).unwrap_or_default() {
+                        waiter.fail(libc::EIO);
+                    }
+                }
+            }
+            let _ended = Ended(Arc::clone(&s), row.id.clone());
             let filled = s.fill(&row, &rel, class).await;
             let shown = s.shown(&rel);
             let event = match &filled {
@@ -418,7 +464,7 @@ impl Shared {
         for id in pins {
             let Some(row) = self.row(&id) else { continue };
             for (file, rel) in self.files_below(&row) {
-                if !self.has_copy(&rel) {
+                if !self.has_copy(&rel, &file.id) {
                     self.ensure(file, rel, Class::Download, None);
                 }
             }
@@ -428,7 +474,7 @@ impl Shared {
     fn state_of(&self, row: &Row, rel: &Path) -> State {
         if crate::panic::lock(&self.fills).contains_key(&row.id) {
             State::Hydrating
-        } else if self.has_copy(rel) {
+        } else if self.has_copy(rel, &row.id) {
             State::Hydrated
         } else {
             State::OnlineOnly
@@ -440,6 +486,9 @@ impl Shared {
 pub struct Mount {
     shared: Arc<Shared>,
     session: Mutex<Option<fuser::BackgroundSession>>,
+    announcer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The mount's connection, as the kernel numbers it (`/sys/fs/fuse/connections/<n>`).
+    connection: u32,
 }
 
 /// What a mount is made with.
@@ -494,6 +543,7 @@ impl Mount {
                 told: Mutex::new(None),
                 tell: Mutex::new(None),
                 pending: Mutex::default(),
+                stopping: std::sync::atomic::AtomicBool::new(false),
                 runtime,
             });
             let mut config = Config::default();
@@ -509,26 +559,53 @@ impl Mount {
             let notifier = session.notifier();
             let (tell, told) = mpsc::channel::<Vec<Announce>>();
             *crate::panic::lock(&shared.tell) = Some(tell);
-            let announcer = Arc::clone(&shared);
-            std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&announcer, &notifier, told))?;
-            let session = session.spawn()?;
+            let session = match session.spawn() {
+                Ok(session) => session,
+                Err(e) => {
+                    *crate::panic::lock(&shared.tell) = None;
+                    return Err(e);
+                }
+            };
+            let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
+            let saying = Arc::clone(&shared);
+            let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
             shared.sweep();
-            Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)) }))
+            Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)), announcer: Mutex::new(Some(announcer)), connection }))
         })
         .await
         .map_err(other)?
     }
 
     /// Takes the mount off. The folder on disk then shows the downloaded files alone.
+    ///
+    /// In this order: the announcer stops while the mount still answers it (what it says by
+    /// path would otherwise land in the folder itself), every open that waits for a download
+    /// is failed, and the connection is aborted before the mount is detached — a program that
+    /// still holds a file of the mount open would otherwise keep the session, and this call,
+    /// waiting for it.
     pub fn stop(&self) {
-        *crate::panic::lock(&self.shared.tell) = None;
-        if let Some(session) = crate::panic::lock(&self.session).take() {
-            if let Err(e) = session.umount_and_join() {
-                tracing::warn!("taking the mount off {}: {e}", self.shared.root.path.display());
-            }
-            // What a download that was cut off left: the folder is the user's again.
-            let _ = fs::remove_dir_all(self.shared.under(Path::new(STAGING)));
+        let Some(session) = crate::panic::lock(&self.session).take() else { return };
+        let s = &self.shared;
+        s.stopping.store(true, Ordering::SeqCst);
+        *crate::panic::lock(&s.tell) = None;
+        if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
+            let _ = announcer.join();
         }
+        let waiting: Vec<Waiter> = crate::panic::lock(&s.fills).drain().flat_map(|(_, waiting)| waiting).collect();
+        waiting.into_iter().for_each(|waiter| waiter.fail(libc::EIO));
+        if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
+            tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", s.root.path.display());
+            // Not waited for: it ends when the last program lets go of the mount.
+            std::thread::spawn(move || {
+                let _ = session.umount_and_join();
+            });
+            return;
+        }
+        if let Err(e) = session.umount_and_join() {
+            tracing::warn!("taking the mount off {}: {e}", s.root.path.display());
+        }
+        // What a download that was cut off left: the folder is the user's again.
+        let _ = fs::remove_dir_all(s.under(Path::new(STAGING)));
     }
 
     /// The folder under the mount, for what must not go through the mount: a walk of what is
@@ -551,29 +628,33 @@ impl Mount {
         let steps: Vec<Step> =
             store.changed_ids()?.into_iter().map(|id| Step { old: placed(Table::Items, &id), new: placed(Table::Staging, &id), id }).collect();
         let s = &self.shared;
-        let mut told = Vec::new();
+        // The copy of item `id` at `rel`, or nothing: a file that is not that item's download
+        // is never moved or removed.
+        let ours = |rel: &Path, id: &str, kind: Kind| match kind {
+            Kind::File => s.has_copy(rel, id),
+            Kind::Folder => fs::symlink_metadata(s.under(rel)).is_ok_and(|m| m.is_dir()),
+        };
+        let (mut told, mut unpinned) = (Vec::new(), Vec::new());
         for step in &steps {
             match (&step.old, &step.new) {
                 (Some((old, was)), None) => {
                     if old.kind == Kind::File {
                         remove_copy(&s.under(was), &step.id);
                     }
-                    if crate::panic::lock(&s.pins).remove(&step.id) {
-                        store.set_pin(&step.id, false)?;
-                    }
-                    told.push(Announce::Gone(was.clone(), old.kind, step.id.clone()));
+                    unpinned.push(step.id.clone());
+                    told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
                 }
-                (None, Some((new, now))) => told.push(Announce::Came(now.clone(), new.kind)),
+                (None, Some((new, now))) => told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone())),
                 (Some((old, was)), Some((new, now))) => {
                     if step.content_changed() {
                         remove_copy(&s.under(was), &step.id);
-                    } else if was != now && fs::symlink_metadata(s.under(was)).is_ok() && fs::symlink_metadata(s.under(now)).is_err() {
+                    } else if was != now && ours(was, &step.id, old.kind) && fs::symlink_metadata(s.under(now)).is_err() {
                         let _ = s.under(now).parent().map(fs::create_dir_all);
                         let _ = fs::rename(s.under(was), s.under(now));
                     }
                     if was != now {
-                        told.push(Announce::Gone(was.clone(), old.kind, step.id.clone()));
-                        told.push(Announce::Came(now.clone(), new.kind));
+                        told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
+                        told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
                     } else if new.kind == Kind::File {
                         told.push(Announce::Changed(now.clone(), step.id.clone()));
                     }
@@ -581,14 +662,26 @@ impl Mount {
                 (None, None) => {}
             }
         }
-        crate::panic::lock(&s.pending).extend(told);
+        // Only this cycle's: what an earlier one left was never committed.
+        *crate::panic::lock(&s.pending) = (told, unpinned);
         Ok(steps)
     }
 
     /// The cycle [`follow`](Self::follow) followed is committed: its changes are announced
     /// through the mount, and what is pinned and not downloaded is downloaded.
     pub fn committed(&self) {
-        let told = std::mem::take(&mut *crate::panic::lock(&self.shared.pending));
+        let (told, unpinned) = std::mem::take(&mut *crate::panic::lock(&self.shared.pending));
+        // An item that is gone keeps nothing on this device.
+        let dropped: Vec<String> = {
+            let mut pins = crate::panic::lock(&self.shared.pins);
+            unpinned.into_iter().filter(|id| pins.remove(id)).collect()
+        };
+        if !dropped.is_empty() {
+            let store = self.shared.store.clone();
+            self.shared.runtime.spawn(async move {
+                let _ = store.call(move |s| dropped.iter().try_for_each(|id| s.set_pin(id, false))).await;
+            });
+        }
         self.shared.announce(told);
         self.shared.sweep();
     }
@@ -609,7 +702,7 @@ impl Mount {
         if row.kind != Kind::File {
             return Err(Refused::NotOurs);
         }
-        if self.shared.has_copy(&rel) {
+        if self.shared.has_copy(&rel, &row.id) {
             return Ok(());
         }
         let (tell, told) = oneshot::channel();
@@ -640,7 +733,7 @@ impl Mount {
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
             for (file, at) in s.files_below(&row) {
-                if !s.has_copy(&at) {
+                if !s.has_copy(&at, &file.id) {
                     continue;
                 }
                 if s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
@@ -704,7 +797,7 @@ impl Mount {
     pub fn downloaded_under(&self, path: &Path) -> Result<(u64, u64), Refused> {
         let (row, _) = self.item(path)?;
         let s = &self.shared;
-        let sizes = s.files_below(&row).into_iter().filter_map(|(_, at)| fs::symlink_metadata(s.under(&at)).ok().filter(fs::Metadata::is_file));
+        let sizes = s.files_below(&row).into_iter().filter_map(|(file, at)| s.copy(&at, &file.id));
         Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks() * 512)))
     }
 }
@@ -734,21 +827,35 @@ fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: mpsc::Receiv
     let path = |rel: &Path| CString::new(shared.root.path.join(rel).into_os_string().into_encoded_bytes()).unwrap_or_default();
     let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tell = |told: Told| *crate::panic::lock(&shared.told) = Some(told);
+    // The node of an item the kernel was told: the root is always known.
+    let node = |id: &Option<String>| -> Option<u64> {
+        let id = id.as_deref()?;
+        if shared.read(|s| s.root_item_id()).flatten().as_deref() == Some(id) {
+            return Some(1);
+        }
+        crate::panic::lock(&shared.nodes).inos.get(id).copied()
+    };
     for a in told.into_iter().flatten() {
+        // The mount is going: nothing more is said through it.
+        if shared.stopping.load(Ordering::SeqCst) {
+            break;
+        }
         // SAFETY: plain system calls on a path this function owns.
         unsafe {
             match a {
-                Announce::Came(rel, kind) => {
-                    tell(Told::Came(name(&rel)));
+                Announce::Came(rel, kind, above) => {
+                    // A directory the kernel was never told has nobody watching it.
+                    let Some(parent) = node(&above) else { continue };
+                    tell(Told::Came { parent, name: name(&rel) });
                     match kind {
                         Kind::Folder => libc::mkdir(path(&rel).as_ptr(), 0o755),
                         Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
                     };
                 }
-                Announce::Gone(rel, kind, id) => {
+                Announce::Gone(rel, kind, id, above) => {
                     // A name the kernel was never told has nobody watching it go.
-                    let Some(ino) = crate::panic::lock(&shared.nodes).inos.get(&id).copied() else { continue };
-                    tell(Told::Gone { name: name(&rel), ino, kind });
+                    let (Some(parent), Some(ino)) = (node(&above), crate::panic::lock(&shared.nodes).inos.get(&id).copied()) else { continue };
+                    tell(Told::Gone { parent, name: name(&rel), ino, kind });
                     match kind {
                         Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
                         Kind::File => libc::unlink(path(&rel).as_ptr()),
@@ -818,8 +925,8 @@ impl Filesystem for Served {
     fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         if self.announcing(req) {
             match &*crate::panic::lock(&self.0.told) {
-                Some(Told::Came(came)) if name == came.as_str() => return reply.error(Errno::ENOENT),
-                Some(Told::Gone { name: gone, ino, kind }) if name == gone.as_str() => {
+                Some(Told::Came { parent: in_, name: came }) if *in_ == parent.0 && name == came.as_str() => return reply.error(Errno::ENOENT),
+                Some(Told::Gone { parent: in_, name: gone, ino, kind }) if *in_ == parent.0 && name == gone.as_str() => {
                     let row = Row { id: String::new(), parent_id: None, name: gone.clone(), kind: *kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
                     return reply.entry(&Duration::ZERO, &self.0.attr(&row, *ino), Generation(0));
                 }
@@ -863,7 +970,7 @@ impl Filesystem for Served {
         let (Some(row), Some(rel)) = (s.id(ino).and_then(|id| s.row(&id)), s.rel_of_ino(ino.0)) else {
             return reply.error(Errno::ENOENT);
         };
-        if s.has_copy(&rel) {
+        if s.has_copy(&rel, &row.id) {
             return match s.open_downloaded(&rel) {
                 Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
                 Err(e) => reply.error(errno(&e)),
