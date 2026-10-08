@@ -1,0 +1,19 @@
+[package]
+name = "konedrive-fuse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The folder as a FUSE mount: stage 1, read-only. Built only when asked for (`-p konedrive-fuse`);
+# nothing that ships uses it yet.
+
+[dependencies]
+fuser = { version = "0.18", default-features = false }
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
+konedrive-tree = { path = "../konedrive-tree" }
+konedrived = { path = "../konedrived" }
+libc.workspace = true
+tokio.workspace = true
+xattr.workspace = true

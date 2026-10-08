@@ -8,6 +8,8 @@ work=$(mktemp -d "$here/target/run.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 {
     echo '#!/bin/sh'
+    # The stage 1 binary, when it is built: `cargo build --release -p konedrive-fuse`.
+    echo "export KFUSE='$here/../../target/release/konedrive-fuse'"
     echo "bash '$here/guest.sh' '$here/target/release' $*"
 } > "$work/inner.sh"
 chmod +x "$work/inner.sh"

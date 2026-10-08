@@ -38,6 +38,12 @@ impl TreeStore {
         Ok(rows)
     }
 
+    /// The row named `name` directly below `parent`, if there is one.
+    pub fn child(&self, table: Table, parent: &str, name: &str) -> Result<Option<Row>, TreeError> {
+        let sql = format!("SELECT {ROW_COLUMNS} FROM {} WHERE parent_id = ?1 AND name = ?2", self.source(table).rows());
+        Ok(self.conn.prepare_cached(&sql)?.query_row([parent, name], row_from).optional()?)
+    }
+
     pub fn descendants(&self, table: Table, id: &str) -> Result<Vec<String>, TreeError> {
         descendants_in(&self.conn, self.source(table), id)
     }

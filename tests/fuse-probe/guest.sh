@@ -320,6 +320,51 @@ arrivals() {
     stop
 }
 
+# Stage 1: the read-only mount of crates/konedrive-fuse over a store seeded from a directory.
+ro() {
+    echo "==== stage 1: read-only mount over the folder, names from the store ===="
+    local k="$KFUSE" c=$W/cloud f=$W/OneDrive st=$W/state/fuse-tree.sqlite p
+    mkdir -p $c/docs/deep $f $W/state
+    echo "hello from the cloud" > $c/a.txt
+    echo "second" > $c/docs/b.txt
+    head -c 1048576 /dev/urandom > $c/docs/deep/c.bin
+    head -c 209715200 /dev/urandom > $c/big.bin
+    echo "will be damaged" > $c/damaged.txt
+    chown -R 1000:1000 $c $f $W/state
+    $U "$k" seed $st $c
+    echo "damaged in transit" > $c/damaged.txt
+    kmount() {
+        $U "$k" mount $f $st --local-dir $c 2> $W/logs/ro.err &
+        p=$!
+        for _ in $(seq 50); do mounted $f && return 0; sleep 0.1; done
+        echo "MOUNT FAILED: $(cat $W/logs/ro.err)"; return 1
+    }
+    state() { $U python3 -c "import os,sys; print(os.getxattr(sys.argv[1],'user.konedrive.state').decode())" "$1"; }
+    kmount || return
+    echo "type: $(awk -v m=$f '$2==m{print $3}' /proc/self/mounts)"
+    echo "listing: $($U find $f | sort | tr '\n' ' ')"
+    echo "sizes: $($U stat -c '%n=%s/%b' $f/a.txt $f/big.bin | tr '\n' ' ')"
+    echo "state of a.txt before: $(state $f/a.txt)"
+    echo "a.txt: $($U cat $f/a.txt)"
+    echo "state of a.txt after: $(state $f/a.txt)"
+    $U cat $f/docs/deep/c.bin > /dev/null & $U cat $f/docs/deep/c.bin > /dev/null & wait $! 
+    echo "c.bin equal to the cloud's: $($U cmp $f/docs/deep/c.bin $c/docs/deep/c.bin && echo yes)"
+    s=$(date +%s.%N)
+    echo "big.bin equal to the cloud's: $($U cmp $f/big.bin $c/big.bin && echo yes), first read took $(echo "$(date +%s.%N) - $s" | bc) s"
+    echo "a file whose content does not match its hash: $($U cat $f/damaged.txt 2>&1)"
+    echo "writes: $($U sh -c "touch $f/new; rm $f/a.txt; echo x >> $f/a.txt; mkdir $f/d; mv $f/a.txt $f/z" 2>&1 | sed 's/.*: //' | sort | uniq -c | tr '\n' ' ')"
+    kill -KILL $p; wait $p 2> /dev/null
+    echo "daemon killed: $($U ls $f 2>&1)"
+    $U fusermount3 -u -z $f
+    echo "the folder itself: $($U find $f -type f | sort | tr '\n' ' ')"
+    echo "attributes of a downloaded file: $($U python3 -c "import os,sys; print({k: os.getxattr(sys.argv[1],k).decode() for k in os.listxattr(sys.argv[1])})" $f/a.txt)"
+    mv $c $c.away
+    kmount || return
+    echo "mounted again, the cloud gone: a.txt: $($U cat $f/a.txt); b.txt: $($U cat $f/docs/b.txt 2>&1)"
+    echo "states: a.txt $(state $f/a.txt), b.txt $(state $f/docs/b.txt)"
+    $U fusermount3 -u $f; wait $p 2> /dev/null
+}
+
 subtype() {
     echo "==== mount type ===="
     start || return

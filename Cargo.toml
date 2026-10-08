@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-helper", "crates/konedrive-proto", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree", "tests/write-account"]
+members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-helper", "crates/konedrive-proto", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree", "tests/write-account", "crates/konedrive-fuse"]
 # The test-account harness is built only when asked for (`-p konedrive-write-test`, or
 # `--workspace`): a plain `cargo build --release` builds what ships (safety review m11).
 default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-helper", "crates/konedrive-proto", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree"]
