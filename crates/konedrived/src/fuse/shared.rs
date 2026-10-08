@@ -48,6 +48,9 @@ pub(super) struct Shared {
     /// What programs hold open, by the handle the kernel was given.
     pub(super) handles: Mutex<HashMap<u64, Handle>>,
     pub(super) next_handle: AtomicU64,
+    /// What each open directory held when it was first listed, by handle: a program that
+    /// reads a directory in parts reads one listing, whatever changes meanwhile.
+    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::local::Entry>>>>,
     /// How many bytes of each item that is not downloaded were read as ranges.
     pub(super) asked: Mutex<HashMap<String, u64>>,
     /// Once that many bytes of a file were read as ranges, the file is downloaded whole

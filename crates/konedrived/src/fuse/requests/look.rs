@@ -3,16 +3,17 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use std::time::Duration;
 
-use fuser::{Errno, FileType, Generation, INodeNo, ReplyAttr, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyXattr, Request};
+use fuser::{Errno, FileHandle, FileType, Generation, INodeNo, ReplyAttr, ReplyOpen, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyXattr, Request};
 use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE, XATTR_SYNC};
 use konedrive_tree::{Kind, Placement, Row};
 
 use super::Requests;
 use crate::fuse::announce::Told;
 use crate::fuse::attr::TTL;
-use crate::fuse::local::Entry;
+use crate::fuse::local::{Dir, Entry};
 use crate::fuse::shared::errno;
 
 impl Requests {
@@ -50,11 +51,24 @@ impl Requests {
         }
     }
 
-    pub(super) fn listed(&self, ino: INodeNo, offset: u64, mut reply: ReplyDirectory) {
+    /// What the open directory `fh` holds: listed at its first read, and the same for every
+    /// part of the listing after it.
+    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Dir, Arc<Vec<Entry>>)> {
         let s = &self.0;
-        let Some(dir) = s.dir(ino.0) else { return reply.ok() };
-        for (i, entry) in s.entries(&dir).iter().enumerate().skip(offset as usize) {
-            let child = s.ino_of(entry, ino.0);
+        let dir = s.dir(ino.0)?;
+        let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
+        let entries = kept.unwrap_or_else(|| {
+            let entries = Arc::new(s.entries(&dir));
+            crate::panic::lock(&s.listings).insert(fh.0, Arc::clone(&entries));
+            entries
+        });
+        Some((dir, entries))
+    }
+
+    pub(super) fn listed(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+        let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
+        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
+            let child = self.0.ino_of(entry, ino.0);
             let kind = if entry.is_dir() { FileType::Directory } else { FileType::RegularFile };
             if reply.add(INodeNo(child), i as u64 + 1, kind, entry.name()) {
                 break;
@@ -63,16 +77,26 @@ impl Requests {
         reply.ok();
     }
 
-    pub(super) fn listed_plus(&self, ino: INodeNo, offset: u64, mut reply: ReplyDirectoryPlus) {
+    pub(super) fn listed_plus(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
         let s = &self.0;
-        let Some(dir) = s.dir(ino.0) else { return reply.ok() };
-        for (i, entry) in s.entries(&dir).iter().enumerate().skip(offset as usize) {
+        let Some((dir, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
+        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
             let child = s.ino_of(entry, ino.0);
             let attr = s.attr_of(entry, child, &dir.rel.join(entry.name()));
             if reply.add(INodeNo(child), i as u64 + 1, entry.name(), &TTL, &attr, Generation(0)) {
                 break;
             }
         }
+        reply.ok();
+    }
+
+    pub(super) fn directory_opened(&self, reply: ReplyOpen) {
+        let fh = self.0.next_handle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        reply.opened(FileHandle(fh), fuser::FopenFlags::empty());
+    }
+
+    pub(super) fn directory_closed(&self, fh: FileHandle, reply: ReplyEmpty) {
+        crate::panic::lock(&self.0.listings).remove(&fh.0);
         reply.ok();
     }
 

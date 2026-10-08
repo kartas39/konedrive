@@ -26,7 +26,9 @@ impl Shared {
     pub(super) fn make(&self, parent: u64, name: &str, dir: bool, open: bool) -> Result<Made, Errno> {
         self.may_change()?;
         let above = self.dir(parent).ok_or(Errno::ENOENT)?;
-        if daemon_owned(name.as_ref()) {
+        // No trash directory of a file manager either: what is removed here goes to
+        // OneDrive's recycle bin, and a trash inside the folder would be uploaded.
+        if daemon_owned(name.as_ref()) || (dir && parent == 1 && name.starts_with(".Trash")) {
             return Err(Errno::EPERM);
         }
         if self.entry(&above, name).is_some() {

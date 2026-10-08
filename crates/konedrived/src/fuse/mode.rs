@@ -47,7 +47,12 @@ impl Mount {
     /// its sync uploads. Whether the modes shown changed with that.
     pub fn read_write(&self, wake: Arc<dyn Fn() + Send + Sync>) -> bool {
         *crate::panic::lock(&self.shared.wake) = Some(wake);
-        !self.shared.writable.swap(true, Ordering::SeqCst)
+        let changed = !self.shared.writable.swap(true, Ordering::SeqCst);
+        if changed {
+            // What a lost row left unsent is found again ([`super::settle`]).
+            self.shared.change(|s| s.settle());
+        }
+        changed
     }
 
     /// The folder takes no change from now on. Whether the modes shown changed with that.

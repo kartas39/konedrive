@@ -81,7 +81,7 @@ pub(super) fn carried(path: &Path) -> Option<String> {
 
 impl Shared {
     /// The object without an item at `rel` in the folder under the mount.
-    fn local(&self, rel: &Path) -> Option<Local> {
+    pub(super) fn local(&self, rel: &Path) -> Option<Local> {
         let name = rel.file_name()?;
         if daemon_owned(name) {
             return None;

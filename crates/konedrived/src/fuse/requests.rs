@@ -91,12 +91,20 @@ impl Filesystem for Requests {
         self.synced(fh, reply)
     }
 
-    fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, reply: ReplyDirectory) {
-        self.listed(ino, offset, reply)
+    fn opendir(&self, _req: &Request, _ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        self.directory_opened(reply)
     }
 
-    fn readdirplus(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, reply: ReplyDirectoryPlus) {
-        self.listed_plus(ino, offset, reply)
+    fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
+        self.directory_closed(fh, reply)
+    }
+
+    fn readdir(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
+        self.listed(ino, fh, offset, reply)
+    }
+
+    fn readdirplus(&self, _req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectoryPlus) {
+        self.listed_plus(ino, fh, offset, reply)
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {

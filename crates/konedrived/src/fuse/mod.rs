@@ -40,6 +40,7 @@ mod pins;
 mod read;
 mod recorder;
 mod remove;
+mod settle;
 mod rename;
 mod requests;
 mod shared;

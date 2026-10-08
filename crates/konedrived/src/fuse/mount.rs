@@ -86,6 +86,7 @@ impl Mount {
                 unfinished: Mutex::default(),
                 handles: Mutex::default(),
                 next_handle: AtomicU64::new(1),
+                listings: Mutex::default(),
                 asked: Mutex::default(),
                 download_after,
                 readers: Mutex::default(),
