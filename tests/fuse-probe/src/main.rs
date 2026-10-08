@@ -642,7 +642,13 @@ fn main() {
     let drop_backing = opt("--drop-backing").is_some_and(|v| v == "1");
     let subtype = opt("--subtype");
     let [backing, mountpoint] = <[OsString; 2]>::try_from(args).expect("fuse-probe <backing> <mountpoint> [options]");
-    let backing = PathBuf::from(OsString::from_vec(backing.into_vec()));
+    let mut backing = PathBuf::from(OsString::from_vec(backing.into_vec()));
+    // Mounted over the backing directory itself: it is opened before the mount hides it and is
+    // reached through that descriptor from then on, never through the mount.
+    if backing == Path::new(&mountpoint) {
+        let fd = File::open(&backing).unwrap().into_raw_fd();
+        backing = PathBuf::from(format!("/proc/self/fd/{fd}"));
+    }
 
     let mut st = State { next: 1, ..State::default() };
     st.paths.insert(1, PathBuf::new());

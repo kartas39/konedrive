@@ -281,6 +281,35 @@ EOF
     stop
 }
 
+over() {
+    echo "==== mounted over the directory that holds the files ===="
+    local d=$W/over
+    mkdir $d
+    chown 1000:1000 $d
+    $U sh -c "echo local > $d/local.txt"
+    $U "$bin/fuse-probe" $d $d --cloud 3 --cloud-size 5 2> $W/logs/over.err &
+    p=$!
+    sleep 1
+    mounted $d || { echo "MOUNT FAILED: $(cat $W/logs/over.err)"; return; }
+    echo "mounted, through the mount: $($U sh -c "ls $d $d/cloud" | tr '\n' ' ')"
+    echo "a file not downloaded, read: $($U cat $d/cloud/f00000.bin)"
+    $U sh -c "echo new > $d/new.txt; mkdir $d/sub; echo deep > $d/sub/deep.txt; mv $d/local.txt $d/sub/"
+    $U dd if=/dev/zero of=$d/big bs=1M count=200 conv=fdatasync 2> /dev/null
+    echo "after writes, through the mount: $($U find $d -type f | sort | tr '\n' ' ')"
+    kill -KILL $p
+    wait $p 2> /dev/null
+    echo "daemon killed: $($U ls $d 2>&1)"
+    $U fusermount3 -u -z $d
+    echo "unmounted, the directory itself: $($U find $d -type f | sort | tr '\n' ' ')"
+    $U sh -c "echo offline > $d/offline.txt"
+    $U "$bin/fuse-probe" $d $d --cloud 3 --cloud-size 5 2> $W/logs/over.err &
+    p=$!
+    sleep 1
+    echo "mounted again: $($U find $d -type f | sort | tr '\n' ' ')"
+    $U fusermount3 -u $d
+    wait $p 2> /dev/null
+}
+
 subtype() {
     echo "==== mount type ===="
     start || return
