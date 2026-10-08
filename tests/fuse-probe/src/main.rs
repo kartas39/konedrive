@@ -81,6 +81,8 @@ struct Probe {
     ttl: Duration,
     keep_cache: bool,
     direct_io: bool,
+    /// Drop the backing file's cached pages once the mount's own cache holds them.
+    drop_backing: bool,
     fill_ms: u64,
     log: Option<Arc<Mutex<File>>>,
 }
@@ -415,7 +417,10 @@ impl Filesystem for Probe {
         let size = self.st.lock().unwrap().cloud.get(&rel).copied();
         self.log(format_args!("open {} flags={:#x} cloud={}", rel.display(), flags.0, size.is_some()));
         let Some(size) = size else {
-            return match self.open_backing(&rel, flags.0) {
+            // A file opened only for reading is read past the backing file's cache: the mount's
+            // own cache then holds the one copy.
+            let direct = self.drop_backing && flags.0 & libc::O_ACCMODE == libc::O_RDONLY;
+            return match self.open_backing(&rel, flags.0 | if direct { libc::O_DIRECT } else { 0 }) {
                 Ok(fd) => reply.opened(FileHandle(fd as u64), self.fopen_flags()),
                 Err(e) => reply.error(e),
             };
@@ -487,7 +492,16 @@ impl Filesystem for Probe {
     ) {
         self.gate();
         self.log(format_args!("read ino={} fh={} off={offset} len={size}", ino.0, fh.0));
-        let mut buf = vec![0u8; size as usize];
+        // Page-aligned, so that a backing file opened with O_DIRECT accepts it.
+        let layout = std::alloc::Layout::from_size_align((size as usize).next_multiple_of(4096).max(4096), 4096).unwrap();
+        struct Aligned(*mut u8, std::alloc::Layout);
+        impl Drop for Aligned {
+            fn drop(&mut self) {
+                unsafe { std::alloc::dealloc(self.0, self.1) }
+            }
+        }
+        let mem = Aligned(unsafe { std::alloc::alloc(layout) }, layout);
+        let buf = unsafe { std::slice::from_raw_parts_mut(mem.0, layout.size()) };
         let mut got = 0;
         while got < buf.len() {
             match borrow(fh).read_at(&mut buf[got..], offset + got as u64) {
@@ -496,7 +510,7 @@ impl Filesystem for Probe {
                 Err(e) => return reply.error(errno(&e)),
             }
         }
-        reply.data(&buf[..got]);
+        reply.data(&buf[..got.min(size as usize)]);
     }
 
     fn write(
@@ -551,7 +565,12 @@ impl Filesystem for Probe {
         self.log(format_args!("fsync ino={} fh={}", ino.0, fh.0));
         let f = borrow(fh);
         match if datasync { f.sync_data() } else { f.sync_all() } {
-            Ok(()) => reply.ok(),
+            Ok(()) => {
+                if self.drop_backing {
+                    unsafe { libc::posix_fadvise(fh.0 as i32, 0, 0, libc::POSIX_FADV_DONTNEED) };
+                }
+                reply.ok()
+            }
             Err(e) => reply.error(errno(&e)),
         }
     }
@@ -620,6 +639,7 @@ fn main() {
     let threads: usize = opt("--threads").map_or(4, |v| v.parse().unwrap());
     let keep_cache = opt("--keep-cache").map_or(true, |v| v == "1");
     let direct_io = opt("--direct-io").is_some_and(|v| v == "1");
+    let drop_backing = opt("--drop-backing").is_some_and(|v| v == "1");
     let subtype = opt("--subtype");
     let [backing, mountpoint] = <[OsString; 2]>::try_from(args).expect("fuse-probe <backing> <mountpoint> [options]");
     let backing = PathBuf::from(OsString::from_vec(backing.into_vec()));
@@ -641,6 +661,7 @@ fn main() {
         ttl: Duration::from_millis(ttl_ms),
         keep_cache,
         direct_io,
+        drop_backing,
         fill_ms,
         log: log.map(|p| Arc::new(Mutex::new(File::create(p).unwrap()))),
     };

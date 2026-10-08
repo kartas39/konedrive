@@ -204,6 +204,27 @@ t4() {
     bench_io "ext4 again" $W/plain
 }
 
+reread() { # reread label count-MiB [probe options]
+    local label=$1 n=$2 f=$W/mnt/bench.bin pass
+    shift 2
+    start --log $W/logs/reread.log "$@" || return
+    $U dd if=/dev/zero of=$f bs=1M count=$n conv=fdatasync 2> /dev/null
+    echo 3 > /proc/sys/vm/drop_caches
+    for pass in "from disk" again "third time"; do
+        : > $W/logs/reread.log
+        echo "$label read, $pass: $($U dd if=$f of=/dev/null bs=1M 2>&1 | rate); requests to the daemon: $(grep -c '^[0-9]* read' $W/logs/reread.log); backing file cached: $(fincore -n -o RES $W/backing/bench.bin)"
+    done
+    $U rm -f $f
+    stop
+}
+
+t4b() {
+    echo "==== T4b second read of a 4 GiB file in a guest with 8 GiB ===="
+    reread "1 GiB, cached twice" 1024
+    reread "4 GiB, cached twice" 4096
+    reread "4 GiB, backing cache dropped" 4096 --drop-backing 1
+}
+
 timeit() { # timeit label command...
     local label=$1 s e
     shift
