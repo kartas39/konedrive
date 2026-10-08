@@ -80,9 +80,9 @@ These rules hold for every change:
 2. **Tests are never in a source file.** The unit tests of `x.rs` are in `x/tests.rs`, or in
    `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
 3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
-   directories before it in this order: `config/`, `account/`, `helper/`, `folder/`,
-   `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/`,
-   `daemon/`, `dbus/`. And `remote/` does not use `upload/`. Test code is exempt. What a lower
+   directories before it in this order: `config/`, `account/`, `folder/`,
+   `conditions/`, `status/`, `hydration/`, `local/`, `fuse/`, `upload/`, `remote/`, `desktop/`,
+   `sync/`, `daemon/`, `dbus/`. And `remote/` does not use `upload/`. Test code is exempt. What a lower
    directory needs from a higher one, it asks through a trait the higher one implements.
 4. **One D-Bus interface, one file** in `crates/konedrived/src/dbus/`, named like its XML in
    `dbus/`.
