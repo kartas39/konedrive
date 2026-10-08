@@ -20,7 +20,7 @@ use super::announce::{announce, Announce};
 use super::fill::{Waiter, OLD_STAGING};
 use super::lock::{clear_stale, set_tree};
 use super::nodes::Nodes;
-use super::served::Served;
+use super::requests::Requests;
 use super::shared::{other, Shared};
 
 /// A folder served as a mount, for as long as this is held.
@@ -102,7 +102,7 @@ impl Mount {
             ];
             config.n_threads = Some(4);
             config.clone_fd = true;
-            let session = fuser::Session::new(Served(Arc::clone(&shared)), &root.path, &config)?;
+            let session = fuser::Session::new(Requests(Arc::clone(&shared)), &root.path, &config)?;
             let notifier = session.notifier();
             let (tell, told) = mpsc::channel::<Vec<Announce>>();
             *crate::panic::lock(&shared.tell) = Some(tell);

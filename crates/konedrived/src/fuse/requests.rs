@@ -32,9 +32,9 @@ pub(super) fn caller(req: &Request) -> String {
 }
 
 /// The mount's requests.
-pub(super) struct Served(pub(super) Arc<Shared>);
+pub(super) struct Requests(pub(super) Arc<Shared>);
 
-impl Served {
+impl Requests {
     fn announcing(&self, req: &Request) -> bool {
         req.pid() as i32 == self.0.announcer.load(Ordering::SeqCst)
     }
@@ -66,7 +66,7 @@ impl Served {
     }
 }
 
-impl Filesystem for Served {
+impl Filesystem for Requests {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> io::Result<()> {
         let _ = config.set_max_readahead(1 << 20);
         let _ = config.add_capabilities(InitFlags::FUSE_DO_READDIRPLUS | InitFlags::FUSE_READDIRPLUS_AUTO | InitFlags::FUSE_PARALLEL_DIROPS);

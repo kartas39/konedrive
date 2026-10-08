@@ -214,7 +214,7 @@ the folder on disk holding only what is downloaded.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
 - `shared.rs` — `Shared`: the folder under the mount, the store read for the requests, and
   what is under way; a path's row.
-- `served.rs` — the mount's requests (`Filesystem`): looked up, listed, opened, read; every
+- `requests.rs` — the mount's requests (`Filesystem`): looked up, listed, opened, read; every
   change from a program refused.
 - `nodes.rs` — the node ids the kernel knows, each an item and its place. `[tests]`
 - `attr.rs` — what the mount says of an item: kind, size, times, modes.
