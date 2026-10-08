@@ -73,6 +73,19 @@ pub trait ContentSource: Send + Sync {
     /// answers a `416` this way, and a file read past its end is empty.
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError>;
 
+    /// Bytes `from`..`end` of `item_id` for a program that reads the file, not for a download
+    /// of it: a folder served through FUSE answers a read of a file that is not downloaded
+    /// with them (`crate::fuse`). Nothing is verified against them, so only `served_from`
+    /// and the stream of the answer count; a source may leave the rest empty. A source that
+    /// asks for an address before it asks for the bytes may remember the address between
+    /// reads ([`forget`](Self::forget)).
+    async fn read_range(&self, item_id: &str, from: u64, end: u64) -> Result<Fetched, SourceError> {
+        self.fetch(item_id, from, Some(end)).await
+    }
+
+    /// The item changed or is gone: whatever the source remembered of it is dropped.
+    fn forget(&self, _item_id: &str) {}
+
     /// How far a download in parts has come as a whole: `done` bytes of the
     /// file's `size` are on disk. No one of its streams can tell, so the
     /// download says it here; a source that shows progress

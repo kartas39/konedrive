@@ -238,6 +238,14 @@ impl ContentSource for Replaceable {
         self.now().fetch(item_id, from, end).await
     }
 
+    async fn read_range(&self, item_id: &str, from: u64, end: u64) -> Result<Fetched, SourceError> {
+        self.now().read_range(item_id, from, end).await
+    }
+
+    fn forget(&self, item_id: &str) {
+        self.now().forget(item_id);
+    }
+
     fn progress(&self, done: u64, size: u64) {
         self.now().progress(done, size);
     }

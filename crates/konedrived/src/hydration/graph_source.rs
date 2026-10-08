@@ -14,16 +14,61 @@ use konedrive_graph::quickxor::decode_base64;
 
 pub struct GraphSource {
     drive: DriveClient,
+    /// The download address of each item a program reads, and when it was given: Graph hands
+    /// out an address that works for about an hour, and a read of 32 KiB should not cost a
+    /// request for one each time.
+    addresses: std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>,
 }
+
+/// How long a download address is used before a new one is asked for. Graph's last about an
+/// hour; one that stops working sooner is asked for again at once.
+const ADDRESS_KEPT: Duration = Duration::from_secs(30 * 60);
 
 impl GraphSource {
     pub fn new(drive: DriveClient) -> Self {
-        Self { drive }
+        Self { drive, addresses: Default::default() }
     }
 }
 
 #[async_trait]
 impl ContentSource for GraphSource {
+    async fn read_range(&self, item_id: &str, from: u64, end: u64) -> Result<Fetched, SourceError> {
+        let remembered = || {
+            let addresses = crate::panic::lock(&self.addresses);
+            addresses.get(item_id).filter(|(_, since)| since.elapsed() < ADDRESS_KEPT).map(|(address, _)| address.clone())
+        };
+        // The remembered address first; when it does not serve, a fresh one, once.
+        for address in [remembered(), None] {
+            let (address, fresh) = match address {
+                Some(address) => (address, false),
+                None => {
+                    let item = self.drive.item(item_id).await.map_err(source_error)?;
+                    if item.deleted.is_some() || item.file.is_none() {
+                        return Err(SourceError::NotFound(format!("{item_id} is not a file in OneDrive any more")));
+                    }
+                    let address = match &item.download_url {
+                        Some(url) => url.clone(),
+                        None => self.drive.content_url(item_id).await.map_err(source_error)?,
+                    };
+                    crate::panic::lock(&self.addresses).insert(item_id.to_owned(), (address.clone(), std::time::Instant::now()));
+                    (address, true)
+                }
+            };
+            match self.drive.download(&address, from, Some(end)).await {
+                Ok(download) => {
+                    return Ok(Fetched { served_from: download.served_from, size: 0, mtime: SystemTime::UNIX_EPOCH, version: None, stream: download.stream })
+                }
+                Err(e) if fresh => return Err(source_error(e)),
+                Err(_) => self.forget(item_id),
+            }
+        }
+        Err(SourceError::Transient(format!("no download address of {item_id} served")))
+    }
+
+    fn forget(&self, item_id: &str) {
+        crate::panic::lock(&self.addresses).remove(item_id);
+    }
+
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let mut fresh_link = false;
         loop {

@@ -419,7 +419,8 @@ impl Shared {
     async fn range(self: &Arc<Self>, row: &Row, from: u64, end: u64) -> Result<Vec<u8>, i32> {
         use tokio::io::AsyncReadExt;
         let _reading = self.reading(&row.id).await;
-        let fetched = self.source.fetch(&row.id, from, Some(end)).await.map_err(|e| {
+        let asked = std::time::Instant::now();
+        let fetched = self.source.read_range(&row.id, from, end).await.map_err(|e| {
             tracing::warn!("a range of {} was not fetched: {e}", row.name);
             libc::EIO
         })?;
@@ -428,7 +429,9 @@ impl Shared {
             return Err(libc::EIO);
         }
         let mut bytes = Vec::with_capacity((end - from) as usize);
+        let answered = asked.elapsed();
         fetched.stream.take(end - from).read_to_end(&mut bytes).await.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        tracing::info!("{} bytes at {from} of {} came from OneDrive in {} ms ({} ms to the answer)", bytes.len(), row.name, asked.elapsed().as_millis(), answered.as_millis());
         Ok(bytes)
     }
 
@@ -817,6 +820,8 @@ impl Mount {
         };
         let (mut told, mut unpinned) = (Vec::new(), Vec::new());
         for step in &steps {
+            // Whatever its source remembered of the item is of what it was.
+            s.source.forget(&step.id);
             match (&step.old, &step.new) {
                 (Some((old, was)), None) => {
                     if old.kind == Kind::File {
