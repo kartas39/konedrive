@@ -310,6 +310,16 @@ over() {
     wait $p 2> /dev/null
 }
 
+arrivals() {
+    echo "==== changes from the cloud, seen by an inotify watch on the directory ===="
+    start --cloud 4 --arrivals 1 || return
+    echo "before: $($U ls $W/mnt/cloud | tr '\n' ' ')"
+    $U "$bin/probe-client" watch $W/mnt/cloud 8
+    echo "after: $($U ls $W/mnt/cloud | tr '\n' ' ')"
+    cat $W/logs/daemon.err
+    stop
+}
+
 subtype() {
     echo "==== mount type ===="
     start || return

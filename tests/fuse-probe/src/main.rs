@@ -20,6 +20,9 @@ use fuser::{
     ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 
+/// The thread that announces arrivals from the cloud through the mount (0: none).
+static ANNOUNCER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
 /// Set by SIGUSR1: from then on every request waits forever, as a hung daemon would.
 static HANG: AtomicBool = AtomicBool::new(false);
 
@@ -333,6 +336,21 @@ impl Filesystem for Probe {
         }
     }
 
+    /// Only the daemon's own announcer comes here: it "creates" through the mount a file that has
+    /// just appeared in the cloud, so that the kernel tells whoever watches the directory.
+    fn mknod(&self, req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {
+        if req.pid() as i32 != ANNOUNCER.load(Ordering::SeqCst) {
+            return reply.error(Errno::EPERM);
+        }
+        let Some(dir) = self.rel(parent) else { return reply.error(Errno::ENOENT) };
+        let rel = dir.join(name);
+        self.st.lock().unwrap().cloud.insert(rel.clone(), 7);
+        match self.attr(&rel) {
+            Ok(a) => reply.entry(&self.ttl, &a, Generation(0)),
+            Err(e) => reply.error(e),
+        }
+    }
+
     fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, mode: u32, _umask: u32, reply: ReplyEntry) {
         self.gate();
         let Some(dir) = self.rel(parent) else { return reply.error(Errno::ENOENT) };
@@ -640,6 +658,7 @@ fn main() {
     let keep_cache = opt("--keep-cache").map_or(true, |v| v == "1");
     let direct_io = opt("--direct-io").is_some_and(|v| v == "1");
     let drop_backing = opt("--drop-backing").is_some_and(|v| v == "1");
+    let arrivals = opt("--arrivals").is_some_and(|v| v == "1");
     let subtype = opt("--subtype");
     let [backing, mountpoint] = <[OsString; 2]>::try_from(args).expect("fuse-probe <backing> <mountpoint> [options]");
     let mut backing = PathBuf::from(OsString::from_vec(backing.into_vec()));
@@ -671,6 +690,28 @@ fn main() {
         fill_ms,
         log: log.map(|p| Arc::new(Mutex::new(File::create(p).unwrap()))),
     };
+    if arrivals {
+        let (st, mnt) = (probe.st.clone(), PathBuf::from(&mountpoint));
+        std::thread::spawn(move || {
+            ANNOUNCER.store(unsafe { libc::gettid() }, Ordering::SeqCst);
+            let pause = || std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(3));
+            // A file appears in the cloud and only the table learns of it.
+            st.lock().unwrap().cloud.insert(PathBuf::from("cloud/silent.bin"), 7);
+            pause();
+            // A file appears and the daemon says so through its own mount.
+            let r = unsafe { libc::mknod(cstr(&mnt.join("cloud/arrived.bin")).as_ptr(), libc::S_IFREG | 0o644, 0) };
+            eprintln!("announce create: {r}");
+            pause();
+            // A file changes in the cloud.
+            let r = unsafe { libc::utimensat(libc::AT_FDCWD, cstr(&mnt.join("cloud/f00002.bin")).as_ptr(), std::ptr::null(), 0) };
+            eprintln!("announce change: {r}");
+            pause();
+            // A file is deleted in the cloud.
+            let r = unsafe { libc::unlink(cstr(&mnt.join("cloud/f00001.bin")).as_ptr()) };
+            eprintln!("announce delete: {r}");
+        });
+    }
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("konedrive".into()), MountOption::RW, MountOption::NoSuid, MountOption::NoDev];
     if let Some(s) = subtype {
