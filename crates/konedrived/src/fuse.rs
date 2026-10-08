@@ -4,8 +4,8 @@
 //! disk holds only the files that are downloaded, and is reached through the descriptor opened
 //! before the mount, never through the mount. A file with no object there is not downloaded:
 //! reading it is answered with the bytes asked for, fetched from OneDrive as a range, and once
-//! more than a threshold of it was read it is downloaded whole, under a staging name, and renamed
-//! into place. Nothing that changes the folder is accepted from a program.
+//! more than a threshold of it was read it is downloaded whole, into a file that has no name
+//! until it is complete and checked, and is then given the item's. Nothing that changes the folder is accepted from a program.
 //!
 //! - The requests of the mount read the store through a connection of their own, opened for
 //!   reading alone: they never wait for the cycle that writes it.
@@ -42,9 +42,12 @@ use crate::hydration::tracked::Tracked;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
 
-/// Where downloads are built, inside the folder. No row has this name, so the mount never
-/// shows it.
-pub const STAGING: &str = ".konedrive-staging";
+/// Where an earlier build of this module built its downloads, inside the folder: taken off at
+/// the mount. A download is built in a file without a name now ([`Shared::fill`]).
+const OLD_STAGING: &str = ".konedrive-staging";
+
+/// How many downloads that failed keep what they have, to be continued from.
+const UNFINISHED: usize = 16;
 
 const TTL: Duration = Duration::from_secs(1);
 
@@ -134,7 +137,7 @@ struct Handle {
 #[derive(Clone)]
 struct Running {
     mark: Arc<AtomicU64>,
-    staged: PathBuf,
+    staged: Arc<File>,
 }
 
 /// How far behind the mark the staging file is surely written: the download writes each piece
@@ -219,6 +222,9 @@ struct Shared {
     fills: Mutex<HashMap<String, Vec<Waiter>>>,
     /// Of those, the ones in one stream: what of each is on disk already.
     running: Mutex<HashMap<String, Running>>,
+    /// The downloads that failed, by item, oldest first: each one's file, which has no name
+    /// and goes with the daemon. The next download of the item continues from its checkpoint.
+    unfinished: Mutex<Vec<(String, Arc<File>)>>,
     /// What programs hold open, by the handle the kernel was given.
     handles: Mutex<HashMap<u64, Handle>>,
     next_handle: AtomicU64,
@@ -388,16 +394,22 @@ impl Shared {
     async fn fill(&self, row: &Row, rel: &Path, class: Class) -> Result<u64, i32> {
         let io_errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
         let mut slot = self.pool.acquire_sized(class, Size::of(row.size)).await;
-        let staging = self.under(Path::new(STAGING));
-        fs::create_dir_all(&staging).map_err(io_errno)?;
-        let name = staging.join(format!("{:016x}", {
-            let mut hash = 0xcbf29ce484222325u64;
-            row.id.bytes().for_each(|b| hash = (hash ^ b as u64).wrapping_mul(0x100000001b3));
-            hash
-        }));
-        // Not emptied: what an earlier download of the item left there is continued from its
-        // checkpoint when it is of the same version.
-        let file = File::options().read(true).write(true).create(true).truncate(false).open(&name).map_err(io_errno)?;
+        // The file a download is built in has no name: it is in the folder's filesystem and in
+        // no directory, so nothing ever lists a file that is not whole, and one the daemon
+        // leaves behind goes by itself. What an earlier download of the item left is
+        // continued from its checkpoint when it is of the same version.
+        let earlier = {
+            let mut unfinished = crate::panic::lock(&self.unfinished);
+            unfinished.iter().position(|(id, _)| *id == row.id).map(|at| unfinished.remove(at).1)
+        };
+        let file = match earlier {
+            Some(file) => file,
+            None => {
+                use std::os::unix::fs::OpenOptionsExt;
+                let opened = File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.under(Path::new("")));
+                Arc::new(opened.map_err(io_errno)?)
+            }
+        };
         let shown = self.shown(rel);
         let tracked = match class {
             Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), shown),
@@ -405,7 +417,7 @@ impl Shared {
         };
         // What of the download is on disk in order, for the reads that come meanwhile.
         let mark = Arc::new(AtomicU64::new(0));
-        crate::panic::lock(&self.running).insert(row.id.clone(), Running { mark: Arc::clone(&mark), staged: name.clone() });
+        crate::panic::lock(&self.running).insert(row.id.clone(), Running { mark: Arc::clone(&mark), staged: Arc::clone(&file) });
         let marked = Marked { inner: &tracked, mark };
         let done = async {
             // A large file that nothing waits to open (a pinned one) goes in parallel parts, the
@@ -413,7 +425,7 @@ impl Shared {
             let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
             download_staged(&file, &row.id, row.size, &marked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
-            let (id, mtime, target, staged) = (row.id.clone(), row.mtime, self.under(rel), name.clone());
+            let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under(rel), Arc::clone(&file));
             // The file's own steps wait for the disk: not on the runtime's threads.
             tokio::task::spawn_blocking(move || {
                 placeholder::write_item_id(&file, &id)?;
@@ -426,10 +438,19 @@ impl Shared {
                 // What stands at the item's place and carries no item's id is the user's own
                 // file, put there while nothing was mounted: it is never replaced. A copy of
                 // another item left there can be downloaded again, and goes.
-                if fs::symlink_metadata(&target).is_ok() && xattr::get(&target, XATTR_ITEM_ID).ok().flatten().is_none() {
-                    return Err(io::Error::from_raw_os_error(libc::EEXIST));
+                if fs::symlink_metadata(&target).is_ok() {
+                    if xattr::get(&target, XATTR_ITEM_ID).ok().flatten().is_none() {
+                        return Err(io::Error::from_raw_os_error(libc::EEXIST));
+                    }
+                    fs::remove_file(&target)?;
                 }
-                fs::rename(&staged, target)
+                // Whole and checked: now it gets its name.
+                let (unnamed, named) = (CString::new(konedrive_fs::proc_path(&*file).into_os_string().into_encoded_bytes())?, CString::new(target.into_os_string().into_encoded_bytes())?);
+                // SAFETY: two paths this function owns.
+                match unsafe { libc::linkat(libc::AT_FDCWD, unnamed.as_ptr(), libc::AT_FDCWD, named.as_ptr(), libc::AT_SYMLINK_FOLLOW) } {
+                    0 => Ok(()),
+                    _ => Err(io::Error::last_os_error()),
+                }
             })
             .await
             .map_err(|_| libc::EIO)?
@@ -439,10 +460,20 @@ impl Shared {
         .await;
         drop(tracked);
         crate::panic::lock(&self.running).remove(&row.id);
-        // A download that failed keeps what it has: the next one continues from its checkpoint.
-        if done.is_ok() {
-            slot.succeeded();
-            crate::panic::lock(&self.asked).remove(&row.id);
+        match done {
+            Ok(_) => {
+                slot.succeeded();
+                crate::panic::lock(&self.asked).remove(&row.id);
+            }
+            // A download that failed keeps what it has for as long as the daemon runs: the
+            // next one continues from its checkpoint. Only the latest few are kept.
+            Err(_) => {
+                let mut unfinished = crate::panic::lock(&self.unfinished);
+                unfinished.push((row.id.clone(), file));
+                if unfinished.len() > UNFINISHED {
+                    unfinished.remove(0);
+                }
+            }
         }
         done
     }
@@ -600,13 +631,7 @@ impl Mount {
             clear_stale(&root.path);
             // Before the mount: afterwards this path is the mount.
             let folder = File::open(&root.path)?;
-            // What downloads that never ended left is kept for a week, to be continued from.
-            if let Ok(staged) = fs::read_dir(konedrive_fs::proc_path(&folder).join(STAGING)) {
-                let old = |e: &fs::DirEntry| e.metadata().and_then(|m| m.modified()).is_ok_and(|at| at.elapsed().is_ok_and(|age| age > Duration::from_secs(7 * 24 * 3600)));
-                staged.flatten().filter(old).for_each(|e| {
-                    let _ = fs::remove_file(e.path());
-                });
-            }
+            let _ = fs::remove_dir_all(konedrive_fs::proc_path(&folder).join(OLD_STAGING));
             let reader = TreeStore::open_read_only(&store_path).map_err(other)?;
             let shared = Arc::new(Shared {
                 root: root.clone(),
@@ -620,6 +645,7 @@ impl Mount {
                 parts,
                 fills: Mutex::default(),
                 running: Mutex::default(),
+                unfinished: Mutex::default(),
                 handles: Mutex::default(),
                 next_handle: AtomicU64::new(1),
                 asked: Mutex::default(),
@@ -696,23 +722,12 @@ impl Mount {
         }
     }
 
-    /// [`stop`](Self::stop), for a folder that is forgotten: what downloads that never ended
-    /// left goes too, and the folder is the user's again.
-    pub fn forget(&self) {
-        self.stop();
-        let _ = fs::remove_dir_all(self.shared.under(Path::new(STAGING)));
-    }
-
-    /// The downloads that never ended, as the folder under the mount holds them: each one's
-    /// size on disk and its checkpoint.
+    /// The downloads that failed and can be continued: each one's size on disk and its
+    /// checkpoint.
     #[cfg(any(test, feature = "fault-injection"))]
     pub fn staged(&self) -> Vec<(u64, Option<u64>)> {
-        let Ok(staged) = fs::read_dir(self.shared.under(Path::new(STAGING))) else { return Vec::new() };
-        let seen = |e: fs::DirEntry| {
-            let file = File::open(e.path()).ok()?;
-            Some((file.metadata().ok()?.len(), placeholder::read_progress(&file).ok().flatten().map(|p| p.bytes)))
-        };
-        staged.flatten().filter_map(seen).collect()
+        let seen = |(_, file): &(String, Arc<File>)| Some((file.metadata().ok()?.len(), placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
+        crate::panic::lock(&self.shared.unfinished).iter().filter_map(seen).collect()
     }
 
     /// The folder under the mount, for what must not go through the mount: a walk of what is
@@ -1132,9 +1147,7 @@ impl Filesystem for Served {
         let running = crate::panic::lock(&s.running).get(&id).cloned();
         if let Some(Running { mark, staged }) = running {
             if end + WRITTEN_BEHIND <= mark.load(Ordering::SeqCst) {
-                if let Ok(file) = File::open(&staged) {
-                    return from_file(&file, reply);
-                }
+                return from_file(&staged, reply);
             }
         }
         tracing::info!("read of {} by {}: {} bytes at {offset}, from OneDrive", rel.display(), caller(req), end - offset);

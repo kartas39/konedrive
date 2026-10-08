@@ -410,6 +410,7 @@ service() {
     # While nothing is mounted the user puts a file of their own where an item that is not
     # downloaded has its name.
     $U fusermount3 -u -z $f
+    echo "the folder itself, the daemon dead: $($U find $f | sort | tr '\n' ' ')"
     $U sh -c "mkdir -p $f/docs && echo 'the user own file' > $f/docs/big.bin"
     : > $W/logs/svc.out
     $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
