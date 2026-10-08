@@ -1,0 +1,13 @@
+# Standalone and throwaway: the prototype behind docs/tasks/fuse-research.md. Not a member of the
+# repository workspace and never merged into dev.
+[workspace]
+
+[package]
+name = "fuse-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fuser = { version = "0.18", default-features = false }
+libc = "0.2"
