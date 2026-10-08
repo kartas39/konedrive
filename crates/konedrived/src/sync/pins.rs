@@ -60,6 +60,9 @@ impl SyncService {
     /// any is pinned: one outside the folder, a `.konedrive-*` name, or a
     /// file that is not ours refuses the call.
     pub async fn pin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        if let Some(mount) = self.mount() {
+            return self.mounted_pin(&mount, paths, true).await;
+        }
         let reg = self.require_record()?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         let (mut again, mut write) = (Vec::new(), Vec::new());
@@ -115,6 +118,9 @@ impl SyncService {
     /// refused `NotAllowed`, naming the folder, as `FreeUp` refuses it
     /// ([`kept_by_folder`]); every path is checked before any pin comes off.
     pub async fn unpin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        if let Some(mount) = self.mount() {
+            return self.mounted_pin(&mount, paths, false).await;
+        }
         let reg = self.require_record()?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         if let Some(refusal) = kept_by_folder(&targets) {

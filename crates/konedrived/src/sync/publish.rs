@@ -96,6 +96,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
         source: folder.source(),
         tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
         store: folder.store(),
+        fuse: folder.acted_on().and_then(|record| record.kept.fuse.clone()),
         sync: sync.clone(),
     };
     let quiet = |path, state, error, helper, view| Published {

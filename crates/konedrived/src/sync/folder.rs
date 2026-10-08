@@ -398,6 +398,8 @@ pub(super) struct View {
     pub tree_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// The tree store of the recorded OneDrive folder ([`Folder::store`]).
     pub store: Option<Store>,
+    /// The mount of a folder served through FUSE.
+    pub fuse: Option<Arc<crate::fuse::Mount>>,
     pub sync: SyncView,
 }
 

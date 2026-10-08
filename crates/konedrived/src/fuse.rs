@@ -526,6 +526,8 @@ impl Mount {
             if let Err(e) = session.umount_and_join() {
                 tracing::warn!("taking the mount off {}: {e}", self.shared.root.path.display());
             }
+            // What a download that was cut off left: the folder is the user's again.
+            let _ = fs::remove_dir_all(self.shared.under(Path::new(STAGING)));
         }
     }
 
@@ -619,29 +621,24 @@ impl Mount {
         }
     }
 
-    /// Frees the space of the downloaded files at and below `path`. What a pin keeps is
-    /// refused when it is the path asked for, and left when it lies below it.
+    /// Frees the space of the downloaded files at and below `path`. What a pin keeps, or a
+    /// download is filling, is left and counted. Whether `path` itself may be freed is the
+    /// caller's to ask first ([`look`](Self::look)).
     pub async fn free_up(&self, path: &Path) -> Result<Freed, Refused> {
-        let (row, rel) = self.item(path)?;
-        let s = Arc::clone(&self.shared);
-        if let Some(by) = s.pinned_by(&row) {
-            let by = if by.id == row.id { "itself".to_owned() } else { self.shared.root.path.join(s.read(|st| st.locate(Table::Items, &by.id)).flatten().map(|at| at.rel).unwrap_or_default()).display().to_string() };
-            return Err(Refused::Pinned { path: path.display().to_string(), by });
-        }
-        let _ = rel;
-        Ok(self.free_below(row, true).await)
+        let (row, _) = self.item(path)?;
+        Ok(self.free_below(row).await)
     }
 
     /// Frees the space of every downloaded file that no pin keeps.
     pub async fn free_up_all(&self) -> Freed {
         let Some(root) = self.shared.id(INodeNo(1)).and_then(|id| self.shared.row(&id)) else { return Freed::default() };
-        self.free_below(root, false).await
+        self.free_below(root).await
     }
 
-    async fn free_below(&self, row: Row, record: bool) -> Freed {
+    async fn free_below(&self, row: Row) -> Freed {
         let s = Arc::clone(&self.shared);
-        let (freed, events) = tokio::task::spawn_blocking(move || {
-            let (mut freed, mut told, mut events) = (Freed::default(), Vec::new(), Vec::new());
+        let freed = tokio::task::spawn_blocking(move || {
+            let (mut freed, mut told) = (Freed::default(), Vec::new());
             for (file, at) in s.files_below(&row) {
                 if !s.has_copy(&at) {
                     continue;
@@ -654,20 +651,16 @@ impl Mount {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
-                        events.push(activity::event(EventKind::Freed, s.shown(&at), activity::human_size(bytes)));
                         told.push(Announce::Changed(at, file.id));
                     }
                     None => freed.kept += 1,
                 }
             }
             s.announce(told);
-            (freed, events)
+            freed
         })
         .await
         .unwrap_or_default();
-        if record && !events.is_empty() {
-            self.shared.report.activity.record(activity::capped(events, activity::PER_KIND, &self.shared.root.path.display().to_string())).await;
-        }
         self.shared.report.space.kick();
         freed
     }
@@ -696,7 +689,8 @@ impl Mount {
         let (row, rel) = self.item(path)?;
         let s = &self.shared;
         let own_pin = crate::panic::lock(&s.pins).contains(&row.id);
-        let pinned_above = row.parent_id.as_deref().and_then(|p| s.row(p)).and_then(|above| s.pinned_by(&above)).is_some();
+        let above = row.parent_id.as_deref().and_then(|p| s.row(p)).and_then(|above| s.pinned_by(&above));
+        let pinned_above = above.and_then(|by| s.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let state = (row.kind == Kind::File).then(|| s.state_of(&row, &rel));
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above })
     }
@@ -723,7 +717,8 @@ pub struct Looked {
     /// `None` for a folder.
     pub state: Option<State>,
     pub own_pin: bool,
-    pub pinned_above: bool,
+    /// The folder above that pins it.
+    pub pinned_above: Option<PathBuf>,
 }
 
 impl Drop for Mount {
@@ -801,7 +796,7 @@ impl Served {
         let s = &self.0;
         if ino.0 == 1 && (name == XATTR_ROOT || name == XATTR_DRIVE) {
             // The folder's own: what its registration and its first cycle wrote on it.
-            return xattr::get(konedrive_fs::proc_path(&s.folder), name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned());
+            return xattr::FileExt::get_xattr(&s.folder, name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned());
         }
         let row = s.id(ino).and_then(|id| s.row(&id))?;
         match name {

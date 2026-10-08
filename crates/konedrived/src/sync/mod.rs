@@ -12,6 +12,7 @@ pub mod free_up;
 pub mod hydrate;
 pub mod menu;
 pub mod mode;
+mod mounted;
 pub mod move_outs;
 pub mod outbox;
 pub mod pause;
@@ -512,6 +513,11 @@ impl SyncService {
 
     /// Where the folder's files are filled from now, as last published: the drive for a
     /// OneDrive folder that is up, the directory a local folder was populated from.
+    /// The mount of a folder served through FUSE, as last published.
+    pub(crate) fn mount(&self) -> Option<Arc<crate::fuse::Mount>> {
+        self.view.borrow().fuse.clone()
+    }
+
     pub(crate) fn content_source(&self) -> Option<Arc<dyn crate::hydration::source::ContentSource>> {
         self.view.borrow().source.clone()
     }
@@ -525,13 +531,16 @@ impl SyncService {
 
     /// `RootSource`.
     pub fn root_source(&self) -> String {
-        self.record().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
+        // What the folder shows, for the clients: how it is served is not their concern.
+        let shown = |source: RootSource| if source.shows_onedrive() { RootSource::OneDrive } else { source };
+        self.record().map(|r| shown(r.source).as_str().to_owned()).unwrap_or_default()
     }
 
     /// HS2: a folder that shows OneDrive is kept in step only when it is
     /// intercepted and the helper is connected.
     fn require_helper_for(&self, record: &Record) -> Result<(), SyncError> {
-        if record.intercepted() && self.link().is_some() {
+        // A folder served through FUSE is kept in step by its mount.
+        if record.source == RootSource::Fuse || (record.intercepted() && self.link().is_some()) {
             Ok(())
         } else {
             Err(SyncError::NoHelper)
@@ -540,7 +549,7 @@ impl SyncService {
 
     fn require_onedrive(&self) -> Result<Record, SyncError> {
         let record = self.require_record()?;
-        if record.source != RootSource::OneDrive {
+        if !record.source.shows_onedrive() {
             return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
         }
         Ok(record)

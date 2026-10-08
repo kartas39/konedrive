@@ -96,6 +96,12 @@ impl SyncService {
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
         let reg = self.require_record()?;
+        if let Some(mount) = self.mount() {
+            // Never opened: an open through the mount would download the file.
+            let id = mount.look(path)?.id;
+            let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
+            return page_of(drive.item(&id).await, &path.display().to_string());
+        }
         let (root, target) = (reg.root.clone(), path.to_path_buf());
         let (id, shown) = tokio::task::spawn_blocking(move || -> Result<_, SyncError> {
             let (item, shown) = root.open_item(&target)?;

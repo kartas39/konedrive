@@ -147,6 +147,7 @@ impl SyncService {
             if let Some(record) = stopped.folder_mut().record_mut() {
                 record.kept.fuse = Some(Arc::clone(&mount));
             }
+            self.show_pins(&mount);
             fuse = Some(mount);
         }
         // A read-only folder that still holds changes waiting to upload (a switch nobody

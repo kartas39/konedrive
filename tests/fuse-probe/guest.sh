@@ -448,6 +448,65 @@ graph() {
     exec 9>&-; wait $cloud 2> /dev/null
 }
 
+# The daemon's own service with a folder served through FUSE, over the fake OneDrive.
+service() {
+    echo "==== the daemon's service with a folder served through FUSE ===="
+    local f=$W/OneDrive3 st=$W/state3 src=$W/src3 svc
+    ip link set lo up
+    mkdir -p $f $st $src
+    echo "hello" > $src/a; echo "inside docs" > $src/b; head -c 20971520 /dev/urandom > $src/big
+    echo "hello, changed in the cloud" > $src/a2; echo "arrived later" > $src/new
+    chown -R 1000:1000 $f $st $src
+    mkfifo $st/in; chown 1000:1000 $st/in
+    $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
+    svc=$!
+    exec 8> $st/in
+    ask() {
+        echo "$*" >&8
+        for _ in $(seq 150); do
+            if grep -qF "done $*:" $W/logs/svc.out; then grep -F "done $*:" $W/logs/svc.out | tail -1 | sed "s/^done [^:]*: *//"; return; fi
+            sleep 0.1
+        done
+        echo "NO ANSWER"
+    }
+    for _ in $(seq 50); do grep -q ready $W/logs/svc.out && break; sleep 0.1; done
+    ask file A R a.txt $src/a > /dev/null; ask folder D R docs > /dev/null
+    ask file B D b.txt $src/b > /dev/null; ask file X D big.bin $src/big > /dev/null
+    echo "register: $(ask register $f)"
+    for _ in $(seq 100); do mounted $f && break; sleep 0.1; done
+    mounted $f || { echo "NOT MOUNTED"; cat $W/logs/svc.err | tail -20; return; }
+    sleep 1
+    echo "type: $(awk -v m=$f '$2==m{print $3}' /proc/self/mounts)"
+    echo "listing: $($U find $f | sort | tr '\n' ' ')"
+    echo "status: $(ask status)"
+    echo "root attributes: $($U python3 -c "import os,sys; print(sorted(os.listxattr(sys.argv[1])))" $f)"
+    echo "state a.txt: $(ask state $f/a.txt); a.txt: $($U cat $f/a.txt); state after: $(ask state $f/a.txt)"
+    echo "hydrate big.bin: $(ask hydrate $f/docs/big.bin); equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"
+    echo "menu big.bin: $(ask menu $f/docs/big.bin)"
+    echo "dehydrate big.bin: $(ask dehydrate $f/docs/big.bin); state: $(ask state $f/docs/big.bin)"
+    echo "pin docs: $(ask pin $f/docs)"; sleep 1
+    echo "states under the pin: b.txt $(ask state $f/docs/b.txt), big.bin $(ask state $f/docs/big.bin)"
+    echo "dehydrate a pinned file: $(ask dehydrate $f/docs/b.txt)"
+    echo "menu b.txt: $(ask menu $f/docs/b.txt)"
+    echo "free-up docs (takes its pin off): $(ask free-up $f/docs)"
+    echo "status: $(ask status)"
+    $U "$bin/probe-client" watch $f 7 > $W/logs/watch3.out &
+    w=$!
+    sleep 1
+    ask file N R new.txt $src/new > /dev/null; ask edit A $src/a2 > /dev/null; ask rename B R b-moved.txt > /dev/null
+    echo "refresh: $(ask refresh)"
+    wait $w
+    echo "an inotify watch on the folder saw: $(tr '\n' ';' < $W/logs/watch3.out)"
+    echo "listing: $($U find $f | sort | tr '\n' ' ')"
+    echo "a.txt: $($U cat $f/a.txt); new.txt: $($U cat $f/new.txt)"
+    echo "free-up-space: $(ask free-up-space)"
+    echo "activity: $(ask activity | head -c 900)"
+    echo "forget: $(ask forget)"; sleep 1
+    mounted $f && echo "still mounted after the forget" || echo "the folder itself after the forget: $($U find $f | sort | tr '\n' ' ')"
+    exec 8>&-; wait $svc 2> /dev/null
+    grep -v "^$" $W/logs/svc.err | tail -8
+}
+
 subtype() {
     echo "==== mount type ===="
     start || return

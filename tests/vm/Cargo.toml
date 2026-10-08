@@ -54,3 +54,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # --graph-token: builds the Graph base URL `DriveClient::new` takes.
 url = "2"
 xattr = "1"
+
+# konedrived needs fuser with FUSE_INTERRUPT handed on (vendor/fuser/README.konedrive.md).
+[patch.crates-io]
+fuser = { path = "../../vendor/fuser" }

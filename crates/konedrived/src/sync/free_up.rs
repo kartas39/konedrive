@@ -32,6 +32,9 @@ impl SyncService {
     /// Refused `NotAllowed` for a file a pin keeps on this device — its own,
     /// or a folder's above it: `FreeUp` takes a pin off.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
+        if let Some(mount) = self.mount() {
+            return self.mounted_dehydrate(&mount, path).await;
+        }
         let reg = self.require_record()?;
         let (root, target) = (reg.root.clone(), path.to_path_buf());
         let pinned = tokio::task::spawn_blocking(move || {
@@ -71,6 +74,9 @@ impl SyncService {
     /// A file a pin keeps on this device is left as it is, and counted in
     /// [`FreedUp::pinned`]; the event says how many.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
+        if let Some(mount) = self.mount() {
+            return self.mounted_free_up_space(&mount).await;
+        }
         let reg = self.require_record()?;
         self.require_helper_to_free(&reg)?;
         let root = reg.root.path.clone();
@@ -169,6 +175,9 @@ impl SyncService {
     /// above the path by the time it is walked — keeps is left and counted in
     /// [`FreedUp::pinned`]. One `freed` event per path that freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
+        if let Some(mount) = self.mount() {
+            return self.mounted_free_up(&mount, paths).await;
+        }
         let reg = self.require_record()?;
         self.require_helper_to_free(&reg)?;
         let targets = self.pin_targets(&reg.root, paths).await?;
@@ -359,6 +368,6 @@ pub struct FreedUp {
 }
 
 /// A `freed` event's detail for more than one file: "2 files, 1.5 MiB".
-fn freed_detail(files: u32, bytes: u64) -> String {
+pub(super) fn freed_detail(files: u32, bytes: u64) -> String {
     format!("{files} file{}, {}", if files == 1 { "" } else { "s" }, activity::human_size(bytes))
 }

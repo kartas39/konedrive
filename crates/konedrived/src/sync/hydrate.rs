@@ -44,6 +44,9 @@ impl SyncService {
     /// may well have been a fill of this same inode, and it may have
     /// finished the job.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
+        if let Some(mount) = self.mount() {
+            return mount.hydrate(path).await.map_err(Into::into);
+        }
         // "Download now" is an open, for the pool: it goes first.
         match self.fill_now(path, Some(konedrive_graph::pool::Class::Open)).await? {
             // No link to the helper, on a file that may carry an ignore mark.

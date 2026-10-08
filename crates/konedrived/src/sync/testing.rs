@@ -296,6 +296,7 @@ pub struct Builder {
     baloo: Option<Baloo>,
     schedule: Option<Schedule>,
     clock: Option<Arc<ManualClock>>,
+    fuse: bool,
 }
 
 /// Starts a [`Builder`].
@@ -334,6 +335,12 @@ impl Builder {
         self
     }
 
+    /// A folder registered while signed in is served as a FUSE mount.
+    pub fn fuse(mut self) -> Self {
+        self.fuse = true;
+        self
+    }
+
     pub fn baloo(mut self, baloo: Baloo) -> Self {
         self.baloo = Some(baloo);
         self
@@ -369,6 +376,7 @@ impl Builder {
         let starting = Arc::clone(&watchers);
         let mut wiring = Wiring {
             onedrive: self.onedrive,
+            fuse: self.fuse,
             sources: Arc::clone(&sources) as Arc<dyn wiring::Sources>,
             watchers: Arc::new(move |config, sink| starting.start(config, sink)),
             ..Wiring::new(Arc::clone(&registry), Arc::clone(&account) as Arc<dyn FolderAccount>, persist.clone())

@@ -162,6 +162,9 @@ impl SyncService {
     pub async fn menu_part(&self, paths: &[PathBuf]) -> Part {
         let nothing = || Part { taken: vec![None; paths.len()], ..Part::default() };
         let Some(reg) = self.record() else { return nothing() };
+        if let Some(mount) = self.mount() {
+            return super::mounted::menu_part(&mount, paths);
+        }
         let (root, given) = (reg.root.clone(), paths.to_vec());
         let looked = tokio::task::spawn_blocking(move || {
             let modes = root_modes(&root).ok()?;
