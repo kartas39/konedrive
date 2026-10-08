@@ -140,6 +140,30 @@ struct Running {
     staged: Arc<File>,
 }
 
+/// A file being read as ranges: the pool's slot held for it, how many of its reads wait for
+/// OneDrive now, and until when it counts as read after the last of them.
+struct Reader {
+    _slot: konedrive_graph::pool::Slot,
+    in_flight: usize,
+    until: tokio::time::Instant,
+}
+
+/// One read of a file, counted from [`Shared::reading`] until it is dropped.
+struct Reading(Arc<Shared>, String);
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        if let Some(reader) = crate::panic::lock(&self.0.readers).get_mut(&self.1) {
+            reader.in_flight = reader.in_flight.saturating_sub(1);
+            reader.until = tokio::time::Instant::now() + READ_LINGERS;
+        }
+    }
+}
+
+/// How long after its last read a file still counts as being read: the background downloads
+/// stay held back between the reads of one program.
+const READ_LINGERS: Duration = Duration::from_secs(2);
+
 /// How far behind the mark the staging file is surely written: the download writes each piece
 /// it has read before it reads the next, and a piece is no larger than this.
 const WRITTEN_BEHIND: u64 = 1 << 20;
@@ -233,6 +257,10 @@ struct Shared {
     /// Once that many bytes of a file were read as ranges, the file is downloaded whole
     /// (`[transfers] download_after` in `config.toml`).
     download_after: u64,
+    /// The files being read as ranges, by item: each holds the account's pool as a file being
+    /// opened does, until [`READ_LINGERS`] after its last read. While one is held no pinned
+    /// or other background download starts, so what the user reads goes first.
+    readers: Mutex<HashMap<String, Reader>>,
     /// The reads waiting for a range from OneDrive, by request: a program that is interrupted
     /// has its read given up.
     reads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
@@ -358,9 +386,39 @@ impl Shared {
         self.read(|s| s.child(Table::Items, &dir, name)).flatten().filter(|r| r.placement == Placement::Placed)
     }
 
+    /// Item `id` is being read: the pool is held for it as for a file being opened, for as
+    /// long as what this returns lives and a moment after its last read.
+    async fn reading(self: &Arc<Self>, id: &str) -> Reading {
+        let join = |s: &Shared| crate::panic::lock(&s.readers).get_mut(id).map(|reader| reader.in_flight += 1).is_some();
+        if !join(self) {
+            let slot = self.pool.acquire_sized(Class::Open, Size::Small).await;
+            // Another read of the item may have taken the place meanwhile: one slot a file.
+            if !join(self) {
+                let until = tokio::time::Instant::now() + READ_LINGERS;
+                crate::panic::lock(&self.readers).insert(id.to_owned(), Reader { _slot: slot, in_flight: 1, until });
+                let (s, id) = (Arc::clone(self), id.to_owned());
+                self.runtime.spawn(async move {
+                    loop {
+                        let Some((in_flight, until)) = crate::panic::lock(&s.readers).get(&id).map(|r| (r.in_flight, r.until)) else { return };
+                        let now = tokio::time::Instant::now();
+                        if in_flight == 0 && now >= until {
+                            crate::panic::lock(&s.readers).remove(&id);
+                            return;
+                        }
+                        // While a read waits it is looked at again after a while; its end moves
+                        // `until`.
+                        tokio::time::sleep_until(if in_flight == 0 { until } else { now + READ_LINGERS }).await;
+                    }
+                });
+            }
+        }
+        Reading(Arc::clone(self), id.to_owned())
+    }
+
     /// The bytes of `row` from `from` up to `end`, asked of OneDrive as a range.
-    async fn range(&self, row: &Row, from: u64, end: u64) -> Result<Vec<u8>, i32> {
+    async fn range(self: &Arc<Self>, row: &Row, from: u64, end: u64) -> Result<Vec<u8>, i32> {
         use tokio::io::AsyncReadExt;
+        let _reading = self.reading(&row.id).await;
         let fetched = self.source.fetch(&row.id, from, Some(end)).await.map_err(|e| {
             tracing::warn!("a range of {} was not fetched: {e}", row.name);
             libc::EIO
@@ -650,6 +708,7 @@ impl Mount {
                 next_handle: AtomicU64::new(1),
                 asked: Mutex::default(),
                 download_after,
+                readers: Mutex::default(),
                 reads: Mutex::default(),
                 pins: Mutex::new(pins),
                 announcer: AtomicI32::new(0),

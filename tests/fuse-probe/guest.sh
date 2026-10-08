@@ -389,6 +389,22 @@ service() {
     alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
     sleep 6
     echo "state afterwards (a read given up downloads nothing): $(ask state $f/slow.txt); read now: $($U cat $f/slow.txt)"
+    echo "-- a file that is read goes before a pinned folder"
+    ask folder Q R queue > /dev/null
+    for n in $(seq -w 1 40); do ask file Q$n Q q$n.txt $src/new > /dev/null; done
+    head -c 4194304 /dev/urandom > $src/first; chown 1000:1000 $src/first
+    ask file F R first.bin $src/first > /dev/null; ask refresh > /dev/null; sleep 1
+    # As the user: root cannot look into the mount.
+    hydrated() { $U python3 -c "import os,sys; d=sys.argv[1]; print(sum(os.getxattr(os.path.join(d,n),'user.konedrive.state')==b'hydrated' for n in os.listdir(d)))" $f/queue; }
+    ask delay GET dl/F 3000 1 > /dev/null
+    $U cat $f/first.bin > /dev/null &
+    c=$!
+    sleep 0.5
+    echo "pin the folder of 40 files while the file is read: $(ask pin $f/queue)"
+    sleep 1.5
+    echo "pinned files downloaded while the read still waits: $(hydrated) of 40"
+    wait $c; sleep 4
+    echo "pinned files downloaded once the read is over: $(hydrated) of 40; the file read: $($U cmp $f/first.bin $src/first > /dev/null 2>&1 && echo whole)"
     echo "-- a download cut off, and continued"
     head -c 41943040 /dev/urandom > $src/large; chown 1000:1000 $src/large
     ask file L R large.bin $src/large > /dev/null; ask refresh > /dev/null; sleep 1
