@@ -205,6 +205,30 @@ pins. Design: `hydration.md`, `pinning.md`.
 - `pin.rs` — "Always keep on this device": which items are pinned, and their downloads.
   `[tests]`
 
+### `crates/konedrived/src/fuse/`
+
+A folder served as a FUSE mount laid over the folder itself: every name from the tree store,
+the folder on disk holding only what is downloaded.
+
+- `mod.rs` — the list of the modules, and what the daemon sees of a mount.
+- `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
+- `shared.rs` — `Shared`: the folder under the mount, the store read for the requests, and
+  what is under way; a path's row.
+- `served.rs` — the mount's requests (`Filesystem`): looked up, listed, opened, read; every
+  change from a program refused.
+- `nodes.rs` — the node ids the kernel knows, each an item and its place. `[tests]`
+- `attr.rs` — what the mount says of an item: kind, size, times, modes.
+- `copies.rs` — the downloaded copies: which file is an item's, its state, its removal.
+- `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
+  background downloads.
+- `fill.rs` — the download of a whole file into a file without a name, and its naming.
+- `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
+- `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
+- `follow.rs` — the folder under the mount made to follow a cycle of the listing (`Step`).
+- `announce.rs` — changes told to the kernel through the mount, for whoever watches.
+- `lock.rs` — the folder on disk locked while no mount lies over it; `tidy`, what follows the
+  daemon's end. `[tests]`
+
 ### `crates/konedrived/src/local/`
 
 What the user changed on disk: the watcher that notices it and the examination that records it
@@ -365,6 +389,7 @@ Baloo and thumbnails. Design: `desktop.md`.
 
 - `mod.rs` — the list of the modules.
 - `baloo.rs` — keeps KDE's file indexer out of a OneDrive folder. `[tests]`
+- `dirnotify.rs` — telling KDE's programs to read directories again, after a mount came or went.
 - `thumbs.rs` — thumbnails from OneDrive. `[tests]`
 
 ### `crates/konedrived/src/sync/`
@@ -395,6 +420,7 @@ Baloo and thumbnails. Design: `desktop.md`.
   the answer of `Files.Menu` put together.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
 - `mode.rs` — the folder's side of the account's mode, and its write gate.
+- `mounted.rs` — what the folder is asked for, answered by its mount (`fuse/`).
 - `outbox.rs` — the outbox worker built and woken; the rows dropped; the outbox as
   `org.konedrive.UploadQueue` shows it. `[tests]`
 - `pause.rs` — the pause, the hold, Sync Anyway, and `PauseClock`, which ends a timed pause. `[tests]`
