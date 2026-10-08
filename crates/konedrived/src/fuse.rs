@@ -3,8 +3,9 @@
 //! The mount lies over the folder itself. Every name comes from the tree store; the folder on
 //! disk holds only the files that are downloaded, and is reached through the descriptor opened
 //! before the mount, never through the mount. A file with no object there is not downloaded:
-//! opening it downloads it under a staging name and renames it into place. Nothing that changes
-//! the folder is accepted from a program.
+//! reading it is answered with the bytes asked for, fetched from OneDrive as a range, and once
+//! more than a threshold of it was read it is downloaded whole, under a staging name, and renamed
+//! into place. Nothing that changes the folder is accepted from a program.
 //!
 //! - The requests of the mount read the store through a connection of their own, opened for
 //!   reading alone: they never wait for the cycle that writes it.
@@ -18,10 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -118,20 +119,65 @@ enum Told {
     Gone { parent: u64, name: String, ino: u64, kind: Kind },
 }
 
-/// Who waits for a download: an open of the mount, by its request, or a caller in the daemon.
-enum Waiter {
-    Open(u64, ReplyOpen),
-    Caller(oneshot::Sender<Result<(), i32>>),
+/// A caller in the daemon that waits for a download to end.
+type Waiter = oneshot::Sender<Result<(), i32>>;
+
+/// What a program holds open: the item, and its downloaded copy once there is one.
+struct Handle {
+    id: String,
+    rel: PathBuf,
+    copy: Option<Arc<File>>,
 }
 
-impl Waiter {
-    fn fail(self, errno: i32) {
-        match self {
-            Waiter::Open(_, reply) => reply.error(Errno::from_i32(errno)),
-            Waiter::Caller(tell) => {
-                let _ = tell.send(Err(errno));
-            }
+/// A download in one stream that is under way: how far its staging file is written in order,
+/// and where that file is. What lies well below the mark is read from it.
+#[derive(Clone)]
+struct Running {
+    mark: Arc<AtomicU64>,
+    staged: PathBuf,
+}
+
+/// How far behind the mark the staging file is surely written: the download writes each piece
+/// it has read before it reads the next, and a piece is no larger than this.
+const WRITTEN_BEHIND: u64 = 1 << 20;
+
+/// The download's source, with the mark moved as its one stream is read. A download in parts
+/// (`end` given) writes out of order and moves no mark.
+struct Marked<'a> {
+    inner: &'a dyn ContentSource,
+    mark: Arc<AtomicU64>,
+}
+
+struct Marking {
+    inner: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+    mark: Arc<AtomicU64>,
+}
+
+impl tokio::io::AsyncRead for Marking {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &polled {
+            self.mark.fetch_add((buf.filled().len() - before) as u64, Ordering::SeqCst);
         }
+        polled
+    }
+}
+
+#[async_trait::async_trait]
+impl ContentSource for Marked<'_> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<crate::hydration::source::Fetched, crate::hydration::source::SourceError> {
+        let mut fetched = self.inner.fetch(item_id, from, end).await?;
+        if end.is_none() {
+            // Also when the download starts over: what is on disk counts from here again.
+            self.mark.store(fetched.served_from, Ordering::SeqCst);
+            fetched.stream = Box::new(Marking { inner: fetched.stream, mark: Arc::clone(&self.mark) });
+        }
+        Ok(fetched)
+    }
+
+    fn progress(&self, done: u64, size: u64) {
+        self.inner.progress(done, size);
     }
 }
 
@@ -171,6 +217,19 @@ struct Shared {
     parts: Arc<Share>,
     /// The downloads in progress, by item, and who waits for each.
     fills: Mutex<HashMap<String, Vec<Waiter>>>,
+    /// Of those, the ones in one stream: what of each is on disk already.
+    running: Mutex<HashMap<String, Running>>,
+    /// What programs hold open, by the handle the kernel was given.
+    handles: Mutex<HashMap<u64, Handle>>,
+    next_handle: AtomicU64,
+    /// How many bytes of each item that is not downloaded were read as ranges.
+    asked: Mutex<HashMap<String, u64>>,
+    /// Once that many bytes of a file were read as ranges, the file is downloaded whole
+    /// (`[transfers] download_after` in `config.toml`).
+    download_after: u64,
+    /// The reads waiting for a range from OneDrive, by request: a program that is interrupted
+    /// has its read given up.
+    reads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
     /// The items that carry a pin of their own, as the store has them.
     pins: Mutex<HashSet<String>>,
     /// The announcer: its thread, what it is telling, and the way to it.
@@ -293,8 +352,20 @@ impl Shared {
         self.read(|s| s.child(Table::Items, &dir, name)).flatten().filter(|r| r.placement == Placement::Placed)
     }
 
-    fn open_downloaded(&self, rel: &Path) -> io::Result<i32> {
-        Ok(File::open(self.under(rel))?.into_raw_fd())
+    /// The bytes of `row` from `from` up to `end`, asked of OneDrive as a range.
+    async fn range(&self, row: &Row, from: u64, end: u64) -> Result<Vec<u8>, i32> {
+        use tokio::io::AsyncReadExt;
+        let fetched = self.source.fetch(&row.id, from, Some(end)).await.map_err(|e| {
+            tracing::warn!("a range of {} was not fetched: {e}", row.name);
+            libc::EIO
+        })?;
+        if fetched.served_from != from {
+            tracing::error!("{}: asked for byte {from} and got a stream starting at {}", row.name, fetched.served_from);
+            return Err(libc::EIO);
+        }
+        let mut bytes = Vec::with_capacity((end - from) as usize);
+        fetched.stream.take(end - from).read_to_end(&mut bytes).await.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        Ok(bytes)
     }
 
     fn announce(&self, what: Vec<Announce>) {
@@ -332,11 +403,15 @@ impl Shared {
             Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), shown),
             _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), shown),
         };
+        // What of the download is on disk in order, for the reads that come meanwhile.
+        let mark = Arc::new(AtomicU64::new(0));
+        crate::panic::lock(&self.running).insert(row.id.clone(), Running { mark: Arc::clone(&mark), staged: name.clone() });
+        let marked = Marked { inner: &tracked, mark };
         let done = async {
             // A large file that nothing waits to open (a pinned one) goes in parallel parts, the
             // slot held here being its first stream's.
             let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
-            download_staged(&file, &row.id, row.size, &tracked, split.as_ref()).await?;
+            download_staged(&file, &row.id, row.size, &marked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
             let (id, mtime, target, staged) = (row.id.clone(), row.mtime, self.under(rel), name.clone());
             // The file's own steps wait for the disk: not on the runtime's threads.
@@ -363,9 +438,11 @@ impl Shared {
         }
         .await;
         drop(tracked);
+        crate::panic::lock(&self.running).remove(&row.id);
         // A download that failed keeps what it has: the next one continues from its checkpoint.
         if done.is_ok() {
             slot.succeeded();
+            crate::panic::lock(&self.asked).remove(&row.id);
         }
         done
     }
@@ -388,8 +465,9 @@ impl Shared {
             struct Ended(Arc<Shared>, String);
             impl Drop for Ended {
                 fn drop(&mut self) {
+                    crate::panic::lock(&self.0.running).remove(&self.1);
                     for waiter in crate::panic::lock(&self.0.fills).remove(&self.1).unwrap_or_default() {
-                        waiter.fail(libc::EIO);
+                        let _ = waiter.send(Err(libc::EIO));
                     }
                 }
             }
@@ -404,18 +482,7 @@ impl Shared {
             s.report.space.kick();
             let waiting = crate::panic::lock(&s.fills).remove(&row.id).unwrap_or_default();
             for waiter in waiting {
-                match waiter {
-                    Waiter::Caller(tell) => {
-                        let _ = tell.send(filled.map(|_| ()));
-                    }
-                    Waiter::Open(_, reply) => {
-                        let opened = filled.map_err(Errno::from_i32).and_then(|_| s.open_downloaded(&rel).map_err(|e| errno(&e)));
-                        match opened {
-                            Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
-                            Err(e) => reply.error(e),
-                        }
-                    }
-                }
+                let _ = waiter.send(filled.map(|_| ()));
             }
             s.announce(vec![Announce::Changed(rel, row.id)]);
         });
@@ -507,6 +574,8 @@ pub struct Parts {
     pub report: Report,
     pub pool: Arc<TransferPool>,
     pub parts: Arc<Share>,
+    /// `[transfers] download_after`: see [`Shared::download_after`].
+    pub download_after: u64,
 }
 
 /// Takes off a mount a daemon that died left on `folder`: every path in it then fails with
@@ -524,7 +593,7 @@ impl Mount {
     /// Mounts over `parts.root` and serves it. The folder on disk must carry its root id
     /// already: after this its path is the mount.
     pub async fn start(parts: Parts) -> io::Result<Arc<Mount>> {
-        let Parts { root, store_path, store, source, report, pool, parts } = parts;
+        let Parts { root, store_path, store, source, report, pool, parts, download_after } = parts;
         let pins: HashSet<String> = store.call(|s| s.pins()).await.map_err(other)?.into_iter().collect();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
@@ -550,6 +619,12 @@ impl Mount {
                 pool,
                 parts,
                 fills: Mutex::default(),
+                running: Mutex::default(),
+                handles: Mutex::default(),
+                next_handle: AtomicU64::new(1),
+                asked: Mutex::default(),
+                download_after,
+                reads: Mutex::default(),
                 pins: Mutex::new(pins),
                 announcer: AtomicI32::new(0),
                 told: Mutex::new(None),
@@ -604,7 +679,10 @@ impl Mount {
             let _ = announcer.join();
         }
         let waiting: Vec<Waiter> = crate::panic::lock(&s.fills).drain().flat_map(|(_, waiting)| waiting).collect();
-        waiting.into_iter().for_each(|waiter| waiter.fail(libc::EIO));
+        waiting.into_iter().for_each(|waiter| {
+            let _ = waiter.send(Err(libc::EIO));
+        });
+        crate::panic::lock(&s.reads).drain().for_each(|(_, read)| read.abort());
         if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
             tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", s.root.path.display());
             // Not waited for: it ends when the last program lets go of the mount.
@@ -735,7 +813,7 @@ impl Mount {
             return Ok(());
         }
         let (tell, told) = oneshot::channel();
-        self.shared.ensure(row, rel, Class::Open, Some(Waiter::Caller(tell)));
+        self.shared.ensure(row, rel, Class::Open, Some(tell));
         match told.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(errno)) => Err(Refused::Io(format!("hydration failed: {}", io::Error::from_raw_os_error(errno)))),
@@ -910,11 +988,6 @@ fn caller(req: &Request) -> String {
     format!("{} ({})", name.trim(), req.pid())
 }
 
-fn borrow(fh: FileHandle) -> std::mem::ManuallyDrop<File> {
-    // SAFETY: the handle is a descriptor this mount opened and closes at the release.
-    std::mem::ManuallyDrop::new(unsafe { File::from_raw_fd(fh.0 as i32) })
-}
-
 /// The mount's requests.
 struct Served(Arc<Shared>);
 
@@ -983,20 +1056,15 @@ impl Filesystem for Served {
         }
     }
 
-    /// The program behind a waiting open was interrupted or killed: that open is answered now.
-    /// The download goes on for whoever else waits, and for the next open.
+    /// The program behind a read that waits for OneDrive was interrupted or killed: the read is
+    /// given up, and answered with an error as its reply is dropped.
     fn interrupt(&self, _req: &Request, unique: fuser::RequestId) {
-        let mut fills = crate::panic::lock(&self.0.fills);
-        for waiting in fills.values_mut() {
-            if let Some(at) = waiting.iter().position(|w| matches!(w, Waiter::Open(u, _) if *u == unique.0)) {
-                if let Waiter::Open(_, reply) = waiting.swap_remove(at) {
-                    reply.error(Errno::EINTR);
-                }
-                return;
-            }
+        if let Some(read) = crate::panic::lock(&self.0.reads).remove(&unique.0) {
+            read.abort();
         }
     }
 
+    /// Opening downloads nothing: a program may open a file and never read it.
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let s = &self.0;
         if flags.0 & libc::O_ACCMODE != libc::O_RDONLY || flags.0 & libc::O_TRUNC != 0 {
@@ -1005,36 +1073,101 @@ impl Filesystem for Served {
         let (Some(row), Some(rel)) = (s.id(ino).and_then(|id| s.row(&id)), s.rel_of_ino(ino.0)) else {
             return reply.error(Errno::ENOENT);
         };
-        let downloaded = s.has_copy(&rel, &row.id);
-        tracing::info!("open of {} by {}: flags {:#x}, {}", rel.display(), caller(req), flags.0, if downloaded { "downloaded" } else { "not downloaded: downloading it" });
-        if downloaded {
-            return match s.open_downloaded(&rel) {
-                Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
+        let copy = if s.has_copy(&rel, &row.id) {
+            match File::open(s.under(&rel)) {
+                Ok(file) => Some(Arc::new(file)),
+                Err(e) => return reply.error(errno(&e)),
+            }
+        } else {
+            None
+        };
+        tracing::info!("open of {} by {}: flags {:#x}, {}", rel.display(), caller(req), flags.0, if copy.is_some() { "downloaded" } else { "not downloaded" });
+        let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
+        crate::panic::lock(&s.handles).insert(fh, Handle { id: row.id, rel, copy });
+        reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
+    }
+
+    /// The bytes asked for, from wherever they are: the downloaded copy; what a download under
+    /// way has written; or OneDrive, as a range. Enough read as ranges starts the download of
+    /// the whole file, which no read waits for.
+    fn read(&self, req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {
+        let s = &self.0;
+        let from_file = |file: &File, reply: ReplyData| {
+            let mut buf = vec![0u8; size as usize];
+            let mut got = 0;
+            while got < buf.len() {
+                match file.read_at(&mut buf[got..], offset + got as u64) {
+                    Ok(0) => break,
+                    Ok(n) => got += n,
+                    Err(e) => return reply.error(errno(&e)),
+                }
+            }
+            reply.data(&buf[..got])
+        };
+        let Some((id, rel, copy)) = crate::panic::lock(&s.handles).get(&fh.0).map(|h| (h.id.clone(), h.rel.clone(), h.copy.clone())) else {
+            return reply.error(Errno::EBADF);
+        };
+        if let Some(copy) = copy {
+            return from_file(&copy, reply);
+        }
+        // Downloaded since it was opened: the handle reads the copy from now on.
+        if s.has_copy(&rel, &id) {
+            return match File::open(s.under(&rel)) {
+                Ok(file) => {
+                    let file = Arc::new(file);
+                    if let Some(handle) = crate::panic::lock(&s.handles).get_mut(&fh.0) {
+                        handle.copy = Some(Arc::clone(&file));
+                    }
+                    from_file(&file, reply)
+                }
                 Err(e) => reply.error(errno(&e)),
             };
         }
-        // Not downloaded: one download per item, and every open of it waits for that one.
-        s.ensure(row, rel, Class::Open, Some(Waiter::Open(req.unique().0, reply)));
-    }
-
-    fn read(&self, req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {
-        let rel = self.0.rel_of_ino(ino.0).unwrap_or_default();
-        tracing::info!("read of {} by {}: {size} bytes at {offset}", rel.display(), caller(req));
-        let mut buf = vec![0u8; size as usize];
-        let mut got = 0;
-        while got < buf.len() {
-            match borrow(fh).read_at(&mut buf[got..], offset + got as u64) {
-                Ok(0) => break,
-                Ok(n) => got += n,
-                Err(e) => return reply.error(errno(&e)),
+        let Some(row) = s.row(&id) else { return reply.error(Errno::ENOENT) };
+        let end = (offset + u64::from(size)).min(row.size);
+        if offset >= end {
+            return reply.data(&[]);
+        }
+        // What a download under way has written already.
+        let running = crate::panic::lock(&s.running).get(&id).cloned();
+        if let Some(Running { mark, staged }) = running {
+            if end + WRITTEN_BEHIND <= mark.load(Ordering::SeqCst) {
+                if let Ok(file) = File::open(&staged) {
+                    return from_file(&file, reply);
+                }
             }
         }
-        reply.data(&buf[..got]);
+        tracing::info!("read of {} by {}: {} bytes at {offset}, from OneDrive", rel.display(), caller(req), end - offset);
+        let (shared, unique) = (Arc::clone(s), req.unique().0);
+        let task = s.runtime.spawn(async move {
+            let fetched = shared.range(&row, offset, end).await;
+            crate::panic::lock(&shared.reads).remove(&unique);
+            match fetched {
+                Ok(bytes) => {
+                    let asked = {
+                        let mut asked = crate::panic::lock(&shared.asked);
+                        let total = asked.entry(row.id.clone()).or_default();
+                        *total += bytes.len() as u64;
+                        *total
+                    };
+                    reply.data(&bytes);
+                    // A file smaller than the threshold is downloaded once all of it was read:
+                    // it would be fetched again at every read otherwise.
+                    if asked >= shared.download_after.min(row.size) {
+                        shared.ensure(row, rel, Class::Open, None);
+                    }
+                }
+                Err(e) => reply.error(Errno::from_i32(e)),
+            }
+        });
+        crate::panic::lock(&s.reads).insert(unique, task.abort_handle());
+        if task.is_finished() {
+            crate::panic::lock(&s.reads).remove(&unique);
+        }
     }
 
     fn release(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, _lock_owner: Option<LockOwner>, _flush: bool, reply: ReplyEmpty) {
-        // SAFETY: the descriptor this mount opened for the handle, closed once.
-        unsafe { libc::close(fh.0 as i32) };
+        crate::panic::lock(&self.0.handles).remove(&fh.0);
         reply.ok();
     }
 

@@ -64,7 +64,17 @@ pub struct TransfersConfig {
     /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
+    /// A folder served through FUSE: how many bytes of a file that is not downloaded may be read
+    /// before the whole file is downloaded. Up to there each read fetches its own bytes from
+    /// OneDrive, so a program that only looks at the start of a file (a file manager finding
+    /// its type) downloads nothing more. 0 downloads the file at its first read.
+    /// [`DOWNLOAD_AFTER`] when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_after: Option<i64>,
 }
+
+/// `[transfers] download_after` when `config.toml` does not say: 1 MiB.
+pub const DOWNLOAD_AFTER: u64 = 1 << 20;
 
 impl Config {
     /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
@@ -78,6 +88,11 @@ impl Config {
             tracing::warn!("[transfers] max = {max} in config.toml is outside {CEILING_MIN}-{CEILING_MAX}; using {clamped}");
         }
         clamped
+    }
+
+    /// `[transfers] download_after`, in bytes; a negative number counts as 0.
+    pub fn download_after(&self) -> u64 {
+        self.transfers.as_ref().and_then(|t| t.download_after).map_or(DOWNLOAD_AFTER, |bytes| bytes.max(0) as u64)
     }
 
     /// Each account's large-stream limit (the streams of large sync transfers, never an

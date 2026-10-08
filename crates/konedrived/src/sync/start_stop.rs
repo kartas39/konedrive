@@ -143,6 +143,7 @@ impl SyncService {
                 report: self.report.clone(),
                 pool: Arc::clone(&self.pool),
                 parts: Arc::clone(&self.parts),
+                download_after: self.wiring.transfers.download_after,
             };
             let mount = crate::fuse::Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
             if let Some(record) = stopped.folder_mut().record_mut() {

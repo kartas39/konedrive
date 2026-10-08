@@ -58,9 +58,9 @@ async fn a_folder_served_through_fuse_is_driven_from_the_command_line() {
     assert_eq!(state(&file), "online-only");
     assert_eq!(shown(&["sync", "state", file.to_str().unwrap()]).trim(), "online-only");
 
-    // Reading it downloads it.
+    // Reading it gives its bytes at once, and — all of it being read — downloads it.
     assert_eq!(std::fs::read(&file).unwrap(), b"abc");
-    assert_eq!(state(&file), "hydrated");
+    wait_for(|| state(&file) == "hydrated").await;
     let activity = shown(&["sync", "activity"]);
     assert!(activity.contains("f.txt"), "{activity}");
 

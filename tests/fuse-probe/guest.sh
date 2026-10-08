@@ -352,7 +352,12 @@ service() {
     echo "listing: $($U find $f | sort | tr '\n' ' ')"
     echo "status: $(ask status)"
     echo "root attributes: $($U python3 -c "import os,sys; print(sorted(os.listxattr(sys.argv[1])))" $f)"
-    echo "state a.txt: $(ask state $f/a.txt); a.txt: $($U cat $f/a.txt); state after: $(ask state $f/a.txt)"
+    echo "state a.txt: $(ask state $f/a.txt); a.txt: $($U cat $f/a.txt)"; sleep 1; echo "state a moment after it was read whole: $(ask state $f/a.txt)"
+    echo "-- a look at the start of a big file"
+    echo "the first 32 KiB equal to the cloud's: $(cmp <($U head -c 32768 $f/docs/big.bin) <(head -c 32768 $src/big) && echo yes); state after: $(ask state $f/docs/big.bin); on disk: $($U stat -c %b $f/docs/big.bin) blocks"
+    echo "bytes from the middle equal: $(cmp <($U dd if=$f/docs/big.bin bs=4096 skip=2000 count=4 2> /dev/null) <(dd if=$src/big bs=4096 skip=2000 count=4 2> /dev/null) && echo yes); state: $(ask state $f/docs/big.bin)"
+    echo "read whole, while it downloads behind: equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"; sleep 1; echo "state a moment after: $(ask state $f/docs/big.bin)"
+    echo "freed again: $(ask dehydrate $f/docs/big.bin)"
     echo "hydrate big.bin: $(ask hydrate $f/docs/big.bin); equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"
     echo "menu big.bin: $(ask menu $f/docs/big.bin)"
     echo "dehydrate big.bin: $(ask dehydrate $f/docs/big.bin); state: $(ask state $f/docs/big.bin)"
@@ -370,7 +375,7 @@ service() {
     wait $w
     echo "an inotify watch on the folder saw: $(tr '\n' ';' < $W/logs/watch3.out)"
     echo "listing: $($U find $f | sort | tr '\n' ' ')"
-    echo "a.txt: $($U cat $f/a.txt); new.txt: $($U cat $f/new.txt)"
+    echo "a.txt: $($U cat $f/a.txt); new.txt: $($U cat $f/new.txt)"; sleep 1
     echo "-- a waiting open, interrupted"
     echo "slow to arrive" > $src/slow; chown 1000:1000 $src/slow
     ask file S R slow.txt $src/slow > /dev/null; ask refresh > /dev/null; sleep 1
@@ -378,12 +383,12 @@ service() {
     $U cat $f/slow.txt > /dev/null 2>&1 &
     c=$!
     sleep 1
-    alive $c && echo "the opener waits; state meanwhile: $(ask state $f/slow.txt)" || echo "the opener did not wait"
+    alive $c && echo "the reader waits for its bytes; state meanwhile: $(ask state $f/slow.txt)" || echo "the reader did not wait"
     # Not SIGINT: a background command of a script ignores it.
     kill -TERM $c; sleep 1
     alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
     sleep 6
-    echo "state once the download ended by itself: $(ask state $f/slow.txt)"
+    echo "state afterwards (a read given up downloads nothing): $(ask state $f/slow.txt); read now: $($U cat $f/slow.txt)"
     echo "-- a download cut off, and continued"
     head -c 41943040 /dev/urandom > $src/large; chown 1000:1000 $src/large
     ask file L R large.bin $src/large > /dev/null; ask refresh > /dev/null; sleep 1

@@ -56,11 +56,14 @@ pub struct Transfers {
     pub ceiling: usize,
     /// How many large files move at once (`large`).
     pub large: usize,
+    /// How much of a file of a folder served through FUSE is read before it is downloaded
+    /// whole (`download_after`).
+    pub download_after: u64,
 }
 
 impl Default for Transfers {
     fn default() -> Self {
-        Self { ceiling: konedrive_graph::pool::DEFAULT_CEILING, large: konedrive_graph::pool::DEFAULT_LARGE }
+        Self { ceiling: konedrive_graph::pool::DEFAULT_CEILING, large: konedrive_graph::pool::DEFAULT_LARGE, download_after: crate::config::DOWNLOAD_AFTER }
     }
 }
 
