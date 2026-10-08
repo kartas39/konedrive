@@ -13,22 +13,6 @@ use nix::sys::stat::Mode;
 use xattr::FileExt;
 
 
-/// Why a file or a folder of the root was not opened ([`SyncRoot::open_inside`],
-/// [`SyncRoot::open_item`]).
-#[derive(Debug, thiserror::Error)]
-pub enum OpenError {
-    /// The path leads out of the root, through a link, or to something that is neither a
-    /// file nor a folder; or the root no longer carries this root's id.
-    #[error("not a plain file inside this sync root")]
-    OutsideRoot,
-    /// Inside the root and not konedrive's: a file without a state, or one of the daemon's
-    /// own `.konedrive-*` names.
-    #[error("not a OneDrive file")]
-    NotManaged,
-    #[error("{0}")]
-    Io(String),
-}
-
 /// The folders a mount lies over, each with the descriptor opened on it before the mount.
 static UNDER: Mutex<Vec<(PathBuf, Arc<File>)>> = Mutex::new(Vec::new());
 

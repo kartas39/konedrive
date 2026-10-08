@@ -141,40 +141,21 @@ struct Held {
 }
 
 /// A share in an [`InodeGuard`]: the inode stays locked until this is dropped
-/// as well. A blocking section of a fill carries one (`hydration::source`):
-/// the section runs to its end on its own thread even when the fill is
-/// dropped, and whoever takes the lock next must not find it still writing.
-///
-/// It can carry something of its holder's that has to last as long as the
-/// section does ([`holding_with`]): let go of after the lock.
+/// as well. A blocking section of an upload carries one:
+/// the section runs to its end on its own thread even when the row's task is
+/// dropped, and whoever takes the lock next must not find it still reading.
 #[derive(Clone)]
 pub struct InodeHold {
     #[allow(dead_code)]
     held: Arc<Held>,
-    #[allow(dead_code)]
-    with: Option<Carried>,
 }
-
-/// What an [`InodeHold`] carries for its holder.
-pub(crate) type Carried = Arc<dyn std::any::Any + Send + Sync>;
 
 impl InodeGuard {
-    /// A share in the lock, for a blocking section started under it that is
-    /// not a fill's (the upload's commit and reads, `upload::steps::sections::blocking_under`).
+    /// A share in the lock, for a blocking section started under it (the upload's commit
+    /// and reads, `upload::steps::sections::blocking_under`).
     pub(crate) fn hold(&self) -> InodeHold {
-        InodeHold { held: Arc::clone(&self.held), with: None }
+        InodeHold { held: Arc::clone(&self.held) }
     }
-}
-
-tokio::task_local! {
-    /// The lock the work running now was started under ([`holding`]).
-    static HELD: InodeHold;
-}
-
-/// A share in the lock the calling work runs under, if it was started under
-/// one ([`holding`], [`unless_removed`]).
-pub(crate) fn hold_in_force() -> Option<InodeHold> {
-    HELD.try_with(InodeHold::clone).ok()
 }
 
 #[cfg(test)]

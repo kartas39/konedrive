@@ -8,10 +8,10 @@
 //! ([`publish`](super::publish)): the bus's `Path`, `State`, the registration's part of
 //! `LastError`, and the [`View`] every reader that only looks reads.
 //!
-//! What runs for a OneDrive folder that is up is part of the state too
-//! ([`Content::OneDrive`], [`Sync`](super::running_sync::Sync)): its sync is started only by a
+//! What runs for a folder that is up is part of the state too
+//! ([`Up::sync`], [`Sync`](super::running_sync::Sync)): its sync is started only by a
 //! holder of a `Stopped`, and stopped by [`SyncService::change`], which takes it out of
-//! the state. So there is no sync without a folder that is up and shows OneDrive, and no
+//! the state. So there is no sync without a folder that is up, and no
 //! tree store open for a folder that is forgotten.
 
 use std::sync::Arc;

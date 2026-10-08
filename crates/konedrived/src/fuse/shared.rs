@@ -54,7 +54,7 @@ pub(super) struct Shared {
     /// (`[transfers] download_after` in `config.toml`).
     pub(super) download_after: u64,
     /// The files being read as ranges, by item: each holds the account's pool as a file being
-    /// opened does, until [`READ_LINGERS`] after its last read. While one is held no pinned
+    /// opened does, until `READ_LINGERS` after its last read. While one is held no pinned
     /// or other background download starts, so what the user reads goes first.
     pub(super) readers: Mutex<HashMap<String, Reader>>,
     /// The reads waiting for a range from OneDrive, by request: a program that is interrupted

@@ -22,6 +22,8 @@
 //! read-only folder's reconcile, or a read-write folder's
 //! (`docs/design/writes.md` §9), which holds the tree lock until the swap.
 //!
+//! [`Mount::follow`]: crate::fuse::Mount::follow
+//! [`Mount::committed`]: crate::fuse::Mount::committed
 //! [`Reconcile::run`]: crate::remote::listing::reconcile::Reconcile::run
 //! [`Reconcile::follow_mount`]: crate::remote::listing::reconcile::Reconcile::follow_mount
 //! [`Reconcile::after_commit`]: crate::remote::listing::reconcile::Reconcile::after_commit
@@ -316,7 +318,7 @@ fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleErr
 /// With a plan (read-write mode) the swap keeps the base row of what the
 /// outbox holds, and its change waits (the read-write reconcile
 /// must, items 3 and 4). Never what is being removed.
-fn commit_cycle(store: &Store, plan: Mode<&Plan>, commit: Commit) -> Result<Said, CycleError> {
+pub(crate) fn commit_cycle(store: &Store, plan: Mode<&Plan>, commit: Commit) -> Result<Said, CycleError> {
     let (link, listing) = match commit {
         Commit::Page { changes, next } => {
             store.call_blocking(move |s| s.commit_page(&changes, &next))?;
