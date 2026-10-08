@@ -904,6 +904,12 @@ fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: mpsc::Receiv
     }
 }
 
+/// The program behind a request, for the log: its id and the name the kernel has for it.
+fn caller(req: &Request) -> String {
+    let name = fs::read_to_string(format!("/proc/{}/comm", req.pid())).unwrap_or_default();
+    format!("{} ({})", name.trim(), req.pid())
+}
+
 fn borrow(fh: FileHandle) -> std::mem::ManuallyDrop<File> {
     // SAFETY: the handle is a descriptor this mount opened and closes at the release.
     std::mem::ManuallyDrop::new(unsafe { File::from_raw_fd(fh.0 as i32) })
@@ -999,7 +1005,9 @@ impl Filesystem for Served {
         let (Some(row), Some(rel)) = (s.id(ino).and_then(|id| s.row(&id)), s.rel_of_ino(ino.0)) else {
             return reply.error(Errno::ENOENT);
         };
-        if s.has_copy(&rel, &row.id) {
+        let downloaded = s.has_copy(&rel, &row.id);
+        tracing::info!("open of {} by {}: flags {:#x}, {}", rel.display(), caller(req), flags.0, if downloaded { "downloaded" } else { "not downloaded: downloading it" });
+        if downloaded {
             return match s.open_downloaded(&rel) {
                 Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
                 Err(e) => reply.error(errno(&e)),
@@ -1009,7 +1017,9 @@ impl Filesystem for Served {
         s.ensure(row, rel, Class::Open, Some(Waiter::Open(req.unique().0, reply)));
     }
 
-    fn read(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {
+    fn read(&self, req: &Request, ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {
+        let rel = self.0.rel_of_ino(ino.0).unwrap_or_default();
+        tracing::info!("read of {} by {}: {size} bytes at {offset}", rel.display(), caller(req));
         let mut buf = vec![0u8; size as usize];
         let mut got = 0;
         while got < buf.len() {
