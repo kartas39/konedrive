@@ -19,6 +19,7 @@ mod announce;
 mod asked;
 mod attr;
 mod changes;
+mod conflict;
 mod copies;
 mod fill;
 mod follow;
@@ -40,7 +41,7 @@ mod write;
 mod writers;
 
 pub use asked::{Freed, Looked, Refused};
-pub use follow::Step;
+pub use follow::{Followed, Step};
 pub use lock::{clear_stale, directories, tidy, tidy_all};
 pub use mount::{Mount, Parts};
 pub use shared::Writing;

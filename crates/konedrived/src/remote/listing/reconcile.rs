@@ -310,7 +310,7 @@ impl Reconcile {
     /// fails has its work on disk recorded and handed over ([`Self::failed`]).
     pub(crate) fn apply_with_handover(&self, prepared: &Prepared, scope: Scope) -> Result<Reconciled, CycleError> {
         if let Some(mount) = &self.fuse {
-            return self.follow_mount(mount);
+            return self.follow_mount(mount, prepared.plan.as_ref().map(|plan| Arc::clone(&plan.rw)));
         }
         let materializer = Materializer {
             disk: Disk::open(&self.root, self.mode.is_read_only()).map_err(|e| applying(e.into()))?,
@@ -340,12 +340,14 @@ impl Reconcile {
     /// store. The folder under the mount follows what changed ([`crate::fuse::Mount::follow`]),
     /// and the changes are counted and named as a pass over a folder of placeholders names
     /// them.
-    fn follow_mount(&self, mount: &Arc<crate::fuse::Mount>) -> Result<Reconciled, CycleError> {
+    fn follow_mount(&self, mount: &Arc<crate::fuse::Mount>, rw: Mode<Arc<Rw>>) -> Result<Reconciled, CycleError> {
         use crate::status::activity::Kind;
         let following = Arc::clone(mount);
-        let steps = self.store.call_blocking(move |s| following.follow(s))?;
+        let followed = self.store.call_blocking(move |s| following.follow(s, rw.read_write().map(|rw| &**rw)))?;
         let mut applied = Applied::default();
-        for step in &steps {
+        applied.on_disk.copies = followed.copied.into_iter().map(|(original, copy)| crate::remote::materialize::Copied { original, copy }).collect();
+        applied.on_disk.recreated = followed.kept;
+        for step in &followed.steps {
             let (kind, rel, from) = match (&step.old, &step.new) {
                 (None, Some((_, now))) => (Kind::Added, now, None),
                 (Some((_, was)), None) => (Kind::Removed, was, None),

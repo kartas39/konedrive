@@ -241,22 +241,38 @@ impl Shared {
     /// The directories of the folder under the mount down to `rel`, made where they are
     /// missing, each carrying the id of the item it is the directory of.
     pub(super) fn backing(&self, rel: &Path) -> std::io::Result<()> {
-        let mut dir = Dir { id: self.read(|s| s.root_item_id()).flatten(), rel: PathBuf::new() };
+        let root = self.read(|s| s.root_item_id()).flatten();
+        self.backing_by(rel, root, |dir, name| self.item_at(dir, name, &self.waiting()).map(|row| row.id))
+    }
+
+    /// [`backing`](Self::backing) inside a cycle of the listing, for a place of the tree it
+    /// has staged: on the store's own thread, where the mount's reader would not see it.
+    pub(super) fn backing_staged(&self, store: &konedrive_tree::TreeStore, rel: &Path) -> std::io::Result<()> {
+        let root = store.root_item_id().ok().flatten();
+        let staged = |dir: &Dir, name: &str| {
+            let row = store.child(Table::Staging, dir.id.as_deref()?, name).ok().flatten()?;
+            (row.placement == Placement::Placed).then_some(row.id)
+        };
+        self.backing_by(rel, root, staged)
+    }
+
+    fn backing_by(&self, rel: &Path, root: Option<String>, item: impl Fn(&Dir, &str) -> Option<String>) -> std::io::Result<()> {
+        let mut dir = Dir { id: root, rel: PathBuf::new() };
         for name in rel.components() {
             let at = dir.rel.join(name);
-            let item = name.as_os_str().to_str().and_then(|n| self.item_at(&dir, n, &self.waiting()));
+            let id = name.as_os_str().to_str().and_then(|n| item(&dir, n));
             let path = self.under(&at);
             match fs::create_dir(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e),
             }
-            if let Some(row) = &item {
-                if carried(&path).as_deref() != Some(row.id.as_str()) {
-                    xattr::set(&path, XATTR_ITEM_ID, row.id.as_bytes())?;
+            if let Some(id) = &id {
+                if carried(&path).as_deref() != Some(id.as_str()) {
+                    xattr::set(&path, XATTR_ITEM_ID, id.as_bytes())?;
                 }
             }
-            dir = Dir { id: item.map(|row| row.id), rel: at };
+            dir = Dir { id, rel: at };
         }
         Ok(())
     }

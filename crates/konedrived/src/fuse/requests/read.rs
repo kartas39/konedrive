@@ -127,7 +127,9 @@ impl Requests {
         let closed = crate::panic::lock(&s.handles).remove(&fh.0);
         if let Some(handle) = closed.filter(|handle| handle.writes) {
             if s.writer_closed(handle.ino) {
-                s.change(move |s| drop(s.content(handle.ino, false)));
+                s.change(move |s| {
+                    let _ = s.content(handle.ino, false);
+                });
             }
         }
         reply.ok();
