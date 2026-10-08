@@ -22,7 +22,11 @@ async fn main() {
     let graph = FakeGraph::start().await;
     let account = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
     let paths = SyncPaths { tree_db: state.join("fuse.sqlite"), rescue_dir: state.join("rescued"), thumbnails: None };
-    let service = testing::wiring().account(account).onedrive(graph.client(), paths).fuse().build();
+    // The folder is recorded in a `config.toml` that stays: a second run finds it there, as a
+    // daemon started again does, and brings it up.
+    let persist = testing::persist(&state.join("config.toml"));
+    let service = testing::wiring().account(account).persist(persist).onedrive(graph.client(), paths).fuse().build();
+    service.resume().await;
     println!("ready");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {

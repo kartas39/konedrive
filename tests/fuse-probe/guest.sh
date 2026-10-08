@@ -499,6 +499,18 @@ service() {
     echo "an inotify watch on the folder saw: $(tr '\n' ';' < $W/logs/watch3.out)"
     echo "listing: $($U find $f | sort | tr '\n' ' ')"
     echo "a.txt: $($U cat $f/a.txt); new.txt: $($U cat $f/new.txt)"
+    echo "-- the daemon killed and started again"
+    kill -KILL $svc; wait $svc 2> /dev/null; exec 8>&-
+    echo "killed: $($U ls $f 2>&1)"
+    : > $W/logs/svc.out
+    $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
+    svc=$!
+    exec 8> $st/in
+    for _ in $(seq 100); do grep -q ready $W/logs/svc.out && break; sleep 0.1; done
+    sleep 1
+    mounted $f && echo "mounted again: $($U ls $f | tr '\n' ' ')" || echo "NOT MOUNTED AGAIN: $(tail -5 $W/logs/svc.err)"
+    echo "a downloaded file after the restart: state $(ask state $f/a.txt), content: $($U cat $f/a.txt)"
+    echo "status: $(ask status)"
     echo "free-up-space: $(ask free-up-space)"
     echo "activity: $(ask activity | head -c 900)"
     echo "forget: $(ask forget)"; sleep 1
