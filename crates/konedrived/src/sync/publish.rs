@@ -128,8 +128,8 @@ pub(super) fn publish(folder: &Folder) -> Published {
             quiet(path, state, error, helper, view(Some(why)))
         }
         Is::Up(up) => {
-            // A folder served through FUSE needs no interception: its mount answers every open.
-            let intercepted = up.record.intercepted() || up.record.source == RootSource::Fuse;
+            // A folder that shows OneDrive needs no interception: its mount answers every open.
+            let intercepted = up.record.intercepted() || up.record.source == RootSource::OneDrive;
             // A recovery that could not reset a file outranks the mode in `State`, because
             // it is the louder of the two problems; `LastError` still carries the
             // no-interception warning.
@@ -140,12 +140,8 @@ pub(super) fn publish(folder: &Folder) -> Published {
             };
             let error = up.recovery.text().unwrap_or_default().to_owned();
             let helper = match up.record.interception {
-                // HS2: a folder that shows OneDrive is kept in step only with
-                // interception; without it, it waits for the helper, and switches when it
-                // connects.
-                Interception::Without { .. } if up.record.source == RootSource::OneDrive => Helper::Waited,
                 Interception::Without { .. } => Helper::NotNeeded,
-                Interception::Intercepted if up.record.source == RootSource::Fuse => Helper::NotNeeded,
+                Interception::Intercepted if up.record.source == RootSource::OneDrive => Helper::NotNeeded,
                 Interception::Intercepted => Helper::Needed,
             };
             let switch_note = up.switch_failed.clone().map(|why| SwitchNote { why });
@@ -196,9 +192,6 @@ impl SyncService {
             s.folder.root_state = published.state;
             s.folder.last_error = published.error;
             s.folder.no_interception_warning = published.no_interception_warning;
-            // Only a folder that is up and served through FUSE: for every other the helper's
-            // trouble is told as it was.
-            s.folder.helper_not_needed = folder.up().is_some_and(|up| up.record.source == RootSource::Fuse);
             s.folder.switch_note = published.switch_note;
             s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;

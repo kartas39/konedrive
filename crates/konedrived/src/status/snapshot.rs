@@ -146,9 +146,6 @@ pub struct FolderStatus {
     /// The folder is up with nothing intercepting opens inside it: `LastError` begins with
     /// [`NO_INTERCEPTION_WARNING`]. A fact of the folder, never trouble by itself.
     pub no_interception_warning: bool,
-    /// The folder is what it is without the helper: registered without interception, or
-    /// served through FUSE. The helper's trouble is then none of the account's.
-    pub helper_not_needed: bool,
     /// Why a folder registered without the helper could not be switched to interception
     /// once the helper connected: said right behind `last_error`, and gone with it.
     pub switch_note: Option<SwitchNote>,

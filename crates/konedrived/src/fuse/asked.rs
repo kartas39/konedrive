@@ -20,17 +20,19 @@ use super::mount::Mount;
 pub struct Freed {
     pub files: u64,
     pub bytes: u64,
-    /// Downloaded files left as they are: pinned, or being downloaded.
+    /// Downloaded files left as they are: pinned, being downloaded, or changed here and not
+    /// uploaded yet.
     pub kept: u64,
 }
 
 /// Why the mount refuses what it was asked.
 #[derive(Debug, thiserror::Error)]
 pub enum Refused {
-    #[error("not an item of this folder")]
+    #[error("not inside this folder")]
     NotOurs,
-    #[error("{path} is pinned by {by}: unpin it first")]
-    Pinned { path: String, by: String },
+    /// A file or directory OneDrive has no item for yet, or a name the folder does not have.
+    #[error("not an item of OneDrive")]
+    NoItem,
     #[error("{0}")]
     Io(String),
 }
@@ -45,6 +47,9 @@ pub struct Looked {
     pub own_pin: bool,
     /// The folder above that pins it.
     pub pinned_above: Option<PathBuf>,
+    /// A file whose content was changed here and is not uploaded yet: its copy is the only
+    /// one there is.
+    pub changed: bool,
 }
 
 impl Mount {
@@ -57,7 +62,7 @@ impl Mount {
         // What has no item yet is not OneDrive's to download, free or pin.
         match self.shared.resolve(&rel) {
             Some(Entry::Item(row)) => Ok((row, rel)),
-            _ => Err(Refused::NotOurs),
+            _ => Err(Refused::NoItem),
         }
     }
 
@@ -65,7 +70,7 @@ impl Mount {
     pub async fn hydrate(&self, path: &Path) -> Result<(), Refused> {
         let (row, rel) = self.item(path)?;
         if row.kind != Kind::File {
-            return Err(Refused::NotOurs);
+            return Err(Refused::NoItem);
         }
         if self.shared.has_copy(&rel, &row.id) {
             return Ok(());
@@ -79,8 +84,8 @@ impl Mount {
         }
     }
 
-    /// Frees the space of the downloaded files at and below `path`. What a pin keeps, or a
-    /// download is filling, is left and counted. Whether `path` itself may be freed is the
+    /// Frees the space of the downloaded files at and below `path`. What a pin keeps, a
+    /// download is filling, or holds a change that is not uploaded yet, is left and counted. Whether `path` itself may be freed is the
     /// caller's to ask first ([`look`](Self::look)).
     pub async fn free_up(&self, path: &Path) -> Result<Freed, Refused> {
         let (row, _) = self.item(path)?;
@@ -97,11 +102,13 @@ impl Mount {
         let s = Arc::clone(&self.shared);
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
+            let waiting = s.waiting();
             for (file, at) in s.files_below(&row) {
                 if !s.has_copy(&at, &file.id) {
                     continue;
                 }
-                if s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
+                // A copy that was changed here is the only place its content is.
+                if waiting.changed.contains(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -131,7 +138,8 @@ impl Mount {
         let above = row.parent_id.as_deref().and_then(|p| s.row(p)).and_then(|above| s.pinned_by(&above));
         let pinned_above = above.and_then(|by| s.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let state = (row.kind == Kind::File).then(|| s.state_of(&row, &rel));
-        Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above })
+        let changed = s.waiting().changed.contains(&row.id);
+        Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
     }
 
     /// How many downloaded files, and bytes, the items at and below `path` hold.

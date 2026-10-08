@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", line("konedrived", VERSION, COMMIT));
         return Ok(());
     }
-    // What the unit runs after the daemon's end, however it ended: a folder served through FUSE
+    // What the unit runs after the daemon's end, however it ended: a folder that shows OneDrive
     // loses the mount the daemon left on it, and is locked.
     if std::env::args().nth(1).is_some_and(|arg| arg == "--tidy") {
         let folders = konedrived::fuse::tidy_all(&Paths::from_xdg()?.config_file);
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         stop::Ended::Bound => tracing::warn!("stopped: requests still in flight are cut"),
         stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
     }
-    // Last: a folder served through FUSE loses its mount, is locked, and whoever showed the
+    // Last: a folder that shows OneDrive loses its mount, is locked, and whoever showed the
     // mount is told to read the folder on disk. The unit's tidy step does the same for a daemon
     // that could not.
     for sync in registry.accounts().iter() {

@@ -26,7 +26,6 @@ mod guards;
 mod hydrate;
 mod mode;
 mod onedrive;
-mod pins;
 mod registration;
 mod reports;
 mod startup;

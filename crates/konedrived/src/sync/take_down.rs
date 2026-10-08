@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::folder::{Down, Is, Record, Standing, Stopped};
-use super::{RootSource, SyncError, SyncService};
+use super::{SyncError, SyncService};
 use crate::folder::disk;
 use crate::folder::root::{self, SyncRoot};
 use crate::helper::HelperError;
@@ -126,9 +126,6 @@ impl SyncService {
         // A move out of the folder still in its store goes with it (the count above leaves
         // none): what it left outside is tidied first, while the helper still holds the
         // folder, and the registry stops routing its ids.
-        if record.source == RootSource::OneDrive {
-            self.drop_moved_out(&mut stopped, &record.root).await;
-        }
         if let Err(refused) = self.let_go_at_the_helper(&record).await {
             self.start_again(&mut stopped).await;
             return Err(refused);
@@ -141,8 +138,7 @@ impl SyncService {
         // Whether the store's connections are closed is waited for below, once the view
         // and the activity log have let go of theirs too.
         let mut kept = std::mem::take(&mut record.kept);
-        // A folder served through FUSE is unmounted: the folder on disk then shows its
-        // downloaded files alone.
+        // The folder is unmounted: on disk it then shows its downloaded files alone.
         if let Some(mount) = kept.fuse.take() {
             self.report.space.measure_at(None);
             let _ = tokio::task::spawn_blocking(move || mount.forget()).await;
@@ -220,9 +216,8 @@ impl SyncService {
             s.local.local_bytes = 0;
             s.local.conflict_count = 0;
         });
-        // The pins stay on the files; what they queued is dropped, and
-        // `PinnedCount` reads 0.
-        self.pins.clear();
+        // The pins went with the folder's store.
+        self.state.update(|s| s.local.pinned_count = 0);
         // A Forget drops the activity: a OneDrive folder's with
         // its store, which the change has already let go of, and a local
         // folder's from memory here — after the folder stopped being the one

@@ -32,7 +32,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::status::report::Report;
 use super::materialize::{Applied, ApplyError, Claimed};
-use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
@@ -107,9 +106,6 @@ pub struct ListingContext {
     /// Where the cycle's activity, conflicts and downloads are reported, and
     /// the folder's space measured again: `SyncService`'s.
     pub report: Report,
-    /// `SyncService`'s pins: a cycle queues what it placed under a pin, and
-    /// a Full reconcile is followed by a sweep.
-    pub pins: Arc<Pins>,
     /// The folder's mode (`docs/design/writes.md` §2.2). Read-only: the
     /// account is, the folder is kept under the read-only lock, and its
     /// cycle is the read phase's. Read-write: with the cycle's part in
@@ -420,22 +416,8 @@ impl Listing {
         {
             tracing::warn!("the task looking over the conflicts failed: {e}");
         }
-        // "Always keep on this device": the sweep finds every pinned file not
-        // downloaded yet and counts the pins again. It follows a Full
-        // reconcile; a cycle after a pinned download failed; and a cycle that
-        // moved or removed anything while pins exist, since a pinned item —
-        // or a folder with one inside — may have moved or gone with it.
-        // After any other, what it placed under a pin is queued.
-        let resweep = self.ctx.pins.take_resweep();
-        let moved_pins = (applied.counts.moved > 0 || applied.counts.deleted > 0) && self.ctx.pins.count() > 0;
-        if self.ctx.fuse.is_some() {
-            // The mount keeps its own pins, and swept them when the cycle was committed.
-        } else if full || resweep || moved_pins {
-            self.ctx.pins.sweep(self.ctx.root.path.clone()).await;
-        } else if !applied.pinned.is_empty() {
-            let placed = applied.pinned.iter().map(|rel| self.ctx.root.path.join(rel)).collect();
-            self.ctx.pins.queue_under(placed).await;
-        }
+        // "Always keep on this device": the mount keeps the pins, and downloaded what they
+        // keep when the cycle was committed.
         // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
         // the pause is Full, and finds them again.
         let paused = self.ctx.running.stopped();

@@ -12,7 +12,6 @@ pub mod free_up;
 pub mod hydrate;
 pub mod menu;
 pub mod mode;
-mod mounted;
 pub mod move_outs;
 pub mod outbox;
 pub mod pause;
@@ -43,7 +42,6 @@ use crate::folder::root::{RegisterError, SyncRoot};
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle, published_error, published_state};
 use crate::conditions::running;
-use crate::hydration::pin;
 use crate::hydration::source;
 use crate::local;
 use crate::remote::listing;
@@ -62,25 +60,21 @@ pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
 pub enum RootSource {
     /// Filled from a directory with `PopulateFromDirectory`, as in part 1.
     Local,
-    /// Listed from the signed-in drive, locked, and kept in step with it.
+    /// The signed-in drive, served as a mount over the folder (`crate::fuse`) and kept in
+    /// step with it.
     OneDrive,
-    /// The signed-in drive served as a FUSE mount over the folder (`crate::fuse`): no
-    /// placeholders, no helper. Its tree store is a file of its own, and a daemon that does
-    /// not know the word leaves the folder down.
-    Fuse,
 }
 
 impl RootSource {
-    /// Whether the folder shows the account's drive, however it is served.
+    /// Whether the folder shows the account's drive.
     pub fn shows_onedrive(self) -> bool {
-        matches!(self, RootSource::OneDrive | RootSource::Fuse)
+        self == RootSource::OneDrive
     }
 
     fn as_str(self) -> &'static str {
         match self {
             RootSource::Local => "local",
             RootSource::OneDrive => "onedrive",
-            RootSource::Fuse => "fuse",
         }
     }
 
@@ -90,7 +84,6 @@ impl RootSource {
         match value {
             "onedrive" => Some(RootSource::OneDrive),
             "local" => Some(RootSource::Local),
-            "fuse" => Some(RootSource::Fuse),
             _ => None,
         }
     }
@@ -136,7 +129,7 @@ pub enum SyncError {
     #[error("no conflict is recorded for {0}")]
     NoConflict(String),
     /// A free-up of something a pin keeps on this device: the message is
-    /// [`pin::refusal`]'s, naming the path refused and what pins it.
+    /// [`pins::refusal`]'s, naming the path refused and what pins it.
     #[error("{0}")]
     NotAllowed(String),
     /// A free-up of a file with a change waiting to be uploaded (`docs/design/writes.md`
@@ -299,10 +292,6 @@ pub struct SyncService {
     /// the sync starts and detached by [`change`](Self::change), after which no write
     /// holds it.
     report: Report,
-    /// "Always keep on this device": the pins and the downloads they ask
-    /// for. Shared with a OneDrive folder's sync, which queues what it places
-    /// under a pin and sweeps after every Full reconcile.
-    pins: Arc<pin::Pins>,
     /// This service, for the watcher's status hook, which may have to stop
     /// the sync from the watcher's thread (the folder moved or deleted).
     me: std::sync::Weak<SyncService>,
@@ -350,7 +339,6 @@ impl SyncService {
         // The pins' downloads go through this very service, which they must
         // not keep alive: a weak reference.
         Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
-            pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
             pool,
             parts: source::Share::new(),
             link: hub.link_cell(),
@@ -511,14 +499,12 @@ impl SyncService {
         published_error(&self.state.get())
     }
 
-    /// Where the folder's files are filled from now, as last published: the drive for a
-    /// OneDrive folder that is up, the directory a local folder was populated from.
-    /// The mount of a folder served through FUSE, as last published.
+    /// The folder's mount, as last published: there from the folder's first sync on.
     pub(crate) fn mount(&self) -> Option<Arc<crate::fuse::Mount>> {
         self.view.borrow().fuse.clone()
     }
 
-    /// The daemon is stopping: a folder served through FUSE loses its mount and is locked, so
+    /// The daemon is stopping: the folder loses its mount and is locked, so
     /// that it shows its downloaded files and takes nothing until the daemon is back. Its path.
     pub async fn unmount(&self) -> Option<std::path::PathBuf> {
         let mount = self.mount()?;
@@ -527,6 +513,8 @@ impl SyncService {
         path
     }
 
+    /// Where the folder's files are filled from now, as last published: the drive for a
+    /// OneDrive folder that is up, the directory a local folder was populated from.
     pub(crate) fn content_source(&self) -> Option<Arc<dyn crate::hydration::source::ContentSource>> {
         self.view.borrow().source.clone()
     }
@@ -540,16 +528,14 @@ impl SyncService {
 
     /// `RootSource`.
     pub fn root_source(&self) -> String {
-        // What the folder shows, for the clients: how it is served is not their concern.
-        let shown = |source: RootSource| if source.shows_onedrive() { RootSource::OneDrive } else { source };
-        self.record().map(|r| shown(r.source).as_str().to_owned()).unwrap_or_default()
+        self.record().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
     }
 
     /// HS2: a folder that shows OneDrive is kept in step only when it is
     /// intercepted and the helper is connected.
     fn require_helper_for(&self, record: &Record) -> Result<(), SyncError> {
-        // A folder served through FUSE is kept in step by its mount.
-        if record.source == RootSource::Fuse || (record.intercepted() && self.link().is_some()) {
+        // A folder that shows OneDrive is kept in step by its mount.
+        if record.source == RootSource::OneDrive || (record.intercepted() && self.link().is_some()) {
             Ok(())
         } else {
             Err(SyncError::NoHelper)

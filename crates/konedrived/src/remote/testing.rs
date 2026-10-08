@@ -261,7 +261,6 @@ impl World {
             full_threshold: FULL_THRESHOLD,
             after_cycle: None,
             report: self.report.clone(),
-            pins: Arc::clone(&self.pins),
             mode: match self.writes {
                 true => Mode::ReadWrite(self.writes(None)),
                 false => Mode::ReadOnly,

@@ -17,7 +17,7 @@ use crate::local::ScanReason;
 use crate::remote::listing::{self, PollHandle};
 use crate::sync::folder::{Down, Is, Record, Standing, Stopped};
 use crate::sync::running_sync::{Handles, Lock, Parts, RunningSync, Sync, Why, Writes};
-use crate::sync::{RootSource, SyncError, SyncPaths, SyncService};
+use crate::sync::{SyncError, SyncPaths, SyncService};
 
 /// What a sync is built on, once [`SyncService::prepare`] has made the folder ready.
 struct Prepared {
@@ -46,8 +46,7 @@ impl SyncService {
         // What the parts started here read of the folder is what it is now.
         stopped.publish();
         let Some(reg) = stopped.folder().up().map(|up| up.record.clone()) else { return };
-        // A folder served through FUSE is read-only whatever the account's mode.
-        let wanted = if reg.source == RootSource::Fuse { Mode::ReadOnly } else { stopped.folder().wanted };
+        let wanted = stopped.folder().wanted;
         let prepared = match self.prepare(stopped, &reg, wanted).await {
             Ok(prepared) => prepared,
             Err(why) => return self.cannot_start(stopped, &reg.root, why).await,
@@ -124,17 +123,14 @@ impl SyncService {
         // is locked before anything else, never left writable until a Full reconcile, which
         // needs Graph. A read-write one is unlocked once its watcher has marked every
         // directory (`start_sync`).
-        if wanted != Mode::ReadWrite && reg.source != RootSource::Fuse {
-            self.ensure_locked(&reg.root).await;
-        }
         let tree_lock = Arc::clone(&reg.kept.tree_lock);
         // The folder's store, the one connection to it: open already, or opened now, made
         // if there is none, and kept with the folder until it is forgotten.
         let store = self.kept_store(stopped, &paths).await?;
-        // A folder served through FUSE is mounted from its first sync on, once its store is
-        // there to read the names from.
+        // The folder is mounted from its first sync on, once its store is there to read the
+        // names from.
         let mut fuse = stopped.folder().record().and_then(|record| record.kept.fuse.clone());
-        if reg.source == RootSource::Fuse && fuse.is_none() {
+        if fuse.is_none() {
             let parts = crate::fuse::Parts {
                 root: reg.root.clone(),
                 store_path: paths.tree_db.clone(),
@@ -295,7 +291,6 @@ impl SyncService {
             full_threshold: listing::FULL_THRESHOLD,
             after_cycle: Some(Arc::clone(&kick)),
             report: self.report.clone(),
-            pins: Arc::clone(&self.pins),
             mode: match writes {
                 Some(writes) => crate::remote::mode::Mode::ReadWrite(writes),
                 None => crate::remote::mode::Mode::ReadOnly,

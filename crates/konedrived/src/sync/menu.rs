@@ -4,25 +4,19 @@
 //! that a file manager shows only what would go through, and decides nothing itself:
 //!
 //! - [`SyncService::menu_part`] looks at one account's share of the selection with the
-//!   checks those calls make themselves (`pins::pin_target`, `pins::kept`, the
-//!   free-up's own preconditions), reaching each item with `Reach::Look` — nothing is
-//!   opened, so nothing is downloaded, and nothing is changed;
+//!   checks those calls make themselves, asking the folder's mount about each path —
+//!   nothing is opened, so nothing is downloaded, and nothing is changed;
 //! - [`decide`] puts the accounts' parts together into the one answer.
 //!
-//! A menu is waited for, so the answer waits for nothing that can take long: the
-//! selection is looked at in one pass, each descriptor closed before the next is opened,
-//! and the tree store is asked one question for all of it, through its read-only
-//! connection, which never waits for the store's writer.
+//! A menu is waited for, so the answer waits for nothing that can take long: the mount
+//! answers from its own reading connection to the tree store, which never waits for the
+//! store's writer.
 
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::State;
-use konedrive_tree::outbox::Inode;
 
-use crate::folder::root::Reach;
-use crate::sync::free_up::outbox_object;
-use crate::sync::pins::{kept, pin_target, root_modes, Place};
-use crate::sync::{RootSource, SyncService};
+use crate::sync::SyncService;
 
 /// "Always keep on this device" in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,106 +122,49 @@ pub struct Taken {
 pub struct Part {
     /// Each path given, in order: what `Pin` takes, and `None` for what it refuses.
     pub taken: Vec<Option<Taken>>,
-    /// The folder `Unpin` and `FreeUp` would refuse the taken paths for
-    /// (`pins::kept_by_folder`).
+    /// The folder `Unpin` and `FreeUp` would refuse the taken paths for: one above them
+    /// that pins them.
     pub kept_by: Option<PathBuf>,
-    /// What `FreeUp` would refuse the taken paths for, if it would: the helper, then a
-    /// folder above, as `FreeUp` asks them; then `Unknown` for a mark that cannot be
-    /// read, before the store is asked, where `FreeUp` goes file by file.
+    /// What `FreeUp` would refuse the taken paths for, if it would: a folder above, then
+    /// a change waiting to be uploaded, as `FreeUp` asks them.
     pub free_up_refused: Option<FreeUpWhy>,
-}
-
-/// What one pass over an account's share of a selection leaves, every descriptor closed.
-#[derive(Default)]
-struct Looked {
-    taken: Vec<Option<Taken>>,
-    /// Where each taken path stands among the pins.
-    places: Vec<Place>,
-    /// The downloaded files among them, as the outbox knows them.
-    downloaded: Vec<(Option<String>, Inode)>,
-    /// A file among them whose marks could not be read: whether a change of it waits
-    /// cannot be told.
-    unreadable: bool,
 }
 
 impl SyncService {
     /// This account's share of what `Files.Menu` answers about `paths`, all of them
-    /// routed to this account's folder. Changes nothing and opens no file.
-    ///
-    /// One blocking task looks at every path, and one question goes to the tree store,
-    /// through its read-only connection: whether a downloaded file among them has a
-    /// change waiting to be uploaded. That sees what was last committed, so a change
-    /// being recorded this moment is not in the answer; `FreeUp` asks the store's own
-    /// thread, and refuses then.
+    /// routed to this account's folder. Changes nothing and opens no file: every path is
+    /// asked of the folder's mount, which answers from the tree store and from the names in
+    /// the folder under it.
     pub async fn menu_part(&self, paths: &[PathBuf]) -> Part {
-        let nothing = || Part { taken: vec![None; paths.len()], ..Part::default() };
-        let Some(reg) = self.record() else { return nothing() };
-        if let Some(mount) = self.mount() {
-            return super::mounted::menu_part(&mount, paths);
+        let mut part = Part { taken: Vec::with_capacity(paths.len()), ..Part::default() };
+        let Some(mount) = self.mount() else { return Part { taken: vec![None; paths.len()], ..Part::default() } };
+        let mut changed = false;
+        for path in paths {
+            let Ok(looked) = mount.look(path) else {
+                part.taken.push(None);
+                continue;
+            };
+            if part.kept_by.is_none() {
+                part.kept_by.clone_from(&looked.pinned_above);
+            }
+            changed |= looked.changed;
+            part.taken.push(Some(Taken {
+                is_dir: looked.folder,
+                own: looked.own_pin,
+                pinned: looked.own_pin || looked.pinned_above.is_some(),
+                hydrated: looked.state == Some(State::Hydrated),
+                in_onedrive: true,
+            }));
         }
-        let (root, given) = (reg.root.clone(), paths.to_vec());
-        let looked = tokio::task::spawn_blocking(move || {
-            let modes = root_modes(&root).ok()?;
-            let mut looked = Looked::default();
-            for path in &given {
-                let Ok(target) = pin_target(&root, path, Reach::Look, &modes) else {
-                    looked.taken.push(None);
-                    continue;
-                };
-                // A file's state is read here a second time: `SyncRoot::item` read it to take
-                // the path, and refused the path on an error.
-                let state = if target.is_dir { Ok(None) } else { Reach::Look.state(&target.item) };
-                let hydrated = matches!(state, Ok(Some(State::Hydrated)));
-                looked.taken.push(Some(Taken {
-                    is_dir: target.is_dir,
-                    own: target.own,
-                    pinned: target.own || target.pinned_above(),
-                    hydrated,
-                    in_onedrive: matches!(Reach::Look.item_id(&target.item), Ok(Some(_))),
-                }));
-                // Only a downloaded file can have a change to lose (`refuse_unuploaded`).
-                if hydrated {
-                    match outbox_object(&target.item, Reach::Look) {
-                        Ok(object) => looked.downloaded.push(object),
-                        Err(_) => looked.unreadable = true,
-                    }
-                } else if state.is_err() {
-                    // Reached only when the mark became unreadable between the two reads.
-                    looked.unreadable = true;
-                }
-                // The descriptor closes here, before the next path is looked at.
-                looked.places.push(target.into_place());
-            }
-            Some(looked)
-        })
-        .await
-        .ok()
-        .flatten();
-        let Some(Looked { taken, places, downloaded, unreadable }) = looked else { return nothing() };
-        let kept_by = kept(places.iter().map(Place::standing)).map(|(_, folder)| folder.to_path_buf());
-        // `FreeUp`'s checks: in its order, but for a mark that cannot be read, which comes
-        // before any file's change waiting to be uploaded.
-        let free_up_refused = if self.require_helper_to_free(&reg).is_err() {
-            Some(FreeUpWhy::NoHelper)
-        } else if kept_by.is_some() {
+        // `FreeUp`'s checks, in its order.
+        part.free_up_refused = if part.kept_by.is_some() {
             Some(FreeUpWhy::PinnedAbove)
-        } else if reg.source != RootSource::OneDrive {
-            None
-        } else if unreadable {
-            Some(FreeUpWhy::Unknown)
-        } else if downloaded.is_empty() {
-            None
+        } else if changed {
+            Some(FreeUpWhy::NotUploaded)
         } else {
-            match self.tree_store() {
-                None => Some(FreeUpWhy::Unknown),
-                Some(store) => match store.read(move |s| s.outbox_holds_any(&downloaded)).await {
-                    Ok(false) => None,
-                    Ok(true) => Some(FreeUpWhy::NotUploaded),
-                    Err(_) => Some(FreeUpWhy::Unknown),
-                },
-            }
+            None
         };
-        Part { taken, kept_by, free_up_refused }
+        part
     }
 }
 

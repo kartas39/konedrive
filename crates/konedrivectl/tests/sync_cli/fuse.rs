@@ -17,8 +17,6 @@ fn state(path: &std::path::Path) -> String {
 async fn a_folder_served_through_fuse_is_driven_from_the_command_line() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
-    // Before the daemon starts: a folder registered from now on is served through FUSE.
-    std::env::set_var("KONEDRIVE_FUSE", "1");
     let (f, graph) = harness_onedrive().await;
     Mock::given(method("GET"))
         .and(path("/me/drive/items/F"))

@@ -26,7 +26,7 @@ mounts() { awk '$3 == "fuse.konedrive" { print $2 }' /proc/self/mounts; }
 
 # The trial's daemon, started with its own config and state.
 launch() {
-    KONEDRIVE_FUSE=1 XDG_CONFIG_HOME="$trial/config" XDG_STATE_HOME="$trial/state" XDG_DATA_HOME="$trial/data" \
+    XDG_CONFIG_HOME="$trial/config" XDG_STATE_HOME="$trial/state" XDG_DATA_HOME="$trial/data" \
         nohup "$repo/target/release/konedrived" >> "$log" 2>&1 &
     echo $! > "$pidfile"
     sleep 2

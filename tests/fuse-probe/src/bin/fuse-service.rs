@@ -28,11 +28,11 @@ async fn main() {
     let state = PathBuf::from(std::env::args().nth(1).expect("a state directory"));
     let graph = FakeGraph::start().await;
     let account = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
-    let paths = SyncPaths { tree_db: state.join("fuse.sqlite"), rescue_dir: state.join("rescued"), thumbnails: None };
+    let paths = SyncPaths { tree_db: state.join("tree.sqlite"), rescue_dir: state.join("rescued"), thumbnails: None };
     // The folder is recorded in a `config.toml` that stays: a second run finds it there, as a
     // daemon started again does, and brings it up.
     let persist = testing::persist(&state.join("config.toml"));
-    let service = testing::wiring().account(account).persist(persist).onedrive(graph.client(), paths).fuse().build();
+    let service = testing::wiring().account(account).persist(persist).onedrive(graph.client(), paths).build();
     service.resume().await;
     println!("ready");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -105,8 +105,8 @@ async fn main() {
             ["status"] => {
                 let s = service.state().get();
                 format!(
-                    "state {:?}, listed {}, placed {}, pinned {}, local bytes {}, last checked {}, last error {:?}, the helper is not needed {}",
-                    s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error, s.folder.helper_not_needed
+                    "state {:?}, listed {}, placed {}, pinned {}, local bytes {}, last checked {}, last error {:?}",
+                    s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error
                 )
             }
             ["activity"] => {

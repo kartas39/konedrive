@@ -100,8 +100,8 @@ pub(super) struct Kept {
     /// that what took it before a sync was started again still keeps the new sync's cycle
     /// out.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The mount of a folder served through FUSE, from its first sync on: it stays while the
-    /// folder is recorded, so that the folder shows its names also while no sync runs.
+    /// The mount of a OneDrive folder, from its first sync on: it stays while the folder is
+    /// recorded, so that the folder shows its names also while no sync runs.
     pub fuse: Option<Arc<crate::fuse::Mount>>,
 }
 
@@ -132,14 +132,14 @@ impl Record {
     pub fn switches_with_helper(&self) -> bool {
         match self.interception {
             Interception::Intercepted => false,
-            Interception::Without { switch_when_helper } => switch_when_helper || self.source == RootSource::OneDrive,
+            Interception::Without { switch_when_helper } => switch_when_helper,
         }
     }
 
-    /// Whether the folder needs the helper to be what it is: it is intercepted, or shows
-    /// OneDrive.
+    /// Whether the folder needs the helper to be what it is: a local folder that is
+    /// intercepted.
     pub fn needs_helper(&self) -> bool {
-        self.intercepted() || self.source == RootSource::OneDrive
+        self.intercepted() && self.source != RootSource::OneDrive
     }
 }
 
@@ -368,11 +368,7 @@ impl Folder {
     /// Whether a OneDrive folder's sync may run: the folder is up, shows OneDrive and is
     /// intercepted (HS2).
     pub fn syncs(&self) -> bool {
-        self.up().is_some_and(|up| match up.record.source {
-            RootSource::OneDrive => up.record.intercepted(),
-            RootSource::Fuse => true,
-            RootSource::Local => false,
-        })
+        self.up().is_some_and(|up| up.record.source == RootSource::OneDrive)
     }
 }
 
@@ -398,7 +394,7 @@ pub(super) struct View {
     pub tree_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// The tree store of the recorded OneDrive folder ([`Folder::store`]).
     pub store: Option<Store>,
-    /// The mount of a folder served through FUSE.
+    /// The folder's mount.
     pub fuse: Option<Arc<crate::fuse::Mount>>,
     pub sync: SyncView,
 }

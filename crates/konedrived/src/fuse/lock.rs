@@ -58,13 +58,14 @@ pub fn directories(folder: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// [`tidy`] for every folder `config_file` records as served through FUSE. The folders.
+/// [`tidy`] for every folder `config_file` records as showing OneDrive: each is served by a
+/// mount while the daemon runs. The folders.
 pub fn tidy_all(config_file: &Path) -> Vec<PathBuf> {
     let mut tidied = Vec::new();
     let Some(config) = fs::read_to_string(config_file).ok().and_then(|text| text.parse::<toml::Table>().ok()) else { return tidied };
     let accounts = config.get("accounts").and_then(|accounts| accounts.as_array()).cloned().unwrap_or_default();
     for root in accounts.iter().filter_map(|account| account.get("root")) {
-        let served = root.get("source").and_then(|source| source.as_str()) == Some("fuse");
+        let served = root.get("source").and_then(|source| source.as_str()) == Some("onedrive");
         if let Some(path) = root.get("path").and_then(|path| path.as_str()).filter(|_| served) {
             tidy(Path::new(path));
             tidied.push(PathBuf::from(path));

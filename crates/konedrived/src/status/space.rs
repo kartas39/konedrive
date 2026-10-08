@@ -33,7 +33,7 @@ pub struct LocalSpace {
     measure: Measure,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Where the folder's files are, when that is not its path: the directory under the
-    /// mount of a folder served through FUSE. A walk through the mount would ask the mount
+    /// mount that serves it. A walk through the mount would ask the mount
     /// about every name of the drive.
     at: Arc<Mutex<Option<std::path::PathBuf>>>,
     /// False for a report that reports nowhere ([`Report::nowhere`](crate::status::report::Report::nowhere)): no

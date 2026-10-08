@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use crate::sync::SyncService;
 use crate::sync::SyncError;
-use crate::hydration::pin::state_of_path;
 use crate::status::activity;
 
 impl SyncService {
@@ -85,35 +84,23 @@ impl SyncService {
     }
 
     /// `Files.WebUrl`: the address of the page OneDrive's web interface has for
-    /// the file or folder at `path`. The path is opened as a pin's is
-    /// (`SyncRoot::open_item`: beneath the root, no link followed, nothing
-    /// downloaded) for its item id, and OneDrive is asked for that item — one
-    /// GET, with the drive client's own retries. Nothing is changed, here or
+    /// the file or folder at `path`. The folder's mount says which
+    /// item the path is — nothing is opened, so nothing is downloaded — and
+    /// OneDrive is asked for that item: one GET, with the drive client's own retries. Nothing is changed, here or
     /// in OneDrive, and nothing is remembered.
     ///
     /// Refused `NotInOneDrive` for an item with no id (not uploaded yet),
     /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
-        let reg = self.require_record()?;
-        if let Some(mount) = self.mount() {
-            // Never opened: an open through the mount would download the file.
-            let id = mount.look(path)?.id;
-            let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
-            return page_of(drive.item(&id).await, &path.display().to_string());
-        }
-        let (root, target) = (reg.root.clone(), path.to_path_buf());
-        let (id, shown) = tokio::task::spawn_blocking(move || -> Result<_, SyncError> {
-            let (item, shown) = root.open_item(&target)?;
-            let id = konedrive_fs::placeholder::read_item_id(&item)
-                .map_err(|e| SyncError::Io(format!("{}: {e}", shown.display())))?;
-            Ok((id, shown.display().to_string()))
-        })
-        .await
-        .map_err(|e| SyncError::Io(format!("reading the item failed: {e}")))??;
-        let Some(id) = id else { return Err(SyncError::NotInOneDrive(shown)) };
+        // Never opened: an open through the mount would download the file.
+        let id = match self.require_mount()?.look(path) {
+            Ok(looked) => looked.id,
+            Err(crate::fuse::Refused::NoItem) => return Err(SyncError::NotInOneDrive(path.display().to_string())),
+            Err(refused) => return Err(refused.into()),
+        };
         let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
-        page_of(drive.item(&id).await, &shown)
+        page_of(drive.item(&id).await, &path.display().to_string())
     }
 
     /// `Files.WebUrl` of the account's folder itself: the address of the page
@@ -130,14 +117,10 @@ impl SyncService {
     ///
     /// # A query never opens the file
     ///
-    /// The state is read with `lgetxattr` on the path. Opening the file
-    /// instead made `ItemState` a *download*: under a marked directory, the
-    /// open of an `online-only` file is intercepted and the whole file is
-    /// fetched as a side effect of asking what state it is in — and where
-    /// nothing can serve it, the denial makes the open fail and this answers
-    /// `not-managed` for a genuinely managed placeholder, which is simply a
-    /// wrong answer. Opening it also blocks: `ItemState` on a FIFO inside
-    /// the folder parked the D-Bus dispatch task forever.
+    /// The state is read with `lgetxattr` on the path, which the folder's mount
+    /// answers: opening the file instead would start its download, and
+    /// `ItemState` on a FIFO inside the folder parked the D-Bus dispatch task
+    /// forever.
     pub async fn item_state(&self, path: &Path) -> String {
         const NOT_MANAGED: &str = "not-managed";
         let Some(reg) = self.record() else {
@@ -176,4 +159,12 @@ fn page_of(answer: Result<konedrive_graph::drive::DriveItem, konedrive_graph::dr
         Err(DriveError::NotFound) => Err(SyncError::Io(format!("{shown} is not in OneDrive any more"))),
         Err(other) => Err(SyncError::Io(format!("asking OneDrive for the page of {shown}: {other}"))),
     }
+}
+
+/// One file's state read by name, with no open at all.
+/// `xattr::get` is `lgetxattr`: it does not follow a final symlink, and the
+/// path it is given has already been canonicalized.
+fn state_of_path(path: &Path) -> Option<konedrive_fs::placeholder::State> {
+    let raw = xattr::get(path, konedrive_fs::placeholder::XATTR_STATE).ok()??;
+    String::from_utf8_lossy(&raw).parse().ok()
 }

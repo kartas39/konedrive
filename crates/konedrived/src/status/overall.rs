@@ -99,7 +99,7 @@ pub fn reason(sign_in: SignInState, s: &SyncSnapshot, downloads: usize) -> Reaso
     // folder it intercepts, not one registered without interception, where nothing
     // downloads on open whatever the helper does. A warning and not offline: the folder
     // itself may be fine.
-    if s.folder.helper_state != HelperState::Connected && state != "no-interception" && !s.folder.helper_not_needed {
+    if s.folder.helper_state != HelperState::Connected && state != "no-interception" && s.folder.waits_for_helper {
         return Reason::HelperUnavailable;
     }
     if s.pause.paused_until.is_some() {

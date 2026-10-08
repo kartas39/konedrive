@@ -30,7 +30,7 @@ fn up(interception: Interception, source: RootSource, recovery: Recovery) -> Is 
 fn content(source: RootSource, why: Why) -> Content {
     match source {
         RootSource::Local => Content::Local,
-        RootSource::OneDrive | RootSource::Fuse => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(why), watcher_ended: None }),
+        RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(why), watcher_ended: None }),
     }
 }
 
@@ -47,7 +47,6 @@ fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static 
         root_state: published.state,
         last_error: published.error,
         no_interception_warning: published.no_interception_warning,
-        helper_not_needed: false,
         switch_note: published.switch_note,
         waits_for_helper: published.helper.waits(link),
         locked_note: published.locked_note,
