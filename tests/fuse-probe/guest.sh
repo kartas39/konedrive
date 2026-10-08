@@ -383,7 +383,7 @@ graph() {
     for _ in $(seq 50); do url=$(awk '$1=="url"{print $2}' $W/logs/cloud.out); [ -n "$url" ] && break; sleep 0.1; done
     say file A R a.txt $src/a; say file G R gone.txt $src/gone; say file K R keep.txt $src/keep
     say folder D R docs; say file B D b.txt $src/b; say file X D big.bin $src/big
-    $U "$k" mount $f $st --graph "$url" --token-file $W/state2/token --poll-secs 60 2> $W/logs/graph.err &
+    $U "$k" mount $f $st --graph "$url" --token-file $W/state2/token --poll-secs 60 --control $W/state2/ctl 2> $W/logs/graph.err &
     p=$!
     for _ in $(seq 100); do mounted $f && break; sleep 0.1; done
     mounted $f || { echo "MOUNT FAILED: $(cat $W/logs/graph.err)"; return; }
@@ -403,6 +403,27 @@ graph() {
     echo "listing: $($U ls $f | tr '\n' ' ')"
     echo "state of a.txt after the change: $(state $f/a.txt); a.txt: $($U cat $f/a.txt)"
     echo "state of moved.txt: $(state $f/moved.txt); moved.txt: $($U cat $f/moved.txt); new.txt: $($U cat $f/new.txt)"
+    echo "-- free up and pin"
+    ctl() { $U "$k" ctl $W/state2/ctl "$@" 2>&1 | head -1; }
+    states() { for n in "$@"; do printf '%s=%s/%s ' "$n" "$(state $f/$n)" "$($U stat -c %b $f/$n)"; done; echo; }
+    echo "before: $(states moved.txt docs/b.txt docs/big.bin)"
+    echo "free-up moved.txt: $(ctl free-up $f/moved.txt); $(states moved.txt)"
+    $U "$bin/probe-client" watch $f/docs 6 > $W/logs/watch2.out &
+    w=$!
+    sleep 1
+    echo "pin docs: $(ctl pin $f/docs)"
+    sleep 1
+    echo "after the pin, nothing read: $(states docs/b.txt docs/big.bin); pin attribute of docs: $($U python3 -c "import os,sys; print(os.getxattr(sys.argv[1],'user.konedrive.pin').decode())" $f/docs)"
+    echo "free-up docs/big.bin: $(ctl free-up $f/docs/big.bin)"
+    echo "free-up docs: $(ctl free-up $f/docs)"
+    echo "second version" > $src/b2; chown 1000:1000 $src/b2
+    say file P D p.txt $src/new; say edit B $src/b2
+    sleep 2
+    echo "a new file and a changed one in the pinned folder, nothing read: $(states docs/p.txt docs/b.txt); b.txt: $($U cat $f/docs/b.txt)"
+    wait $w
+    echo "an inotify watch on docs saw: $(sort $W/logs/watch2.out | uniq -c | tr -s ' ' | tr '\n' ';')"
+    echo "unpin docs: $(ctl unpin $f/docs); free-up docs: $(ctl free-up $f/docs); $(states docs/b.txt docs/big.bin docs/p.txt)"
+    echo "big.bin read again after the free-up, equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"
     $U fusermount3 -u $f; wait $p 2> /dev/null
     echo "the folder itself: $($U find $f -type f | sort | tr '\n' ' ')"
     cat $W/logs/graph.err

@@ -36,7 +36,7 @@ fn placed(store: &TreeStore, table: Table, id: &str) -> Option<(Row, PathBuf)> {
 }
 
 /// Removes the downloaded copy at `path` if it is the copy of `id` and no other file.
-fn remove_copy(path: &Path, id: &str) {
+pub fn remove_copy(path: &Path, id: &str) {
     let ours = File::open(path).ok().and_then(|f| konedrive_fs::placeholder::read_item_id(&f).ok().flatten());
     if ours.as_deref() == Some(id) {
         let _ = fs::remove_file(path);

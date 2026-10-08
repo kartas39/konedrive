@@ -7,7 +7,7 @@
 
 pub mod cloud;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File};
 use std::io;
@@ -24,7 +24,7 @@ use fuser::{
     ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
     ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use konedrive_fs::placeholder::{State, XATTR_ITEM_ID, XATTR_STATE};
+use konedrive_fs::placeholder::{State, XATTR_ITEM_ID, XATTR_PIN, XATTR_STATE};
 use konedrive_graph::quickxor::{self, QuickXor};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 use konedrived::hydration::source::ContentSource;
@@ -102,11 +102,15 @@ struct Shared {
     source: Arc<dyn ContentSource>,
     /// The downloads in progress, by item, and the opens that wait for each.
     fills: Mutex<HashMap<String, Vec<ReplyOpen>>>,
+    /// The items that carry a pin of their own, as the store has them.
+    pins: Mutex<HashSet<String>>,
+    /// To the thread that announces changes through the mount, once it runs.
+    tell: Mutex<Option<std::sync::mpsc::Sender<Vec<Announce>>>>,
+    runtime: tokio::runtime::Handle,
 }
 
 pub struct ReadOnlyFs {
     shared: Arc<Shared>,
-    runtime: tokio::runtime::Handle,
 }
 
 fn errno(e: &io::Error) -> Errno {
@@ -172,7 +176,146 @@ impl Shared {
 
     fn downloaded(&self, ino: u64) -> bool {
         let rel = self.nodes.lock().unwrap().rel(ino);
-        rel.is_some_and(|rel| fs::symlink_metadata(self.under(&rel)).is_ok_and(|m| m.is_file()))
+        rel.is_some_and(|rel| self.has_copy(&rel))
+    }
+
+    /// Whether the folder under the mount holds the file at `rel`.
+    fn has_copy(&self, rel: &Path) -> bool {
+        fs::symlink_metadata(self.under(rel)).is_ok_and(|m| m.is_file())
+    }
+
+    fn announce(&self, what: Vec<Announce>) {
+        if let Some(tell) = &*self.tell.lock().unwrap() {
+            let _ = tell.send(what);
+        }
+    }
+
+    /// Downloads `row` to `rel` unless a download of it runs already; `waiter` is an open that
+    /// is answered when the download ends, however it ends.
+    fn ensure(self: &Arc<Self>, row: Row, rel: PathBuf, waiter: Option<ReplyOpen>) {
+        {
+            let mut fills = self.fills.lock().unwrap();
+            if let Some(waiting) = fills.get_mut(&row.id) {
+                return waiting.extend(waiter);
+            }
+            fills.insert(row.id.clone(), waiter.into_iter().collect());
+        }
+        let s = self.clone();
+        self.runtime.spawn(async move {
+            let filled = s.fill(&row, &rel).await;
+            if let Err(e) = &filled {
+                eprintln!("konedrive-fuse: {} was not downloaded: {e}", rel.display());
+            }
+            let waiting = s.fills.lock().unwrap().remove(&row.id).unwrap_or_default();
+            for reply in waiting {
+                match filled.as_ref().map_err(errno).and_then(|()| s.open_downloaded(&rel).map_err(|e| errno(&e))) {
+                    Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
+                    Err(e) => reply.error(e),
+                }
+            }
+            if filled.is_ok() {
+                s.announce(vec![Announce::Changed(rel, row.id)]);
+            }
+        });
+    }
+
+    /// The row at `rel`, name by name from the root.
+    fn resolve(&self, rel: &Path) -> Option<Row> {
+        let store = self.store.lock().unwrap();
+        let mut row = store.get(Table::Items, &store.root_item_id().ok()??).ok()??;
+        for name in rel.components() {
+            row = store.child(Table::Items, &row.id, name.as_os_str().to_str()?).ok()??;
+            if row.placement != Placement::Placed {
+                return None;
+            }
+        }
+        Some(row)
+    }
+
+    /// The item that keeps `row` on this device: itself or a folder above it, whichever
+    /// carries a pin.
+    fn pinned_by(&self, row: &Row) -> Option<Row> {
+        let (pins, store) = (self.pins.lock().unwrap(), self.store.lock().unwrap());
+        let mut at = Some(row.clone());
+        while let Some(row) = at {
+            if pins.contains(&row.id) {
+                return Some(row);
+            }
+            at = row.parent_id.as_deref().and_then(|p| store.get(Table::Items, p).ok().flatten());
+        }
+        None
+    }
+
+    /// The files at and below `row`, each with its place in the folder.
+    fn files_below(&self, row: &Row) -> Vec<(Row, PathBuf)> {
+        let store = self.store.lock().unwrap();
+        let mut ids = store.descendants(Table::Items, &row.id).unwrap_or_default();
+        ids.push(row.id.clone());
+        let file = |id: &String| {
+            let row = store.get(Table::Items, id).ok().flatten().filter(|r| r.kind == Kind::File)?;
+            let at = store.locate(Table::Items, id).ok().flatten().filter(|at| at.placed)?;
+            Some((row, at.rel))
+        };
+        ids.iter().filter_map(file).collect()
+    }
+
+    /// Downloads every pinned file that is not downloaded. Run when a pin is put on and after
+    /// every change from OneDrive: a new file in a pinned folder and a pinned file whose
+    /// content changed are downloaded by it.
+    fn sweep(self: &Arc<Self>) {
+        let pins: Vec<String> = self.pins.lock().unwrap().iter().cloned().collect();
+        for id in pins {
+            let Some(row) = self.row(&id) else { continue };
+            for (file, rel) in self.files_below(&row) {
+                if !self.has_copy(&rel) {
+                    self.ensure(file, rel, None);
+                }
+            }
+        }
+    }
+
+    fn set_pin(self: &Arc<Self>, rel: &Path, pinned: bool) -> Result<String, String> {
+        let row = self.resolve(rel).ok_or("no such item")?;
+        self.store.lock().unwrap().set_pin(&row.id, pinned).map_err(|e| e.to_string())?;
+        let mut pins = self.pins.lock().unwrap();
+        let changed = if pinned { pins.insert(row.id.clone()) } else { pins.remove(&row.id) };
+        drop(pins);
+        if changed {
+            self.announce(vec![Announce::Changed(rel.to_owned(), row.id)]);
+        }
+        if pinned {
+            self.sweep();
+        }
+        Ok(if pinned { "pinned" } else { "unpinned" }.into())
+    }
+
+    /// Frees the space of the downloaded files at and below `rel`. What a pin keeps is refused
+    /// when it is the path asked for, and left when it lies below it.
+    fn free_up(self: &Arc<Self>, rel: &Path) -> Result<String, String> {
+        let row = self.resolve(rel).ok_or("no such item")?;
+        if let Some(by) = self.pinned_by(&row) {
+            let by = if by.id == row.id { "itself".to_owned() } else { format!("the folder {}", by.name) };
+            return Err(format!("{} is pinned by {by}: unpin it first", rel.display()));
+        }
+        let (mut freed, mut kept, mut told) = (0, 0, Vec::new());
+        for (file, at) in self.files_below(&row) {
+            if !self.has_copy(&at) {
+                continue;
+            }
+            if self.pinned_by(&file).is_some() || self.fills.lock().unwrap().contains_key(&file.id) {
+                kept += 1;
+                continue;
+            }
+            cloud::remove_copy(&self.under(&at), &file.id);
+            if self.has_copy(&at) {
+                kept += 1;
+            } else {
+                freed += 1;
+                told.push(Announce::Changed(at, file.id));
+            }
+        }
+        self.announce(told);
+        Ok(format!("freed {freed}, kept {kept}"))
     }
 
     fn children(&self, id: &str) -> Vec<Row> {
@@ -244,8 +387,9 @@ impl ReadOnlyFs {
         let mut nodes = Nodes { next: 1, ..Nodes::default() };
         nodes.inos.insert(root.clone(), 1);
         nodes.items.insert(1, Node { id: root, place: None });
-        let shared = Shared { folder, store, nodes: Mutex::new(nodes), source, fills: Mutex::default() };
-        Ok(Self { shared: Arc::new(shared), runtime })
+        let pins = store.lock().unwrap().pins().map_err(|e| io::Error::other(e.to_string()))?.into_iter().collect();
+        let shared = Shared { folder, store, nodes: Mutex::new(nodes), source, fills: Mutex::default(), pins: Mutex::new(pins), tell: Mutex::new(None), runtime };
+        Ok(Self { shared: Arc::new(shared) })
     }
 }
 
@@ -278,10 +422,25 @@ fn announcements(steps: &[cloud::Step]) -> Vec<Announce> {
     out
 }
 
+/// Answers one line of the control socket: `pin`, `unpin` or `free-up`, then a path in the
+/// folder.
+fn control(shared: &Arc<Shared>, mount: &Path, line: &str) -> Result<String, String> {
+    let (verb, path) = line.trim().split_once(' ').ok_or("a verb and a path")?;
+    let path = Path::new(path);
+    let rel = path.strip_prefix(mount).unwrap_or(path);
+    match verb {
+        "pin" => shared.set_pin(rel, true),
+        "unpin" => shared.set_pin(rel, false),
+        "free-up" => shared.free_up(rel),
+        _ => Err(format!("{verb}: not pin, unpin or free-up")),
+    }
+}
+
 /// Mounts `store` over `folder` and serves it until the mount goes. With `follow`, OneDrive is
-/// listed into the store first and asked again every so often; each change is then announced
-/// through the mount, so that an inotify watch on a directory sees it.
-pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle, follow: Option<Follow>) -> io::Result<()> {
+/// listed into the store first and asked again when it says it changed; each change is then
+/// announced through the mount, so that an inotify watch on a directory sees it. `socket` is
+/// where pins and free-ups are asked for (`konedrive-fuse ctl`).
+pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle, follow: Option<Follow>, socket: Option<&Path>) -> io::Result<()> {
     // Before the mount: afterwards this path is the mount.
     let under = File::open(folder)?;
     let under_path = konedrive_fs::proc_path(&under);
@@ -302,48 +461,67 @@ pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, ru
     config.n_threads = Some(4);
     config.clone_fd = true;
     let session = fuser::Session::new(fs, folder, &config)?;
-    if let Some(follow) = follow {
-        let notifier = session.notifier();
-        let (tell, told) = std::sync::mpsc::channel::<Vec<Announce>>();
-        let mount = folder.to_owned();
-        std::thread::spawn(move || {
-            ANNOUNCER.store(unsafe { libc::gettid() }, Ordering::SeqCst);
-            let path = |rel: &Path| CString::new(mount.join(rel).into_os_string().into_encoded_bytes()).unwrap();
-            for batch in told {
-                for a in batch {
-                    let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let tell = |told: Told| *TOLD.lock().unwrap() = Some(told);
-                    unsafe {
-                        match a {
-                            Announce::Came(rel, kind) => {
-                                tell(Told::Came(name(&rel)));
-                                match kind {
-                                    Kind::Folder => libc::mkdir(path(&rel).as_ptr(), 0o755),
-                                    Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
-                                };
-                            }
-                            Announce::Gone(rel, kind, id) => {
-                                // A name the kernel was never told has nobody watching it go.
-                                let Some(ino) = shared.nodes.lock().unwrap().inos.get(&id).copied() else { continue };
-                                tell(Told::Gone { name: name(&rel), ino, kind });
-                                match kind {
-                                    Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
-                                    Kind::File => libc::unlink(path(&rel).as_ptr()),
-                                };
-                            }
-                            Announce::Changed(rel, id) => {
-                                // The kernel's cached pages of the old content go first.
-                                if let Some(ino) = shared.nodes.lock().unwrap().inos.get(&id) {
-                                    let _ = notifier.inval_inode(INodeNo(*ino), 0, 0);
-                                }
-                                libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);
-                            }
-                        }
+
+    // The announcer: one thread, known to the mount by its id.
+    let notifier = session.notifier();
+    let (tell, told) = std::sync::mpsc::channel::<Vec<Announce>>();
+    *shared.tell.lock().unwrap() = Some(tell);
+    let (mount, nodes) = (folder.to_owned(), shared.clone());
+    std::thread::spawn(move || {
+        ANNOUNCER.store(unsafe { libc::gettid() }, Ordering::SeqCst);
+        let path = |rel: &Path| CString::new(mount.join(rel).into_os_string().into_encoded_bytes()).unwrap();
+        let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tell = |told: Told| *TOLD.lock().unwrap() = Some(told);
+        for a in told.into_iter().flatten() {
+            unsafe {
+                match a {
+                    Announce::Came(rel, kind) => {
+                        tell(Told::Came(name(&rel)));
+                        match kind {
+                            Kind::Folder => libc::mkdir(path(&rel).as_ptr(), 0o755),
+                            Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
+                        };
                     }
-                    *TOLD.lock().unwrap() = None;
+                    Announce::Gone(rel, kind, id) => {
+                        // A name the kernel was never told has nobody watching it go.
+                        let Some(ino) = nodes.nodes.lock().unwrap().inos.get(&id).copied() else { continue };
+                        tell(Told::Gone { name: name(&rel), ino, kind });
+                        match kind {
+                            Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
+                            Kind::File => libc::unlink(path(&rel).as_ptr()),
+                        };
+                    }
+                    Announce::Changed(rel, id) => {
+                        // The kernel's cached pages of the old content go first.
+                        let ino = nodes.nodes.lock().unwrap().inos.get(&id).copied();
+                        if let Some(ino) = ino {
+                            let _ = notifier.inval_inode(INodeNo(ino), 0, 0);
+                        }
+                        libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);
+                    }
+                }
+            }
+            *TOLD.lock().unwrap() = None;
+        }
+    });
+
+    if let Some(socket) = socket {
+        let _ = fs::remove_file(socket);
+        let listener = std::os::unix::net::UnixListener::bind(socket)?;
+        let (shared, mount) = (shared.clone(), folder.to_owned());
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            for mut conn in listener.incoming().flatten() {
+                let mut line = String::new();
+                if io::BufReader::new(&conn).read_line(&mut line).is_ok() {
+                    let answer = control(&shared, &mount, &line).unwrap_or_else(|e| format!("refused: {e}"));
+                    let _ = writeln!(conn, "{answer}");
                 }
             }
         });
+    }
+
+    if let Some(follow) = follow {
         // Graph's notification socket asks for a cycle at once; the poll stays as the safety
         // net. A socket that ends is opened again after a pause.
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -365,6 +543,7 @@ pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, ru
                 heard.notify_one();
             }
         });
+        let shared = shared.clone();
         runtime.spawn(async move {
             loop {
                 tokio::select! {
@@ -375,13 +554,15 @@ pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, ru
                     Ok(steps) if steps.is_empty() => {}
                     Ok(steps) => {
                         eprintln!("konedrive-fuse: {} items changed in OneDrive", steps.len());
-                        let _ = tell.send(announcements(&steps));
+                        shared.announce(announcements(&steps));
+                        shared.sweep();
                     }
                     Err(e) => eprintln!("konedrive-fuse: asking OneDrive failed: {e}"),
                 }
             }
         });
     }
+    shared.sweep();
     session.run()
 }
 
@@ -433,23 +614,7 @@ impl Filesystem for ReadOnlyFs {
             };
         }
         // Not downloaded: one download per item, and every open of it waits for that one.
-        {
-            let mut fills = s.fills.lock().unwrap();
-            if let Some(waiting) = fills.get_mut(&row.id) {
-                return waiting.push(reply);
-            }
-            fills.insert(row.id.clone(), vec![reply]);
-        }
-        self.runtime.spawn(async move {
-            let filled = s.fill(&row, &rel).await;
-            let waiting = s.fills.lock().unwrap().remove(&row.id).unwrap_or_default();
-            for reply in waiting {
-                match filled.as_ref().map_err(errno).and_then(|()| s.open_downloaded(&rel).map_err(|e| errno(&e))) {
-                    Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
-                    Err(e) => reply.error(e),
-                }
-            }
-        });
+        s.ensure(row, rel, Some(reply));
     }
 
     fn read(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {
@@ -516,6 +681,7 @@ impl Filesystem for ReadOnlyFs {
             Some(XATTR_STATE) if row.kind == Kind::File => {
                 if s.downloaded(ino.0) { State::Hydrated } else { State::OnlineOnly }.as_str().to_owned()
             }
+            Some(XATTR_PIN) if s.pins.lock().unwrap().contains(&row.id) => "1".to_owned(),
             _ => return reply.error(Errno::ENODATA),
         };
         match size {

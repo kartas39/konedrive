@@ -64,18 +64,28 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let done: Result<(), Box<dyn std::error::Error>> = match args.as_slice() {
         ["seed", store, dir] => seed(Path::new(store), Path::new(dir)),
+        ["ctl", socket, verb, path] => (|| {
+            use std::io::{BufRead, Write};
+            let mut conn = std::os::unix::net::UnixStream::connect(socket)?;
+            writeln!(conn, "{verb} {path}")?;
+            let mut answer = String::new();
+            std::io::BufReader::new(conn).read_line(&mut answer)?;
+            println!("{}", answer.trim());
+            if answer.starts_with("refused") { Err("refused".into()) } else { Ok(()) }
+        })(),
         ["mount", folder, store, "--local-dir", dir] => (|| {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let source = Arc::new(LocalDir::new(PathBuf::from(dir)));
             let store = TreeStore::open(Path::new(store))?;
-            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), None)?)
+            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), None, None)?)
         })(),
         // OneDrive itself, or what stands in for it: Graph's root and a file holding an access token.
         ["mount", folder, store, "--graph", base, "--token-file", token, rest @ ..] => (|| {
-            let every = match rest {
-                ["--poll-secs", n] => n.parse()?,
-                [] => 30,
-                _ => return Err("after --token-file only --poll-secs <n> may come".into()),
+            let (every, socket) = match rest {
+                ["--poll-secs", n, "--control", socket] => (n.parse()?, Some(Path::new(socket))),
+                ["--poll-secs", n] => (n.parse()?, None),
+                [] => (30, None),
+                _ => return Err("after --token-file: --poll-secs <n> [--control <socket>]".into()),
             };
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
             let token = std::fs::read_to_string(token)?.trim().to_owned();
@@ -84,9 +94,9 @@ fn main() -> ExitCode {
             let source = Arc::new(GraphSource::new(drive.clone()));
             let store = TreeStore::open(Path::new(store))?;
             let follow = konedrive_fuse::Follow { drive, every: std::time::Duration::from_secs(every) };
-            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), Some(follow))?)
+            Ok(konedrive_fuse::serve(Path::new(folder), store, source, runtime.handle().clone(), Some(follow), socket)?)
         })(),
-        _ => Err("usage: konedrive-fuse mount <folder> <store> (--local-dir <dir> | --graph <url> --token-file <file> [--poll-secs <n>]) | seed <store> <dir>".into()),
+        _ => Err("usage: konedrive-fuse mount <folder> <store> (--local-dir <dir> | --graph <url> --token-file <file> [--poll-secs <n> [--control <socket>]]) | ctl <socket> pin|unpin|free-up <path> | seed <store> <dir>".into()),
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,

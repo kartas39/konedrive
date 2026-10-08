@@ -33,6 +33,7 @@ mod forget;
 mod meta;
 mod model;
 pub mod outbox;
+mod pins;
 mod plan;
 mod query;
 mod read;
