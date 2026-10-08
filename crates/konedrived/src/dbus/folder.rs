@@ -26,8 +26,7 @@ impl Folder {
         Ok(self.service.unregister_root().await?)
     }
 
-    /// Mirrors a local directory as placeholders. Part 2 replaces the source
-    /// with the Graph listing; this stays as the offline test path.
+    /// Refused: kept for the clients that still know the call.
     async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
         Ok(self.service.populate_from_directory(Path::new(source_dir)).await?)
     }

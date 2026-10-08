@@ -95,14 +95,11 @@ impl From<SyncError> for Fault {
             SyncError::Unsupported(_) => Refusal::Unsupported,
             SyncError::InUse => Refusal::InUse,
             SyncError::NoRoot => Refusal::NoRoot,
-            SyncError::NoHelper => Refusal::NoHelper,
             SyncError::NotManaged => Refusal::NotManaged,
             SyncError::NotHydrated => Refusal::NotHydrated,
-            SyncError::ModifiedLocally => Refusal::ModifiedLocally,
             SyncError::OutsideRoot => Refusal::OutsideRoot,
             SyncError::AlreadyRegistered => Refusal::AlreadyRegistered,
             SyncError::NotSignedIn => Refusal::NotSignedIn,
-            SyncError::NoSource => Refusal::NoSource,
             SyncError::NoConflict(_) => Refusal::NoConflict,
             SyncError::NotAllowed(_) => Refusal::NotAllowed,
             SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => Refusal::NotUploaded,
@@ -111,8 +108,7 @@ impl From<SyncError> for Fault {
             // The bus's own name for it, as the label, the client id and the mode go out.
             SyncError::InvalidArgs(_) => Refusal::InvalidArgs,
             SyncError::NotUp(_) => Refusal::NotUp,
-            SyncError::Helper(_)
-            | SyncError::Config(_)
+            SyncError::Config(_)
             | SyncError::Store(_)
             | SyncError::HeldBack(_)
             | SyncError::Removing

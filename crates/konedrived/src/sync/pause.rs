@@ -252,12 +252,12 @@ impl SyncService {
     /// Neither needs the folder's sync or its store: a OneDrive folder that is registered
     /// shows its pause in any state.
     pub(super) fn show_pause(&self) {
-        // Only a OneDrive folder has background work to hold back.
-        let held = match self.require_onedrive() {
+        // Only an account with a folder has background work to hold back.
+        let held = match self.require_record() {
             Ok(_) => self.running.held().map(|h| h.as_str().to_owned()).unwrap_or_default(),
             Err(_) => String::new(),
         };
-        let onedrive = self.require_onedrive().is_ok();
+        let onedrive = self.require_record().is_ok();
         let mut changed = false;
         self.clock.show(|| {
             let before = self.state.get();
@@ -311,7 +311,7 @@ impl SyncService {
     /// `pause_on_metered` / `on_battery` changes. Not kept across a restart. Refused
     /// `Unsupported` for a folder not connected to OneDrive, as `Pause` is.
     pub fn sync_anyway(&self) -> Result<(), SyncError> {
-        self.require_onedrive()?;
+        self.require_record()?;
         self.running.sync_anyway();
         tracing::info!("syncing anyway, though the account would hold back");
         self.show_pause();

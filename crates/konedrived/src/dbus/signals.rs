@@ -7,14 +7,12 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrive_dbus::HelperState;
 use tokio::sync::{broadcast, watch, Mutex};
 use tokio::task::JoinHandle;
-use zbus::object_server::{InterfaceRef, SignalEmitter};
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::ObjectPath;
 use zbus::Connection;
 
-use crate::dbus::accounts::Accounts;
 use crate::account::state::AccountSnapshot;
 use crate::dbus::properties::{self, Changed, Seen, AT_ONCE, COALESCED, DECIDED, OVERALL, PATH};
 use crate::dbus::{ActivityLog, Folder};
@@ -114,22 +112,6 @@ pub(crate) async fn start_signals(
         }
     });
     Ok(vec![states, coalesced, activity, decided])
-}
-
-/// Announces `Accounts.HelperState` at every change of `helper`, the hub's own state; the
-/// task that does. It ends only with the process: through `Accounts` it holds the account
-/// manager, and so the hub whose state it follows. What `helper` holds now is where things
-/// stand: a change before the task first runs is still announced.
-pub(crate) fn announce_helper_state(accounts: InterfaceRef<Accounts>, mut helper: watch::Receiver<HelperState>) -> JoinHandle<()> {
-    helper.borrow_and_update();
-    tokio::spawn(async move {
-        while helper.changed().await.is_ok() {
-            helper.borrow_and_update();
-            if let Err(e) = accounts.get().await.helper_state_changed(accounts.signal_emitter()).await {
-                tracing::warn!("cannot emit PropertiesChanged for HelperState: {e}");
-            }
-        }
-    })
 }
 
 /// What the three hold now, each taken as seen.

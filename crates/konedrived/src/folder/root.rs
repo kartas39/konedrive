@@ -1,21 +1,17 @@
 use std::fs::File;
 use std::io;
-use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use konedrive_fs::placeholder::{read_state, XATTR_DRIVE, XATTR_ROOT};
+use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ROOT};
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_fs::proc_path;
 use nix::errno::Errno;
-use nix::fcntl::{openat2, OFlag, OpenHow};
+use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
-use crate::helper::{HelperError, HelperLink};
-
-use super::disk::beneath;
 
 /// Why a file or a folder of the root was not opened ([`SyncRoot::open_inside`],
 /// [`SyncRoot::open_item`]).
@@ -31,10 +27,6 @@ pub enum OpenError {
     NotManaged,
     #[error("{0}")]
     Io(String),
-}
-
-fn io_error(e: impl std::fmt::Display) -> OpenError {
-    OpenError::Io(e.to_string())
 }
 
 /// The folders a mount lies over, each with the descriptor opened on it before the mount.
@@ -72,10 +64,6 @@ pub enum RegisterError {
     /// The folder could not be looked at or labelled: an errno, with what was being done.
     #[error("{0}")]
     Io(String),
-    /// The helper did not register it. A [`HelperError::Timeout`] is the one answer after
-    /// which the helper may hold the registration all the same.
-    #[error("{0}")]
-    Helper(#[from] HelperError),
 }
 
 /// Opens a candidate sync root, and nothing else: `O_DIRECTORY` so a file
@@ -189,60 +177,20 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
     Ok(())
 }
 
-/// Binds an empty folder to the account: probe, stamp it, tell the helper.
+/// Makes `path` a sync root: the folder checked — a directory, empty unless it carries a
+/// root id already, on a filesystem that keeps the attributes a downloaded copy carries —
+/// and its root id read, or minted and written. Nothing is mounted here: the folder's first
+/// sync does that.
 ///
-/// # Why the root id is read before it is minted
-///
-/// `user.konedrive.root` is written before the helper is told about it, and
-/// it is never overwritten. That ordering is not free to change — a crash,
-/// or a `HelperError::Timeout`, between the helper saving the root and this
-/// function returning leaves a registration the daemon cannot see — so the
-/// xattr is read *first* and reused whenever it is there. The helper treats
-/// a registration with the same uid and the same id as idempotent,
-/// so retrying with the id already on the folder converges.
-///
-/// Minting a fresh id on every attempt, as this used to, does the opposite:
-/// the retry offers root B for a directory the helper already holds as root
-/// A, which is `nesting_conflict` → `SameDirectory` → **`EINVAL`**, forever,
-/// and `unregister_root(B)` can never remove A either. The folder becomes
-/// permanently unregisterable. A reused id costs nothing when the first
-/// attempt failed for good (an unwritable folder, a refused filesystem):
-/// the id is a name, not a claim, and the next successful registration uses
-/// it. We do not remove it on failure precisely because a timeout cannot
-/// tell us whether the helper saved it.
-///
-/// `link.register_root` triggers a full `openat2` walk of the whole tree
-/// inside the helper (bounded by `HelperLink`'s 120 s `register_root`
-/// timeout, not the ordinary 30 s call bound). A root that walk could not
-/// fully cover is logged by the helper as degraded
-/// (`konedrive-helper/src/registration.rs` `record_walk`) and kept track of
-/// nowhere: `RegisterRoot`'s ack carries only an errno, so a degraded root
-/// still acks success here (issue #219). Nothing in this crate
-/// today has anywhere to put that signal — the natural home is a later
-/// helper→daemon query (or an addition to `RootState`/`LastError` on
-/// `org.konedrive.Folder`), once one exists.
-pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, RegisterError> {
-    let (dir, root) = prepare(path).await?;
-    link.register_root(&dir, &root.root_id).await?;
-    Ok(root)
-}
-
-/// Everything [`register_root`] does before the helper is told: the folder
-/// checks, and the root id read or minted. Returns the open
-/// directory the helper is to be handed, so that the descriptor the checks
-/// ran on is the descriptor it registers.
-///
-/// Separate so that `SyncService` can write a new root down in
-/// `config.toml` between the two halves — before the helper holds anything
-/// the daemon's next start would not know about.
-pub(crate) async fn prepare(path: &Path) -> Result<(File, SyncRoot), RegisterError> {
-    // Opening, listing, probing and stamping a directory are
-    // all blocking syscalls, and `helper/mod.rs`'s module doc treats a
-    // blocking call left on a tokio worker as a first-class defect.
+/// A root id the folder carries is used again, so that a registration made again after a
+/// failure, a Forget or a restart names the same folder.
+pub async fn register_root(path: &Path) -> Result<SyncRoot, RegisterError> {
+    // Opening, listing, probing and stamping a directory are all blocking syscalls.
     let requested = path.to_path_buf();
     tokio::task::spawn_blocking(move || prepare_root(&requested))
         .await
         .map_err(|e| RegisterError::Io(format!("the registration task failed: {e}")))?
+        .map(|(_dir, root)| root)
 }
 
 /// The root id `path` carries, if it is a directory carrying one of ours —
@@ -344,29 +292,7 @@ pub(crate) fn mark_drive(root: &SyncRoot, drive: &str) -> io::Result<bool> {
     Ok(true)
 }
 
-/// [`register_root`] with nobody to intercept anything: the
-/// same local checks and the same root id, but no helper is told, so no
-/// directory under this root is ever marked and no open inside it is ever
-/// suspended.
-///
-/// This is the deliberate, separately-named opt-in behind
-/// `org.konedrive.Folder.RegisterWithoutInterception`, never a fallback
-/// that a failed helper connection can slide into: `RegisterRoot` itself
-/// still refuses outright without a helper, because a placeholder nobody
-/// intercepts reads as zeros, which is the one outcome this project exists
-/// to prevent. What makes the mode safe to offer at all is that it is
-/// *visible* — `RootState` reports `no-interception` and `LastError` says
-/// plainly that files here read as zeros until they are hydrated. A folder
-/// registered this way while no helper was connected is switched to
-/// interception by `SyncService` once one connects.
-pub async fn register_root_unprotected(path: &Path) -> Result<SyncRoot, RegisterError> {
-    let (_dir, root) = prepare(path).await?;
-    Ok(root)
-}
-
-/// The local half of [`register_root`]: everything up to, but not including,
-/// telling the helper. Returns the open directory the helper is handed, so
-/// that the descriptor the checks ran on is the descriptor it registers.
+/// [`register_root`]'s work, with the directory the checks ran on.
 fn prepare_root(path: &Path) -> Result<(File, SyncRoot), RegisterError> {
     let dir = open_root_dir(path)?;
     check_root_dir(&dir, path)?;
@@ -444,11 +370,14 @@ fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
 }
 
 /// The canonical form of what [`uuid_v4`] mints — 36 characters,
-/// `8-4-4-4-12`, lowercase-or-uppercase hex throughout, version nibble `4`.
-/// The helper registers a root under no other form, so the rule is the
-/// protocol's ([`konedrive_proto::is_root_id`]).
+/// `8-4-4-4-12`, lowercase-or-uppercase hex throughout, version nibble `4`. The daemon
+/// believes no other value it finds on a folder.
 pub(crate) fn looks_like_a_root_id(id: &str) -> bool {
-    konedrive_proto::is_root_id(id)
+    let fields: Vec<&str> = id.split('-').collect();
+    id.len() == 36
+        && fields.iter().map(|f| f.len()).eq([8, 4, 4, 4, 12])
+        && fields.iter().all(|f| f.chars().all(|c| c.is_ascii_hexdigit()))
+        && fields[2].starts_with('4')
 }
 
 /// 16 random bytes in the canonical form; no dependency for one identifier.
@@ -462,89 +391,6 @@ pub(crate) fn uuid_v4() -> String {
 }
 
 impl SyncRoot {
-    /// Opens `path` to fill it or free it up: once, `O_RDWR`, and only if it really
-    /// is a plain file inside this root. A file the read-only
-    /// lock made `0444` refuses `O_RDWR`; it is opened read-only instead and
-    /// reopened writable on the same inode, and only when it is one of ours
-    /// (see [`open_locked`](Self::open_locked)).
-    ///
-    /// Three separate things are checked, because the punch that follows is
-    /// irreversible:
-    ///
-    /// - the root directory still carries *this* root's `user.konedrive.root`
-    ///   — a registration that has been removed or replaced no longer
-    ///   authorises emptying anything inside it;
-    /// - the file's path lies under the root's resolved path, with its parent
-    ///   directory resolved first so that `..` and symlinked parents cannot
-    ///   spell their way out;
-    /// - the kernel agrees, which is what `RESOLVE_BENEATH` is for: the open
-    ///   is refused outright if resolution would leave the root, and
-    ///   `RESOLVE_NO_SYMLINKS` plus `O_NOFOLLOW` refuse it if any component,
-    ///   including the last, is a symlink at all.
-    ///
-    /// The helper's own check cannot stand in for this one: it is scoped to
-    /// the device a root lives on, not to the root itself, and it is not
-    /// consulted here anyway. It matters as soon as a D-Bus method
-    /// puts a path from outside this process on the other end.
-    ///
-    /// This is the *only* way anything in `sync` may turn a
-    /// caller's path into a descriptor it will write through.
-    /// `SyncService::hydrate_now` used to open the checked string itself,
-    /// with no `O_NOFOLLOW` and no `RESOLVE_BENEATH`, after awaiting an
-    /// unbounded lock — measured, a file outside the root overwritten with
-    /// hydration content and `Hydrate` reporting success. An ordinary
-    /// directory rename inside the root was enough; no attacker was required.
-    pub(crate) fn open_inside(&self, path: &Path) -> Result<File, OpenError> {
-        let dir = self
-            .open_registered()
-            .map_err(|e| OpenError::Io(format!("{}: {e}", self.path.display())))?
-            .ok_or(OpenError::OutsideRoot)?;
-
-        let relative = self.relative(path)?;
-        let how = OpenHow::new()
-            .flags(OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(beneath());
-        match openat2(dir.as_fd(), &relative, how) {
-            Ok(fd) => Ok(File::from(fd)),
-            Err(Errno::EACCES) => self.open_locked(&dir, &relative, path),
-            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => Err(OpenError::OutsideRoot),
-            Err(e) => Err(OpenError::Io(format!("{}: {e}", path.display()))),
-        }
-    }
-
-    /// [`open_inside`](Self::open_inside) for a file the read-only lock made
-    /// `0444`: opened for reading with the same resolution rules,
-    /// and reopened writable — on the same inode — only if it carries a
-    /// konedrive state. A file that is not ours comes back read-only and
-    /// untouched; every caller refuses such a file before it writes anything.
-    ///
-    /// `O_NONBLOCK`, because a read-only open of a FIFO waits for a writer,
-    /// and a `0444` FIFO is refused `O_RDWR` and so reaches here; the `fstat`
-    /// below then refuses it.
-    fn open_locked(&self, dir: &File, relative: &Path, shown: &Path) -> Result<File, OpenError> {
-        let how = OpenHow::new()
-            .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-            .resolve(beneath());
-        let read_only = match openat2(dir.as_fd(), relative, how) {
-            Ok(fd) => File::from(fd),
-            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => return Err(OpenError::OutsideRoot),
-            Err(e) => return Err(OpenError::Io(format!("{}: {e}", shown.display()))),
-        };
-        if !read_only.metadata().map_err(io_error)?.is_file() {
-            return Err(OpenError::OutsideRoot);
-        }
-        match read_state(&read_only) {
-            Ok(Some(_)) => {
-                let writable = konedrive_fs::placeholder::reopen_writable(&read_only).map_err(io_error)?;
-                // Only the writable descriptor may be left: a second one of
-                // our own would refuse the write lease a free-up takes.
-                drop(read_only);
-                Ok(writable)
-            }
-            _ => Ok(read_only),
-        }
-    }
-
     /// This root's directory, opened as a directory and proved to still be
     /// *this* registered root — `Ok(None)` when the folder no longer carries
     /// this root's `user.konedrive.root`.
@@ -568,22 +414,6 @@ impl SyncRoot {
             Some(id) if id == self.root_id.as_bytes() => Ok(Some(dir)),
             _ => Ok(None),
         }
-    }
-
-    /// `path` as a name to resolve from this root's directory descriptor.
-    /// The parent is resolved first and the final component is carried over
-    /// untouched, so a symlinked file is refused by the open rather than
-    /// silently followed here.
-    pub(crate) fn relative(&self, path: &Path) -> Result<PathBuf, OpenError> {
-        let name = path.file_name().ok_or(OpenError::OutsideRoot)?;
-        let parent = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
-        let parent = std::fs::canonicalize(parent).map_err(io_error)?;
-        let root = std::fs::canonicalize(&self.path).map_err(io_error)?;
-        let inside = parent.strip_prefix(&root).map_err(|_| OpenError::OutsideRoot)?;
-        Ok(inside.join(name))
     }
 }
 

@@ -1,10 +1,7 @@
-//! Everything this sub-project adds to the daemon: the helper link, the
-//! content source, the hydration loop, and `SyncService` — the `org.konedrive.Folder`
-//! D-Bus surface's own half of the work (`dbus/folder.rs` is the thin zbus wrapper
-//! around it, the same split `crate::account`/`crate::dbus` uses for
-//! `Account`). There is one `SyncService` per account; the list of them and the per-inode
-//! locks are the daemon's, in `registry.rs`, and so are the helper link and its supervisor,
-//! in `helper::hub`.
+//! `SyncService`: one account's folder — the `org.konedrive.Folder` D-Bus surface's own
+//! half of the work (`dbus/folder.rs` is the thin zbus wrapper around it, the same split
+//! `crate::account`/`crate::dbus` uses for `Account`). There is one `SyncService` per
+//! account; the list of them is the daemon's, in `registry.rs`.
 
 pub mod bring_up;
 mod folder;
@@ -16,7 +13,6 @@ pub mod outbox;
 pub mod pause;
 mod persisted;
 pub mod pins;
-pub mod populate;
 mod publish;
 pub mod queries;
 pub mod registry;
@@ -33,18 +29,15 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::status::report::Report;
-use crate::helper::{Clearance, HelperLink};
-use crate::folder::root::OpenError;
-use crate::hydration::dehydrate::DehydrateError;
-use crate::folder::root::{RegisterError, SyncRoot};
 use crate::folder::locks::InodeLocks;
-use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle, published_error, published_state};
+use crate::folder::root::{RegisterError, SyncRoot};
+use crate::status::snapshot::{published_error, published_state, SyncSnapshot, SyncStateHandle};
 use crate::conditions::running;
 use crate::hydration::source;
 use crate::local;
 use crate::remote::listing;
 
-use folder::{Folder, Record, View};
+use folder::{Folder, View};
 pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
 
 // --- the folder's interfaces' own half of the work ------------------------
@@ -53,43 +46,7 @@ pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
 // `crate::dbus` uses for `Account`); everything that actually does
 // something lives here, so it can be exercised without a bus at all.
 
-/// What a registered folder shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RootSource {
-    /// Filled from a directory with `PopulateFromDirectory`, as in part 1.
-    Local,
-    /// The signed-in drive, served as a mount over the folder (`crate::fuse`) and kept in
-    /// step with it.
-    OneDrive,
-}
-
-impl RootSource {
-    /// Whether the folder shows the account's drive.
-    pub fn shows_onedrive(self) -> bool {
-        self == RootSource::OneDrive
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            RootSource::Local => "local",
-            RootSource::OneDrive => "onedrive",
-        }
-    }
-
-    /// One of the two words `config.toml` has for it; `None` for anything else, which
-    /// is never taken for either (quality finding `SY6`).
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "onedrive" => Some(RootSource::OneDrive),
-            "local" => Some(RootSource::Local),
-            _ => None,
-        }
-    }
-}
-
-/// Everything the folder can refuse, flattened from `RegisterError` and
-/// `DehydrateError` plus the failures that only exist at this layer (no
-/// root registered, no helper connected, a path outside the root).
+/// Everything the folder can refuse.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("the folder must be empty")]
@@ -100,15 +57,11 @@ pub enum SyncError {
     InUse,
     #[error("no sync root is registered")]
     NoRoot,
-    #[error("the konedrive helper is not connected")]
-    NoHelper,
     #[error("not a OneDrive file")]
     NotManaged,
     #[error("the file is not downloaded")]
     NotHydrated,
-    #[error("the file was modified locally")]
-    ModifiedLocally,
-    #[error("not a plain file inside this sync root")]
+    #[error("not a file or folder inside this sync root")]
     OutsideRoot,
     /// A folder that remembers another account's drive (`docs/design/accounts.md` §6.3);
     /// `Folder` answers it `NotEmpty`.
@@ -122,8 +75,6 @@ pub enum SyncError {
     AlreadyRegistered,
     #[error("nobody is signed in")]
     NotSignedIn,
-    #[error("no content source is registered; call PopulateFromDirectory first")]
-    NoSource,
     #[error("no conflict is recorded for {0}")]
     NoConflict(String),
     /// A free-up of something a pin keeps on this device: the message is
@@ -150,18 +101,14 @@ pub enum SyncError {
     /// the tree store holding them would go. The message says how many, and what to do.
     #[error("{0}")]
     PendingUploads(String),
-    /// The helper refused, or did not answer; the message says what it was asked.
-    #[error("{0}")]
-    Helper(String),
     /// `config.toml` could not be read or written.
     #[error("{0}")]
     Config(String),
     /// The folder's tree store could not be read or written.
     #[error("{0}")]
     Store(String),
-    /// A folder is recorded and not up — it waits for the helper, a registration or a
-    /// bring-up failed, `config.toml` does not say what it shows — or its sync has not
-    /// started: the call needs a folder whose sync runs. The whole sentence, with why
+    /// A folder is recorded and not up — a bring-up failed, `config.toml` does not say
+    /// what it shows — or its sync has not started: the call needs a folder whose sync runs. The whole sentence, with why
     /// ([`SyncError::not_up`]).
     #[error("{0}")]
     NotUp(String),
@@ -195,70 +142,21 @@ impl From<RegisterError> for SyncError {
             RegisterError::NotEmpty => SyncError::NotEmpty,
             // One name on the bus for both, as before the two were told apart.
             RegisterError::Unsupported(why) | RegisterError::Io(why) => SyncError::Unsupported(why),
-            RegisterError::Helper(why) => SyncError::Helper(why.to_string()),
         }
     }
 }
 
-impl From<DehydrateError> for SyncError {
-    fn from(e: DehydrateError) -> Self {
-        match e {
-            DehydrateError::NotManaged => SyncError::NotManaged,
-            DehydrateError::NotHydrated => SyncError::NotHydrated,
-            DehydrateError::ModifiedLocally => SyncError::ModifiedLocally,
-            DehydrateError::InUse => SyncError::InUse,
-            DehydrateError::HelperNotConnected => SyncError::NoHelper,
-            DehydrateError::Open(e) => e.into(),
-            DehydrateError::Io(why) => SyncError::Io(why),
-        }
-    }
-}
-
-impl From<OpenError> for SyncError {
-    fn from(e: OpenError) -> Self {
-        match e {
-            OpenError::OutsideRoot => SyncError::OutsideRoot,
-            OpenError::NotManaged => SyncError::NotManaged,
-            OpenError::Io(why) => SyncError::Io(why),
-        }
-    }
-}
-
-/// One account's folder: registration, the manual `PopulateFromDirectory`
-/// fill, and per-file hydrate/dehydrate/state — what that account's
-/// `org.konedrive.Folder` and its sibling interfaces expose, and what `org.konedrive.Files` routes to it.
+/// One account's folder: its registration, its sync with OneDrive, and what is asked of a
+/// file in it — what that account's `org.konedrive.Folder` and its sibling interfaces
+/// expose, and what `org.konedrive.Files` routes to it.
 ///
-/// # Why `hydrate_now` fills directly rather than only through interception
-///
-/// The original design describes a helper-connected `Hydrate()`
-/// as opening the file and letting the kernel's `FAN_OPEN_PERM` interception
-/// carry the request to `serve_hydrations`, the same path a real
-/// application's `open()` takes — which is the right design *when a real
-/// privileged helper has actually marked the root* (production, or a
-/// `vng` test). It is unreachable in an unprivileged `cargo test`: nothing
-/// unprivileged can hold `CAP_SYS_ADMIN`, so no fanotify group is ever
-/// installed, `MarkDir`/`MarkFile` acks from the fake helper this crate's
-/// own D-Bus tests use are just protocol replies, and an `open()` under
-/// such a "marked" directory is not intercepted at all — it returns
-/// immediately with whatever the placeholder already holds, i.e. nothing.
-/// Relying on interception here would make `Hydrate()` either silently
-/// serve zeros (an open that succeeds without being filled) or hang forever
-/// in a real deployment that starts this method before the helper has
-/// finished marking — both worse than what this does instead: hydrate_now
-/// always fills the file itself, synchronously, through the same
-/// `ContentSource`/`source::hydrate` the interception path uses, under the
-/// same per-inode lock `serve_hydrations` takes. `serve_hydrations` itself is started once,
-/// at daemon startup, before any root exists: the registry's router answers each open with the
-/// source the file's folder has at that moment (`registry::filler`).
+/// A folder that is up shows OneDrive through its mount (`crate::fuse`), which answers every
+/// read, download, free-up and pin; the service asks the mount, and keeps what the bus
+/// shows of the answers.
 pub struct SyncService {
     /// What the service was made with: the registry, the account, its entry in `config.toml`,
     /// the drive, and the rest of [`Wiring`]. Never changed.
     wiring: Wiring,
-    /// The hub's link cell: replaceable, because the helper can go away and
-    /// come back — `helper::hub::supervise` swaps it for `None` the moment the
-    /// connection drops and back to a live link when it reconnects. Shared
-    /// with a OneDrive folder's sync, which reads it at every reconcile.
-    link: crate::helper::LinkCell,
     state: SyncStateHandle,
     /// What the folder is ([`Folder`]), inside the lock that guards it: the only async
     /// lock of the service.
@@ -266,27 +164,24 @@ pub struct SyncService {
     /// Taken for writing only by [`change`](Self::change), by everything that changes
     /// which folder is registered, how, in which mode, or whether the account takes one —
     /// for the whole of the change, with the folder's sync stopped. Taken for reading by
-    /// what decides from the folder what to ask of the helper and then acts on it
-    /// (`dehydrate`, `populate_from_directory`), by what reads the tree store outside the
-    /// sync (`skipped`, `pending_uploads`, the registry's router), and by a reconcile, through
-    /// the lease its listing is given, while it changes the folder.
+    /// what reads the tree store outside the sync (`skipped`, `pending_uploads`), and by a
+    /// reconcile, through the lease its listing is given, while it changes the folder.
     ///
     /// zbus runs every method call in a task of its own, so without it two
     /// registrations both passed the "no root yet" check before either had
-    /// committed, both reached the helper, and the last commit won — leaving
-    /// the helper holding a root the daemon did not.
+    /// committed, and the last commit won.
     folder: Arc<tokio::sync::RwLock<Folder>>,
     /// The folder as last published ([`publish`]), for the readers that only look and the
     /// synchronous callers. Written by nothing but `publish`.
     view: watch::Sender<View>,
-    /// The registry's lock table: one inode belongs to one account only.
+    /// The lock table of the folder's files: an upload reads a file under its inode's
+    /// lock.
     locks: InodeLocks,
     /// The parts of syncs that were told to stop and are not waited for yet
     /// ([`running_sync`]): [`change`](Self::change) waits for them.
     ended: running_sync::Ended,
     /// The activity log, the conflicts, the downloads under way and the
-    /// folder's space, shared with the hydration loop and a
-    /// OneDrive folder's sync. Its store is a clone of the running sync's, attached as
+    /// folder's space, shared with the folder's mount and its sync. Its store is a clone of the running sync's, attached as
     /// the sync starts and detached by [`change`](Self::change), after which no write
     /// holds it.
     report: Report,
@@ -310,17 +205,13 @@ pub struct SyncService {
     totals: tokio::task::AbortHandle,
 }
 
-pub use crate::status::snapshot::NO_INTERCEPTION_WARNING;
-
 impl SyncService {
     /// One account's folder, made with `wiring`, on a tokio runtime: its totals are counted
     /// from now on. It is not one of the daemon's accounts until whoever made it adds it
     /// to the registry ([`registry::Registry::add`]).
     pub fn new(mut wiring: Wiring) -> Arc<Self> {
         let registry = Arc::clone(&wiring.registry);
-        let hub = Arc::clone(registry.hub());
-        let helper_state = hub.state();
-        let state = SyncStateHandle::new(SyncSnapshot { folder: FolderStatus { helper_state, ..FolderStatus::default() }, ..SyncSnapshot::default() });
+        let state = SyncStateHandle::new(SyncSnapshot::default());
         let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
         let shown = state.clone();
         pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
@@ -336,7 +227,6 @@ impl SyncService {
         Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
             pool,
             parts: source::Share::new(),
-            link: hub.link_cell(),
             ignore: settings::configured_ignore(&wiring.persist),
             running: Arc::new(running::Running::new(settings, Arc::clone(&wiring.clock))),
             clock: pause::PauseClock::new(Arc::clone(&wiring.clock), {
@@ -381,18 +271,7 @@ impl SyncService {
         self.wiring.account.quota()
     }
 
-    /// The link to the helper this account shares with the daemon's others.
-    pub fn hub(&self) -> &Arc<crate::helper::hub::HelperHub> {
-        self.wiring.registry.hub()
-    }
-
-    /// `HelperState` (HS1), the hub's.
-    pub fn helper_state(&self) -> String {
-        self.hub().state().as_str().to_owned()
-    }
-
-    /// The drive a folder registered while signed in shows; without one, every folder is
-    /// local.
+    /// The drive a folder shows; without one, none can be registered.
     fn drive(&self) -> Option<&konedrive_graph::drive::DriveClient> {
         self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.drive)
     }
@@ -415,13 +294,6 @@ impl SyncService {
         listing::Neighbours { drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
     }
 
-    /// What a punch goes by when nothing ties it to a link of its own
-    /// (local rule, on [`Clearance`]): the live link if there
-    /// is one, the helper's socket if not.
-    fn clearance(&self) -> Clearance {
-        self.hub().clearance()
-    }
-
     pub fn state(&self) -> &SyncStateHandle {
         &self.state
     }
@@ -431,40 +303,10 @@ impl SyncService {
         &self.report
     }
 
-    /// The lock table `serve_hydrations` must share with this service, so
-    /// that a real interception-driven hydration and a `dehydrate()` (or a
-    /// direct `hydrate_now()`) of the same inode can never run at once.
-    pub fn locks(&self) -> InodeLocks {
-        self.locks.clone()
-    }
-
-    /// The live helper link, if there is one right now.
-    pub fn link(&self) -> Option<HelperLink> {
-        self.link.get()
-    }
-
     /// The drive `config.toml` records for this account, if it records one.
     fn account_drive(&self) -> Option<String> {
         let persist = &self.wiring.persist;
         persist.store.account(&persist.account).and_then(|a| a.drive_id).map(|drive| drive.into_string())
-    }
-
-    /// The device the folder is on, as it was when its record was made, for the registry's
-    /// router; `None` with no folder, or one that could not be looked at.
-    fn root_device(&self) -> Option<u64> {
-        self.record().and_then(|record| record.dev)
-    }
-
-    /// Whether this account has a folder the router cannot place: one whose device is
-    /// unknown, or one that `config.toml` records and the daemon does not act on — an
-    /// account held back, or a registration under way, which writes its folder down
-    /// first. An open in such a folder could be taken for another account's by device
-    /// alone.
-    fn has_unplaced_folder(&self) -> bool {
-        match self.record() {
-            Some(record) => record.dev.is_none(),
-            None => self.persisted_root().is_some(),
-        }
     }
 
     /// Every folder this account holds or records: the one it acts on, and
@@ -473,10 +315,6 @@ impl SyncService {
         let mut folders: Vec<std::path::PathBuf> = self.record().map(|record| record.root.path).into_iter().collect();
         folders.extend(self.persisted_root().map(|p| p.path));
         folders
-    }
-
-    fn require_link(&self) -> Result<HelperLink, SyncError> {
-        self.link().ok_or(SyncError::NoHelper)
     }
 
     pub fn root(&self) -> Option<SyncRoot> {
@@ -495,7 +333,7 @@ impl SyncService {
 
     /// The folder's mount, as last published: there from the folder's first sync on.
     pub(crate) fn mount(&self) -> Option<Arc<crate::fuse::Mount>> {
-        self.view.borrow().fuse.clone()
+        self.view.borrow().mount.clone()
     }
 
     /// The daemon is stopping: the folder loses its mount and is locked, so
@@ -507,12 +345,6 @@ impl SyncService {
         path
     }
 
-    /// Where the folder's files are filled from now, as last published: the drive for a
-    /// OneDrive folder that is up, the directory a local folder was populated from.
-    pub(crate) fn content_source(&self) -> Option<Arc<dyn crate::hydration::source::ContentSource>> {
-        self.view.borrow().source.clone()
-    }
-
     /// `Writable`: whether the folder takes changes now, and what is changed in it is
     /// uploaded: its mount says ([`Mount::is_writable`](crate::fuse::Mount::is_writable)).
     pub fn writable(&self) -> bool {
@@ -521,26 +353,7 @@ impl SyncService {
 
     /// `RootSource`.
     pub fn root_source(&self) -> String {
-        self.record().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
-    }
-
-    /// HS2: a folder that shows OneDrive is kept in step only when it is
-    /// intercepted and the helper is connected.
-    fn require_helper_for(&self, record: &Record) -> Result<(), SyncError> {
-        // A folder that shows OneDrive is kept in step by its mount.
-        if record.source == RootSource::OneDrive || (record.intercepted() && self.link().is_some()) {
-            Ok(())
-        } else {
-            Err(SyncError::NoHelper)
-        }
-    }
-
-    fn require_onedrive(&self) -> Result<Record, SyncError> {
-        let record = self.require_record()?;
-        if !record.source.shows_onedrive() {
-            return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
-        }
-        Ok(record)
+        self.record().map(|_| persisted::ONEDRIVE.to_owned()).unwrap_or_default()
     }
 
     /// Why a call that needs the folder's sync cannot have it, for a OneDrive folder

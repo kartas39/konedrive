@@ -19,7 +19,6 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
-use std::time::SystemTime;
 
 use konedrive_fs::placeholder::{write_progress, Progress};
 use konedrive_graph::quickxor::QuickXor;
@@ -28,24 +27,11 @@ use tokio::io::AsyncReadExt;
 use super::guards::{check_answer, errno_of, open, resume, same_version, verify, Breaks, End, StartOver, Tuning, BUFFER};
 use super::target::Target;
 use super::{ContentSource, Split, Version};
-use crate::hydration::demote::{drop_checkpoint, usable_checkpoint};
+use super::guards::{drop_checkpoint, usable_checkpoint};
 
 /// What a download produced, before any of it is committed.
 pub(crate) struct Downloaded {
     pub size: u64,
-    pub mtime: SystemTime,
-    pub version: Option<Version>,
-}
-
-/// A download into a file nobody else can see — the replacement of a changed file: no
-/// checkpoints (an `O_TMPFILE` does not survive a crash) and no size guard (there is no
-/// placeholder whose size it could contradict). What to commit, or an errno.
-pub(crate) async fn download_into(file: &File, item_id: &str, source: &dyn ContentSource) -> Result<Downloaded, i32> {
-    // A second descriptor of the same open file: a section outlives a dropped download,
-    // and the caller's descriptor is the caller's to close.
-    let target = Target::new(file.try_clone().map_err(|e| errno_of(&e))?);
-    let tuning = Tuning { checkpoint_every: None, ..Tuning::default() };
-    download(&target, item_id, 0, source, None, &tuning).await
 }
 
 /// Streams the file's bytes into `target`, from `resume` if there is one, and checks them:
@@ -177,7 +163,7 @@ async fn attempt(
                 if written != fetched.size && version.as_ref().is_some_and(|v| v.quick_xor.is_some()) {
                     return Err(End::Mismatch);
                 }
-                return Ok(Downloaded { size: fetched.size, mtime: fetched.mtime, version });
+                return Ok(Downloaded { size: fetched.size });
             }
             // A break, or a short stream: continue from where the bytes stopped.
             None => breaks.again(item_id, &format!("the stream ended after {written} bytes")).await?,

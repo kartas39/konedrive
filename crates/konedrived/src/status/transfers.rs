@@ -28,7 +28,7 @@ pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64,
 }
 
 /// The downloads under way (`Transfers`): fills on open,
-/// `Hydrate`, and replacements of changed files — not thumbnails.
+/// `Hydrate`, and pinned files — not thumbnails.
 ///
 /// Watched, so that `dbus::signals` can publish it coalesced. An entry is added
 /// by [`start`](Self::start) and removed when the [`TransferEntry`] it

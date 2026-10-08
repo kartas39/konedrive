@@ -15,7 +15,7 @@ use std::sync::{Arc, Weak};
 use tokio::sync::watch;
 
 use super::folder::{Stopped, View};
-use super::{RootSource, SyncService};
+use super::SyncService;
 use crate::account::state::AccountSnapshot;
 use crate::account::PendingUploads;
 use crate::config::{Mode, WriteStanding};
@@ -68,7 +68,7 @@ impl SyncService {
         // Why the outbox waited in the other mode goes with it; the sync starting next says
         // it again if it still holds.
         self.state.update(|s| s.outbox.note = None);
-        if let Some(up) = stopped.folder().up().filter(|up| up.record.source == RootSource::OneDrive) {
+        if let Some(up) = stopped.folder().up() {
             tracing::info!("{} is {} now", up.record.root.path.display(), mode.as_str());
         }
     }

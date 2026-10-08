@@ -16,7 +16,6 @@ use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, 
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
-use crate::helper::hub::HelperHub;
 use crate::sync::menu::{self, Menu};
 use crate::sync::registry::Registry;
 use crate::conditions::running::HoldSettings;
@@ -167,11 +166,6 @@ impl AccountManager {
     /// How the objects get on the bus.
     pub(crate) fn bus(&self) -> Arc<dyn Bus> {
         Arc::clone(&self.options.bus)
-    }
-
-    /// The link to the helper every account shares.
-    pub fn hub(&self) -> &Arc<HelperHub> {
-        self.registry.hub()
     }
 
     /// The accounts as their folders see each other: the same accounts as
@@ -545,11 +539,21 @@ impl AccountManager {
         menu::decide(paths, &parts, account_folder)
     }
 
-    /// Brings up every folder that needs no helper (§3.2, step 6); an intercepted one
-    /// waits for the hub's first connection.
+    /// Brings up every account's folder, one after another, in account order (§3.2,
+    /// step 6).
+    ///
+    /// An account whose bring-up panics is left down, saying so, and the next account is
+    /// brought up all the same: a defect that one account's folder meets would otherwise
+    /// keep the daemon from starting.
     pub async fn resume_all(&self) {
+        use futures_util::FutureExt;
         for account in self.accounts() {
-            account.sync.resume().await;
+            let Err(panic) = std::panic::AssertUnwindSafe(account.sync.resume()).catch_unwind().await else { continue };
+            let panic = crate::panic::message(panic);
+            tracing::error!("bringing up the folder of the account {} panicked: {panic}", account.id);
+            if std::panic::AssertUnwindSafe(account.sync.bring_up_panicked(&panic)).catch_unwind().await.is_err() {
+                tracing::error!("the folder of the account {} could not be left down either; it stays as the panic left it", account.id);
+            }
         }
     }
 }

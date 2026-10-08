@@ -1239,7 +1239,6 @@ dependencies = [
  "konedrive-dbus",
  "konedrive-fs",
  "konedrive-graph",
- "konedrive-proto",
  "konedrive-text",
  "konedrive-tree",
  "konedrived",

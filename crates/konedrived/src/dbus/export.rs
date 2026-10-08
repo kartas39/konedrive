@@ -12,7 +12,7 @@ use crate::dbus::accounts::Accounts;
 use crate::dbus::files::Files;
 use crate::sync::SyncService;
 use crate::dbus::{ActivityLog, Conflicts, Folder, LocalScan, Transfers, UploadQueue};
-use crate::dbus::signals::{announce_helper_state, start_signals};
+use crate::dbus::signals::start_signals;
 
 /// Serves one account's folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
 /// `LocalScan` and `ActivityLog` — at `path` and starts their signals; the tasks
@@ -90,10 +90,6 @@ impl Bus for OnBus {
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
         #[cfg(feature = "dev-tools")]
         server.at(ACCOUNTS_PATH, crate::dbus::dev_tools::DevTools { manager: Arc::clone(manager) }).await?;
-        // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
-        let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
-        // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
-        drop(announce_helper_state(accounts, manager.hub().subscribe()));
         Ok(())
     }
 

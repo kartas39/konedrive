@@ -32,7 +32,7 @@ fn the_daemons_sentences_are_read_back() {
 
     use konedrived::sync::SyncError;
 
-    let pinned = konedrived::hydration::pin::refusal(Path::new("/f/Docs/a b.txt"), Path::new("/f/Docs"));
+    let pinned = konedrived::sync::pins::refusal(Path::new("/f/Docs/a b.txt"), Path::new("/f/Docs"));
     assert_eq!(pinned, "/f/Docs/a b.txt is pinned by /f/Docs: unpin it first");
     assert_eq!(super::pinned_parts(&pinned), Some(("/f/Docs/a b.txt", "/f/Docs")));
     assert_eq!(super::refused_path_of("org.konedrive.Error.NotAllowed", &pinned), Some("/f/Docs/a b.txt"));

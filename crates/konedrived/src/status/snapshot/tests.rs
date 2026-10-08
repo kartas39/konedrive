@@ -1,95 +1,8 @@
-use crate::helper::status::HelperState;
 use super::*;
 
 /// A snapshot whose folder is `folder`, the rest as at the start.
 fn folder(folder: FolderStatus) -> SyncSnapshot {
     SyncSnapshot { folder, ..SyncSnapshot::default() }
-}
-
-#[test]
-fn the_published_state_is_computed_from_the_registration_and_the_sync() {
-    let mut s = folder(FolderStatus { root_state: RootState::Ready, ..FolderStatus::default() });
-    assert_eq!(published_state(&s), "ready");
-    s.cycle.listing = true;
-    assert_eq!(published_state(&s), "listing");
-    s.cycle.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false, kind: TroubleKind::Unreachable });
-    assert_eq!(published_state(&s), "listing", "no network is said, not an error");
-    s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true, kind: TroubleKind::Other });
-    assert_eq!(published_state(&s), "error");
-    s.folder.root_state = RootState::Error;
-    s.folder.last_error = "the helper is not connected".into();
-    s.cycle.replacement_note = Some(ReplacementNote { files: 1, why: "no space".into() });
-    s.local.conflict_count = 1;
-    assert_eq!(
-        published_error(&s),
-        "the helper is not connected. signed out. 1 file(s) changed in OneDrive could not be updated here yet: no space",
-        "a conflict is not a problem; it is not in LastError"
-    );
-    assert_eq!(published_state(&SyncSnapshot::default()), "none");
-
-    // `listing` never hides `no-interception`.
-    let mut s = folder(FolderStatus { root_state: RootState::NoInterception, ..FolderStatus::default() });
-    s.cycle.listing = true;
-    assert_eq!(published_state(&s), "no-interception");
-}
-
-/// HS3: while a folder waits for the helper, `RootState` reads `error`
-/// and `LastError` begins with what `HelperState` says — how to install
-/// it, start it, or see why it failed — ahead of whatever else is said.
-#[test]
-fn a_folder_waiting_for_the_helper_says_how_to_start_it() {
-    let said = |helper_state| {
-        let s = folder(FolderStatus {
-            root_state: RootState::Ready,
-            waits_for_helper: true,
-            helper_state,
-            last_error: "recovery left 1 file".into(),
-            ..FolderStatus::default()
-        });
-        (published_state(&s), published_error(&s))
-    };
-    let (state, error) = said(HelperState::NotInstalled);
-    assert_eq!(state, "error");
-    assert_eq!(
-        error,
-        "the konedrive helper is not installed: files are not kept in step and do not download when \
-         opened. Install it: sudo scripts/install-helper.sh (see README). recovery left 1 file"
-    );
-    assert!(said(HelperState::Stopped).1.starts_with(
-        "the konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`. "
-    ));
-    assert!(said(HelperState::Failed).1.starts_with("the konedrive helper failed: see `systemctl status konedrive-helper`. "));
-    assert!(said(HelperState::Unknown).1.starts_with("the konedrive helper is not connected. "));
-    assert_eq!(said(HelperState::Connected).1, "recovery left 1 file", "nothing to say of a connected helper");
-
-    let s = folder(FolderStatus { root_state: RootState::Ready, helper_state: HelperState::Stopped, ..FolderStatus::default() });
-    assert_eq!((published_state(&s), published_error(&s).as_str()), ("ready", ""), "a folder not waiting says nothing of it");
-}
-
-/// Every note's text, written out: clients read `LastError`.
-#[test]
-fn every_note_says_what_last_error_said() {
-    assert_eq!(
-        SwitchNote { why: "errno 5".into() }.text(),
-        "the konedrive helper is connected, but switching this folder to interception failed: errno 5; it is tried \
-         again the next time the helper connects"
-    );
-    assert_eq!(OutboxNote::GateClosed("the account is read-only".into()).text(), "nothing is uploaded: the account is read-only");
-    assert_eq!(
-        OutboxNote::HeldBack(3).text(),
-        "3 change(s) made here wait to be uploaded, so the folder is not kept in step with OneDrive: they go once \
-         the account is read-write again, or are dropped by a forced switch to read-only"
-    );
-    assert_eq!(
-        OutboxNote::Unreadable.text(),
-        "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive"
-    );
-    assert_eq!(OutboxNote::FolderClosed("Permission denied (os error 13)".into()).text(), "the folder cannot be opened (Permission denied (os error 13)); uploads wait");
-    // The time is the wall clock's here, whatever the zone: its shape is checked.
-    let throttled = OutboxNote::Throttled(1_700_000_000).text();
-    let time = throttled.strip_prefix("OneDrive asked to slow down; uploads continue at ").expect(&throttled);
-    let (hour, minute) = time.split_once(':').expect(time);
-    assert!(hour.len() == 2 && minute.len() == 2 && hour.parse::<u8>().unwrap() < 24 && minute.parse::<u8>().unwrap() < 60, "{time}");
 }
 
 /// The throttle's note names the minute the wait is over in: a time within a minute is
@@ -137,35 +50,6 @@ fn the_worker_takes_back_only_its_own_notes() {
     assert_eq!(OutboxNote::after_gate(&closed, None), None);
 }
 
-/// The note of a failed switch stands behind the registration's text.
-#[test]
-fn the_switch_note_stands_behind_the_registrations_text() {
-    let note = SwitchNote { why: "errno 5".into() };
-    let mut s = folder(FolderStatus { switch_note: Some(note.clone()), ..FolderStatus::default() });
-    assert_eq!(published_error(&s), note.text());
-    s.folder.last_error = "recovery left 1 file".into();
-    assert_eq!(published_error(&s), format!("recovery left 1 file. {}", note.text()));
-}
-
-/// A folder recorded and not up yet is calm while nothing is known to be wrong: `waiting`,
-/// and nothing of the helper in `LastError`. Once the helper it waits for is known to be
-/// missing, stopped or failed, it reads `error` and says what to do.
-#[test]
-fn a_folder_not_up_yet_waits_calmly_until_the_helper_is_known_to_be_down() {
-    let said = |helper_state, waits_for_helper| {
-        let s = folder(FolderStatus { root_state: RootState::Waiting, waits_for_helper, helper_state, ..FolderStatus::default() });
-        (published_state(&s), published_error(&s))
-    };
-    assert_eq!(said(HelperState::Unknown, true), ("waiting", String::new()));
-    assert_eq!(said(HelperState::Connected, true), ("waiting", String::new()), "being brought up");
-    for down in [HelperState::NotInstalled, HelperState::Stopped, HelperState::Failed] {
-        let (state, error) = said(down, true);
-        assert_eq!(state, "error");
-        assert_eq!(error, down.advice().unwrap());
-    }
-    assert_eq!(said(HelperState::Stopped, false), ("waiting", String::new()), "a folder that needs no helper is brought up without one");
-}
-
 /// The write gate says why it is closed over whatever is shown, and takes back only its
 /// own note: what the poller says of a read-only folder stays.
 #[test]
@@ -179,13 +63,19 @@ fn the_gate_takes_back_only_its_own_note() {
     assert_eq!(OutboxNote::after_gate(&None, None), None);
 }
 
-/// Only a read-write folder has a watcher, and so a local scan.
 #[test]
-fn a_read_only_folder_has_no_local_scan() {
-    let mut scan = LocalScan::default();
-    assert_eq!(scan.state, ScanState::None);
-    scan.follow(Mode::ReadWrite);
-    assert_eq!(scan.state, ScanState::Idle);
-    scan.follow(Mode::ReadOnly);
-    assert_eq!(scan.state.as_str(), "none");
+fn the_published_state_is_computed_from_the_registration_and_the_sync() {
+    let mut s = folder(FolderStatus { root_state: RootState::Ready, ..FolderStatus::default() });
+    assert_eq!(published_state(&s), "ready");
+    s.cycle.listing = true;
+    assert_eq!(published_state(&s), "listing");
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false, kind: TroubleKind::Unreachable });
+    assert_eq!(published_state(&s), "listing", "no network is said, not an error");
+    s.cycle.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true, kind: TroubleKind::Other });
+    assert_eq!(published_state(&s), "error");
+    s.folder.root_state = RootState::Error;
+    s.folder.last_error = "the folder cannot be mounted".into();
+    s.local.conflict_count = 1;
+    assert_eq!(published_error(&s), "the folder cannot be mounted. signed out", "a conflict is not a problem; it is not in LastError");
+    assert_eq!(published_state(&SyncSnapshot::default()), "none");
 }

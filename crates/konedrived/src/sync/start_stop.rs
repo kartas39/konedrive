@@ -27,7 +27,7 @@ struct Prepared {
 }
 
 impl SyncService {
-    /// Starts the sync of the OneDrive folder that is up now. Inside a change of the
+    /// Starts the sync of the folder that is up now; nothing for a folder that is not up. Inside a change of the
     /// folder's state, so that no Forget can come in between, and none runs: the change
     /// stopped it.
     ///
@@ -38,9 +38,6 @@ impl SyncService {
     /// A read-write folder's mount takes changes from here on, and wakes the sync's outbox
     /// worker for each one it records; a read-only folder's takes none.
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
-        if !stopped.folder().syncs() {
-            return;
-        }
         debug_assert!(stopped.folder().running().is_none(), "a sync runs inside a change");
         // What the parts started here read of the folder is what it is now.
         stopped.publish();
@@ -58,8 +55,8 @@ impl SyncService {
             Some(outbox) => mount.read_write(Arc::new(move || outbox.wake())),
             None => mount.read_only(),
         };
-        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
-            onedrive.sync = Sync::Running(Box::new(sync));
+        if let Some(running) = stopped.folder_mut().sync_mut() {
+            *running = Sync::Running(Box::new(sync));
         }
         // The readers reach the sync from here on.
         stopped.publish();
@@ -84,7 +81,7 @@ impl SyncService {
         let store = self.kept_store(stopped, &paths).await?;
         // The folder is mounted from its first sync on, once its store is there to read the
         // names from.
-        let mount = match stopped.folder().record().and_then(|record| record.kept.fuse.clone()) {
+        let mount = match stopped.folder().mount().cloned() {
             Some(mount) => mount,
             None => {
                 let parts = crate::fuse::Parts {
@@ -100,7 +97,7 @@ impl SyncService {
                 };
                 let mount = Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
                 if let Some(record) = stopped.folder_mut().record_mut() {
-                    record.kept.fuse = Some(Arc::clone(&mount));
+                    record.kept.mount = Some(Arc::clone(&mount));
                 }
                 self.show_pins(&mount);
                 // A file manager that showed the folder before this mount reads it again: its
@@ -209,8 +206,8 @@ impl SyncService {
     /// does bringing the folder up again.
     fn cannot_start(&self, stopped: &mut Stopped<'_>, why: String) {
         tracing::error!("{why}");
-        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
-            onedrive.sync = Sync::Stopped(Why::CannotStart(why));
+        if let Some(sync) = stopped.folder_mut().sync_mut() {
+            *sync = Sync::Stopped(Why::CannotStart(why));
         }
         stopped.publish();
     }
@@ -227,24 +224,19 @@ impl SyncService {
         }
     }
 
-    /// `Refresh()`: a cycle now, for a folder that shows OneDrive.
+    /// `Refresh()`: a cycle now.
     ///
     /// A folder whose sync is not running — it could not start: its tree
-    /// store could not be opened — has it started again here, the way
-    /// every start is made, inside a change of the folder's state. `Ok` means a
+    /// store could not be opened, or it could not be mounted — has it started again here,
+    /// the way every start is made, inside a change of the folder's state. `Ok` means a
     /// sync runs; when it still cannot, the refusal says why.
     ///
-    /// A folder that is down because a bring-up failed, because the folder itself was moved
-    /// or deleted, or because a registration was kept, is brought up here: this is the way
-    /// back that does not wait for the helper's next connect. When that fails too, and for
-    /// a folder that only waits (for the helper, or for a `source` that can be read), the
-    /// refusal is `NotUp`, with why.
-    ///
-    /// Refused `NoHelper` whenever the folder has no helper to keep it in
-    /// step with (HS2): no link, or no interception yet.
+    /// A folder that is down because a bring-up failed is brought up here: this is the way
+    /// back that does not wait for the next start. When that fails too, and for a folder
+    /// that only waits (for a `source` that can be read), the refusal is `NotUp`, with why.
     pub async fn refresh(&self) -> Result<(), SyncError> {
         if self.view().down.is_none() {
-            self.require_helper_for(&self.require_onedrive()?)?;
+            self.require_record()?;
             // The outbox too (`docs/design/writes.md` §6.4): rows in backoff go now,
             // and, while a sync runs, the quota is read again, which may end a
             // full OneDrive.
@@ -254,17 +246,14 @@ impl SyncService {
                 return Ok(());
             }
         }
-        let syncs = {
+        {
             let mut stopped = self.change().await;
             let refreshed = self.refresh_in(&mut stopped).await;
             if refreshed.is_err() {
                 // A refusal leaves the folder as it was, its sync included.
                 self.start_again(&mut stopped).await;
             }
-            refreshed?
-        };
-        if !syncs {
-            return Ok(());
+            refreshed?;
         }
         if self.running().is_some() {
             self.refresh_quota().await;
@@ -275,34 +264,21 @@ impl SyncService {
 
     /// [`refresh`](Self::refresh), inside its change: the folder looked at again (a Forget
     /// may have come first), brought up if it is down for a failure, and its sync started.
-    /// Whether the folder is one that syncs; a local folder brought up has nothing more to
-    /// refresh.
-    async fn refresh_in(&self, stopped: &mut Stopped<'_>) -> Result<bool, SyncError> {
+    async fn refresh_in(&self, stopped: &mut Stopped<'_>) -> Result<(), SyncError> {
         if matches!(stopped.folder().standing, Standing::HeldBack(_)) {
             return Err(SyncError::NoRoot);
         }
         let retry = match &stopped.folder().is {
             Is::Absent => return Err(SyncError::NoRoot),
-            Is::Down(record, Down::Failed { .. } | Down::Kept { .. }) => {
-                if record.intercepted() && self.link().is_none() {
-                    return Err(SyncError::NoHelper);
-                }
-                true
-            }
+            Is::Down(_, Down::Failed { .. }) => true,
             Is::Down(..) | Is::Up(_) => false,
         };
         if retry {
             self.bring_up(stopped).await;
         }
-        let record = match &stopped.folder().is {
+        match &stopped.folder().is {
             Is::Absent => return Err(SyncError::NoRoot),
             Is::Down(record, down) => {
-                if !retry {
-                    if !record.source.shows_onedrive() {
-                        return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
-                    }
-                    self.require_helper_for(record)?;
-                }
                 let why = down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned);
                 return Err(if retry {
                     SyncError::not_up(&format!("bringing it up was tried just now and failed: {why}"))
@@ -310,17 +286,13 @@ impl SyncService {
                     SyncError::not_up(&why)
                 });
             }
-            Is::Up(up) => up.record.clone(),
-        };
-        if !record.source.shows_onedrive() {
-            return if retry { Ok(false) } else { Err(SyncError::Unsupported("this folder is not connected to OneDrive".into())) };
+            Is::Up(_) => {}
         }
-        self.require_helper_for(&record)?;
         // A bring-up has started it already.
         if stopped.folder().running().is_none() {
             self.start_sync(stopped).await;
         }
-        Ok(true)
+        Ok(())
     }
 
     /// `Refresh()`'s part for the quota: read now, one request, into the account's

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,9 +11,6 @@ use futures_util::FutureExt;
 use tracing_subscriber::EnvFilter;
 
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// The first delay before a helper reconnect is retried; it doubles up to
-/// `helper::hub::MAX_HELPER_BACKOFF`.
-const HELPER_BACKOFF: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -51,9 +47,8 @@ async fn main() -> anyhow::Result<()> {
         drive: konedrived::daemon::manager::own_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    // `config.toml` migrated, every account brought up as far as it can be
-    // without the helper, every object exported, and only then the bus name
-    // claimed: a D-Bus-activated client's first call is never answered from
+    // `config.toml` migrated, every account's folder taken up, every object exported, and
+    // only then the bus name claimed: a D-Bus-activated client's first call is never answered from
     // stale state (`docs/design/accounts.md` §3.2). Held for the life of the process: dropping
     // the connection would drop the bus name and every object with it.
     // A stop before the daemon is up has nothing in flight to wait for.
@@ -65,25 +60,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let registry = Arc::clone(daemon.manager.registry());
-    let hub = Arc::clone(registry.hub());
-    // HS1: with no link, `HelperState` says what systemd says of the
-    // helper's unit (read-only, on the system bus). The one place that asks
-    // the real systemd.
-    hub.set_unit(Arc::new(konedrived::helper::status::Systemd::default()));
-    // Everything that can be slow — the helper connection, which can take up
-    // to 30 s against a helper that accepts and then says nothing, and each
-    // folder's registration and recovery walk — happens in the supervisor,
-    // where it delays nobody's first call. On every connect it brings every
-    // account's folder up, one after another, before it serves a fill.
     // Kept, each of them: one that is gone ends the daemon (quality finding `SY11`).
     let mut tasks = stop::Tasks::default();
-    tasks.spawn(
-        "the helper's supervisor",
-        stop::Need::Always,
-        konedrived::helper::hub::supervise(Arc::clone(&hub), PathBuf::from(konedrive_proto::SOCKET_PATH), HELPER_BACKOFF),
-    );
-    // `HelperState` follows the link, and systemd every 30 s without one.
-    tasks.spawn("the watch of the helper's state", stop::Need::Always, konedrived::helper::hub::watch(hub));
     // Every account holds back by itself on a metered connection or on battery, as its
     // settings say (`conditions`). With no system bus it has nothing to follow, and ends.
     tasks.spawn("the watcher of power and metering", stop::Need::WhileItCan, konedrived::conditions::watch(Arc::clone(&registry)));
@@ -93,8 +71,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("konedrived ready");
     let _connection = daemon.connection;
     // A signal stops the daemon; so does the end of a task it cannot work without, and then
-    // it leaves with a failure, for systemd to start it again (`Restart=on-failure`): a
-    // daemon that stays up with no supervisor says ready and fills nothing.
+    // it leaves with a failure, for systemd to start it again (`Restart=on-failure`).
     let code = match stop::stopped(signals.next(), &mut tasks).await {
         None => 0,
         Some(died) => {

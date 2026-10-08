@@ -51,7 +51,6 @@ async fn start_daemon_with(
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let registry = konedrived::sync::registry::Registry::new();
-    registry.hub().set_socket(dir.join("no-helper.sock"));
     let paths = konedrived::config::Paths::in_dir(dir);
     konedrived::daemon::startup::start_on(bus.builder(), paths, options, registry).await.unwrap()
 }

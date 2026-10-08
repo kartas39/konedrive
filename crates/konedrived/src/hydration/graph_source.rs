@@ -120,5 +120,3 @@ fn mtime_of(item: &DriveItem) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(seconds as u64)
 }
 
-#[cfg(test)]
-mod tests;

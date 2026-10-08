@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Mutex};
 
-use tokio_util::sync::CancellationToken;
 
 /// A file's identity, the way "per inode" means it: the `(st_dev,
 /// st_ino)` pair, read from an open descriptor and never spelled as a name.
@@ -26,25 +24,12 @@ impl InodeKey {
         let meta = file.metadata()?;
         Ok(Self { dev: meta.dev(), ino: meta.ino() })
     }
-
-    /// As [`of`](Self::of), for a descriptor that is not a `File` —
-    /// `serve_hydrations` must not consume the event fd to read its
-    /// identity, since `source::hydrate` takes ownership of it afterwards.
-    pub fn of_fd(fd: impl AsFd) -> io::Result<Self> {
-        let stat = nix::sys::stat::fstat(fd)
-            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-        Ok(Self { dev: stat.st_dev as u64, ino: stat.st_ino as u64 })
-    }
 }
 
 /// One inode's slot: the mutex itself, and how many callers are holding or
 /// waiting for it.
 struct Slot {
     mutex: Arc<tokio::sync::Mutex<()>>,
-    /// Cancelled when the inode is taken off the disk because OneDrive
-    /// removed its item ([`InodeLocks::cancel`]): a fill that holds the lock
-    /// stops.
-    cancel: CancellationToken,
     /// Incremented before the caller starts waiting and decremented when it
     /// lets go — whether it acquired the lock or was cancelled while parked
     /// (see [`Row`]). The row is removed when this reaches zero.
@@ -89,60 +74,15 @@ impl InodeLocks {
             let mut map = crate::panic::lock(&self.inner);
             let slot = map
                 .entry(key)
-                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
+                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), users: 0 });
             slot.users += 1;
-            (Arc::clone(&slot.mutex), slot.cancel.clone())
+            Arc::clone(&slot.mutex)
         };
-        let (mutex, cancel) = mutex;
         // Armed *before* the await, so a caller whose future is dropped
-        // while it is parked below still takes itself out of the count. A
-        // D-Bus method's future is dropped whenever its caller goes away,
-        // and `hydrate_now` can park here for as long as another fill of the
-        // same file takes, which has no time limit.
+        // while it is parked below still takes itself out of the count.
         let row = Row { table: Arc::clone(&self.inner), key };
         let guard = mutex.lock_owned().await;
-        InodeGuard { held: Arc::new(Held { _guard: guard, _row: row }), cancel }
-    }
-
-    /// Exclusive use of `key` if nobody holds or awaits it now, and `None`
-    /// otherwise — without waiting. Startup recovery takes it this way:
-    /// a fill or a free-up of the same file is running in this
-    /// daemon, and waiting for it would hold the whole reconnect behind a
-    /// download (the very thing took away), while the file it is
-    /// busy with is one recovery leaves alone anyway.
-    pub fn try_lock(&self, key: InodeKey) -> Option<InodeGuard> {
-        let mutex = {
-            let mut map = crate::panic::lock(&self.inner);
-            let slot = map
-                .entry(key)
-                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
-            slot.users += 1;
-            (Arc::clone(&slot.mutex), slot.cancel.clone())
-        };
-        let (mutex, cancel) = mutex;
-        // Counted like any other user until it gives up: dropped with the
-        // refusal, it takes itself out of the count and, if it was the only
-        // one, the row out of the table.
-        let row = Row { table: Arc::clone(&self.inner), key };
-        let guard = mutex.try_lock_owned().ok()?;
-        Some(InodeGuard { held: Arc::new(Held { _guard: guard, _row: row }), cancel })
-    }
-
-    /// The inode `key` is being taken off the disk because OneDrive removed
-    /// its item: whoever holds or awaits its lock — a fill — is
-    /// told to stop ([`InodeGuard::cancelled`]). Whether anyone was.
-    pub fn cancel(&self, key: InodeKey) -> bool {
-        match crate::panic::lock(&self.inner).get_mut(&key) {
-            Some(slot) => {
-                slot.cancel.cancel();
-                // Whoever comes for the lock from now on gets a token of its
-                // own: a download that starts after the stop is not stopped
-                // by it.
-                slot.cancel = CancellationToken::new();
-                true
-            }
-            None => false,
-        }
+        InodeGuard { held: Arc::new(Held { _guard: guard, _row: row }) }
     }
 
     /// How many inodes the table is tracking. Tests only: the table growing
@@ -188,7 +128,6 @@ impl Drop for Row {
 /// dropped too.
 pub struct InodeGuard {
     held: Arc<Held>,
-    cancel: CancellationToken,
 }
 
 /// The lock itself and its place in the count, let go of together.
@@ -220,11 +159,6 @@ pub struct InodeHold {
 pub(crate) type Carried = Arc<dyn std::any::Any + Send + Sync>;
 
 impl InodeGuard {
-    /// Done when the inode is being taken off the disk ([`InodeLocks::cancel`]).
-    pub async fn cancelled(&self) {
-        self.cancel.cancelled().await
-    }
-
     /// A share in the lock, for a blocking section started under it that is
     /// not a fill's (the upload's commit and reads, `upload::steps::sections::blocking_under`).
     pub(crate) fn hold(&self) -> InodeHold {
@@ -237,41 +171,10 @@ tokio::task_local! {
     static HELD: InodeHold;
 }
 
-/// Runs `work` as work done under `guard`: a blocking section that `work`
-/// starts takes a share in the lock ([`hold_in_force`]) and keeps the inode
-/// locked until it ends, whether `work` is still there by then or was
-/// dropped.
-pub(crate) async fn holding<T>(guard: &InodeGuard, work: impl std::future::Future<Output = T>) -> T {
-    holding_with(guard, None, work).await
-}
-
-/// [`holding`], each share in the lock carrying `with` as well: the upload
-/// worker's count of the sections its rows have under way, so that its stop
-/// waits for a section of a fill a row started (`upload::steps::sections::Sections`).
-pub(crate) async fn holding_with<T>(guard: &InodeGuard, with: Option<Carried>, work: impl std::future::Future<Output = T>) -> T {
-    HELD.scope(InodeHold { with, ..guard.hold() }, work).await
-}
-
 /// A share in the lock the calling work runs under, if it was started under
 /// one ([`holding`], [`unless_removed`]).
 pub(crate) fn hold_in_force() -> Option<InodeHold> {
     HELD.try_with(InodeHold::clone).ok()
-}
-
-/// Runs `fill` — a download into a file — unless the file is taken off the
-/// disk meanwhile because OneDrive removed its item: then it is dropped where
-/// it is, and `None` says so. Without a guard it runs to its end.
-///
-/// The fill runs as work under the guard ([`holding`]): a blocking section it
-/// had begun when it was dropped ends before the lock is free.
-pub(crate) async fn unless_removed<T>(guard: Option<&InodeGuard>, fill: impl std::future::Future<Output = T>) -> Option<T> {
-    match guard {
-        Some(guard) => tokio::select! {
-            done = holding(guard, fill) => Some(done),
-            () = guard.cancelled() => None,
-        },
-        None => Some(fill.await),
-    }
 }
 
 #[cfg(test)]

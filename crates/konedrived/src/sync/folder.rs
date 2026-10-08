@@ -20,10 +20,10 @@ use konedrive_tree::Store;
 use tokio::sync::RwLockWriteGuard;
 
 use super::running_sync::{Handles, RunningSync, Sync, Why};
-use super::{RootSource, SyncService};
+use super::SyncService;
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
-use crate::hydration::recovery::RecoveryReport;
+use crate::fuse::Mount;
 use crate::hydration::source::ContentSource;
 
 /// An account's folder: whether the account takes one, the mode it is to follow, and what
@@ -31,7 +31,7 @@ use crate::hydration::source::ContentSource;
 pub(super) struct Folder {
     pub standing: Standing,
     /// The account's mode as the folder follows it (`docs/design/writes.md` §2, §2.2):
-    /// read-only keeps a OneDrive folder under the lock, read-write lifts it.
+    /// a read-only folder's mount takes no change, a read-write one's does.
     pub wanted: Mode,
     pub is: Is,
 }
@@ -53,61 +53,49 @@ pub(super) enum Standing {
 pub(super) enum Is {
     /// The account has no folder.
     Absent,
-    /// A folder is recorded and not up: no sync runs, and nothing new is placed in it.
+    /// A folder is recorded and not up: no sync runs for it.
     Down(Record, Down),
-    /// Registered and recovered.
+    /// Registered, and shown through its mount from its first sync on.
     Up(Up),
 }
 
-/// A folder as the daemon holds it, up or not: what `config.toml` records of it, and the
-/// device it is on.
+/// A folder as the daemon holds it, up or not: what `config.toml` records of it.
 #[derive(Debug, Clone)]
 pub(super) struct Record {
     pub root: SyncRoot,
-    pub interception: Interception,
-    /// What it shows, decided when it was first registered and kept with it for good.
-    /// Under [`Down::UnreadSource`] it is a guess, good for a Forget alone.
-    pub source: RootSource,
     /// Whether *this daemon* excluded the folder from Baloo, so that a Forget takes
     /// exactly that exclusion off again.
     pub baloo: bool,
-    /// The device the folder is on, read once when the record is made, for the registry's
-    /// router: never a path looked at per request. `None` when the folder could not be
-    /// looked at then.
-    pub dev: Option<u64>,
     /// What the daemon keeps for the folder for as long as it is recorded, up or down.
     pub kept: Kept,
 }
 
 /// What is kept with a recorded folder until it is forgotten, its account removed, or
 /// another folder registered: it does not go when the folder goes down. So a folder that
-/// is down still fills an open the helper intercepts, still says what waits to be
-/// uploaded and whether it is paused, and its tree still claims its items for the other
-/// accounts.
+/// is down still shows its names, still says what waits to be uploaded and whether it is
+/// paused.
 #[derive(Clone, Default)]
 pub(super) struct Kept {
-    /// Where the folder's files are filled from: the drive for a OneDrive folder, from
-    /// its first bring-up on (`None` when the daemon was given no drive); the directory a
-    /// local folder was last populated from (`PopulateFromDirectory`), in this run of the
-    /// daemon.
+    /// Where the folder's files are downloaded from: the drive, from its first bring-up
+    /// on (`None` when the daemon was given no drive).
     pub source: Option<Arc<dyn ContentSource>>,
-    /// A OneDrive folder's tree store: opened when its sync first starts, or when a change
+    /// The folder's tree store: opened when its sync first starts, or when a change
     /// first needs it, and the one connection to it from then on.
     pub store: Option<Store>,
     /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
-    /// across each commit that touches `items`, and a cycle must hold it from staging to
-    /// swap, or the swap reverts the commit. One for as long as the folder is recorded, so
-    /// that what took it before a sync was started again still keeps the new sync's cycle
-    /// out.
+    /// across each commit that touches `items`, the mount's recorder across each change it
+    /// records, and a cycle must hold it from staging to swap, or the swap reverts the
+    /// commit. One for as long as the folder is recorded, so that what took it before a
+    /// sync was started again still keeps the new sync's cycle out.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The mount of a OneDrive folder, from its first sync on: it stays while the folder is
-    /// recorded, so that the folder shows its names also while no sync runs.
-    pub fuse: Option<Arc<crate::fuse::Mount>>,
+    /// The folder's mount, from its first sync on: it stays while the folder is recorded,
+    /// so that the folder shows its names also while no sync runs.
+    pub mount: Option<Arc<Mount>>,
 }
 
 impl std::fmt::Debug for Kept {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Kept").field("source", &self.source.is_some()).field("store", &self.store.is_some()).finish()
+        f.debug_struct("Kept").field("source", &self.source.is_some()).field("store", &self.store.is_some()).field("mount", &self.mount.is_some()).finish()
     }
 }
 
@@ -119,55 +107,17 @@ impl Record {
     pub fn bare(&self) -> Record {
         Record { kept: Kept::default(), ..self.clone() }
     }
-
-    /// Whether opens inside the folder are intercepted: false only for a folder registered
-    /// through `RegisterWithoutInterception`.
-    pub fn intercepted(&self) -> bool {
-        self.interception == Interception::Intercepted
-    }
-
-    /// Whether the folder switches to interception when a helper connects: it was
-    /// registered without only because none was connected, or it shows OneDrive, which is
-    /// kept in step only with interception (HS2).
-    pub fn switches_with_helper(&self) -> bool {
-        match self.interception {
-            Interception::Intercepted => false,
-            Interception::Without { switch_when_helper } => switch_when_helper,
-        }
-    }
-
-    /// Whether the folder needs the helper to be what it is: a local folder that is
-    /// intercepted.
-    pub fn needs_helper(&self) -> bool {
-        self.intercepted() && self.source != RootSource::OneDrive
-    }
-}
-
-/// How, or whether, opens inside a folder are intercepted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Interception {
-    Intercepted,
-    /// Nothing intercepts opens in it. `switch_when_helper`: it was registered so only
-    /// because no helper was connected, and switches when one connects.
-    Without { switch_when_helper: bool },
 }
 
 /// Why a recorded folder is not up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Down {
-    /// Recorded without interception, and not brought up yet in this run of the daemon.
+    /// Recorded, and not brought up yet in this run of the daemon.
     NotYetUp,
-    /// Recorded with interception; it is brought up when the helper connects.
-    WaitsForHelper,
-    /// A registration, or a switch to interception, failed, and the helper could not
-    /// confirm it let go: the helper may still hold the folder, so the daemon keeps it,
-    /// intercepted, and brings it up at the next connect. The sentence that says so.
-    Kept { why: String },
-    /// `config.toml` says what the folder shows in a word that is neither of its two
+    /// `config.toml` says what the folder shows in a word that is not `"onedrive"`
     /// (`written`): it is never brought up on a guess (`SY6`).
     UnreadSource { written: String },
-    /// A bring-up failed, or the folder itself was moved or deleted. The sentence that
-    /// says so.
+    /// A bring-up failed. The sentence that says so.
     Failed { why: String },
 }
 
@@ -176,25 +126,22 @@ impl Down {
     /// down for this; empty while it only waits.
     pub fn why(&self, root: &SyncRoot) -> String {
         match self {
-            Down::NotYetUp | Down::WaitsForHelper => String::new(),
-            Down::Kept { why } | Down::Failed { why } => why.clone(),
+            Down::NotYetUp => String::new(),
+            Down::Failed { why } => why.clone(),
             Down::UnreadSource { written } => format!(
-                "cannot bring up the sync folder {}: config.toml has source = {written:?} for it, which is neither \
-                 \"onedrive\" nor \"local\"; correct it and start konedrive again, or forget the folder and add it again",
+                "cannot bring up the sync folder {}: config.toml has source = {written:?} for it, which is not \
+                 \"onedrive\"; correct it and start konedrive again, or forget the folder and add it again",
                 root.path.display()
             ),
         }
     }
-}
 
-impl Down {
     /// What a folder that only waits waits for, for a refusal that has to say why the
     /// folder is not up; `None` when it is down for a reason of its own ([`why`](Self::why)).
     pub fn waits_for(&self) -> Option<&'static str> {
         match self {
             Down::NotYetUp => Some("it is being brought up"),
-            Down::WaitsForHelper => Some("it waits for the konedrive helper to connect"),
-            Down::Kept { .. } | Down::UnreadSource { .. } | Down::Failed { .. } => None,
+            Down::UnreadSource { .. } | Down::Failed { .. } => None,
         }
     }
 }
@@ -202,90 +149,7 @@ impl Down {
 /// A folder that is up.
 pub(super) struct Up {
     pub record: Record,
-    pub recovery: Recovery,
-    /// Why the last switch to interception did not go through, for a folder that stays
-    /// without: said behind the registration's own text until a switch does, or the
-    /// folder is brought up again.
-    pub switch_failed: Option<String>,
-    pub content: Content,
-}
-
-/// What a folder that is up holds besides its record.
-pub(super) enum Content {
-    /// Filled by hand (`PopulateFromDirectory`); nothing runs for it.
-    Local,
-    OneDrive(OneDriveFolder),
-}
-
-/// A folder that is up and shows OneDrive.
-pub(super) struct OneDriveFolder {
     pub sync: Sync,
-}
-
-/// What the recovery walk of the bring-up left behind (`docs/design/hydration.md` §9).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Recovery {
-    /// Nothing to say.
-    Clean,
-    /// Interrupted files could not be reset: the folder reads `error`. The sentence.
-    Unreset(String),
-    /// Part of the folder could not be looked at. The sentence.
-    Uninspected(String),
-    /// Interrupted files were left as found because a helper runs that this daemon has no
-    /// link to: the walk runs again when there is one. The sentence.
-    Deferred(String),
-}
-
-impl Recovery {
-    /// What `report` leaves to say, logged as it is worked out.
-    pub fn of(report: &RecoveryReport) -> Self {
-        if report.failed > 0 {
-            let text = format!(
-                "startup recovery could not reset {} of {} managed file(s); they are left \
-                 exactly as found for the next start (reset {}, skipped {})",
-                report.failed, report.scanned, report.reset, report.skipped
-            );
-            tracing::error!("{text}");
-            Recovery::Unreset(text)
-        } else if report.skipped > 0 {
-            let text = format!(
-                "startup recovery could not inspect {} item(s); the root may not be fully \
-                 recovered",
-                report.skipped
-            );
-            tracing::warn!("{text}");
-            Recovery::Uninspected(text)
-        } else if report.busy > 0 {
-            // Not an error: what has such a file open is, as often as not, the very open
-            // that will fill it. So it is logged and not said in `LastError`: said
-            // there, it stayed for the whole session, long after the file was filled.
-            tracing::info!(
-                "startup recovery left {} interrupted file(s) as they were because they were in \
-                 use; each is filled when it is next opened, or reset at the next start",
-                report.busy
-            );
-            Recovery::Clean
-        } else if report.deferred > 0 {
-            // Not an error either: recovery runs again the moment the link is up.
-            let text = format!(
-                "startup recovery left {} interrupted file(s) as they were: a konedrive helper \
-                 is running and this daemon is not connected to it yet; they are reset once it is",
-                report.deferred
-            );
-            tracing::info!("{text}");
-            Recovery::Deferred(text)
-        } else {
-            Recovery::Clean
-        }
-    }
-
-    /// The sentence, if there is one.
-    pub fn text(&self) -> Option<&str> {
-        match self {
-            Recovery::Clean => None,
-            Recovery::Unreset(text) | Recovery::Uninspected(text) | Recovery::Deferred(text) => Some(text),
-        }
-    }
 }
 
 impl Folder {
@@ -319,24 +183,17 @@ impl Folder {
         }
     }
 
-    /// The folder's OneDrive side, when it is up and shows OneDrive.
-    pub fn onedrive(&self) -> Option<&OneDriveFolder> {
-        match self.up().map(|up| &up.content) {
-            Some(Content::OneDrive(onedrive)) => Some(onedrive),
-            _ => None,
-        }
-    }
-
-    pub fn onedrive_mut(&mut self) -> Option<&mut OneDriveFolder> {
+    /// The sync of the folder that is up, running or not, to put another in its place.
+    pub fn sync_mut(&mut self) -> Option<&mut Sync> {
         match &mut self.is {
-            Is::Up(Up { content: Content::OneDrive(onedrive), .. }) => Some(onedrive),
+            Is::Up(up) => Some(&mut up.sync),
             _ => None,
         }
     }
 
     /// The folder's sync, when one runs.
     pub fn running(&self) -> Option<&RunningSync> {
-        match self.onedrive().map(|onedrive| &onedrive.sync) {
+        match self.up().map(|up| &up.sync) {
             Some(Sync::Running(sync)) => Some(sync),
             _ => None,
         }
@@ -351,20 +208,14 @@ impl Folder {
         }
     }
 
-    /// The tree store of the recorded OneDrive folder, once it has been opened.
+    /// The tree store of the recorded folder, once it has been opened.
     pub fn store(&self) -> Option<Store> {
         self.record().and_then(|record| record.kept.store.clone())
     }
 
-    /// Where the folder's files are filled from ([`Kept::source`]).
-    pub fn source(&self) -> Option<Arc<dyn ContentSource>> {
-        self.acted_on().and_then(|record| record.kept.source.clone())
-    }
-
-    /// Whether a OneDrive folder's sync may run: the folder is up, shows OneDrive and is
-    /// intercepted (HS2).
-    pub fn syncs(&self) -> bool {
-        self.up().is_some_and(|up| up.record.source == RootSource::OneDrive)
+    /// The folder's mount, once it has been mounted.
+    pub fn mount(&self) -> Option<&Arc<Mount>> {
+        self.record().and_then(|record| record.kept.mount.as_ref())
     }
 }
 
@@ -383,25 +234,23 @@ pub(super) struct View {
     pub down: Option<String>,
     /// The mode the folder follows.
     pub wanted: Mode,
-    /// Where the folder's files are filled from ([`Folder::source`]).
-    pub source: Option<Arc<dyn ContentSource>>,
     /// The tree lock of the folder, for `RestoreDeletes`, which takes it with no state
     /// lock.
     pub tree_lock: Option<Arc<tokio::sync::Mutex<()>>>,
-    /// The tree store of the recorded OneDrive folder ([`Folder::store`]).
+    /// The tree store of the recorded folder ([`Folder::store`]).
     pub store: Option<Store>,
-    /// The folder's mount.
-    pub fuse: Option<Arc<crate::fuse::Mount>>,
+    /// The folder's mount ([`Folder::mount`]).
+    pub mount: Option<Arc<Mount>>,
     pub sync: SyncView,
 }
 
 /// The sync of the folder, as the readers see it.
 #[derive(Clone, Default)]
 pub(super) enum SyncView {
-    /// The folder is not one that has a sync: there is none, it is not up, or it is local.
+    /// There is no folder, or it is not up.
     #[default]
     None,
-    /// A OneDrive folder is up and its sync does not run: why, when it could not start.
+    /// The folder is up and its sync does not run: why, when it could not start.
     Stopped(Option<String>),
     Running(Handles),
 }
@@ -460,7 +309,7 @@ impl<'a> Stopped<'a> {
 
     /// Whether the folder's mount takes changes now.
     fn writable(&self) -> bool {
-        self.folder.record().and_then(|record| record.kept.fuse.as_ref()).is_some_and(|mount| mount.is_writable())
+        self.folder.mount().is_some_and(|mount| mount.is_writable())
     }
 
     /// Publishes the state as it is now.
@@ -520,15 +369,15 @@ impl SyncService {
         // Dropped from here on, the change publishes what it leaves.
         let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
         // No sync, no uploads: the mount takes no change until a read-write sync runs again.
-        if let Some(mount) = stopped.folder.record().and_then(|record| record.kept.fuse.as_ref()) {
+        if let Some(mount) = stopped.folder.mount() {
             stopped.was_writable = mount.read_only();
         }
-        if let Some(onedrive) = stopped.folder.onedrive_mut() {
-            match std::mem::replace(&mut onedrive.sync, Sync::Stopped(Why::Interrupted)) {
+        if let Some(sync) = stopped.folder.sync_mut() {
+            match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {
                 // Dropped here: told again, and its parts handed over to be waited for.
                 Sync::Running(_) => stopped.ran = true,
                 Sync::Stopped(Why::Interrupted) => stopped.ran = true,
-                Sync::Stopped(why) => onedrive.sync = Sync::Stopped(why),
+                Sync::Stopped(why) => *sync = Sync::Stopped(why),
             }
         }
         // What the folder is now, before the parts are waited for: another change may have
@@ -564,7 +413,7 @@ impl SyncService {
         self.view.borrow().running().cloned()
     }
 
-    /// The tree store of the recorded OneDrive folder, as last published.
+    /// The tree store of the recorded folder, as last published.
     pub(super) fn tree_store(&self) -> Option<Store> {
         self.view.borrow().store.clone()
     }

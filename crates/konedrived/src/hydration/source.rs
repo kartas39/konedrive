@@ -1,5 +1,5 @@
-//! Where hydration gets its bytes from (`ContentSource`), and the fill of a
-//! placeholder in place from one of those sources (`fill`).
+//! Where a download gets its bytes from (`ContentSource`), and the download of a whole file
+//! from one of those sources, in one stream or in parts.
 
 use std::time::SystemTime;
 
@@ -7,16 +7,11 @@ use async_trait::async_trait;
 use tokio::io::AsyncRead;
 
 mod download;
-pub mod fill;
 mod guards;
-mod local_dir;
 pub mod parts;
 mod target;
 
 pub(crate) use download::download_staged;
-pub use fill::{answer_request, hydrate_in_parts, hydrate_with, Answered, FillError};
-pub(crate) use local_dir::refused_source_path;
-pub use local_dir::LocalDir;
 pub use parts::{Share, Split};
 
 #[derive(Debug, thiserror::Error)]

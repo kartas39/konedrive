@@ -52,7 +52,7 @@ impl SyncService {
     /// is for a folder that is not connected to OneDrive, and `NotUp`, with why,
     /// for a folder that is not up, or whose store has not been opened yet.
     pub(super) fn outbox_store(&self) -> Result<Store, SyncError> {
-        self.require_onedrive()?;
+        self.require_record()?;
         // The state first: the store of a folder that went down is still here.
         if self.view().down.is_some() {
             return Err(self.sync_not_running());
@@ -300,17 +300,15 @@ impl SyncService {
         }
     }
 
-    /// The tree store of the recorded OneDrive folder, inside a change, for what the change
+    /// The tree store of the recorded folder, inside a change, for what the change
     /// does to what waits in it: the one kept with the folder, or else the one on disk,
     /// opened now and kept ([`kept_store`](Self::kept_store)). `None` for a folder that has
-    /// none: a local one, or one whose store was never made or cannot be opened.
+    /// none: one whose store was never made or cannot be opened.
     pub(super) async fn store_in(&self, stopped: &mut Stopped<'_>) -> Option<Store> {
         if let Some(store) = stopped.folder().store() {
             return Some(store);
         }
-        if !stopped.folder().record()?.source.shows_onedrive() {
-            return None;
-        }
+        stopped.folder().record()?;
         let paths = self.sync_paths()?.clone();
         if !paths.tree_db.exists() {
             return None;

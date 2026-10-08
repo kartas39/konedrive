@@ -25,7 +25,7 @@ impl SyncService {
     /// `config.toml`, and taken at once. Refused `Unsupported` for a folder not connected to
     /// OneDrive. Nothing here needs the account's sync to be running.
     pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), SyncError> {
-        self.require_onedrive()?;
+        self.require_record()?;
         // `config.toml` first, and the settings in memory only once it is written: a change
         // that is refused changes nothing, here or on the bus. One change at a time
         // ([`Running::changing`]), so two calls at once leave the file and memory the same.

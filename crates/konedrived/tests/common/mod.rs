@@ -121,7 +121,6 @@ pub async fn start_daemon_with(
     options: konedrived::daemon::manager::Options,
 ) -> konedrived::daemon::startup::Daemon {
     let registry = konedrived::sync::registry::Registry::new();
-    registry.hub().set_socket(dir.join("no-helper.sock"));
     konedrived::daemon::startup::start_on(bus.builder(), Paths::in_dir(dir), options, registry).await.unwrap()
 }
 

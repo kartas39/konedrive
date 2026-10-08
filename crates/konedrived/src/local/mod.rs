@@ -1,43 +1,19 @@
-//! Local changes, from the disk to the outbox (`docs/design/writes.md` §4):
-//! what a read-write folder holds that the base does not.
+//! Local changes on their way to the outbox (`docs/design/writes.md` §4): what a read-write
+//! folder holds that the base does not.
 //!
-//! The watcher turns notification events into a [`Batch`] of dirty
-//! places — directories and names, and object handles — and hands it over
-//! once the folder has been quiet for [`QUIET`] (at the latest [`CEILING`]
-//! after the first event). The [`Examiner`] compares what is on disk there
-//! with the base (`items`) and records what differs as outbox rows
-//! ([`konedrive_tree::outbox`]); the outbox worker sends them. A
-//! [`Batch::full`] examines every directory: the Full local scan, run at
-//! bring-up, after a queue overflow, after a helper reconnect and when the
-//! ignore list changes.
-//!
-//! Events are hints, never the truth: every decision is made from the disk,
-//! by item id, file handle and content, so a lost or merged event costs a
-//! scan, never a wrong upload.
-//!
-//! The daemon runs it from `sync/watcher.rs`: the watcher ([`watcher`]) hands each
-//! batch to the examination under the folder's tree lock (`watcher/service.rs`).
-//! One path leads to each thing here: what an examination is made of and gives back
-//! is named at this level ([`Batch`], [`Examiner`], [`Examined`], [`IgnoreList`]);
-//! the rest is in its own public module ([`handles`], [`liveness`], [`names`],
-//! [`scan`], [`watcher`]).
+//! A change is made and recorded by the folder's mount (`crate::fuse`) as a program asks
+//! for it; nothing is watched and nothing is examined. What is here is what the recording
+//! and the worker that sends the rows go by: the names that stay local ([`ignore`]) and
+//! the ones OneDrive refuses ([`names`]), how detections become rows ([`record`]), what
+//! the rows hold of the folder while they wait ([`held`]), and the limits they share.
 
-mod batch;
-mod entry;
-mod examine;
-pub mod handles;
 pub mod held;
 mod ignore;
-pub mod liveness;
 pub mod names;
 pub mod record;
-pub mod scan;
-pub mod watcher;
 
 use std::time::Duration;
 
-pub use batch::{Batch, ScanReason};
-pub use examine::{ExamineError, Examined, Examiner, ScanProgress};
 pub use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
 
 /// A batch is examined when no event came for this long (provisional).

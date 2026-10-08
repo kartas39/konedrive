@@ -27,8 +27,6 @@ mod status;
 mod token_export;
 mod wording;
 
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,14 +35,9 @@ use common::{err_text, out_text, run};
 use konedrive_dbus::accounts::{FilesProxy, FolderProxies};
 use konedrive_dbus::testing::TestBus;
 use konedrive_fs::placeholder::{write_state, State};
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::account::AccountService;
 use konedrived::account::state::SignInState;
-use konedrived::helper::HelperLink;
 use konedrived::sync::SyncService;
-use nix::sys::socket::{
-    accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
-};
 
 /// Polls `pred` every 20 ms for up to 5 s — the same shape
 /// `konedrived`'s own tests use for a background listing to catch up.
@@ -75,35 +68,6 @@ struct Harness {
     _config_dir: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
-}
-
-/// Accepts one connection on a `SOCK_SEQPACKET` socket at `path`, greets, and
-/// acknowledges every request with `Ack { errno: 0 }` — a stand-in for the
-/// real, privileged helper, which these unprivileged tests cannot start (see
-/// the module doc comment). Lifted from `konedrived`'s own
-/// `tests/sync_dbus.rs::fake_helper`, which has the canonical copy.
-fn fake_helper(path: PathBuf, refuse_clear_ignore: bool) {
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
-    let addr = UnixAddr::new(&path).unwrap();
-    bind(fd.as_raw_fd(), &addr).unwrap();
-    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
-    std::thread::spawn(move || {
-        let accepted = accept(fd.as_raw_fd()).unwrap();
-        // SAFETY: `accept` just returned a freshly opened descriptor that
-        // this process now solely owns.
-        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-        let mut channel = Channel::new(stream).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        while let Ok((message, _fd)) = channel.recv::<ToHelper>() {
-            let errno = match message {
-                ToHelper::ClearIgnore if refuse_clear_ignore => 5, // EIO
-                _ => 0,
-            };
-            if channel.send(&ToDaemon::Ack { errno }, None).is_err() {
-                break;
-            }
-        }
-    });
 }
 
 /// The daemon with one account, `Personal`, signed in, and the fake helper
@@ -141,26 +105,15 @@ async fn build_harness(with_helper: bool, signed_in: bool, refuse_clear_ignore: 
 
 /// [`build_harness`], whose account's folder shows what `drive` gives.
 async fn build_harness_showing(
-    with_helper: bool,
+    _with_helper: bool,
     signed_in: bool,
-    refuse_clear_ignore: bool,
+    _refuse_clear_ignore: bool,
     drive: konedrived::daemon::manager::DriveOf,
 ) -> Harness {
     let bus = TestBus::start();
     let config_dir = tempfile::tempdir().unwrap();
     let daemon = common::start_daemon_showing(&bus, config_dir.path(), drive).await;
 
-    let helper_dir = tempfile::tempdir().unwrap();
-    let hub = daemon.manager.hub();
-    // Without a helper, nothing is bound at this path: a punch with no link
-    // goes ahead whatever this machine runs at the real one.
-    hub.set_socket(helper_dir.path().join("helper.sock"));
-    if with_helper {
-        let socket_path = helper_dir.path().join("helper.sock");
-        fake_helper(socket_path.clone(), refuse_clear_ignore);
-        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        hub.set_link(Some(link));
-    }
     let account = daemon.manager.add("Personal", &daemon.connection).await.unwrap();
     if signed_in {
         account.account.state().update(|s| s.state = SignInState::SignedIn);
@@ -178,7 +131,7 @@ async fn build_harness_showing(
         account: Arc::clone(&account.account),
         _daemon: daemon,
         _config_dir: config_dir,
-        _helper_dir: helper_dir,
+        _helper_dir: tempfile::tempdir().unwrap(),
         _bus: bus,
     }
 }

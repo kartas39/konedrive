@@ -157,8 +157,8 @@ properties! {
     OVERALL: konedrive_dbus::overall::Overall = FOLDER, "Overall", |s| overall::reason(s.sign_in, &s.snapshot, s.downloads.len()).into();
     /// The sentence of the trouble there is now, whatever the reason is; or empty.
     TROUBLE: String = FOLDER, "Trouble", |s| overall::trouble(&s.snapshot);
-    /// The failed-update note alone, or empty.
-    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::not_updated(&s.snapshot);
+    /// Always empty: no update of a file waits (`status::overall`).
+    NOT_UPDATED: String = FOLDER, "NotUpdated", |s| overall::overall(s.sign_in, &s.snapshot, s.downloads.len()).not_updated;
 }
 
 properties! {

@@ -1,10 +1,8 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use super::*;
 use crate::status::snapshot::{OutboxStatus, PauseStatus, TransferStatus};
 use konedrive_graph::pool::{Direction, TransferPool, STILL_AFTER};
-use crate::hydration::pin::Pins;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -84,33 +82,6 @@ fn done_starts_again_when_nothing_is_left() {
 
     s.transfers.throughput.up_moved = 9 * MIB;
     assert_eq!(counter.count(&s, &BTreeMap::new()).up.done_bytes, 2 * MIB, "this run only");
-}
-
-/// Downloads: the pinned files waiting and every download under way, less what those
-/// have received; the pins' queue says what waits, and a download on open counts only
-/// while it runs.
-#[tokio::test]
-async fn downloads_left_are_the_pinned_files_waiting_and_those_under_way() {
-    let state = SyncStateHandle::new(SyncSnapshot::default());
-    let pins = Pins::detached(state.clone());
-    pins.add((0..3).map(|i| (PathBuf::from(format!("/r/{i}.bin")), 10 * MIB)).collect());
-    assert_eq!(state.get().local.pinned_waiting, (3, 30 * MIB));
-
-    let transfers = Transfers::default();
-    let opening = transfers.start("/r/open.bin".into(), 0);
-    opening.progress(MIB, 4 * MIB);
-    let mut s = state.get();
-    s.transfers.throughput.down_moved = MIB;
-    s.transfers.throughput.down_average = MIB;
-    let mut counter = Counter::default();
-    let down = counter.count(&s, &transfers.subscribe().borrow());
-    assert_eq!(down.down, Totals { left_count: 4, left_bytes: 33 * MIB, done_bytes: MIB, time_left: 33 });
-    assert_eq!(down.up, Totals::default());
-
-    pins.clear();
-    drop(opening);
-    let s = SyncSnapshot { transfers: TransferStatus { throughput: s.transfers.throughput, ..state.get().transfers }, ..state.get() };
-    assert_eq!(counter.count(&s, &transfers.subscribe().borrow()).down, Totals::default());
 }
 
 /// The totals reach the published state, and follow it.

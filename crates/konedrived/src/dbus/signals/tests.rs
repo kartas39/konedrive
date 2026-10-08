@@ -97,7 +97,6 @@ async fn the_overall_state_is_sent_when_it_changes_and_not_again_when_it_does_no
     state.update(|s| {
         s.folder.root_path = "/home/u/OneDrive".into();
         s.folder.root_state = RootState::Ready;
-        s.folder.helper_state = HelperState::Connected;
     });
     settle().await;
     assert!(since(&sent).is_empty(), "still signed out");
@@ -165,7 +164,6 @@ async fn a_reason_is_not_sent_ahead_of_the_count_it_speaks_of() {
     state.update(|s| {
         s.folder.root_path = "/home/u/OneDrive".into();
         s.folder.root_state = RootState::Ready;
-        s.folder.helper_state = HelperState::Connected;
     });
     let account = StateHandle::new(AccountSnapshot::default());
     account.update(|s| s.state = SignInState::SignedIn);

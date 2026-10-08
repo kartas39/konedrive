@@ -250,7 +250,6 @@ async fn attempt(
 
     let size = fetched.size;
     let version = fetched.version.clone();
-    let mtime = fetched.mtime;
     let mut pieces = Vec::new();
     let mut at = start;
     while at < size {
@@ -263,7 +262,7 @@ async fn attempt(
     let state = State { next: usize::from(first.is_some()), pieces, hash, written: start, last_checkpoint: start };
     let attempt = Attempt { target, item_id, source, split, joined, tuning, original_size, start, size, version, state: Mutex::new(state) };
     attempt.run(first, breaks).await?;
-    attempt.finish(mtime)
+    attempt.finish()
 }
 
 impl Attempt<'_> {
@@ -450,9 +449,9 @@ impl Attempt<'_> {
     }
 
     /// Every piece is down: the combined hash is checked, as a single stream's is.
-    fn finish(&self, mtime: std::time::SystemTime) -> Result<Downloaded, End> {
+    fn finish(&self) -> Result<Downloaded, End> {
         verify(self.item_id, &self.version, &self.lock().hash)?;
-        Ok(Downloaded { size: self.size, mtime, version: self.version.clone() })
+        Ok(Downloaded { size: self.size })
     }
 }
 
@@ -465,5 +464,3 @@ impl Drop for StreamCount<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests;

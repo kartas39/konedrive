@@ -5,10 +5,9 @@
 //!
 //! - **Left.** Uploads, in changes: the outbox rows not uploaded yet (`PendingCount`,
 //!   `PendingBytes`; a move, a delete or a new folder is a change of no bytes), less the bytes
-//!   already sent of the uploads under way. Downloads, in files: the pinned files waiting
-//!   ([`Pins`](crate::hydration::pin::Pins)) and every download under way (`Transfers`: opens, `Hydrate`,
-//!   replacements, pinned files), less the bytes already received of those under way. A file
-//!   being opened and a replacement are not queued ahead: they count only while they run.
+//!   already sent of the uploads under way. Downloads, in files: every download under way
+//!   (`Transfers`: files being read, `Hydrate`, pinned files), less the bytes already
+//!   received of those. Nothing is queued ahead: a download counts only while it runs.
 //!   What is kept back — blocked, held, waiting for space while OneDrive is full, too big for
 //!   the space left — is not left: the Not Uploaded page counts it.
 //! - **Done.** The bytes moved that way (the transfer pool's count) since nothing was last
@@ -57,8 +56,7 @@ impl Counter {
         let pool = s.transfers.throughput;
         let received: u64 = transfers.values().map(|t| t.total.saturating_sub(t.done)).sum();
         let running = u32::try_from(transfers.len()).unwrap_or(u32::MAX);
-        let (pinned, pinned_bytes) = s.local.pinned_waiting;
-        let down = (pinned.saturating_add(running), pinned_bytes.saturating_add(received));
+        let down = (running, received);
         // `PendingCount` takes in the changes that wait for space and those too big for it:
         // kept back, not left.
         let sent: u64 = s.outbox.uploads.iter().map(|(_, sent, _)| sent).sum();

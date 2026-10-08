@@ -104,27 +104,6 @@ async fn binary_register_without_a_helper_says_how_to_start_it() {
     assert_eq!(helper, "Helper:                 unknown — the konedrive helper is not connected", "{status}");
 }
 
-/// `NoHelper` from `dehydrate`: a root registered *with* interception whose
-/// helper has since gone away. Freeing space then has to be refused (the
-/// helper must resume watching the file first), and the file is untouched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_dehydrate_without_the_helper_changes_nothing_and_says_why() {
-    let f = harness().await;
-    let addr = f._bus.address();
-    let file = populated(&f).await;
-    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
-    f.service.hub().set_link(None);
-
-    let told = refused(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
-    assert!(told.contains("helper is not connected"), "{told}");
-    assert!(told.contains("nothing was changed"), "{told}");
-    assert!(
-        !told.contains("register-without-interception"),
-        "this is the dehydrate wording, not register's: {told}"
-    );
-    assert_eq!(std::fs::read(&file).unwrap(), vec![7u8; 8192]);
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_register_while_signed_out_says_to_log_in() {
     let f = harness_signed_out().await;
@@ -238,21 +217,6 @@ async fn binary_register_of_another_accounts_folder_says_whose_it_is() {
     let told = refused(f._bus.address(), &["sync", "register", root.to_str().unwrap()]);
     assert!(told.contains("holds the files of another OneDrive account's folder"), "{told}");
     assert!(told.contains("sign the account in first (`konedrivectl login`)"), "{told}");
-}
-
-/// `account remove` refused for want of the helper changes nothing, and says so.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_remove_without_the_helper_changes_nothing() {
-    let f = harness().await;
-    let root = f.dir.path().join("OneDrive");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    f.service.hub().set_link(None);
-
-    let told = refused(f._bus.address(), &["account", "remove", "Personal"]);
-    assert!(told.contains("the account Personal was not removed and nothing was changed"), "{told}");
-    let list = out_text(&run(f._bus.address(), &["account", "list"]));
-    assert!(list.contains("Personal") && list.contains(root.to_str().unwrap()), "{list}");
 }
 
 /// The client ID cannot change while an account uses it; the refusal names the account and

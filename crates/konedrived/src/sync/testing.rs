@@ -2,9 +2,6 @@
 //! folder through public calls and what it was made with, never through a field of
 //! [`SyncService`].
 //!
-//! - the helper: the daemon's one fake (`helper::testing::FakeHelper`, in the crate's own
-//!   tests only), which records what it is asked, refuses on demand, and holds an answer
-//!   until the test lets it go (a change held open is "the helper has not answered yet");
 //! - the account: [`Account`], over a state the test changes, counting what the folder
 //!   tells it;
 //! - `config.toml`: a temporary one ([`persist`]), or the test's own;
@@ -35,22 +32,21 @@ use crate::account::FolderAccount;
 use crate::conditions::running::Clock;
 use crate::config::ConfigStore;
 use crate::desktop::baloo::Baloo;
-use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
-use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
+use crate::hydration::source::{ContentSource, Fetched, SourceError};
 use crate::remote::listing::Schedule;
 
 impl SyncService {
     /// Stops the folder's sync and waits for every part of it, through the door every
     /// change of the folder uses ([`SyncService::change`]); whether one ran. The sync
-    /// stays stopped until something starts it: `Refresh()`, the helper back, a switch
+    /// stays stopped until something starts it: `Refresh()`, a switch
     /// of mode. A test ends with it, so that nothing of the sync is at work when its
     /// temporary directories go.
     pub async fn stop_sync(&self) -> bool {
         let mut stopped = self.change().await;
         let ran = stopped.ran();
-        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
-            onedrive.sync = super::running_sync::Sync::Stopped(super::running_sync::Why::NotStarted);
+        if let Some(sync) = stopped.folder_mut().sync_mut() {
+            *sync = super::running_sync::Sync::Stopped(super::running_sync::Why::NotStarted);
         }
         ran
     }
@@ -208,10 +204,6 @@ impl wiring::Sources for Sources {
         assert!(!self.broken.load(Ordering::SeqCst), "broken on purpose");
         Arc::new(Replaceable { real: Arc::new(GraphSource::new(drive.clone())), instead: Arc::clone(&self.instead) })
     }
-
-    fn directory(&self, local: LocalDir) -> Arc<dyn ContentSource> {
-        Arc::new(Replaceable { real: Arc::new(local), instead: Arc::clone(&self.instead) })
-    }
 }
 
 /// A folder's real source, or what the test put in its place.
@@ -269,13 +261,12 @@ pub fn parts(service: &SyncService) -> Parts {
 }
 
 /// A [`Wiring`] of fakes, part by part; what is not said is: a registry of the service's
-/// own, whose hub has no link, a signed-in read-only account, a `config.toml` in a temporary directory
-/// of its own, no drive (every folder is local), no Baloo, the default schedule, the real
-/// sources and watcher behind their switches, and the system's clock.
+/// own, a signed-in read-only account, a `config.toml` in a temporary directory
+/// of its own, no drive (no folder can be registered), no Baloo, the default schedule, the
+/// real source behind its switch, and the system's clock.
 #[derive(Default)]
 pub struct Builder {
     registry: Option<Arc<Registry>>,
-    link: Option<HelperLink>,
     account: Option<StateHandle>,
     persist: Option<Persist>,
     onedrive: Option<OneDrive>,
@@ -293,12 +284,6 @@ impl Builder {
     /// The service is added to `registry`, after the accounts it has.
     pub fn registry(mut self, registry: &Arc<Registry>) -> Self {
         self.registry = Some(Arc::clone(registry));
-        self
-    }
-
-    /// The service gets a registry of its own, whose hub holds `link` already.
-    pub fn link(mut self, link: Option<HelperLink>) -> Self {
-        self.link = link;
         self
     }
 
@@ -339,7 +324,7 @@ impl Builder {
     /// The service, made with all of it and added to its registry, as the account manager
     /// adds the daemon's. [`parts`] finds what it was made with.
     pub fn build(self) -> Arc<SyncService> {
-        let registry = self.registry.unwrap_or_else(|| Registry::with_link(self.link));
+        let registry = self.registry.unwrap_or_else(Registry::new);
         let account = match self.account {
             Some(state) => Account::over(state),
             None => Account::signed_in(),
@@ -374,17 +359,4 @@ impl Builder {
         made.push((Arc::downgrade(&service), parts));
         service
     }
-}
-
-/// A service with a registry of its own, whose hub holds `link`, over `account`'s state (or a signed-in
-/// account) and recording its folder in `persist` (or in a `config.toml` of its own).
-pub fn service(link: Option<HelperLink>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<SyncService> {
-    let mut builder = wiring().link(link);
-    if let Some(state) = account {
-        builder = builder.account(state);
-    }
-    if let Some(persist) = persist {
-        builder = builder.persist(persist);
-    }
-    builder.build()
 }

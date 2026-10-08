@@ -1,6 +1,6 @@
 //! What the bus shows of the folder's state, worked out in one place: [`publish`] derives
-//! `Path`, `State`, the registration's part of `LastError`, whether the folder waits for
-//! the helper, and the [`View`] from a [`Folder`], and nothing else writes them.
+//! `Path`, `State`, the registration's part of `LastError`, `Writable` and the [`View`] from
+//! a [`Folder`], and nothing else writes them.
 //!
 //! What the folder's sync says of itself (its trouble, its notes, the counters) is beside
 //! this, in the snapshot, written by the parts that run; `status::snapshot` puts the two
@@ -8,25 +8,20 @@
 
 use std::sync::Arc;
 
-use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, SyncView, View};
+use super::folder::{Folder, Is, Record, Standing, SyncView, View};
 use super::running_sync::{Sync, Why};
-use super::{RootSource, SyncService};
-use crate::status::snapshot::{RootState, SwitchNote, SyncSnapshot, SyncTrouble, TroubleKind};
+use super::SyncService;
+use crate::status::snapshot::{RootState, SyncSnapshot, SyncTrouble, TroubleKind};
 
 /// What a folder's state comes to on the bus, and for the readers.
 #[derive(Clone)]
 pub(super) struct Published {
     /// `Path`: the folder recorded, up or not; empty with none.
     pub path: String,
-    /// `State`, before the helper and the sync have their say (`published_state`).
+    /// `State`, before the sync has its say (`published_state`).
     pub state: RootState,
     /// The registration's part of `LastError`: what it ran into.
     pub error: String,
-    /// The folder is up with nothing intercepting: `LastError` warns of it ahead of `error`.
-    pub no_interception_warning: bool,
-    /// Why a switch to interception failed, said right behind `error`.
-    pub switch_note: Option<SwitchNote>,
-    pub helper: Helper,
     /// `Writable`: the folder takes changes, and what is changed in it is uploaded.
     pub writable: bool,
     /// Why the folder's sync could not start: blocking trouble, until one does.
@@ -34,31 +29,8 @@ pub(super) struct Published {
     pub view: View,
 }
 
-/// What the folder's state says of the helper.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Helper {
-    /// The folder is what it is without one.
-    NotNeeded,
-    /// The folder is intercepted, or shows OneDrive: it waits for the helper whenever
-    /// there is no link.
-    Needed,
-    /// The folder waits for the helper whatever the link: it is brought up, or switched to
-    /// interception, at the next connect.
-    Waited,
-}
-
-impl Helper {
-    /// Whether a folder that says this of the helper waits for it, with a `link` or none.
-    pub(super) fn waits(self, link: bool) -> bool {
-        match self {
-            Helper::NotNeeded => false,
-            Helper::Needed => !link,
-            Helper::Waited => true,
-        }
-    }
-}
-
-/// What `folder` comes to. Pure: the same state always publishes the same.
+/// What `folder` comes to. It reads the folder's state, and of its mount whether it takes
+/// changes now.
 pub(super) fn publish(folder: &Folder) -> Published {
     let path = folder.record().map(|record| record.root.path.display().to_string()).unwrap_or_default();
     // An account held back says so over whatever its folder is: nothing acts on the
@@ -68,15 +40,12 @@ pub(super) fn publish(folder: &Folder) -> Published {
             path,
             state: RootState::Error,
             error: why.clone(),
-            no_interception_warning: false,
-            switch_note: None,
-            helper: Helper::NotNeeded,
             writable: false,
             cannot_start: None,
             view: View { wanted: folder.wanted, ..View::default() },
         };
     }
-    let sync = match folder.onedrive().map(|onedrive| &onedrive.sync) {
+    let sync = match folder.up().map(|up| &up.sync) {
         None => SyncView::None,
         // One that was told to stop is not running: a change that told it may have been
         // cut before it took it out of the state.
@@ -89,75 +58,29 @@ pub(super) fn publish(folder: &Folder) -> Published {
         record: folder.acted_on().map(Record::bare),
         down,
         wanted: folder.wanted,
-        source: folder.source(),
         tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
         store: folder.store(),
-        fuse: folder.acted_on().and_then(|record| record.kept.fuse.clone()),
+        mount: folder.acted_on().and_then(|record| record.kept.mount.clone()),
         sync: sync.clone(),
     };
-    let quiet = |path, state, error, helper, view| Published {
-        path,
-        state,
-        error,
-        no_interception_warning: false,
-        switch_note: None,
-        helper,
-        writable: false,
-        cannot_start: None,
-        view,
-    };
-    match &folder.is {
-        Is::Absent => quiet(path, RootState::None, String::new(), Helper::NotNeeded, view(None)),
+    let (state, error, down) = match &folder.is {
+        Is::Absent => (RootState::None, String::new(), None),
         Is::Down(record, down) => {
             let error = down.why(&record.root);
-            let (state, helper) = match down {
-                // Nothing is known to be wrong: it is brought up in a moment, or when the
-                // helper connects.
-                Down::NotYetUp => (RootState::Waiting, Helper::NotNeeded),
-                Down::WaitsForHelper => (RootState::Waiting, Helper::Waited),
-                Down::UnreadSource { .. } => (RootState::Error, Helper::NotNeeded),
-                Down::Kept { .. } | Down::Failed { .. } if record.needs_helper() => (RootState::Error, Helper::Needed),
-                Down::Kept { .. } | Down::Failed { .. } => (RootState::Error, Helper::NotNeeded),
-            };
+            // Nothing is known to be wrong with a folder that only waits: it is brought up
+            // in a moment.
+            let state = if down.waits_for().is_some() { RootState::Waiting } else { RootState::Error };
             let why = down.waits_for().map_or_else(|| error.clone(), str::to_owned);
-            quiet(path, state, error, helper, view(Some(why)))
+            (state, error, Some(why))
         }
-        Is::Up(up) => {
-            // A folder that shows OneDrive needs no interception: its mount answers every open.
-            let intercepted = up.record.intercepted() || up.record.source == RootSource::OneDrive;
-            // A recovery that could not reset a file outranks the mode in `State`, because
-            // it is the louder of the two problems; `LastError` still carries the
-            // no-interception warning.
-            let state = match (&up.recovery, intercepted) {
-                (Recovery::Unreset(_), _) => RootState::Error,
-                (_, true) => RootState::Ready,
-                (_, false) => RootState::NoInterception,
-            };
-            let error = up.recovery.text().unwrap_or_default().to_owned();
-            let helper = match up.record.interception {
-                Interception::Without { .. } => Helper::NotNeeded,
-                Interception::Intercepted if up.record.source == RootSource::OneDrive => Helper::NotNeeded,
-                Interception::Intercepted => Helper::Needed,
-            };
-            let switch_note = up.switch_failed.clone().map(|why| SwitchNote { why });
-            let writable = up.record.kept.fuse.as_ref().is_some_and(|mount| mount.is_writable());
-            let cannot_start = match &sync {
-                SyncView::Stopped(why) => why.clone(),
-                _ => None,
-            };
-            Published {
-                path,
-                state,
-                error,
-                no_interception_warning: !intercepted,
-                switch_note,
-                helper,
-                writable,
-                cannot_start,
-                view: view(None),
-            }
-        }
-    }
+        Is::Up(_) => (RootState::Ready, String::new(), None),
+    };
+    let cannot_start = match &sync {
+        SyncView::Stopped(why) => why.clone(),
+        _ => None,
+    };
+    let writable = folder.up().is_some() && folder.mount().is_some_and(|mount| mount.is_writable());
+    Published { path, state, error, writable, cannot_start, view: view(down) }
 }
 
 impl SyncService {
@@ -166,14 +89,10 @@ impl SyncService {
     pub(super) fn publish(&self, folder: &Folder, also: impl FnOnce(&mut SyncSnapshot)) {
         let published = publish(folder);
         self.view.send_replace(published.view);
-        let waits = published.helper.waits(self.link().is_some());
         self.state.update_if_changed(|s| {
             s.folder.root_path = published.path;
             s.folder.root_state = published.state;
             s.folder.last_error = published.error;
-            s.folder.no_interception_warning = published.no_interception_warning;
-            s.folder.switch_note = published.switch_note;
-            s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;
             if let Some(text) = published.cannot_start {
                 s.cycle.sync_trouble = Some(SyncTrouble { text, blocking: true, kind: TroubleKind::Other });
@@ -181,19 +100,4 @@ impl SyncService {
             also(s);
         });
     }
-
-    /// Publishes the helper's disappearance: `State` used to stay `ready` with an empty
-    /// `LastError` while the sync folder was, in the only sense that matters, dead —
-    /// nothing intercepting, nothing reconnecting, and every un-hydrated file reading as
-    /// zeros. Now it reads `error`, and `LastError` says what `HelperState` says (HS3):
-    /// how to start the helper. The rest of what `LastError` said stays.
-    ///
-    /// Without the state lock: a change under way (a long registration, a fill it waits
-    /// for) must not hold this back. The folder is read as last published.
-    pub fn report_helper_lost(&self) {
-        if self.record().is_some_and(|record| record.needs_helper()) {
-            self.state.update(|s| s.folder.waits_for_helper = true);
-        }
-    }
 }
-

@@ -170,11 +170,7 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
     s.there_are(1).await;
     s.no_more_finished().await;
 
-    // It is an account like any other: it takes a folder, and is removed.
-    let folder = konedrive_dbus::accounts::FolderProxy::new(&s.client, path.clone()).await.unwrap();
-    let root = s.dir.path().join("folder");
-    std::fs::create_dir(&root).unwrap();
-    folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
+    // It is an account like any other: it is removed.
     s.manager.remove(&OwnedObjectPath::try_from(path).unwrap().as_ref()).await.unwrap();
     s.there_are(0).await;
     s.no_more_finished().await;

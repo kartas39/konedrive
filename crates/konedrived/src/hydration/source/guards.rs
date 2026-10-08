@@ -8,9 +8,8 @@ use std::io;
 use std::os::unix::fs::FileExt;
 use std::time::Duration;
 
-use konedrive_fs::placeholder::{remove_progress, Progress};
+use konedrive_fs::placeholder::{read_progress, remove_progress, Progress, XATTR_PROGRESS};
 use konedrive_graph::quickxor::QuickXor;
-use konedrive_proto::clamp_deny_errno;
 
 use super::target::Target;
 use super::{ContentSource, Fetched, SourceError, Version};
@@ -43,23 +42,44 @@ impl Default for Tuning {
     }
 }
 
-/// Maps a local filesystem failure onto the errno the suspended `open()` is answered with.
+/// The errnos a download ends with: what the program that waits for the file is answered.
+const ANSWERED: [i32; 7] = [libc::EPERM, libc::EIO, libc::EAGAIN, libc::EBUSY, libc::ETXTBSY, libc::ENOSPC, libc::EDQUOT];
+
+/// Maps a local filesystem failure onto the errno the program that waits for the file is
+/// answered with.
 ///
-/// A **clamp**, not a flattening: `ENOSPC` and `EDQUOT` are in the kernel's accepted
-/// `FAN_DENY` set and are exactly what a `pwrite` or an `fsync` produces on a full disk or
-/// an exhausted quota. Everything else the local filesystem can report (`EROFS`, `EBADF`,
-/// `EFBIG`, ...) is outside the set and would make the helper's response `write()` fail
-/// with `EINVAL`, leaving the opener suspended forever, so it becomes `EIO`.
+/// A **clamp**, not a flattening: `ENOSPC` and `EDQUOT` are exactly what a `pwrite` or an
+/// `fsync` produces on a full disk or an exhausted quota, and the one thing the user can act
+/// on. Everything else the local filesystem can report (`EROFS`, `EBADF`, `EFBIG`, ...) says
+/// nothing to whoever reads the file, so it becomes `EIO`.
 pub(super) fn errno_of(e: &io::Error) -> i32 {
-    clamp_deny_errno(e.raw_os_error().unwrap_or(libc::EIO))
+    e.raw_os_error().filter(|errno| ANSWERED.contains(errno)).unwrap_or(libc::EIO)
+}
+
+/// The checkpoint a download left on `file`, if a download can continue from it: well
+/// formed, counting at least one byte, and not past `size` — a file that short cannot hold
+/// the bytes it counts.
+pub(super) fn usable_checkpoint(file: &File, size: u64) -> Option<Progress> {
+    match read_progress(file) {
+        Ok(Some(progress)) if progress.bytes > 0 && progress.bytes <= size => Some(progress),
+        _ => None,
+    }
+}
+
+/// Takes the checkpoint off `file`, whether it reads as one or not. Whether there was one.
+pub(super) fn drop_checkpoint(file: &File) -> io::Result<bool> {
+    if let Ok(None) = xattr::FileExt::get_xattr(file, XATTR_PROGRESS) {
+        return Ok(false);
+    }
+    remove_progress(file)?;
+    Ok(true)
 }
 
 /// Why an attempt at the whole file ended without it.
 pub(super) enum End {
-    /// Answered with this errno; nothing more is tried. Every value is in
-    /// `konedrive_proto::ACCEPTED_DENY_ERRNOS`: a missing remote item and a failure that
-    /// did not pass are `EIO`, never the errno their cause might suggest (`ENOENT`,
-    /// `ECONNRESET`), which the kernel would not deliver.
+    /// Answered with this errno; nothing more is tried. A missing remote item and a
+    /// failure that did not pass are `EIO`, never the errno their cause might suggest
+    /// (`ENOENT`, `ECONNRESET`).
     Fail(i32),
     /// The file changed in the cloud mid-download: start over, once.
     Changed,

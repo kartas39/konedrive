@@ -38,7 +38,6 @@ image.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-graph = { path = "../konedrive-graph" }
-konedrive-proto = { path = "../konedrive-proto" }
 konedrive-tree = { path = "../konedrive-tree" }
 libc.workspace = true
 md-5.workspace = true

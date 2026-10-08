@@ -33,11 +33,6 @@ impl Target {
         Self { file: Arc::new(file), gate: Arc::default(), hold: hold_in_force() }
     }
 
-    /// For what is not a blocking call: handing the file to the helper's link.
-    pub(super) fn file(&self) -> &File {
-        &self.file
-    }
-
     /// Runs `work` on a blocking thread once no other section of this file is running, and
     /// with none beside it.
     pub(super) async fn alone<T: Send + 'static>(&self, work: impl FnOnce(&File) -> T + Send + 'static) -> T {

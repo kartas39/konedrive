@@ -4,10 +4,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::folder::{Down, Is, Record, Standing, Stopped};
+use super::folder::{Down, Is, Standing, Stopped};
 use super::{SyncError, SyncService};
-use crate::folder::root;
-use crate::helper::HelperError;
 
 /// How long a Forget waits for the tree store's connections to close before it removes
 /// the store's files.
@@ -42,47 +40,16 @@ impl SyncService {
         }
     }
 
-    /// Forgets the root and clears the published state. The files themselves
+    /// Forgets the root and clears the published state. The files that are downloaded
     /// are left exactly as they are.
     ///
-    /// # An intercepted root is forgotten through the helper, or not at all
-    ///
-    /// The helper's `UnregisterRoot` is the one thing that takes an
-    /// intercepted root's marks off — its directory marks, and the ignore
-    /// mark on every hydrated file in it. This used to tell the helper only
-    /// *if* a link happened to be up, and forget the root either way: the
-    /// helper kept the registration, the marks and the ignore marks, the
-    /// orphan never cleared, and a folder registered again without
-    /// interception then had its files freed up with no `ClearIgnore` while
-    /// they were still ignored — measured in the VM suite: a reader got
-    /// 65536 zero bytes and nothing was fetched. So with no link this
-    /// refuses `NoHelper`, exactly as `RegisterRoot` does, and nothing
-    /// changes.
-    ///
-    /// The helper answering `EPERM` is not a refusal to forget: it holds no
-    /// root of this uid under that id — it lost it, or never kept it — so no
-    /// mark of that registration is left to take off, and keeping the root
-    /// would only make it impossible to forget. Any other failure keeps it,
-    /// because then the helper may well still hold it.
-    ///
-    /// # A root registered without interception never involves the helper
-    ///
-    /// It was never announced to the helper, so there is nothing to tell it.
-    /// Telling it anyway made such a root impossible to forget while a helper
-    /// was connected: the helper refuses `EPERM` to unregister a root the uid
-    /// does not hold, and the daemon kept the registration (measured).
-    ///
-    /// # A OneDrive folder
-    ///
     /// Its sync is stopped first ([`change`](Self::change)), its mount is taken off, which
-    /// leaves the folder on disk the user's own again, and its tree store is dropped. A Forget that
-    /// is refused leaves it registered — so it is kept in step again.
+    /// leaves the folder on disk the user's own again, and its tree store is dropped. A
+    /// Forget that is refused leaves it registered — so it is kept in step again.
     ///
-    /// # A folder that is not up
-    ///
-    /// One held until the helper is back, kept after a registration that failed, held
-    /// with a `source` that cannot be read, or recorded by an account that is held back,
-    /// is forgotten the same way: its record is the only name the helper holds it by.
+    /// A folder that is not up — held with a `source` that cannot be read, one whose
+    /// bring-up failed, or recorded by an account that is held back — is forgotten the same
+    /// way.
     pub async fn unregister_root(&self) -> Result<(), SyncError> {
         self.forget(false).await.map(drop)
     }
@@ -124,10 +91,6 @@ impl SyncService {
         // A move out of the folder still in its store goes with it (the count above leaves
         // none): what it left outside is tidied first, while the helper still holds the
         // folder, and the registry stops routing its ids.
-        if let Err(refused) = self.let_go_at_the_helper(&record).await {
-            self.start_again(&mut stopped).await;
-            return Err(refused);
-        }
         // The folder is gone from the state, and with it everything kept with it: its
         // source and its tree store. The copy of the record this call holds gives its
         // store up too, and no reader holds one: what the view hands out carries none
@@ -137,7 +100,7 @@ impl SyncService {
         // and the activity log have let go of theirs too.
         let mut kept = std::mem::take(&mut record.kept);
         // The folder is unmounted: on disk it then shows its downloaded files alone.
-        if let Some(mount) = kept.fuse.take() {
+        if let Some(mount) = kept.mount.take() {
             self.report.space.measure_at(None);
             let _ = tokio::task::spawn_blocking(move || mount.forget()).await;
         }
@@ -146,55 +109,19 @@ impl SyncService {
             retire_in(&mut stopped);
         }
         self.forgotten(&stopped).await;
-        if record.source.shows_onedrive() {
-            if let Some(closing) = closing {
-                if tokio::time::timeout(STORE_CLOSES_WITHIN, closing).await.is_err() {
-                    tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
-                }
+        if let Some(closing) = closing {
+            if tokio::time::timeout(STORE_CLOSES_WITHIN, closing).await.is_err() {
+                tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
             }
-            self.remove_tree_store().await;
-            // Only when *this daemon* is the one that excluded the folder from Baloo —
-            // never a folder that arrived already excluded, and this survives a restart
-            // in between (the record carries it forward from `config.toml`).
-            if record.baloo {
-                self.wiring.baloo.include_again(&record.root.path).await;
-            }
+        }
+        self.remove_tree_store().await;
+        // Only when *this daemon* is the one that excluded the folder from Baloo —
+        // never a folder that arrived already excluded, and this survives a restart
+        // in between (the record carries it forward from `config.toml`).
+        if record.baloo {
+            self.wiring.baloo.include_again(&record.root.path).await;
         }
         Ok(Some(record.root.path))
-    }
-
-    /// The helper lets go of an intercepted folder, or the Forget is refused.
-    async fn let_go_at_the_helper(&self, record: &Record) -> Result<(), SyncError> {
-        if !record.intercepted() {
-            return Ok(());
-        }
-        // An intercepted folder cannot be named to the helper without its id: only the
-        // daemon's record of it goes, and nothing in the folder is touched.
-        // The id as recorded, or else the one the folder carries now: it may have come
-        // back with its attribute, or been given one by a bring-up that then failed.
-        let root_id = if root::looks_like_a_root_id(&record.root.root_id) {
-            Some(record.root.root_id.clone())
-        } else {
-            root::recorded_root_id(&record.root.path).await
-        };
-        let Some(root_id) = root_id else {
-            tracing::warn!(
-                "forgetting {} here only: config.toml does not record its root id and the folder carries none \
-                 that can be read, so the konedrive helper could not be told to let go of it; restarting \
-                 konedrive-helper clears whatever it still holds of it",
-                record.root.path.display()
-            );
-            return Ok(());
-        };
-        let link = self.require_link()?;
-        match link.unregister_root(&root_id).await {
-            Ok(()) => Ok(()),
-            Err(HelperError::Refused(libc::EPERM)) => {
-                tracing::warn!("the helper holds no root {root_id} for {}; forgetting it here", record.root.path.display());
-                Ok(())
-            }
-            Err(e) => Err(SyncError::Helper(e.to_string())),
-        }
     }
 
     /// The folder is forgotten: `config.toml` records none, and everything published about
@@ -208,7 +135,6 @@ impl SyncService {
             s.cycle.items_placed = 0;
             s.cycle.skipped_count = 0;
             s.cycle.sync_trouble = None;
-            s.cycle.replacement_note = None;
             s.outbox.note = None;
             s.cycle.last_checked = 0;
             s.local.local_bytes = 0;
@@ -216,11 +142,8 @@ impl SyncService {
         });
         // The pins went with the folder's store.
         self.state.update(|s| s.local.pinned_count = 0);
-        // A Forget drops the activity: a OneDrive folder's with
-        // its store, which the change has already let go of, and a local
-        // folder's from memory here — after the folder stopped being the one
-        // registered, so that a download still ending in it records nothing
-        // from now on. Its walker stops too.
+        // A Forget drops the activity with the folder's store, which the change has
+        // already let go of. Its walker stops too.
         self.let_go_of_activity().await;
     }
 
@@ -239,10 +162,9 @@ impl SyncService {
 
 impl SyncService {
     /// A bring-up of the folder panicked, saying `panic`: a defect of the daemon. The
-    /// folder's sync is stopped and the folder is down, saying so, until `Refresh()`, the
-    /// helper's next connect or the next start brings it up again. Its registration at
-    /// the helper is left as it is.
-    pub(super) async fn bring_up_panicked(&self, panic: &str) {
+    /// folder's sync is stopped and the folder is down, saying so, until `Refresh()` or
+    /// the next start brings it up again.
+    pub(crate) async fn bring_up_panicked(&self, panic: &str) {
         let mut stopped = self.change().await;
         let folder = stopped.folder_mut();
         let record = match &folder.is {

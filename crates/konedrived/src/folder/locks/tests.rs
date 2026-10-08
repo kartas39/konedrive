@@ -1,4 +1,3 @@
-use std::os::fd::OwnedFd;
 use std::time::Duration;
 use std::sync::Arc;
 
@@ -39,38 +38,6 @@ fn a_key_names_the_inode_and_not_the_name_it_was_reached_by() {
     let before = key_of(&one);
     std::fs::rename(&one, &renamed).unwrap();
     assert_eq!(before, key_of(&renamed), "a rename changes no inode");
-}
-
-/// The lock has two constructors for one key — `of` on the
-/// `SyncService` side (`hydrate_now`, `dehydrate`) and `of_fd` on the
-/// interception side (`serve_hydrations`, which must not consume the
-/// event fd) — and serialization across the two sides holds only while
-/// they compute the same key. Drop `st_dev` from one, or offset the inode
-/// in the other, and an intercepted fill races a `Dehydrate` of the same
-/// file (C1's cross-side form) with every other test green.
-#[test]
-fn both_constructors_give_one_file_the_same_key() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.bin");
-    let other = dir.path().join("g.bin");
-    std::fs::write(&path, b"x").unwrap();
-    std::fs::write(&other, b"y").unwrap();
-
-    // What `serve_hydrations` is handed: a bare descriptor.
-    let event_fd: OwnedFd = std::fs::File::open(&path).unwrap().into();
-    let by_fd = InodeKey::of_fd(&event_fd).unwrap();
-    // What `hydrate_now` and `dehydrate` open for themselves.
-    let by_file = InodeKey::of(&std::fs::File::open(&path).unwrap()).unwrap();
-
-    assert_eq!(
-        by_fd, by_file,
-        "the interception side and the service side must lock the same key for one file"
-    );
-    assert_ne!(
-        InodeKey::of_fd(std::fs::File::open(&other).unwrap()).unwrap(),
-        by_file,
-        "and a different file must still be a different key"
-    );
 }
 
 /// The core property: a second waiter on the *same* key does not run
@@ -148,29 +115,6 @@ async fn a_releasing_key_is_removed_from_the_table() {
     );
 }
 
-/// `try_lock` is refused while the key is held, leaves no
-/// row behind when refused, and once granted excludes `lock` like any
-/// other holder.
-#[tokio::test]
-async fn try_lock_is_refused_while_held_and_leaves_nothing_behind() {
-    let locks = InodeLocks::new();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("x"), b"x").unwrap();
-    let key = key_of(&dir.path().join("x"));
-
-    let held = locks.lock(key).await;
-    assert!(locks.try_lock(key).is_none(), "granted while another holder has it");
-    assert_eq!(locks.users(key), 1, "a refused try_lock left itself in the count");
-    drop(held);
-    assert_eq!(locks.tracked(), 0);
-
-    let taken = locks.try_lock(key).expect("free, so granted");
-    let waiter = tokio::time::timeout(Duration::from_millis(100), locks.lock(key)).await;
-    assert!(waiter.is_err(), "lock() got in while try_lock held the key");
-    drop(taken);
-    assert_eq!(locks.tracked(), 0, "rows left behind");
-}
-
 /// The other direction, and the one the previous bookkeeping got wrong:
 /// a row must **survive** while somebody else still needs it. Dropping
 /// it there would hand the next caller a brand-new mutex for an inode
@@ -215,30 +159,6 @@ async fn a_row_stays_while_another_caller_is_still_using_it() {
     b.abort();
 }
 
-/// A waiter whose future is dropped — a D-Bus method whose caller went
-/// away, a `select!` that lost — must not leave its row behind. Measured
-/// A stop reaches the fill that holds the lock (and one
-/// already waiting), never one that comes for the lock after it, even
-/// while the slot is still in use.
-#[tokio::test]
-async fn a_stop_does_not_reach_a_fill_that_starts_after_it() {
-    let locks = InodeLocks::new();
-    let key = InodeKey { dev: 1, ino: 2 };
-    let holder = locks.lock(key).await;
-    assert!(locks.cancel(key));
-    tokio::time::timeout(Duration::from_secs(1), holder.cancelled()).await.expect("the holder is told");
-    let later = {
-        let locks = locks.clone();
-        tokio::spawn(async move {
-            let guard = locks.lock(key).await;
-            tokio::time::timeout(Duration::from_millis(200), guard.cancelled()).await.is_err()
-        })
-    };
-    tokio::task::yield_now().await;
-    drop(holder);
-    assert!(later.await.unwrap(), "a fill that came after the stop is not stopped");
-}
-
 /// before the fix: holder releases, parked waiter is cancelled, one row
 /// stays in the table forever.
 #[tokio::test]
@@ -266,27 +186,4 @@ async fn a_cancelled_waiter_leaves_no_row_behind() {
         "a cancelled waiter left its row in the table: the table grows by one row per \
          cancelled call, forever"
     );
-}
-
-/// A fill run through `unless_removed` runs under the guard's hold: what it
-/// takes there (`hold_in_force`, as a blocking section of the fill does)
-/// keeps the inode locked after the guard is gone, until it is dropped too.
-/// A fill run with no guard, or outside it, has no hold.
-#[tokio::test]
-async fn a_fill_run_unless_removed_holds_the_lock_it_runs_under() {
-    let locks = InodeLocks::new();
-    let key = InodeKey { dev: 3, ino: 4 };
-    assert!(hold_in_force().is_none(), "nothing is held outside a guard's work");
-    assert!(unless_removed(None, async { hold_in_force() }).await.unwrap().is_none(), "no guard, no hold");
-
-    let guard = locks.lock(key).await;
-    let hold = unless_removed(Some(&guard), async { hold_in_force() })
-        .await
-        .expect("nothing stopped it")
-        .expect("the fill runs under the guard's hold");
-    drop(guard);
-    assert!(locks.try_lock(key).is_none(), "the hold outlives the guard: the inode is still locked");
-    drop(hold);
-    assert!(locks.try_lock(key).is_some(), "free once the hold is gone");
-    assert_eq!(locks.tracked(), 0, "and no row is left behind");
 }

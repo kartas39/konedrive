@@ -15,7 +15,7 @@ use crate::conditions::running::{Clock, SystemClock};
 use crate::config::ConfigStore;
 use crate::desktop::baloo::Baloo;
 use crate::hydration::graph_source::GraphSource;
-use crate::hydration::source::{ContentSource, LocalDir};
+use crate::hydration::source::ContentSource;
 use crate::remote::listing::Schedule;
 
 /// Where a OneDrive folder's own files live.
@@ -67,20 +67,14 @@ impl Default for Transfers {
 pub trait Sources: Send + Sync {
     /// The source of a folder that shows `drive`.
     fn onedrive(&self, drive: &DriveClient) -> Arc<dyn ContentSource>;
-    /// The source of a local folder, populated from the directory `local` reads.
-    fn directory(&self, local: LocalDir) -> Arc<dyn ContentSource>;
 }
 
-/// The daemon's sources: Graph for a OneDrive folder, the directory itself for a local one.
+/// The daemon's source: Graph.
 pub struct RealSources;
 
 impl Sources for RealSources {
     fn onedrive(&self, drive: &DriveClient) -> Arc<dyn ContentSource> {
         Arc::new(GraphSource::new(drive.clone()))
-    }
-
-    fn directory(&self, local: LocalDir) -> Arc<dyn ContentSource> {
-        Arc::new(local)
     }
 }
 
@@ -88,7 +82,7 @@ impl Sources for RealSources {
 /// service lives; what does change with the account (its standing, its mode) is told to
 /// the service by a call.
 pub struct Wiring {
-    /// The folders of the daemon's accounts, and the link to the helper they share.
+    /// The folders of the daemon's accounts.
     pub registry: Arc<Registry>,
     /// The folder's account: its sign-in, its quota, and what the folder tells it.
     pub account: Arc<dyn FolderAccount>,
@@ -108,8 +102,8 @@ pub struct Wiring {
 }
 
 impl Wiring {
-    /// The wiring of the daemon for what has only one real answer: Graph and the
-    /// directory as sources, the system's clock, the default schedule
+    /// The wiring of the daemon for what has only one real answer: Graph as the source,
+    /// the system's clock, the default schedule
     /// and transfer limits, and no Baloo. The caller sets what its account has.
     pub fn new(registry: Arc<Registry>, account: Arc<dyn FolderAccount>, persist: Persist) -> Self {
         Self {
