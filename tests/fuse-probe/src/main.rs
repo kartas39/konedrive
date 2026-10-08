@@ -80,6 +80,7 @@ struct Probe {
     st: Arc<Mutex<State>>,
     ttl: Duration,
     keep_cache: bool,
+    direct_io: bool,
     fill_ms: u64,
     log: Option<Arc<Mutex<File>>>,
 }
@@ -210,7 +211,9 @@ impl Probe {
     }
 
     fn fopen_flags(&self) -> FopenFlags {
-        if self.keep_cache {
+        if self.direct_io {
+            FopenFlags::FOPEN_DIRECT_IO
+        } else if self.keep_cache {
             FopenFlags::FOPEN_KEEP_CACHE
         } else {
             FopenFlags::empty()
@@ -616,6 +619,7 @@ fn main() {
     let ttl_ms: u64 = opt("--ttl-ms").map_or(1000, |v| v.parse().unwrap());
     let threads: usize = opt("--threads").map_or(4, |v| v.parse().unwrap());
     let keep_cache = opt("--keep-cache").map_or(true, |v| v == "1");
+    let direct_io = opt("--direct-io").is_some_and(|v| v == "1");
     let subtype = opt("--subtype");
     let [backing, mountpoint] = <[OsString; 2]>::try_from(args).expect("fuse-probe <backing> <mountpoint> [options]");
     let backing = PathBuf::from(OsString::from_vec(backing.into_vec()));
@@ -636,6 +640,7 @@ fn main() {
         st: Arc::new(Mutex::new(st)),
         ttl: Duration::from_millis(ttl_ms),
         keep_cache,
+        direct_io,
         fill_ms,
         log: log.map(|p| Arc::new(Mutex::new(File::create(p).unwrap()))),
     };

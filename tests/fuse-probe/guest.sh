@@ -9,11 +9,14 @@ tests=${*:-t1 t2 t3 t4 t5}
 modprobe loop
 modprobe fuse 2>/dev/null
 mount -t fusectl none /sys/fs/fuse/connections 2>/dev/null
-mount -t tmpfs -o size=7G tmpfs /mnt
-mkdir -p /mnt/img /mnt/ext4 /mnt/bin
-truncate -s 5G /mnt/img/ext4.img
-mkfs.ext4 -q -F /mnt/img/ext4.img
-mount -o loop /mnt/img/ext4.img /mnt/ext4
+mount -t tmpfs -o size=64M tmpfs /mnt
+mkdir -p /mnt/ext4 /mnt/bin
+# The disk is a file on the host's NVMe, opened by QEMU with O_DIRECT (run.sh): what is written
+# here goes to the real disk and the host caches none of it.
+disk=$(lsblk -dn -o NAME,TYPE | awk '$2=="disk" && $1 ~ /^(vd|sd)/ {print "/dev/" $1; exit}')
+echo "disk: $disk $(lsblk -dn -o SIZE,MODEL $disk)"
+mkfs.ext4 -q -F $disk
+mount $disk /mnt/ext4
 
 echo "root mount options: $(findmnt -no OPTIONS /)"
 # The guest's root is the host over virtiofs; if it is nosuid, fusermount3's setuid bit is dead.
@@ -166,30 +169,39 @@ t3() {
 rate() { tail -1 | sed 's/.*, //'; }
 
 bench_io() { # bench_io label dir
-    local d=$2 f=$2/bench.bin
-    echo "$1 write 1M: $($U dd if=/dev/zero of=$f bs=1M count=512 conv=fdatasync 2>&1 | rate)"
+    local f=$2/bench.bin
+    echo "$1 write 1M, to disk (fdatasync): $($U dd if=/dev/zero of=$f bs=1M count=4096 conv=fdatasync 2>&1 | rate)"
     echo 3 > /proc/sys/vm/drop_caches
-    echo "$1 read 1M cold: $($U dd if=$f of=/dev/null bs=1M 2>&1 | rate)"
-    echo "$1 read 1M warm: $($U dd if=$f of=/dev/null bs=1M 2>&1 | rate)"
+    echo "$1 read 1M, from disk: $($U dd if=$f of=/dev/null bs=1M 2>&1 | rate)"
+    echo "$1 read 1M, again: $($U dd if=$f of=/dev/null bs=1M 2>&1 | rate)"
     $U rm -f $f
-    echo "$1 write 4k: $($U dd if=/dev/zero of=$f bs=4k count=65536 conv=fdatasync 2>&1 | rate)"
+    sync
+    echo "$1 write 1M, as cp does (no sync): $($U dd if=/dev/zero of=$f bs=1M count=4096 2>&1 | rate)"
+    sync
+    $U rm -f $f
+    echo "$1 write 4k, to disk (fdatasync): $($U dd if=/dev/zero of=$f bs=4k count=262144 conv=fdatasync 2>&1 | rate)"
     echo 3 > /proc/sys/vm/drop_caches
-    echo "$1 read 4k cold: $($U dd if=$f of=/dev/null bs=4k 2>&1 | rate)"
+    echo "$1 read 4k, from disk: $($U dd if=$f of=/dev/null bs=4k 2>&1 | rate)"
     $U rm -f $f
+    sync
 }
 
 t4() {
-    echo "==== T4 throughput (512 MiB, ext4 on a RAM-backed loop device) ===="
+    echo "==== T4 throughput (4 GiB with 1 MiB blocks, 1 GiB with 4 KiB blocks; ext4 on the host's NVMe) ===="
+    # The image is written once in full first: a first write into a fresh image costs the host
+    # extra, and whoever ran first would pay it.
+    dd if=/dev/zero of=$W/plain/prefill bs=1M count=20000 conv=fdatasync 2> /dev/null
+    rm -f $W/plain/prefill
+    sync
+    fstrim $W 2> /dev/null
     bench_io ext4 $W/plain
     start || return
     bench_io fuse $W/mnt
     stop
-    start --keep-cache 0 || return
-    echo "fuse without KEEP_CACHE:"
-    $U dd if=/dev/zero of=$W/mnt/bench.bin bs=1M count=512 2> /dev/null
-    echo "fuse read 1M again after reopen: $($U dd if=$W/mnt/bench.bin of=/dev/null bs=1M 2>&1 | rate)"
-    rm -f $W/backing/bench.bin
+    start --direct-io 1 || return
+    bench_io "fuse direct_io" $W/mnt
     stop
+    bench_io "ext4 again" $W/plain
 }
 
 timeit() { # timeit label command...
