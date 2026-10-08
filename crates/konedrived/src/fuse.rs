@@ -354,7 +354,10 @@ impl Shared {
             ctime: seconds(row.mtime),
             crtime: UNIX_EPOCH,
             kind: FileType::RegularFile,
-            perm: 0o644,
+            // No write bit anywhere: the folder takes no change from a program, and a file
+            // manager reads that from the modes before anything is tried, as it does in a
+            // read-only folder of placeholders.
+            perm: 0o444,
             nlink: 1,
             uid,
             gid,
@@ -364,7 +367,7 @@ impl Shared {
         };
         if row.kind == Kind::Folder {
             attr.kind = FileType::Directory;
-            attr.perm = 0o755;
+            attr.perm = 0o555;
             attr.nlink = 2;
             attr.size = 0;
             return attr;
@@ -1285,6 +1288,14 @@ impl Filesystem for Served {
             return reply.error(errno(&io::Error::last_os_error()));
         }
         reply.statfs(v.f_blocks, v.f_bfree, v.f_bavail, v.f_files, v.f_ffree, v.f_bsize as u32, 255, v.f_frsize as u32);
+    }
+
+    /// Whether the caller may do what it asks: anything but write.
+    fn access(&self, _req: &Request, _ino: INodeNo, mask: fuser::AccessFlags, reply: ReplyEmpty) {
+        if mask.contains(fuser::AccessFlags::W_OK) {
+            return reply.error(Errno::EROFS);
+        }
+        reply.ok();
     }
 
     /// The attributes the Dolphin plugins, `konedrivectl` and the daemon read, answered from

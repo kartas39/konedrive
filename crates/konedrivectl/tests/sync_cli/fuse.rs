@@ -80,6 +80,15 @@ async fn a_folder_served_through_fuse_is_driven_from_the_command_line() {
     assert!(space.status.success(), "{space:?}");
     assert_eq!(state(&file), "online-only");
 
+    // The folder says it takes no change before anything is tried: no write bit on a
+    // directory or a file, and no leave to write.
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(root.metadata().unwrap().permissions().mode() & 0o222, 0);
+    assert_eq!(docs.metadata().unwrap().permissions().mode() & 0o222, 0);
+    assert_eq!(file.metadata().unwrap().permissions().mode() & 0o222, 0);
+    let docs_c = std::ffi::CString::new(docs.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::access(docs_c.as_ptr(), libc::W_OK) }, -1);
+
     // A program cannot change the folder.
     assert_eq!(std::fs::write(root.join("new.txt"), b"x").unwrap_err().raw_os_error(), Some(libc::EROFS));
 
