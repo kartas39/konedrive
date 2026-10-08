@@ -278,7 +278,6 @@ impl AccountManager {
             drive,
             paths: SyncPaths {
                 tree_db: paths.tree_db.clone(),
-                rescue_dir: paths.rescue_dir.clone(),
                 thumbnails: self.options.thumbnails.clone(),
             },
         });

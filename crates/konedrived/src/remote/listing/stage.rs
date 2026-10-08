@@ -3,8 +3,7 @@
 //!
 //! [`Listing::stage`] puts a delta's changes into `staging` (a whole listing
 //! was staged page by page as it was fetched) and says which reconcile they
-//! ask for: its scope, its commit, and what a read-write one carries to its
-//! swap. A read-write folder's staging has three more rules
+//! ask for: its commit, and what a read-write one carries to its swap. A read-write folder's staging has three more rules
 //! (`docs/design/writes.md` §9):
 //!
 //! - **The tree lock** is taken before `staging` is written and goes on to
@@ -15,11 +14,11 @@
 //!   after the fetch began — or deleted, by its tombstone — may be older than
 //!   the commit, or newer: it is read again from Graph, under the lock, and
 //!   that answer is staged instead, newer than both.
-//! - **What waits is staged again**, before the delta: an item the reconcile
-//!   left as it is on disk keeps its base row, and its change is deferred
-//!   until the disk takes it or an outbox commit supersedes it. Items the
-//!   outbox committed since the last cycle, and items with no local object
-//!   on record, are looked at again too, so the disk follows the base.
+//! - **What waits is staged again**, before the delta: an item the outbox
+//!   holds keeps its base row, and its change is deferred until the folder
+//!   takes it or an outbox commit supersedes it. Items the outbox committed
+//!   since the last cycle are looked at again too, so the folder follows the
+//!   base.
 
 use std::sync::atomic::Ordering;
 
@@ -28,7 +27,6 @@ use tokio_util::sync::CancellationToken;
 use super::reconcile::{Commit, Reconciled, RwCycle, Waiting};
 use super::{cancellable, drive_error, CycleError, Listing, Turn, Writes};
 use crate::folder::classify::classify;
-use crate::remote::materialize::Scope;
 use crate::remote::mode::Mode;
 use konedrive_graph::drive::DriveError;
 use konedrive_tree::reconcile::RwStaged;
@@ -57,22 +55,15 @@ pub(crate) enum Fetched {
 
 /// What OneDrive said that the folder has still to be made to match.
 pub(crate) enum News {
-    /// A full listing is in `staging`: the first into a folder that shows
-    /// the drive already, one after `410`, or one after a first listing's
-    /// resume link was refused.
-    Listed {
-        link: String,
-        /// `410` with `resyncChangesUploadDifferences`: a read-write
-        /// folder uploads what the listing left out.
-        upload_differences: bool,
-    },
+    /// A full listing is in `staging`: one after `410`, or one after a first
+    /// listing's resume link was refused.
+    Listed { link: String },
     Changes { changes: Vec<Change>, link: String },
 }
 
 /// The reconcile that what was staged asks for.
 pub(crate) struct Staged<'a> {
     pub mode: Mode<RwCycle<'a>>,
-    pub scope: Scope,
     pub commit: Commit,
 }
 
@@ -88,34 +79,26 @@ impl Listing {
     /// Stages what OneDrive said: the reconcile it asks for, with the
     /// number of entries a delta had. No reconcile when nothing changed and
     /// nothing is to be looked at again: the new link is stored, and that
-    /// is the cycle. `full_requested`: the reconcile is Full whatever the
+    /// is the cycle. `full_requested`: there is a reconcile whatever the
     /// delta holds.
     pub(crate) async fn stage<'a>(&self, turn: &Turn, mode: Mode<Since<'a>>, news: News, full_requested: bool, cancel: &CancellationToken) -> Result<(Option<Staged<'a>>, usize), CycleError> {
         let swap = |link| Commit::Swap { link, listing: false };
         match (news, mode) {
-            (News::Listed { link, .. }, Mode::ReadOnly) => Ok((Some(Staged { mode: Mode::ReadOnly, scope: Scope::Full, commit: swap(link) }), 0)),
+            (News::Listed { link }, Mode::ReadOnly) => Ok((Some(Staged { mode: Mode::ReadOnly, commit: swap(link) }), 0)),
             (News::Changes { changes, link }, Mode::ReadOnly) => {
                 let count = changes.len();
-                if count > 0 || full_requested {
-                    self.on_store(turn, move |s| {
-                        s.begin_staging(konedrive_tree::NewTree::Delta)?;
-                        s.stage(&changes)
-                    })
-                    .await?;
-                }
-                let scope = if full_requested || count > self.ctx.full_threshold {
-                    Scope::Full
-                } else if count == 0 {
+                if count == 0 && !full_requested {
                     self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                     return Ok((None, count));
-                } else {
-                    // What `staging` now differs from `items` by: the delta
-                    // just staged, read back so the closure above could own it.
-                    Scope::Changed(self.on_store(turn, |s| s.changed_ids()).await?)
-                };
-                Ok((Some(Staged { mode: Mode::ReadOnly, scope, commit: swap(link) }), count))
+                }
+                self.on_store(turn, move |s| {
+                    s.begin_staging(konedrive_tree::NewTree::Delta)?;
+                    s.stage(&changes)
+                })
+                .await?;
+                Ok((Some(Staged { mode: Mode::ReadOnly, commit: swap(link) }), count))
             }
-            (News::Listed { link, upload_differences }, Mode::ReadWrite(Since { writes, fetch_seq })) => {
+            (News::Listed { link }, Mode::ReadWrite(Since { writes, fetch_seq })) => {
                 let tree = self.tree_lock(writes, cancel).await?;
                 // `staging` holds the whole new listing: what the outbox
                 // committed since the listing began is read again.
@@ -131,8 +114,8 @@ impl Listing {
                         s.deferred_ids()
                     })
                     .await?;
-                let rw = RwCycle { writes, tree, upload_differences, waiting: Waiting { fetch_seq, consumed } };
-                Ok((Some(Staged { mode: Mode::ReadWrite(rw), scope: Scope::Full, commit: swap(link) }), 0))
+                let rw = RwCycle { writes, tree, waiting: Waiting { fetch_seq, consumed } };
+                Ok((Some(Staged { mode: Mode::ReadWrite(rw), commit: swap(link) }), 0))
             }
             (News::Changes { changes, link }, Mode::ReadWrite(Since { writes, fetch_seq })) => {
                 let count = changes.len();
@@ -140,13 +123,12 @@ impl Listing {
                 let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
                 let since = self.revisit_from.load(Ordering::SeqCst);
                 let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
-                let Some(RwStaged { ids, consumed }) = staged else {
+                let Some(RwStaged { consumed, .. }) = staged else {
                     self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                     return Ok((None, count));
                 };
-                let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
-                let rw = RwCycle { writes, tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed } };
-                Ok((Some(Staged { mode: Mode::ReadWrite(rw), scope, commit: swap(link) }), count))
+                let rw = RwCycle { writes, tree, waiting: Waiting { fetch_seq, consumed } };
+                Ok((Some(Staged { mode: Mode::ReadWrite(rw), commit: swap(link) }), count))
             }
         }
     }
@@ -161,7 +143,7 @@ impl Listing {
         let (staged, changes) = self.stage(turn, mode, news, full_requested, cancel).await?;
         let reconciled = match staged {
             None => Reconciled::default(),
-            Some(Staged { mode, scope, commit }) => self.reconcile(turn, mode, scope, commit, cancel).await?,
+            Some(Staged { mode, commit }) => self.reconcile(turn, mode, commit, cancel).await?,
         };
         if let Mode::ReadWrite(since) = mode {
             // Items the outbox committed after this cycle's fetch began are

@@ -1,35 +1,33 @@
-use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::folder::disk::Disk;
-use crate::remote::materialize::Scope;
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveError};
 use crate::folder::classify::classify;
-use konedrive_tree::{Change, Table};
+use konedrive_tree::Change;
 use super::reconcile::{Commit, Reconciled, RwCycle, Waiting};
 use super::stage::{Fetched, News, Since};
-use super::{applying, cancellable, drive_error, refused, CycleError, Listing, OnDrop, Turn};
+use super::{cancellable, drive_error, refused, CycleError, Listing, OnDrop, Turn};
 use crate::remote::mode::Mode;
 
 impl Listing {
     /// What OneDrive says since the stored link: the changes of a delta, a
-    /// whole listing into `staging`, or — into a folder that holds nothing
-    /// of ours yet — a first listing placed page by page, begun or resumed.
+    /// whole listing into `staging`, or — while the store holds no tree yet —
+    /// a first listing shown page by page, begun or resumed.
     pub(super) async fn fetch(&self, turn: &Turn, mode: Mode<Since<'_>>, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
         let (stored, resume_at) = self.on_store(turn, |s| Ok((s.delta_link()?, s.listing_next()?))).await?;
         match (stored, resume_at) {
             (Some(link), _) => Ok(Fetched::News(self.fetch_changes(turn, link, cancel).await?)),
             (None, Some(next)) if next.is_empty() => self.list_placing(turn, mode, DeltaFrom::Start, cancel).await,
             (None, Some(next)) => self.list_placing(turn, mode, DeltaFrom::Link(next), cancel).await,
-            (None, None) if self.holds_nothing_yet(turn).await? => {
-                // Under way from here on, so that whatever of ours the
-                // folder holds from now on is this listing's, also after a
-                // stop before its first page is committed.
+            // The folder under the mount holds nothing of ours that the store does not
+            // name: a first listing is shown page by page, each page's names as soon as
+            // the page is committed.
+            (None, None) => {
+                // Under way from here on, also after a stop before its first page is
+                // committed.
                 self.on_store(turn, |s| s.begin_placing()).await?;
                 self.list_placing(turn, mode, DeltaFrom::Start, cancel).await
             }
-            (None, None) => Ok(Fetched::News(self.list_all(turn, cancel).await?)),
         }
     }
 
@@ -66,73 +64,28 @@ impl Listing {
             self.ctx.state.update(|s| s.cycle.items_listed = listed);
             match page.next {
                 DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                DeltaNext::Done(link) => return Ok(News::Listed { link, upload_differences: false }),
+                DeltaNext::Done(link) => return Ok(News::Listed { link }),
             }
         }
     }
 
-    /// Whether a first listing can be placed page by page: `items`
-    /// is empty, and nothing in the folder carries an item id — no
-    /// placeholder, no directory of ours, nothing waiting in the holding
-    /// directory. Asked once, when such a listing begins; from then on
-    /// `listing_next` says it is under way.
-    ///
-    /// A folder that shows the drive already — its tree store lost, or
-    /// forgotten and registered again — is listed whole and reconciled once
-    /// at the end instead ([`Self::list_all`]): part-way through a listing,
-    /// an item of ours not listed yet cannot be told from one that is gone,
-    /// and only the end of the listing tells them apart. It is found by its
-    /// id then, downloaded content and all, rather than removed and made
-    /// again. Read without the folder's lock: it changes nothing.
-    pub(super) async fn holds_nothing_yet(&self, turn: &Turn) -> Result<bool, CycleError> {
-        if !self.on_store(turn, |s| s.is_empty(Table::Items)).await? {
-            return Ok(false);
-        }
-        // A folder served through FUSE holds nothing of ours that its store does not name:
-        // its first listing is shown page by page, each page's names as soon as the page is
-        // committed, and the folder under the mount is not looked at.
-        if self.ctx.fuse.is_some() {
-            return Ok(true);
-        }
-        let (root, held) = (self.ctx.root.clone(), Arc::clone(turn));
-        tokio::task::spawn_blocking(move || {
-            let _turn = held;
-            let scanned = Disk::open(&root, false)?.scan("")?;
-            Ok::<_, std::io::Error>(scanned.iter().all(|entry| entry.id.is_none()))
-        })
-        .await
-        .map_err(|e| CycleError::Apply(format!("the task looking at the folder failed: {e}")))?
-        .map_err(|e| applying(e.into()))
-    }
-
-    /// A first listing placed page by page, from the start or from
+    /// A first listing shown page by page, from the start or from
     /// where a stopped one got to (`from`, the link `items` was last
-    /// committed with). Each page is staged, then placed and committed into `items`
+    /// committed with). Each page is staged, then committed into `items`
     /// together with the link to the page after it — under the folder's
     /// lock, which is let go while Graph is asked for the next page, so that
-    /// a Forget or a helper's reconnect waits for one page at most. An entry
-    /// whose folder has not come yet waits in `items` (and so in `staging`)
-    /// and is placed when its folder is; one whose folder never
-    /// comes is left as a Full reconcile leaves it — listed, not placed. The
+    /// a Forget waits for one page at most — and the mount shows its names
+    /// from then on. An entry whose folder has not come yet waits in `items`
+    /// (and so in `staging`) and is shown when its folder is. The
     /// last page swaps `staging` in with the delta link, which ends the
     /// listing, and says the one `listed` event.
     ///
-    /// Between pages `staging` is `items`. The first page this cycle places
-    /// is reconciled Full, as the first cycle of a `Listing` and the one
-    /// after a failure are: it locks the root, and clears what a
-    /// stopped page left — a page placed but not committed, a directory not
-    /// yet named. That is safe part-way through: this listing started with
-    /// nothing of ours in the folder ([`Self::holds_nothing_yet`]), so
-    /// whatever a Full reconcile finds that `staging` does not have, this
-    /// listing placed, and a page still to come places again. Later pages are
-    /// reconciled Changed, and hand over to Full as every Changed reconcile
-    /// does.
+    /// Between pages `staging` is `items`.
     ///
     /// A resume link Graph refuses — the one a stopped listing left, asked
     /// for first in this cycle — lists the drive again from the start,
-    /// whole, and reconciles it once in full ([`News::Listed`]), as after
-    /// an expired feed: what is placed is found by its id, and
-    /// what is gone goes. A next-page link handed out in this cycle that
+    /// whole, and reconciles it once ([`News::Listed`]), as after
+    /// an expired feed. A next-page link handed out in this cycle that
     /// Graph turns down fails the cycle like any trouble with Graph; the
     /// next cycle resumes from it.
     pub(super) async fn list_placing(&self, turn: &Turn, mode: Mode<Since<'_>>, mut from: DeltaFrom, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
@@ -156,8 +109,6 @@ impl Listing {
             s.cycle.skipped_count = counts.skipped;
         });
         let mut placed = Reconciled::default();
-        let mut full = true;
-        let mut handed_over = false;
         // The stored resume link, until its page has come: the only link
         // Graph may refuse and send the listing back to the start. One it
         // handed out in this cycle and then turns down fails the cycle, and
@@ -198,30 +149,20 @@ impl Listing {
                 Mode::ReadOnly => None,
             };
             self.on_store(turn, move |s| s.stage(&staged)).await?;
-            let scope = if full { Scope::Full } else { Scope::Changed(changes.iter().map(|c| c.id().to_owned()).collect()) };
             let (commit, next) = match page.next {
                 DeltaNext::Page(next) => (Commit::Page { changes, next: next.clone() }, Some(next)),
                 DeltaNext::Done(link) => (Commit::Swap { link, listing: true }, None),
             };
-            let changed = !full;
             let mode = match tree {
                 None => Mode::ReadOnly,
                 Some((writes, tree)) => {
                     let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     // The last page ends a whole listing of the drive.
                     let waiting = Waiting { fetch_seq, consumed: Vec::new() };
-                    Mode::ReadWrite(RwCycle { writes, tree, upload_differences: false, waiting })
+                    Mode::ReadWrite(RwCycle { writes, tree, waiting })
                 }
             };
-            let done = self.reconcile(turn, mode, scope, commit, cancel).await?;
-            // A later page that had to hand over to Full found the folder
-            // not matching `items` part-way — a name two pages give to two
-            // items, say — and a later Changed page cannot see all it moved
-            // aside.
-            handed_over |= changed && done.full;
-            // Still Full until a page is placed at all: none is before the
-            // drive's root has come.
-            full &= !done.full;
+            let done = self.reconcile(turn, mode, commit, cancel).await?;
             shown += done.applied.counts.created;
             placed.add(done);
             self.ctx.state.update(|s| {
@@ -230,14 +171,7 @@ impl Listing {
             });
             match next {
                 Some(next) => from = DeltaFrom::Link(next),
-                None => {
-                    if handed_over {
-                        // The listing's end is reconciled once more, whole,
-                        // at the next cycle.
-                        self.request_full();
-                    }
-                    return Ok(Fetched::Placed(placed));
-                }
+                None => return Ok(Fetched::Placed(placed)),
             }
         }
     }
@@ -260,13 +194,11 @@ impl Listing {
                     tracing::info!("the change feed has expired; listing the drive again");
                     return self.list_all(turn, cancel).await;
                 }
-                // Read-only, the two resyncs are one.
+                // The two resyncs are one: what a change of the user's holds is kept
+                // whichever it is.
                 Err(DriveError::ResyncUpload) => {
-                    tracing::info!("the change feed has expired; listing the drive again, keeping what it no longer has");
-                    return match self.list_all(turn, cancel).await? {
-                        News::Listed { link, .. } => Ok(News::Listed { link, upload_differences: true }),
-                        other => Ok(other),
-                    };
+                    tracing::info!("the change feed has expired; listing the drive again");
+                    return self.list_all(turn, cancel).await;
                 }
                 Err(e) => return Err(drive_error(e)),
             }

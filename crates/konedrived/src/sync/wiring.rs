@@ -22,10 +22,8 @@ use crate::remote::listing::Schedule;
 #[derive(Debug, Clone)]
 pub struct SyncPaths {
     pub tree_db: PathBuf,
-    pub rescue_dir: PathBuf,
     /// The freedesktop thumbnail cache. `None` runs no thumbnail
-    /// filler at all: the VM suite's real-account run, which must not fetch
-    /// a thumbnail of every image in the drive.
+    /// filler at all.
     pub thumbnails: Option<PathBuf>,
 }
 

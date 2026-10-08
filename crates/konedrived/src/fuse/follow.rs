@@ -11,7 +11,7 @@ use super::conflict::Met;
 use super::copies::remove_copy;
 use super::local::carried;
 use super::mount::Mount;
-use crate::remote::materialize::Rw;
+use crate::local::held::Rw;
 
 /// One item a cycle changed: where the store had it and where the new tree has it.
 pub struct Step {

@@ -12,7 +12,6 @@ use crate::account::state::SignInState;
 use crate::config::Mode;
 use crate::desktop::thumbs;
 use crate::fuse::Mount;
-use crate::hydration::source::ContentSource;
 use crate::remote::listing::{self, PollHandle};
 use crate::sync::folder::{Down, Is, Record, Standing, Stopped};
 use crate::sync::running_sync::{Handles, Parts, RunningSync, Sync, Why};
@@ -23,7 +22,6 @@ struct Prepared {
     drive: DriveClient,
     paths: SyncPaths,
     store: Store,
-    source: Arc<dyn ContentSource>,
     tree_lock: Arc<tokio::sync::Mutex<()>>,
     mount: Arc<Mount>,
 }
@@ -139,7 +137,7 @@ impl SyncService {
         .flatten()
         .unwrap_or(0);
         self.state.update(|s| s.cycle.last_checked = last_checked);
-        Ok(Prepared { drive, paths, store, source, tree_lock, mount })
+        Ok(Prepared { drive, paths, store, tree_lock, mount })
     }
 
     /// Builds the parts of a sync, linked to each other and not through the service, and
@@ -149,7 +147,7 @@ impl SyncService {
     /// Local changes need no looking for: the folder's mount records each one as a program
     /// makes it (`fuse::recorder`), and the worker sends what is recorded.
     fn build(&self, prepared: Prepared, reg: &Record, wanted: Mode) -> RunningSync {
-        let Prepared { drive, paths, store, source, tree_lock, mount } = prepared;
+        let Prepared { drive, paths, store, tree_lock, mount } = prepared;
         let stop = CancellationToken::new();
         let kept_back = Arc::new(Mutex::new(None));
         // The worker asks the poller for a cycle, and the cycle wakes the worker: the
@@ -171,26 +169,19 @@ impl SyncService {
         let writes = outbox.as_ref().map(|outbox| self.cycle_writes(&tree_lock, outbox.handle()));
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),
-            intercepted: reg.intercepted(),
             store: store.clone(),
             drive: drive.clone(),
             drive_record,
-            source,
-            link: self.link.clone(),
-            fuse: Some(mount),
-            locks: self.locks.clone(),
+            mount,
             state: self.state.clone(),
             lease: listing::Lease::on(&self.folder),
-            rescue_dir: paths.rescue_dir.clone(),
-            full_threshold: listing::FULL_THRESHOLD,
             after_cycle: Some(Arc::clone(&kick)),
             report: self.report.clone(),
             mode: match writes {
                 Some(writes) => crate::remote::mode::Mode::ReadWrite(writes),
                 None => crate::remote::mode::Mode::ReadOnly,
             },
-            // Another account's objects are never removed here, and the
-            // account hears of a drive that is not the folder's (m2).
+            // The account hears of a drive that is not the folder's (m2).
             neighbours: Some(self.neighbours()),
             running: Arc::clone(&self.running),
         });

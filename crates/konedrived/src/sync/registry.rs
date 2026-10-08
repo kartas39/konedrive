@@ -201,29 +201,6 @@ impl Registry {
         true
     }
 
-    /// Whether an account other than `me` claims item `id` (`docs/design/writes.md`
-    /// §8.3): its outbox waits to fetch it wherever it is
-    /// (`move-out`), its tree store knows it, or the drive the id names
-    /// (`<drive>!<n>`, a personal account's) is that account's. A store that
-    /// cannot be read claims it. The store is kept with the folder while it is recorded, up or down,
-    /// whether or not its sync runs. An account with no store open says nothing:
-    /// what it would miss, its own move-out keeps (`move_out::kept`).
-    /// Blocking: a reconcile asks from its own thread.
-    pub(super) fn claimed_elsewhere(&self, me: &AccountId, id: &str) -> bool {
-        let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
-        self.others(me).into_iter().any(|other| {
-            let Some(store) = other.tree_store() else { return false };
-            let (id, drive) = (id.to_owned(), drive.clone());
-            store
-                .call_blocking(move |s| {
-                    let known = s.get(konedrive_tree::Table::Items, &id)?.is_some() || s.get(konedrive_tree::Table::Staging, &id)?.is_some();
-                    let ours = drive.as_deref().is_some_and(|d| s.drive_id().ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
-                    Ok(known || ours)
-                })
-                .unwrap_or(true)
-        })
-    }
-
     /// The label of an account other than `me` whose folder `path` is, is
     /// inside, or contains (`docs/design/accounts.md` §6.3): compared by component on the
     /// resolved paths, and by `(st_dev, st_ino)` for the same directory

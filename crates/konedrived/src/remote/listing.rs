@@ -4,26 +4,22 @@
 //! swap leaves the old link, and the next cycle asks for the same changes.
 //!
 //! The first cycle of every `Listing`, and every cycle after one that failed
-//! (or whose future was dropped), reconciles the whole folder — as
-//! does the cycle after one that left a file for later, or after a replacement
-//! that ended with nothing to do: a Changed scope never looks at those files
-//! again. A replacement that failed is retried as it is, after every cycle.
+//! (or whose future was dropped), has a reconcile whatever its delta holds:
+//! the folder's mount is told a cycle was committed, and downloads again what
+//! its pins keep.
 //!
 //! Cycles of one `Listing` never overlap. A cycle asks Graph without the
 //! folder's lock (`SyncService`'s `folder`, held through the lease) and takes it only to change the folder and swap the link in,
-//! so a helper's reconnect is never kept waiting by a listing. A stop
+//! so a change of the folder is never kept waiting by a listing. A stop
 //! (`Poller::stop`) never waits for Graph or for whoever holds that lock; it
 //! waits only for a reconcile already changing the folder, which checks for the
 //! stop between steps.
 //!
-//! A folder's first listing, into a folder that holds nothing of ours yet, is
-//! placed page by page instead: each page is reconciled and
+//! A folder's first listing is shown page by page: each page is
 //! committed into `items` as it comes, with the link to the next page, so
 //! that the folder fills as the drive is listed and a listing stopped
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 
-use crate::helper::LinkCell;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -31,10 +27,8 @@ use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use crate::status::report::Report;
-use super::materialize::{Applied, ApplyError, Claimed};
+use super::applied::Applied;
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::ContentSource;
-use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncStateHandle, SyncTrouble, TroubleKind};
 use konedrive_graph::drive::{DriveClient, DriveError};
 use konedrive_tree::{Store, TreeError, TreeStore};
@@ -56,14 +50,8 @@ use crate::remote::mode::Mode;
 mod fetch;
 /// The task that runs a cycle on a schedule, on a refresh and when the live socket says so.
 mod poller;
-/// Downloaded files that changed in OneDrive, replaced after the cycle.
-mod replacements;
 pub use poller::{PollHandle, Poller, Schedule};
-use replacements::Replacements;
-pub use replacements::REPLACE_WORKERS;
 
-/// A delta with more changes than this is reconciled in full.
-pub const FULL_THRESHOLD: usize = 5000;
 
 /// The account's drive, as `config.toml` keeps it (`docs/design/accounts.md` §6.1): the
 /// same-account check then survives a tree store rebuilt empty, whose `meta`
@@ -80,25 +68,18 @@ pub struct DriveRecord {
 
 pub struct ListingContext {
     pub root: SyncRoot,
-    pub intercepted: bool,
     pub store: Store,
     pub drive: DriveClient,
     /// `None` where nothing keeps a record (tests): the store's `meta` alone
     /// says which drive the folder shows.
     pub drive_record: Option<DriveRecord>,
-    pub source: Arc<dyn ContentSource>,
-    /// The helper link as `SyncService` holds it; read at every reconcile.
-    pub link: LinkCell,
-    /// The mount of a folder served through FUSE (`crate::fuse`): its cycle makes the folder
-    /// under the mount follow the new tree and needs no helper.
-    pub fuse: Option<Arc<crate::fuse::Mount>>,
-    pub locks: InodeLocks,
+    /// The folder's mount (`crate::fuse`): a cycle makes the folder under it follow the new
+    /// tree, and tells it once the tree is committed.
+    pub mount: Arc<crate::fuse::Mount>,
     pub state: SyncStateHandle,
     /// The folder's lease (`sync/`'s): a reconcile holds it, so a Forget waits
     /// for one that is changing the folder.
     pub lease: Lease,
-    pub rescue_dir: PathBuf,
-    pub full_threshold: usize,
     /// Nudged at the end of every successful cycle, so the thumbnail filler
     /// runs right after there is something new to make thumbnails
     /// of, rather than waiting out its own idle timer.
@@ -107,24 +88,20 @@ pub struct ListingContext {
     /// the folder's space measured again: `SyncService`'s.
     pub report: Report,
     /// The folder's mode (`docs/design/writes.md` §2.2). Read-only: the
-    /// account is, the folder is kept under the read-only lock, and its
-    /// cycle is the read phase's. Read-write: with the cycle's part in
-    /// uploading. A switch of mode stops the sync and starts a new one, so
+    /// account is, and the folder's mount takes no change. Read-write: with
+    /// the cycle's part in uploading. A switch of mode stops the sync and starts a new one, so
     /// this never changes under a running sync.
     pub mode: Mode<Writes>,
     /// The daemon's other parts a cycle asks or tells; `None` in tests.
     pub neighbours: Option<Neighbours>,
-    /// What background work runs now (`conditions::running`): the poll and the replacements it
-    /// runs stop while the account's work does.
+    /// What background work runs now (`conditions::running`): the poll stops while the
+    /// account's work does.
     pub running: Arc<crate::conditions::running::Running>,
 }
 
 /// What a cycle asks of, or tells, the rest of the daemon.
 #[derive(Clone)]
 pub struct Neighbours {
-    /// Whether another account claims an item id: an object carrying it is
-    /// never removed here (`docs/design/writes.md` §8.3).
-    pub claimed: Claimed,
     /// The drive the account's token reaches, when a cycle finds it is not
     /// the folder's: the account records it and works its
     /// mode out again, so that a read-write account turns read-only.
@@ -153,12 +130,8 @@ pub enum CycleError {
     DriveTaken(String),
     #[error("cannot reach OneDrive ({0}); trying again")]
     Offline(String),
-    #[error("the helper is not connected; the folder is brought up to date when it is back")]
-    NoHelper,
     /// A failure of the tree store, in its own words ("the tree store: …"), that ends
-    /// the cycle: at a store call of the cycle's own ([`From<TreeError>`](CycleError::from))
-    /// or inside the materializer ([`applying`]); both are this, and stop the folder
-    /// (quality finding `RE6`). Not every store failure ends a cycle: those the
+    /// the cycle and stops the folder (quality finding `RE6`). Not every store failure ends a cycle: those the
     /// read-write reconcile only logs and passes over after its commit do not come here.
     #[error("{0}")]
     Store(String),
@@ -169,14 +142,11 @@ pub enum CycleError {
 }
 
 impl CycleError {
-    /// Trouble that stops the folder until someone acts — the
-    /// helper's absence among it (HS2), though that one is published as the
-    /// folder waiting for the helper, not as sync trouble
-    /// ([`Listing::publish_outcome`]).
+    /// Trouble that stops the folder until someone acts.
     pub fn blocking(&self) -> bool {
         matches!(
             self,
-            CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_) | CycleError::NoHelper
+            CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_)
         )
     }
 }
@@ -213,22 +183,9 @@ fn drive_error(e: DriveError) -> CycleError {
     }
 }
 
-/// What making the folder match the tree ran into. A failure of the tree store is the
-/// trouble it is anywhere else in a cycle: it stops the folder ([`CycleError::blocking`]),
-/// and is not the kind that is only said and tried again.
-fn applying(e: ApplyError) -> CycleError {
-    match e {
-        ApplyError::Cancelled => CycleError::Cancelled,
-        ApplyError::Tree(e) => CycleError::from(e),
-        other => CycleError::Apply(other.to_string()),
-    }
-}
-
 /// What one cycle did.
 #[derive(Debug, Default)]
 pub struct CycleReport {
-    /// A Full reconcile ran.
-    pub full: bool,
     /// Entries in the delta; 0 for a full listing.
     pub changes: usize,
     pub applied: Applied,
@@ -239,7 +196,7 @@ pub struct CycleReport {
 /// runs, even when this cycle's future has been dropped.
 pub(crate) type Turn = Arc<OwnedMutexGuard<()>>;
 
-/// Whether the next cycle's reconcile is Full. Asked for through
+/// Whether the next cycle has a reconcile whatever its delta holds. Asked for through
 /// [`Listing::request_full`], and taken by the cycle that then runs it.
 struct FullRequest(AtomicBool);
 
@@ -256,7 +213,7 @@ impl FullRequest {
 
 pub struct Listing {
     ctx: ListingContext,
-    /// Asked for from the start: a `Listing`'s first cycle is Full.
+    /// Asked for from the start, for a `Listing`'s first cycle.
     full: FullRequest,
     /// The drive has been written into `config.toml`, or is being:
     /// once per `Listing`.
@@ -265,8 +222,6 @@ pub struct Listing {
     pending_drive: std::sync::Mutex<Option<(DriveRecord, String)>>,
     /// Whose turn it is (see [`Turn`]).
     turns: Arc<tokio::sync::Mutex<()>>,
-    /// Downloaded files that changed in OneDrive: replaced after the cycle.
-    replacements: Replacements,
     /// Read-write mode: the outbox commit count the last cycle's fetch
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
@@ -299,20 +254,18 @@ fn refused(e: &DriveError) -> bool {
 
 impl Listing {
     pub fn new(ctx: ListingContext) -> Arc<Self> {
-        let replacements = Replacements::new(ctx.state.clone());
         Arc::new(Self {
             ctx,
             full: FullRequest(AtomicBool::new(true)),
             drive_recorded: AtomicBool::new(false),
             pending_drive: std::sync::Mutex::new(None),
             turns: Arc::new(tokio::sync::Mutex::new(())),
-            replacements,
             revisit_from: std::sync::atomic::AtomicI64::new(0),
         })
     }
 
-    /// Asks for the next cycle's reconcile to be Full: it looks at the whole
-    /// folder, not only at what the delta names. The one way to ask.
+    /// Asks for the next cycle to have a reconcile whatever its delta holds. The one way
+    /// to ask.
     fn request_full(&self) {
         self.full.request();
     }
@@ -321,7 +274,7 @@ impl Listing {
     ///
     /// Cycles of one `Listing` run one at a time (a `refresh` and the
     /// poller's own, say). One that fails, or whose future is dropped
-    /// part-way, leaves the next one a Full reconcile.
+    /// part-way, leaves the next one a reconcile whatever its delta holds.
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
         let was_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
@@ -348,10 +301,9 @@ impl Listing {
 
     async fn take_turn(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let turn: Turn = Arc::new(cancellable(cancel, Arc::clone(&self.turns).lock_owned()).await?);
-        // Taken, not read: a replacement that ends while this cycle runs asks
-        // for a Full reconcile, and that request must outlive this cycle.
+        // Taken, not read: a request made while this cycle runs must outlive it.
         let full_requested = self.full.take();
-        // Unless this cycle succeeds, the next one is Full — also
+        // Unless this cycle succeeds, the next one is asked for too — also
         // when its future is dropped part-way.
         let mut unless_done = OnDrop(Some(|| self.request_full()));
         let result = self.sync_once(&turn, full_requested, cancel).await;
@@ -366,13 +318,6 @@ impl Listing {
     /// and what a cycle that went through leaves to do is done
     /// ([`Self::after_cycle`]). The mode is told once, before the fetch.
     async fn sync_once(self: &Arc<Self>, turn: &Turn, full_requested: bool, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
-        // HS2: a folder that shows OneDrive is kept in step only with
-        // interception and a connected helper — nothing is placed or updated
-        // otherwise, and Graph is not asked for what could not be placed.
-        // Asked again under the folder's lock, where the answer counts.
-        if self.ctx.fuse.is_none() && (!self.ctx.intercepted || !self.ctx.link.is_linked()) {
-            return Err(CycleError::NoHelper);
-        }
         self.check_account(turn, cancel).await?;
         let mode = self.begin(turn).await?;
         let fetched = self.fetch(turn, mode, cancel).await?;
@@ -383,19 +328,12 @@ impl Listing {
         self.after_cycle(turn, reconciled, changes, listed || full_requested).await
     }
 
-    /// What a cycle that went through leaves to do: the next one asked to
-    /// be Full where this one left a file for later, the counts and the
-    /// time published, the conflicts looked over, what is pinned swept or
-    /// queued, the replacements started, and the outbox told. `changed`:
+    /// What a cycle that went through leaves to do: the counts and the
+    /// time published, the conflicts looked over, and the outbox told. `changed`:
     /// the cycle may have changed the tree whatever its delta held.
     async fn after_cycle(self: &Arc<Self>, turn: &Turn, reconciled: Reconciled, changes: usize, changed: bool) -> Result<CycleReport, CycleError> {
-        if reconciled.applied.counts.deferred > 0 {
-            // Files being filled or freed up right now: a Changed scope would
-            // never look at them again.
-            self.request_full();
-        }
-        let Reconciled { applied, full } = reconciled;
-        if changed || full || changes > 0 {
+        let Reconciled { applied } = reconciled;
+        if changed || changes > 0 {
             self.publish_counts(turn).await?;
         }
         // `LastChecked`: this cycle succeeded. Kept in the store,
@@ -418,19 +356,11 @@ impl Listing {
         }
         // "Always keep on this device": the mount keeps the pins, and downloaded what they
         // keep when the cycle was committed.
-        // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
-        // the pause is Full, and finds them again.
-        let paused = self.ctx.running.stopped();
-        if paused && !applied.pending.replacements.is_empty() {
-            self.request_full();
-        } else {
-            self.spawn_replacements(applied.pending.replacements.clone());
-        }
         if let Some(writes) = self.ctx.mode.read_write() {
             // The base caught up: the outbox sends (`docs/design/writes.md` §9).
             (writes.cycled)();
         }
-        Ok(CycleReport { full, changes, applied })
+        Ok(CycleReport { changes, applied })
     }
 
     /// A tree store call on a blocking thread, holding this cycle's turn
@@ -501,18 +431,8 @@ impl Listing {
 
     fn publish_outcome(&self, result: &Result<CycleReport, CycleError>) {
         self.ctx.state.update(|s| match result {
-            Ok(_) => {
-                s.cycle.sync_trouble = None;
-                s.folder.waits_for_helper = false;
-            }
+            Ok(_) => s.cycle.sync_trouble = None,
             Err(CycleError::Cancelled) => {}
-            // The folder waits for the helper (HS2, HS3): `LastError` says so
-            // in the helper's own words (`HelperState`), and `RootState`
-            // reads `error` (`published_state`, `published_error`: not while the
-            // folder is `waiting` and the helper is not known to be down).
-            // `SyncService` publishes the same the moment the link drops; this
-            // only makes sure of it.
-            Err(CycleError::NoHelper) => s.folder.waits_for_helper = true,
             Err(e) => s.cycle.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking(), kind: e.kind() }),
         });
     }

@@ -78,9 +78,8 @@ impl PollHandle {
         }
     }
 
-    /// A cycle now whose reconcile is Full: it places again what is missing
-    /// here though OneDrive did not change it (`RestoreDeletes`, an item whose
-    /// local object was forgotten).
+    /// A cycle now that has a reconcile whatever its delta holds
+    /// (`RestoreDeletes`).
     pub fn refresh_full(&self) {
         if let Some(listing) = self.listing.upgrade() {
             listing.request_full();
@@ -88,14 +87,10 @@ impl PollHandle {
         self.refresh.notify_one();
     }
 
-    /// Tells the poller, the live task and every replacement under way to stop, without
-    /// waiting for them: a cycle gives up where it waits, and a file call it has begun
-    /// ends first.
+    /// Tells the poller and the live task to stop, without waiting for them: a cycle
+    /// gives up where it waits, and a file call it has begun ends first.
     pub fn cancel(&self) {
         self.cancel.cancel();
-        if let Some(listing) = self.listing.upgrade() {
-            listing.stop_replacements();
-        }
     }
 }
 
@@ -140,7 +135,7 @@ impl Poller {
         self.handle.refresh_full();
     }
 
-    /// Stops the poller, the live task and every replacement under way, and waits for them.
+    /// Stops the poller and the live task, and waits for them.
     pub async fn stop(mut self) {
         self.join().await;
     }
@@ -158,7 +153,6 @@ impl Poller {
             self.live = None;
         }
         self.listing.ctx.state.set_live_changes(crate::status::snapshot::LiveChanges::Off);
-        self.listing.join_replacements().await;
     }
 }
 

@@ -412,16 +412,7 @@ impl SyncService {
     /// again.
     fn neighbours(&self) -> listing::Neighbours {
         let account = Arc::clone(&self.wiring.account);
-        listing::Neighbours { claimed: self.claims(), drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
-    }
-
-    /// Whether another account of this daemon claims an item id (`docs/design/writes.md` §8.3), for this
-    /// account's reconcile: an object carrying it is never removed ([`Registry::claimed_elsewhere`]).
-    ///
-    /// [`Registry::claimed_elsewhere`]: crate::sync::registry::Registry::claimed_elsewhere
-    fn claims(&self) -> crate::remote::materialize::Claimed {
-        let (registry, me) = (Arc::downgrade(&self.wiring.registry), self.id().clone());
-        Arc::new(move |id| registry.upgrade().is_some_and(|registry| registry.claimed_elsewhere(&me, id)))
+        listing::Neighbours { drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
     }
 
     /// What a punch goes by when nothing ties it to a link of its own

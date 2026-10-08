@@ -26,6 +26,7 @@ mod batch;
 mod entry;
 mod examine;
 pub mod handles;
+pub mod held;
 mod ignore;
 pub mod liveness;
 pub mod names;
