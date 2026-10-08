@@ -107,24 +107,17 @@ impl Requests {
     }
 
     /// Bytes written through a handle that may write: into the file in the folder under the
-    /// mount. Before the first of them the outbox is told that the file is being written.
+    /// mount. The outbox holds the file since it was opened.
     pub(super) fn written(&self, fh: FileHandle, offset: u64, data: &[u8], reply: ReplyWrite) {
         let s = &self.0;
         let Some((ino, file)) = crate::panic::lock(&s.handles).get(&fh.0).filter(|h| h.writes).and_then(|h| Some((h.ino, h.copy.clone()?))) else {
             return reply.error(Errno::EBADF);
         };
-        let write = move |data: &[u8], reply: ReplyWrite| match file.write_all_at(data, offset) {
+        s.writers.written(ino);
+        match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
             Err(e) => reply.error(errno(&e)),
-        };
-        if !s.first_change(ino) {
-            return write(data, reply);
         }
-        let data = data.to_vec();
-        s.change(move |s| match s.content(ino, true) {
-            Ok(()) => write(&data, reply),
-            Err(e) => reply.error(e),
-        });
     }
 
     /// A size set cuts or extends the file; a time set is the file's own from then on. Modes

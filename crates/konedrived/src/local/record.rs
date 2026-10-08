@@ -130,3 +130,6 @@ pub(crate) fn ordered(detections: Vec<Detection>) -> Vec<Detection> {
     let mut slots: Vec<Option<Detection>> = detections.into_iter().map(Some).collect();
     order.into_iter().map(|i| slots[i].take().expect("each row once")).collect()
 }
+
+#[cfg(test)]
+mod tests;

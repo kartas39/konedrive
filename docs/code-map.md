@@ -179,7 +179,7 @@ each change (`fuse/`); here is what the recording goes by. Design: `writes.md` �
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
 - `record.rs` — a local change recorded in the outbox: the mass-delete guard, the order of
-  the rows, the one transaction.
+  the rows, the one transaction. `[tests]`
 - `held.rs` — `Rw`: what the outbox's rows hold of the folder while they wait — the items a
   cycle of the listing leaves as they are, and the ones being removed.
 
@@ -207,6 +207,7 @@ daemon shows OneDrive.
 - `local.rs` — what a directory holds: the store's items as the outbox's rows leave them,
   and the files and directories OneDrive has no item for yet.
 - `outbox.rs` — the outbox's rows laid over the store: items moved, removed or changed here.
+  `[tests]`
 - `copies.rs` — the downloaded copies: which file is an item's, its state, its removal.
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
   background downloads.
@@ -221,7 +222,7 @@ daemon shows OneDrive.
 - `rename.rs` — a file or a directory a program renames or moves inside the folder.
 - `write.rs` — a file a program writes, in its downloaded copy.
 - `writers.rs` — the files held open for writing: a file is sent once its last writer closed
-  it.
+  it. `[tests]`
 - `follow.rs` — the folder under the mount made to follow a cycle of the listing (`Step`).
 - `conflict.rs` — where a change from OneDrive meets something the user made here: what is
   kept, and under which name.

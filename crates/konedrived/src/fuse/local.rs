@@ -86,7 +86,10 @@ impl Shared {
         }
         let path = self.under(rel);
         let meta = fs::symlink_metadata(&path).ok().filter(|m| m.is_file() || m.is_dir())?;
-        carried(&path).is_none().then(|| Local { name: name.to_string_lossy().into_owned(), meta })
+        // One that carries the id of an item the store does not have is not an item's yet:
+        // its upload is being committed, or the store was made anew.
+        let of_an_item = carried(&path).is_some_and(|id| self.row(&id).is_some());
+        (!of_an_item).then(|| Local { name: name.to_string_lossy().into_owned(), meta })
     }
 
     /// The item `id` as the folder shows it under `name`, unless it is gone from the folder.

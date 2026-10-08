@@ -102,13 +102,13 @@ impl Mount {
         let s = Arc::clone(&self.shared);
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
-            let waiting = s.waiting();
             for (file, at) in s.files_below(&row) {
                 if !s.has_copy(&at, &file.id) {
                     continue;
                 }
-                // A copy that was changed here is the only place its content is.
-                if waiting.changed.contains(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
+                // What a pin keeps, a download is filling, or holds content of the user's own
+                // that is not in OneDrive yet, stays.
+                if s.own_content(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -138,7 +138,7 @@ impl Mount {
         let above = row.parent_id.as_deref().and_then(|p| s.row(p)).and_then(|above| s.pinned_by(&above));
         let pinned_above = above.and_then(|by| s.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let state = (row.kind == Kind::File).then(|| s.state_of(&row, &rel));
-        let changed = s.waiting().changed.contains(&row.id);
+        let changed = s.own_content(&row.id);
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
     }
 
@@ -148,5 +148,13 @@ impl Mount {
         let s = &self.shared;
         let sizes = s.files_below(&row).into_iter().filter_map(|(file, at)| s.copy(&at, &file.id));
         Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks() * 512)))
+    }
+}
+
+impl super::shared::Shared {
+    /// Whether the copy of item `id` holds content of the user's own that is not in OneDrive
+    /// yet: changed here and not sent, or open for writing now.
+    fn own_content(&self, id: &str) -> bool {
+        self.waiting().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
     }
 }

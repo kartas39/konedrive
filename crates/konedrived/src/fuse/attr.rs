@@ -56,7 +56,7 @@ impl Shared {
         }
         attr.size = row.size;
         if let Some(meta) = rel.and_then(|rel| self.copy(rel, &row.id)) {
-            if self.waiting().changed.contains(&row.id) || self.being_written(ino) {
+            if self.waiting().changed.contains(&row.id) || self.writers.open(ino) {
                 self.of_object(&mut attr, &meta);
             } else {
                 (attr.size, attr.blocks) = (meta.size(), meta.blocks());
