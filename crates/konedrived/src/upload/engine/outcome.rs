@@ -13,10 +13,6 @@ pub(crate) enum Class {
     Meta,
     /// `create`, `update`: as many as the account's transfer pool gives, small or large.
     Content,
-    /// `move-out`: a download, then a delete. One at a time, beside
-    /// the others: its dependencies order it (a folder's removal waits for
-    /// what left it first).
-    Out,
 }
 
 /// How one run of a row ended: each variant is one thing the worker does with the row

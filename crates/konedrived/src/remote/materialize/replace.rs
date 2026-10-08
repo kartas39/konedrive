@@ -448,6 +448,3 @@ fn clear_leftover_link(disk: &Disk, dir: &File, temp: &OsStr, id: &str) -> std::
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

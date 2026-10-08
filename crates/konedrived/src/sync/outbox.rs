@@ -14,7 +14,6 @@ use super::running_sync::Handles;
 use super::{SyncError, SyncService};
 use crate::conditions::running::Running as WhatRuns;
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::ContentSource;
 use crate::remote::listing::PollHandle;
 use crate::status::snapshot::OutboxNote;
 use crate::upload::kept_back::SummaryRow;
@@ -90,7 +89,6 @@ impl SyncService {
         store: &Store,
         drive: &konedrive_graph::drive::DriveClient,
         tree_lock: &Arc<tokio::sync::Mutex<()>>,
-        source: &Arc<dyn ContentSource>,
         kept_back: Arc<Mutex<Option<Vec<SummaryRow>>>>,
         poll: Arc<OnceLock<PollHandle>>,
     ) -> OutboxWorker {
@@ -111,9 +109,6 @@ impl SyncService {
                 gate: self.gate(),
             }),
             limits: upload::Limits::default(),
-            // Moves out of the folder: the helper over this account's link, fills
-            // through the folder's source, and the registry's router.
-            moved_out: Some(self.move_outs(Some(Arc::clone(source)))),
             quota: self.quota(),
         })
     }
@@ -264,11 +259,6 @@ impl SyncService {
         if !dropped.is_empty() {
             self.nudge_full();
         }
-        // What a dropped move out named outside the folder is tidied, before the
-        // answer, whether or not a worker runs.
-        if let Some(record) = view.record {
-            self.tidy_dropped(&record.root, &store, view.source, &dropped).await;
-        }
         self.wake_outbox();
         Ok(dropped.len() as u32)
     }
@@ -286,13 +276,10 @@ impl SyncService {
     pub(super) async fn drop_outbox(&self, stopped: &mut Stopped<'_>) {
         let Some(store) = self.store_in(stopped).await else { return };
         let Some(root) = stopped.folder().record().map(|record| record.root.clone()) else { return };
-        let source = stopped.folder().source();
         let (dropping, marked) = (store.clone(), root.clone());
         let dropped = tokio::task::spawn_blocking(move || {
             let rows = dropping.call_blocking(move |s| {
-                let mut rows = upload::move_out::drop_rows(s)?;
-                rows.extend(s.outbox_drop_all()?);
-                Ok(rows)
+                s.outbox_drop_all()
             })?;
             upload::clear_marks(&marked, &rows);
             Ok::<_, konedrive_tree::TreeError>(rows)
@@ -305,11 +292,6 @@ impl SyncService {
             upload::cancel_given_up(&store, drive, DROPPED_CANCELS).await;
         }
         self.clear_outbox_counts();
-        // What moves out of the folder left outside it is tidied.
-        self.forget_moved_out();
-        if let Ok(Ok(rows)) = &dropped {
-            self.tidy_dropped(&root, &store, source, rows).await;
-        }
         match dropped.map(|rows| rows.map(|rows| rows.len())) {
             Ok(Ok(0)) => {}
             Ok(Ok(n)) => tracing::info!("{n} change(s) waiting to upload were dropped; the files stay as they are"),

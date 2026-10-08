@@ -242,7 +242,7 @@ impl SyncService {
             self.ensure_locked(&reg.root).await;
             None
         } else if wanted == Mode::ReadWrite {
-            let outbox = self.outbox_worker(&reg.root, &store, &drive, &tree_lock, &source, Arc::clone(&kept_back), Arc::clone(&poll));
+            let outbox = self.outbox_worker(&reg.root, &store, &drive, &tree_lock, Arc::clone(&kept_back), Arc::clone(&poll));
             let (scanned, scan) = watch::channel(false);
             match self.spawn_watcher(&reg.root, &store, &tree_lock, outbox.handle(), Some(scanned), reason, id) {
                 Ok(watcher) => {
@@ -273,7 +273,7 @@ impl SyncService {
         // A read-write folder's cycle shares the tree lock with its outbox worker, and its
         // first one waits for the watcher's Full local scan (`docs/design/writes.md` §9).
         let writes = handles.clone().map(|(watcher, outbox)| {
-            self.cycle_writes(first_scan, &tree_lock, watcher, outbox, self.tidy_after_cycle(&reg.root, &store, &source, Arc::clone(&tidying)))
+            self.cycle_writes(first_scan, &tree_lock, watcher, outbox)
         });
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),

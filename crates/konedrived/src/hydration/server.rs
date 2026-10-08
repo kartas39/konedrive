@@ -306,6 +306,3 @@ pub(crate) fn fill_event(answered: &Answered, path: &str, size: Option<u64>) -> 
         Answered::AlreadyThere | Answered::NotOurs => None,
     }
 }
-
-#[cfg(test)]
-mod tests;

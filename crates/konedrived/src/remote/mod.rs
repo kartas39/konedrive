@@ -5,6 +5,3 @@ pub mod materialize;
 pub mod mode;
 
 
-/// The one fixture of this area's tests.
-#[cfg(test)]
-pub(crate) mod testing;

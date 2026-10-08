@@ -517,9 +517,7 @@ impl SyncService {
                 }
             }
         }
-        // What left the folder is marked again first (`docs/design/writes.md` §10), then the
-        // helper marked nothing new while it was away (§3.5).
-        self.outbox_helper_back();
+        // The helper marked nothing new while it was away (`docs/design/writes.md` §3.5).
         self.watcher_helper_back();
     }
 

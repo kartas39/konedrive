@@ -2,8 +2,17 @@ use std::os::fd::OwnedFd;
 use std::time::Duration;
 use std::sync::Arc;
 
-use crate::sync::tests::wait_until;
 use super::*;
+
+async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    for _ in 0..600 {
+        if ready() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{what} never happened");
+}
 
 // --- InodeLocks (Ruling: serialization) -----------
 

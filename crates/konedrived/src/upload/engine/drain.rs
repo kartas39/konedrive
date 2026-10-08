@@ -92,7 +92,6 @@ impl Engine {
         }
         let mut flying = Flying::default();
         loop {
-            self.protect(&disk).await;
             self.mark_rows_blocking(&disk).await;
             let wanting = self.take_rows(&disk, &mut flying).await;
             if flying.set.is_empty() && wanting.is_empty() {
@@ -145,7 +144,7 @@ impl Engine {
         // The local file's size says whether its upload is large.
         let size = match class {
             Class::Content => Size::of(local::size_at(disk, &row.rel).unwrap_or(0)),
-            Class::Meta | Class::Out => Size::Small,
+            Class::Meta => Size::Small,
         };
         let wants = (pool_class(class), size);
         if wanting.contains(&wants) {

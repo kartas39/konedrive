@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::engine::{outcome_of, Engine, NoSpace, Outcome};
 use super::local;
 use crate::folder::disk::Disk;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, Reason};
 
 mod meta;
 mod sections;
@@ -17,7 +17,7 @@ mod shared;
 
 pub(super) use meta::delete;
 pub(crate) use sections::Sections;
-pub(super) use sections::{blocking, blocking_under, off, share, tree};
+pub(super) use sections::{blocking, blocking_under, tree};
 pub(super) use shared::{answer_row, base_after_a_change, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, parent_recorded, upload_as_new, wanted_name, Guard, Named, Ours};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
@@ -27,8 +27,9 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Ou
         OutboxKind::Mkdir => meta::mkdir(e, disk, row).await,
         OutboxKind::Move => meta::moved(e, disk, row).await,
         OutboxKind::Delete => delete(e, row).await,
-        // The object is downloaded before its item goes (WR5).
-        OutboxKind::MoveOut => super::move_out::run(e, disk, row).await,
+        // Never recorded, and never picked: through a mount nothing is moved out of the
+        // folder (the kernel answers a rename across it with `EXDEV`).
+        OutboxKind::MoveOut => Ok(Outcome::Blocked(Reason::Forbidden)),
     };
     match result.or_else(outcome_of) {
         Ok(outcome) => outcome,

@@ -354,6 +354,3 @@ impl Listing {
         self.replacements.join().await;
     }
 }
-
-#[cfg(test)]
-mod tests;

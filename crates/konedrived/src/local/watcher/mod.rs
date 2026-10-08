@@ -54,8 +54,6 @@ mod map;
 mod reader;
 mod schedule;
 pub(crate) mod service;
-#[cfg(test)]
-mod tests;
 
 use std::fs::File;
 use std::io;

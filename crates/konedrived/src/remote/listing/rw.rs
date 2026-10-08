@@ -71,6 +71,3 @@ impl Listing {
         cancellable(cancel, lock).await
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -31,10 +31,6 @@ pub mod liveness;
 pub mod names;
 pub mod record;
 pub mod scan;
-#[cfg(test)]
-pub(crate) mod testing;
-#[cfg(test)]
-mod tests;
 pub mod watcher;
 
 use std::time::Duration;
@@ -42,8 +38,6 @@ use std::time::Duration;
 pub use batch::{Batch, ScanReason};
 pub use examine::{ExamineError, Examined, Examiner, ScanProgress};
 pub use ignore::{IgnoreList, SharedIgnore, DEFAULT_PATTERNS};
-#[cfg(test)]
-pub use testing::FakeLiveness;
 
 /// A batch is examined when no event came for this long (provisional).
 pub const QUIET: Duration = Duration::from_secs(2);

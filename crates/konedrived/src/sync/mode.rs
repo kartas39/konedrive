@@ -182,15 +182,13 @@ impl SyncService {
     /// (`docs/design/writes.md` §9): the tree lock, the watcher's first scan to wait for, the
     /// watcher itself, handed what the reconcile kept or copied for examination, and the
     /// worker, told that a cycle went through. Each is the part of the same sync, reached
-    /// directly; `tidy` is what tidies after a row the cycle dropped
-    /// ([`tidy_after_cycle`](Self::tidy_after_cycle)).
+    /// directly.
     pub(super) fn cycle_writes(
         &self,
         scanned: Option<watch::Receiver<bool>>,
         tree_lock: &Arc<tokio::sync::Mutex<()>>,
         watcher: WatchHandle,
         outbox: OutboxHandle,
-        tidy: Arc<dyn Fn(Vec<konedrive_tree::outbox::OutboxRow>) + Send + Sync>,
     ) -> crate::remote::listing::Writes {
         let (cycled, reopened, counted) = (outbox.clone(), outbox.clone(), outbox);
         crate::remote::listing::Writes {
@@ -202,12 +200,9 @@ impl SyncService {
             // The worker, which waits for the folder's first delta cycle, may go.
             cycled: Arc::new(move || cycled.cycle_done()),
             reopened: Arc::new(move || reopened.wake()),
-            dropped_removed: Arc::new(move |rows| {
-                // `HeldCount`/`PendingCount` count the drop at once, not at the
-                // worker's own next wake (the outbox on the bus).
-                counted.wake();
-                tidy(rows);
-            }),
+            // `HeldCount`/`PendingCount` count the drop at once, not at the
+            // worker's own next wake (the outbox on the bus).
+            dropped_removed: Arc::new(move |_| counted.wake()),
         }
     }
 }

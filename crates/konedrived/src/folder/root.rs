@@ -5,7 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use konedrive_fs::placeholder::{self, read_state, State, StateError, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE};
+use konedrive_fs::placeholder::{read_state, XATTR_DRIVE, XATTR_ROOT};
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_fs::proc_path;
 use nix::errno::Errno;
@@ -16,7 +16,6 @@ use xattr::FileExt;
 use crate::helper::{HelperError, HelperLink};
 
 use super::disk::beneath;
-use super::walk::reserved;
 
 /// Why a file or a folder of the root was not opened ([`SyncRoot::open_inside`],
 /// [`SyncRoot::open_item`]).
@@ -462,62 +461,6 @@ pub(crate) fn uuid_v4() -> String {
     format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
 }
 
-/// How [`SyncRoot::item`] reaches an item, and how its marks are then read from the
-/// descriptor it gives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Reach {
-    /// Opened read-only and `O_NONBLOCK`: the marks are read, and written, through the
-    /// descriptor. What `Pin`, `Unpin`, `FreeUp` and `WebUrl` do.
-    Open,
-    /// `O_PATH`: the place in the tree and nothing more. The file is not opened, so no
-    /// event is raised and nothing is downloaded, whatever the helper is doing
-    /// (`docs/kernel-behavior-7.2/open-by-handle.md`); the marks are read by the
-    /// descriptor's name in `/proc`. What `Files.Menu` does, which only asks.
-    Look,
-}
-
-impl Reach {
-    fn flags(self) -> OFlag {
-        match self {
-            Reach::Open => OFlag::O_RDONLY | OFlag::O_NONBLOCK,
-            Reach::Look => OFlag::O_PATH,
-        }
-    }
-
-    /// The attribute `name` of an item reached by `Look`: an `O_PATH` descriptor reads no
-    /// attribute itself, and its name in `/proc` is the object, not a path walked again.
-    fn looked(item: &File, name: &str) -> io::Result<Option<String>> {
-        Ok(xattr::get_deref(proc_path(item), name)?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
-    }
-
-    /// The item's state, as `placeholder::read_state` reads it.
-    pub(crate) fn state(self, item: &File) -> Result<Option<State>, StateError> {
-        match self {
-            Reach::Open => read_state(item),
-            Reach::Look => match Self::looked(item, XATTR_STATE)? {
-                None => Ok(None),
-                Some(value) => value.parse().map(Some).map_err(|()| StateError::Corrupt(value)),
-            },
-        }
-    }
-
-    /// The item's id in OneDrive, as `placeholder::read_item_id` reads it.
-    pub(crate) fn item_id(self, item: &File) -> io::Result<Option<String>> {
-        match self {
-            Reach::Open => placeholder::read_item_id(item),
-            Reach::Look => Self::looked(item, XATTR_ITEM_ID),
-        }
-    }
-
-    /// Whether the item carries a pin of its own, as `placeholder::read_pin` reads it.
-    pub(crate) fn pin(self, item: &File) -> io::Result<bool> {
-        match self {
-            Reach::Open => placeholder::read_pin(item),
-            Reach::Look => Ok(Self::looked(item, XATTR_PIN)?.is_some()),
-        }
-    }
-}
-
 impl SyncRoot {
     /// Opens `path` to fill it or free it up: once, `O_RDWR`, and only if it really
     /// is a plain file inside this root. A file the read-only
@@ -600,64 +543,6 @@ impl SyncRoot {
             }
             _ => Ok(read_only),
         }
-    }
-
-    /// Opens a file or a folder inside this root — or the root itself — to
-    /// read or write its pin, with its full path as the activity log names
-    /// it. Read-only and `O_NONBLOCK`, under the same resolution rules as
-    /// [`open_inside`](Self::open_inside): the root must still carry this
-    /// root's id, and neither `..`, a symbolic link nor anything else may
-    /// lead outside it. A regular file must be one of ours (it carries a
-    /// state); a folder need not carry an item id, since a folder filled with
-    /// `PopulateFromDirectory` has none. A `.konedrive-*` name anywhere on
-    /// the way is `NotManaged`; anything else is refused.
-    pub(crate) fn open_item(&self, path: &Path) -> Result<(File, PathBuf), OpenError> {
-        self.item(path, Reach::Open)
-    }
-
-    /// [`open_item`](Self::open_item), reached as `reach` says: the one set of
-    /// rules for what `Pin`, `Unpin`, `FreeUp` and `WebUrl` take, whether the
-    /// item is opened for them or only looked at for `Files.Menu`.
-    pub(crate) fn item(&self, path: &Path, reach: Reach) -> Result<(File, PathBuf), OpenError> {
-        let dir = self
-            .open_registered()
-            .map_err(|e| OpenError::Io(format!("{}: {e}", self.path.display())))?
-            .ok_or(OpenError::OutsideRoot)?;
-        // The root itself, named by its own path: its parent resolved, its
-        // name carried over, as `relative` does.
-        let named = match (path.parent(), path.file_name()) {
-            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-                std::fs::canonicalize(parent).ok().map(|parent| parent.join(name))
-            }
-            _ => None,
-        };
-        let root = std::fs::canonicalize(&self.path).map_err(io_error)?;
-        if named.as_deref() == Some(root.as_path()) {
-            return Ok((dir, self.path.clone()));
-        }
-        let relative = self.relative(path)?;
-        // `.konedrive-*` is the daemon's own — the holding directory, a new
-        // folder before its label, a replacement before its swap — and
-        // nothing in or under it is anyone's to pin or free up.
-        if relative.components().any(|part| reserved(part.as_os_str())) {
-            return Err(OpenError::NotManaged);
-        }
-        let how = OpenHow::new().flags(reach.flags() | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC).resolve(beneath());
-        let item = match openat2(dir.as_fd(), &relative, how) {
-            Ok(fd) => File::from(fd),
-            Err(Errno::EXDEV | Errno::ELOOP) => return Err(OpenError::OutsideRoot),
-            Err(e) => return Err(OpenError::Io(format!("{}: {e}", path.display()))),
-        };
-        let meta = item.metadata().map_err(io_error)?;
-        if meta.is_file() {
-            if reach.state(&item).map_err(io_error)?.is_none() {
-                return Err(OpenError::NotManaged);
-            }
-        } else if !meta.is_dir() {
-            // A symbolic link too, which `Reach::Look` gets a descriptor of.
-            return Err(OpenError::OutsideRoot);
-        }
-        Ok((item, self.path.join(relative)))
     }
 
     /// This root's directory, opened as a directory and proved to still be

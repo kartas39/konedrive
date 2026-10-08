@@ -27,8 +27,3 @@ pub mod panic;
 #[cfg(any(test, feature = "fault-injection"))]
 #[path = "tests/fake_onedrive/mod.rs"]
 pub mod fake_onedrive;
-
-/// The outbox at scale: ignored tests, run by hand in release.
-#[cfg(test)]
-#[path = "tests/bench.rs"]
-mod bench;

@@ -20,21 +20,19 @@ use crate::folder::locks::InodeLocks;
 use crate::folder::root::SyncRoot;
 use konedrive_graph::drive::DriveClient;
 use konedrive_graph::pool::Class as PoolClass;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, Pick, Picked, Reason};
+use konedrive_tree::outbox::{OutboxRow, Pick, Picked, Reason};
 use konedrive_tree::{ActivityRow, Store, TreeError, TreeStore};
 
 use state::Shared;
 pub(crate) use outcome::Class;
 pub(super) use outcome::{outcome_of, Fail, NoSpace, Outcome};
-#[cfg(test)]
-pub(super) use outcome::without_urls;
 
 /// The slot of the account's transfer pool a row of `class` takes: content is an upload;
 /// metadata, and a move out of the folder (a download, then a delete), go before transfers.
 fn pool_class(class: Class) -> PoolClass {
     match class {
         Class::Content => PoolClass::Upload,
-        Class::Meta | Class::Out => PoolClass::Metadata,
+        Class::Meta => PoolClass::Metadata,
     }
 }
 
@@ -80,9 +78,6 @@ pub(crate) struct Engine {
     /// The fault points a test armed ([`arm`](Self::arm)).
     #[cfg(test)]
     faults: Mutex<Vec<Fault>>,
-    /// What the pending `move-out` rows name, re-marked on this helper
-    /// connection.
-    protection: Mutex<super::move_out::Protection>,
     /// The blocking sections the rows in flight have under way, the askings
     /// of the write gate among them: a stop waits for them.
     pub(super) sections: super::steps::Sections,
@@ -125,7 +120,6 @@ impl Engine {
             wake: Notify::new(),
             #[cfg(test)]
             faults: Mutex::new(Vec::new()),
-            protection: Mutex::new(super::move_out::Protection::default()),
             sections: super::steps::Sections::default(),
             #[cfg(test)]
             record_hook: Mutex::new(None),
@@ -174,11 +168,6 @@ impl Engine {
         &self.cfg.quota
     }
 
-    /// The helper and the fills `move-out` rows need, where the worker has them.
-    pub(super) fn move_outs(&self) -> Option<&super::move_out::MoveOuts> {
-        self.cfg.moved_out.as_ref()
-    }
-
     fn shared(&self) -> MutexGuard<'_, Shared> {
         crate::panic::lock(&self.shared)
     }
@@ -203,17 +192,6 @@ impl Engine {
     /// Whether the daemon is stopping ([`close`](Self::close)).
     pub(super) fn closing(&self) -> bool {
         self.closing.is_cancelled()
-    }
-
-    pub(super) fn protection(&self) -> MutexGuard<'_, super::move_out::Protection> {
-        crate::panic::lock(&self.protection)
-    }
-
-    /// The helper is back without its marks: the `move-out` rows' objects
-    /// are marked again at the next look, before any row runs.
-    pub(super) fn helper_back(&self) {
-        self.protection().helper_back();
-        self.wake();
     }
 
     #[cfg(test)]
@@ -415,15 +393,12 @@ impl Engine {
     fn slot_free(&self, class: Class) -> bool {
         let busy = self.shared().flights.of(class);
         match class {
-            Class::Meta | Class::Out => busy < 1,
+            Class::Meta => busy < 1,
             Class::Content => true,
         }
     }
 
     fn class_of(&self, row: &OutboxRow) -> Class {
-        if row.kind == OutboxKind::MoveOut {
-            return Class::Out;
-        }
         if !row.kind.sends_content() {
             return Class::Meta;
         }
@@ -431,8 +406,8 @@ impl Engine {
     }
 
     /// The rows that may run now, in `seq` order: due, waiting for no other
-    /// row, not held here already, and as the space allows; move-outs only
-    /// with what they need. Read a portion at a time ([`TreeStore::outbox_pick`]),
+    /// row, not held here already, and as the space allows; never a
+    /// `move-out` row, which nothing records for a folder under a mount. Read a portion at a time ([`TreeStore::outbox_pick`]),
     /// off the async runtime. What stands in front of the rest is kept
     /// (`Shared::waits`, [`next_due`](Self::next_due)), and a time it names wakes the worker.
     ///
@@ -440,13 +415,12 @@ impl Engine {
     pub(crate) async fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
         let flying: HashSet<i64> = self.shared().flights.seqs();
-        let move_outs = self.move_outs().is_some();
         let (full, looked) = self.space_seen();
         let picked = self
             .store()
             .call(move |s| {
                 let allows = |s: &TreeStore, r: &OutboxRow| space::allows(r, full, &looked, || s.outbox_removed_behind(r));
-                s.outbox_pick(&Pick { now, flying: &flying, move_outs, want: PICK_WANT, allows: &allows })
+                s.outbox_pick(&Pick { now, flying: &flying, move_outs: false, want: PICK_WANT, allows: &allows })
             })
             .await?;
         if !picked.stalled.is_empty() {

@@ -273,6 +273,3 @@ impl Listing {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

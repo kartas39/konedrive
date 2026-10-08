@@ -38,14 +38,6 @@ impl Sections {
     }
 }
 
-/// A share in the sections of the worker whose row runs on this task, for
-/// work that starts blocking sections of its own (a fill): the worker's stop
-/// waits until it is let go of (`folder::locks::holding_with`).
-pub(in crate::upload) async fn share() -> Option<crate::folder::locks::Carried> {
-    let sections = SECTIONS.try_with(Sections::clone).ok()?;
-    Some(Arc::new(sections.running().await))
-}
-
 /// `f` on a blocking thread: a *section*, the file calls of a step that
 /// follow each other with no wait between them. None of them runs on a
 /// runtime thread. A section that has begun runs to its end, whatever

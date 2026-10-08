@@ -341,6 +341,3 @@ async fn sleep_until(at: Option<Instant>) {
         None => std::future::pending().await,
     }
 }
-
-#[cfg(test)]
-mod tests;

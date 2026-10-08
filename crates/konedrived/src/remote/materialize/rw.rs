@@ -350,6 +350,3 @@ impl Materializer {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

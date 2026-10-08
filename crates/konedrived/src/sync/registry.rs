@@ -13,7 +13,7 @@
 //! it to its own list and removes it where it removes it there. A service does not put
 //! itself on it.
 
-use std::collections::{HashMap, HashSet};
+
 use std::fs::File;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
@@ -81,12 +81,6 @@ pub struct Registry {
     /// overlap check to its end: two accounts cannot both pass the check
     /// with folders that nest (§6.3).
     pub(super) registering: tokio::sync::Mutex<()>,
-    /// The item ids of what left each account's folder and waits in its
-    /// outbox (`move-out` rows, and what the base has inside a moved-out
-    /// folder): a fill of one of these is that account's, wherever the object
-    /// is now — outside every folder, or inside another account's (`docs/design/writes.md`
-    /// §8.3).
-    moved_out: Mutex<HashMap<AccountId, HashSet<String>>>,
     /// What every account was told last; one that is added later is told what it is then.
     told: Mutex<Told>,
 }
@@ -104,7 +98,6 @@ impl Registry {
             locks: InodeLocks::new(),
             accounts: Mutex::new(Vec::new()),
             registering: tokio::sync::Mutex::new(()),
-            moved_out: Mutex::new(HashMap::new()),
             told: Mutex::new(Told::default()),
         })
     }
@@ -140,7 +133,6 @@ impl Registry {
     /// is routed to it, and it claims nothing.
     pub fn remove(&self, id: &AccountId) {
         self.list().retain(|(a, _)| a != id);
-        crate::panic::lock(&self.moved_out).remove(id);
     }
 
     /// Every account, in account order.
@@ -151,11 +143,6 @@ impl Registry {
     /// Every account but `me`.
     fn others(&self, me: &AccountId) -> Vec<Arc<SyncService>> {
         self.list().iter().filter(|(id, _)| id != me).filter_map(|(_, a)| a.upgrade()).collect()
-    }
-
-    /// The account `id`, while it is one of the daemon's.
-    fn account(&self, id: &AccountId) -> Option<Arc<SyncService>> {
-        self.list().iter().find(|(a, _)| a == id).and_then(|(_, a)| a.upgrade())
     }
 
     /// The list, locked. What an account does when it is told ([`tell`](Self::tell)) runs
@@ -214,18 +201,6 @@ impl Registry {
         true
     }
 
-    /// The item ids whose fills are the account `me`'s wherever the objects are now:
-    /// what its outbox's `move-out` rows name (`docs/design/writes.md` §8). Replaces
-    /// what it said before.
-    pub(super) fn set_moved_out(&self, me: &AccountId, ids: HashSet<String>) {
-        let mut moved_out = crate::panic::lock(&self.moved_out);
-        if ids.is_empty() {
-            moved_out.remove(me);
-        } else {
-            moved_out.insert(me.clone(), ids);
-        }
-    }
-
     /// Whether an account other than `me` claims item `id` (`docs/design/writes.md`
     /// §8.3): its outbox waits to fetch it wherever it is
     /// (`move-out`), its tree store knows it, or the drive the id names
@@ -235,9 +210,6 @@ impl Registry {
     /// what it would miss, its own move-out keeps (`move_out::kept`).
     /// Blocking: a reconcile asks from its own thread.
     pub(super) fn claimed_elsewhere(&self, me: &AccountId, id: &str) -> bool {
-        if crate::panic::lock(&self.moved_out).iter().any(|(account, ids)| account != me && ids.contains(id)) {
-            return true;
-        }
         let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
         self.others(me).into_iter().any(|other| {
             let Some(store) = other.tree_store() else { return false };
@@ -250,22 +222,6 @@ impl Registry {
                 })
                 .unwrap_or(true)
         })
-    }
-
-    /// The account whose moved-out objects include the file behind `fd`, by
-    /// the item id it carries. Nothing is read while no account has any.
-    async fn by_moved_out(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
-        if crate::panic::lock(&self.moved_out).is_empty() {
-            return None;
-        }
-        let id = item_id_of(fd).await?;
-        let owner = crate::panic::lock(&self.moved_out).iter().find(|(_, ids)| ids.contains(&id)).map(|(account, _)| account.clone())?;
-        self.account(&owner)
-    }
-
-    /// Every folder every account holds or records.
-    pub(super) fn folders(&self) -> Vec<std::path::PathBuf> {
-        self.accounts().iter().flat_map(|a| a.folders()).collect()
     }
 
     /// The label of an account other than `me` whose folder `path` is, is
@@ -312,11 +268,6 @@ impl Registry {
     /// renamed or unlinked while its open was suspended. `None` otherwise:
     /// routing never guesses.
     pub(crate) async fn route(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
-        // An object that left an account's folder is that account's, by its
-        // item id, whatever folder its path is in now (`docs/design/writes.md` §8, §8.3).
-        if let Some(account) = self.by_moved_out(fd).await {
-            return Some(account);
-        }
         let key = InodeKey::of_fd(fd).ok()?;
         let accounts = self.accounts();
         // A folder whose device is not known — held back, or written down by
@@ -497,6 +448,3 @@ impl crate::conditions::Accounts for Registry {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

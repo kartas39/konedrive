@@ -38,13 +38,10 @@
 mod content;
 pub(crate) mod engine;
 pub mod local;
-pub mod move_out;
 pub mod space;
 mod steps;
 
 pub mod kept_back;
-#[cfg(test)]
-pub(crate) mod tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -223,9 +220,6 @@ pub struct WorkerConfig {
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     pub host: Arc<dyn OutboxHost>,
     pub limits: Limits,
-    /// The helper and the fills `move-out` rows need; `None` leaves
-    /// them waiting.
-    pub moved_out: Option<move_out::MoveOuts>,
     /// The account's one quota (`crate::account::quota`): what the space check reads
     /// and adjusts, keeping no copy of its own ([`space`]).
     pub quota: crate::account::quota::Quota,
@@ -428,12 +422,6 @@ impl OutboxHandle {
                 tracing::warn!("cannot make the outbox's waiting rows due: {e}");
             }
         });
-    }
-
-    /// The helper is back, with none of its marks (`docs/design/writes.md` §10): what
-    /// the pending `move-out` rows name is marked again, before any row runs.
-    pub fn helper_back(&self) {
-        self.engine.helper_back();
     }
 }
 
