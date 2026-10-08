@@ -128,7 +128,8 @@ pub(super) fn publish(folder: &Folder) -> Published {
             quiet(path, state, error, helper, view(Some(why)))
         }
         Is::Up(up) => {
-            let intercepted = up.record.intercepted();
+            // A folder served through FUSE needs no interception: its mount answers every open.
+            let intercepted = up.record.intercepted() || up.record.source == RootSource::Fuse;
             // A recovery that could not reset a file outranks the mode in `State`, because
             // it is the louder of the two problems; `LastError` still carries the
             // no-interception warning.
@@ -144,6 +145,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 // connects.
                 Interception::Without { .. } if up.record.source == RootSource::OneDrive => Helper::Waited,
                 Interception::Without { .. } => Helper::NotNeeded,
+                Interception::Intercepted if up.record.source == RootSource::Fuse => Helper::NotNeeded,
                 Interception::Intercepted => Helper::Needed,
             };
             let switch_note = up.switch_failed.clone().map(|why| SwitchNote { why });
@@ -194,6 +196,7 @@ impl SyncService {
             s.folder.root_state = published.state;
             s.folder.last_error = published.error;
             s.folder.no_interception_warning = published.no_interception_warning;
+            s.folder.helper_not_needed = published.helper == Helper::NotNeeded;
             s.folder.switch_note = published.switch_note;
             s.folder.waits_for_helper = waits;
             s.folder.writable = published.writable;

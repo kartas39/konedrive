@@ -67,6 +67,10 @@ async fn main() {
                 graph.with(|cloud| cloud.trash(id));
                 String::new()
             }
+            ["delay", method, fragment, ms, times] => {
+                graph.with(|cloud| cloud.delay(method, fragment, std::time::Duration::from_millis(ms.parse().unwrap()), times.parse().unwrap()));
+                String::new()
+            }
             ["register", p] => said(service.register_root(&path(p)).await.map(|()| "registered".into()).map_err(|e| e.to_string())),
             ["forget"] => said(service.unregister_root().await.map(|()| "forgotten".into()).map_err(|e| e.to_string())),
             ["refresh"] => said(service.refresh().await.map(|()| "refreshed".into()).map_err(|e| e.to_string())),
@@ -84,8 +88,8 @@ async fn main() {
             ["status"] => {
                 let s = service.state().get();
                 format!(
-                    "listed {}, placed {}, pinned {}, local bytes {}, last checked {}, last error {:?}",
-                    s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error
+                    "state {:?}, listed {}, placed {}, pinned {}, local bytes {}, last checked {}, last error {:?}, the helper is not needed {}",
+                    s.folder.root_state, s.cycle.items_listed, s.cycle.items_placed, s.local.pinned_count, s.local.local_bytes, s.cycle.last_checked > 0, s.folder.last_error, s.folder.helper_not_needed
                 )
             }
             ["activity"] => {

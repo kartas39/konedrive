@@ -1103,21 +1103,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "konedrive-fuse"
-version = "0.1.2"
-dependencies = [
- "fuser",
- "konedrive-fs",
- "konedrive-graph",
- "konedrive-tree",
- "konedrived",
- "libc",
- "tokio",
- "url",
- "xattr",
-]
-
-[[package]]
 name = "konedrive-graph"
 version = "0.1.2"
 dependencies = [

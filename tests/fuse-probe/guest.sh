@@ -320,134 +320,6 @@ arrivals() {
     stop
 }
 
-# Stage 1: the read-only mount of crates/konedrive-fuse over a store seeded from a directory.
-ro() {
-    echo "==== stage 1: read-only mount over the folder, names from the store ===="
-    local k="$KFUSE" c=$W/cloud f=$W/OneDrive st=$W/state/fuse-tree.sqlite p
-    mkdir -p $c/docs/deep $f $W/state
-    echo "hello from the cloud" > $c/a.txt
-    echo "second" > $c/docs/b.txt
-    head -c 1048576 /dev/urandom > $c/docs/deep/c.bin
-    head -c 209715200 /dev/urandom > $c/big.bin
-    echo "will be damaged" > $c/damaged.txt
-    chown -R 1000:1000 $c $f $W/state
-    $U "$k" seed $st $c
-    echo "damaged in transit" > $c/damaged.txt
-    kmount() {
-        $U "$k" mount $f $st --local-dir $c 2> $W/logs/ro.err &
-        p=$!
-        for _ in $(seq 50); do mounted $f && return 0; sleep 0.1; done
-        echo "MOUNT FAILED: $(cat $W/logs/ro.err)"; return 1
-    }
-    state() { $U python3 -c "import os,sys; print(os.getxattr(sys.argv[1],'user.konedrive.state').decode())" "$1"; }
-    kmount || return
-    echo "type: $(awk -v m=$f '$2==m{print $3}' /proc/self/mounts)"
-    echo "listing: $($U find $f | sort | tr '\n' ' ')"
-    echo "sizes: $($U stat -c '%n=%s/%b' $f/a.txt $f/big.bin | tr '\n' ' ')"
-    echo "state of a.txt before: $(state $f/a.txt)"
-    echo "a.txt: $($U cat $f/a.txt)"
-    echo "state of a.txt after: $(state $f/a.txt)"
-    $U cat $f/docs/deep/c.bin > /dev/null & $U cat $f/docs/deep/c.bin > /dev/null & wait $! 
-    echo "c.bin equal to the cloud's: $($U cmp $f/docs/deep/c.bin $c/docs/deep/c.bin && echo yes)"
-    s=$(date +%s.%N)
-    echo "big.bin equal to the cloud's: $($U cmp $f/big.bin $c/big.bin && echo yes), first read took $(echo "$(date +%s.%N) - $s" | bc) s"
-    echo "a file whose content does not match its hash: $($U cat $f/damaged.txt 2>&1)"
-    echo "writes: $($U sh -c "touch $f/new; rm $f/a.txt; echo x >> $f/a.txt; mkdir $f/d; mv $f/a.txt $f/z" 2>&1 | sed 's/.*: //' | sort | uniq -c | tr '\n' ' ')"
-    kill -KILL $p; wait $p 2> /dev/null
-    echo "daemon killed: $($U ls $f 2>&1)"
-    $U fusermount3 -u -z $f
-    echo "the folder itself: $($U find $f -type f | sort | tr '\n' ' ')"
-    echo "attributes of a downloaded file: $($U python3 -c "import os,sys; print({k: os.getxattr(sys.argv[1],k).decode() for k in os.listxattr(sys.argv[1])})" $f/a.txt)"
-    mv $c $c.away
-    kmount || return
-    echo "mounted again, the cloud gone: a.txt: $($U cat $f/a.txt); b.txt: $($U cat $f/docs/b.txt 2>&1)"
-    echo "states: a.txt $(state $f/a.txt), b.txt $(state $f/docs/b.txt)"
-    $U fusermount3 -u $f; wait $p 2> /dev/null
-}
-
-# Stage 1 against the fake OneDrive: listed into the store, followed, announced.
-graph() {
-    echo "==== stage 1 with OneDrive: listing, download, and changes that arrive ===="
-    local k="$KFUSE" f=$W/OneDrive2 st=$W/state2/fuse-tree.sqlite src=$W/src2 p cloud url
-    ip link set lo up
-    mkdir -p $f $W/state2 $src
-    echo "hello" > $src/a; echo "to be deleted" > $src/gone; echo "keeps its content" > $src/keep
-    echo "inside docs" > $src/b; head -c 52428800 /dev/urandom > $src/big; echo "hello, changed in the cloud" > $src/a2
-    echo "arrived later" > $src/new; echo T > $W/state2/token
-    chown -R 1000:1000 $f $W/state2 $src
-    mkfifo $W/state2/in; chown 1000:1000 $W/state2/in
-    $U "$bin/fake-cloud" < $W/state2/in > $W/logs/cloud.out 2> $W/logs/cloud.err &
-    cloud=$!
-    exec 9> $W/state2/in
-    say() { echo "$*" >&9; for _ in $(seq 50); do grep -qF "done $*" $W/logs/cloud.out && return; sleep 0.1; done; echo "the fake cloud did not answer: $*"; }
-    for _ in $(seq 50); do url=$(awk '$1=="url"{print $2}' $W/logs/cloud.out); [ -n "$url" ] && break; sleep 0.1; done
-    say file A R a.txt $src/a; say file G R gone.txt $src/gone; say file K R keep.txt $src/keep
-    say folder D R docs; say file B D b.txt $src/b; say file X D big.bin $src/big
-    $U "$k" mount $f $st --graph "$url" --token-file $W/state2/token --poll-secs 60 --control $W/state2/ctl 2> $W/logs/graph.err &
-    p=$!
-    for _ in $(seq 100); do mounted $f && break; sleep 0.1; done
-    mounted $f || { echo "MOUNT FAILED: $(cat $W/logs/graph.err)"; return; }
-    state() { $U python3 -c "import os,sys; print(os.getxattr(sys.argv[1],'user.konedrive.state').decode())" "$1"; }
-    echo "listing: $($U find $f | sort | tr '\n' ' ')"
-    echo "a.txt: $($U cat $f/a.txt); keep.txt: $($U cat $f/keep.txt); gone.txt: $($U cat $f/gone.txt)"
-    echo "big.bin equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"
-    $U "$bin/probe-client" watch $f 9 > $W/logs/watch.out &
-    w=$!
-    sleep 1
-    say file N R new.txt $src/new; sleep 2
-    say edit A $src/a2; sleep 2
-    say trash G; sleep 2
-    say rename K R moved.txt
-    wait $w
-    echo "an inotify watch on the folder saw: $(tr '\n' ';' < $W/logs/watch.out)"
-    echo "listing: $($U ls $f | tr '\n' ' ')"
-    echo "state of a.txt after the change: $(state $f/a.txt); a.txt: $($U cat $f/a.txt)"
-    echo "state of moved.txt: $(state $f/moved.txt); moved.txt: $($U cat $f/moved.txt); new.txt: $($U cat $f/new.txt)"
-    echo "-- a waiting open, interrupted"
-    echo "slow to arrive" > $src/slow; chown 1000:1000 $src/slow
-    say file S R slow.txt $src/slow; sleep 2
-    say delay GET dl/S 8000 1
-    $U cat $f/slow.txt > /dev/null 2> $W/logs/slow.err &
-    c=$!
-    sleep 1
-    alive $c && echo "the opener waits for the download" || echo "the opener did not wait"
-    # Not SIGINT: a background command of a script ignores it.
-    kill -TERM $c
-    sleep 1
-    alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
-    kill -KILL $c 2> /dev/null
-    sleep 1
-    alive $c && echo "1 s after SIGKILL: still waiting" || echo "after SIGKILL: gone"
-    echo "state right after: $(state $f/slow.txt)"
-    sleep 8
-    echo "state once the download ended by itself: $(state $f/slow.txt)"
-    echo "-- free up and pin"
-    ctl() { $U "$k" ctl $W/state2/ctl "$@" 2>&1 | head -1; }
-    states() { for n in "$@"; do printf '%s=%s/%s ' "$n" "$(state $f/$n)" "$($U stat -c %b $f/$n)"; done; echo; }
-    echo "before: $(states moved.txt docs/b.txt docs/big.bin)"
-    echo "free-up moved.txt: $(ctl free-up $f/moved.txt); $(states moved.txt)"
-    $U "$bin/probe-client" watch $f/docs 6 > $W/logs/watch2.out &
-    w=$!
-    sleep 1
-    echo "pin docs: $(ctl pin $f/docs)"
-    sleep 1
-    echo "after the pin, nothing read: $(states docs/b.txt docs/big.bin); pin attribute of docs: $($U python3 -c "import os,sys; print(os.getxattr(sys.argv[1],'user.konedrive.pin').decode())" $f/docs)"
-    echo "free-up docs/big.bin: $(ctl free-up $f/docs/big.bin)"
-    echo "free-up docs: $(ctl free-up $f/docs)"
-    echo "second version" > $src/b2; chown 1000:1000 $src/b2
-    say file P D p.txt $src/new; say edit B $src/b2
-    sleep 2
-    echo "a new file and a changed one in the pinned folder, nothing read: $(states docs/p.txt docs/b.txt); b.txt: $($U cat $f/docs/b.txt)"
-    wait $w
-    echo "an inotify watch on docs saw: $(sort $W/logs/watch2.out | uniq -c | tr -s ' ' | tr '\n' ';')"
-    echo "unpin docs: $(ctl unpin $f/docs); free-up docs: $(ctl free-up $f/docs); $(states docs/b.txt docs/big.bin docs/p.txt)"
-    echo "big.bin read again after the free-up, equal to the cloud's: $($U cmp $f/docs/big.bin $src/big && echo yes)"
-    $U fusermount3 -u $f; wait $p 2> /dev/null
-    echo "the folder itself: $($U find $f -type f | sort | tr '\n' ' ')"
-    cat $W/logs/graph.err
-    exec 9>&-; wait $cloud 2> /dev/null
-}
-
 # The daemon's own service with a folder served through FUSE, over the fake OneDrive.
 service() {
     echo "==== the daemon's service with a folder served through FUSE ===="
@@ -499,6 +371,19 @@ service() {
     echo "an inotify watch on the folder saw: $(tr '\n' ';' < $W/logs/watch3.out)"
     echo "listing: $($U find $f | sort | tr '\n' ' ')"
     echo "a.txt: $($U cat $f/a.txt); new.txt: $($U cat $f/new.txt)"
+    echo "-- a waiting open, interrupted"
+    echo "slow to arrive" > $src/slow; chown 1000:1000 $src/slow
+    ask file S R slow.txt $src/slow > /dev/null; ask refresh > /dev/null; sleep 1
+    ask delay GET dl/S 6000 1 > /dev/null
+    $U cat $f/slow.txt > /dev/null 2>&1 &
+    c=$!
+    sleep 1
+    alive $c && echo "the opener waits; state meanwhile: $(ask state $f/slow.txt)" || echo "the opener did not wait"
+    # Not SIGINT: a background command of a script ignores it.
+    kill -TERM $c; sleep 1
+    alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
+    sleep 6
+    echo "state once the download ended by itself: $(ask state $f/slow.txt)"
     echo "-- the daemon killed and started again"
     kill -KILL $svc; wait $svc 2> /dev/null; exec 8>&-
     echo "killed: $($U ls $f 2>&1)"
