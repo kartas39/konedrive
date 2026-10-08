@@ -344,9 +344,33 @@ pub fn serve(folder: &Path, store: TreeStore, source: Arc<dyn ContentSource>, ru
                 }
             }
         });
+        // Graph's notification socket asks for a cycle at once; the poll stays as the safety
+        // net. A socket that ends is opened again after a pause.
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let (heard, drive) = (wake.clone(), follow.drive.clone());
         runtime.spawn(async move {
             loop {
-                tokio::time::sleep(follow.every).await;
+                let listened: Result<(), String> = async {
+                    let endpoint = drive.socket_endpoint().await.map_err(|e| e.to_string())?;
+                    let mut socket = konedrive_graph::drive::socket::NotificationSocket::connect(&endpoint.notification_url).await.map_err(|e| format!("{e:?}"))?;
+                    eprintln!("konedrive-fuse: listening to OneDrive's notifications");
+                    loop {
+                        socket.notification().await.map_err(|e| format!("{e:?}"))?;
+                        heard.notify_one();
+                    }
+                }
+                .await;
+                eprintln!("konedrive-fuse: the notification socket ended: {}", listened.unwrap_err());
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                heard.notify_one();
+            }
+        });
+        runtime.spawn(async move {
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(follow.every) => {}
+                    () = wake.notified() => {}
+                }
                 match cloud::sync_once(&follow.drive, &store, &under_path).await {
                     Ok(steps) if steps.is_empty() => {}
                     Ok(steps) => {

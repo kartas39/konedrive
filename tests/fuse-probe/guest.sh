@@ -383,7 +383,7 @@ graph() {
     for _ in $(seq 50); do url=$(awk '$1=="url"{print $2}' $W/logs/cloud.out); [ -n "$url" ] && break; sleep 0.1; done
     say file A R a.txt $src/a; say file G R gone.txt $src/gone; say file K R keep.txt $src/keep
     say folder D R docs; say file B D b.txt $src/b; say file X D big.bin $src/big
-    $U "$k" mount $f $st --graph "$url" --token-file $W/state2/token --poll-secs 1 2> $W/logs/graph.err &
+    $U "$k" mount $f $st --graph "$url" --token-file $W/state2/token --poll-secs 60 2> $W/logs/graph.err &
     p=$!
     for _ in $(seq 100); do mounted $f && break; sleep 0.1; done
     mounted $f || { echo "MOUNT FAILED: $(cat $W/logs/graph.err)"; return; }
