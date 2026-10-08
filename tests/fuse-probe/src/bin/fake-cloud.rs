@@ -1,7 +1,7 @@
 //! The daemon's fake OneDrive as a process. It prints `url <Graph's root>` and then takes one
 //! command a line on its input:
 //! `file <id> <parent> <name> <path>` (content from a local file), `folder <id> <parent> <name>`,
-//! `edit <id> <path>`, `rename <id> <parent> <name>`, `trash <id>`. The root's id is `R`.
+//! `edit <id> <path>`, `rename <id> <parent> <name>`, `trash <id>`, `delay <method> <path fragment> <ms> <times>`. The root's id is `R`.
 
 use konedrived::fake_onedrive::{FakeGraph, FakeItem};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -30,6 +30,9 @@ async fn main() {
             ["edit", id, path] => cloud.edit(id, &std::fs::read(path).unwrap()),
             ["rename", id, parent, name] => cloud.rename(id, parent, name),
             ["trash", id] => cloud.trash(id),
+            ["delay", method, fragment, ms, times] => {
+                cloud.delay(method, fragment, std::time::Duration::from_millis(ms.parse().unwrap()), times.parse().unwrap())
+            }
             _ => eprintln!("fake-cloud: not a command: {line}"),
         });
         println!("done {line}");

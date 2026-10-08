@@ -101,7 +101,7 @@ struct Shared {
     nodes: Mutex<Nodes>,
     source: Arc<dyn ContentSource>,
     /// The downloads in progress, by item, and the opens that wait for each.
-    fills: Mutex<HashMap<String, Vec<ReplyOpen>>>,
+    fills: Mutex<HashMap<String, Vec<(u64, ReplyOpen)>>>,
     /// The items that carry a pin of their own, as the store has them.
     pins: Mutex<HashSet<String>>,
     /// To the thread that announces changes through the mount, once it runs.
@@ -192,7 +192,7 @@ impl Shared {
 
     /// Downloads `row` to `rel` unless a download of it runs already; `waiter` is an open that
     /// is answered when the download ends, however it ends.
-    fn ensure(self: &Arc<Self>, row: Row, rel: PathBuf, waiter: Option<ReplyOpen>) {
+    fn ensure(self: &Arc<Self>, row: Row, rel: PathBuf, waiter: Option<(u64, ReplyOpen)>) {
         {
             let mut fills = self.fills.lock().unwrap();
             if let Some(waiting) = fills.get_mut(&row.id) {
@@ -207,7 +207,7 @@ impl Shared {
                 eprintln!("konedrive-fuse: {} was not downloaded: {e}", rel.display());
             }
             let waiting = s.fills.lock().unwrap().remove(&row.id).unwrap_or_default();
-            for reply in waiting {
+            for (_, reply) in waiting {
                 match filled.as_ref().map_err(errno).and_then(|()| s.open_downloaded(&rel).map_err(|e| errno(&e))) {
                     Ok(fd) => reply.opened(FileHandle(fd as u64), FopenFlags::FOPEN_KEEP_CACHE),
                     Err(e) => reply.error(e),
@@ -599,7 +599,18 @@ impl Filesystem for ReadOnlyFs {
         }
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+    /// The program behind a waiting open was interrupted or killed: that open is answered now.
+    /// The download goes on for whoever else waits, and for the next open.
+    fn interrupt(&self, _req: &Request, unique: fuser::RequestId) {
+        let mut fills = self.shared.fills.lock().unwrap();
+        for waiting in fills.values_mut() {
+            if let Some(at) = waiting.iter().position(|(u, _)| *u == unique.0) {
+                return waiting.swap_remove(at).1.error(Errno::EINTR);
+            }
+        }
+    }
+
+    fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let s = self.shared.clone();
         if flags.0 & libc::O_ACCMODE != libc::O_RDONLY || flags.0 & libc::O_TRUNC != 0 {
             return reply.error(Errno::EROFS);
@@ -614,7 +625,7 @@ impl Filesystem for ReadOnlyFs {
             };
         }
         // Not downloaded: one download per item, and every open of it waits for that one.
-        s.ensure(row, rel, Some(reply));
+        s.ensure(row, rel, Some((req.unique().0, reply)));
     }
 
     fn read(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, size: u32, _flags: OpenFlags, _lock_owner: Option<LockOwner>, reply: ReplyData) {

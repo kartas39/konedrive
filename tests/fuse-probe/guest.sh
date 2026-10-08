@@ -403,6 +403,24 @@ graph() {
     echo "listing: $($U ls $f | tr '\n' ' ')"
     echo "state of a.txt after the change: $(state $f/a.txt); a.txt: $($U cat $f/a.txt)"
     echo "state of moved.txt: $(state $f/moved.txt); moved.txt: $($U cat $f/moved.txt); new.txt: $($U cat $f/new.txt)"
+    echo "-- a waiting open, interrupted"
+    echo "slow to arrive" > $src/slow; chown 1000:1000 $src/slow
+    say file S R slow.txt $src/slow; sleep 2
+    say delay GET dl/S 8000 1
+    $U cat $f/slow.txt > /dev/null 2> $W/logs/slow.err &
+    c=$!
+    sleep 1
+    alive $c && echo "the opener waits for the download" || echo "the opener did not wait"
+    # Not SIGINT: a background command of a script ignores it.
+    kill -TERM $c
+    sleep 1
+    alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
+    kill -KILL $c 2> /dev/null
+    sleep 1
+    alive $c && echo "1 s after SIGKILL: still waiting" || echo "after SIGKILL: gone"
+    echo "state right after: $(state $f/slow.txt)"
+    sleep 8
+    echo "state once the download ended by itself: $(state $f/slow.txt)"
     echo "-- free up and pin"
     ctl() { $U "$k" ctl $W/state2/ctl "$@" 2>&1 | head -1; }
     states() { for n in "$@"; do printf '%s=%s/%s ' "$n" "$(state $f/$n)" "$($U stat -c %b $f/$n)"; done; echo; }
