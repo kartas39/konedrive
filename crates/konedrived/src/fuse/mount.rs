@@ -58,6 +58,9 @@ impl Mount {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             clear_stale(&root.path);
+            if super::older::left_by_an_older(&root.path) {
+                return Err(super::older::refusal(&root.path));
+            }
             // `fusermount3` mounts only where its user may write; the folder was locked when the
             // daemon last ended.
             {

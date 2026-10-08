@@ -49,7 +49,7 @@ fn in_dir_places_every_file_in_the_directory() {
     let paths = Paths::in_dir(Path::new("/tmp/x"));
     assert_eq!(paths.config_file, Path::new("/tmp/x/config.toml"));
     assert_eq!(paths.account_cache, Path::new("/tmp/x/account.json"));
-    assert_eq!(paths.tree_db, Path::new("/tmp/x/tree.sqlite"));
+    assert_eq!(paths.tree_db, Path::new("/tmp/x/fuse.sqlite"));
     assert_eq!(paths.rescue_dir, Path::new("/tmp/x/rescued"));
     assert_eq!(paths.thumbnails, Path::new("/tmp/x/thumbnails"));
 }
@@ -64,7 +64,7 @@ fn each_account_has_its_own_files() {
         Some(AccountPaths {
             dir: "/tmp/x/accounts/3f9a1c0e5b7d".into(),
             account_cache: "/tmp/x/accounts/3f9a1c0e5b7d/account.json".into(),
-            tree_db: "/tmp/x/accounts/3f9a1c0e5b7d/tree.sqlite".into(),
+            tree_db: "/tmp/x/accounts/3f9a1c0e5b7d/fuse.sqlite".into(),
             rescue_dir: "/tmp/x/rescued/3f9a1c0e5b7d".into(),
         })
     );

@@ -35,6 +35,10 @@ pub struct AccountPaths {
     pub rescue_dir: PathBuf,
 }
 
+/// The tree store's file. Not the name an older konedrive kept its store under: that one
+/// described a folder of placeholders, and is never read.
+pub const TREE_DB: &str = "fuse.sqlite";
+
 impl Paths {
     /// Standard XDG locations for the current user.
     pub fn from_xdg() -> anyhow::Result<Self> {
@@ -46,7 +50,7 @@ impl Paths {
         Ok(Self {
             config_file: config.join("konedrive").join("config.toml"),
             account_cache: state.join("account.json"),
-            tree_db: state.join("tree.sqlite"),
+            tree_db: state.join(TREE_DB),
             state_dir: state,
             rescue_dir: data.join("konedrive").join("rescued"),
             thumbnails: cache.join("thumbnails"),
@@ -59,7 +63,7 @@ impl Paths {
             config_file: dir.join("config.toml"),
             state_dir: dir.to_owned(),
             account_cache: dir.join("account.json"),
-            tree_db: dir.join("tree.sqlite"),
+            tree_db: dir.join(TREE_DB),
             rescue_dir: dir.join("rescued"),
             thumbnails: dir.join("thumbnails"),
         }
@@ -75,7 +79,7 @@ impl Paths {
         let dir = self.state_dir.join("accounts").join(id.as_str());
         Some(AccountPaths {
             account_cache: dir.join("account.json"),
-            tree_db: dir.join("tree.sqlite"),
+            tree_db: dir.join(TREE_DB),
             dir,
             rescue_dir: self.rescue_dir.join(id.as_str()),
         })
