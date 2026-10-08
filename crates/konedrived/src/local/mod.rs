@@ -29,6 +29,7 @@ pub mod handles;
 mod ignore;
 pub mod liveness;
 pub mod names;
+pub mod record;
 pub mod scan;
 #[cfg(test)]
 pub(crate) mod testing;

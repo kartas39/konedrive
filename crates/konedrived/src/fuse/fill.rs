@@ -120,6 +120,8 @@ impl Shared {
             let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
             download_staged(&file, &row.id, row.size, &marked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
+            // The directories down to its place, each marked as its item's.
+            self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
             let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under(rel), Arc::clone(&file));
             // The file's own steps wait for the disk: not on the runtime's threads.
             tokio::task::spawn_blocking(move || {
@@ -132,9 +134,6 @@ impl Shared {
                     file.set_permissions(fs::Permissions::from_mode(0o444))?;
                 }
                 file.sync_all()?;
-                if let Some(dir) = target.parent() {
-                    fs::create_dir_all(dir)?;
-                }
                 // What stands at the item's place and carries no item's id is the user's own
                 // file, put there while nothing was mounted: it is never replaced. A copy of
                 // another item left there can be downloaded again, and goes.

@@ -1,7 +1,6 @@
 //! What every part of a mount works on: the folder under it, the store, and what is under way.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,9 +8,9 @@ use std::sync::atomic::{AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fuser::{Errno, INodeNo};
+use fuser::Errno;
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{Kind, Placement, Row, Store, Table, TreeStore};
+use konedrive_tree::{Kind, Row, Store, Table, TreeStore};
 
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{ContentSource, Share};
@@ -20,6 +19,9 @@ use crate::status::report::Report;
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
+use super::outbox::Waiting;
+use super::recorder::Job;
+use super::writers::Written;
 use super::read::{Handle, Reader};
 
 pub(super) struct Shared {
@@ -69,7 +71,30 @@ pub(super) struct Shared {
     pub(super) pending: Mutex<(Vec<Announce>, Vec<String>)>,
     /// The mount is being taken off: the announcer says nothing more through it.
     pub(super) stopping: std::sync::atomic::AtomicBool,
+    /// Whether programs may change the folder ([`super::mode`]).
+    pub(super) writable: std::sync::atomic::AtomicBool,
+    /// What a folder that takes changes shares with its sync.
+    pub(super) writing: Writing,
+    /// Wakes the outbox's worker: set while a sync that uploads runs.
+    pub(super) wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// The way to the recorder's thread ([`super::recorder`]).
+    pub(super) jobs: Mutex<Option<mpsc::Sender<Job>>>,
+    /// The files programs hold open for writing, by node ([`super::writers`]).
+    pub(super) writers: Mutex<HashMap<u64, Written>>,
+    /// What the outbox's rows say of the folder, as last read ([`super::outbox`]).
+    pub(super) waiting: Mutex<Arc<Waiting>>,
     pub(super) runtime: tokio::runtime::Handle,
+}
+
+/// What a folder that takes changes shares with its sync.
+pub struct Writing {
+    /// The folder's tree lock: a change is recorded under it, as a cycle of the listing
+    /// holds it from staging to its swap.
+    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The account's ignore list: what stays on this computer only.
+    pub ignore: crate::local::SharedIgnore,
+    /// For conflict copies: `name-<machine>.ext`.
+    pub machine_name: String,
 }
 
 pub(super) fn errno(e: &io::Error) -> Errno {
@@ -94,29 +119,8 @@ impl Shared {
         ask(&crate::panic::lock(&self.reader)).ok()
     }
 
-    pub(super) fn id(&self, ino: INodeNo) -> Option<String> {
-        if ino.0 == 1 {
-            return self.read(|s| s.root_item_id()).flatten();
-        }
-        crate::panic::lock(&self.nodes).items.get(&ino.0).map(|n| n.id.clone())
-    }
-
     pub(super) fn row(&self, id: &str) -> Option<Row> {
         self.read(|s| s.get(Table::Items, id)).flatten()
-    }
-
-    pub(super) fn rel_of_ino(&self, ino: u64) -> Option<PathBuf> {
-        crate::panic::lock(&self.nodes).rel(ino)
-    }
-
-    pub(super) fn children(&self, id: &str) -> Vec<Row> {
-        let rows = self.read(|s| s.children(Table::Items, id)).unwrap_or_default();
-        rows.into_iter().filter(|r| r.placement == Placement::Placed).collect()
-    }
-
-    pub(super) fn child(&self, parent: INodeNo, name: &OsStr) -> Option<Row> {
-        let (dir, name) = self.id(parent).zip(name.to_str())?;
-        self.read(|s| s.child(Table::Items, &dir, name)).flatten().filter(|r| r.placement == Placement::Placed)
     }
 
     /// The path a download is shown under: the file's place in the folder.
@@ -124,29 +128,19 @@ impl Shared {
         self.root.path.join(rel).display().to_string()
     }
 
-    /// The row at `rel`, name by name from the root.
-    pub(super) fn resolve(&self, rel: &Path) -> Option<Row> {
-        let store = crate::panic::lock(&self.reader);
-        let mut row = store.get(Table::Items, &store.root_item_id().ok()??).ok()??;
-        for name in rel.components() {
-            row = store.child(Table::Items, &row.id, name.as_os_str().to_str()?).ok()??;
-            if row.placement != Placement::Placed {
-                return None;
-            }
-        }
-        Some(row)
-    }
-
     /// The files at and below `row`, each with its place in the folder.
     pub(super) fn files_below(&self, row: &Row) -> Vec<(Row, PathBuf)> {
-        let store = crate::panic::lock(&self.reader);
-        let mut ids = store.descendants(Table::Items, &row.id).unwrap_or_default();
-        ids.push(row.id.clone());
-        let file = |id: &String| {
-            let row = store.get(Table::Items, id).ok().flatten().filter(|r| r.kind == Kind::File)?;
-            let at = store.locate(Table::Items, id).ok().flatten().filter(|at| at.placed)?;
-            Some((row, at.rel))
+        let files: Vec<Row> = {
+            let store = crate::panic::lock(&self.reader);
+            let mut ids = store.descendants(Table::Items, &row.id).unwrap_or_default();
+            ids.push(row.id.clone());
+            ids.iter().filter_map(|id| store.get(Table::Items, id).ok().flatten().filter(|r| r.kind == Kind::File)).collect()
         };
-        ids.iter().filter_map(file).collect()
+        files.into_iter().filter_map(|file| self.place(&file.id).map(|at| (file, at))).collect()
+    }
+
+    /// The time the outbox's rows are dated by.
+    pub(super) fn now(&self) -> i64 {
+        crate::clock::unix_now()
     }
 }

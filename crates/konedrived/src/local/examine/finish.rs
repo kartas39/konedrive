@@ -1,13 +1,14 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::local::entry::Type;
 use crate::local::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
 use std::path::{Path, PathBuf};
 
-use konedrive_tree::outbox::{Detection, LocalSkip, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
+use konedrive_tree::outbox::{LocalSkip, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Kind, TreeError};
 
 use super::{depth, Examined, ExamineError, Run};
+use crate::local::record::ordered;
 use crate::folder::disk::daemon_owned;
 
 impl Run<'_, '_, '_> {
@@ -158,71 +159,4 @@ impl Run<'_, '_, '_> {
         self.outcome.out.applied = applied?;
         Ok(self.outcome.out)
     }
-}
-
-/// Whether a detection takes its item away from its base place.
-fn moves_away(d: &Detection) -> bool {
-    matches!(d.kind, OutboxKind::Move | OutboxKind::Update)
-        && d.base.as_ref().is_some_and(|b| (b.parent.as_deref(), b.name.as_deref()) != (d.target_parent.as_deref(), d.target_name.as_deref()))
-}
-
-/// The OneDrive (parent, name) a detection frees and takes, compared
-/// without case as OneDrive does.
-fn frees(d: &Detection) -> Option<(String, String)> {
-    if !(d.kind.removes() || moves_away(d)) {
-        return None;
-    }
-    let base = d.base.as_ref()?;
-    Some((base.parent.clone()?, base.name.as_ref()?.to_lowercase()))
-}
-
-fn takes(d: &Detection) -> Option<(String, String)> {
-    if !(matches!(d.kind, OutboxKind::Mkdir | OutboxKind::Create) || moves_away(d)) {
-        return None;
-    }
-    Some((d.target_parent.clone()?, d.target_name.as_ref()?.to_lowercase()))
-}
-
-/// A batch's detections in the order their rows are written: every row that
-/// frees a name before a row that takes it, otherwise shallowest first and
-/// in the order found. A cycle (a swap) is broken at its first row.
-fn ordered(detections: Vec<Detection>) -> Vec<Detection> {
-    let n = detections.len();
-    let mut freeing: HashMap<(String, String), Vec<usize>> = HashMap::new();
-    for (i, d) in detections.iter().enumerate() {
-        if let Some(key) = frees(d) {
-            freeing.entry(key).or_default().push(i);
-        }
-    }
-    let mut after: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut before = vec![0usize; n];
-    for (t, d) in detections.iter().enumerate() {
-        for &f in takes(d).and_then(|key| freeing.get(&key)).map(Vec::as_slice).unwrap_or_default() {
-            if f != t {
-                after[f].push(t);
-                before[t] += 1;
-            }
-        }
-    }
-    let priority = |i: usize| (depth(&detections[i].rel), i);
-    let mut ready: BTreeSet<(usize, usize)> = (0..n).filter(|&i| before[i] == 0).map(priority).collect();
-    let mut done = vec![false; n];
-    let mut order = Vec::with_capacity(n);
-    while order.len() < n {
-        let next = match ready.pop_first() {
-            Some((_, i)) if done[i] => continue,
-            Some((_, i)) => i,
-            None => (0..n).filter(|&i| !done[i]).min_by_key(|&i| priority(i)).expect("a row is left"),
-        };
-        done[next] = true;
-        order.push(next);
-        for &t in &after[next] {
-            before[t] = before[t].saturating_sub(1);
-            if before[t] == 0 && !done[t] {
-                ready.insert(priority(t));
-            }
-        }
-    }
-    let mut slots: Vec<Option<Detection>> = detections.into_iter().map(Some).collect();
-    order.into_iter().map(|i| slots[i].take().expect("each row once")).collect()
 }

@@ -5,7 +5,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fuser::INodeNo;
 use konedrive_fs::placeholder::State;
 use konedrive_graph::pool::Class;
 use konedrive_tree::{Kind, Row, Table};
@@ -13,6 +12,7 @@ use tokio::sync::oneshot;
 
 use super::announce::Announce;
 use super::copies::remove_copy;
+use super::local::Entry;
 use super::mount::Mount;
 
 /// What a free-up did.
@@ -54,8 +54,11 @@ impl Mount {
 
     pub(super) fn item(&self, path: &Path) -> Result<(Row, PathBuf), Refused> {
         let rel = self.rel(path)?;
-        let row = self.shared.resolve(&rel).ok_or(Refused::NotOurs)?;
-        Ok((row, rel))
+        // What has no item yet is not OneDrive's to download, free or pin.
+        match self.shared.resolve(&rel) {
+            Some(Entry::Item(row)) => Ok((row, rel)),
+            _ => Err(Refused::NotOurs),
+        }
     }
 
     /// Downloads the file at `path` now, and waits for it.
@@ -86,7 +89,7 @@ impl Mount {
 
     /// Frees the space of every downloaded file that no pin keeps.
     pub async fn free_up_all(&self) -> Freed {
-        let Some(root) = self.shared.id(INodeNo(1)).and_then(|id| self.shared.row(&id)) else { return Freed::default() };
+        let Some(root) = self.shared.read(|s| s.root_item_id()).flatten().and_then(|id| self.shared.row(&id)) else { return Freed::default() };
         self.free_below(root).await
     }
 

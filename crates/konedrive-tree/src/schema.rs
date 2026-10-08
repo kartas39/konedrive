@@ -225,6 +225,12 @@ impl TreeStore {
         Ok(Self { conn, path: None, whole: false, changes: Default::default() })
     }
 
+    /// A number that changes whenever another connection commits to the store: what a
+    /// reader keeps of the store is good for as long as it is the same.
+    pub fn data_version(&self) -> Result<i64, TreeError> {
+        Ok(self.conn.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+    }
+
     /// Brings what `conn` holds to [`SCHEMA_VERSION`]: a store with no
     /// table at all gets the schema, an older one its migrations, each in a
     /// transaction of its own. A store with tables and no `meta` (a crash

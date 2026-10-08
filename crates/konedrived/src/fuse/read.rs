@@ -11,11 +11,14 @@ use konedrive_tree::Row;
 
 use super::shared::Shared;
 
-/// What a program holds open: the item, and its downloaded copy once there is one.
+/// What a program holds open: the node, its item when it has one, the file in the folder
+/// under the mount once there is one, and whether the handle may write it.
 pub(super) struct Handle {
-    pub(super) id: String,
+    pub(super) ino: u64,
+    pub(super) id: Option<String>,
     pub(super) rel: PathBuf,
     pub(super) copy: Option<Arc<File>>,
+    pub(super) writes: bool,
 }
 
 /// A file being read as ranges: the pool's slot held for it, how many of its reads wait for

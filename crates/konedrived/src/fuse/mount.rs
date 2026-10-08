@@ -21,7 +21,7 @@ use super::fill::{Waiter, OLD_STAGING};
 use super::lock::{clear_stale, set_tree};
 use super::nodes::Nodes;
 use super::requests::Requests;
-use super::shared::{other, Shared};
+use super::shared::{other, Shared, Writing};
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
@@ -45,13 +45,15 @@ pub struct Parts {
     pub parts: Arc<Share>,
     /// `[transfers] download_after`: see [`Shared::download_after`].
     pub download_after: u64,
+    /// What the folder shares with its sync when it takes changes.
+    pub writing: Writing,
 }
 
 impl Mount {
     /// Mounts over `parts.root` and serves it. The folder on disk must carry its root id
     /// already: after this its path is the mount.
     pub async fn start(parts: Parts) -> io::Result<Arc<Mount>> {
-        let Parts { root, store_path, store, source, report, pool, parts, download_after } = parts;
+        let Parts { root, store_path, store, source, report, pool, parts, download_after, writing } = parts;
         let pins: HashSet<String> = store.call(|s| s.pins()).await.map_err(other)?.into_iter().collect();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
@@ -91,6 +93,12 @@ impl Mount {
                 tell: Mutex::new(None),
                 pending: Mutex::default(),
                 stopping: std::sync::atomic::AtomicBool::new(false),
+                writable: std::sync::atomic::AtomicBool::new(false),
+                writing,
+                wake: Mutex::new(None),
+                jobs: Mutex::new(None),
+                writers: Mutex::default(),
+                waiting: Mutex::default(),
                 runtime,
             });
             let mut config = Config::default();
@@ -104,6 +112,12 @@ impl Mount {
             config.clone_fd = true;
             let session = fuser::Session::new(Requests(Arc::clone(&shared)), &root.path, &config)?;
             let notifier = session.notifier();
+            // From here on the daemon opens the folder by this descriptor: its path is the mount.
+            crate::folder::root::mounted_over(&root.path, Arc::new(shared.folder.try_clone()?));
+            let (jobs, queued) = mpsc::channel();
+            *crate::panic::lock(&shared.jobs) = Some(jobs);
+            let recording = Arc::clone(&shared);
+            std::thread::Builder::new().name("konedrive-record".into()).spawn(move || super::recorder::run(&recording, queued))?;
             let (tell, told) = mpsc::channel::<Vec<Announce>>();
             *crate::panic::lock(&shared.tell) = Some(tell);
             let session = match session.spawn() {
@@ -137,6 +151,8 @@ impl Mount {
         let s = &self.shared;
         s.stopping.store(true, Ordering::SeqCst);
         *crate::panic::lock(&s.tell) = None;
+        // The recorder ends with the last change it was given; what comes later is refused.
+        *crate::panic::lock(&s.jobs) = None;
         if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
             let _ = announcer.join();
         }
@@ -151,6 +167,7 @@ impl Mount {
             let folder = s.root.path.clone();
             std::thread::spawn(move || {
                 let _ = session.umount_and_join();
+                crate::folder::root::mount_gone(&folder);
                 set_tree(&folder, true);
             });
             return;
@@ -158,6 +175,7 @@ impl Mount {
         if let Err(e) = session.umount_and_join() {
             tracing::warn!("taking the mount off {}: {e}", s.root.path.display());
         }
+        crate::folder::root::mount_gone(&s.root.path);
         // A plain directory again: locked, so that nothing is put into it by mistake.
         set_tree(&s.root.path, true);
     }

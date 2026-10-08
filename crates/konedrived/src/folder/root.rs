@@ -3,6 +3,7 @@ use std::io;
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use konedrive_fs::placeholder::{self, read_state, State, StateError, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE};
 use konedrive_fs::probe::{probe_dir, ProbeError};
@@ -35,6 +36,22 @@ pub enum OpenError {
 
 fn io_error(e: impl std::fmt::Display) -> OpenError {
     OpenError::Io(e.to_string())
+}
+
+/// The folders a mount lies over, each with the descriptor opened on it before the mount.
+static UNDER: Mutex<Vec<(PathBuf, Arc<File>)>> = Mutex::new(Vec::new());
+
+/// From now on the folder at `path` is opened through `folder` ([`SyncRoot::open_registered`]):
+/// a mount lies over its path.
+pub(crate) fn mounted_over(path: &Path, folder: Arc<File>) {
+    let mut under = crate::panic::lock(&UNDER);
+    under.retain(|(at, _)| at != path);
+    under.push((path.to_path_buf(), folder));
+}
+
+/// The mount over `path` is gone: the folder is opened by its path again.
+pub(crate) fn mount_gone(path: &Path) {
+    crate::panic::lock(&UNDER).retain(|(at, _)| at != path);
 }
 
 #[derive(Debug, Clone)]
@@ -655,7 +672,13 @@ impl SyncRoot {
     /// somewhere else entirely.
     pub(crate) fn open_registered(&self) -> io::Result<Option<File>> {
         let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let dir = nix::fcntl::open(&self.path, flags, Mode::empty()).map(File::from)?;
+        // A folder a mount lies over is reached through the descriptor opened before the
+        // mount: its path is the mount.
+        let under = crate::panic::lock(&UNDER).iter().find(|(path, _)| *path == self.path).map(|(_, folder)| Arc::clone(folder));
+        let dir = match under {
+            Some(folder) => nix::fcntl::open(&proc_path(&*folder), flags.difference(OFlag::O_NOFOLLOW), Mode::empty()).map(File::from)?,
+            None => nix::fcntl::open(&self.path, flags, Mode::empty()).map(File::from)?,
+        };
         match dir.get_xattr(XATTR_ROOT)? {
             Some(id) if id == self.root_id.as_bytes() => Ok(Some(dir)),
             _ => Ok(None),

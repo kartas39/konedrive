@@ -144,6 +144,7 @@ impl SyncService {
                 pool: Arc::clone(&self.pool),
                 parts: Arc::clone(&self.parts),
                 download_after: self.wiring.transfers.download_after,
+                writing: crate::fuse::Writing { tree_lock: Arc::clone(&tree_lock), ignore: Arc::clone(&self.ignore), machine_name: self.machine_name() },
             };
             let mount = crate::fuse::Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
             if let Some(record) = stopped.folder_mut().record_mut() {
