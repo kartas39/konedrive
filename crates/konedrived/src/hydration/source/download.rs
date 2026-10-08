@@ -27,7 +27,8 @@ use tokio::io::AsyncReadExt;
 
 use super::guards::{check_answer, errno_of, open, resume, same_version, verify, Breaks, End, StartOver, Tuning, BUFFER};
 use super::target::Target;
-use super::{ContentSource, Version};
+use super::{ContentSource, Split, Version};
+use crate::hydration::demote::{drop_checkpoint, usable_checkpoint};
 
 /// What a download produced, before any of it is committed.
 pub(crate) struct Downloaded {
@@ -49,6 +50,40 @@ pub(crate) async fn download_into(file: &File, item_id: &str, source: &dyn Conte
 
 /// Streams the file's bytes into `target`, from `resume` if there is one, and checks them:
 /// what to commit, or the errno to answer with (`guards::End::Fail`).
+/// A download into a staging file, which becomes the item's copy once it is whole: a folder
+/// served through FUSE (`crate::fuse`) has no placeholder to fill in place. The file may hold
+/// the start of an earlier download of the item, with its checkpoint: that one is continued
+/// when it is of the same version, as a fill in place continues its own. `size` is the item's
+/// size as the folder's tree has it; `split`, for a large file that nothing waits to open,
+/// downloads it in parallel parts.
+pub(crate) async fn download_staged(file: &File, item_id: &str, size: u64, source: &dyn ContentSource, split: Option<&Split>) -> Result<Downloaded, i32> {
+    let target = Target::new(file.try_clone().map_err(|e| errno_of(&e))?);
+    let tuning = Tuning::default();
+    let resume = target
+        .alone(move |file| {
+            let resume = usable_checkpoint(file, size);
+            if resume.is_none() {
+                // Nothing to continue from: what the file holds is written over from zero.
+                let _ = drop_checkpoint(file);
+            }
+            resume
+        })
+        .await;
+    let downloaded = match split {
+        Some(split) => super::parts::download(&target, item_id, size, source, resume, split, &tuning).await?,
+        None => download(&target, item_id, size, source, resume, &tuning).await?,
+    };
+    let whole = downloaded.size;
+    target
+        .alone(move |file| {
+            file.set_len(whole)?;
+            drop_checkpoint(file).map(|_| ())
+        })
+        .await
+        .map_err(|e| errno_of(&e))?;
+    Ok(downloaded)
+}
+
 pub(super) async fn download(
     target: &Target,
     item_id: &str,

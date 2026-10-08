@@ -474,6 +474,7 @@ dependencies = [
  "konedrived",
  "libc",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

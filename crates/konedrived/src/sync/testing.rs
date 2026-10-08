@@ -65,6 +65,12 @@ impl SyncService {
 /// The tree store of the folder that is up, for a test that seeds a row only the
 /// worker or the mass-delete guard would write (a blocked row, a held one): what the
 /// readers of the bus read. `None` before the folder's first sync start.
+/// The downloads that never ended in a folder served through FUSE: each one's size on disk
+/// and its checkpoint.
+pub fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
+    service.mount().map(|mount| mount.staged()).unwrap_or_default()
+}
+
 pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
     service.tree_store()
 }

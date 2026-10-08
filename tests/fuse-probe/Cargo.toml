@@ -14,6 +14,8 @@ libc = "0.2"
 # The fake OneDrive of the daemon's tests, as a process the stage 1 tests talk to.
 konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std"] }
+# A scripted answer of the fake OneDrive: a download cut short.
+wiremock = "0.6"
 
 # konedrived needs fuser with FUSE_INTERRUPT handed on (vendor/fuser/README.konedrive.md).
 [patch.crates-io]

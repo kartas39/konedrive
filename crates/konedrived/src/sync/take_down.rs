@@ -145,7 +145,7 @@ impl SyncService {
         // downloaded files alone.
         if let Some(mount) = kept.fuse.take() {
             self.report.space.measure_at(None);
-            let _ = tokio::task::spawn_blocking(move || mount.stop()).await;
+            let _ = tokio::task::spawn_blocking(move || mount.forget()).await;
         }
         let closing = kept.store.map(konedrive_tree::Store::close);
         if retire {

@@ -36,7 +36,7 @@ use konedrive_tree::{Kind, Placement, Row, Store, Table, TreeStore};
 use tokio::sync::oneshot;
 
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::{download_into, ContentSource};
+use crate::hydration::source::{download_staged, ContentSource, Share, Split};
 use crate::hydration::tracked::Tracked;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
@@ -167,6 +167,8 @@ struct Shared {
     source: Arc<dyn ContentSource>,
     report: Report,
     pool: Arc<TransferPool>,
+    /// What the daemon's large downloads in parts share.
+    parts: Arc<Share>,
     /// The downloads in progress, by item, and who waits for each.
     fills: Mutex<HashMap<String, Vec<Waiter>>>,
     /// The items that carry a pin of their own, as the store has them.
@@ -322,14 +324,19 @@ impl Shared {
             row.id.bytes().for_each(|b| hash = (hash ^ b as u64).wrapping_mul(0x100000001b3));
             hash
         }));
-        let file = File::options().read(true).write(true).create(true).truncate(true).open(&name).map_err(io_errno)?;
+        // Not emptied: what an earlier download of the item left there is continued from its
+        // checkpoint when it is of the same version.
+        let file = File::options().read(true).write(true).create(true).truncate(false).open(&name).map_err(io_errno)?;
         let shown = self.shown(rel);
         let tracked = match class {
             Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), shown),
             _ => Tracked::new(Arc::clone(&self.source), self.report.transfers.clone(), shown),
         };
         let done = async {
-            download_into(&file, &row.id, &tracked).await?;
+            // A large file that nothing waits to open (a pinned one) goes in parallel parts, the
+            // slot held here being its first stream's.
+            let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
+            download_staged(&file, &row.id, row.size, &tracked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
             let (id, mtime, target, staged) = (row.id.clone(), row.mtime, self.under(rel), name.clone());
             // The file's own steps wait for the disk: not on the runtime's threads.
@@ -356,11 +363,9 @@ impl Shared {
         }
         .await;
         drop(tracked);
-        match done {
-            Ok(_) => slot.succeeded(),
-            Err(_) => {
-                let _ = fs::remove_file(&name);
-            }
+        // A download that failed keeps what it has: the next one continues from its checkpoint.
+        if done.is_ok() {
+            slot.succeeded();
         }
         done
     }
@@ -501,6 +506,7 @@ pub struct Parts {
     pub source: Arc<dyn ContentSource>,
     pub report: Report,
     pub pool: Arc<TransferPool>,
+    pub parts: Arc<Share>,
 }
 
 /// Takes off a mount a daemon that died left on `folder`: every path in it then fails with
@@ -518,15 +524,20 @@ impl Mount {
     /// Mounts over `parts.root` and serves it. The folder on disk must carry its root id
     /// already: after this its path is the mount.
     pub async fn start(parts: Parts) -> io::Result<Arc<Mount>> {
-        let Parts { root, store_path, store, source, report, pool } = parts;
+        let Parts { root, store_path, store, source, report, pool, parts } = parts;
         let pins: HashSet<String> = store.call(|s| s.pins()).await.map_err(other)?.into_iter().collect();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             clear_stale(&root.path);
             // Before the mount: afterwards this path is the mount.
             let folder = File::open(&root.path)?;
-            // What a download that never ended left.
-            let _ = fs::remove_dir_all(konedrive_fs::proc_path(&folder).join(STAGING));
+            // What downloads that never ended left is kept for a week, to be continued from.
+            if let Ok(staged) = fs::read_dir(konedrive_fs::proc_path(&folder).join(STAGING)) {
+                let old = |e: &fs::DirEntry| e.metadata().and_then(|m| m.modified()).is_ok_and(|at| at.elapsed().is_ok_and(|age| age > Duration::from_secs(7 * 24 * 3600)));
+                staged.flatten().filter(old).for_each(|e| {
+                    let _ = fs::remove_file(e.path());
+                });
+            }
             let reader = TreeStore::open_read_only(&store_path).map_err(other)?;
             let shared = Arc::new(Shared {
                 root: root.clone(),
@@ -537,6 +548,7 @@ impl Mount {
                 source,
                 report,
                 pool,
+                parts,
                 fills: Mutex::default(),
                 pins: Mutex::new(pins),
                 announcer: AtomicI32::new(0),
@@ -604,8 +616,25 @@ impl Mount {
         if let Err(e) = session.umount_and_join() {
             tracing::warn!("taking the mount off {}: {e}", s.root.path.display());
         }
-        // What a download that was cut off left: the folder is the user's again.
-        let _ = fs::remove_dir_all(s.under(Path::new(STAGING)));
+    }
+
+    /// [`stop`](Self::stop), for a folder that is forgotten: what downloads that never ended
+    /// left goes too, and the folder is the user's again.
+    pub fn forget(&self) {
+        self.stop();
+        let _ = fs::remove_dir_all(self.shared.under(Path::new(STAGING)));
+    }
+
+    /// The downloads that never ended, as the folder under the mount holds them: each one's
+    /// size on disk and its checkpoint.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub fn staged(&self) -> Vec<(u64, Option<u64>)> {
+        let Ok(staged) = fs::read_dir(self.shared.under(Path::new(STAGING))) else { return Vec::new() };
+        let seen = |e: fs::DirEntry| {
+            let file = File::open(e.path()).ok()?;
+            Some((file.metadata().ok()?.len(), placeholder::read_progress(&file).ok().flatten().map(|p| p.bytes)))
+        };
+        staged.flatten().filter_map(seen).collect()
     }
 
     /// The folder under the mount, for what must not go through the mount: a walk of what is

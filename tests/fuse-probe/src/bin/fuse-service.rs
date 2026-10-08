@@ -6,7 +6,9 @@
 //! `edit <id> <path>`, `rename <id> <parent> <name>`, `trash <id>` (the root's id is `R`).
 //! The folder's: `register <path>`, `forget`, `refresh`, `hydrate <path>`, `dehydrate <path>`,
 //! `free-up <path>`, `free-up-space`, `pin <path>`, `unpin <path>`, `state <path>`,
-//! `menu <path>`, `status`, `activity`.
+//! `menu <path>`, `status`, `activity`, `staged` (the downloads that never ended), and for the
+//! cloud `cut <id> <bytes> <times>`, `delay <method> <fragment> <ms> <times>`,
+//! `count <method> <fragment>`.
 
 use std::path::{Path, PathBuf};
 
@@ -71,6 +73,16 @@ async fn main() {
                 graph.with(|cloud| cloud.delay(method, fragment, std::time::Duration::from_millis(ms.parse().unwrap()), times.parse().unwrap()));
                 String::new()
             }
+            // The next `times` downloads of `id` end after `bytes` bytes.
+            ["cut", id, bytes, times] => {
+                graph.with(|cloud| {
+                    let start = cloud.item(id).map(|item| item.content[..bytes.parse().unwrap()].to_vec()).unwrap_or_default();
+                    cloud.script("GET", &format!("dl/{id}"), wiremock::ResponseTemplate::new(200).set_body_bytes(start), times.parse().unwrap());
+                });
+                String::new()
+            }
+            ["count", method, fragment] => graph.with(|cloud| cloud.count(method, fragment)).to_string(),
+            ["staged"] => format!("{:?}", testing::staged(&service)),
             ["register", p] => said(service.register_root(&path(p)).await.map(|()| "registered".into()).map_err(|e| e.to_string())),
             ["forget"] => said(service.unregister_root().await.map(|()| "forgotten".into()).map_err(|e| e.to_string())),
             ["refresh"] => said(service.refresh().await.map(|()| "refreshed".into()).map_err(|e| e.to_string())),

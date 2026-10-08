@@ -384,6 +384,21 @@ service() {
     alive $c && echo "1 s after SIGTERM: still waiting" || echo "1 s after SIGTERM: gone"
     sleep 6
     echo "state once the download ended by itself: $(ask state $f/slow.txt)"
+    echo "-- a download cut off, and continued"
+    head -c 41943040 /dev/urandom > $src/large; chown 1000:1000 $src/large
+    ask file L R large.bin $src/large > /dev/null; ask refresh > /dev/null; sleep 1
+    ask cut L 20971520 6 > /dev/null
+    echo "first read: $($U cat $f/large.bin 2>&1 > /dev/null | sed 's/.*: //'); what it left (size, checkpoint): $(ask staged)"
+    echo "downloads asked of the cloud so far: $(ask count GET dl/L)"; ask cut L 0 0 > /dev/null
+    for _ in 1 2 3 4 5 6; do $U cat $f/large.bin > /dev/null 2>&1 && break; done
+    echo "a later read equal to the cloud's: $($U cmp $f/large.bin $src/large && echo yes); left: $(ask staged); downloads asked of the cloud: $(ask count GET dl/L)"
+    echo "-- a large pinned file, in parts"
+    head -c 314572800 /dev/urandom > $src/huge; chown 1000:1000 $src/huge
+    ask folder K R keep > /dev/null; ask file H K huge.bin $src/huge > /dev/null; ask refresh > /dev/null; sleep 1
+    echo "pin keep: $(ask pin $f/keep)"
+    for _ in $(seq 60); do [ "$(ask state $f/keep/huge.bin)" = hydrated ] && break; sleep 0.5; done
+    echo "state: $(ask state $f/keep/huge.bin); equal to the cloud's: $($U cmp $f/keep/huge.bin $src/huge && echo yes); downloads asked of the cloud: $(ask count GET dl/H)"
+    echo "unpin and free: $(ask free-up $f/keep)"
     echo "-- the daemon killed and started again"
     kill -KILL $svc; wait $svc 2> /dev/null; exec 8>&-
     echo "killed: $($U ls $f 2>&1)"
