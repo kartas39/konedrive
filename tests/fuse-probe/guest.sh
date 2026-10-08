@@ -248,6 +248,16 @@ EOF
     stop
 }
 
+subtype() {
+    echo "==== mount type ===="
+    start || return
+    echo "without subtype: $(awk -v m=$W/mnt '$2==m{print $1, $3}' /proc/self/mounts)"
+    stop
+    start --subtype konedrive || return
+    echo "with subtype=konedrive: $(awk -v m=$W/mnt '$2==m{print $1, $3}' /proc/self/mounts)"
+    stop
+}
+
 for t in $tests; do
     $t
 done
