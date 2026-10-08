@@ -13,6 +13,7 @@ use crate::fuse::fill::{Running, WRITTEN_BEHIND};
 use crate::fuse::local::Entry;
 use crate::fuse::read::Handle;
 use crate::fuse::shared::{errno, Shared};
+use crate::fuse::writers::Closed;
 
 /// `size` bytes of `file` at `offset`, or as many as it has.
 fn from_file(file: &File, offset: u64, size: u32, reply: ReplyData) {
@@ -126,10 +127,13 @@ impl Requests {
         let s = &self.0;
         let closed = crate::panic::lock(&s.handles).remove(&fh.0);
         if let Some(handle) = closed.filter(|handle| handle.writes) {
-            if s.writer_closed(handle.ino) {
-                s.change(move |s| {
-                    let _ = s.content(handle.ino, false);
-                });
+            let changed = match s.writer_closed(handle.ino) {
+                Closed::StillOpen => None,
+                Closed::Changed => Some(true),
+                Closed::Untouched => Some(false),
+            };
+            if let Some(changed) = changed {
+                s.change(move |s| s.closed(handle.ino, changed));
             }
         }
         reply.ok();

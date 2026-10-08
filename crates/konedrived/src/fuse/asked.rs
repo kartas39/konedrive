@@ -101,7 +101,10 @@ impl Mount {
                 if !s.has_copy(&at, &file.id) {
                     continue;
                 }
-                if s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
+                // What a pin keeps, a download is filling, or holds content of the user's own
+                // that is not in OneDrive yet, stays.
+                let own = s.waiting().changed.contains(&file.id) || crate::panic::lock(&s.handles).values().any(|h| h.writes && h.id.as_deref() == Some(file.id.as_str()));
+                if own || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
                     freed.kept += 1;
                     continue;
                 }

@@ -57,22 +57,43 @@ impl Shared {
         }
         self.writable_file(&entry, &rel, truncate)?;
         let file = OpenOptions::new().read(true).write(true).truncate(truncate).open(self.under(&rel)).map_err(|e| errno(&e))?;
-        self.writer_opened(ino);
-        if truncate {
-            self.changing(ino)?;
+        // Its content is the user's own already when the outbox holds a change of it; from
+        // the first writer on the outbox holds it in any case.
+        let own = truncate || entry.id().is_some_and(|id| self.waiting().changed.contains(id));
+        if self.writer_opened(ino, own) {
+            if let Err(e) = self.content(ino, true) {
+                self.writer_closed(ino);
+                return Err(e);
+            }
         }
         let fh = self.next_handle.fetch_add(1, Ordering::SeqCst);
         crate::panic::lock(&self.handles).insert(fh, Handle { ino, id: entry.id().map(str::to_owned), rel, copy: Some(Arc::new(file)), writes: true });
         Ok(fh)
     }
 
-    /// Node `ino` is about to be changed by a program that holds it open: the first time
-    /// since it was last closed, the outbox is told that it waits for its writer.
-    pub(super) fn changing(&self, ino: u64) -> Result<(), Errno> {
-        if self.first_change(ino) {
-            self.content(ino, true)?;
+    /// The last writer of node `ino` closed it: its content is ready to be sent, or, when
+    /// nothing was written, the outbox lets go of it.
+    pub(super) fn closed(&self, ino: u64, changed: bool) {
+        let untouched = match self.node(ino) {
+            Some((Entry::Item(row), _)) if !changed => Some(row),
+            _ => None,
+        };
+        let Some(row) = untouched else {
+            let _ = self.content(ino, false);
+            return;
+        };
+        let Some((_, above)) = self.above(ino) else { return };
+        // The item is where it stands, with the content the base has: the row that held it
+        // goes, or is the move it was before.
+        let recorded = self.record(move |s| {
+            let Some(base) = based(s, &row.id)? else { return Ok(Default::default()) };
+            let mut here = Place { dir: &above, name: &row.name }.of_item(OutboxKind::Move, &base, None);
+            here.same_content = true;
+            Ok((vec![here], Vec::new()))
+        });
+        if let Err(e) = recorded {
+            tracing::warn!("a file closed unchanged could not be let go of: {e}");
         }
-        Ok(())
     }
 
     /// Cuts or extends node `ino` to `size`.
@@ -84,12 +105,10 @@ impl Shared {
         }
         self.writable_file(&entry, &rel, size == 0)?;
         let file: File = OpenOptions::new().write(true).open(self.under(&rel)).map_err(|e| errno(&e))?;
-        let open = self.being_written(ino);
-        if open {
-            self.changing(ino)?;
-        }
         file.set_len(size).map_err(|e| errno(&e))?;
-        if !open {
+        if self.being_written(ino) {
+            self.written(ino);
+        } else {
             self.content(ino, false)?;
         }
         Ok(())
