@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID};
+use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_graph::pool::{Class, Size};
 use konedrive_tree::Row;
 use tokio::sync::oneshot;
@@ -122,6 +122,11 @@ impl Shared {
             let size = tracked.fetched().unwrap_or(row.size);
             // The directories down to its place, each marked as its item's.
             self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
+            // Moved or removed here while it was downloaded: the download is of no place now,
+            // and the next read starts one where the item stands.
+            if self.place(&row.id).as_deref() != Some(rel) {
+                return Err(libc::ESTALE);
+            }
             let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under(rel), Arc::clone(&file));
             // The file's own steps wait for the disk: not on the runtime's threads.
             tokio::task::spawn_blocking(move || {
@@ -134,14 +139,17 @@ impl Shared {
                     file.set_permissions(fs::Permissions::from_mode(0o444))?;
                 }
                 file.sync_all()?;
-                // What stands at the item's place and carries no item's id is the user's own
-                // file, put there while nothing was mounted: it is never replaced. A copy of
-                // another item left there can be downloaded again, and goes.
+                // What stands at the item's place by now is never replaced by what was
+                // downloaded: a file of the user's own; the item's copy, which a program made
+                // or saved over it meanwhile; the whole copy of another item. Only what holds
+                // nothing — a file that is not whole — goes.
                 if fs::symlink_metadata(&target).is_ok() {
-                    if xattr::get(&target, XATTR_ITEM_ID).ok().flatten().is_none() {
-                        return Err(io::Error::from_raw_os_error(libc::EEXIST));
+                    let whole = xattr::get(&target, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
+                    match xattr::get(&target, XATTR_ITEM_ID).ok().flatten() {
+                        Some(carried) if carried == id.as_bytes() && whole => return Ok(()),
+                        Some(_) if !whole => fs::remove_file(&target)?,
+                        _ => return Err(io::Error::from_raw_os_error(libc::EEXIST)),
                     }
-                    fs::remove_file(&target)?;
                 }
                 // Whole and checked: now it gets its name.
                 let (unnamed, named) = (CString::new(konedrive_fs::proc_path(&*file).into_os_string().into_encoded_bytes())?, CString::new(target.into_os_string().into_encoded_bytes())?);

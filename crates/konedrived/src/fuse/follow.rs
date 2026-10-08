@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{Kind, Row, Table, TreeStore};
 
 use super::announce::Announce;
+use super::changes::rebase;
 use super::conflict::Met;
 use super::copies::remove_copy;
 use super::local::carried;
@@ -90,6 +91,10 @@ impl Mount {
                 (Some((old, was)), Some((new, now))) => {
                     if was != now {
                         s.out_of_the_way(now, new.parent_id.as_deref(), &mut met);
+                    }
+                    if was != now && new.kind == Kind::Folder {
+                        // The rows of what the user changed below it are found by place.
+                        met.ops.push(rebase(was, now));
                     }
                     if step.content_changed() {
                         remove_copy(&s.under(was), &step.id);

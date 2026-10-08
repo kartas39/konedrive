@@ -13,6 +13,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 use super::copies::mark_copy;
 use super::changes::{based, forgotten, leaves, object, rebase, waits, Place};
 use super::local::{Dir, Entry};
+use super::nodes::Key;
 use super::shared::{errno, Shared};
 use crate::folder::disk::daemon_owned;
 
@@ -149,7 +150,13 @@ impl Shared {
             // The file is the item's content from here on: read as its downloaded copy.
             let _ = mark_copy(&now, id);
         }
-        crate::panic::lock(&self.nodes).moved(src_ino, new_parent, new_name);
+        let mut nodes = crate::panic::lock(&self.nodes);
+        nodes.moved(src_ino, new_parent, new_name);
+        if let (Some(id), Entry::Local(local)) = (&taken_over, &src) {
+            // The file's node is the item's from here on: whoever looks the name up gets
+            // the node the new content is read and written through.
+            nodes.rekey(&Key::Local(std::os::unix::fs::MetadataExt::ino(&local.meta)), Key::Item(id.clone()));
+        }
         Ok(())
     }
 }

@@ -18,6 +18,7 @@ use konedrive_tree::Row;
 use super::changes::{based, waits, Place};
 use super::copies::mark_copy;
 use super::local::Entry;
+use super::nodes::Key;
 use super::read::Handle;
 use super::shared::{errno, Shared};
 
@@ -82,6 +83,11 @@ impl Shared {
             let _ = self.content(ino, false);
             return;
         };
+        // A node the item no longer is — its name was taken over by a file saved over it —
+        // says nothing of the item's content.
+        if crate::panic::lock(&self.nodes).inos.get(&Key::Item(row.id.clone())) != Some(&ino) {
+            return;
+        }
         let Some((_, above)) = self.above(ino) else { return };
         // The item is where it stands, with the content the base has: the row that held it
         // goes, or is the move it was before.

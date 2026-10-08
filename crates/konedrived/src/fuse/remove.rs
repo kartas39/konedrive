@@ -7,6 +7,7 @@ use fuser::Errno;
 use super::changes::{based, forgotten, leaves, object};
 use super::copies::remove_copy;
 use super::local::{Dir, Entry};
+use super::nodes::Key;
 use super::shared::{errno, Shared};
 
 impl Shared {
@@ -47,6 +48,11 @@ impl Shared {
             Entry::Item(row) => drop(remove_copy(&path, &row.id)),
             Entry::Local(_) if dir => fs::remove_dir(&path).map_err(|e| errno(&e))?,
             Entry::Local(_) => fs::remove_file(&path).map_err(|e| errno(&e))?,
+        }
+        if let Entry::Local(local) = &entry {
+            // Its inode number is the filesystem's to give again: the next object that gets
+            // it is another node.
+            crate::panic::lock(&self.nodes).inos.remove(&Key::Local(std::os::unix::fs::MetadataExt::ino(&local.meta)));
         }
         Ok(())
     }

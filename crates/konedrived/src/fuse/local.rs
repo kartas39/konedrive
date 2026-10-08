@@ -67,7 +67,9 @@ impl Dir {
     fn is(&self, above: &Above) -> bool {
         match above {
             Above::Item(id) => self.id.as_deref() == Some(id),
-            Above::Local(rel) => self.id.is_none() && *rel == self.rel,
+            // By its place alone: the directory may have got its item since the row was
+            // written, and the row its parent only when the worker next looks at it.
+            Above::Local(rel) => *rel == self.rel,
         }
     }
 }

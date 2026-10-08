@@ -31,6 +31,11 @@ impl Shared {
     /// Writes what `meaning` finds a change to mean into the outbox, in one transaction with
     /// what it read to find it, and wakes the worker. Called on the recorder's thread.
     pub(super) fn record(&self, meaning: impl FnOnce(&mut TreeStore) -> Result<Meaning, TreeError> + Send + 'static) -> Result<Recorded, TreeError> {
+        // A folder switched to read-only takes no row: what a program still held open at the
+        // switch is not sent.
+        if !self.writable() {
+            return Ok(Recorded::default());
+        }
         let now = self.now();
         let recorded = self.store.call_blocking(move |s| {
             let (detections, ops) = meaning(s)?;
