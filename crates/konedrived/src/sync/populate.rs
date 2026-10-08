@@ -22,7 +22,7 @@ impl SyncService {
         // change until this is done: the folder's state is held for reading.
         let folder = self.folder.read().await;
         let reg = folder.acted_on().map(|record| record.bare()).ok_or(SyncError::NoRoot)?;
-        if reg.source == RootSource::OneDrive {
+        if reg.source.shows_onedrive() {
             return Err(SyncError::Unsupported(
                 "this folder shows your OneDrive; filling it from a directory is for a folder \
                  registered while signed out"

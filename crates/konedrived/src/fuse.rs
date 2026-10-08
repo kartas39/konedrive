@@ -456,7 +456,7 @@ pub struct Parts {
 
 /// Takes off a mount a daemon that died left on `folder`: every path in it then fails with
 /// "not connected", and nothing can be mounted over it.
-fn clear_stale(folder: &Path) {
+pub fn clear_stale(folder: &Path) {
     if let Err(e) = fs::metadata(folder) {
         if e.raw_os_error() == Some(libc::ENOTCONN) {
             tracing::warn!("{} carries the mount of a daemon that is gone; taking it off", folder.display());

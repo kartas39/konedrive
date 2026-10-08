@@ -30,7 +30,7 @@ fn up(interception: Interception, source: RootSource, recovery: Recovery) -> Is 
 fn content(source: RootSource, why: Why) -> Content {
     match source {
         RootSource::Local => Content::Local,
-        RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(why), watcher_ended: None }),
+        RootSource::OneDrive | RootSource::Fuse => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(why), watcher_ended: None }),
     }
 }
 

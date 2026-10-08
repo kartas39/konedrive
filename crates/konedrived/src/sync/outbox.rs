@@ -326,7 +326,7 @@ impl SyncService {
         if let Some(store) = stopped.folder().store() {
             return Some(store);
         }
-        if stopped.folder().record()?.source != super::RootSource::OneDrive {
+        if !stopped.folder().record()?.source.shows_onedrive() {
             return None;
         }
         let paths = self.sync_paths()?.clone();

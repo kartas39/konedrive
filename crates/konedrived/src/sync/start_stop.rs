@@ -26,6 +26,7 @@ struct Prepared {
     store: Store,
     source: Arc<dyn ContentSource>,
     tree_lock: Arc<tokio::sync::Mutex<()>>,
+    fuse: Option<Arc<crate::fuse::Mount>>,
 }
 
 impl SyncService {
@@ -45,7 +46,8 @@ impl SyncService {
         // What the parts started here read of the folder is what it is now.
         stopped.publish();
         let Some(reg) = stopped.folder().up().map(|up| up.record.clone()) else { return };
-        let wanted = stopped.folder().wanted;
+        // A folder served through FUSE is read-only whatever the account's mode.
+        let wanted = if reg.source == RootSource::Fuse { Mode::ReadOnly } else { stopped.folder().wanted };
         let prepared = match self.prepare(stopped, &reg, wanted).await {
             Ok(prepared) => prepared,
             Err(why) => return self.cannot_start(stopped, &reg.root, why).await,
@@ -122,13 +124,31 @@ impl SyncService {
         // is locked before anything else, never left writable until a Full reconcile, which
         // needs Graph. A read-write one is unlocked once its watcher has marked every
         // directory (`start_sync`).
-        if wanted != Mode::ReadWrite {
+        if wanted != Mode::ReadWrite && reg.source != RootSource::Fuse {
             self.ensure_locked(&reg.root).await;
         }
         let tree_lock = Arc::clone(&reg.kept.tree_lock);
         // The folder's store, the one connection to it: open already, or opened now, made
         // if there is none, and kept with the folder until it is forgotten.
         let store = self.kept_store(stopped, &paths).await?;
+        // A folder served through FUSE is mounted from its first sync on, once its store is
+        // there to read the names from.
+        let mut fuse = stopped.folder().record().and_then(|record| record.kept.fuse.clone());
+        if reg.source == RootSource::Fuse && fuse.is_none() {
+            let parts = crate::fuse::Parts {
+                root: reg.root.clone(),
+                store_path: paths.tree_db.clone(),
+                store: store.clone(),
+                source: Arc::clone(&source),
+                report: self.report.clone(),
+                pool: Arc::clone(&self.pool),
+            };
+            let mount = crate::fuse::Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
+            if let Some(record) = stopped.folder_mut().record_mut() {
+                record.kept.fuse = Some(Arc::clone(&mount));
+            }
+            fuse = Some(mount);
+        }
         // A read-only folder that still holds changes waiting to upload (a switch nobody
         // forced) runs no cycle while they wait: what a read-write cycle
         // deferred stays deferred for the read-write cycle that sends them.
@@ -156,7 +176,7 @@ impl SyncService {
         .flatten()
         .unwrap_or(0);
         self.state.update(|s| s.cycle.last_checked = last_checked);
-        Ok(Prepared { drive, paths, store, source, tree_lock })
+        Ok(Prepared { drive, paths, store, source, tree_lock, fuse })
     }
 
     /// Builds the parts of a sync, linked to each other and not through the service, and
@@ -178,7 +198,7 @@ impl SyncService {
         reason: ScanReason,
         watcher_ended: Option<String>,
     ) -> (RunningSync, Option<watch::Receiver<crate::local::watcher::WalkState>>) {
-        let Prepared { drive, paths, store, source, tree_lock } = prepared;
+        let Prepared { drive, paths, store, source, tree_lock, fuse } = prepared;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stop = CancellationToken::new();
@@ -237,6 +257,7 @@ impl SyncService {
             drive_record,
             source,
             link: self.link.clone(),
+            fuse,
             locks: self.locks.clone(),
             state: self.state.clone(),
             lease: listing::Lease::on(&self.folder),
@@ -376,7 +397,7 @@ impl SyncService {
             Is::Absent => return Err(SyncError::NoRoot),
             Is::Down(record, down) => {
                 if !retry {
-                    if record.source != RootSource::OneDrive {
+                    if !record.source.shows_onedrive() {
                         return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
                     }
                     self.require_helper_for(record)?;
@@ -390,7 +411,7 @@ impl SyncService {
             }
             Is::Up(up) => up.record.clone(),
         };
-        if record.source != RootSource::OneDrive {
+        if !record.source.shows_onedrive() {
             return if retry { Ok(false) } else { Err(SyncError::Unsupported("this folder is not connected to OneDrive".into())) };
         }
         self.require_helper_for(&record)?;

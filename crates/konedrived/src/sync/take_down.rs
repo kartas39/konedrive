@@ -140,12 +140,18 @@ impl SyncService {
         stopped.folder_mut().is = Is::Absent;
         // Whether the store's connections are closed is waited for below, once the view
         // and the activity log have let go of theirs too.
-        let closing = std::mem::take(&mut record.kept).store.map(konedrive_tree::Store::close);
+        let mut kept = std::mem::take(&mut record.kept);
+        // A folder served through FUSE is unmounted: the folder on disk then shows its
+        // downloaded files alone.
+        if let Some(mount) = kept.fuse.take() {
+            let _ = tokio::task::spawn_blocking(move || mount.stop()).await;
+        }
+        let closing = kept.store.map(konedrive_tree::Store::close);
         if retire {
             retire_in(&mut stopped);
         }
         self.forgotten(&stopped).await;
-        if record.source == RootSource::OneDrive {
+        if record.source.shows_onedrive() {
             if let Some(closing) = closing {
                 if tokio::time::timeout(STORE_CLOSES_WITHIN, closing).await.is_err() {
                     tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());

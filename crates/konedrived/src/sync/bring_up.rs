@@ -102,10 +102,12 @@ impl SyncService {
             self.require_sign_in()?;
         }
         check_absent(stopped.folder())?;
-        let link = if intercepted { Some(self.require_link()?) } else { None };
+        // A folder served through FUSE has no use for the helper.
+        let fuse = intercepted && self.wiring.fuse;
+        let link = if intercepted && !fuse { Some(self.require_link()?) } else { None };
         let _registering = self.wiring.registry.registering.lock().await;
         self.check_overlap(path).await?;
-        self.register(stopped, path, link).await
+        self.register(stopped, path, link, fuse).await
     }
 
     /// The developer's mode (HS2): `RegisterRoot`'s folder
@@ -205,9 +207,11 @@ impl SyncService {
     /// the developer's local folder, filled with `PopulateFromDirectory`. A
     /// OneDrive folder nobody intercepts would read as zeros wherever a file
     /// is not downloaded, and is never made any more.
-    fn fresh_source(&self, intercepted: bool) -> RootSource {
+    fn fresh_source(&self, intercepted: bool, fuse: bool) -> RootSource {
         let signed_in = self.wiring.account.snapshot().state == SignInState::SignedIn;
-        if signed_in && self.wiring.onedrive.is_some() && intercepted {
+        if signed_in && self.wiring.onedrive.is_some() && fuse {
+            RootSource::Fuse
+        } else if signed_in && self.wiring.onedrive.is_some() && intercepted {
             RootSource::OneDrive
         } else {
             RootSource::Local
@@ -240,7 +244,7 @@ impl SyncService {
     /// A root registered without interception is never announced to the
     /// helper: not registered, not marked, not unregistered. What its recovery may still
     /// ask is `ClearIgnore`, by the same local rule every punch follows.
-    async fn register(&self, stopped: &mut Stopped<'_>, path: &Path, link: Option<HelperLink>) -> Result<(), SyncError> {
+    async fn register(&self, stopped: &mut Stopped<'_>, path: &Path, link: Option<HelperLink>, fuse: bool) -> Result<(), SyncError> {
         // A OneDrive folder remembers its account's drive (`docs/design/accounts.md` §6.3):
         // one forgotten by another account is that account's files, and a
         // folder carrying a root id may be registered again without being
@@ -252,8 +256,8 @@ impl SyncService {
             root::DriveOf::Stale(_) => root::forget_drive(path).await,
             root::DriveOf::Foreign(_) => return Err(SyncError::ForeignFolder),
         }
-        let source = self.fresh_source(link.is_some());
-        if source == RootSource::OneDrive {
+        let source = self.fresh_source(link.is_some(), fuse);
+        if source.shows_onedrive() {
             // A tree store left by a folder forgotten earlier describes
             // another folder.
             self.remove_tree_store().await;
@@ -262,9 +266,10 @@ impl SyncService {
             // Made with no helper connected, it is the window's fallback, and switches to
             // interception when one connects; made with one connected, it is a choice,
             // and stays.
-            let interception = Interception::Without { switch_when_helper: self.link().is_none() };
+            let interception = Interception::Without { switch_when_helper: source != RootSource::Fuse && self.link().is_none() };
             let root = root::register_root_unprotected(path).await?;
-            let report = self.recover(&self.clearance(), &root).await?;
+            // A folder served through FUSE holds no placeholder to recover.
+            let report = if source == RootSource::Fuse { RecoveryReport::default() } else { self.recover(&self.clearance(), &root).await? };
             self.come_up(stopped, root, interception, source, true, report).await;
             return Ok(());
         };
@@ -364,7 +369,7 @@ impl SyncService {
     ) {
         let recovery = Recovery::of(&report);
         let baloo = self.keep_out_of_baloo(&root, source, fresh).await;
-        if source == RootSource::OneDrive {
+        if source.shows_onedrive() {
             self.mark_drive(&root).await;
         }
         // `config.toml` names what is registered now: a fresh root without
@@ -376,7 +381,7 @@ impl SyncService {
         // What is kept with the folder stays with it: what a local one was filled from by
         // hand, a OneDrive one's tree store and tree lock.
         let mut kept = stopped.folder().record().map(|record| record.kept.clone()).unwrap_or_default();
-        if source == RootSource::OneDrive && kept.source.is_none() {
+        if source.shows_onedrive() && kept.source.is_none() {
             // Files are downloaded from the drive whether or not the folder can be kept
             // in step, from its first bring-up on.
             kept.source = self.drive().map(|drive| self.wiring.sources.onedrive(drive));
@@ -384,7 +389,7 @@ impl SyncService {
         let record = Record { root, interception, source, baloo, dev, kept };
         let content = match source {
             RootSource::Local => Content::Local,
-            RootSource::OneDrive => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(Why::NotStarted), watcher_ended: None }),
+            RootSource::OneDrive | RootSource::Fuse => Content::OneDrive(OneDriveFolder { sync: Sync::Stopped(Why::NotStarted), watcher_ended: None }),
         };
         stopped.folder_mut().is = Is::Up(Up { record, recovery, switch_failed: None, content });
         stopped.publish();
@@ -420,7 +425,7 @@ impl SyncService {
     /// recorded, or been refused by a registration kept after it failed; or Baloo came
     /// later. It only ever adds. Whether this daemon is the one that excluded it.
     async fn keep_out_of_baloo(&self, root: &SyncRoot, source: RootSource, fresh: bool) -> bool {
-        if source != RootSource::OneDrive {
+        if !source.shows_onedrive() {
             return false;
         }
         if !fresh && self.persisted_root().is_some_and(|p| p.baloo_excluded) {
@@ -571,6 +576,15 @@ impl SyncService {
             }
         };
         let path = record.root.path.clone();
+        if source == RootSource::Fuse {
+            if record.kept.fuse.is_some() {
+                // Mounted already: the folder is what it was, and its path is the mount.
+                return self.come_up(stopped, record.root.clone(), record.interception, source, false, RecoveryReport::default()).await;
+            }
+            // What a daemon that died left mounted goes before the folder is looked at.
+            let stale = path.clone();
+            let _ = tokio::task::spawn_blocking(move || crate::fuse::clear_stale(&stale)).await;
+        }
         // The directory at the path must be the folder that is recorded, before anything
         // is stamped on it or said to the helper: a bring-up never adopts whatever stands
         // there now (an empty directory made where the folder was moved away from would be
@@ -597,6 +611,7 @@ impl SyncService {
         }
         let taken = match (record.interception, self.link()) {
             (Interception::Without { .. }, _) => match root::register_root_unprotected(&path).await {
+                Ok(root) if source == RootSource::Fuse => Ok((root, RecoveryReport::default())),
                 Ok(root) => self.recover(&self.clearance(), &root).await.map(|report| (root, report)),
                 Err(e) => Err(e.into()),
             },

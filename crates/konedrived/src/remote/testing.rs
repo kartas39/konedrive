@@ -248,6 +248,7 @@ impl World {
         ListingContext {
             root: self.root.clone(),
             intercepted: true,
+            fuse: None,
             store: self.store.clone(),
             drive: drive.clone(),
             drive_record: None,

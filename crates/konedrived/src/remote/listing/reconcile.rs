@@ -153,6 +153,7 @@ pub(crate) struct Reconcile {
     root: SyncRoot,
     store: Store,
     link: Option<HelperLink>,
+    fuse: Option<Arc<crate::fuse::Mount>>,
     runtime: tokio::runtime::Handle,
     locks: InodeLocks,
     rescue_dir: PathBuf,
@@ -203,7 +204,7 @@ impl Listing {
         // whose helper has no marks yet: at worst a `MarkDir` fails, this
         // cycle fails (the next is Full), and `resume` re-marks the tree.
         let link = self.ctx.link.get().filter(|_| self.ctx.intercepted);
-        if link.is_none() {
+        if link.is_none() && self.ctx.fuse.is_none() {
             return Err(CycleError::NoHelper);
         }
         let (tree, claimed, mode) = match mode {
@@ -226,6 +227,7 @@ impl Listing {
             root: self.ctx.root.clone(),
             store: self.ctx.store.clone(),
             link,
+            fuse: self.ctx.fuse.clone(),
             runtime: tokio::runtime::Handle::current(),
             locks: self.ctx.locks.clone(),
             rescue_dir: self.ctx.rescue_dir.clone(),
@@ -254,6 +256,9 @@ impl Reconcile {
     pub(crate) fn commit(&self, prepared: &Prepared, done: Reconciled, commit: Commit) -> Result<Reconciled, CycleError> {
         match commit_cycle(&self.store, prepared.plan.as_ref(), &done, commit) {
             Ok(said) => {
+                if let Some(mount) = &self.fuse {
+                    mount.committed();
+                }
                 self.after_commit(&done.applied, said);
                 Ok(done)
             }
@@ -272,7 +277,12 @@ impl Reconcile {
         if let Some(Err(e)) = recorded {
             tracing::warn!("cannot record the account's drive in config.toml: {e}");
         }
-        if let Err(e) = crate::folder::root::mark_drive(&self.root, &id) {
+        // Through the mount the folder takes no attribute: its own directory does.
+        let root = match &self.fuse {
+            Some(mount) => SyncRoot { path: mount.under(), root_id: self.root.root_id.clone() },
+            None => self.root.clone(),
+        };
+        if let Err(e) = crate::folder::root::mark_drive(&root, &id) {
             tracing::warn!("cannot record the drive on {}: {e}", self.root.path.display());
         }
     }
@@ -299,6 +309,9 @@ impl Reconcile {
     /// one; what the first rescued is rescued all the same. A pass that
     /// fails has its work on disk recorded and handed over ([`Self::failed`]).
     pub(crate) fn apply_with_handover(&self, prepared: &Prepared, scope: Scope) -> Result<Reconciled, CycleError> {
+        if let Some(mount) = &self.fuse {
+            return self.follow_mount(mount);
+        }
         let materializer = Materializer {
             disk: Disk::open(&self.root, self.mode.is_read_only()).map_err(|e| applying(e.into()))?,
             store: self.store.clone(),
@@ -321,6 +334,34 @@ impl Reconcile {
                 Err(applying(error))
             }
         }
+    }
+
+    /// Step 1 of a folder served through FUSE: nothing is placed, since the mount shows the
+    /// store. The folder under the mount follows what changed ([`crate::fuse::Mount::follow`]),
+    /// and the changes are counted and named as a pass over a folder of placeholders names
+    /// them.
+    fn follow_mount(&self, mount: &Arc<crate::fuse::Mount>) -> Result<Reconciled, CycleError> {
+        use crate::status::activity::Kind;
+        let following = Arc::clone(mount);
+        let steps = self.store.call_blocking(move |s| following.follow(s))?;
+        let mut applied = Applied::default();
+        for step in &steps {
+            let (kind, rel, from) = match (&step.old, &step.new) {
+                (None, Some((_, now))) => (Kind::Added, now, None),
+                (Some((_, was)), None) => (Kind::Removed, was, None),
+                (Some((_, was)), Some((_, now))) if was != now => (Kind::Moved, now, Some(was.clone())),
+                (Some(_), Some((_, now))) if step.content_changed() => (Kind::Updated, now, None),
+                _ => continue,
+            };
+            match kind {
+                Kind::Added => applied.counts.created += 1,
+                Kind::Removed => applied.counts.deleted += 1,
+                Kind::Moved => applied.counts.moved += 1,
+                _ => applied.counts.updated += 1,
+            }
+            applied.changes.push(crate::remote::materialize::Changed { kind, rel: rel.clone(), from });
+        }
+        Ok(Reconciled { applied, full: false })
     }
 
     /// Step 3, once the tree the folder was made to match is committed.

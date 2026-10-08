@@ -90,6 +90,9 @@ pub struct ListingContext {
     pub source: Arc<dyn ContentSource>,
     /// The helper link as `SyncService` holds it; read at every reconcile.
     pub link: LinkCell,
+    /// The mount of a folder served through FUSE (`crate::fuse`): its cycle makes the folder
+    /// under the mount follow the new tree and needs no helper.
+    pub fuse: Option<Arc<crate::fuse::Mount>>,
     pub locks: InodeLocks,
     pub state: SyncStateHandle,
     /// The folder's lease (`sync/`'s): a reconcile holds it, so a Forget waits
@@ -371,7 +374,7 @@ impl Listing {
         // interception and a connected helper — nothing is placed or updated
         // otherwise, and Graph is not asked for what could not be placed.
         // Asked again under the folder's lock, where the answer counts.
-        if !self.ctx.intercepted || !self.ctx.link.is_linked() {
+        if self.ctx.fuse.is_none() && (!self.ctx.intercepted || !self.ctx.link.is_linked()) {
             return Err(CycleError::NoHelper);
         }
         self.check_account(turn, cancel).await?;
@@ -425,7 +428,9 @@ impl Listing {
         // After any other, what it placed under a pin is queued.
         let resweep = self.ctx.pins.take_resweep();
         let moved_pins = (applied.counts.moved > 0 || applied.counts.deleted > 0) && self.ctx.pins.count() > 0;
-        if full || resweep || moved_pins {
+        if self.ctx.fuse.is_some() {
+            // The mount keeps its own pins, and swept them when the cycle was committed.
+        } else if full || resweep || moved_pins {
             self.ctx.pins.sweep(self.ctx.root.path.clone()).await;
         } else if !applied.pinned.is_empty() {
             let placed = applied.pinned.iter().map(|rel| self.ctx.root.path.join(rel)).collect();

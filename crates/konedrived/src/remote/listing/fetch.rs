@@ -85,7 +85,9 @@ impl Listing {
     /// id then, downloaded content and all, rather than removed and made
     /// again. Read without the folder's lock: it changes nothing.
     pub(super) async fn holds_nothing_yet(&self, turn: &Turn) -> Result<bool, CycleError> {
-        if !self.on_store(turn, |s| s.is_empty(Table::Items)).await? {
+        // Nothing is placed page by page in a folder served through FUSE: a file that is
+        // not downloaded has no object to place.
+        if self.ctx.fuse.is_some() || !self.on_store(turn, |s| s.is_empty(Table::Items)).await? {
             return Ok(false);
         }
         let (root, held) = (self.ctx.root.clone(), Arc::clone(turn));

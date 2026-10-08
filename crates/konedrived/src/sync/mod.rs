@@ -63,13 +63,23 @@ pub enum RootSource {
     Local,
     /// Listed from the signed-in drive, locked, and kept in step with it.
     OneDrive,
+    /// The signed-in drive served as a FUSE mount over the folder (`crate::fuse`): no
+    /// placeholders, no helper. Its tree store is a file of its own, and a daemon that does
+    /// not know the word leaves the folder down.
+    Fuse,
 }
 
 impl RootSource {
+    /// Whether the folder shows the account's drive, however it is served.
+    pub fn shows_onedrive(self) -> bool {
+        matches!(self, RootSource::OneDrive | RootSource::Fuse)
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             RootSource::Local => "local",
             RootSource::OneDrive => "onedrive",
+            RootSource::Fuse => "fuse",
         }
     }
 
@@ -79,6 +89,7 @@ impl RootSource {
         match value {
             "onedrive" => Some(RootSource::OneDrive),
             "local" => Some(RootSource::Local),
+            "fuse" => Some(RootSource::Fuse),
             _ => None,
         }
     }

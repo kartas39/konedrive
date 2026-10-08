@@ -110,6 +110,8 @@ pub struct Wiring {
     pub watchers: Watchers,
     /// The clock the account's pause is kept by.
     pub clock: Arc<dyn Clock>,
+    /// A folder registered from now on is served as a FUSE mount ([`RootSource::Fuse`](super::RootSource)).
+    pub fuse: bool,
 }
 
 impl Wiring {
@@ -128,6 +130,7 @@ impl Wiring {
             sources: Arc::new(RealSources),
             watchers: Arc::new(Watcher::start),
             clock: Arc::new(SystemClock),
+            fuse: false,
         }
     }
 }

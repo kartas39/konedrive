@@ -100,6 +100,9 @@ pub(super) struct Kept {
     /// that what took it before a sync was started again still keeps the new sync's cycle
     /// out.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The mount of a folder served through FUSE, from its first sync on: it stays while the
+    /// folder is recorded, so that the folder shows its names also while no sync runs.
+    pub fuse: Option<Arc<crate::fuse::Mount>>,
 }
 
 impl std::fmt::Debug for Kept {
@@ -365,7 +368,11 @@ impl Folder {
     /// Whether a OneDrive folder's sync may run: the folder is up, shows OneDrive and is
     /// intercepted (HS2).
     pub fn syncs(&self) -> bool {
-        self.up().is_some_and(|up| up.record.source == RootSource::OneDrive && up.record.intercepted())
+        self.up().is_some_and(|up| match up.record.source {
+            RootSource::OneDrive => up.record.intercepted(),
+            RootSource::Fuse => true,
+            RootSource::Local => false,
+        })
     }
 }
 

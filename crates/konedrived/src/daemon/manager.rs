@@ -274,16 +274,20 @@ impl AccountManager {
         // of a drive that is not the folder's. A folder registered while signed in shows
         // OneDrive only with a drive to show, and a restored one starts syncing as it is
         // brought up.
+        // `KONEDRIVE_FUSE`: a folder registered from now on is served as a FUSE mount, with a
+        // tree store of its own beside the other.
+        let fuse = std::env::var_os("KONEDRIVE_FUSE").is_some_and(|v| !v.is_empty());
         let onedrive = (self.options.drive)(&account)?.map(|drive| OneDrive {
             drive,
             paths: SyncPaths {
-                tree_db: paths.tree_db.clone(),
+                tree_db: if fuse { paths.tree_db.with_file_name("fuse.sqlite") } else { paths.tree_db.clone() },
                 rescue_dir: paths.rescue_dir.clone(),
                 thumbnails: self.options.thumbnails.clone(),
             },
         });
         let sync = SyncService::new(Wiring {
             onedrive,
+            fuse,
             baloo: (self.options.baloo)(),
             transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large() },
             ..Wiring::new(Arc::clone(&self.registry), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
