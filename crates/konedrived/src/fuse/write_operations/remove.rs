@@ -18,15 +18,15 @@ impl WriteOperations {
         self.access_mode_switch.check_read_write()?;
         let plan = plan_remove(kind, name, self.find_remove_place(parent, name))?;
         let (event, rel) = match &plan {
-            RemovePlan::OneDriveFile { id, path } | RemovePlan::OneDriveDirectory { id, path } => (EntryRemoved::InOneDrive { id: id.clone(), rel: path.clone() }, path),
-            RemovePlan::LocalOnlyFile { handle, path } | RemovePlan::LocalOnlyDirectory { handle, path } => (EntryRemoved::LocalOnly { handle: handle.clone(), rel: path.clone() }, path),
+            RemovePlan::OneDriveFile { onedrive_id, path } | RemovePlan::OneDriveDirectory { onedrive_id, path } => (EntryRemoved::InOneDrive { onedrive_id: onedrive_id.clone(), path: path.clone() }, path),
+            RemovePlan::LocalOnlyFile { handle, path } | RemovePlan::LocalOnlyDirectory { handle, path } => (EntryRemoved::LocalOnly { handle: handle.clone(), path: path.clone() }, path),
         };
         self.record_or_undo(event, format_args!("the removal of {}", rel.display()), || {})?;
         match &plan {
             // The directory in the backing directory is removed when nothing is left in it.
-            RemovePlan::OneDriveDirectory { path, .. } => drop(self.backing_directory.remove_dir(path)),
-            RemovePlan::OneDriveFile { id, path } => drop(self.backing_directory.remove_downloaded_copy(path, id)),
-            RemovePlan::LocalOnlyDirectory { path, .. } => self.backing_directory.remove_dir(path).map_err(|e| to_errno(&e))?,
+            RemovePlan::OneDriveDirectory { path, .. } => drop(self.backing_directory.remove_directory(path)),
+            RemovePlan::OneDriveFile { onedrive_id, path } => drop(self.backing_directory.remove_downloaded_copy(path, onedrive_id)),
+            RemovePlan::LocalOnlyDirectory { path, .. } => self.backing_directory.remove_directory(path).map_err(|e| to_errno(&e))?,
             RemovePlan::LocalOnlyFile { path, .. } => self.backing_directory.remove_file(path).map_err(|e| to_errno(&e))?,
         }
         if let RemovePlan::LocalOnlyFile { handle, .. } | RemovePlan::LocalOnlyDirectory { handle, .. } = &plan {

@@ -10,7 +10,7 @@ fn id() -> String {
 #[test]
 fn an_id_placed_only_in_the_new_tree_appeared() {
     let change = OneDriveChange::of(id(), None, placed(Kind::File, "docs/a.txt"));
-    assert!(matches!(change, Some(OneDriveChange::Appeared { id, now, .. }) if id == "A" && now.to_str() == Some("docs/a.txt")));
+    assert!(matches!(change, Some(OneDriveChange::Appeared { onedrive_id, now, .. }) if onedrive_id == "A" && now.to_str() == Some("docs/a.txt")));
 }
 
 #[test]

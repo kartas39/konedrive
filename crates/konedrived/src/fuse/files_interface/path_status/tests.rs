@@ -15,7 +15,7 @@ fn copy() -> DiskMetadata {
 }
 
 fn status(entry_state: EntryState) -> PathStatus {
-    PathStatus { id: "A".into(), own_pin: false, pinned_above: None, entry_state, is_downloading: false, is_open_for_writing: false }
+    PathStatus { onedrive_id: "A".into(), own_pin: false, pinned_above: None, entry_state, is_downloading: false, is_open_for_writing: false }
 }
 
 fn synced() -> PathStatus {

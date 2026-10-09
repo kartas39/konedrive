@@ -23,7 +23,7 @@ impl BackingDirectory {
         for name in rel.components() {
             let at = parent.join(name);
             let id = name.as_os_str().to_str().and_then(|n| id_of(parent_id.as_deref(), &parent, n));
-            match self.make_dir(&at) {
+            match self.make_directory(&at) {
                 Ok(()) => {}
                 // What is there already must be a directory: a file in the way is not marked
                 // with the directory's OneDrive id, which would hide it as that directory.

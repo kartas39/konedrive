@@ -19,7 +19,7 @@ pub(in crate::fuse) enum WriteBits {
 
 /// The mode of a directory or a file with or without its owner's write bit: the one table of
 /// the modes the layer sets on disk and shows through the mount.
-pub(in crate::fuse) fn mode_bits(kind: EntryKind, write_bits: WriteBits) -> u32 {
+pub(in crate::fuse) fn to_mode_bits(kind: EntryKind, write_bits: WriteBits) -> u32 {
     match (kind, write_bits) {
         (EntryKind::Directory, WriteBits::Present) => 0o755,
         (EntryKind::File, WriteBits::Present) => 0o644,
@@ -47,8 +47,8 @@ pub(in crate::fuse) fn restore_write_bits(folder: &Path) {
 fn set_modes(path: &Path, write_bits: WriteBits) {
     let Ok(metadata) = fs::symlink_metadata(path) else { return };
     let wanted = match (metadata.is_dir(), metadata.is_file()) {
-        (true, _) => mode_bits(EntryKind::Directory, write_bits),
-        (_, true) => mode_bits(EntryKind::File, write_bits),
+        (true, _) => to_mode_bits(EntryKind::Directory, write_bits),
+        (_, true) => to_mode_bits(EntryKind::File, write_bits),
         _ => return,
     };
     if metadata.permissions().mode() & 0o777 != wanted {

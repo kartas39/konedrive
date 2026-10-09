@@ -7,7 +7,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use super::{mode_bits, BackingDirectory, EntryKind, WriteBits};
+use super::{to_mode_bits, BackingDirectory, EntryKind, WriteBits};
 
 impl BackingDirectory {
     /// What the filesystem says of the name `rel`, a link not followed. `None` when nothing
@@ -21,16 +21,16 @@ impl BackingDirectory {
         fs::read_dir(self.resolve_path(rel)).into_iter().flatten().flatten()
     }
 
-    pub(in crate::fuse) fn make_dir(&self, rel: &Path) -> io::Result<()> {
+    pub(in crate::fuse) fn make_directory(&self, rel: &Path) -> io::Result<()> {
         fs::create_dir(self.resolve_path(rel))
     }
 
     /// A new file at `rel`, where nothing is yet, open to read and write.
     pub(in crate::fuse) fn make_file(&self, rel: &Path) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).create_new(true).mode(mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_path(rel))
+        OpenOptions::new().read(true).write(true).create_new(true).mode(to_mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_path(rel))
     }
 
-    pub(in crate::fuse) fn remove_dir(&self, rel: &Path) -> io::Result<()> {
+    pub(in crate::fuse) fn remove_directory(&self, rel: &Path) -> io::Result<()> {
         fs::remove_dir(self.resolve_path(rel))
     }
 
@@ -60,7 +60,7 @@ impl BackingDirectory {
 
     /// Gives the file at `rel` its owner's write bit: a downloaded copy has none.
     pub(in crate::fuse) fn grant_write_bit(&self, rel: &Path) -> io::Result<()> {
-        fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(mode_bits(EntryKind::File, WriteBits::Present)))
+        fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(to_mode_bits(EntryKind::File, WriteBits::Present)))
     }
 }
 

@@ -57,8 +57,8 @@ fn bridge() -> InotifyBridge {
     InotifyBridge::new(folder.disk.clone(), Arc::clone(&folder.node_resolver), Arc::clone(&folder.directory_contents))
 }
 
-fn shown_changed(rel: &str, id: &str) -> Announcement {
-    Announcement::FileShownChanged { rel: rel.into(), id: id.into() }
+fn shown_changed(path: &str, onedrive_id: &str) -> Announcement {
+    Announcement::FileShownChanged { path: path.into(), onedrive_id: onedrive_id.into() }
 }
 
 /// The mount does not answer yet: what is given to announce waits, in the order it came, for

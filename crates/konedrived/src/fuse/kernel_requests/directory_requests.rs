@@ -14,7 +14,7 @@ use std::sync::Arc;
 use fuser::{FileHandle, FileType, FopenFlags, Generation, INodeNo, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyOpen};
 
 use crate::fuse::access_mode_switch::AccessModeSwitch;
-use crate::fuse::attributes::{attributes, TTL};
+use crate::fuse::attributes::{to_attributes, TTL};
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::directory_contents::{DirectoryContents, ListedName};
 use crate::fuse::directory_reference::DirectoryReference;
@@ -78,7 +78,7 @@ impl DirectoryRequests {
         for (i, listed_name) in listed_names.iter().enumerate().skip(offset as usize) {
             let entry = self.directory_contents.describe_listed_name(listed_name, &directory);
             let child = self.node_resolver.assign_node_id(&entry, node_id);
-            let attr = attributes(child, access_mode, &entry);
+            let attr = to_attributes(child, access_mode, &entry);
             if reply.add(INodeNo::from(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;
             }

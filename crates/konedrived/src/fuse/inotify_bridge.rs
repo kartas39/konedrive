@@ -26,7 +26,7 @@ use std::thread::JoinHandle;
 use fuser::INodeNo;
 use konedrive_tree::Kind;
 
-use super::backing_directory::{mode_bits, EntryKind, WriteBits};
+use super::backing_directory::{to_mode_bits, EntryKind, WriteBits};
 use super::directory_contents::DirectoryContents;
 use super::node_resolver::NodeResolver;
 use super::node_table::NodeId;
@@ -35,13 +35,13 @@ use super::node_table::NodeId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Announcement {
     /// A name appeared at `rel`, in the directory with the OneDrive id `parent_id`.
-    NameAppeared { rel: PathBuf, kind: Kind, parent_id: Option<String> },
+    NameAppeared { path: PathBuf, kind: Kind, parent_id: Option<String> },
     /// The name of the OneDrive id `id` vanished from `rel`, in the directory with the
     /// OneDrive id `parent_id`.
-    NameVanished { rel: PathBuf, kind: Kind, id: String, parent_id: Option<String> },
+    NameVanished { path: PathBuf, kind: Kind, onedrive_id: String, parent_id: Option<String> },
     /// What the mount shows of the OneDrive file `id` at `rel` changed: its content, or how
     /// much of it is on this computer.
-    FileShownChanged { rel: PathBuf, id: String },
+    FileShownChanged { path: PathBuf, onedrive_id: String },
 }
 
 /// The announcement the bridge's thread is making right now: the name, in the directory node
@@ -170,8 +170,8 @@ impl InotifyBridge {
     fn announce_queued(&self, notifier: &fuser::Notifier, queued: mpsc::Receiver<Vec<Announcement>>) {
         // SAFETY: a system call that takes nothing and cannot fail.
         self.thread_id.store(unsafe { libc::gettid() }, Ordering::SeqCst);
-        let path = |rel: &Path| CString::new(self.folder.join(rel).into_os_string().into_encoded_bytes()).unwrap_or_default();
-        let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let to_c_path = |path: &Path| CString::new(self.folder.join(path).into_os_string().into_encoded_bytes()).unwrap_or_default();
+        let name = |path: &Path| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let begin = |announcement: AnnouncementInProgress| *crate::panic::lock(&self.in_progress) = Some(announcement);
         for announcement in queued.into_iter().flatten() {
             // The mount is going: nothing more is announced through it.
@@ -181,30 +181,30 @@ impl InotifyBridge {
             // SAFETY: plain system calls on a path this function owns.
             unsafe {
                 match announcement {
-                    Announcement::NameAppeared { rel, kind, parent_id } => {
+                    Announcement::NameAppeared { path, kind, parent_id } => {
                         // A directory the kernel was never told of has nobody watching it.
                         let Some(parent) = self.find_directory_node_id(parent_id.as_deref()) else { continue };
-                        begin(AnnouncementInProgress::NameAppearing { parent, name: name(&rel) });
+                        begin(AnnouncementInProgress::NameAppearing { parent, name: name(&path) });
                         match kind {
-                            Kind::Folder => libc::mkdir(path(&rel).as_ptr(), mode_bits(EntryKind::Directory, WriteBits::Present)),
-                            Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | mode_bits(EntryKind::File, WriteBits::Present), 0),
+                            Kind::Folder => libc::mkdir(to_c_path(&path).as_ptr(), to_mode_bits(EntryKind::Directory, WriteBits::Present)),
+                            Kind::File => libc::mknod(to_c_path(&path).as_ptr(), libc::S_IFREG | to_mode_bits(EntryKind::File, WriteBits::Present), 0),
                         };
                     }
-                    Announcement::NameVanished { rel, kind, id, parent_id } => {
+                    Announcement::NameVanished { path, kind, onedrive_id, parent_id } => {
                         // A name the kernel was never told of has nobody watching it go.
-                        let (Some(parent), Some(node_id)) = (self.find_directory_node_id(parent_id.as_deref()), self.node_resolver.find_node_id(&id)) else { continue };
-                        begin(AnnouncementInProgress::NameVanishing { parent, name: name(&rel), node_id, kind });
+                        let (Some(parent), Some(node_id)) = (self.find_directory_node_id(parent_id.as_deref()), self.node_resolver.find_node_id(&onedrive_id)) else { continue };
+                        begin(AnnouncementInProgress::NameVanishing { parent, name: name(&path), node_id, kind });
                         match kind {
-                            Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
-                            Kind::File => libc::unlink(path(&rel).as_ptr()),
+                            Kind::Folder => libc::rmdir(to_c_path(&path).as_ptr()),
+                            Kind::File => libc::unlink(to_c_path(&path).as_ptr()),
                         };
                     }
-                    Announcement::FileShownChanged { rel, id } => {
+                    Announcement::FileShownChanged { path, onedrive_id } => {
                         // The kernel's cached pages of the old content go first.
-                        if let Some(node_id) = self.node_resolver.find_node_id(&id) {
+                        if let Some(node_id) = self.node_resolver.find_node_id(&onedrive_id) {
                             let _ = notifier.inval_inode(INodeNo::from(node_id), 0, 0);
                         }
-                        libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);
+                        libc::utimensat(libc::AT_FDCWD, to_c_path(&path).as_ptr(), std::ptr::null(), 0);
                     }
                 }
             }

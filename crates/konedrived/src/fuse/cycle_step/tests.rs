@@ -64,7 +64,7 @@ fn a_downloaded_copy_whose_content_is_stale_is_removed() {
     let built = build_mount();
     built.download("a.txt", "A", b"old");
     let outcome = apply(&built, vec![with_new_content("A", "R", "a.txt")], None);
-    assert!(matches!(&outcome.changes[..], [OneDriveChange::Stayed { id, .. }] if id == "A"));
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Stayed { onedrive_id, .. }] if onedrive_id == "A"));
     assert!(!built.disk.join("a.txt").exists());
 }
 
@@ -74,7 +74,7 @@ fn a_downloaded_copy_moves_with_its_file() {
     let built = build_mount();
     built.download("a.txt", "A", b"content");
     let outcome = apply(&built, vec![Change::Upsert(row("A", Some("D"), "a.txt", Kind::File))], None);
-    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { id, .. }] if id == "A"));
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { onedrive_id, .. }] if onedrive_id == "A"));
     assert!(!built.disk.join("a.txt").exists());
     assert_eq!(std::fs::read(built.disk.join("docs/a.txt")).unwrap(), b"content");
     assert_eq!(xattr::get(built.disk.join("docs"), XATTR_ITEM_ID).unwrap().as_deref(), Some(b"D".as_slice()));
@@ -141,7 +141,7 @@ fn what_a_cycle_leaves_is_done_once_when_it_is_committed() {
     let built = build_mount_with(&[], &["A"]);
     apply(&built, vec![Change::Delete("A".into())], None);
     let cycle_step = built.mount.cycle_step();
-    let vanished = Announcement::NameVanished { rel: "a.txt".into(), kind: Kind::File, id: "A".into(), parent_id: Some("R".into()) };
+    let vanished = Announcement::NameVanished { path: "a.txt".into(), kind: Kind::File, onedrive_id: "A".into(), parent_id: Some("R".into()) };
     assert_eq!(*crate::panic::lock(&cycle_step.uncommitted_cycle), UncommittedCycle { announcements: vec![vanished], removed_ids: vec!["A".to_owned()] });
     assert_eq!(built.mount.files_interface().count_pins(), 1, "not before the cycle is committed");
     cycle_step.announce_committed_cycle();
@@ -158,7 +158,7 @@ fn only_the_last_cycle_applied_leaves_anything() {
     apply(&built, vec![Change::Delete("B".into())], None);
     let uncommitted_cycle = crate::panic::lock(&built.mount.cycle_step().uncommitted_cycle);
     assert_eq!(uncommitted_cycle.removed_ids, ["B"]);
-    assert!(matches!(&uncommitted_cycle.announcements[..], [Announcement::NameVanished { id, .. }] if id == "B"));
+    assert!(matches!(&uncommitted_cycle.announcements[..], [Announcement::NameVanished { onedrive_id, .. }] if onedrive_id == "B"));
 }
 
 /// Every conflict copy's name of the user's own is taken, so it could not be moved aside:
@@ -174,7 +174,7 @@ fn nothing_is_moved_onto_what_is_still_in_the_way() {
         std::fs::write(built.disk.join("docs").join(crate::local::names::copy_name("a.txt", "fedora", n)), b"an earlier copy").unwrap();
     }
     let outcome = apply(&built, vec![Change::Upsert(row("A", Some("D"), "a.txt", Kind::File))], None);
-    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { id, .. }] if id == "A"));
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { onedrive_id, .. }] if onedrive_id == "A"));
     assert!(outcome.conflicts.moved_aside.is_empty());
     assert_eq!(std::fs::read(built.disk.join("docs/a.txt")).unwrap(), b"mine");
     assert_eq!(std::fs::read(built.disk.join("a.txt")).unwrap(), b"content");
@@ -188,7 +188,7 @@ fn a_directory_of_the_backing_directory_moves_with_its_directory_of_onedrive() {
     built.make_marked_directory("docs", "D");
     std::fs::write(built.disk.join("docs/own.txt"), b"mine").unwrap();
     let outcome = apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
-    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { id, .. }] if id == "D"));
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { onedrive_id, .. }] if onedrive_id == "D"));
     assert!(!built.disk.join("docs").exists());
     assert_eq!(std::fs::read(built.disk.join("papers/own.txt")).unwrap(), b"mine");
     assert_eq!(xattr::get(built.disk.join("papers"), XATTR_ITEM_ID).unwrap().as_deref(), Some(b"D".as_slice()));

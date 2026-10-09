@@ -4,7 +4,7 @@ use super::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 use crate::fuse::detections::tests::{detect, detection_of, file, in_docs, in_root, local_only, quiet, store, writing};
 
 fn in_onedrive(write: OneDriveFileWrite) -> FileWritten {
-    FileWritten::InOneDrive { id: "C".into(), place: in_docs("c.txt"), write }
+    FileWritten::InOneDrive { onedrive_id: "C".into(), place: in_docs("c.txt"), write }
 }
 
 fn said(written: FileWritten) -> (OutboxKind, Option<String>, OutboxState, Option<Reason>, bool) {
@@ -38,7 +38,7 @@ fn a_onedrive_file_closed_untouched_is_said_to_be_where_it_is_as_it_was() {
 
 #[test]
 fn a_file_the_base_no_longer_has_is_recorded_as_nothing() {
-    let gone = FileWritten::InOneDrive { id: "gone".into(), place: in_root("gone.txt"), write: OneDriveFileWrite::Opened(file(1, 0)) };
+    let gone = FileWritten::InOneDrive { onedrive_id: "gone".into(), place: in_root("gone.txt"), write: OneDriveFileWrite::Opened(file(1, 0)) };
     assert!(detect(gone, &store(Vec::new())).is_empty());
 }
 

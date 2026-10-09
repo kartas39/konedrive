@@ -122,7 +122,7 @@ impl ConflictCopies {
             return;
         }
         // The removal is the test of whether it holds anything: one that holds nothing goes.
-        if self.backing_directory.remove_dir(rel).is_ok() {
+        if self.backing_directory.remove_directory(rel).is_ok() {
             return;
         }
         // It was not removed because nothing is there: the directory was never made here.

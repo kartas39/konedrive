@@ -17,7 +17,7 @@ pub(in crate::fuse) struct UncommittedCycle {
 /// The OneDrive ids `changes` took out of the folder.
 pub(in crate::fuse) fn list_removed_ids(changes: &[OneDriveChange]) -> Vec<String> {
     let removed = changes.iter().filter_map(|change| match change {
-        OneDriveChange::Vanished { id, .. } => Some(id.clone()),
+        OneDriveChange::Vanished { onedrive_id, .. } => Some(onedrive_id.clone()),
         OneDriveChange::Appeared { .. } | OneDriveChange::Moved { .. } | OneDriveChange::Stayed { .. } => None,
     });
     removed.collect()

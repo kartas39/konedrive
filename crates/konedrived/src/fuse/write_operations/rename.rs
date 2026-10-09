@@ -69,7 +69,7 @@ impl WriteOperations {
             to_directory,
             name: name.to_owned(),
             new_name: new_name.to_owned(),
-            new_name_is_daemon_owned: self.upload_rules.daemon_owned(new_name),
+            new_name_is_daemon_owned: self.upload_rules.is_daemon_owned(new_name),
             moved_entry,
             target,
             target_holds_entries,
@@ -136,7 +136,7 @@ impl WriteOperations {
     /// removed.
     fn remove_displaced(&self, plan: &RenamePlan, displaced: Option<EntryKind>) {
         let _ = match displaced {
-            Some(EntryKind::Directory) => self.backing_directory.remove_dir(&plan.from),
+            Some(EntryKind::Directory) => self.backing_directory.remove_directory(&plan.from),
             Some(EntryKind::File) => self.backing_directory.remove_file(&plan.from),
             None => Ok(()),
         };
@@ -157,7 +157,7 @@ impl WriteOperations {
     /// new content is read and written through. A local-only entry that was displaced is
     /// gone.
     fn move_node(&self, plan: &RenamePlan, node_id: NodeId, new_parent: NodeId) {
-        let taken = plan.saved_over().map(|(file, over)| {
+        let taken = plan.find_saved_over_file().map(|(file, over)| {
             let _ = self.backing_directory.mark_downloaded_copy(&plan.to.path(), over);
             (&file.on_disk.handle, over)
         });

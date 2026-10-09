@@ -13,7 +13,7 @@
 //!   ([`UploadRules::is_ignored`], or as an [`UploadStatus`]
 //!   [`UploadRules::find_upload_status`]), or by a directory it is in
 //!   ([`UploadRules::is_in_ignored_directory`]);
-//! - which names a program may not make: the daemon's own ([`UploadRules::daemon_owned`])
+//! - which names a program may not make: the daemon's own ([`UploadRules::is_daemon_owned`])
 //!   and a file manager's trash ([`UploadRules::is_trash`]).
 
 use std::path::Path;
@@ -40,13 +40,13 @@ impl UploadRules {
         UploadRules { ignore }
     }
 
-    /// Whether what is in the directory `dir` and is not in OneDrive is ignored
+    /// Whether what is in the directory `directory` and is not in OneDrive is ignored
     /// whatever its name: a directory it is in, which is not in OneDrive either, is on the
     /// ignore list. `in_onedrive` says whether the directory at a path is marked with a
     /// OneDrive id: one that is, is OneDrive's, whatever its name.
-    pub(super) fn is_in_ignored_directory(&self, dir: &Path, in_onedrive: impl Fn(&Path) -> bool) -> bool {
+    pub(super) fn is_in_ignored_directory(&self, directory: &Path, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignore = crate::panic::read(&self.ignore);
-        let mut at = dir;
+        let mut at = directory;
         while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
             if ignore.matches(name) && !in_onedrive(at) {
                 return true;
@@ -56,18 +56,18 @@ impl UploadRules {
         false
     }
 
-    /// Whether what is `name` in the directory `dir` and is not in OneDrive is ignored:
+    /// Whether what is `name` in the directory `directory` and is not in OneDrive is ignored:
     /// its name is on the ignore list, or it is in a directory that is
     /// ([`Self::is_in_ignored_directory`]).
-    pub(super) fn is_ignored(&self, dir: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
+    pub(super) fn is_ignored(&self, directory: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignored = crate::panic::read(&self.ignore).matches(name.as_ref());
-        ignored || self.is_in_ignored_directory(dir, in_onedrive)
+        ignored || self.is_in_ignored_directory(directory, in_onedrive)
     }
 
-    /// Whether what is `name` in the directory `dir` and is not in OneDrive is uploaded from
+    /// Whether what is `name` in the directory `directory` and is not in OneDrive is uploaded from
     /// there, or ignored ([`Self::is_ignored`]).
-    pub(super) fn find_upload_status(&self, dir: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> UploadStatus {
-        match self.is_ignored(dir, name, in_onedrive) {
+    pub(super) fn find_upload_status(&self, directory: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> UploadStatus {
+        match self.is_ignored(directory, name, in_onedrive) {
             true => UploadStatus::Ignored,
             false => UploadStatus::Uploaded,
         }
@@ -75,7 +75,7 @@ impl UploadRules {
 
     /// Whether `name` is one the daemon uses for itself in the folder: no program makes it
     /// or renames anything to it.
-    pub(super) fn daemon_owned(&self, name: &str) -> bool {
+    pub(super) fn is_daemon_owned(&self, name: &str) -> bool {
         daemon_owned(name.as_ref())
     }
 

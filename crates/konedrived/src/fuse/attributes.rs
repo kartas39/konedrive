@@ -1,6 +1,6 @@
 //! The attributes the mount gives the kernel for a name: its kind, size, times and modes.
 //!
-//! [`attributes`] is a function of a directory entry, whose state says everything there is
+//! [`to_attributes`] is a function of a directory entry, whose state says everything there is
 //! to say, and of the access mode, which says the modes. It reads nothing: not the store, not
 //! the disk.
 
@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fuser::{FileAttr, FileType, INodeNo};
 
 use super::access_mode_switch::AccessMode;
-use super::backing_directory::{mode_bits, EntryKind, WriteBits};
+use super::backing_directory::{to_mode_bits, EntryKind, WriteBits};
 use super::node_table::NodeId;
 use super::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::clock::to_system_time;
@@ -24,7 +24,7 @@ fn permissions(access_mode: AccessMode, kind: EntryKind) -> u16 {
         AccessMode::ReadWrite => WriteBits::Present,
         AccessMode::ReadOnly => WriteBits::Removed,
     };
-    mode_bits(kind, write_bits) as u16
+    to_mode_bits(kind, write_bits) as u16
 }
 
 /// The attributes of the node `node_id`, which stands for `entry`, in a folder in
@@ -36,7 +36,7 @@ fn permissions(access_mode: AccessMode, kind: EntryKind) -> u16 {
 ///   time: a download does not change when the file was last modified.
 /// - A file modified here has its copy's size, blocks and time.
 /// - A local-only entry has what the filesystem says of it; a directory shows no size.
-pub(super) fn attributes(node_id: NodeId, access_mode: AccessMode, entry: &DirectoryEntry) -> FileAttr {
+pub(super) fn to_attributes(node_id: NodeId, access_mode: AccessMode, entry: &DirectoryEntry) -> FileAttr {
     let (directory, size, blocks, modified): (bool, u64, u64, SystemTime) = match &entry.state {
         EntryState::Directory(DirectorySyncState::InOneDrive(row)) => (true, 0, 0, to_system_time(row.mtime)),
         EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => (true, 0, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),

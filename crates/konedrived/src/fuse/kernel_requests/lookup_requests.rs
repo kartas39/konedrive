@@ -14,7 +14,7 @@ use fuser::{AccessFlags, Errno, FileAttr, Generation, ReplyAttr, ReplyEmpty, Rep
 use konedrive_tree::Kind;
 
 use crate::fuse::access_mode_switch::{AccessMode, AccessModeSwitch};
-use crate::fuse::attributes::{attributes, TTL};
+use crate::fuse::attributes::{to_attributes, TTL};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::{make_bare_row, DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
@@ -37,7 +37,7 @@ fn make_vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
 /// `access_mode`: the answer of `getattr`, and of a `setattr` that was made.
 pub(super) fn answer_with_attributes(node_resolver: &NodeResolver, access_mode: AccessMode, node_id: NodeId, reply: ReplyAttr) {
     match node_resolver.find_entry(node_id) {
-        Some((entry, _)) => reply.attr(&TTL, &attributes(node_id, access_mode, &entry)),
+        Some((entry, _)) => reply.attr(&TTL, &to_attributes(node_id, access_mode, &entry)),
         None => reply.error(Errno::ENOENT),
     }
 }
@@ -59,7 +59,7 @@ impl LookupRequests {
     /// The attributes of `entry`, which the node `node_id` stands for, in the folder's access
     /// mode.
     fn attributes_of(&self, entry: &DirectoryEntry, node_id: NodeId) -> FileAttr {
-        attributes(node_id, self.access_mode_switch.access_mode(), entry)
+        to_attributes(node_id, self.access_mode_switch.access_mode(), entry)
     }
 
     /// The entry the directory node `parent` holds under `name`, as the folder has it now.

@@ -25,9 +25,9 @@ pub(super) struct RemovePlace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemovePlan {
     /// A file of OneDrive: removed there by the outbox, and its downloaded copy here.
-    OneDriveFile { id: String, path: PathBuf },
+    OneDriveFile { onedrive_id: String, path: PathBuf },
     /// A directory of OneDrive: removed there by the outbox, and its directory here.
-    OneDriveDirectory { id: String, path: PathBuf },
+    OneDriveDirectory { onedrive_id: String, path: PathBuf },
     /// A local-only file: removed here, and forgotten by the outbox.
     LocalOnlyFile { handle: FileHandle, path: PathBuf },
     /// A local-only directory: removed here, and forgotten by the outbox.
@@ -46,10 +46,10 @@ pub(super) fn plan_remove(kind: EntryKind, name: &str, place: RemovePlace) -> Re
         (EntryState::Directory(_), EntryKind::File) => Err(Errno::EISDIR),
         (EntryState::File(_), EntryKind::Directory) => Err(Errno::ENOTDIR),
         (EntryState::Directory(_), EntryKind::Directory) if place.holds_entries => Err(Errno::ENOTEMPTY),
-        (EntryState::Directory(DirectorySyncState::InOneDrive(row)), EntryKind::Directory) => Ok(RemovePlan::OneDriveDirectory { id: row.id, path }),
+        (EntryState::Directory(DirectorySyncState::InOneDrive(row)), EntryKind::Directory) => Ok(RemovePlan::OneDriveDirectory { onedrive_id: row.id, path }),
         (EntryState::Directory(DirectorySyncState::LocalOnly(local_only)), EntryKind::Directory) => Ok(RemovePlan::LocalOnlyDirectory { handle: local_only.on_disk.handle, path }),
         (EntryState::File(FileSyncState::LocalOnly(local_only)), EntryKind::File) => Ok(RemovePlan::LocalOnlyFile { handle: local_only.on_disk.handle, path }),
-        (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), EntryKind::File) => Ok(RemovePlan::OneDriveFile { id: row.id, path }),
+        (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), EntryKind::File) => Ok(RemovePlan::OneDriveFile { onedrive_id: row.id, path }),
     }
 }
 

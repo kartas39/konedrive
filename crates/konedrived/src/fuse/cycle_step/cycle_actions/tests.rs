@@ -19,20 +19,20 @@ fn at_new_path(new_path: NewPathContents) -> BackingDirectoryFacts {
     BackingDirectoryFacts { holds_at_old_path: true, new_path }
 }
 
-fn vanished(kind: Kind, rel: &str) -> CycleAction {
-    CycleAction::Announce(Announcement::NameVanished { rel: rel.into(), kind, id: "A".into(), parent_id: Some("D".into()) })
+fn vanished(kind: Kind, path: &str) -> CycleAction {
+    CycleAction::Announce(Announcement::NameVanished { path: path.into(), kind, onedrive_id: "A".into(), parent_id: Some("D".into()) })
 }
 
-fn appeared(kind: Kind, rel: &str) -> CycleAction {
-    CycleAction::Announce(Announcement::NameAppeared { rel: rel.into(), kind, parent_id: Some("D".into()) })
+fn appeared(kind: Kind, path: &str) -> CycleAction {
+    CycleAction::Announce(Announcement::NameAppeared { path: path.into(), kind, parent_id: Some("D".into()) })
 }
 
-fn aside(rel: &str) -> CycleAction {
-    CycleAction::MoveLocalOnlyEntryAside { path: rel.into(), parent_id: Some("D".into()) }
+fn aside(path: &str) -> CycleAction {
+    CycleAction::MoveLocalOnlyEntryAside { path: path.into(), parent_id: Some("D".into()) }
 }
 
-fn remove_copy(rel: &str) -> CycleAction {
-    CycleAction::RemoveDownloadedCopy { path: rel.into(), id: "A".into() }
+fn remove_copy(path: &str) -> CycleAction {
+    CycleAction::RemoveDownloadedCopy { path: path.into(), onedrive_id: "A".into() }
 }
 
 fn move_on_disk(from: &str, to: &str) -> CycleAction {
@@ -48,7 +48,7 @@ fn a_file_that_vanished_loses_its_downloaded_copy_and_its_name() {
 #[test]
 fn a_directory_that_vanished_is_removed_if_empty_and_loses_its_name() {
     let actions = list_cycle_actions(&change(Some("docs/old"), None, Kind::Folder), &nothing_on_disk());
-    assert_eq!(actions, [CycleAction::RemoveDirectoryIfEmpty { id: "A".into(), path: "docs/old".into() }, vanished(Kind::Folder, "docs/old")]);
+    assert_eq!(actions, [CycleAction::RemoveDirectoryIfEmpty { onedrive_id: "A".into(), path: "docs/old".into() }, vanished(Kind::Folder, "docs/old")]);
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn a_directory_that_moved_has_its_rows_rebased_before_it_moves() {
 #[test]
 fn a_file_that_stayed_is_announced_as_shown_anew() {
     let actions = list_cycle_actions(&change(Some("docs/a.txt"), Some("docs/a.txt"), Kind::File), &nothing_on_disk());
-    assert_eq!(actions, [CycleAction::Announce(Announcement::FileShownChanged { rel: "docs/a.txt".into(), id: "A".into() })]);
+    assert_eq!(actions, [CycleAction::Announce(Announcement::FileShownChanged { path: "docs/a.txt".into(), onedrive_id: "A".into() })]);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn a_file_that_stayed_with_new_content_loses_its_downloaded_copy() {
     new.as_mut().unwrap().0.ctag = Some("other".into());
     let stayed = OneDriveChange::of("A".into(), placed(Kind::File, "docs/a.txt"), new).unwrap();
     let actions = list_cycle_actions(&stayed, &nothing_on_disk());
-    assert_eq!(actions, [remove_copy("docs/a.txt"), CycleAction::Announce(Announcement::FileShownChanged { rel: "docs/a.txt".into(), id: "A".into() })]);
+    assert_eq!(actions, [remove_copy("docs/a.txt"), CycleAction::Announce(Announcement::FileShownChanged { path: "docs/a.txt".into(), onedrive_id: "A".into() })]);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn a_directory_that_stayed_does_nothing() {
 
 #[test]
 fn the_removed_directories_go_deepest_first_and_keep_their_order_at_one_depth() {
-    let removed = |id: &str, path: &str| RemovedDirectory { id: id.into(), path: PathBuf::from(path) };
+    let removed = |onedrive_id: &str, path: &str| RemovedDirectory { onedrive_id: onedrive_id.into(), path: PathBuf::from(path) };
     let ordered = order_deepest_first(vec![removed("1", "a"), removed("2", "a/b/c"), removed("3", "a/b"), removed("4", "x/y")]);
     assert_eq!(ordered, [removed("2", "a/b/c"), removed("3", "a/b"), removed("4", "x/y"), removed("1", "a")]);
 }

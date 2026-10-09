@@ -91,7 +91,7 @@ impl WriteOperations {
         MakePlace {
             parent_directory,
             is_in_root: parent == NodeId::ROOT,
-            name_is_daemon_owned: self.upload_rules.daemon_owned(name),
+            name_is_daemon_owned: self.upload_rules.is_daemon_owned(name),
             name_is_trash: self.upload_rules.is_trash(name),
             name_is_taken,
         }
@@ -100,7 +100,7 @@ impl WriteOperations {
     /// A new directory at `rel`, or a new file, which is handed back open.
     fn make_in_backing_directory(&self, rel: &Path, kind: EntryKind) -> Result<Option<File>, Errno> {
         match kind {
-            EntryKind::Directory => self.backing_directory.make_dir(rel).map(|()| None),
+            EntryKind::Directory => self.backing_directory.make_directory(rel).map(|()| None),
             EntryKind::File => self.backing_directory.make_file(rel).map(Some),
         }
         .map_err(|e| to_errno(&e))
@@ -109,7 +109,7 @@ impl WriteOperations {
     /// Takes back what [`make_in_backing_directory`](Self::make_in_backing_directory) made.
     fn unmake_in_backing_directory(&self, rel: &Path, kind: EntryKind) {
         let _ = match kind {
-            EntryKind::Directory => self.backing_directory.remove_dir(rel),
+            EntryKind::Directory => self.backing_directory.remove_directory(rel),
             EntryKind::File => self.backing_directory.remove_file(rel),
         };
     }

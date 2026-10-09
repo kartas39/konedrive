@@ -66,6 +66,6 @@ fn a_change_of_the_list_is_what_the_next_answer_goes_by() {
 #[test]
 fn the_daemons_names_and_a_trash_directory_are_told() {
     let rules = rules();
-    assert!(rules.daemon_owned(HOLDING) && !rules.daemon_owned("docs"));
+    assert!(rules.is_daemon_owned(HOLDING) && !rules.is_daemon_owned("docs"));
     assert!(rules.is_trash(".Trash-1000") && rules.is_trash(".Trash") && !rules.is_trash("Trash"));
 }

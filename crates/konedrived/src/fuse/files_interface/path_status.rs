@@ -16,7 +16,7 @@ use crate::fuse::state_attribute::to_state_attribute;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathStatus {
     /// Its OneDrive id.
-    pub id: String,
+    pub onedrive_id: String,
     /// It carries a pin of its own.
     pub own_pin: bool,
     /// The directory above that pins it.

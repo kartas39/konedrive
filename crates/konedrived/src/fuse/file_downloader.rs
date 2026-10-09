@@ -78,14 +78,14 @@ pub(super) struct FileDownloader {
 /// panics still leaves no open waiting for it for ever.
 struct RunningDownload {
     download_states: Arc<DownloadStates>,
-    id: String,
+    onedrive_id: String,
     finished: bool,
 }
 
 impl Drop for RunningDownload {
     fn drop(&mut self) {
         if !self.finished {
-            self.download_states.abandon(&self.id);
+            self.download_states.abandon(&self.onedrive_id);
         }
     }
 }
@@ -107,10 +107,10 @@ impl FileDownloader {
         FileDownloader { backing_directory, directory_contents, download_states, inotify_bridge, source, pool, split_download_share, report, folder, runtime }
     }
 
-    /// Tells whoever watches the folder that what is shown of the OneDrive file `id` at
-    /// `rel` changed.
-    fn announce_file_change(&self, rel: PathBuf, id: String) {
-        self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel, id }]);
+    /// Tells whoever watches the folder that what is shown of the OneDrive file
+    /// `onedrive_id` at `path` changed.
+    fn announce_file_change(&self, path: PathBuf, onedrive_id: String) {
+        self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path, onedrive_id }]);
     }
 
     /// Downloads the OneDrive file `row` to `rel` unless a download of it runs already;
@@ -124,7 +124,7 @@ impl FileDownloader {
         self.announce_file_change(rel.clone(), row.id.clone());
         let downloader = Arc::clone(self);
         self.runtime.spawn(async move {
-            let mut running = RunningDownload { download_states: Arc::clone(&downloader.download_states), id: row.id.clone(), finished: false };
+            let mut running = RunningDownload { download_states: Arc::clone(&downloader.download_states), onedrive_id: row.id.clone(), finished: false };
             let downloaded = downloader.download_and_land(&row, &rel, class, unfinished_file).await;
             let shown_path = downloader.shown_path(&rel);
             let event = match &downloaded {

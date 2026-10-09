@@ -97,7 +97,7 @@ pub(super) trait StoreFacts {
     /// The outbox's rows of the entry on disk that `handle` identifies.
     fn outbox_rows_of(&self, handle: &FileHandle) -> Result<Vec<OutboxRow>, TreeError>;
     /// The outbox's rows at the path `rel` and below it.
-    fn rows_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError>;
+    fn rows_at_or_below(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError>;
     /// Whether the outbox holds new content of the OneDrive file `id`.
     fn has_update(&self, id: &str) -> Result<bool, TreeError>;
 }
@@ -111,7 +111,7 @@ impl StoreFacts for TreeStore {
         self.outbox_for_object(handle)
     }
 
-    fn rows_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+    fn rows_at_or_below(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
         self.outbox_at_or_under(rel)
     }
 

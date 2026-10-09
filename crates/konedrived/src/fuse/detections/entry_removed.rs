@@ -11,16 +11,16 @@ use super::{detect_removed_by_id, detect_forgotten, FolderEvent, OutboxBatch, St
 #[derive(Debug)]
 pub(in crate::fuse) enum EntryRemoved {
     /// A file or directory of OneDrive, by its id: removed from OneDrive by the outbox.
-    InOneDrive { id: String, rel: PathBuf },
+    InOneDrive { onedrive_id: String, path: PathBuf },
     /// A local-only entry: what the outbox held of it is removed.
-    LocalOnly { handle: FileHandle, rel: PathBuf },
+    LocalOnly { handle: FileHandle, path: PathBuf },
 }
 
 impl FolderEvent for EntryRemoved {
     fn detect(self, facts: &impl StoreFacts, _now: i64) -> Result<OutboxBatch, TreeError> {
         Ok(OutboxBatch::of(match self {
-            EntryRemoved::InOneDrive { id, rel } => detect_removed_by_id(facts, &id, &rel)?,
-            EntryRemoved::LocalOnly { handle, rel } => detect_forgotten(facts, &handle, &rel)?,
+            EntryRemoved::InOneDrive { onedrive_id, path } => detect_removed_by_id(facts, &onedrive_id, &path)?,
+            EntryRemoved::LocalOnly { handle, path } => detect_forgotten(facts, &handle, &path)?,
         }))
     }
 }

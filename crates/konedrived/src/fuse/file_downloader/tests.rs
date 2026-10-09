@@ -86,7 +86,7 @@ fn a_download_lands_at_the_files_path_as_its_downloaded_copy() {
     assert!(downloads.folder.backing_directory.find_downloaded_copy(&at("a.txt"), "A").is_some());
     assert!(!downloads.file_downloader.is_downloading("A"));
     let announced = downloads.inotify_bridge.list_queued_announcements();
-    assert_eq!(announced.first(), Some(&Announcement::FileShownChanged { rel: at("a.txt"), id: "A".into() }));
+    assert_eq!(announced.first(), Some(&Announcement::FileShownChanged { path: at("a.txt"), onedrive_id: "A".into() }));
 }
 
 /// One download of a file runs at a time: whoever asks while it runs waits for the one that
@@ -123,7 +123,7 @@ fn a_running_download_that_is_dropped_unfinished_is_abandoned() {
     let download_states = Arc::new(DownloadStates::new(1 << 20));
     let (waiter, told) = oneshot::channel();
     download_states.start_or_join("A", Some(waiter));
-    drop(RunningDownload { download_states: Arc::clone(&download_states), id: "A".into(), finished: false });
+    drop(RunningDownload { download_states: Arc::clone(&download_states), onedrive_id: "A".into(), finished: false });
     assert_eq!(told.blocking_recv(), Ok(Err(libc::EIO)));
     assert!(!download_states.is_downloading("A"));
 }
@@ -133,6 +133,6 @@ fn a_running_download_that_finished_is_not_abandoned() {
     let download_states = Arc::new(DownloadStates::new(1 << 20));
     let (waiter, mut told) = oneshot::channel();
     download_states.start_or_join("A", Some(waiter));
-    drop(RunningDownload { download_states: Arc::clone(&download_states), id: "A".into(), finished: true });
+    drop(RunningDownload { download_states: Arc::clone(&download_states), onedrive_id: "A".into(), finished: true });
     assert!(download_states.is_downloading("A") && told.try_recv().is_err(), "its end is the download states' to be told");
 }

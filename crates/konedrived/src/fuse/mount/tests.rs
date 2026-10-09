@@ -145,7 +145,7 @@ fn the_parts_of_a_mount_are_built_over_a_folder_that_no_mount_lies_over() {
     assert!(!built.mount.access_mode_switch().is_read_write(), "a mount starts every folder read-only");
     assert_eq!(built.mount.files_interface().count_pins(), 1);
     let status = built.mount.files_interface().find_path_status(&built.path("docs/c.txt")).unwrap();
-    assert_eq!((status.id.as_str(), status.own_pin, status.pinned_above.as_deref()), ("C", false, Some(built.path("docs").as_path())));
+    assert_eq!((status.onedrive_id.as_str(), status.own_pin, status.pinned_above.as_deref()), ("C", false, Some(built.path("docs").as_path())));
     assert!(matches!(built.mount.files_interface().find_path_status(Path::new("/elsewhere/a.txt")), Err(FilesRefusal::OutsideFolder)));
     // No session: nothing was mounted, and there is nothing to take off.
     assert!(crate::panic::lock(&built.mount.session).is_none() && built.mount.fuse_connection.is_none());

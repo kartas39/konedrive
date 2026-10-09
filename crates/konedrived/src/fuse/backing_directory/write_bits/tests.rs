@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use super::{mode_bits, remove_write_bits, restore_write_bits, WriteBits};
+use super::{to_mode_bits, remove_write_bits, restore_write_bits, WriteBits};
 use crate::fuse::backing_directory::tests::empty_backing_directory;
 use crate::fuse::backing_directory::EntryKind;
 
@@ -31,10 +31,10 @@ fn a_folder_without_write_bits_takes_nothing_and_with_them_restored_is_its_owner
 
 #[test]
 fn the_modes_are_those_of_an_owner_who_may_or_may_not_change_the_entry() {
-    assert_eq!(mode_bits(EntryKind::Directory, WriteBits::Present), 0o755);
-    assert_eq!(mode_bits(EntryKind::File, WriteBits::Present), 0o644);
-    assert_eq!(mode_bits(EntryKind::Directory, WriteBits::Removed), 0o555);
-    assert_eq!(mode_bits(EntryKind::File, WriteBits::Removed), 0o444);
+    assert_eq!(to_mode_bits(EntryKind::Directory, WriteBits::Present), 0o755);
+    assert_eq!(to_mode_bits(EntryKind::File, WriteBits::Present), 0o644);
+    assert_eq!(to_mode_bits(EntryKind::Directory, WriteBits::Removed), 0o555);
+    assert_eq!(to_mode_bits(EntryKind::File, WriteBits::Removed), 0o444);
 }
 
 /// The path the write bits are restored through names the directory, and not the link the

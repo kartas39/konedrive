@@ -48,24 +48,24 @@ pub(in crate::fuse) enum CycleAction {
     RebaseOutboxRows { from: PathBuf, to: PathBuf },
     /// The downloaded copy of the OneDrive file `id` at `path` is removed: the file is gone,
     /// or its content is another now.
-    RemoveDownloadedCopy { path: PathBuf, id: String },
+    RemoveDownloadedCopy { path: PathBuf, onedrive_id: String },
     /// What the backing directory holds at `from` moves to `to` with its file or directory.
     /// Not done when a [`CycleAction::MoveLocalOnlyEntryAside`] of the same change left the
     /// user's own in the way: nothing is moved onto it.
     MoveInBackingDirectory { from: PathBuf, to: PathBuf },
     /// The directory with the OneDrive id `id` is gone from OneDrive: the directory at `path`
     /// is removed when nothing is left in it, and stays as a local-only directory otherwise.
-    RemoveDirectoryIfEmpty { id: String, path: PathBuf },
+    RemoveDirectoryIfEmpty { onedrive_id: String, path: PathBuf },
     /// Whoever watches the folder is told.
     Announce(Announcement),
 }
 
-fn announce_vanished(id: &str, old: &Row, was: &PathBuf) -> CycleAction {
-    CycleAction::Announce(Announcement::NameVanished { rel: was.clone(), kind: old.kind, id: id.to_owned(), parent_id: old.parent_id.clone() })
+fn announce_vanished(onedrive_id: &str, old: &Row, was: &PathBuf) -> CycleAction {
+    CycleAction::Announce(Announcement::NameVanished { path: was.clone(), kind: old.kind, onedrive_id: onedrive_id.to_owned(), parent_id: old.parent_id.clone() })
 }
 
 fn announce_appeared(new: &Row, now: &PathBuf) -> CycleAction {
-    CycleAction::Announce(Announcement::NameAppeared { rel: now.clone(), kind: new.kind, parent_id: new.parent_id.clone() })
+    CycleAction::Announce(Announcement::NameAppeared { path: now.clone(), kind: new.kind, parent_id: new.parent_id.clone() })
 }
 
 fn move_aside(new: &Row, now: &PathBuf, facts: &BackingDirectoryFacts) -> Option<CycleAction> {
@@ -86,36 +86,36 @@ fn move_aside(new: &Row, now: &PathBuf, facts: &BackingDirectoryFacts) -> Option
 pub(in crate::fuse) fn list_cycle_actions(change: &OneDriveChange, facts: &BackingDirectoryFacts) -> Vec<CycleAction> {
     let mut actions = Vec::new();
     match change {
-        OneDriveChange::Vanished { id, old, was } => {
+        OneDriveChange::Vanished { onedrive_id, old, was } => {
             actions.push(match old.kind {
-                Kind::File => CycleAction::RemoveDownloadedCopy { path: was.clone(), id: id.clone() },
-                Kind::Folder => CycleAction::RemoveDirectoryIfEmpty { id: id.clone(), path: was.clone() },
+                Kind::File => CycleAction::RemoveDownloadedCopy { path: was.clone(), onedrive_id: onedrive_id.clone() },
+                Kind::Folder => CycleAction::RemoveDirectoryIfEmpty { onedrive_id: onedrive_id.clone(), path: was.clone() },
             });
-            actions.push(announce_vanished(id, old, was));
+            actions.push(announce_vanished(onedrive_id, old, was));
         }
         OneDriveChange::Appeared { new, now, .. } => {
             actions.extend(move_aside(new, now, facts));
             actions.push(announce_appeared(new, now));
         }
-        OneDriveChange::Moved { id, old, was, new, now } => {
+        OneDriveChange::Moved { onedrive_id, old, was, new, now } => {
             actions.extend(move_aside(new, now, facts));
             if new.kind == Kind::Folder {
                 actions.push(CycleAction::RebaseOutboxRows { from: was.clone(), to: now.clone() });
             }
             if change.has_new_content() {
-                actions.push(CycleAction::RemoveDownloadedCopy { path: was.clone(), id: id.clone() });
+                actions.push(CycleAction::RemoveDownloadedCopy { path: was.clone(), onedrive_id: onedrive_id.clone() });
             } else if facts.holds_at_old_path && facts.new_path != NewPathContents::OtherEntry {
                 actions.push(CycleAction::MoveInBackingDirectory { from: was.clone(), to: now.clone() });
             }
-            actions.push(announce_vanished(id, old, was));
+            actions.push(announce_vanished(onedrive_id, old, was));
             actions.push(announce_appeared(new, now));
         }
-        OneDriveChange::Stayed { id, new, at, .. } => {
+        OneDriveChange::Stayed { onedrive_id, new, at, .. } => {
             if change.has_new_content() {
-                actions.push(CycleAction::RemoveDownloadedCopy { path: at.clone(), id: id.clone() });
+                actions.push(CycleAction::RemoveDownloadedCopy { path: at.clone(), onedrive_id: onedrive_id.clone() });
             }
             if new.kind == Kind::File {
-                actions.push(CycleAction::Announce(Announcement::FileShownChanged { rel: at.clone(), id: id.clone() }));
+                actions.push(CycleAction::Announce(Announcement::FileShownChanged { path: at.clone(), onedrive_id: onedrive_id.clone() }));
             }
         }
     }
@@ -125,7 +125,7 @@ pub(in crate::fuse) fn list_cycle_actions(change: &OneDriveChange, facts: &Backi
 /// A directory gone from OneDrive, which the end of the step removes if it is empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::fuse) struct RemovedDirectory {
-    pub(in crate::fuse) id: String,
+    pub(in crate::fuse) onedrive_id: String,
     pub(in crate::fuse) path: PathBuf,
 }
 

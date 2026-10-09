@@ -45,12 +45,12 @@ pub(super) struct RangeReaders {
 /// dropped.
 pub(super) struct ActiveRangeRead {
     range_readers: Arc<RangeReaders>,
-    id: String,
+    onedrive_id: String,
 }
 
 impl Drop for ActiveRangeRead {
     fn drop(&mut self) {
-        if let Some(reader) = crate::panic::lock(&self.range_readers.readers).get_mut(&self.id) {
+        if let Some(reader) = crate::panic::lock(&self.range_readers.readers).get_mut(&self.onedrive_id) {
             reader.in_flight = reader.in_flight.saturating_sub(1);
             reader.lingers_until = Instant::now() + READ_LINGERS;
         }
@@ -80,7 +80,7 @@ impl RangeReaders {
                 self.runtime.spawn(Arc::clone(self).expire_reader(id.to_owned()));
             }
         }
-        ActiveRangeRead { range_readers: Arc::clone(self), id: id.to_owned() }
+        ActiveRangeRead { range_readers: Arc::clone(self), onedrive_id: id.to_owned() }
     }
 
     /// The timer of the reader of `id`: lets the reader, and its slot, go once no read of it

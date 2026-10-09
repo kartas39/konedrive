@@ -14,7 +14,7 @@ use crate::fuse::backing_directory::DiskEntry;
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum FileWritten {
     /// A file of OneDrive, by its id, in its downloaded copy.
-    InOneDrive { id: String, place: EntryPlace, write: OneDriveFileWrite },
+    InOneDrive { onedrive_id: String, place: EntryPlace, write: OneDriveFileWrite },
     /// A file that is not in OneDrive yet.
     LocalOnly { file: LocalOnlyEntry, write: LocalOnlyFileWrite },
 }
@@ -55,8 +55,8 @@ impl FolderEvent for FileWritten {
                 };
                 Ok(OutboxBatch::of([detect_local_only_entry(&file.place, &file.on_disk, write_state, now)]))
             }
-            FileWritten::InOneDrive { id, place, write } => {
-                let Some(base) = facts.base_row(&id)? else { return Ok(OutboxBatch::default()) };
+            FileWritten::InOneDrive { onedrive_id, place, write } => {
+                let Some(base) = facts.base_row(&onedrive_id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {
                     OneDriveFileWrite::Opened(copy) => {
                         let mut update = detect_modified(&place, &base, &copy);

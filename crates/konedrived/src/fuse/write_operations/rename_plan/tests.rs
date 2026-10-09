@@ -151,7 +151,7 @@ fn a_local_only_entry_moves_to_where_nothing_is_uploaded() {
 fn a_local_only_file_renamed_over_a_onedrive_file_is_saved_over_it() {
     let saved = plan_rename(RenameMode::Replace, over(local_only_file("a.txt"), onedrive_file("B", "new.txt"))).unwrap();
     let RenameDecision::Rename(plan) = saved else { panic!("a rename: {saved:?}") };
-    assert_eq!(plan.saved_over().map(|(file, over)| (file.place.name.as_str(), over)), Some(("a.txt", "B")));
+    assert_eq!(plan.find_saved_over_file().map(|(file, over)| (file.place.name.as_str(), over)), Some(("a.txt", "B")));
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn any_other_rename_saves_over_nothing() {
     ];
     for places in plans {
         let RenameDecision::Rename(plan) = plan_rename(RenameMode::Replace, places).unwrap() else { panic!("a rename") };
-        assert_eq!(plan.saved_over().map(|(_, over)| over), None);
+        assert_eq!(plan.find_saved_over_file().map(|(_, over)| over), None);
     }
 }
 
@@ -198,11 +198,11 @@ fn a_local_only_file_renamed_over_a_onedrive_file_is_recorded_as_saved_over_it()
 #[test]
 fn a_onedrive_file_or_directory_is_recorded_as_moved_in_onedrive() {
     let file_plan = plan(onedrive_file("A", "a.txt"), None, UploadStatus::Uploaded);
-    let moved_file = MovedEntry::InOneDrive { id: "A".into(), kind: EntryKind::File, handle: Some(handle(7)) };
+    let moved_file = MovedEntry::InOneDrive { onedrive_id: "A".into(), kind: EntryKind::File, handle: Some(handle(7)) };
     assert_eq!(describe_rename(&file_plan, WriteState::NotOpen, Some(handle(7)), Vec::new()), moved(&file_plan, moved_file));
     // What the rules say of the new place is not asked of what is in OneDrive.
     let directory_plan = plan(onedrive_directory("D", "a.txt"), None, UploadStatus::Ignored);
-    let moved_directory = MovedEntry::InOneDrive { id: "D".into(), kind: EntryKind::Directory, handle: None };
+    let moved_directory = MovedEntry::InOneDrive { onedrive_id: "D".into(), kind: EntryKind::Directory, handle: None };
     assert_eq!(describe_rename(&directory_plan, WriteState::NotOpen, None, Vec::new()), moved(&directory_plan, moved_directory));
 }
 

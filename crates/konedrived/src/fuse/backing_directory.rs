@@ -38,7 +38,7 @@ mod write_bits;
 
 pub(super) use download_landing::LandingOutcome;
 pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
-pub(super) use write_bits::{mode_bits, remove_write_bits, restore_write_bits, WriteBits};
+pub(super) use write_bits::{to_mode_bits, remove_write_bits, restore_write_bits, WriteBits};
 
 /// Where an earlier build built its downloads, inside the backing directory: removed when the
 /// directory is opened. A download is built in a file without a name now.
@@ -56,13 +56,13 @@ impl BackingDirectory {
     /// konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
         if legacy_placeholders::holds_legacy_placeholders(folder) {
-            return Err(legacy_placeholders::refusal(folder));
+            return Err(legacy_placeholders::describe_refusal(folder));
         }
         // `fusermount3` mounts only where its user may write; its write bits were removed
         // when the daemon last ended.
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(folder, fs::Permissions::from_mode(mode_bits(EntryKind::Directory, WriteBits::Present)));
+            let _ = fs::set_permissions(folder, fs::Permissions::from_mode(to_mode_bits(EntryKind::Directory, WriteBits::Present)));
         }
         let backing_directory = BackingDirectory { descriptor: File::open(folder)? };
         let _ = fs::remove_dir_all(backing_directory.resolve_path(Path::new(LEGACY_STAGING_DIRECTORY)));

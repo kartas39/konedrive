@@ -16,8 +16,8 @@ fn moved(entry: MovedEntry, from: &str, to: EntryPlace, displaced: Option<Displa
     EntryRenamed::Moved { entry, from: rel(from), to, displaced }
 }
 
-fn in_onedrive(id: &str, kind: EntryKind) -> MovedEntry {
-    MovedEntry::InOneDrive { id: id.into(), kind, handle: None }
+fn in_onedrive(onedrive_id: &str, kind: EntryKind) -> MovedEntry {
+    MovedEntry::InOneDrive { onedrive_id: onedrive_id.into(), kind, handle: None }
 }
 
 /// What each detection is, in order: its kind, and its OneDrive id or the first byte of its
@@ -33,7 +33,7 @@ fn pair(kind: OutboxKind, what: &str) -> (OutboxKind, String) {
 #[test]
 fn a_onedrive_file_renamed_is_moved_with_the_content_it_had() {
     let store = store(Vec::new());
-    let renamed = moved(MovedEntry::InOneDrive { id: "A".into(), kind: EntryKind::File, handle: Some(handle(9)) }, "a.txt", in_docs("new.txt"), None);
+    let renamed = moved(MovedEntry::InOneDrive { onedrive_id: "A".into(), kind: EntryKind::File, handle: Some(handle(9)) }, "a.txt", in_docs("new.txt"), None);
     let batch = detect(renamed, &store);
     let [d] = batch.detections.as_slice() else { panic!("one detection: {batch:?}") };
     assert_eq!((d.kind, d.item_id.as_deref(), d.object.as_ref(), d.same_content), (OutboxKind::Move, Some("A"), Some(&handle(9)), true));

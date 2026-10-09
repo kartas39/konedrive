@@ -33,7 +33,7 @@ pub(in crate::fuse) enum EntryRenamed {
 pub(in crate::fuse) enum MovedEntry {
     /// A file or a directory of OneDrive: moved in OneDrive. `handle` is of what the backing
     /// directory holds for it, now at the new place: its downloaded copy, or its directory.
-    InOneDrive { id: String, kind: EntryKind, handle: Option<FileHandle> },
+    InOneDrive { onedrive_id: String, kind: EntryKind, handle: Option<FileHandle> },
     /// A local-only file, to a place it is uploaded from.
     LocalOnlyFile { file: DiskEntry, write_state: WriteState },
     /// A local-only file, to a place where it is ignored from now on.
@@ -68,8 +68,8 @@ impl FolderEvent for EntryRenamed {
                     None => Vec::new(),
                 });
                 let kind = match entry {
-                    MovedEntry::InOneDrive { id, kind, handle } => {
-                        batch.detections.extend(detect_moved_by_id(facts, &id, handle, &to)?);
+                    MovedEntry::InOneDrive { onedrive_id, kind, handle } => {
+                        batch.detections.extend(detect_moved_by_id(facts, &onedrive_id, handle, &to)?);
                         kind
                     }
                     MovedEntry::LocalOnlyFile { file, write_state } => {
@@ -77,11 +77,11 @@ impl FolderEvent for EntryRenamed {
                         EntryKind::File
                     }
                     MovedEntry::IgnoredLocalOnlyFile { file } => {
-                        detect_kept_off_onedrive(facts, &file.handle, &from, &at, &mut batch)?;
+                        detect_ignored(facts, &file.handle, &from, &at, &mut batch)?;
                         EntryKind::File
                     }
                     MovedEntry::IgnoredLocalOnlyDirectory { handle } => {
-                        detect_kept_off_onedrive(facts, &handle, &from, &at, &mut batch)?;
+                        detect_ignored(facts, &handle, &from, &at, &mut batch)?;
                         EntryKind::Directory
                     }
                     MovedEntry::LocalOnlyDirectory { uploaded_entries } => {
@@ -134,9 +134,9 @@ fn detect_uploaded_from(facts: &impl StoreFacts, file: &DiskEntry, write_state: 
 /// a local-only entry at and below the place it came from, that is not being sent is removed
 /// from the outbox, and no row is left of it. A row of the entry itself that is being sent
 /// is left to finish, and is followed by the removal of what it made in OneDrive.
-fn detect_kept_off_onedrive(facts: &impl StoreFacts, handle: &FileHandle, from: &Path, at: &Path, batch: &mut OutboxBatch) -> Result<(), TreeError> {
+fn detect_ignored(facts: &impl StoreFacts, handle: &FileHandle, from: &Path, at: &Path, batch: &mut OutboxBatch) -> Result<(), TreeError> {
     let own = facts.outbox_rows_of(handle)?;
-    let below = facts.rows_at_or_under(from)?;
+    let below = facts.rows_at_or_below(from)?;
     if own.iter().any(|row| row.state == OutboxState::Running) {
         batch.detections.push(detect_removed_at(None, Some(handle.clone()), at));
     }

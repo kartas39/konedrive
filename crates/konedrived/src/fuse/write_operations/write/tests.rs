@@ -39,7 +39,7 @@ fn last_close(outcome: CloseOutcome, entry: &DirectoryEntry, node_stands_for_fil
 }
 
 fn onedrive_write(write: OneDriveFileWrite) -> Option<FileWritten> {
-    Some(FileWritten::InOneDrive { id: "A".into(), place: EntryPlace::new(&root(), "a.txt"), write })
+    Some(FileWritten::InOneDrive { onedrive_id: "A".into(), place: EntryPlace::new(&root(), "a.txt"), write })
 }
 
 #[test]

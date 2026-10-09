@@ -66,7 +66,7 @@ pub(super) struct RenamePlan {
 impl RenamePlan {
     /// The local-only file that is saved, by rename, over a OneDrive file, and that file's
     /// OneDrive id.
-    pub(super) fn saved_over(&self) -> Option<(&LocalOnlyEntry, &str)> {
+    pub(super) fn find_saved_over_file(&self) -> Option<(&LocalOnlyEntry, &str)> {
         match (&self.moved_entry.state, self.target.as_ref().and_then(DirectoryEntry::onedrive_id)) {
             (EntryState::File(FileSyncState::LocalOnly(file)), Some(over)) => Some((file, over)),
             _ => None,
@@ -107,12 +107,12 @@ pub(super) enum BackingDirectoryMove {
 ///   ignored from now on.
 /// - What was at the new place is displaced with it: by its OneDrive id, or by its handle.
 pub(super) fn describe_rename(plan: &RenamePlan, write_state: WriteState, handle_at_new_place: Option<FileHandle>, uploaded_entries: Vec<LocalOnlyEntry>) -> EntryRenamed {
-    if let Some((file, over)) = plan.saved_over() {
+    if let Some((file, over)) = plan.find_saved_over_file() {
         return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), write_state, over: over.to_owned(), to: plan.to.clone() };
     }
     let entry = match (&plan.moved_entry.state, plan.to_upload_status) {
-        (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), _) => MovedEntry::InOneDrive { id: row.id.clone(), kind: EntryKind::File, handle: handle_at_new_place },
-        (EntryState::Directory(DirectorySyncState::InOneDrive(row)), _) => MovedEntry::InOneDrive { id: row.id.clone(), kind: EntryKind::Directory, handle: handle_at_new_place },
+        (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), _) => MovedEntry::InOneDrive { onedrive_id: row.id.clone(), kind: EntryKind::File, handle: handle_at_new_place },
+        (EntryState::Directory(DirectorySyncState::InOneDrive(row)), _) => MovedEntry::InOneDrive { onedrive_id: row.id.clone(), kind: EntryKind::Directory, handle: handle_at_new_place },
         (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), write_state },
         (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyFile { file: file.on_disk.clone() },
         (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },

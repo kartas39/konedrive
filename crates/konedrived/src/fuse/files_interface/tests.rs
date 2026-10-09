@@ -19,8 +19,8 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
 }
 
-fn shown_changed(rel: &str, id: &str) -> Announcement {
-    Announcement::FileShownChanged { rel: rel.into(), id: id.into() }
+fn shown_changed(path: &str, onedrive_id: &str) -> Announcement {
+    Announcement::FileShownChanged { path: path.into(), onedrive_id: onedrive_id.into() }
 }
 
 /// The fixture's three files downloaded: `a.txt`, `b.txt` and `docs/c.txt`.

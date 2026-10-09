@@ -121,7 +121,7 @@ impl CycleStep {
         }
         let StepProgress { mut conflicts, removed_directories, announcements } = progress;
         for directory in order_deepest_first(removed_directories) {
-            self.conflict_copies.keep_removed_directory(&directory.id, &directory.path, access_mode, recorded_at, &mut conflicts);
+            self.conflict_copies.keep_removed_directory(&directory.onedrive_id, &directory.path, access_mode, recorded_at, &mut conflicts);
         }
         // What the cycle kept of the user's own, in the cycle's own transaction.
         let kept = OutboxBatch { detections: conflicts.detections.clone(), ops: conflicts.ops.clone() };
@@ -150,7 +150,7 @@ impl CycleStep {
     fn read_backing_directory_facts(&self, change: &OneDriveChange) -> BackingDirectoryFacts {
         match change {
             OneDriveChange::Appeared { now, .. } => BackingDirectoryFacts { holds_at_old_path: false, new_path: self.read_new_path_contents(now) },
-            OneDriveChange::Moved { id, old, was, now, .. } => BackingDirectoryFacts { holds_at_old_path: self.holds_at(was, id, old.kind), new_path: self.read_new_path_contents(now) },
+            OneDriveChange::Moved { onedrive_id, old, was, now, .. } => BackingDirectoryFacts { holds_at_old_path: self.holds_at(was, onedrive_id, old.kind), new_path: self.read_new_path_contents(now) },
             OneDriveChange::Vanished { .. } | OneDriveChange::Stayed { .. } => BackingDirectoryFacts::default(),
         }
     }
@@ -183,14 +183,14 @@ impl CycleStep {
             match action {
                 CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), access_mode, recorded_at, &mut progress.conflicts),
                 CycleAction::RebaseOutboxRows { from, to } => progress.conflicts.ops.push(rebase(&from, &to)),
-                CycleAction::RemoveDownloadedCopy { path, id } => drop(self.backing_directory.remove_downloaded_copy(&path, &id)),
+                CycleAction::RemoveDownloadedCopy { path, onedrive_id } => drop(self.backing_directory.remove_downloaded_copy(&path, &onedrive_id)),
                 // The user's own is still at the new path: nothing is moved onto it.
                 CycleAction::MoveInBackingDirectory { .. } if moved_aside == MoveAsideOutcome::StillInTheWay => {}
                 CycleAction::MoveInBackingDirectory { from, to } => {
                     let _ = to.parent().map(|directory| self.make_staged_directories(store, directory));
                     let _ = self.backing_directory.rename(&from, &to);
                 }
-                CycleAction::RemoveDirectoryIfEmpty { id, path } => progress.removed_directories.push(RemovedDirectory { id, path }),
+                CycleAction::RemoveDirectoryIfEmpty { onedrive_id, path } => progress.removed_directories.push(RemovedDirectory { onedrive_id, path }),
                 CycleAction::Announce(announcement) => progress.announcements.push(announcement),
             }
         }

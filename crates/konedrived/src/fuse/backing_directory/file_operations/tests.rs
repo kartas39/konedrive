@@ -8,12 +8,12 @@ use crate::fuse::backing_directory::tests::empty_backing_directory;
 #[test]
 fn a_file_and_a_directory_are_made_renamed_and_removed_in_the_backing_directory() {
     let (dir, backing_directory) = empty_backing_directory();
-    backing_directory.make_dir(Path::new("docs")).unwrap();
+    backing_directory.make_directory(Path::new("docs")).unwrap();
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap().write_all(b"abc").unwrap();
     assert_eq!(fs::read(dir.path().join("docs/a.txt")).unwrap(), b"abc");
     backing_directory.rename(Path::new("docs/a.txt"), Path::new("b.txt")).unwrap();
     assert!(backing_directory.read_metadata(Path::new("docs/a.txt")).is_none() && backing_directory.read_metadata(Path::new("b.txt")).is_some_and(|m| m.is_file()));
-    backing_directory.remove_dir(Path::new("docs")).unwrap();
+    backing_directory.remove_directory(Path::new("docs")).unwrap();
     backing_directory.remove_file(Path::new("b.txt")).unwrap();
     assert_eq!(backing_directory.list_directory(Path::new("")).count(), 0);
 }
@@ -23,15 +23,15 @@ fn a_file_is_not_made_where_something_is() {
     let (_dir, backing_directory) = empty_backing_directory();
     backing_directory.make_file(Path::new("a.txt")).unwrap();
     assert_eq!(backing_directory.make_file(Path::new("a.txt")).unwrap_err().kind(), ErrorKind::AlreadyExists);
-    assert_eq!(backing_directory.make_dir(Path::new("a.txt")).unwrap_err().kind(), ErrorKind::AlreadyExists);
+    assert_eq!(backing_directory.make_directory(Path::new("a.txt")).unwrap_err().kind(), ErrorKind::AlreadyExists);
 }
 
 #[test]
 fn a_directory_that_holds_something_is_not_removed() {
     let (_dir, backing_directory) = empty_backing_directory();
-    backing_directory.make_dir(Path::new("docs")).unwrap();
+    backing_directory.make_directory(Path::new("docs")).unwrap();
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap();
-    assert_eq!(backing_directory.remove_dir(Path::new("docs")).unwrap_err().kind(), ErrorKind::DirectoryNotEmpty);
+    assert_eq!(backing_directory.remove_directory(Path::new("docs")).unwrap_err().kind(), ErrorKind::DirectoryNotEmpty);
     assert_eq!(backing_directory.list_directory(Path::new("docs")).map(|e| e.file_name()).collect::<Vec<_>>(), ["a.txt"]);
 }
 

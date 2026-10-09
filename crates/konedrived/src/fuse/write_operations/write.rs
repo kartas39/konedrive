@@ -224,7 +224,7 @@ pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &Dir
         LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
         LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(copy),
     };
-    Some(FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &entry.name), write })
+    Some(FileWritten::InOneDrive { onedrive_id: row.id.clone(), place: EntryPlace::new(parent_directory, &entry.name), write })
 }
 
 /// What the close of a writer of the file `entry` is recorded as, for the `outcome` of the
@@ -250,7 +250,7 @@ pub(super) fn describe_last_close(
     match (outcome, access_mode, entry.row()) {
         (CloseOutcome::StillOpenElsewhere, _, _) | (_, AccessMode::ReadOnly, _) => None,
         (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, Some(row)) => {
-            node_stands_for_file.then(|| FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
+            node_stands_for_file.then(|| FileWritten::InOneDrive { onedrive_id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
         }
         (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Closed),
     }

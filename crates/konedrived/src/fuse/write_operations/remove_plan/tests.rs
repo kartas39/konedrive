@@ -44,14 +44,14 @@ fn a_onedrive_file_is_removed_by_its_id_whatever_its_sync_state() {
     let states: [fn(konedrive_tree::Row) -> FileSyncState; 3] = [FileSyncState::RemoteOnly, |row| FileSyncState::Synced(row, copy()), |row| FileSyncState::ModifiedHere(row, copy())];
     for state in states {
         let plan = plan_remove(EntryKind::File, "a.txt", holding(onedrive_file(state)));
-        assert_eq!(plan, Ok(RemovePlan::OneDriveFile { id: "A".into(), path: "a.txt".into() }));
+        assert_eq!(plan, Ok(RemovePlan::OneDriveFile { onedrive_id: "A".into(), path: "a.txt".into() }));
     }
 }
 
 #[test]
 fn a_onedrive_directory_that_holds_nothing_is_removed_by_its_id() {
     let plan = plan_remove(EntryKind::Directory, "docs", holding(onedrive_directory()));
-    assert_eq!(plan, Ok(RemovePlan::OneDriveDirectory { id: "D".into(), path: "docs".into() }));
+    assert_eq!(plan, Ok(RemovePlan::OneDriveDirectory { onedrive_id: "D".into(), path: "docs".into() }));
 }
 
 #[test]

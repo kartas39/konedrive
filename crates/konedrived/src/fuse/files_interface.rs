@@ -220,7 +220,7 @@ impl FilesInterface {
         };
         match freed_bytes {
             Some(bytes) => {
-                self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel: path, id: onedrive_id.to_owned() }]);
+                self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path: path, onedrive_id: onedrive_id.to_owned() }]);
                 FreedSpace { files: 1, bytes, kept: 0 }
             }
             None => FreedSpace { kept: 1, ..nothing },
@@ -237,7 +237,7 @@ impl FilesInterface {
         let pinned_above = above.and_then(|by| self.directory_contents.find_stored_path(&by.id)).map(|at| self.folder.join(at));
         let is_downloading = self.download_states.is_downloading(&row.id);
         let is_open_for_writing = self.open_handles.is_open_for_writing_by_onedrive_id(&row.id);
-        Ok(PathStatus { id: row.id, own_pin, pinned_above, entry_state: entry.state, is_downloading, is_open_for_writing })
+        Ok(PathStatus { onedrive_id: row.id, own_pin, pinned_above, entry_state: entry.state, is_downloading, is_open_for_writing })
     }
 
     /// Puts the pin on what is at `path`, or takes it off. A pin put on downloads what it
@@ -246,7 +246,7 @@ impl FilesInterface {
         let (row, rel) = self.find_onedrive_row(path)?;
         let changed = self.pins.set_pin(&row.id, pinned).await.map_err(|e| FilesRefusal::Io(e.to_string()))?;
         if changed {
-            self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel, id: row.id }]);
+            self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path: rel, onedrive_id: row.id }]);
         }
         if pinned {
             self.pinned_file_downloader.download_pinned_files();

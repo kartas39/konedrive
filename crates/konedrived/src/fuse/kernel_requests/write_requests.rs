@@ -40,7 +40,7 @@ use tokio::sync::oneshot;
 
 use super::lookup_requests::answer_with_attributes;
 use crate::fuse::access_mode_switch::{AccessMode, AccessModeSwitch};
-use crate::fuse::attributes::{attributes, TTL};
+use crate::fuse::attributes::{to_attributes, TTL};
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::errno::to_errno;
 use crate::fuse::file_downloader::FileDownloader;
@@ -195,7 +195,7 @@ impl WriteRequests {
     /// A directory (`mkdir`) or a file that is not opened (`mknod`) made.
     pub(super) fn answer_make(&self, parent: NodeId, name: &OsStr, entry_to_make: EntryToMake, reply: ReplyEntry) {
         self.run_named_operation(name, Errno::EINVAL, reply, move |requests, name, reply| match requests.write_operations.make(parent, name, entry_to_make) {
-            Ok((node_id, entry, _)) => reply.entry(&TTL, &attributes(node_id, requests.access_mode_switch.access_mode(), &entry), Generation(0)),
+            Ok((node_id, entry, _)) => reply.entry(&TTL, &to_attributes(node_id, requests.access_mode_switch.access_mode(), &entry), Generation(0)),
             Err(e) => reply.error(e),
         });
     }
@@ -211,7 +211,7 @@ impl WriteRequests {
     pub(super) fn answer_create(&self, parent: NodeId, name: &OsStr, reply: ReplyCreate) {
         self.run_named_operation(name, Errno::EINVAL, reply, move |requests, name, reply| match requests.write_operations.make(parent, name, EntryToMake::FileOpenedForWriting) {
             Ok((node_id, entry, opened)) => {
-                let attr = attributes(node_id, requests.access_mode_switch.access_mode(), &entry);
+                let attr = to_attributes(node_id, requests.access_mode_switch.access_mode(), &entry);
                 reply.created(&TTL, &attr, Generation(0), FileHandle::from(opened.unwrap_or(Fh::NOT_OPENED)), FopenFlags::empty())
             }
             Err(e) => reply.error(e),

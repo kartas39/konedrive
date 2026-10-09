@@ -8,7 +8,7 @@ use crate::fuse::node_table::NodeId;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::attributes;
+use super::to_attributes;
 use crate::fuse::access_mode_switch::AccessMode;
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
 use crate::fuse::directory_contents::tests::row;
@@ -43,39 +43,39 @@ fn local_only(kind: EntryKind) -> LocalOnlyEntry {
 
 #[test]
 fn a_onedrive_directory_has_the_stores_time_and_no_size() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &directory(DirectorySyncState::InOneDrive(stored(Kind::Folder))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &directory(DirectorySyncState::InOneDrive(stored(Kind::Folder))));
     assert_eq!((shown.ino.0, shown.kind, shown.size, shown.blocks, shown.nlink), (7, FileType::Directory, 0, 0, 2));
     assert_eq!((shown.atime, shown.mtime, shown.ctime), (at(100), at(100), at(100)));
 }
 
 #[test]
 fn a_remote_only_file_has_the_stores_size_and_time_and_no_blocks() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::RemoteOnly(stored(Kind::File))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::RemoteOnly(stored(Kind::File))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.nlink, shown.mtime), (FileType::RegularFile, 42, 0, 1, at(100)));
 }
 
 /// A download does not change when the file was last modified: that is OneDrive's to say.
 #[test]
 fn a_synced_file_has_its_copys_size_and_blocks_and_the_stores_time() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::Synced(stored(Kind::File), on_disk(EntryKind::File))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::Synced(stored(Kind::File), on_disk(EntryKind::File))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.mtime), (FileType::RegularFile, 10, 8, at(100)));
 }
 
 #[test]
 fn a_file_modified_here_has_its_copys_size_and_time() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::ModifiedHere(stored(Kind::File), on_disk(EntryKind::File))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::ModifiedHere(stored(Kind::File), on_disk(EntryKind::File))));
     assert_eq!((shown.size, shown.blocks, shown.atime, shown.mtime, shown.ctime), (10, 8, at(500), at(500), at(500)));
 }
 
 #[test]
 fn a_local_only_file_has_what_the_filesystem_says_of_it() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::LocalOnly(local_only(EntryKind::File))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &file(FileSyncState::LocalOnly(local_only(EntryKind::File))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.mtime), (FileType::RegularFile, 10, 8, at(500)));
 }
 
 #[test]
 fn a_local_only_directory_has_the_filesystems_blocks_and_time_and_no_size() {
-    let shown = attributes(NodeId(7), AccessMode::ReadWrite, &directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory))));
+    let shown = to_attributes(NodeId(7), AccessMode::ReadWrite, &directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.nlink, shown.mtime), (FileType::Directory, 0, 8, 2, at(500)));
 }
 
@@ -89,10 +89,10 @@ fn the_modes_are_the_access_modes_in_every_state() {
         file(FileSyncState::LocalOnly(local_only(EntryKind::File))),
     ];
     for entry in &files {
-        assert_eq!((attributes(NodeId(2), AccessMode::ReadWrite, entry).perm, attributes(NodeId(2), AccessMode::ReadOnly, entry).perm), (0o644, 0o444), "{entry:?}");
+        assert_eq!((to_attributes(NodeId(2), AccessMode::ReadWrite, entry).perm, to_attributes(NodeId(2), AccessMode::ReadOnly, entry).perm), (0o644, 0o444), "{entry:?}");
     }
     let directories = [directory(DirectorySyncState::InOneDrive(stored(Kind::Folder))), directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory)))];
     for entry in &directories {
-        assert_eq!((attributes(NodeId(2), AccessMode::ReadWrite, entry).perm, attributes(NodeId(2), AccessMode::ReadOnly, entry).perm), (0o755, 0o555), "{entry:?}");
+        assert_eq!((to_attributes(NodeId(2), AccessMode::ReadWrite, entry).perm, to_attributes(NodeId(2), AccessMode::ReadOnly, entry).perm), (0o755, 0o555), "{entry:?}");
     }
 }
