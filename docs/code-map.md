@@ -222,7 +222,7 @@ daemon shows OneDrive.
 - `backing_directory/write_bits.rs` — the write bits of the folder on disk: removed while no
   mount lies over it (`remove_write_bits`), restored for the daemon under its mount and for
   a folder that is the user's again (`restore_write_bits`); the one table of the modes of a
-  directory and a file with and without them (`mode_bits`, `WriteBits`). `[tests]`
+  directory and a file with and without them (`to_mode_bits`, `WriteBits`). `[tests]`
 - `backing_directory/legacy_placeholders.rs` — a directory that holds an older konedrive's
   placeholders: it is not opened, so no mount is put over it. `[tests]`
 - `stale_mount.rs` — the mount a daemon that died left on a folder, taken off
@@ -277,8 +277,9 @@ daemon shows OneDrive.
 - `open_handles.rs` — `OpenHandles`: the files (`OpenFile`: read while not downloaded, read
   from the backing directory, or written) and the directories programs hold open, by the
   kernel's `fh` (`Fh`); it alone counts the writers of a node, remembers whether one wrote,
-  says what closing a file left (`ClosedFile`, with its `CloseOutcome` and the node whose
-  last writer it was) and whether a file is open for writing, by node id and by OneDrive id;
+  says what closing a file that was open for writing left (`ClosedFile`: the node it wrote
+  and the `CloseOutcome`) and whether a file is open for writing, by node id and by OneDrive
+  id — a writer is closed on the write-operation thread, and counts until then;
   the names an open directory listed when it was first read.
   `[tests]`
 - `state_attribute.rs` — `to_state_attribute`: what is shown of a file — online-only, being
@@ -308,10 +309,15 @@ daemon shows OneDrive.
   and range of OneDrive, nothing); `choose_read_origin` decides it for a file that is not
   downloaded, from its row and a running download. `[tests]`
 - `kernel_requests/write_requests.rs` — `WriteRequests`: everything that changes the folder,
-  and the close of a file's last writer, each made by a write operation on the
-  write-operation thread — the time set on a file too; a read-only folder's is refused
-  before it is put there. `write` and `fsync` go into the file a write operation opened,
-  and are answered on the mount's own thread. `[tests]`
+  each made by a write operation on the write-operation thread; here are the type and how a
+  request gets onto the thread — a read-only folder's is refused before it is put there.
+  `[tests]`
+- `kernel_requests/write_requests/name_requests.rs` — the requests that change a name: one
+  made, removed, renamed. `[tests]`
+- `kernel_requests/write_requests/content_requests.rs` — the requests that change a file's
+  content or its time: opened for writing, cut, the time set, and the close of a writer,
+  which is answered at once and made on the thread; `write` and `fsync` go into the file a
+  write operation opened, and are answered on the mount's own thread. `[tests]`
 - `kernel_requests/interruptible_reads.rs` — `InterruptibleReads`: the reads that wait for a
   range from OneDrive, by the kernel's request number (`RequestId`), which an `interrupt` or the mount's
   end gives up. `[tests]`
@@ -344,7 +350,9 @@ daemon shows OneDrive.
 - `files_interface.rs` — `FilesInterface`: what the daemon's bus interface `Files` asks of a
   mount for a path, over exactly the parts it uses: download, free up (`FreedSpace`), pin,
   how the path stands; the downloaded copies below a path (`DownloadedCopies`); why it
-  refuses (`FilesRefusal`). `[tests]`
+  refuses (`FilesRefusal`). A free-up lists the copies off the write-operation thread and
+  frees each in a job of its own on it, where it reads how the file stands, decides and
+  removes the copy. `[tests]`
 - `files_interface/path_status.rs` — `PathStatus`: a path's id and pin, and its sync state,
   whether it is being downloaded and whether it is open for writing, which what is shown of
   it and what a free-up does with it are asked of. `[tests]`
@@ -370,7 +378,8 @@ daemon shows OneDrive.
 - `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
   came to its name from OneDrive. `[tests]`
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
-  the switch to read-only and the scan for unrecorded entries run on, each job under
+  the switch to read-only, the scan for unrecorded entries and the freeing of each
+  downloaded copy run on, each job under
   the folder's tree lock. Stopped, it runs nothing any more: the stop waits for the job in
   flight, drops the jobs that wait, and never waits for the tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's
@@ -394,11 +403,13 @@ daemon shows OneDrive.
 - `write_operations/remove_plan.rs` — `plan_remove`: what a remove takes out of the folder
   (`RemovePlan`), or the errno. `[tests]`
 - `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
-  folder: the lookups, the backing directory renamed, the record, the node. `[tests]`
+  folder: the lookups, the backing directory renamed — what it held at the new place kept at
+  the old one until the rename is recorded, and put back when it cannot be — the record,
+  the node. `[tests]`
 - `write_operations/rename_plan.rs` — the decisions of a rename: `plan_rename`, what it
   moves where and over what (`RenamePlan`, `RenameMode`), or the errno;
-  `choose_removed_at_new_place`, what is removed there before the move
-  (`BackingDirectoryMove`); `describe_rename`, what it is recorded as. `[tests]`
+  `BackingDirectoryMove`, whether the backing directory held anything to move;
+  `describe_rename`, what it is recorded as. `[tests]`
 - `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened with
   its content or to be overwritten, closed, cut, and the time it was last modified set;
   what a write and the last close are recorded as (`describe_file_write`,
