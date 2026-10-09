@@ -239,8 +239,8 @@ impl Stamp {
         format!("{} {}.{}", self.size, self.mtime_sec, self.mtime_nsec)
     }
 
-    /// The attribute's value as [`read_stamp`] parses it, for a caller that
-    /// read it by name without opening the file.
+    /// The attribute's value parsed, for a caller that read it by name
+    /// without opening the file.
     pub fn decode(value: &str) -> Option<Self> {
         let (size, time) = value.split_once(' ')?;
         let (sec, nsec) = time.split_once('.')?;
