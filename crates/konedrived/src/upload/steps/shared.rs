@@ -7,8 +7,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use konedrive_fs::handle::FileHandle;
-
 use super::sections::{blocking, blocking_under, tree, Tree};
 use crate::folder::classify::classify;
 use crate::folder::disk::{Disk, Probe};
@@ -51,13 +49,12 @@ fn swap_name(row: &OutboxRow) -> String {
 
 /// The item id of the directory `dir` (relative to the root), read from the
 /// disk: the root's is the drive's root. Only an id that is the directory's
-/// own counts: the base has it as a folder, and records this very object for
-/// it (or, with no object recorded, places it here). A copy that kept its
-/// attributes, or a folder from elsewhere, carries an id that names another
-/// folder in OneDrive; nothing is sent into that one because of it. The
-/// examination strips such a directory when it can, but it does not always
-/// see it (a batch that names only what is below it), and cannot always strip
-/// it (`LO3`): this is the one place every row passes before it is sent.
+/// own counts: the base has it as a folder, and places it here. A directory
+/// that carries the id of a folder the base has elsewhere — one the user
+/// moved, whose move is not sent yet, or a copy that kept its attributes —
+/// is not asked for it: nothing is sent into a folder because of an
+/// attribute alone, and a row below a moved directory waits for the move.
+/// This is the one place every row passes before it is sent.
 async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
         return Ok(e.store().call(|s| s.root_item_id()).await?);
@@ -71,24 +68,16 @@ async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<Strin
             Err(err) => return Err(err),
         };
         let Probe::Managed { id, is_dir: true } = on.probe(&parent, &name)? else { return Ok(None) };
-        Ok(Some((id, FileHandle::at(&parent, &name).ok())))
+        Ok(Some(id))
     })
     .await?;
-    let Some((id, here)) = probed else { return Ok(None) };
+    let Some(id) = probed else { return Ok(None) };
     let (asked, at) = (id.clone(), dir.to_owned());
     let own = e
         .store()
         .call(move |s| {
-            if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
-                return Ok(false);
-            }
-            // The object the base records for it.
-            let placed = s.local_handle(&asked)?;
-            if here.is_some() && placed == here {
-                return Ok(true);
-            }
-            // With no object to compare: where the base places it.
-            Ok((placed.is_none() || here.is_none()) && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at))
+            let folder = s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder);
+            Ok(folder && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at))
         })
         .await?;
     if !own {
@@ -167,13 +156,13 @@ pub(super) fn place(item: &DriveItem) -> (Option<String>, String) {
 
 /// Commit step 2 (`docs/design/writes.md` §5.4), or its temporary form: the item landed under a
 /// temporary name, and a `move` row takes it on to the local name.
-pub(in crate::upload) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &Row, handle: Option<&FileHandle>, parent: &str, event: ActivityRow) -> Result<(), Fail> {
-    let (seq, answer, handle, parent, stored) = (row.seq, answer.clone(), handle.cloned(), parent.to_owned(), event.clone());
+pub(in crate::upload) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &Row, parent: &str, event: ActivityRow) -> Result<(), Fail> {
+    let (seq, answer, parent, stored) = (row.seq, answer.clone(), parent.to_owned(), event.clone());
     if in_swap(row) {
         let final_name = local_name(row)?;
-        e.store().call(move |s| s.outbox_commit_temporary(seq, &answer, handle.as_ref(), &parent, &final_name, Some(&stored))).await?;
+        e.store().call(move |s| s.outbox_commit_temporary(seq, &answer, &parent, &final_name, Some(&stored))).await?;
     } else {
-        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
+        e.store().call(move |s| s.outbox_commit(seq, Committed::Item(&answer), Some(&stored))).await?;
     }
     e.host().activity(&event);
     Ok(())
@@ -293,11 +282,7 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         tracing::info!("{name} is still another item's in OneDrive: {} goes through {}", row.rel.display(), swap_name(row));
         return Ok(Taken::Temporary(swap_name(row)));
     }
-    let known_here = !own_item
-        && (rows.iter().any(|r| r.item_id.as_deref() == Some(holder.id.as_str())) || {
-            let held_by = holder.id.clone();
-            e.store().call(move |s| s.local_handle(&held_by)).await?.is_some()
-        });
+    let known_here = !own_item && (rows.iter().any(|r| r.item_id.as_deref() == Some(holder.id.as_str())) || in_folder(e, &holder.id).await?);
     if is_ours && !known_here {
         return Ok(Taken::Adopt(Box::new(holder)));
     }
@@ -309,6 +294,14 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         }
     }
     Ok(Taken::Copy)
+}
+
+/// Whether the folder shows item `id` already: the base has it, and places
+/// it. Such an item is no row's to adopt: it has its own name in the folder,
+/// and its own copy there when it is downloaded.
+pub(in crate::upload) async fn in_folder(e: &Engine, id: &str) -> Result<bool, Fail> {
+    let id = id.to_owned();
+    Ok(e.store().call(move |s| Ok(s.locate(Table::Items, &id)?.is_some_and(|l| l.placed))).await?)
 }
 
 /// [`Taken::Held`]: the row waits for the name, with the usual backoff.
@@ -349,20 +342,13 @@ pub(in crate::upload) async fn name_taken(
     name: &str,
     ours: Ours<'_>,
 ) -> Result<Named, Fail> {
-    let item = match &ours {
-        Ours::Item(id) if row.kind != OutboxKind::Move => Some(*id),
-        _ => None,
-    };
     Ok(match taken(e, row, parent, name, ours).await? {
         Taken::Free => Named::Settled(Outcome::again()),
         Taken::Temporary(swap) => Named::Settled(temporary(e, row, parent, &swap).await?),
         Taken::Adopt(item) => Named::Adopt(item),
         Taken::Held => Named::Settled(held(row)),
-        // A copy made of an item's own object (its content, changed here)
-        // takes the object from the item: the item forgets it, and is
-        // placed again from OneDrive. A move keeps its object.
         Taken::Copy => Named::Settled(match found {
-            Some(found) => copy(e, disk, row, found, parent, item).await?,
+            Some(found) => copy(e, disk, row, found, parent).await?,
             None => Outcome::later(Reason::NotFound, RECHECK),
         }),
     })
@@ -372,18 +358,18 @@ pub(in crate::upload) async fn name_taken(
 /// name (`<stem>-<machine><.ext>`, never over anything), konedrive's
 /// attributes taken off, recorded as a conflict of kind `copy`. The row
 /// becomes the copy's create (or mkdir) — or, for a move, the move to the
-/// copy's name. `forget` is the item the copy was made from: its name is
-/// placed again from the cloud, never deleted there.
+/// copy's name. The item a copy was made from is in the folder as OneDrive
+/// has it, under its own name.
 ///
 /// The rename, the strip and the record of them (`outbox_copied`) are one
 /// section: a stop of the worker never leaves a copy the outbox does not
 /// know of, as it could not when they ran in one go on the row's task.
-pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: &Found, parent: &str, forget: Option<&str>) -> Result<Outcome, Fail> {
+pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: &Found, parent: &str) -> Result<Outcome, Fail> {
     let (event, copy_rel) = {
         let tree = tree(e).await;
         let moving = row.kind == OutboxKind::Move;
         let (engine, on, object) = (Arc::clone(e), Arc::clone(disk), found.clone());
-        let (seq, parent, forget) = (row.seq, parent.to_owned(), forget.map(str::to_owned));
+        let (seq, parent) = (row.seq, parent.to_owned());
         #[cfg(test)]
         let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
         let (event, copy_rel) = blocking_under(Arc::clone(&tree), move || {
@@ -415,7 +401,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
             engine.before_record(row_dropped);
             let stored = event.clone();
             let recorded = engine.store().call_blocking(move |s| {
-                let copied = ConflictCopy { forget: forget.as_deref(), at: now(), original: &original, copy: &copy_path };
+                let copied = ConflictCopy { at: now(), original: &original, copy: &copy_path };
                 s.outbox_copied(seq, amend, &copied, Some(&stored))
             });
             Ok(recorded.map(|()| (event, copy_rel)))

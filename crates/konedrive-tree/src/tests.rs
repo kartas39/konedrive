@@ -439,61 +439,6 @@ fn a_permission_error_does_not_rebuild_a_good_store() {
     assert!(store.get(Table::Items, "A").unwrap().is_some(), "the good store must survive a transient open failure");
 }
 
-/// The inode an item was placed as survives the swap that ends a cycle,
-/// a full listing's included (it stages from nothing), and a first
-/// listing's page commit.
-#[test]
-fn the_local_handle_travels_with_its_row() {
-    let handle = konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![1, 2, 3] };
-    let mut store = committed(&[root(), file("A", "R", "a")]);
-    store.set_local_handle("A", Some(&handle)).unwrap();
-    store.begin_staging(crate::NewTree::Whole).unwrap();
-    store.stage(&[root(), file("A", "R", "renamed")]).unwrap();
-    store.commit_staging("link-2").unwrap();
-    assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a full listing");
-    store.begin_staging(crate::NewTree::Delta).unwrap();
-    store.stage(&[file("A", "R", "again")]).unwrap();
-    store.commit_staging("link-3").unwrap();
-    assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a delta");
-
-    // A page placed: the handle was recorded in `staging` before the
-    // item was in `items`.
-    let mut store = TreeStore::in_memory().unwrap();
-    store.begin_staging(crate::NewTree::Delta).unwrap();
-    store.stage(&[root(), file("B", "R", "b")]).unwrap();
-    store.set_local_handle("B", Some(&handle)).unwrap();
-    store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
-    assert_eq!(store.local_handle("B").unwrap(), Some(handle));
-}
-
-/// Forgetting below a row that
-/// turns placed again stays cheap in a store of 30,000 rows — a file
-/// (nothing below it) costs no recursive query, a folder one. The times
-/// are printed (`--nocapture`); the bounds are loose.
-#[test]
-fn forgetting_below_a_row_placed_again_is_cheap_at_scale() {
-    let mut changes = vec![root()];
-    for d in 0..100 {
-        changes.push(folder(&format!("D{d}"), "R", &format!("d{d}")));
-        for f in 0..299 {
-            changes.push(file(&format!("F{d}-{f}"), &format!("D{d}"), &format!("f{f}")));
-        }
-    }
-    let mut store = committed(&changes);
-    store.begin_staging(crate::NewTree::Delta).unwrap();
-    let tx = store.conn.transaction().unwrap();
-    let time = |root: &str| {
-        let started = std::time::Instant::now();
-        for _ in 0..10 {
-            forget_subtrees(&tx, &[root.to_owned()], false).unwrap();
-        }
-        started.elapsed() / 10
-    };
-    let (a_file, a_folder) = (time("F50-7"), time("D50"));
-    eprintln!("forget_subtrees on 30,000 rows: below a file {a_file:?}, below a folder of 299 {a_folder:?}");
-    assert!(a_file < std::time::Duration::from_secs(1) && a_folder < std::time::Duration::from_secs(1));
-}
-
 /// The last 200 events are kept; the oldest go.
 #[test]
 fn the_activity_log_keeps_the_newest_two_hundred() {

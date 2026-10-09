@@ -15,7 +15,7 @@ use crate::placeholder::punch_all;
 pub enum ProbeError {
     /// Something about this directory, right now, stopped the probe.
     /// `errno` is the underlying OS error where there was one, so a caller can
-    /// tell a filesystem that cannot host placeholders from a caller that is
+    /// tell a filesystem that cannot hold a folder from a caller that is
     /// merely not allowed to write here (`EROFS`, `EACCES`).
     #[error("{path}: {why}")]
     Unusable { path: String, why: String, errno: Option<i32> },
@@ -87,7 +87,7 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         errno: e.raw_os_error(),
     };
 
-    // `O_TMPFILE` is a feature every placeholder needs, available on every
+    // `O_TMPFILE` is a feature every folder needs, available on every
     // local Linux filesystem and on all three supported ones; a filesystem
     // that genuinely lacks it says so with `EOPNOTSUPP` and is reported like
     // any other missing feature, while `EROFS`/`EACCES` here still mean what

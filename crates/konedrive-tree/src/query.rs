@@ -6,8 +6,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use konedrive_reason::WaitsFor;
 
-use crate::model::{placed, row_from, skipped, Chain, Counts, Located, Placement, Row, SkipReason, Table, ROW_COLUMNS};
-use crate::source::{below_sql, chains_sql, chains_then, Source};
+use crate::model::{placed, row_from, skipped, Counts, Located, Placement, Row, SkipReason, Table, ROW_COLUMNS};
+use crate::source::{below_sql, chains_then, Source};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 impl TreeStore {
@@ -84,24 +84,6 @@ impl TreeStore {
             placed: below.iter().all(|(_, _, _, placement)| Placement::decode(placement) == Placement::Placed),
             depth: below.len(),
         }))
-    }
-
-    /// Where each item `start` selects is — a query of `id, parent_id, name,
-    /// placement` over `table`'s rows, with `params` from `?2` on (`?1` is
-    /// the drive's root) — in one query ([`chains_sql`]). Items whose chain
-    /// does not reach the root are left out.
-    pub(crate) fn chains(&self, table: Table, start: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<Chain>, TreeError> {
-        let Some(root) = self.root_item_id()? else { return Ok(Vec::new()) };
-        let sql = chains_sql(self.source(table), start);
-        let mut all: Vec<&dyn rusqlite::ToSql> = vec![&root];
-        all.extend_from_slice(params);
-        let mut statement = self.conn.prepare_cached(&sql)?;
-        let chains = statement
-            .query_map(all.as_slice(), |r| {
-                Ok(Chain { id: r.get(0)?, rel: PathBuf::from(r.get::<_, String>(1)?), above: r.get(2)?, own: r.get(3)? })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(chains)
     }
 
     /// Every item but the root: what is listed, counted without a walk.

@@ -30,8 +30,8 @@ pub(crate) const FILE: &str = "file";
 const FOLDER: &str = "folder";
 
 /// Every column, for copies between `items` and `staging`: the local ones
-/// (`thumb_key`, `local_handle`, `local_seq`) travel with the row.
-pub(crate) const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key, local_handle, local_seq";
+/// (`thumb_key`, `local_seq`) travel with the row.
+pub(crate) const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key, local_seq";
 /// The columns of a [`Row`], in the order [`row_from`] reads them and
 /// [`upsert`] writes them. A query that reads rows selects exactly these
 /// first, and whatever else it needs from [`ROW_WIDTH`] on.
@@ -100,17 +100,6 @@ pub(crate) mod at {
     pub(crate) const QUICKXOR: usize = column(ROW_COLUMNS, "quickxor");
     pub(crate) const MIME: usize = column(ROW_COLUMNS, "mime");
     pub(crate) const PLACEMENT: usize = column(ROW_COLUMNS, "placement");
-}
-
-/// One item's place, as [`chains_sql`](crate::source::chains_sql) finds it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Chain {
-    pub id: String,
-    pub rel: PathBuf,
-    /// Every folder above it (below the root) is placed.
-    pub above: bool,
-    /// It is placed itself.
-    pub own: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

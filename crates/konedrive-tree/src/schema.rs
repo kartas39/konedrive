@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::model::{placed, skipped};
+use crate::model::skipped;
 use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
@@ -25,9 +25,8 @@ pub const SCHEMA_VERSION: &str = "10";
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
 ///
-/// - `items`, `staging`: the tree and the tree a cycle builds.
-///   `local_handle` is the file handle of the inode the item was placed or
-///   adopted as, `local_seq` the outbox commit that last wrote the row
+/// - `items`, `staging`: the tree and the tree a cycle builds. `local_seq`
+///   is the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
 ///   while it is staged.
 /// - `deferred`, `outbox_gone`: what a read-write cycle keeps between
@@ -52,8 +51,8 @@ pub const SCHEMA_VERSION: &str = "10";
 ///   whose outcome is not known); the URL replaces it. `upload_openings_left`: a record
 ///   whose row left, or moved to another place, kept until a
 ///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
-/// - `items_unplaced` and `items_skipped` ask whether a row is placed as
-///   every query and the decoder do ([`placed`]), so that a query uses them.
+/// - `items_skipped` asks whether a row is placed as every query and the
+///   decoder do ([`skipped`]), so that a query uses it.
 /// - The indexes keep a cycle and the outbox's lookups from reading a whole
 ///   table.
 fn schema() -> String {
@@ -64,9 +63,8 @@ fn schema() -> String {
                  size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
                  etag TEXT, ctag TEXT, quickxor TEXT, mime TEXT,
                  placement TEXT NOT NULL, thumb_key TEXT,
-                 local_handle BLOB, local_seq INTEGER NOT NULL DEFAULT 0);
-             CREATE INDEX {table}_parent ON {table}(parent_id);
-             CREATE INDEX {table}_handle ON {table}(local_handle);"
+                 local_seq INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX {table}_parent ON {table}(parent_id);"
         )
     };
     format!(
@@ -74,7 +72,6 @@ fn schema() -> String {
          {staging}
          CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
          CREATE INDEX items_seq ON items(local_seq);
-         CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND {placed};
          CREATE INDEX items_skipped ON items(id) WHERE {skipped};
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -120,7 +117,6 @@ fn schema() -> String {
         staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),
         frees = outbox::FREES,
-        placed = placed("placement"),
         skipped = skipped("placement"),
     )
 }

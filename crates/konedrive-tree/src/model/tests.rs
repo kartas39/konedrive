@@ -63,7 +63,6 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
     assert!(store.locate(Table::Items, "D").unwrap().unwrap().placed);
     assert!(store.locate(Table::Items, "F").unwrap().unwrap().placed, "what is inside it is in the folder too");
     assert_eq!(store.counts().unwrap(), Counts { listed: 3, placed: 2, skipped: 1 });
-    assert_eq!(store.unplaced(Table::Items).unwrap(), ["D", "F"], "both are placed, and wait for their objects");
 
     let unknown = store.get(Table::Items, "S").unwrap().unwrap();
     assert_eq!((unknown.placement, unknown.kind), (Placement::Skipped(SkipReason::Unsupported), Kind::File));
@@ -71,12 +70,7 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
 
     // `INDEXED BY` fails to prepare when the query does not imply the
     // index's own condition.
-    for sql in [
-        format!("SELECT id FROM items INDEXED BY items_unplaced WHERE local_handle IS NULL AND {}", placed("placement")),
-        format!("SELECT id FROM items INDEXED BY items_skipped WHERE {}", skipped("placement")),
-    ] {
-        store.conn.prepare(&sql).unwrap();
-    }
+    store.conn.prepare(&format!("SELECT id FROM items INDEXED BY items_skipped WHERE {}", skipped("placement"))).unwrap();
 }
 
 #[test]

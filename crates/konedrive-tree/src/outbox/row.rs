@@ -284,8 +284,8 @@ pub struct OutboxApplied {
 /// A committed row's answer from OneDrive.
 #[derive(Debug, Clone, Copy)]
 pub enum Committed<'a> {
-    /// The item as Graph answered, and the local object it now is.
-    Item { row: &'a Row, handle: Option<&'a FileHandle> },
+    /// The item as Graph answered.
+    Item(&'a Row),
     /// Deleted in OneDrive (to its recycle bin).
     Gone { item_id: &'a str },
 }

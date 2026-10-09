@@ -197,10 +197,11 @@ daemon shows OneDrive.
 - `requests/read.rs` — the requests that open and read a file.
 - `requests/change.rs` — the requests that change the folder, each made on the recorder's
   thread.
-- `nodes.rs` — the node ids the kernel knows, each an item and its place. `[tests]`
+- `nodes.rs` — the node ids the kernel knows, each an item, or an object without one by its
+  file handle, and its place. `[tests]`
 - `attr.rs` — what the mount says of an item: kind, size, times, modes.
 - `local.rs` — what a directory holds: the store's items as the outbox's rows leave them,
-  and the files and directories OneDrive has no item for yet.
+  and the files and directories OneDrive has no item for yet, each known by its file handle.
 - `outbox.rs` — the outbox's rows laid over the store: items moved, removed or changed here.
   `[tests]`
 - `copies.rs` — the downloaded copies: which file is an item's, its state, its removal.
@@ -495,8 +496,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `meta.rs` — what the store keeps one of: every key of `meta`, and its typed accessors.
 - `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
 - `read.rs` — `ReadStore`: the store as its read-only connection gives it.
-- `forget.rs` — forgetting local objects: the one walk of a subtree, and the rule that a row the
-  base does not place records none.
+- `placing.rs` — whether the base places a row: itself, and every folder above it.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
 - `staging.rs` — the new tree a cycle builds, and its swap into `items`.
@@ -515,7 +515,6 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `outbox/dependencies.rs` — every row's blockers at once; test code.
 - `outbox/worker.rs` — the worker's own transactions.
 - `outbox/sums.rs` — what the outbox holds, summed.
-- `outbox/handles.rs` — an item's local object, as the worker recorded it.
 - `outbox/changes.rs` — telling those who wait that the outbox changed.
 
 ## `crates/konedrive-fs`: a folder's files
@@ -533,8 +532,10 @@ Design: `hydration.md`.
 - `placeholder.rs` — what konedrive keeps on a file or a directory: its extended attributes
   and its modes. `[tests]`
 - `lease.rs` — a write lease: proof that no other process has the file open. `[tests]`
-- `handle.rs` — file handles: the kernel's name for an inode. `[tests]`
-- `probe.rs` — whether a directory's filesystem can be a sync folder's. `[tests]`
+- `handle.rs` — file handles: the kernel's name for an inode, and what a file or directory
+  without an item is known by. `[tests]`
+- `probe.rs` — whether a directory's filesystem can be a sync folder's: sparse files, `user.*`
+  attributes, leases, file handles. `[tests]`
 
 ## `crates/konedrive-reason`: why a change is kept back
 

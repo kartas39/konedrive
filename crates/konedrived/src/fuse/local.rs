@@ -3,10 +3,10 @@
 //!
 //! An object without an item is a file or a directory of the folder under the mount that
 //! carries no item id: made by a program through the mount, and uploaded by the outbox. It
-//! is shown where it lies, and is what its file handle says it is: the handle goes with it
-//! through every rename, and the filesystem gives it to no other object, as it gives an
-//! inode number again. An item is shown where the store has it, or where the user moved
-//! it; a name both have is the item's.
+//! is shown where it lies, and is known by its file handle, which goes with it through every
+//! rename and is never another object's, as an inode number is once its file is removed. An
+//! item is shown where the store has it, or where the user moved it; a name both have is
+//! the item's.
 
 use std::collections::HashSet;
 use std::fs::{self, File};

@@ -121,10 +121,10 @@ pub trait OutboxHost: Send + Sync {
     fn may_write(&self) -> Result<(), String> {
         Ok(())
     }
-    /// An item's local object was forgotten and OneDrive's version must be
-    /// placed again (§7: delete × edit), though the delta may have carried it
-    /// already: a cycle with a Full reconcile should run soon (the outbox on
-    /// the bus).
+    /// A row was dropped for what OneDrive decided (§7: delete × edit), and
+    /// the folder is to show OneDrive's version again, though the delta may
+    /// have carried it already: a cycle with a Full reconcile should run
+    /// soon (the outbox on the bus).
     fn full_cycle_wanted(&self) {
         self.cycle_wanted();
     }

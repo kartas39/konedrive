@@ -19,8 +19,7 @@
 //! 4 closes a circle, its edges in the circle are dropped (`name_edges`
 //! in [`pick`]).
 //!
-//! Also here: `local_skipped` (what is never uploaded, §4.2 rule 2) and the
-//! item's local object (`items.local_handle`).
+//! Also here: `local_skipped` (what is never uploaded, §4.2 rule 2).
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -31,7 +30,7 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::forget::{base_places, forget_subtrees, forget_unplaced};
+use crate::placing::base_places;
 use crate::meta::next_outbox_seq;
 #[cfg(test)]
 use crate::model::Kind;
@@ -47,7 +46,6 @@ mod changes;
 mod encoded;
 #[cfg(test)]
 mod dependencies;
-mod handles;
 /// Which rows run next.
 mod pick;
 mod record;
@@ -390,20 +388,11 @@ impl TreeStore {
         Ok(self.conn.execute("UPDATE outbox SET state = 'ready', reason = NULL, confirmed = 1 WHERE state = 'held'", [])?)
     }
 
-    /// `RestoreDeletes`: the held rows are dropped, and returned so that
-    /// their items can be placed again from the cloud. Their items, and what
-    /// is inside them, forget their local inode in the same transaction:
-    /// until the reconcile places them again, an examination cannot prove
-    /// them deleted (they are unproven), so nothing deletes them in smaller
-    /// batches the guard would let through.
+    /// `RestoreDeletes`: the held rows are dropped, and returned: their
+    /// items are in the folder again, as OneDrive has them.
     pub fn outbox_drop_held(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;
         let held = rows_where(&tx, "WHERE state = 'held'", [])?;
-        // In both tables, and by both trees, so that a cycle between staging
-        // and swap cannot give the items their local objects back (the
-        // outbox on the bus).
-        let items: Vec<String> = held.iter().filter_map(|row| row.item_id.clone()).collect();
-        forget_subtrees(&tx, &items, true)?;
         for row in &held {
             remove(&tx, row.seq)?;
         }
@@ -432,7 +421,7 @@ impl TreeStore {
     }
 
     /// Commit step 2 (§5.4), after the attributes are on the file: in one
-    /// transaction, the base takes Graph's answer and the local object, with
+    /// transaction, the base takes Graph's answer, with
     /// `local_seq = ++outbox_seq`; follow-ups behind a create learn its item
     /// id and base; the row goes; the activity event is written. Returns the
     /// commit's `local_seq`.
@@ -451,7 +440,7 @@ impl TreeStore {
             )));
         };
         match committed {
-            Committed::Item { row, handle } => {
+            Committed::Item(row) => {
                 // The answer names the item as OneDrive has it now. Where
                 // the folder cannot hold it there (a name too long, a
                 // reserved one, a folder that is not placed here, such as
@@ -486,12 +475,7 @@ impl TreeStore {
                         upsert(&tx, Table::Items, row)?;
                     }
                 }
-                tx.execute(
-                    "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
-                    params![row.id, handle.map(FileHandle::encode), local_seq],
-                )?;
-                // A row the base does not place records no object (I1).
-                forget_unplaced(&tx, [row.id.as_str()])?;
+                tx.execute("UPDATE items SET local_seq = ?2 WHERE id = ?1", params![row.id, local_seq])?;
                 // The follow-up behind it was detected against what this
                 // commit made: that is its base now — and, behind a create,
                 // its item id.

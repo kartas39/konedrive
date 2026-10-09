@@ -63,18 +63,13 @@ pub(crate) fn below_sql(source: Source) -> String {
 }
 
 /// Where each item `start` selects is (`id, parent_id, name, placement` of
-/// the tree's rows, with `?1` the drive's root): `(id, path, above,
-/// own)` — the chain of names from the root, whether every folder above it
-/// (below the root) is placed, and whether it is itself. An item whose
-/// chain does not reach the root is left out. One query for the lot.
-pub(crate) fn chains_sql(source: Source, start: &str) -> String {
-    chains_then(source, start, "SELECT start, path, above, own FROM chain WHERE parent_id = ?1")
-}
-
-/// [`chains_sql`] with a query of its own over `chain(start, parent_id,
-/// path, above, own, start_placement)`: a row whose `parent_id` is the root
-/// (`?1`) has its whole path. `start` may select rows of another table (a
-/// change that waits): the folders above each are the tree's.
+/// the tree's rows, with `?1` the drive's root), for a query of the caller's
+/// own, `then`, over `chain(start, parent_id, path, above, own,
+/// start_placement)`: the chain of names from the root, whether every folder
+/// above the item (below the root) is placed, and whether it is itself. A
+/// row whose `parent_id` is the root has its whole path; an item whose chain
+/// does not reach the root has none. `start` may select rows of another
+/// table (a change that waits): the folders above each are the tree's.
 pub(crate) fn chains_then(source: Source, start: &str, then: &str) -> String {
     format!(
         "WITH RECURSIVE chain(start, parent_id, path, above, own, start_placement, depth) AS (

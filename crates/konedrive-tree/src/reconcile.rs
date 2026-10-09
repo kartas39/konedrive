@@ -12,8 +12,8 @@
 //! - **What waits to leave.** An item OneDrive still has and the folder
 //!   cannot hold any more (a name too long, the Personal Vault...) is such a
 //!   deferred change too: the base keeps it placed where the disk has it,
-//!   with its recorded object, until a cycle finds nothing waiting in it
-//!   and takes it off the disk whole. What it waits for is kept with the
+//!   until a cycle finds nothing waiting in it and takes it off the disk
+//!   whole. What it waits for is kept with the
 //!   change ([`Deferrals::waits`]), for `Skipped()`.
 //! - **Tombstones.** An item the outbox deleted in OneDrive has no base row
 //!   left to carry its `local_seq`, so the delete's commit count is kept by
@@ -24,19 +24,19 @@ use std::collections::HashMap;
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::model::{at, placed, row_from, Change, NewTree, Row, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
+use crate::model::{at, row_from, Change, NewTree, Row, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
 #[cfg(test)]
 use crate::model::{Kind, Placement};
 use crate::query::get_row;
-use crate::source::{Source, UNTOUCHED};
+use crate::source::Source;
 use crate::staging::{apply, swap};
 use crate::{TreeError, TreeStore};
 
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RwStaged {
-    /// The ids to reconcile: what the new tree changes, what the outbox
-    /// committed since, and what has no local object on record.
+    /// The ids to reconcile: what the new tree changes, and what the outbox
+    /// committed since.
     pub ids: Vec<String>,
     /// The deferred changes staged again, which the cycle's commit is done
     /// with ([`Deferrals::consumed`]).
@@ -170,10 +170,8 @@ impl TreeStore {
     /// A folder that is read-only now (a switch back, or a daemon that
     /// starts so): what waits is the base's at once — the read phase's cycle
     /// knows no deferred change, and the delta cursor will not send it again.
-    /// A row placed again by it carries no local object, and a
-    /// row it makes not placed keeps none (I1): the first cycle takes what
-    /// waited to leave off the disk as the read phase does.
-    /// The first cycle, a Full reconcile, makes the folder match. Nothing to
+    /// The first cycle, a Full reconcile, makes the folder match: it takes
+    /// what waited to leave off the disk as the read phase does. Nothing to
     /// do, and nothing done, for a folder that never was read-write.
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
         let changes = self.live_deferred()?;
@@ -199,27 +197,6 @@ impl TreeStore {
             .query_row(&format!("SELECT {} FROM deferred WHERE id = ?1", deferred_columns()), [id], deferred_change)
             .optional()?
             .map(|(change, _)| change))
-    }
-
-    /// Items `table` places — the item and every folder above it placed —
-    /// with no local object recorded: never placed here, or forgotten by the
-    /// outbox or a restore of held deletes. The root is not one.
-    /// Read from those with no local object alone (an index of `items`, and
-    /// what a delta staged), each placed or not by one query for the lot:
-    /// no walk of the whole tree.
-    pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
-        let own = placed("placement");
-        let start = match self.source(table) {
-            Source::Items => format!("SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND {own}"),
-            Source::Whole => format!("SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND {own}"),
-            Source::Overlay => format!(
-                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND {own}
-                 UNION ALL
-                 SELECT id, parent_id, name, placement FROM items p
-                  WHERE local_handle IS NULL AND {own} AND {UNTOUCHED}"
-            ),
-        };
-        Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
     }
 
     /// Items the outbox wrote after commit count `seq` (`local_seq`): a read-write
@@ -304,14 +281,13 @@ impl TreeStore {
 
     /// A read-write cycle's delta, staged (`remote::listing::rw`): what waits
     /// is staged again before `changes`. The ids to reconcile — what the new
-    /// tree changes, what the outbox committed after commit count `since`,
-    /// and what has no local object on record — and the deferred changes
-    /// consumed ([`RwStaged`]); `None`, with nothing staged, when there is
-    /// nothing to do and no `full` reconcile is asked for.
+    /// tree changes, and what the outbox committed after commit count
+    /// `since` — and the deferred changes consumed ([`RwStaged`]); `None`,
+    /// with nothing staged, when there is nothing to do and no `full`
+    /// reconcile is asked for.
     ///
-    /// An idle cycle reads nothing whole: the deferred changes,
-    /// the outbox by item id, `items` by `local_seq` and by what has no
-    /// local object, each through an index.
+    /// An idle cycle reads nothing whole: the deferred changes, the outbox
+    /// by item id and `items` by `local_seq`, each through an index.
     pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<RwStaged>, TreeError> {
         let deferred = self.live_deferred()?;
         let waiting = {
@@ -326,8 +302,7 @@ impl TreeStore {
             waiting
         };
         let revisit = self.committed_items_since(since)?;
-        let unplaced = self.unplaced(Table::Items)?;
-        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
+        if !full && changes.is_empty() && waiting && revisit.is_empty() {
             return Ok(None);
         }
         let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
@@ -336,7 +311,6 @@ impl TreeStore {
         self.stage(changes)?;
         let mut ids: std::collections::BTreeSet<String> = self.changed_ids()?.into_iter().collect();
         ids.extend(revisit);
-        ids.extend(self.unplaced(Table::Staging)?);
         Ok(Some(RwStaged { ids: ids.into_iter().collect(), consumed }))
     }
 

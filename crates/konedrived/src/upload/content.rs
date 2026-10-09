@@ -15,7 +15,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{Engine, Fail, Outcome};
 use super::local::{self, Found, Opened, Snap};
-use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, tree, upload_as_new, wanted_name, Guard, Named, Ours};
+use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, holds, in_folder, local_name, locate, name_taken, never_uploaded, tree, upload_as_new, wanted_name, Guard, Named, Ours};
 use super::Fault;
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -86,7 +86,7 @@ async fn removed(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcom
     }
     tracing::info!("the new version of {} is not uploaded: the file was removed here", row.rel.display());
     let seq = row.seq;
-    e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
+    e.store().call(move |s| s.outbox_drop(seq, None)).await?;
     Ok(Outcome::Done)
 }
 
@@ -150,8 +150,9 @@ impl Job<'_> {
     ///   that carried none) it is deleted as that version deleted it: with
     ///   the tag just read, whatever happened to it meanwhile.
     /// - It is adopted only while nothing here knows it (no outbox row of
-    ///   the item, no local object: the test of `steps::shared::taken`): one the delta
-    ///   feed listed and a cycle placed here is that local file's.
+    ///   the item, and the folder does not show it: the test of
+    ///   `steps::shared::taken`): one the delta feed listed and a cycle
+    ///   placed here has its own name in the folder.
     /// - It is forgotten exactly when it is deleted, found gone, or left
     ///   as someone else's; adopted, it goes with the row. Anything else —
     ///   a read that fails, a delete OneDrive does not carry out — leaves it
@@ -171,8 +172,8 @@ impl Job<'_> {
         };
         if item.quick_xor_hash() == Some(self.hash().await?.as_str()) {
             let id = bad.id.clone();
-            let known_here = self.e.store().call(move |s| Ok(!s.outbox_for_item(&id)?.is_empty() || s.local_handle(&id)?.is_some())).await?;
-            if !known_here {
+            let waiting = !self.e.store().call(move |s| s.outbox_for_item(&id)).await?.is_empty();
+            if !waiting && !in_folder(self.e, &bad.id).await? {
                 return self.commit(item).await.map(Some);
             }
         }
@@ -444,7 +445,7 @@ impl Job<'_> {
             }).await?;
             return Ok(Outcome::again());
         }
-        copy(self.e, self.disk, row, self.found, self.parent, Some(id)).await
+        copy(self.e, self.disk, row, self.found, self.parent).await
     }
 
     /// Whether the row sends the item nowhere: its object stands where the
@@ -538,7 +539,7 @@ impl Job<'_> {
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
         let event = self.e.event(ActivityKind::Uploaded, &self.found.rel, crate::status::activity::human_size(self.snap.size));
-        commit_row(self.e, self.row, &answer, Some(&self.found.handle), self.parent, event).await?;
+        commit_row(self.e, self.row, &answer, self.parent, event).await?;
         Ok(Outcome::Done)
     }
 }

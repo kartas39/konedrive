@@ -3,12 +3,11 @@
 //! transaction, so a crash leaves all of it or none, and the row it concerns
 //! is replayed from what is left (WR7).
 
-use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
-use crate::forget::{base_places, forget_subtrees, forget_unplaced};
+use crate::placing::base_places;
 use crate::query::get_row;
 use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
@@ -19,8 +18,6 @@ use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT};
 /// A conflict copy, as [`TreeStore::outbox_copied`] records it.
 #[derive(Debug, Clone, Copy)]
 pub struct ConflictCopy<'a> {
-    /// The item the copy came from, if it has one.
-    pub forget: Option<&'a str>,
     /// When, unix seconds.
     pub at: i64,
     /// The full path the cloud's version keeps.
@@ -42,15 +39,6 @@ fn add_activity(tx: &rusqlite::Transaction<'_>, event: Option<&ActivityRow>) -> 
         tx.execute("DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT ?1)", [ACTIVITY_KEPT as i64])?;
     }
     Ok(())
-}
-
-/// Forgets the local object of `id` and of everything the base or the new
-/// tree has inside it: until the reconcile places them again, no examination
-/// can prove them deleted, so none of them becomes a delete in OneDrive (WR4).
-/// In both tables, so that a cycle between staging and swap cannot give them
-/// back (the outbox on the bus).
-fn forget_local(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), TreeError> {
-    forget_subtrees(tx, &[id.to_owned()], true)
 }
 
 fn amend_in(conn: &Connection, seq: i64, amend: impl FnOnce(&mut OutboxRow)) -> Result<bool, TreeError> {
@@ -140,7 +128,6 @@ impl TreeStore {
         &mut self,
         seq: i64,
         answer: &Row,
-        handle: Option<&FileHandle>,
         final_parent: &str,
         final_name: &str,
         activity: Option<&ActivityRow>,
@@ -149,8 +136,7 @@ impl TreeStore {
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_outbox_seq(&tx)?;
         // As [`TreeStore::outbox_commit`]: an answer in a folder the base
-        // does not place takes no placed item's place away, and a row the
-        // base does not place records no object (I1).
+        // does not place takes no placed item's place away.
         let placed = Row { placement: Placement::Placed, ..answer.clone() };
         let stays = match get_row(&tx, Source::Items, &answer.id)? {
             Some(base) if base_places(&tx, &answer.id)? && !super::would_place(&tx, &placed)? => Some(base),
@@ -171,11 +157,7 @@ impl TreeStore {
                 answer.parent_id.clone()
             }
         };
-        tx.execute(
-            "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
-            params![answer.id, handle.map(FileHandle::encode), local_seq],
-        )?;
-        forget_unplaced(&tx, [answer.id.as_str()])?;
+        tx.execute("UPDATE items SET local_seq = ?2 WHERE id = ?1", params![answer.id, local_seq])?;
         let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent, name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
         if let Some(object) = &committed.object {
@@ -377,15 +359,10 @@ impl TreeStore {
     }
 
     /// Row `seq` goes without a commit: OneDrive decided otherwise (§7: a
-    /// delete of something changed there). In one transaction: `forget` (an
-    /// item) and what is inside it lose their local object, so that what is
-    /// missing here is placed again rather than deleted in OneDrive; the
-    /// activity is written.
-    pub fn outbox_drop(&mut self, seq: i64, forget: Option<&str>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
+    /// delete of something changed there), or there is nothing to send. In
+    /// one transaction with the activity.
+    pub fn outbox_drop(&mut self, seq: i64, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        if let Some(id) = forget {
-            forget_local(&tx, id)?;
-        }
         remove(&tx, seq)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
@@ -444,15 +421,10 @@ impl TreeStore {
 
     /// A conflict copy (§7): the local version renamed beside the cloud's,
     /// recorded as a conflict of kind `copy` ([`ConflictCopy`]). The row
-    /// becomes, through `amend`, the copy's create; the item the copy came
-    /// from loses its local object, so that its name is placed again from
-    /// the cloud rather than deleted there — in one transaction.
+    /// becomes, through `amend`, the copy's create — in one transaction.
     pub fn outbox_copied(&mut self, seq: i64, amend: impl FnOnce(&mut OutboxRow), copied: &ConflictCopy<'_>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         amend_in(&tx, seq, amend)?;
-        if let Some(id) = copied.forget {
-            forget_local(&tx, id)?;
-        }
         tx.execute(
             &format!(
                 "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, '{kind}')

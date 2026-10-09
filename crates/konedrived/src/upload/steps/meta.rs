@@ -45,10 +45,8 @@ pub(super) async fn mkdir(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
 }
 
 /// A folder's commit, on the directory `dir` opened before the request. One
-/// removed since is committed all the same, with its handle: the item exists
-/// in OneDrive now, and only the base knowing it lets the examination delete
-/// it there (a commit that failed here left it in OneDrive for good, and the
-/// reconcile placed it back as new).
+/// removed since is committed all the same: the item exists in OneDrive now,
+/// and only the base knowing it lets its removal here remove it there.
 async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::File, item: &DriveItem, parent: &str) -> Result<Outcome, Fail> {
     let answer = answer_row(item, Some(parent))?;
     let tree = tree(e).await;
@@ -56,7 +54,7 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
     blocking_under(Arc::clone(&tree), move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;
     let event = e.event(ActivityKind::Uploaded, &found.rel, "folder");
-    commit_row(e, row, &answer, Some(&found.handle), parent, event).await?;
+    commit_row(e, row, &answer, parent, event).await?;
     Ok(Outcome::Done)
 }
 
@@ -81,7 +79,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
         }
         // Where the base has it already: nothing to send.
-        e.store().call(move |s| s.outbox_drop(row.seq, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(row.seq, None)).await?;
         return Ok(Outcome::Done);
     }
     match e.drive().update_item(&id, guard.as_str(), &change).await {
@@ -110,7 +108,6 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                     let tree = tree(e).await;
                     if let Some(to_rel) = follow_cloud(e, disk, &tree, found, &remote).await? {
                         let answer = answer_row(&remote, None)?;
-                        let handle = found.handle.clone();
                         let (on, at) = (Arc::clone(disk), to_rel.clone());
                         blocking_under(Arc::clone(&tree), move || {
                             local::mark(&on, &at, None);
@@ -119,7 +116,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                         .await?;
                         let event = e.event(ActivityKind::Moved, &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
                         let (seq, stored) = (row.seq, event.clone());
-                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, Some(&stored))).await?;
+                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item(&answer), Some(&stored))).await?;
                         e.host().activity(&event);
                         return Ok(Outcome::Done);
                     }
@@ -151,7 +148,6 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         None => String::new(),
     };
     let tree = tree(e).await;
-    let handle = found.map(|f| f.handle.clone()).or_else(|| row.object.clone());
     let rel = found.map(|f| f.rel.as_path()).unwrap_or(&row.rel);
     if let Some(object) = found.cloned() {
         blocking_under(Arc::clone(&tree), move || {
@@ -161,7 +157,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         .await?;
     }
     let event = e.event(ActivityKind::CloudMoved, rel, was);
-    commit_row(e, row, &answer, handle.as_ref(), parent, event).await?;
+    commit_row(e, row, &answer, parent, event).await?;
     Ok(Outcome::Done)
 }
 
@@ -202,7 +198,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
         // Never in OneDrive (its create never landed): nothing to delete.
         tracing::info!("{} was never uploaded: its delete leaves the outbox", row.rel.display());
         let seq = row.seq;
-        e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(seq, None)).await?;
         return Ok(Outcome::Done);
     };
     let base = row.base.clone().unwrap_or_default();
@@ -234,16 +230,15 @@ async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcom
     Ok(Outcome::Done)
 }
 
-/// OneDrive's version comes back: the delete is dropped, and the item is
-/// placed again by the reconcile (§7, delete × edit: remote wins). Under the
-/// tree lock, so that a cycle's swap cannot give the item its old local
-/// object back.
-async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
+/// OneDrive's version comes back: the delete is dropped, and the item is in
+/// the folder again as OneDrive has it (§7, delete × edit: remote wins).
+/// Under the tree lock, as a delete's commit is.
+async fn restored(e: &Engine, row: &OutboxRow, why: &str) -> Result<Outcome, Fail> {
     let event = e.event(ActivityKind::Restored, &row.rel, why);
     {
         let _tree = e.tree_lock().lock().await;
-        let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
-        e.store().call(move |s| s.outbox_drop(seq, Some(&id), Some(&stored))).await?;
+        let (seq, stored) = (row.seq, event.clone());
+        e.store().call(move |s| s.outbox_drop(seq, Some(&stored))).await?;
     }
     e.host().activity(&event);
     e.host().full_cycle_wanted();
@@ -261,7 +256,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
             Err(err) => return Err(err.into()),
         };
         if remote.c_tag.is_none() || remote.c_tag != base.ctag {
-            return restored(e, row, id, "changed in OneDrive after it was deleted here").await;
+            return restored(e, row, "changed in OneDrive after it was deleted here").await;
         }
         match e.drive().delete_item(id, Guard::of_item(&remote).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,

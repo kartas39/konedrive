@@ -29,11 +29,11 @@ use rusqlite::Connection;
 
 mod activity;
 mod conflicts;
-mod forget;
 mod meta;
 mod model;
 pub mod outbox;
 mod pins;
+mod placing;
 mod query;
 mod read;
 pub mod reconcile;
@@ -43,11 +43,9 @@ mod source;
 mod staging;
 mod thumbs;
 
-#[cfg(test)]
-use forget::forget_subtrees;
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
-pub use model::{usable_id, Chain, Change, Counts, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
+pub use model::{usable_id, Change, Counts, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
 pub use konedrive_reason::WaitsFor;
 pub use query::Skipped;
 pub use read::ReadStore;
