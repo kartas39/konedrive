@@ -114,6 +114,12 @@ impl WriteOperationThread {
         drop(dropped);
     }
 
+    /// How many jobs wait for the thread.
+    #[cfg(test)]
+    pub(super) fn count_queued_jobs(&self) -> usize {
+        crate::panic::lock(&self.queued_jobs).as_ref().map_or(0, VecDeque::len)
+    }
+
     /// Takes the queue away, and wakes the thread to its end: no job is queued, or taken
     /// off the queue, from here on.
     fn take_queued_jobs(&self) -> Option<VecDeque<Job>> {

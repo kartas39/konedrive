@@ -64,7 +64,7 @@ pub struct Mount {
     /// ([`super::cycle_step`]).
     cycle_step: Arc<CycleStep>,
     /// What the daemon's bus interface `Files` asks ([`super::files_interface`]).
-    files_interface: FilesInterface,
+    files_interface: Arc<FilesInterface>,
     /// What brings a change from OneDrive to whoever watches the folder
     /// ([`super::inotify_bridge`]).
     inotify_bridge: Arc<InotifyBridge>,
@@ -214,7 +214,7 @@ impl Mount {
     }
 
     /// What answers the daemon's bus interface `Files` for this folder.
-    pub fn files_interface(&self) -> &FilesInterface {
+    pub fn files_interface(&self) -> &Arc<FilesInterface> {
         &self.files_interface
     }
 

@@ -58,7 +58,7 @@ impl SyncService {
     /// the folder, not one per file.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
         let reg = self.require_record()?;
-        let freed = self.require_mount()?.files_interface().free_up_all().await;
+        let freed = self.require_mount()?.files_interface().free_up_all().await?;
         let total = FreedUp { files: freed.files as u32, bytes: freed.bytes, pinned: freed.kept as u32, ..FreedUp::default() };
         if total.files > 0 {
             let event = activity::event(Kind::Freed, reg.root.path.display().to_string(), freed_detail(total.files, total.bytes));

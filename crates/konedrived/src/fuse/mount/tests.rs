@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_graph::pool::TransferPool;
@@ -17,6 +17,7 @@ use crate::folder::root::SyncRoot;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::files_interface::FilesRefusal;
 use crate::fuse::kernel_requests::KernelRequests;
+use crate::fuse::node_table::NodeId;
 use crate::hydration::source::{ContentSource, Fetched, Share, SourceError};
 use crate::local::IgnoreList;
 use crate::status::report::Report;
@@ -101,6 +102,32 @@ impl BuiltMount {
     /// thread was given before has run then.
     pub(in crate::fuse) fn run_on_write_operation_thread(&self, job: impl FnOnce() + Send + 'static) {
         self.mount.write_operation_thread.run_and_wait(job).blocking_recv().unwrap();
+    }
+
+    /// Puts `job` on the mount's write-operation thread, behind every job it was given
+    /// before; what it gives comes once it ran.
+    pub(in crate::fuse) fn queue_on_write_operation_thread<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> tokio::sync::oneshot::Receiver<T> {
+        self.mount.write_operation_thread.run_and_wait(job)
+    }
+
+    /// Stops the mount's write-operation thread, as the stop of the mount does.
+    pub(in crate::fuse) fn stop_write_operation_thread(&self) {
+        self.mount.write_operation_thread.stop();
+    }
+
+    /// Waits until `count` jobs wait for the mount's write-operation thread, which runs
+    /// none of them while the test holds the tree lock.
+    pub(in crate::fuse) fn wait_for_queued_write_operations(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.mount.write_operation_thread.count_queued_jobs() < count {
+            assert!(Instant::now() < deadline, "{count} jobs were to wait for the write-operation thread, and {} do", self.mount.write_operation_thread.count_queued_jobs());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The node id the kernel is given for `name` of the folder itself.
+    pub(in crate::fuse) fn node_id_in_root(&self, name: &str) -> NodeId {
+        self.kernel_requests.find_node_id_in_root(name)
     }
 
     /// The folder's path, which a mount would lie over: what the `Files` interface is asked

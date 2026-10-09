@@ -5,14 +5,25 @@
 //! directory holds ([`DirectoryContents`]), the [`BackingDirectory`], where a copy that is
 //! freed is removed, the state of the downloads ([`DownloadStates`]) and what downloads
 //! ([`FileDownloader`], and the [`PinnedFileDownloader`] for what a pin keeps), what
-//! programs hold open ([`OpenHandles`]), the [`Pins`], and the [`InotifyBridge`], which
-//! announces what changed of a file to whoever shows it. A path it is asked about is a path
-//! of the mount; what is local only is not OneDrive's to download, free or pin, and is
-//! refused ([`FilesRefusal::NotInOneDrive`]).
+//! programs hold open ([`OpenHandles`]), the [`Pins`], the [`InotifyBridge`], which
+//! announces what changed of a file to whoever shows it, and the [`WriteOperationThread`],
+//! on which a copy is freed. A path it is asked about is a path of the mount; what is local
+//! only is not OneDrive's to download, free or pin, and is refused
+//! ([`FilesRefusal::NotInOneDrive`]).
 //!
 //! Whether a downloaded copy is freed is decided in one place
 //! ([`super::free_up_decision`]): for each copy below a path here, and for a path the
 //! folder's sync asks about, through its [`PathStatus`].
+//!
+//! A free-up walks off the write-operation thread and frees on it. The walk lists the
+//! OneDrive ids of the downloaded copies below a path, and decides nothing. Each copy is
+//! then freed in a job of its own on the thread, waited for before the next is put there:
+//! the job reads how the file stands now, decides, and removes the copy, and no write
+//! operation — an open for writing, a close, a cut, a rename — runs between what it read
+//! and what it did. One job a file, so that a program's write waits for one file of a long
+//! free-up and not for all of them. What a [`PathStatus`] says of a path was read off the
+//! thread, and is what the folder's sync refuses by before anything is freed; the job
+//! decides again.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,6 +42,7 @@ use super::inotify_bridge::{Announcement, InotifyBridge};
 use super::open_handles::OpenHandles;
 use super::pinned_file_downloader::PinnedFileDownloader;
 use super::pins::Pins;
+use super::write_operation_thread::WriteOperationThread;
 use crate::status::report::Report;
 
 mod path_status;
@@ -78,6 +90,8 @@ pub struct FilesInterface {
     pins: Arc<Pins>,
     inotify_bridge: Arc<InotifyBridge>,
     pinned_file_downloader: Arc<PinnedFileDownloader>,
+    /// Where a downloaded copy is freed: beside no write operation.
+    write_operation_thread: Arc<WriteOperationThread>,
     report: Report,
 }
 
@@ -93,9 +107,10 @@ impl FilesInterface {
         pins: Arc<Pins>,
         inotify_bridge: Arc<InotifyBridge>,
         pinned_file_downloader: Arc<PinnedFileDownloader>,
+        write_operation_thread: Arc<WriteOperationThread>,
         report: Report,
     ) -> Self {
-        FilesInterface { folder, directory_contents, backing_directory, download_states, file_downloader, open_handles, pins, inotify_bridge, pinned_file_downloader, report }
+        FilesInterface { folder, directory_contents, backing_directory, download_states, file_downloader, open_handles, pins, inotify_bridge, pinned_file_downloader, write_operation_thread, report }
     }
 
     /// The entry at `path`, when it is in OneDrive, and its path in the folder.
@@ -133,51 +148,83 @@ impl FilesInterface {
     /// Frees the space of the downloaded copies at and below `path`. What a pin keeps, a
     /// download is filling, a program writes, or holds a change that is not uploaded yet, is
     /// left and counted. Whether `path` itself may be freed is the caller's to ask first
-    /// ([`find_path_status`](Self::find_path_status)).
-    pub async fn free_up(&self, path: &Path) -> Result<FreedSpace, FilesRefusal> {
+    /// ([`find_path_status`](Self::find_path_status)). Refused when the mount is stopped
+    /// ([`FilesRefusal::Io`]): nothing more is freed then.
+    pub async fn free_up(self: &Arc<Self>, path: &Path) -> Result<FreedSpace, FilesRefusal> {
         let (row, _) = self.find_onedrive_row(path)?;
-        Ok(self.free_up_below(row).await)
+        self.free_up_below(row).await
     }
 
-    /// Frees the space of every downloaded copy that no pin keeps.
-    pub async fn free_up_all(&self) -> FreedSpace {
-        let Some(root) = self.directory_contents.find_root_id().and_then(|id| self.directory_contents.find_row(&id)) else { return FreedSpace::default() };
+    /// Frees the space of every downloaded copy that no pin keeps. Refused as
+    /// [`free_up`](Self::free_up) is.
+    pub async fn free_up_all(self: &Arc<Self>) -> Result<FreedSpace, FilesRefusal> {
+        let Some(root) = self.directory_contents.find_root_id().and_then(|id| self.directory_contents.find_row(&id)) else { return Ok(FreedSpace::default()) };
         self.free_up_below(root).await
     }
 
-    async fn free_up_below(&self, row: Row) -> FreedSpace {
-        let (directory_contents, open_handles, pins) = (Arc::clone(&self.directory_contents), Arc::clone(&self.open_handles), Arc::clone(&self.pins));
-        let backing_directory = Arc::clone(&self.backing_directory);
-        let (download_states, inotify_bridge) = (Arc::clone(&self.download_states), Arc::clone(&self.inotify_bridge));
-        let freed = tokio::task::spawn_blocking(move || {
-            let (mut freed, mut announcements) = (FreedSpace::default(), Vec::new());
-            for (file, at) in directory_contents.list_files_below(&row) {
-                // What is not downloaded takes no space: only a downloaded copy is asked
-                // about.
-                let Some(file_row) = file.row().filter(|_| file.downloaded_copy().is_some()).cloned() else { continue };
-                let (is_pinned, is_downloading) = (pins.find_pinning_row(&file_row).is_some(), download_states.is_downloading(&file_row.id));
-                let is_open_for_writing = open_handles.is_open_for_writing_by_onedrive_id(&file_row.id);
-                let freed_bytes = match decide_free_up(&EntryState::File(file), is_pinned, is_downloading, is_open_for_writing) {
-                    FreeUpDecision::Free => backing_directory.remove_downloaded_copy(&at, &file_row.id),
-                    FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => None,
-                    FreeUpDecision::NotDownloaded => continue,
-                };
-                match freed_bytes {
-                    Some(bytes) => {
-                        freed.files += 1;
-                        freed.bytes += bytes;
-                        announcements.push(Announcement::FileShownChanged { rel: at, id: file_row.id });
-                    }
-                    None => freed.kept += 1,
+    /// Frees the downloaded copies at and below `row`: the walk lists them here, off the
+    /// write-operation thread, and each is freed on it, in a job of its own that is waited
+    /// for before the next is put there ([`free_downloaded_copy`](Self::free_downloaded_copy)).
+    /// A thread that is stopped drops the job: the free-up ends there, refused.
+    async fn free_up_below(self: &Arc<Self>, row: Row) -> Result<FreedSpace, FilesRefusal> {
+        let files_interface = Arc::clone(self);
+        let listed = tokio::task::spawn_blocking(move || files_interface.list_downloaded_ids_below(&row)).await.unwrap_or_default();
+        let (mut freed, mut given_up) = (FreedSpace::default(), false);
+        for onedrive_id in listed {
+            let files_interface = Arc::clone(self);
+            match self.write_operation_thread.run_and_wait(move || files_interface.free_downloaded_copy(&onedrive_id)).await {
+                Ok(copy) => freed = FreedSpace { files: freed.files + copy.files, bytes: freed.bytes + copy.bytes, kept: freed.kept + copy.kept },
+                Err(_) => {
+                    given_up = true;
+                    break;
                 }
             }
-            inotify_bridge.announce(announcements);
-            freed
-        })
-        .await
-        .unwrap_or_default();
+        }
         self.report.space.kick();
-        freed
+        match given_up {
+            true => Err(FilesRefusal::Io("the free-up was given up: the folder is no longer served".into())),
+            false => Ok(freed),
+        }
+    }
+
+    /// The OneDrive ids of the files at and below `row` that have a downloaded copy now:
+    /// what a free-up asks about, one by one. What is not downloaded takes no space. Only
+    /// the ids are kept of the walk: how each file stands is read again at its turn.
+    fn list_downloaded_ids_below(&self, row: &Row) -> Vec<String> {
+        let files = self.directory_contents.list_files_below(row).into_iter();
+        files.filter(|(file, _)| file.downloaded_copy().is_some()).filter_map(|(file, _)| file.row().map(|row| row.id.clone())).collect()
+    }
+
+    /// Frees the downloaded copy of the OneDrive file `onedrive_id`, unless something keeps
+    /// it: what was freed, or that one copy was kept; nothing of either for a file that has
+    /// no downloaded copy any more, or is gone from the folder.
+    ///
+    /// Called on the write-operation thread. How the file stands — where the mount shows
+    /// it, its sync state, its pin, its download, its writers — is read here, and the copy
+    /// is removed here: no write operation runs in between, so what is decided is true of
+    /// the copy that is removed.
+    fn free_downloaded_copy(&self, onedrive_id: &str) -> FreedSpace {
+        let nothing = FreedSpace::default();
+        let Some(path) = self.directory_contents.find_path(onedrive_id) else { return nothing };
+        let Some(entry) = path.file_name().and_then(|name| name.to_str()).and_then(|name| self.directory_contents.find_entry_by_id(onedrive_id, name, &path)) else { return nothing };
+        let (EntryState::File(file), Some(row)) = (&entry.state, entry.row()) else { return nothing };
+        if file.downloaded_copy().is_none() {
+            return nothing;
+        }
+        let (is_pinned, is_downloading) = (self.pins.find_pinning_row(row).is_some(), self.download_states.is_downloading(onedrive_id));
+        let is_open_for_writing = self.open_handles.is_open_for_writing_by_onedrive_id(onedrive_id);
+        let freed_bytes = match decide_free_up(&entry.state, is_pinned, is_downloading, is_open_for_writing) {
+            FreeUpDecision::Free => self.backing_directory.remove_downloaded_copy(&path, onedrive_id),
+            FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => None,
+            FreeUpDecision::NotDownloaded => return nothing,
+        };
+        match freed_bytes {
+            Some(bytes) => {
+                self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel: path, id: onedrive_id.to_owned() }]);
+                FreedSpace { files: 1, bytes, kept: 0 }
+            }
+            None => FreedSpace { kept: 1, ..nothing },
+        }
     }
 
     /// How the file or directory of OneDrive at `path` stands: its pin — its own, and the

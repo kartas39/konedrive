@@ -78,6 +78,18 @@ impl KernelRequests {
         KernelRequests { lookup_requests, directory_requests, xattr_requests, read_requests, write_requests, inotify_bridge }
     }
 
+    /// The write operations the write requests have made.
+    #[cfg(test)]
+    pub(super) fn write_operations(&self) -> &Arc<super::write_operations::WriteOperations> {
+        self.write_requests.write_operations()
+    }
+
+    /// The node id a lookup gives `name` of the folder itself.
+    #[cfg(test)]
+    pub(super) fn find_node_id_in_root(&self, name: &str) -> NodeId {
+        NodeId::from(self.lookup_requests.find_lookup_answer(false, NodeId::ROOT, OsStr::new(name)).unwrap().0.ino)
+    }
+
     /// Whether the request is the inotify bridge's own: a change from OneDrive it announces,
     /// which is answered from the store and never made.
     fn is_from_inotify_bridge(&self, req: &Request) -> bool {

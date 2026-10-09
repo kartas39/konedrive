@@ -2,7 +2,7 @@
 //! fixture's drive (`docs` with `c.txt`; `a.txt` and `b.txt` in the root), whose source
 //! gives every file no bytes, and a bridge whose thread is not started.
 
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -122,10 +122,10 @@ fn what_is_not_downloaded_is_neither_freed_nor_counted_as_kept() {
     let built = build_mount_with(&[], &["B"]);
     let files_interface = built.mount.files_interface();
     built.download("a.txt", "A", b"aaaa");
-    let freed = block_on(files_interface.free_up_all());
+    let freed = block_on(files_interface.free_up_all()).unwrap();
     assert_eq!((freed.files, freed.kept), (1, 0));
     // And a second free-up finds nothing left to free.
-    let again = block_on(files_interface.free_up_all());
+    let again = block_on(files_interface.free_up_all()).unwrap();
     assert_eq!((again.files, again.bytes, again.kept), (0, 0, 0));
 }
 
@@ -192,4 +192,72 @@ fn a_pin_is_announced_only_when_it_changed() {
     assert_eq!(files_interface.count_pins(), 0);
     assert_eq!(files_interface.inotify_bridge.list_queued_announcements(), [shown_changed("docs", "D")]);
     assert!(!files_interface.download_states.is_downloading("C"));
+}
+
+/// The parts of a read-write mount whose `a.txt` is downloaded.
+fn build_mount_with_downloaded_file() -> BuiltMount {
+    let built = build_mount();
+    assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
+    built.run_on_write_operation_thread(|| {});
+    built.download("a.txt", "A", b"from OneDrive");
+    built
+}
+
+/// Frees up `a.txt` while a cycle holds the tree lock and `queued` jobs wait for the
+/// write-operation thread already: the free-up has listed the file, and its turn on the
+/// thread comes after them. What it freed, once the lock is let go of.
+fn free_up_behind_queued_jobs(built: &BuiltMount, held: tokio::sync::MutexGuard<'_, ()>, queued: usize) -> super::FreedSpace {
+    let path = built.path("a.txt");
+    std::thread::scope(|scope| {
+        let free_up = scope.spawn(|| block_on(built.mount.files_interface().free_up(&path)));
+        built.wait_for_queued_write_operations(queued + 1);
+        drop(held);
+        free_up.join().unwrap().unwrap()
+    })
+}
+
+/// The file is listed while its copy matches; before its turn a program opens it, writes it
+/// and closes it. Its copy holds the only content that is not sent: it is kept, and counted
+/// as kept.
+#[test]
+fn a_file_modified_between_the_listing_and_its_turn_is_kept() {
+    let built = build_mount_with_downloaded_file();
+    let node_id = built.node_id_in_root("a.txt");
+    let held = built.tree_lock.blocking_lock();
+    let (write_operations, open_handles) = (Arc::clone(built.kernel_requests.write_operations()), Arc::clone(&built.mount.files_interface().open_handles));
+    let _modified = built.queue_on_write_operation_thread(move || {
+        let fh = write_operations.open_to_write(node_id).unwrap();
+        open_handles.find_file_to_write(fh).unwrap().1.write_all_at(b"the user's own", 0).unwrap();
+        open_handles.mark_written(node_id);
+        write_operations.close_writer(fh);
+    });
+    let freed = free_up_behind_queued_jobs(&built, held, 1);
+    assert_eq!((freed.files, freed.bytes, freed.kept), (0, 0, 1));
+    assert_eq!(std::fs::read(built.disk.join("a.txt")).unwrap(), b"the user's own");
+    assert!(built.mount.files_interface().inotify_bridge.list_queued_announcements().is_empty());
+}
+
+/// The file is listed while no program writes it; before its turn one opens it for writing.
+/// Its copy is what that program writes into: it is kept.
+#[test]
+fn a_file_opened_for_writing_between_the_listing_and_its_turn_is_kept() {
+    let built = build_mount_with_downloaded_file();
+    let held = built.tree_lock.blocking_lock();
+    let open_handles = Arc::clone(&built.mount.files_interface().open_handles);
+    let _opened = built.queue_on_write_operation_thread(move || drop(open_handles.add_writer(NodeId(900), Some("A".into()), Arc::new(tempfile::tempfile().unwrap()))));
+    let freed = free_up_behind_queued_jobs(&built, held, 1);
+    assert_eq!((freed.files, freed.kept), (0, 1));
+    assert!(built.disk.join("a.txt").is_file());
+}
+
+/// No write operation runs on a stopped thread, and nothing is freed beside one: the
+/// free-up says it freed nothing.
+#[test]
+fn a_free_up_of_a_folder_whose_write_operation_thread_is_stopped_frees_nothing_and_is_refused() {
+    let built = build_mount();
+    download_all(&built);
+    built.stop_write_operation_thread();
+    assert!(matches!(block_on(built.mount.files_interface().free_up(&built.path(""))), Err(FilesRefusal::Io(_))));
+    assert!(matches!(block_on(built.mount.files_interface().free_up_all()), Err(FilesRefusal::Io(_))));
+    assert!(built.disk.join("a.txt").is_file() && built.disk.join("b.txt").is_file() && built.disk.join("docs/c.txt").is_file());
 }

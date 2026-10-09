@@ -116,7 +116,7 @@ impl Mount {
             Arc::clone(&inotify_bridge),
             Arc::clone(&pinned_file_downloader),
         ));
-        let files_interface = FilesInterface::new(
+        let files_interface = Arc::new(FilesInterface::new(
             folder.clone(),
             Arc::clone(&directory_contents),
             Arc::clone(&backing_directory),
@@ -126,8 +126,9 @@ impl Mount {
             Arc::clone(&pins),
             Arc::clone(&inotify_bridge),
             Arc::clone(&pinned_file_downloader),
+            Arc::clone(&write_operation_thread),
             report,
-        );
+        ));
         let kernel_requests = KernelRequests::new(
             LookupRequests::new(Arc::clone(&node_resolver), Arc::clone(&directory_contents), Arc::clone(&access_mode_switch), Arc::clone(&inotify_bridge), Arc::clone(&backing_directory)),
             DirectoryRequests::new(Arc::clone(&node_resolver), Arc::clone(&directory_contents), Arc::clone(&open_handles), Arc::clone(&access_mode_switch)),

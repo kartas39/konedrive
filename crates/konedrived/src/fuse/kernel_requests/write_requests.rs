@@ -101,6 +101,11 @@ impl WriteRequests {
         WriteRequests { write_operations, write_operation_thread, access_mode_switch, node_resolver, open_handles, file_downloader, runtime }
     }
 
+    #[cfg(test)]
+    pub(super) fn write_operations(&self) -> &Arc<WriteOperations> {
+        &self.write_operations
+    }
+
     /// The errno of a change the mount never takes: `refusal` in a read-write folder, and a
     /// read-only filesystem's in a read-only one.
     pub(super) fn refuse_unsupported(&self, refusal: Errno) -> Errno {

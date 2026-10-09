@@ -74,7 +74,8 @@
 //!   it uses — the write requests over the write operations and their thread;
 //!   [`files_interface`] answers the daemon's bus interface `Files`, over the directory
 //!   contents, the backing directory, the download states, the two downloaders, the open
-//!   handles, the pins and the bridge.
+//!   handles, the pins, the bridge and the write-operation thread, on which it frees each
+//!   downloaded copy.
 //! - The mount itself: [`mount`] holds the session, the [`fuse_connection`] and the parts,
 //!   and hands out the four the daemon asks: the access mode switch, the cycle step, the
 //!   `Files` interface and the backing directory. Its build takes a stale mount off the
