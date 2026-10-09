@@ -75,25 +75,6 @@ impl OutboxState {
     }
 }
 
-/// The local object a row is about. The handle, where the filesystem gives
-/// one, is the identity; the inode number is kept beside it, as the schema
-/// has it, and is the identity only where there is no handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Inode {
-    pub dev: u64,
-    pub ino: u64,
-    pub handle: Option<FileHandle>,
-}
-
-impl Inode {
-    pub fn same_object(&self, other: &Inode) -> bool {
-        match (&self.handle, &other.handle) {
-            (Some(a), Some(b)) => a == b,
-            _ => self.dev == other.dev && self.ino == other.ino,
-        }
-    }
-}
-
 /// What a change was made against: the item as the base had it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Base {
@@ -167,7 +148,10 @@ pub struct OutboxRow {
     pub kind: OutboxKind,
     /// `None` until a `create` or `mkdir` lands.
     pub item_id: Option<String>,
-    pub inode: Option<Inode>,
+    /// The local object the row is about, by its file handle: a file or
+    /// directory of the folder. `None` for an item the folder holds no
+    /// object of.
+    pub object: Option<FileHandle>,
     /// Where it was last seen, relative to the root.
     pub rel: PathBuf,
     pub base: Option<Base>,
@@ -227,7 +211,8 @@ impl OutboxRow {
 pub struct Detection {
     pub kind: OutboxKind,
     pub item_id: Option<String>,
-    pub inode: Option<Inode>,
+    /// The local object, as in [`OutboxRow::object`].
+    pub object: Option<FileHandle>,
     pub rel: PathBuf,
     /// `None` for a `create` or a `mkdir`.
     pub base: Option<Base>,

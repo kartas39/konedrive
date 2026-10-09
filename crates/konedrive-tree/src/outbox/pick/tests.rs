@@ -3,7 +3,7 @@ use std::path::Path;
 use konedrive_fs::handle::FileHandle;
 
 use super::*;
-use crate::outbox::{Base, Inode, OutboxKind};
+use crate::outbox::{Base, OutboxKind};
 use crate::{Change, Placement, Row};
 
 fn item(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
@@ -32,8 +32,8 @@ fn store(items: &[Row]) -> TreeStore {
     s
 }
 
-fn object(n: u64) -> Inode {
-    Inode { dev: 1, ino: n, handle: Some(FileHandle { kind: 1, bytes: n.to_le_bytes().to_vec() }) }
+fn object(n: u64) -> FileHandle {
+    FileHandle { kind: 1, bytes: n.to_le_bytes().to_vec() }
 }
 
 fn row(kind: OutboxKind, rel: &str, n: u64) -> OutboxRow {
@@ -41,7 +41,7 @@ fn row(kind: OutboxKind, rel: &str, n: u64) -> OutboxRow {
         seq: 0,
         kind,
         item_id: None,
-        inode: Some(object(n)),
+        object: Some(object(n)),
         rel: rel.into(),
         base: None,
         target_parent: None,

@@ -27,7 +27,7 @@ fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Opti
     Detection {
         kind,
         item_id: Some(id.into()),
-        inode: None,
+        object: None,
         rel: PathBuf::from(rel),
         base: Some(Base { etag: Some("e".into()), ctag: Some("c".into()), parent: Some("R".into()), name: Some(name.into()) }),
         target_parent: to.0.map(str::to_owned),

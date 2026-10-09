@@ -1,9 +1,16 @@
 use std::path::Path;
 
+use konedrive_fs::handle::FileHandle;
+
 use super::{Key, Nodes};
 
 fn item(id: &str) -> Key {
     Key::Item(id.into())
+}
+
+/// An object by a handle as ext4 gives it: the inode's number, then its generation.
+fn local(ino: u32, generation: u32) -> Key {
+    Key::Local(FileHandle { kind: 1, bytes: [ino.to_le_bytes(), generation.to_le_bytes()].concat() })
 }
 
 fn nodes() -> Nodes {
@@ -42,8 +49,20 @@ fn the_roots_path_is_empty_and_an_unknown_nodes_is_none() {
 #[test]
 fn an_object_that_gets_its_item_keeps_its_node() {
     let mut nodes = nodes();
-    let file = nodes.ino(Key::Local(42), 1, "new.txt");
-    nodes.rekey(&Key::Local(42), item("N"));
+    let file = nodes.ino(local(42, 1), 1, "new.txt");
+    nodes.rekey(&local(42, 1), item("N"));
     assert_eq!(nodes.ino(item("N"), 1, "new.txt"), file);
-    assert_eq!(nodes.inos.get(&Key::Local(42)), None);
+    assert_eq!(nodes.inos.get(&local(42, 1)), None);
+}
+
+/// The filesystem gives the inode number of a removed file to the next one made. The two are
+/// two objects, by their handles, and never one node: what a program still holds of the
+/// first says nothing of the second.
+#[test]
+fn two_objects_that_had_one_inode_number_are_two_nodes() {
+    let mut nodes = nodes();
+    let first = nodes.ino(local(42, 1), 1, "a.txt");
+    let second = nodes.ino(local(42, 2), 1, "a.txt");
+    assert_ne!(first, second);
+    assert_eq!(nodes.ino(local(42, 1), 1, "a.txt"), first);
 }

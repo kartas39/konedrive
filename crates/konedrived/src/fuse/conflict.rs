@@ -33,8 +33,8 @@ impl Shared {
     pub(super) fn out_of_the_way(&self, rel: &Path, above: Option<&str>, met: &mut Met) {
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
         let path = self.under(rel);
-        let Ok(meta) = fs::symlink_metadata(&path) else { return };
-        if carried(&path).is_some() || !(meta.is_file() || meta.is_dir()) {
+        let Some(object) = self.object(rel) else { return };
+        if carried(&path).is_some() || !(object.meta.is_file() || object.meta.is_dir()) {
             return;
         }
         let dir = Dir { id: above.map(str::to_owned), rel: parent.to_path_buf() };
@@ -48,11 +48,11 @@ impl Shared {
                 tracing::warn!("{} could not be kept beside the item that comes to its name: {e}", rel.display());
                 return;
             }
-            if meta.is_dir() {
+            if object.meta.is_dir() {
                 met.ops.push(rebase(rel, &to));
             }
             if !self.stays_local(&dir, &copy) {
-                met.detections.push(Place { dir: &dir, name: &copy }.new(&meta, false));
+                met.detections.push(Place { dir: &dir, name: &copy }.new(&object, false));
             }
             met.copied.push((rel.to_path_buf(), to));
             return;

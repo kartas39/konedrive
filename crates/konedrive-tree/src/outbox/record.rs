@@ -11,7 +11,7 @@ fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
         seq: 0,
         kind,
         item_id: d.item_id.clone(),
-        inode: d.inode.clone(),
+        object: d.object.clone(),
         rel: d.rel.clone(),
         base,
         target_parent: if removes { None } else { d.target_parent.clone() },
@@ -58,7 +58,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     let mut row = new_row(d, kind, base);
     row.seq = existing.seq;
     row.item_id = existing.item_id.clone().or_else(|| d.item_id.clone());
-    row.inode = d.inode.clone().or_else(|| existing.inode.clone());
+    row.object = d.object.clone().or_else(|| existing.object.clone());
     row.attempts = existing.attempts;
     row.size = d.size.or(existing.size);
     // A confirmed removal stays confirmed while it is still one.
@@ -96,12 +96,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     // An upload session belongs to one object, one place and one kind of
     // request; the snapshot is checked against the file before a resume, so
     // new content alone does not cost the progress.
-    let same_object = match (&row.inode, &existing.inode) {
-        (Some(a), Some(b)) => a.same_object(b),
-        (None, None) => true,
-        _ => false,
-    };
-    if kind == existing.kind && same_object && row.target() == existing.target() {
+    if kind == existing.kind && row.object == existing.object && row.target() == existing.target() {
         row.snapshot = existing.snapshot;
         row.session_url = existing.session_url.clone();
         row.session_expires = existing.session_expires;
@@ -130,7 +125,7 @@ fn follow_up(running: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
 }
 
 pub(super) fn record(conn: &Connection, d: &Detection) -> Result<Recorded, TreeError> {
-    let live = rows_for(conn, d.item_id.as_deref(), d.inode.as_ref())?;
+    let live = rows_for(conn, d.item_id.as_deref(), d.object.as_ref())?;
     let running = live.iter().find(|row| row.state == OutboxState::Running);
     let pending = live.iter().rev().find(|row| row.state != OutboxState::Running);
     if let Some(existing) = pending {

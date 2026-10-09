@@ -8,7 +8,7 @@ fn create(rel: &str, state: OutboxState, reason: Option<&str>) -> OutboxOp {
     OutboxOp::Record(Detection {
         kind: OutboxKind::Create,
         item_id: None,
-        inode: None,
+        object: None,
         rel: rel.into(),
         base: None,
         target_parent: None,

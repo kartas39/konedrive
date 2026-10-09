@@ -90,48 +90,41 @@ fn one(conn: &Connection, seq: i64) -> Result<Option<OutboxRow>, TreeError> {
 struct Memo {
     mkdirs: HashMap<std::path::PathBuf, Option<i64>>,
     earlier: HashMap<i64, Vec<i64>>,
-    /// Once many portions were read: the item ids, handles and inodes more
-    /// than one row has. A row with none of them waits for no earlier row of
-    /// its own (rule 1), and is not asked.
+    /// Once many portions were read: the item ids and the objects more than
+    /// one row has. A row with neither waits for no earlier row of its own
+    /// (rule 1), and is not asked.
     shared: Option<Shared>,
 }
 
-/// The item ids, handles and inodes more than one row has.
-type Shared = (HashSet<String>, HashSet<Vec<u8>>, HashSet<(i64, i64)>);
+/// The item ids and the objects (as stored) more than one row has.
+type Shared = (HashSet<String>, HashSet<Vec<u8>>);
 
 /// Portions read before rule 1 is answered from what is shared ([`Memo::shared`]).
 const PORTIONS_ASKED: usize = 8;
 
 impl Memo {
-    /// What more than one row has: three walks of the indexes, once per pick.
+    /// What more than one row has: two walks of the indexes, once per pick.
     fn share(&mut self, conn: &Connection) -> Result<(), TreeError> {
         let ids = conn
             .prepare("SELECT item_id FROM outbox WHERE item_id IS NOT NULL GROUP BY item_id HAVING count(*) > 1")?
             .query_map([], |r| r.get(0))?
             .collect::<Result<HashSet<String>, _>>()?;
-        let handles = conn
+        let objects = conn
             .prepare("SELECT handle FROM outbox WHERE handle IS NOT NULL GROUP BY handle HAVING count(*) > 1")?
             .query_map([], |r| r.get(0))?
             .collect::<Result<HashSet<Vec<u8>>, _>>()?;
-        let inodes = conn
-            .prepare("SELECT dev, ino FROM outbox WHERE dev IS NOT NULL GROUP BY dev, ino HAVING count(*) > 1")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<HashSet<(i64, i64)>, _>>()?;
-        self.shared = Some((ids, handles, inodes));
+        self.shared = Some((ids, objects));
         Ok(())
     }
 
     /// Rule 1 for every row of `portion`: two queries for all of them — by
-    /// item id, and by handle — and one per row known by its inode alone; or,
-    /// once what is shared is known, a query only for a row that shares.
+    /// item id, and by object — or, once what is shared is known, a query
+    /// only for a row that shares.
     fn portion(&mut self, conn: &Connection, portion: &[OutboxRow]) -> Result<(), TreeError> {
-        if let Some((ids, handles, inodes)) = &self.shared {
+        if let Some((ids, objects)) = &self.shared {
             for row in portion {
                 let shares = row.item_id.as_ref().is_some_and(|id| ids.contains(id))
-                    || row.inode.as_ref().is_some_and(|i| match &i.handle {
-                        Some(handle) => handles.contains(&handle.encode()),
-                        None => inodes.contains(&(i.dev as i64, i.ino as i64)),
-                    });
+                    || row.object.as_ref().is_some_and(|object| objects.contains(&object.encode()));
                 let mut earlier = Vec::new();
                 if shares {
                     rule_one(conn, row, &mut earlier)?;
@@ -141,7 +134,7 @@ impl Memo {
             return Ok(());
         }
         let ids: HashSet<&str> = portion.iter().filter_map(|r| r.item_id.as_deref()).collect();
-        let handles: HashSet<Vec<u8>> = portion.iter().filter_map(|r| r.inode.as_ref()?.handle.as_ref().map(|h| h.encode())).collect();
+        let objects: HashSet<Vec<u8>> = portion.iter().filter_map(|r| r.object.as_ref().map(|object| object.encode())).collect();
         let mut by_id: HashMap<String, Vec<i64>> = HashMap::new();
         if !ids.is_empty() {
             let sql = format!("SELECT item_id, seq FROM outbox WHERE item_id IN ({})", vec!["?"; ids.len()].join(","));
@@ -152,14 +145,14 @@ impl Memo {
                 by_id.entry(id).or_default().push(seq);
             }
         }
-        let mut by_handle: HashMap<Vec<u8>, Vec<i64>> = HashMap::new();
-        if !handles.is_empty() {
-            let sql = format!("SELECT handle, seq FROM outbox WHERE +item_id IS NULL AND handle IN ({})", vec!["?"; handles.len()].join(","));
+        let mut by_object: HashMap<Vec<u8>, Vec<i64>> = HashMap::new();
+        if !objects.is_empty() {
+            let sql = format!("SELECT handle, seq FROM outbox WHERE +item_id IS NULL AND handle IN ({})", vec!["?"; objects.len()].join(","));
             let mut statement = conn.prepare(&sql)?;
-            let found = statement.query_map(rusqlite::params_from_iter(handles.iter()), |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
+            let found = statement.query_map(rusqlite::params_from_iter(objects.iter()), |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
             for pair in found {
-                let (handle, seq) = pair?;
-                by_handle.entry(handle).or_default().push(seq);
+                let (object, seq) = pair?;
+                by_object.entry(object).or_default().push(seq);
             }
         }
         for row in portion {
@@ -167,10 +160,8 @@ impl Memo {
             if let Some(id) = &row.item_id {
                 earlier.extend(by_id.get(id).into_iter().flatten().copied().filter(|&seq| seq < row.seq));
             }
-            match row.inode.as_ref().map(|i| (i, i.handle.as_ref())) {
-                Some((_, Some(handle))) => earlier.extend(by_handle.get(&handle.encode()).into_iter().flatten().copied().filter(|&seq| seq < row.seq)),
-                Some((inode, None)) => earlier.extend(same_inode_before(conn, inode, row.seq)?),
-                None => {}
+            if let Some(object) = &row.object {
+                earlier.extend(by_object.get(&object.encode()).into_iter().flatten().copied().filter(|&seq| seq < row.seq));
             }
             self.earlier.insert(row.seq, earlier);
         }
@@ -178,19 +169,12 @@ impl Memo {
     }
 }
 
-/// Earlier rows with no item id and no handle, on `inode`.
-fn same_inode_before(conn: &Connection, inode: &super::Inode, seq: i64) -> Result<Vec<i64>, TreeError> {
-    let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle IS NULL AND dev = ?1 AND ino = ?2 AND seq < ?3")?;
-    let seqs = statement.query_map(params![inode.dev as i64, inode.ino as i64, seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
-    Ok(seqs)
-}
-
 /// Rules 1–3 for `row`, by point queries: the live rows it waits for.
 /// `memo` holds what this pick asked already.
 fn structural(conn: &Connection, row: &OutboxRow, mut memo: Option<&mut Memo>) -> Result<Vec<i64>, TreeError> {
     let mut out: Vec<i64> = Vec::new();
     // 1. An earlier row of the same item, or of the same local object with no
-    // id yet, the object being its handle or, without one, its inode.
+    // id yet.
     if let Some(known) = memo.as_deref_mut().and_then(|m| m.earlier.remove(&row.seq)) {
         out.extend(known);
     } else {
@@ -204,17 +188,9 @@ fn rule_one(conn: &Connection, row: &OutboxRow, out: &mut Vec<i64>) -> Result<()
         let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE item_id = ?1 AND seq < ?2")?;
         out.extend(statement.query_map(params![id, row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
     }
-    if let Some(inode) = &row.inode {
-        // The same handle's bytes, or no handle and the same inode.
-        let earlier: Vec<i64> = match &inode.handle {
-            Some(handle) => {
-                let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle = ?1 AND seq < ?2")?;
-                let seqs = statement.query_map(params![handle.encode(), row.seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
-                seqs
-            }
-            None => same_inode_before(conn, inode, row.seq)?,
-        };
-        out.extend(earlier);
+    if let Some(object) = &row.object {
+        let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle = ?1 AND seq < ?2")?;
+        out.extend(statement.query_map(params![object.encode(), row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
     }
     Ok(())
 }
@@ -478,13 +454,9 @@ impl TreeStore {
 
     /// Whether a removal of `row`'s object is recorded behind it.
     pub fn outbox_removed_behind(&self, row: &OutboxRow) -> Result<bool, TreeError> {
-        let Some(inode) = &row.inode else { return Ok(false) };
-        let behind = rows_where(
-            &self.conn,
-            "WHERE kind = 'delete' AND seq > ?1 AND ((dev = ?2 AND ino = ?3) OR handle = ?4)",
-            params![row.seq, inode.dev as i64, inode.ino as i64, inode.handle.as_ref().map(|h| h.encode())],
-        )?;
-        Ok(behind.iter().any(|r| r.inode.as_ref() == Some(inode)))
+        let Some(object) = &row.object else { return Ok(false) };
+        let behind = rows_where(&self.conn, "WHERE kind = 'delete' AND seq > ?1 AND handle = ?2", params![row.seq, object.encode()])?;
+        Ok(!behind.is_empty())
     }
 
     /// The rows with these `seq`s that are still there.

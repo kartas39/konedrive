@@ -538,7 +538,7 @@ impl Job<'_> {
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
         let event = self.e.event(ActivityKind::Uploaded, &self.found.rel, crate::status::activity::human_size(self.snap.size));
-        commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event).await?;
+        commit_row(self.e, self.row, &answer, Some(&self.found.handle), self.parent, event).await?;
         Ok(Outcome::Done)
     }
 }

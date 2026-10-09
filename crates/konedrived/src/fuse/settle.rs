@@ -38,7 +38,7 @@ impl Shared {
         let recorded = self.record(move |s| {
             let mut unknown = Vec::new();
             for detection in found {
-                if detection.inode.as_ref().is_some_and(|inode| s.outbox_for_inode(inode).is_ok_and(|rows| rows.is_empty())) {
+                if detection.object.as_ref().is_some_and(|object| s.outbox_for_object(object).is_ok_and(|rows| rows.is_empty())) {
                     unknown.push(detection);
                 }
             }

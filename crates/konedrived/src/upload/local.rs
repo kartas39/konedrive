@@ -27,7 +27,7 @@ use xattr::FileExt as _;
 use crate::folder::disk::{open_subdir, Disk};
 use crate::local::names::copy_name;
 
-use konedrive_tree::outbox::{Inode, Snapshot};
+use konedrive_tree::outbox::Snapshot;
 
 /// `user.konedrive.sync` values (`docs/design/writes.md` §5.4).
 pub const SYNC_PENDING: &str = "pending";
@@ -94,7 +94,8 @@ pub(super) struct Found {
     /// The directory it is in.
     pub dir: Arc<File>,
     pub name: OsString,
-    pub inode: Inode,
+    /// What it is: its file handle.
+    pub handle: FileHandle,
     pub is_dir: bool,
 }
 
@@ -103,7 +104,8 @@ fn missing(e: &io::Error) -> bool {
 }
 
 /// What stands at `rel`, if it is a file or a directory: `fstatat` without
-/// following and the handle by name, so nothing is opened or filled.
+/// following and the handle by name, so nothing is opened or filled. What is
+/// gone between the two is not there.
 pub(super) fn find(disk: &Disk, rel: &Path) -> io::Result<Option<Found>> {
     let (Some(name), dir_rel) = (rel.file_name(), rel.parent().unwrap_or(Path::new(""))) else { return Ok(None) };
     let dir = match disk.dir(dir_rel) {
@@ -120,11 +122,15 @@ pub(super) fn find(disk: &Disk, rel: &Path) -> io::Result<Option<Found>> {
     if kind != libc::S_IFREG && kind != libc::S_IFDIR {
         return Ok(None);
     }
-    let handle = FileHandle::at(&dir, name).ok();
+    let handle = match FileHandle::at(&dir, name) {
+        Ok(handle) => handle,
+        Err(e) if missing(&e) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     Ok(Some(Found {
         rel: rel.to_owned(),
         name: name.to_owned(),
-        inode: Inode { dev: stat.st_dev as u64, ino: stat.st_ino as u64, handle },
+        handle,
         is_dir: kind == libc::S_IFDIR,
         dir: Arc::new(dir),
     }))
@@ -156,8 +162,7 @@ impl Found {
     }
 
     fn same(&self, file: &File) -> io::Result<File> {
-        let meta = file.metadata()?;
-        if (meta.dev(), meta.ino()) != (self.inode.dev, self.inode.ino) {
+        if FileHandle::of(file)? != self.handle {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} was replaced meanwhile", self.rel.display())));
         }
         file.try_clone()
@@ -221,7 +226,7 @@ pub(super) fn remove_placeholder(disk: &Disk, found: &Found) -> io::Result<bool>
     let file = found.open()?;
     let Some(lease) = WriteLease::take(&file)? else { return Ok(false) };
     let again = find(disk, &found.rel)?;
-    if again.as_ref().is_some_and(|a| a.inode.same_object(&found.inode)) && found.state()? == Some(State::OnlineOnly) {
+    if again.as_ref().is_some_and(|a| a.handle == found.handle) && found.state()? == Some(State::OnlineOnly) {
         disk.remove(&found.dir, &found.name, false)?;
     }
     drop(lease);

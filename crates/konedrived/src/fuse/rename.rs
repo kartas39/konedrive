@@ -11,7 +11,7 @@ use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
 use super::copies::mark_copy;
-use super::changes::{based, forgotten, leaves, object, rebase, waits, Place};
+use super::changes::{based, forgotten, leaves, rebase, waits, Place};
 use super::local::{Dir, Entry};
 use super::nodes::Key;
 use super::shared::{errno, Shared};
@@ -63,28 +63,28 @@ impl Shared {
             fs::rename(&was, &now).map_err(|e| errno(&e))?;
         }
         let taken_over = match (&src, &dst) {
-            (Entry::Local(local), Some(Entry::Item(over))) if !local.meta.is_dir() && !over.name.is_empty() => Some(over.id.clone()),
+            (Entry::Local(local), Some(Entry::Item(over))) if !local.object.meta.is_dir() && !over.name.is_empty() => Some(over.id.clone()),
             _ => None,
         };
         // What has no item and is sent from the new place: itself, and all it holds.
         let mut news = Vec::new();
         if let (Entry::Local(local), false, None) = (&src, stays, &taken_over) {
-            if local.meta.is_dir() {
+            if local.object.meta.is_dir() {
                 self.below(&to_dir, new_name, &mut news);
             } else {
-                let mut new = Place { dir: &to_dir, name: new_name }.new(&local.meta, open);
+                let mut new = Place { dir: &to_dir, name: new_name }.new(&local.object, open);
                 new.rel = to.clone();
                 news.push(new);
             }
         }
         let src_item = src.id().map(str::to_owned);
         let src_object = match &src {
-            Entry::Local(local) => Some(local.meta.clone()),
-            Entry::Item(_) => fs::symlink_metadata(&now).ok().filter(|_| moved),
+            Entry::Local(local) => Some(local.object.clone()),
+            Entry::Item(_) => self.object(&to).filter(|_| moved),
         };
         let (src_dir, dst_item) = (src.is_dir(), dst.as_ref().and_then(|d| d.id().map(str::to_owned)));
         let dst_object = match &dst {
-            Some(Entry::Local(local)) => Some(object(&local.meta)),
+            Some(Entry::Local(local)) => Some(local.object.handle.clone()),
             _ => None,
         };
         let (at, came_from, place_dir, place_name, over) = (to.clone(), from.clone(), to_dir.clone(), new_name.to_owned(), taken_over.clone());
@@ -94,10 +94,10 @@ impl Shared {
             // What stood at the new place.
             match (&over, &dst_item, &dst_object) {
                 (Some(id), _, _) => {
-                    if let (Some(base), Some(meta)) = (based(s, id)?, &src_object) {
-                        let pending = s.outbox_for_inode(&object(meta))?;
+                    if let (Some(base), Some(object)) = (based(s, id)?, &src_object) {
+                        let pending = s.outbox_for_object(&object.handle)?;
                         ops.extend(pending.iter().filter(|row| row.state != OutboxState::Running).map(|row| OutboxOp::Remove(row.seq)));
-                        let mut update = place.of_item(OutboxKind::Update, &base, Some(meta));
+                        let mut update = place.of_item(OutboxKind::Update, &base, Some(object));
                         if open {
                             waits(&mut update);
                         }
@@ -105,7 +105,7 @@ impl Shared {
                     }
                 }
                 (None, Some(id), _) => detections.extend(based(s, id)?.iter().map(|base| leaves(Some(base), None, &at))),
-                (None, None, Some(inode)) => detections.extend(forgotten(s, inode, &at)?),
+                (None, None, Some(object)) => detections.extend(forgotten(s, object, &at)?),
                 _ => {}
             }
             // What moved.
@@ -118,14 +118,14 @@ impl Shared {
                         detections.push(moved);
                     }
                 }
-                (None, Some(meta)) if news.is_empty() => {
+                (None, Some(object)) if news.is_empty() => {
                     // It stays on this computer from now on, with what is below it.
-                    detections.extend(forgotten(s, &object(meta), &at)?);
+                    detections.extend(forgotten(s, &object.handle, &at)?);
                     let below = s.outbox_at_or_under(&came_from)?;
                     ops.extend(below.iter().filter(|row| row.item_id.is_none() && row.state != OutboxState::Running).map(|row| OutboxOp::Remove(row.seq)));
                 }
-                (None, Some(meta)) => {
-                    let being_sent = s.outbox_for_inode(&object(meta))?.iter().any(|row| row.state == OutboxState::Running);
+                (None, Some(object)) => {
+                    let being_sent = s.outbox_for_object(&object.handle)?.iter().any(|row| row.state == OutboxState::Running);
                     if being_sent && !src_dir {
                         // Going up as it is: only where it stands changed.
                         news[0].kind = OutboxKind::Move;
@@ -155,7 +155,7 @@ impl Shared {
         if let (Some(id), Entry::Local(local)) = (&taken_over, &src) {
             // The file's node is the item's from here on: whoever looks the name up gets
             // the node the new content is read and written through.
-            nodes.rekey(&Key::Local(std::os::unix::fs::MetadataExt::ino(&local.meta)), Key::Item(id.clone()));
+            nodes.rekey(&Key::Local(local.object.handle.clone()), Key::Item(id.clone()));
         }
         Ok(())
     }

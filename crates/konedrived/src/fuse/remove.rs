@@ -4,7 +4,7 @@ use std::fs;
 
 use fuser::Errno;
 
-use super::changes::{based, forgotten, leaves, object};
+use super::changes::{based, forgotten, leaves};
 use super::copies::remove_copy;
 use super::local::{Dir, Entry};
 use super::nodes::Key;
@@ -34,8 +34,8 @@ impl Shared {
                 self.record(move |s| Ok((based(s, &id)?.iter().map(|base| leaves(Some(base), None, &at)).collect(), Vec::new())))
             }
             Entry::Local(local) => {
-                let inode = object(&local.meta);
-                self.record(move |s| Ok((forgotten(s, &inode, &at)?, Vec::new())))
+                let object = local.object.handle.clone();
+                self.record(move |s| Ok((forgotten(s, &object, &at)?, Vec::new())))
             }
         };
         if let Err(e) = recorded {
@@ -50,9 +50,8 @@ impl Shared {
             Entry::Local(_) => fs::remove_file(&path).map_err(|e| errno(&e))?,
         }
         if let Entry::Local(local) = &entry {
-            // Its inode number is the filesystem's to give again: the next object that gets
-            // it is another node.
-            crate::panic::lock(&self.nodes).inos.remove(&Key::Local(std::os::unix::fs::MetadataExt::ino(&local.meta)));
+            // The object is gone, and no other is ever this one: nothing is found by it again.
+            crate::panic::lock(&self.nodes).inos.remove(&Key::Local(local.object.handle.clone()));
         }
         Ok(())
     }

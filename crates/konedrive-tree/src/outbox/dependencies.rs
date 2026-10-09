@@ -3,27 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::{all_rows, circles, frees, takes, Inode, OutboxKind};
+use konedrive_fs::handle::FileHandle;
+
+use super::{all_rows, circles, frees, takes, OutboxKind};
 use crate::{Kind, Table, TreeError, TreeStore};
-
-/// One local object, as rows are grouped by it: its handle, or its inode
-/// where there is none.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ObjectKey {
-    Handle(Vec<u8>),
-    Inode(u64, u64),
-}
-
-#[cfg(test)]
-impl ObjectKey {
-    fn of(inode: &Inode) -> Self {
-        match &inode.handle {
-            Some(handle) => Self::Handle(handle.encode()),
-            None => Self::Inode(inode.dev, inode.ino),
-        }
-    }
-}
 
 impl TreeStore {
     /// Every row's blockers: the live rows it waits for (the module's four
@@ -37,13 +20,13 @@ impl TreeStore {
         // 1. An earlier row of the same item, or of the same local object
         // with no id yet (a row behind a create that has not landed).
         let mut by_item: HashMap<&str, Vec<i64>> = HashMap::new();
-        let mut pending_objects: HashMap<ObjectKey, Vec<i64>> = HashMap::new();
+        let mut pending_objects: HashMap<&FileHandle, Vec<i64>> = HashMap::new();
         for row in &rows {
             if let Some(id) = &row.item_id {
                 by_item.entry(id.as_str()).or_default().push(row.seq);
             }
-            if let (None, Some(inode)) = (&row.item_id, &row.inode) {
-                pending_objects.entry(ObjectKey::of(inode)).or_default().push(row.seq);
+            if let (None, Some(object)) = (&row.item_id, &row.object) {
+                pending_objects.entry(object).or_default().push(row.seq);
             }
         }
         for row in &rows {
@@ -51,7 +34,7 @@ impl TreeStore {
             if let Some(id) = &row.item_id {
                 earlier.extend(by_item[id.as_str()].iter().copied().filter(|&seq| seq < row.seq));
             }
-            if let Some(same) = row.inode.as_ref().and_then(|inode| pending_objects.get(&ObjectKey::of(inode))) {
+            if let Some(same) = row.object.as_ref().and_then(|object| pending_objects.get(object)) {
                 earlier.extend(same.iter().copied().filter(|&seq| seq < row.seq));
             }
             deps.get_mut(&row.seq).expect("every row has an entry").extend(earlier);

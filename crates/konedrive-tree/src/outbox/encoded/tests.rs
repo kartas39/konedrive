@@ -11,7 +11,7 @@ fn a_rows_snapshot_and_target_name_are_read_as_written() {
     let d = Detection {
         kind: OutboxKind::Create,
         item_id: None,
-        inode: None,
+        object: None,
         rel: "a.txt".into(),
         base: None,
         target_parent: None,

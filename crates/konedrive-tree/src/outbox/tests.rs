@@ -30,19 +30,19 @@ fn store(rows: &[Row]) -> TreeStore {
     store
 }
 
-fn inode(n: u64) -> Inode {
-    Inode { dev: 1, ino: n, handle: Some(FileHandle { kind: 1, bytes: n.to_le_bytes().to_vec() }) }
+fn object(n: u64) -> FileHandle {
+    FileHandle { kind: 1, bytes: n.to_le_bytes().to_vec() }
 }
 
 fn base_of(row: &Row) -> Base {
     Base { etag: row.etag.clone(), ctag: row.ctag.clone(), parent: row.parent_id.clone(), name: Some(row.name.clone()) }
 }
 
-fn detect(kind: OutboxKind, item: Option<&Row>, object: Option<Inode>, rel: &str, parent: Option<&str>) -> Detection {
+fn detect(kind: OutboxKind, item: Option<&Row>, object: Option<FileHandle>, rel: &str, parent: Option<&str>) -> Detection {
     Detection {
         kind,
         item_id: item.map(|r| r.id.clone()),
-        inode: object,
+        object,
         rel: rel.into(),
         base: item.map(base_of),
         target_parent: parent.map(str::to_owned),
@@ -68,17 +68,17 @@ fn detections_coalesce_into_one_live_row_per_item() {
     let mut s = store(&[a.clone(), d.clone()]);
 
     // create + update / move → create, newest content at the newest place.
-    s.outbox_record(&detect(Create, None, Some(inode(10)), "n.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Create, None, Some(inode(10)), "d/n.txt", Some("D"))).unwrap();
+    s.outbox_record(&detect(Create, None, Some(object(10)), "n.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Create, None, Some(object(10)), "d/n.txt", Some("D"))).unwrap();
     assert_eq!(kinds(&s), vec![(Create, "d/n.txt".into())]);
     // create + delete → removed.
-    assert!(matches!(s.outbox_record(&detect(Delete, None, Some(inode(10)), "d/n.txt", None)).unwrap(), Recorded::Removed(_)));
+    assert!(matches!(s.outbox_record(&detect(Delete, None, Some(object(10)), "d/n.txt", None)).unwrap(), Recorded::Removed(_)));
     assert!(kinds(&s).is_empty());
 
     // update + update → update; update + move → one row, move then content.
-    s.outbox_record(&detect(Update, Some(&a), Some(inode(1)), "a.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Update, Some(&a), Some(inode(1)), "a.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "d/a.txt", Some("D"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&a), Some(object(1)), "a.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&a), Some(object(1)), "a.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "d/a.txt", Some("D"))).unwrap();
     let rows = s.outbox_rows().unwrap();
     assert_eq!((rows.len(), rows[0].kind, rows[0].target_parent.as_deref()), (1, Update, Some("D")));
     // update + delete → delete, the base of the update kept.
@@ -86,24 +86,24 @@ fn detections_coalesce_into_one_live_row_per_item() {
     let row = &s.outbox_rows().unwrap()[0];
     assert_eq!((row.kind, row.base.as_ref().and_then(|b| b.etag.as_deref()), row.target_name.as_deref()), (Delete, Some("e-A"), None));
     // delete + a new file at the same name → update (save-by-rename).
-    s.outbox_record(&detect(Update, Some(&a), Some(inode(2)), "a.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&a), Some(object(2)), "a.txt", Some("R"))).unwrap();
     let row = &s.outbox_rows().unwrap()[0];
-    assert_eq!((row.kind, row.inode.clone()), (Update, Some(inode(2))));
+    assert_eq!((row.kind, row.object.clone()), (Update, Some(object(2))));
     // Checked and the same again: a move back to the base place → removed.
-    s.outbox_record(&Detection { same_content: true, ..detect(Move, Some(&a), Some(inode(2)), "a.txt", Some("R")) }).unwrap();
+    s.outbox_record(&Detection { same_content: true, ..detect(Move, Some(&a), Some(object(2)), "a.txt", Some("R")) }).unwrap();
     assert!(kinds(&s).is_empty());
 
     // move + move → one move to the final place; back where the base has it → removed.
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "d/a.txt", Some("D"))).unwrap();
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "d/b.txt", Some("D"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "d/a.txt", Some("D"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "d/b.txt", Some("D"))).unwrap();
     assert_eq!(kinds(&s), vec![(Move, "d/b.txt".into())]);
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "a.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "a.txt", Some("R"))).unwrap();
     assert!(kinds(&s).is_empty());
     // A move at the base place with no row is nothing at all.
-    assert_eq!(s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "a.txt", Some("R"))).unwrap(), Recorded::Nothing);
+    assert_eq!(s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "a.txt", Some("R"))).unwrap(), Recorded::Nothing);
 
     // move + delete → delete.
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "d/a.txt", Some("D"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "d/a.txt", Some("D"))).unwrap();
     s.outbox_record(&detect(Delete, Some(&a), None, "d/a.txt", None)).unwrap();
     assert_eq!(kinds(&s), vec![(Delete, "d/a.txt".into())]);
 }
@@ -115,26 +115,26 @@ fn detections_coalesce_into_one_live_row_per_item() {
 fn a_running_row_gets_one_follow_up() {
     use OutboxKind::*;
     let mut s = store(&[]);
-    let Recorded::Inserted(first) = s.outbox_record(&detect(Create, None, Some(inode(7)), "n.txt", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(first) = s.outbox_record(&detect(Create, None, Some(object(7)), "n.txt", Some("R"))).unwrap() else { panic!() };
     s.outbox_set_state(first, OutboxState::Running, None, None).unwrap();
     // Where the running create takes it already: nothing new.
-    assert_eq!(s.outbox_record(&detect(Move, None, Some(inode(7)), "n.txt", Some("R"))).unwrap(), Recorded::Nothing);
+    assert_eq!(s.outbox_record(&detect(Move, None, Some(object(7)), "n.txt", Some("R"))).unwrap(), Recorded::Nothing);
     // New content (the examination compares the snapshot): an update behind it.
-    assert_eq!(s.outbox_record(&detect(Create, None, Some(inode(7)), "n.txt", Some("R"))).unwrap(), Recorded::Inserted(first + 1));
-    assert_eq!(s.outbox_record(&detect(Create, None, Some(inode(7)), "n.txt", Some("R"))).unwrap(), Recorded::Merged(first + 1));
+    assert_eq!(s.outbox_record(&detect(Create, None, Some(object(7)), "n.txt", Some("R"))).unwrap(), Recorded::Inserted(first + 1));
+    assert_eq!(s.outbox_record(&detect(Create, None, Some(object(7)), "n.txt", Some("R"))).unwrap(), Recorded::Merged(first + 1));
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.iter().map(|r| (r.kind, r.state)).collect::<Vec<_>>(), vec![(Create, OutboxState::Running), (Update, OutboxState::Ready)]);
     assert_eq!(s.checked_blockers(rows[1].seq).unwrap(), vec![first], "the follow-up waits for the running row");
 
     let committed = base_row("N", "R", "n.txt", Kind::File);
-    let local_seq = s.outbox_commit(first, Committed::Item { row: &committed, handle: inode(7).handle.as_ref() }, None).unwrap();
+    let local_seq = s.outbox_commit(first, Committed::Item { row: &committed, handle: Some(&object(7)) }, None).unwrap();
     assert_eq!((local_seq, s.outbox_seq().unwrap()), (1, 1));
-    assert!(s.outbox_commit(first, Committed::Item { row: &committed, handle: inode(7).handle.as_ref() }, None).is_err(), "a row that is gone commits nothing");
+    assert!(s.outbox_commit(first, Committed::Item { row: &committed, handle: Some(&object(7)) }, None).is_err(), "a row that is gone commits nothing");
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].item_id.as_deref(), Some("N"), "the follow-up is now an update of the new item");
     assert_eq!(rows[0].base.as_ref().and_then(|b| b.etag.as_deref()), Some("e-N"));
-    assert_eq!(s.local_handle("N").unwrap(), inode(7).handle);
+    assert_eq!(s.local_handle("N").unwrap(), Some(object(7)));
     assert!(s.checked_blockers(rows[0].seq).unwrap().is_empty());
 
     // Behind a running update, the follow-up's base becomes what that
@@ -142,9 +142,9 @@ fn a_running_row_gets_one_follow_up() {
     let n = base_row("N", "R", "n.txt", Kind::File);
     let running = rows[0].seq;
     s.outbox_set_state(running, OutboxState::Running, None, None).unwrap();
-    s.outbox_record(&detect(Update, Some(&n), Some(inode(7)), "n.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&n), Some(object(7)), "n.txt", Some("R"))).unwrap();
     let answered = Row { etag: Some("e-N2".into()), ..n.clone() };
-    assert_eq!(s.outbox_commit(running, Committed::Item { row: &answered, handle: inode(7).handle.as_ref() }, None).unwrap(), 2);
+    assert_eq!(s.outbox_commit(running, Committed::Item { row: &answered, handle: Some(&object(7)) }, None).unwrap(), 2);
     let rows = s.outbox_rows().unwrap();
     assert_eq!((rows.len(), rows[0].base.as_ref().and_then(|b| b.etag.as_deref())), (1, Some("e-N2")));
 }
@@ -163,11 +163,11 @@ fn rows_wait_for_their_parents_mkdir_and_a_folder_delete_for_what_is_inside() {
         other => panic!("{other:?}"),
     };
     let delete_d = seq(s.outbox_record(&detect(Delete, Some(&d), None, "d", None)).unwrap());
-    let mkdir = seq(s.outbox_record(&detect(Mkdir, None, Some(inode(20)), "new", Some("R"))).unwrap());
-    let create = seq(s.outbox_record(&detect(Create, None, Some(inode(21)), "new/f.txt", None)).unwrap());
+    let mkdir = seq(s.outbox_record(&detect(Mkdir, None, Some(object(20)), "new", Some("R"))).unwrap());
+    let create = seq(s.outbox_record(&detect(Create, None, Some(object(21)), "new/f.txt", None)).unwrap());
     // X left d for the new folder before d went: detected after d's delete.
-    let move_x = seq(s.outbox_record(&detect(Move, Some(&x), Some(inode(22)), "new/x.txt", None)).unwrap());
-    let update_y = seq(s.outbox_record(&detect(Update, Some(&y), Some(inode(23)), "y.txt", Some("R"))).unwrap());
+    let move_x = seq(s.outbox_record(&detect(Move, Some(&x), Some(object(22)), "new/x.txt", None)).unwrap());
+    let update_y = seq(s.outbox_record(&detect(Update, Some(&y), Some(object(23)), "y.txt", Some("R"))).unwrap());
 
     assert_eq!(s.checked_blockers(create).unwrap(), vec![mkdir]);
     assert_eq!(s.checked_blockers(move_x).unwrap(), vec![mkdir]);
@@ -179,7 +179,7 @@ fn rows_wait_for_their_parents_mkdir_and_a_folder_delete_for_what_is_inside() {
     assert_eq!(s.outbox_runnable(99).unwrap().iter().map(|r| r.seq).collect::<Vec<_>>(), vec![mkdir]);
     assert!(s.outbox_runnable(100).unwrap().iter().any(|r| r.seq == update_y), "its time has come");
     // A merge keeps the backoff.
-    s.outbox_record(&detect(Update, Some(&y), Some(inode(23)), "y.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&y), Some(object(23)), "y.txt", Some("R"))).unwrap();
     assert_eq!(s.outbox_row(update_y).unwrap().unwrap().state, OutboxState::Retry);
 }
 
@@ -193,10 +193,10 @@ fn a_swap_waits_on_nothing_and_a_later_freer_is_still_waited_for() {
     let b = base_row("B", "R", "b", Kind::File);
     let c = base_row("C", "R", "c", Kind::File);
     let mut s = store(&[a.clone(), b.clone(), c.clone()]);
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "b", Some("R"))).unwrap();
-    s.outbox_record(&detect(Move, Some(&b), Some(inode(2)), "a", Some("R"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "b", Some("R"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&b), Some(object(2)), "a", Some("R"))).unwrap();
     assert_eq!(s.outbox_runnable(0).unwrap().len(), 2);
-    let Recorded::Inserted(create) = s.outbox_record(&detect(Create, None, Some(inode(3)), "c", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(create) = s.outbox_record(&detect(Create, None, Some(object(3)), "c", Some("R"))).unwrap() else { panic!() };
     let Recorded::Inserted(delete) = s.outbox_record(&detect(Delete, Some(&c), None, "c", None)).unwrap() else { panic!() };
     assert_eq!(s.checked_blockers(create).unwrap(), vec![delete]);
 }
@@ -206,9 +206,9 @@ fn a_swap_waits_on_nothing_and_a_later_freer_is_still_waited_for() {
 fn rows_follow_a_directory_that_moved() {
     use OutboxKind::*;
     let mut s = store(&[]);
-    s.outbox_record(&detect(Mkdir, None, Some(inode(1)), "a", Some("R"))).unwrap();
-    s.outbox_record(&detect(Create, None, Some(inode(2)), "a/f", None)).unwrap();
-    s.outbox_record(&detect(Create, None, Some(inode(3)), "ab/g", None)).unwrap();
+    s.outbox_record(&detect(Mkdir, None, Some(object(1)), "a", Some("R"))).unwrap();
+    s.outbox_record(&detect(Create, None, Some(object(2)), "a/f", None)).unwrap();
+    s.outbox_record(&detect(Create, None, Some(object(3)), "ab/g", None)).unwrap();
     s.outbox_apply(&[OutboxOp::Rebase { from: "a".into(), to: "b/a".into() }], 0).unwrap();
     let rels: Vec<String> = s.outbox_rows().unwrap().iter().map(|r| r.rel.display().to_string()).collect();
     assert_eq!(rels, vec!["a", "b/a/f", "ab/g"], "the directory's own row is its detection's to move, and ab is not under a");
@@ -233,7 +233,7 @@ fn held_deletes_wait_for_a_decision() {
     assert_eq!(s.outbox_runnable(0).unwrap().len(), 2);
     s.outbox_set_state(1, OutboxState::Held, None, None).unwrap();
     for id in ["A", "B"] {
-        s.set_local_handle(id, inode(1).handle.as_ref()).unwrap();
+        s.set_local_handle(id, Some(&object(1))).unwrap();
     }
     let dropped = s.outbox_drop_held().unwrap();
     assert_eq!(dropped.iter().map(|r| r.item_id.clone().unwrap()).collect::<Vec<_>>(), vec!["A".to_owned()]);
@@ -253,9 +253,9 @@ fn a_forced_drop_keeps_a_rename_half_done() {
     let b = base_row("B", "R", "b.txt", Kind::File);
     let swapped = base_row("S", "R", &format!("{SWAP_PREFIX}1"), Kind::File);
     let mut s = store(&[a.clone(), b.clone(), swapped.clone()]);
-    s.outbox_record(&detect(Move, Some(&a), Some(inode(1)), "b.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Move, Some(&swapped), Some(inode(2)), "c.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Update, Some(&b), Some(inode(3)), "b.txt", None)).unwrap();
+    s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "b.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Move, Some(&swapped), Some(object(2)), "c.txt", Some("R"))).unwrap();
+    s.outbox_record(&detect(Update, Some(&b), Some(object(3)), "b.txt", None)).unwrap();
     let sending = s.outbox_rows().unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("A")).unwrap();
     s.outbox_set_target(sending.seq, Some("R"), Some(&format!("{SWAP_PREFIX}2"))).unwrap();
     let dropped = s.outbox_drop_all().unwrap();
@@ -278,14 +278,14 @@ fn dropping_a_row_forgets_its_item_and_what_either_tree_has_below_it() {
         let t = base_row("T", "R", "t", Kind::File);
         let mut s = store(&[d.clone(), a.clone(), t.clone()]);
         for (id, n) in [("D", 1), ("A", 2), ("T", 3)] {
-            s.set_local_handle(id, inode(n).handle.as_ref()).unwrap();
+            s.set_local_handle(id, Some(&object(n))).unwrap();
         }
         let state = if restore { OutboxState::Held } else { OutboxState::Ready };
         let Recorded::Inserted(seq) = s.outbox_record(&Detection { state, ..detect(Delete, Some(&d), None, "d", None) }).unwrap() else { panic!() };
         // A delta staged meanwhile moves `T` into `D` and adds `N` there.
         s.begin_staging(crate::NewTree::Delta).unwrap();
         s.stage(&[Change::Upsert(Row { parent_id: Some("D".into()), ..t.clone() }), Change::Upsert(base_row("N", "D", "n", Kind::File))]).unwrap();
-        s.set_local_handle("N", inode(4).handle.as_ref()).unwrap();
+        s.set_local_handle("N", Some(&object(4))).unwrap();
         if restore {
             assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
         } else {
@@ -310,8 +310,8 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
     let x = base_row("X", "R", "x", Kind::File);
     let answer = Row { name: "long".into(), ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, placement: Placement::Skipped(crate::SkipReason::NameTooLong), ..x.clone() };
     let mut s = store(std::slice::from_ref(&x));
-    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
-    let handle = inode(7).handle.unwrap();
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let handle = object(7);
     let at = s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, ..x.clone() }, "the version, at the base's place");
     assert_eq!(s.local_handle("X").unwrap(), Some(handle.clone()));
@@ -328,7 +328,7 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
 
     // Not placed by the base already: it has no place to keep, and the
     // answer is its row.
-    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&answer), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&answer), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
     let again = Row { ctag: Some("c3".into()), ..answer.clone() };
     s.outbox_commit(seq, Committed::Item { row: &again, handle: Some(&handle) }, None).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), again);
@@ -349,10 +349,10 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     let vault = Row { placement: Placement::Skipped(crate::SkipReason::PersonalVault), ..base_row("V", "R", "Personal Vault", Kind::Folder) };
     let x = base_row("X", "R", "x", Kind::File);
     let mut s = store(&[d.clone(), vault, x.clone()]);
-    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
     s.outbox_claim(seq, OutboxState::Ready).unwrap();
-    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
-    let handle = inode(7).handle.unwrap();
+    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&x), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let handle = object(7);
     let answer = Row { parent_id: Some("V".into()), ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() };
     s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None).unwrap();
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() });
@@ -370,9 +370,9 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     // item in the Vault: the kept place is where the object stands now —
     // the new name in the base's folder — and so is the base of the row
     // behind it. OneDrive's place is in the deferred change alone.
-    let Recorded::Inserted(rename) = s.outbox_record(&detect(Move, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
+    let Recorded::Inserted(rename) = s.outbox_record(&detect(Move, Some(&moved), Some(object(7)), "d/y", Some("D"))).unwrap() else { panic!() };
     s.outbox_claim(rename, OutboxState::Ready).unwrap();
-    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
+    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&moved), Some(object(7)), "d/y", Some("D"))).unwrap() else { panic!() };
     let renamed = Row { parent_id: Some("V".into()), name: "y".into(), etag: Some("e3".into()), ..x.clone() };
     s.outbox_commit(rename, Committed::Item { row: &renamed, handle: Some(&handle) }, None).unwrap();
     let kept = s.get(Table::Items, "X").unwrap().unwrap();
@@ -385,7 +385,7 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     // under its temporary name in the folder the object stands in, and the
     // move that follows is made against that — it sends a name, no folder.
     let y = s.get(Table::Items, "X").unwrap().unwrap();
-    let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&y), Some(inode(7)), "d/z", Some("D"))).unwrap() else { panic!() };
+    let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&y), Some(object(7)), "d/z", Some("D"))).unwrap() else { panic!() };
     let swapped = Row { parent_id: Some("V".into()), name: format!("{SWAP_PREFIX}X"), ..x.clone() };
     s.outbox_commit_temporary(swap, &swapped, Some(&handle), "D", "z", None).unwrap();
     let kept = s.get(Table::Items, "X").unwrap().unwrap();
@@ -403,7 +403,7 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
 #[test]
 fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     let mut s = store(&[]);
-    let d = detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"));
+    let d = detect(OutboxKind::Create, None, Some(object(1)), "a.txt", Some("R"));
     let Recorded::Inserted(seq) = s.outbox_record(&d).unwrap() else { panic!() };
     assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
     let bad = BadItem::answered("BAD", Some("c-BAD"), Some("e-BAD"));
@@ -425,7 +425,7 @@ fn a_rows_bad_item_survives_a_settle_and_a_merge() {
 #[test]
 fn an_unreadable_row_is_blocked() {
     let mut s = store(&[]);
-    let Recorded::Inserted(seq) = s.outbox_record(&detect(OutboxKind::Create, None, Some(inode(1)), "x", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(OutboxKind::Create, None, Some(object(1)), "x", Some("R"))).unwrap() else { panic!() };
     s.conn.execute("UPDATE outbox SET kind = 'frobnicate' WHERE seq = ?1", [seq]).unwrap();
     let row = s.outbox_row(seq).unwrap().unwrap();
     assert_eq!(row.state, OutboxState::Blocked);
@@ -439,7 +439,7 @@ fn a_path_that_is_not_utf8_is_kept_as_it_is() {
     let mut s = store(&[]);
     let rel = PathBuf::from(OsStr::from_bytes(b"dir/caf\xe9.txt"));
     s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "fifo".into(), size: 0 }], 5).unwrap();
-    s.outbox_record(&Detection { rel: rel.clone(), ..detect(OutboxKind::Create, None, Some(inode(4)), "x", None) }).unwrap();
+    s.outbox_record(&Detection { rel: rel.clone(), ..detect(OutboxKind::Create, None, Some(object(4)), "x", None) }).unwrap();
     // The row follows its directory; the line stays until it is moved by name.
     s.outbox_apply(&[OutboxOp::Rebase { from: "dir".into(), to: "moved".into() }], 5).unwrap();
     assert_eq!(s.local_skipped().unwrap()[0].rel, rel);
@@ -462,7 +462,7 @@ fn a_row_with_a_reason_the_enum_does_not_know_is_kept() {
     let d = Detection {
         kind: OutboxKind::Create,
         item_id: None,
-        inode: None,
+        object: None,
         rel: "a.txt".into(),
         base: None,
         target_parent: None,
@@ -495,7 +495,7 @@ fn the_rows_waiting_for_space_are_found_by_their_reasons() {
         OutboxOp::Record(Detection {
             kind: OutboxKind::Create,
             item_id: None,
-            inode: None,
+            object: None,
             rel: rel.into(),
             base: None,
             target_parent: None,
@@ -554,4 +554,20 @@ fn no_statement_but_removes_deletes_an_outbox_row() {
     }
     deleting.sort();
     assert_eq!(deleting, [Path::new("outbox/stored.rs")], "the one delete is `remove`'s");
+}
+
+/// A local object is its file handle. A file made where another was removed
+/// may get that one's inode number, and is another object all the same: its
+/// rows are its own, and the first one's are not found by it.
+#[test]
+fn two_objects_that_had_one_inode_number_have_rows_of_their_own() {
+    use OutboxKind::*;
+    // As ext4 names an inode: its number, then its generation.
+    let generation = |n: u32| FileHandle { kind: 1, bytes: [42u32.to_le_bytes(), n.to_le_bytes()].concat() };
+    let mut s = store(&[]);
+    let Recorded::Inserted(first) = s.outbox_record(&detect(Create, None, Some(generation(1)), "a.txt", Some("R"))).unwrap() else { panic!() };
+    let Recorded::Inserted(second) = s.outbox_record(&detect(Create, None, Some(generation(2)), "b.txt", Some("R"))).unwrap() else { panic!() };
+    assert_ne!(first, second);
+    assert_eq!(s.outbox_for_object(&generation(1)).unwrap().iter().map(|r| r.seq).collect::<Vec<_>>(), vec![first]);
+    assert_eq!(s.checked_blockers(second).unwrap(), Vec::<i64>::new(), "the second waits for no row of the first");
 }

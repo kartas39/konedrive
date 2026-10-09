@@ -3,21 +3,15 @@
 //! folder afterwards; the rules for what is sent at all are the account's own
 //! ([`crate::local::names`], the ignore list).
 
-use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use konedrive_tree::outbox::{Base, Detection, Inode, OutboxKind, OutboxOp, OutboxState, Reason};
+use konedrive_fs::handle::FileHandle;
+use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState, Reason};
 use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
-use super::local::{carried, Dir};
+use super::local::{carried, Dir, Object};
 use super::shared::Shared;
 use crate::local::names;
-
-/// The object a row is about: a file or directory of the folder under the mount.
-pub(super) fn object(meta: &fs::Metadata) -> Inode {
-    Inode { dev: meta.dev(), ino: meta.ino(), handle: None }
-}
 
 /// The item as the base has it: what a change to it was made against.
 fn base(row: &Row) -> Base {
@@ -35,11 +29,11 @@ impl Place<'_> {
         self.dir.rel.join(self.name)
     }
 
-    fn standing(&self, kind: OutboxKind, inode: Option<Inode>, size: Option<u64>) -> Detection {
+    fn standing(&self, kind: OutboxKind, object: Option<FileHandle>, size: Option<u64>) -> Detection {
         Detection {
             kind,
             item_id: None,
-            inode,
+            object,
             rel: self.rel(),
             base: None,
             target_parent: self.dir.id.clone(),
@@ -52,12 +46,13 @@ impl Place<'_> {
         }
     }
 
-    /// A file or directory OneDrive has no item for yet stands here: `meta` is its own. A name
+    /// The file or directory `object`, which OneDrive has no item for yet, stands here. A name
     /// OneDrive refuses, or a file too large for it, is said on the row and waits for the
     /// user; a file a program still writes waits for its last writer.
-    pub(super) fn new(&self, meta: &fs::Metadata, open: bool) -> Detection {
+    pub(super) fn new(&self, object: &Object, open: bool) -> Detection {
+        let meta = &object.meta;
         let kind = if meta.is_dir() { OutboxKind::Mkdir } else { OutboxKind::Create };
-        let mut d = self.standing(kind, Some(object(meta)), meta.is_file().then(|| meta.len()));
+        let mut d = self.standing(kind, Some(object.handle.clone()), meta.is_file().then(|| meta.len()));
         let refused = names::refused(self.name.as_ref()).or((meta.is_file() && meta.len() > names::MAX_FILE_SIZE).then_some(names::Refused::TooLarge));
         if let Some(refused) = refused {
             d.state = OutboxState::Blocked;
@@ -70,11 +65,11 @@ impl Place<'_> {
         d
     }
 
-    /// The item `base` stands here: moved (`Move`) or with new content (`Update`), in the
-    /// object `meta` is of, when the folder holds one for it.
-    pub(super) fn of_item(&self, kind: OutboxKind, row: &Row, meta: Option<&fs::Metadata>) -> Detection {
-        let size = meta.filter(|m| m.is_file() && kind == OutboxKind::Update).map(fs::Metadata::len);
-        Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..self.standing(kind, meta.map(object), size) }
+    /// The item `base` stands here: moved (`Move`) or with new content (`Update`), in
+    /// `object`, when the folder holds one for it.
+    pub(super) fn of_item(&self, kind: OutboxKind, row: &Row, object: Option<&Object>) -> Detection {
+        let size = object.filter(|o| o.meta.is_file() && kind == OutboxKind::Update).map(|o| o.meta.len());
+        Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..self.standing(kind, object.map(|o| o.handle.clone()), size) }
     }
 }
 
@@ -94,12 +89,12 @@ pub(super) fn settles(d: &mut Detection) {
     d.next_try = Some(crate::clock::unix_now() + crate::local::QUIET.as_secs() as i64);
 }
 
-/// What was at `rel` is removed: the item `row`, or an object without one (`inode`).
-pub(super) fn leaves(row: Option<&Row>, inode: Option<Inode>, rel: &Path) -> Detection {
+/// What was at `rel` is removed: the item `row`, or an object without one.
+pub(super) fn leaves(row: Option<&Row>, object: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
-        inode,
+        object,
         rel: rel.to_path_buf(),
         base: row.map(base),
         target_parent: None,
@@ -119,8 +114,8 @@ pub(super) fn based(s: &TreeStore, id: &str) -> Result<Option<Row>, TreeError> {
 
 /// An object without an item is gone, or stays on this computer from now on: what the outbox
 /// held of it goes. Nothing for an object the outbox never heard of.
-pub(super) fn forgotten(s: &TreeStore, inode: &Inode, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(if s.outbox_for_inode(inode)?.is_empty() { Vec::new() } else { vec![leaves(None, Some(inode.clone()), rel)] })
+pub(super) fn forgotten(s: &TreeStore, object: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(if s.outbox_for_object(object)?.is_empty() { Vec::new() } else { vec![leaves(None, Some(object.clone()), rel)] })
 }
 
 /// A directory moved: the rows of what is below it follow.
@@ -150,14 +145,14 @@ impl Shared {
     /// is sent from now on: itself, and what it holds, by the same rules as anything new.
     pub(super) fn below(&self, dir: &Dir, name: &str, into: &mut Vec<Detection>) {
         let rel = dir.rel.join(name);
-        let Ok(meta) = fs::symlink_metadata(self.under(&rel)) else { return };
-        if self.stays_local(dir, name) || carried(&self.under(&rel)).is_some() || !(meta.is_dir() || meta.is_file()) {
+        let Some(object) = self.object(&rel) else { return };
+        if self.stays_local(dir, name) || carried(&self.under(&rel)).is_some() || !(object.meta.is_dir() || object.meta.is_file()) {
             return;
         }
-        into.push(Place { dir, name }.new(&meta, false));
-        if meta.is_dir() && into.len() < MOST_BELOW {
+        into.push(Place { dir, name }.new(&object, false));
+        if object.meta.is_dir() && into.len() < MOST_BELOW {
             let inside = Dir { id: None, rel: rel.clone() };
-            for entry in fs::read_dir(self.under(&rel)).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(self.under(&rel)).into_iter().flatten().flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     self.below(&inside, name, into);
                 }

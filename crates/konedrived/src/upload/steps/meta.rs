@@ -56,7 +56,7 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
     blocking_under(Arc::clone(&tree), move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;
     let event = e.event(ActivityKind::Uploaded, &found.rel, "folder");
-    commit_row(e, row, &answer, found.inode.handle.as_ref(), parent, event).await?;
+    commit_row(e, row, &answer, Some(&found.handle), parent, event).await?;
     Ok(Outcome::Done)
 }
 
@@ -110,7 +110,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                     let tree = tree(e).await;
                     if let Some(to_rel) = follow_cloud(e, disk, &tree, found, &remote).await? {
                         let answer = answer_row(&remote, None)?;
-                        let handle = found.inode.handle.clone();
+                        let handle = found.handle.clone();
                         let (on, at) = (Arc::clone(disk), to_rel.clone());
                         blocking_under(Arc::clone(&tree), move || {
                             local::mark(&on, &at, None);
@@ -119,7 +119,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                         .await?;
                         let event = e.event(ActivityKind::Moved, &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
                         let (seq, stored) = (row.seq, event.clone());
-                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
+                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, Some(&stored))).await?;
                         e.host().activity(&event);
                         return Ok(Outcome::Done);
                     }
@@ -151,7 +151,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         None => String::new(),
     };
     let tree = tree(e).await;
-    let handle = found.and_then(|f| f.inode.handle.clone()).or_else(|| row.inode.as_ref().and_then(|i| i.handle.clone()));
+    let handle = found.map(|f| f.handle.clone()).or_else(|| row.object.clone());
     let rel = found.map(|f| f.rel.as_path()).unwrap_or(&row.rel);
     if let Some(object) = found.cloned() {
         blocking_under(Arc::clone(&tree), move || {

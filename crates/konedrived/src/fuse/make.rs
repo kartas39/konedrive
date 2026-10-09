@@ -47,13 +47,13 @@ impl Shared {
         } else {
             Some(OpenOptions::new().read(true).write(true).create_new(true).mode(0o644).open(&path).map_err(|e| errno(&e))?)
         };
-        let meta = fs::symlink_metadata(&path).map_err(|e| errno(&e))?;
+        let object = self.object(&rel).ok_or(Errno::EIO)?;
         // A file made where the user just removed an item's file is that item's new content:
         // programs replace a file that way, and the item keeps its history and its links.
         let again = if dir { None } else { self.removed_here(&rel) };
         let recorded = match &again {
             Some(base) => {
-                let mut update = Place { dir: &above, name }.of_item(OutboxKind::Update, base, Some(&meta));
+                let mut update = Place { dir: &above, name }.of_item(OutboxKind::Update, base, Some(&object));
                 if open {
                     waits(&mut update);
                 }
@@ -62,7 +62,7 @@ impl Shared {
             }
             None if self.stays_local(&above, name) => Ok(()),
             None => {
-                let made = Place { dir: &above, name }.new(&meta, open);
+                let made = Place { dir: &above, name }.new(&object, open);
                 self.record(move |_| Ok((vec![made], Vec::new()))).map(drop)
             }
         };
@@ -73,7 +73,7 @@ impl Shared {
         }
         let entry = match &again {
             Some(base) => Entry::Item(Row { name: name.to_owned(), ..base.clone() }),
-            None => Entry::Local(Local { name: name.to_owned(), meta }),
+            None => Entry::Local(Local { name: name.to_owned(), object }),
         };
         let ino = self.ino_of(&entry, parent);
         let attr = self.attr_of(&entry, ino, &rel);

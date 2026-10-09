@@ -178,8 +178,8 @@ impl TreeStore {
         forget_unplaced(&tx, [answer.id.as_str()])?;
         let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent, name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
-        if let Some(inode) = committed.inode.clone() {
-            followers.extend(rows_for(&tx, None, Some(&inode))?);
+        if let Some(object) = &committed.object {
+            followers.extend(rows_for(&tx, None, Some(object))?);
         }
         followers.retain(|r| r.seq != seq);
         for mut follower in followers.clone() {
@@ -194,7 +194,7 @@ impl TreeStore {
                     seq: 0,
                     kind: OutboxKind::Move,
                     item_id: Some(answer.id.clone()),
-                    inode: committed.inode.clone(),
+                    object: committed.object.clone(),
                     rel: committed.rel.clone(),
                     base: Some(base),
                     target_parent: Some(final_parent.to_owned()),
@@ -404,8 +404,8 @@ impl TreeStore {
         let Some(dropped) = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next() else {
             return Ok(());
         };
-        let later = match &dropped.inode {
-            Some(inode) => rows_for(&tx, None, Some(inode))?,
+        let later = match &dropped.object {
+            Some(object) => rows_for(&tx, None, Some(object))?,
             None => Vec::new(),
         };
         for mut row in later.into_iter().filter(|r| r.seq != seq) {

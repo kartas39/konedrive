@@ -126,17 +126,17 @@ impl Shared {
     pub(super) fn content(&self, ino: u64, open: bool) -> Result<(), Errno> {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, above))) = (self.node(ino), self.above(ino)) else { return Ok(()) };
-        let Ok(meta) = fs::symlink_metadata(self.under(&rel)) else { return Ok(()) };
+        let Some(object) = self.object(&rel) else { return Ok(()) };
         let name = entry.name().to_owned();
         let recorded = match entry {
             Entry::Local(_) if self.stays_local(&above, &name) => return Ok(()),
             Entry::Local(_) => {
-                let new = Place { dir: &above, name: &name }.new(&meta, open);
+                let new = Place { dir: &above, name: &name }.new(&object, open);
                 self.record(move |_| Ok((vec![new], Vec::new())))
             }
             Entry::Item(row) => self.record(move |s| {
                 let Some(base) = based(s, &row.id)? else { return Ok(Default::default()) };
-                let mut update = Place { dir: &above, name: &name }.of_item(OutboxKind::Update, &base, Some(&meta));
+                let mut update = Place { dir: &above, name: &name }.of_item(OutboxKind::Update, &base, Some(&object));
                 if open {
                     waits(&mut update);
                 } else {

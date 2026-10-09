@@ -8,7 +8,7 @@ fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
         seq,
         kind: OutboxKind::Create,
         item_id: None,
-        inode: None,
+        object: None,
         rel: PathBuf::from(format!("{seq}.bin")),
         base: None,
         target_parent: Some("R".into()),

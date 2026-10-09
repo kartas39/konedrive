@@ -4,14 +4,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use konedrive_fs::handle::FileHandle;
+
 /// What a node is.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum Key {
     /// An item of the store, by its id.
     Item(String),
-    /// A file or directory OneDrive has no item for yet, by its inode number in the folder
+    /// A file or directory OneDrive has no item for yet, by its file handle in the folder
     /// under the mount.
-    Local(u64),
+    Local(FileHandle),
 }
 
 /// The node ids the kernel knows. The root is 1.

@@ -22,7 +22,7 @@ fn detection(kind: OutboxKind, id: Option<&str>, name: &str) -> Detection {
     Detection {
         kind,
         item_id: id.map(str::to_owned),
-        inode: None,
+        object: None,
         rel: PathBuf::from(name),
         base: id.map(|_| Base { etag: Some("e".into()), ctag: Some("c".into()), parent: Some("R".into()), name: Some(name.into()) }),
         target_parent: (!kind.removes()).then(|| "R".to_owned()),

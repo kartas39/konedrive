@@ -20,7 +20,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "9";
+pub const SCHEMA_VERSION: &str = "10";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -36,7 +36,8 @@ pub const SCHEMA_VERSION: &str = "9";
 /// - `outbox`, `local_skipped`: the write phase ([`crate::outbox`]).
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
 ///   at commit can never be mistaken for a new one by a worker still
-///   holding it. The content being sent is `snapshot_size`,
+///   holding it. `handle` is the file handle of the local object a row is
+///   about, which is what the object is. The content being sent is `snapshot_size`,
 ///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`.
 /// - `upload_sessions`: the upload sessions opened and not yet completed,
 ///   cancelled or found gone, with the place a new file's
@@ -89,7 +90,6 @@ fn schema() -> String {
              seq INTEGER PRIMARY KEY AUTOINCREMENT,
              kind TEXT NOT NULL,
              item_id TEXT,
-             dev INTEGER, ino INTEGER,
              rel TEXT NOT NULL,
              base_etag TEXT, base_ctag TEXT, base_parent TEXT, base_name TEXT,
              target_parent TEXT, target_name TEXT,
@@ -102,7 +102,6 @@ fn schema() -> String {
              size INTEGER,
              bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT);
          CREATE INDEX outbox_item ON outbox(item_id);
-         CREATE INDEX outbox_object ON outbox(dev, ino);
          CREATE INDEX outbox_handle ON outbox(handle);
          CREATE INDEX outbox_rel ON outbox(rel);
          CREATE INDEX outbox_due ON outbox(state, next_try, seq);

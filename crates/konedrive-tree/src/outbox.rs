@@ -6,7 +6,7 @@
 //! **One live row per item.** A detection merges into the item's row (the
 //! table in §5.2) unless that row is `running`; then one follow-up row waits
 //! behind it. An item is its item id; something not uploaded yet is its local
-//! object, by file handle (or inode where there is no handle).
+//! object, which is its file handle.
 //!
 //! **Order.** Rows run in `seq` order, the order of first detection, which a
 //! merge keeps. Four rules hold a row back ([`pick`]):
@@ -65,7 +65,7 @@ pub use pick::{due, Pick, Picked, PORTION};
 pub use encoded::Snapshot;
 pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
-pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded, SessionUrl};
+pub use row::{BadItem, Base, Committed, Detection, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded, SessionUrl};
 use stored::{all_rows, insert, path_from, path_value, remove, rewrite, rows_where, set_snapshot};
 pub use sums::{OutboxGroup, SkippedGroup};
 pub use worker::ConflictCopy;
@@ -188,21 +188,13 @@ fn item_gone(tx: &rusqlite::Transaction<'_>, id: &str) -> bool {
     tx.query_row("SELECT 1 FROM items WHERE id = ?1", [id], |_| Ok(())).optional().map(|found| found.is_none()).unwrap_or(false)
 }
 
-/// The live rows of the item or local object `d` is about, oldest first.
-/// An object is found through its inode or its handle, both indexed, and
-/// then compared as [`Inode::same_object`] does.
-fn rows_for(conn: &Connection, item_id: Option<&str>, inode: Option<&Inode>) -> Result<Vec<OutboxRow>, TreeError> {
-    match (item_id, inode) {
+/// The live rows of an item, or of a local object with no item id yet,
+/// oldest first.
+fn rows_for(conn: &Connection, item_id: Option<&str>, object: Option<&FileHandle>) -> Result<Vec<OutboxRow>, TreeError> {
+    match (item_id, object) {
         (Some(id), _) => rows_where(conn, "WHERE item_id = ?1", [id]),
-        (None, Some(inode)) => Ok(rows_where(
-            conn,
-            // `+item_id`: not the item index, which every row without an id shares.
-            "WHERE +item_id IS NULL AND ((dev = ?1 AND ino = ?2) OR handle = ?3)",
-            params![inode.dev as i64, inode.ino as i64, inode.handle.as_ref().map(FileHandle::encode)],
-        )?
-        .into_iter()
-        .filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(inode)))
-        .collect()),
+        // `+item_id`: not the item index, which every row without an id shares.
+        (None, Some(object)) => rows_where(conn, "WHERE +item_id IS NULL AND handle = ?1", [object.encode()]),
         (None, None) => Ok(Vec::new()),
     }
 }
@@ -349,8 +341,8 @@ impl TreeStore {
     }
 
     /// The live rows of a local object with no item id yet.
-    pub fn outbox_for_inode(&self, inode: &Inode) -> Result<Vec<OutboxRow>, TreeError> {
-        rows_for(&self.conn, None, Some(inode))
+    pub fn outbox_for_object(&self, object: &FileHandle) -> Result<Vec<OutboxRow>, TreeError> {
+        rows_for(&self.conn, None, Some(object))
     }
 
     /// Rows at `rel` or below it.
@@ -504,8 +496,8 @@ impl TreeStore {
                 // commit made: that is its base now — and, behind a create,
                 // its item id.
                 let mut followers = rows_for(&tx, Some(&row.id), None)?;
-                if let Some(inode) = committed_row.inode.clone() {
-                    followers.extend(rows_for(&tx, None, Some(&inode))?);
+                if let Some(object) = &committed_row.object {
+                    followers.extend(rows_for(&tx, None, Some(object))?);
                 }
                 for mut follower in followers.into_iter().filter(|r| r.seq != seq) {
                     follower.item_id = Some(row.id.clone());

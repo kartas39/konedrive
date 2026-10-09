@@ -123,19 +123,19 @@ pub(in crate::upload) async fn parent_recorded(e: &Engine, disk: &Arc<Disk>, row
 /// The row's local object: where the row saw it, or where a row behind it
 /// saw it since. `None` when it is in neither place.
 pub(in crate::upload) async fn locate(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<Found>, Fail> {
-    let (item_id, inode) = (row.item_id.clone(), row.inode.clone());
-    let others = e.store().call(move |s| match (&item_id, &inode) {
+    let (item_id, object) = (row.item_id.clone(), row.object.clone());
+    let others = e.store().call(move |s| match (&item_id, &object) {
         (Some(id), _) => s.outbox_for_item(id),
-        (None, Some(inode)) => s.outbox_for_inode(inode),
+        (None, Some(object)) => s.outbox_for_object(object),
         _ => Ok(Vec::new()),
     })
     .await?;
     let places: Vec<PathBuf> = std::iter::once(row.rel.clone()).chain(others.into_iter().filter(|r| r.seq != row.seq).map(|r| r.rel)).collect();
-    let (disk, inode) = (Arc::clone(disk), row.inode.clone());
+    let (disk, object) = (Arc::clone(disk), row.object.clone());
     blocking(move || {
         for rel in places {
             if let Some(found) = local::find(&disk, &rel)? {
-                if inode.as_ref().is_none_or(|inode| inode.same_object(&found.inode)) {
+                if object.as_ref().is_none_or(|object| *object == found.handle) {
                     return Ok(Some(found));
                 }
             }
@@ -397,10 +397,10 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
             let original = engine.root().path.join(&object.rel).display().to_string();
             let copy_path = engine.root().path.join(&copy_rel).display().to_string();
             let event = engine.event(ActivityKind::Conflict, &object.rel, copy_path.clone());
-            let (inode, is_dir, rel, name) = (object.inode.clone(), object.is_dir, copy_rel.clone(), copy_name);
+            let (handle, is_dir, rel, name) = (object.handle.clone(), object.is_dir, copy_rel.clone(), copy_name);
             let amend = move |next: &mut OutboxRow| {
                 next.rel = rel;
-                next.inode = Some(inode);
+                next.object = Some(handle);
                 next.target_parent = Some(parent);
                 next.target_name = Some(name);
                 next.state = OutboxState::Running;
@@ -530,11 +530,11 @@ pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: 
 pub(in crate::upload) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, found: &Found, parent: &str, id: &str) -> Result<Outcome, Fail> {
     let tree = tree(e).await;
     let is_dir = found.is_dir;
-    let (inode, rel, parent, name) = (found.inode.clone(), found.rel.clone(), parent.to_owned(), found.name.to_str().map(str::to_owned));
+    let (handle, rel, parent, name) = (found.handle.clone(), found.rel.clone(), parent.to_owned(), found.name.to_str().map(str::to_owned));
     let amend = move |next: &mut OutboxRow| {
         next.kind = if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create };
         next.item_id = None;
-        next.inode = Some(inode);
+        next.object = Some(handle);
         next.rel = rel;
         next.base = None;
         next.target_parent = Some(parent);
@@ -569,10 +569,10 @@ pub(in crate::upload) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, f
 /// behind it of the same object that never got an item id — nothing of it
 /// reached OneDrive. Except where it may have: see [`landed_away`].
 pub(in crate::upload) async fn never_uploaded(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcome, Fail> {
-    let behind: Vec<i64> = match &row.inode {
-        Some(inode) => {
-            let inode = inode.clone();
-            e.store().call(move |s| s.outbox_for_inode(&inode)).await?
+    let behind: Vec<i64> = match &row.object {
+        Some(object) => {
+            let object = object.clone();
+            e.store().call(move |s| s.outbox_for_object(&object)).await?
         }.into_iter().filter(|r| r.seq > row.seq).map(|r| r.seq).collect(),
         None => Vec::new(),
     };

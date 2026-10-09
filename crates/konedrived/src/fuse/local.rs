@@ -3,15 +3,20 @@
 //!
 //! An object without an item is a file or a directory of the folder under the mount that
 //! carries no item id: made by a program through the mount, and uploaded by the outbox. It
-//! is shown where it lies. An item is shown where the store has it, or where the user moved
+//! is shown where it lies, and is what its file handle says it is: the handle goes with it
+//! through every rename, and the filesystem gives it to no other object, as it gives an
+//! inode number again. An item is shown where the store has it, or where the user moved
 //! it; a name both have is the item's.
 
 use std::collections::HashSet;
-use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, File};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
+use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::nodes::Key;
@@ -29,6 +34,14 @@ pub(super) enum Entry {
 
 pub(super) struct Local {
     pub(super) name: String,
+    pub(super) object: Object,
+}
+
+/// A file or directory of the folder under the mount: its file handle, which is what it is,
+/// and what the filesystem says of it.
+#[derive(Debug, Clone)]
+pub(super) struct Object {
+    pub(super) handle: FileHandle,
     pub(super) meta: fs::Metadata,
 }
 
@@ -43,7 +56,7 @@ impl Entry {
     pub(super) fn is_dir(&self) -> bool {
         match self {
             Entry::Item(row) => row.kind == Kind::Folder,
-            Entry::Local(local) => local.meta.is_dir(),
+            Entry::Local(local) => local.object.meta.is_dir(),
         }
     }
 
@@ -80,6 +93,16 @@ pub(super) fn carried(path: &Path) -> Option<String> {
 }
 
 impl Shared {
+    /// What stands at `rel` in the folder under the mount, looked at once, through the
+    /// folder's descriptor and without following a link at its name: the handle and the
+    /// rest are of one object, whatever takes the name meanwhile. `None` when nothing
+    /// stands there.
+    pub(super) fn object(&self, rel: &Path) -> Option<Object> {
+        let found = nix::fcntl::openat(self.folder.as_fd(), rel, OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC, Mode::empty()).ok()?;
+        let found = File::from(found);
+        Some(Object { handle: FileHandle::of(&found).ok()?, meta: found.metadata().ok()? })
+    }
+
     /// The object without an item at `rel` in the folder under the mount.
     pub(super) fn local(&self, rel: &Path) -> Option<Local> {
         let name = rel.file_name()?;
@@ -87,11 +110,11 @@ impl Shared {
             return None;
         }
         let path = self.under(rel);
-        let meta = fs::symlink_metadata(&path).ok().filter(|m| m.is_file() || m.is_dir())?;
+        let object = self.object(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
         // One that carries the id of an item the store does not have is not an item's yet:
         // its upload is being committed, or the store was made anew.
         let of_an_item = carried(&path).is_some_and(|id| self.row(&id).is_some());
-        (!of_an_item).then(|| Local { name: name.to_string_lossy().into_owned(), meta })
+        (!of_an_item).then(|| Local { name: name.to_string_lossy().into_owned(), object })
     }
 
     /// The item `id` as the folder shows it under `name`, unless it is gone from the folder.
@@ -142,13 +165,13 @@ impl Shared {
     pub(super) fn ino_of(&self, entry: &Entry, parent: u64) -> u64 {
         let mut nodes = crate::panic::lock(&self.nodes);
         match entry {
-            Entry::Local(local) => nodes.ino(Key::Local(local.meta.ino()), parent, &local.name),
+            Entry::Local(local) => nodes.ino(Key::Local(local.object.handle.clone()), parent, &local.name),
             Entry::Item(row) => {
                 let key = Key::Item(row.id.clone());
                 if !nodes.inos.contains_key(&key) {
-                    let on_disk = nodes.rel(parent).and_then(|dir| fs::symlink_metadata(self.under(&dir.join(&row.name))).ok());
-                    if let Some(meta) = on_disk {
-                        nodes.rekey(&Key::Local(meta.ino()), key.clone());
+                    let on_disk = nodes.rel(parent).and_then(|dir| self.object(&dir.join(&row.name)));
+                    if let Some(object) = on_disk {
+                        nodes.rekey(&Key::Local(object.handle), key.clone());
                     }
                 }
                 nodes.ino(key, parent, &row.name)
@@ -174,15 +197,15 @@ impl Shared {
                 let row = self.shown_as(&id, &name).filter(|_| !self.waiting().gone.contains(&id))?;
                 Some((Entry::Item(row), rel))
             }
-            Key::Local(object) => {
-                let path = self.under(&rel);
-                let meta = fs::symlink_metadata(&path).ok().filter(|m| m.ino() == object)?;
+            Key::Local(handle) => {
+                // Another object at its place is not this node.
+                let object = self.object(&rel).filter(|o| o.handle == handle)?;
                 // It got its item since: the node is the item's from now on.
-                if let Some(row) = carried(&path).and_then(|id| self.shown_as(&id, &name)) {
-                    crate::panic::lock(&self.nodes).rekey(&Key::Local(object), Key::Item(row.id.clone()));
+                if let Some(row) = carried(&self.under(&rel)).and_then(|id| self.shown_as(&id, &name)) {
+                    crate::panic::lock(&self.nodes).rekey(&Key::Local(handle), Key::Item(row.id.clone()));
                     return Some((Entry::Item(row), rel));
                 }
-                Some((Entry::Local(Local { name, meta }), rel))
+                Some((Entry::Local(Local { name, object }), rel))
             }
         }
     }

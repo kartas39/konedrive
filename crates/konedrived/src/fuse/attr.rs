@@ -70,9 +70,9 @@ impl Shared {
         match entry {
             Entry::Item(row) => self.attr(row, ino, Some(rel)),
             Entry::Local(local) => {
-                let mut attr = self.plain(ino, local.meta.is_dir());
-                self.of_object(&mut attr, &local.meta);
-                if local.meta.is_dir() {
+                let mut attr = self.plain(ino, local.object.meta.is_dir());
+                self.of_object(&mut attr, &local.object.meta);
+                if local.object.meta.is_dir() {
                     attr.size = 0;
                 }
                 attr

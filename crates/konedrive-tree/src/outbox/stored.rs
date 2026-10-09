@@ -10,13 +10,13 @@ use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, Connection};
 
 use super::encoded::StoredSnapshot;
-use super::{Base, Inode, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl};
+use super::{Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl};
 use crate::model::column;
 use crate::TreeError;
 
 /// What a query that reads rows selects, in the order [`outbox_row`] finds
 /// them by name.
-const OUTBOX_COLUMNS: &str = "seq, kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name, \
+const OUTBOX_COLUMNS: &str = "seq, kind, item_id, rel, base_etag, base_ctag, base_parent, base_name, \
      target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, \
      session_url, session_expires, session_next, handle, confirmed, size";
 
@@ -45,8 +45,6 @@ mod at {
     pub(super) const SEQ: usize = column(OUTBOX_COLUMNS, "seq");
     pub(super) const KIND: usize = column(OUTBOX_COLUMNS, "kind");
     pub(super) const ITEM_ID: usize = column(OUTBOX_COLUMNS, "item_id");
-    pub(super) const DEV: usize = column(OUTBOX_COLUMNS, "dev");
-    pub(super) const INO: usize = column(OUTBOX_COLUMNS, "ino");
     pub(super) const REL: usize = column(OUTBOX_COLUMNS, "rel");
     pub(super) const BASE_ETAG: usize = column(OUTBOX_COLUMNS, "base_etag");
     pub(super) const BASE_CTAG: usize = column(OUTBOX_COLUMNS, "base_ctag");
@@ -73,10 +71,7 @@ mod at {
 fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
     let kind: String = row.get(at::KIND)?;
     let state: String = row.get(at::STATE)?;
-    let dev: Option<i64> = row.get(at::DEV)?;
-    let ino: Option<i64> = row.get(at::INO)?;
     let handle: Option<Vec<u8>> = row.get(at::HANDLE)?;
-    let inode = inode_from(dev, ino, handle);
     let base = Base { etag: row.get(at::BASE_ETAG)?, ctag: row.get(at::BASE_CTAG)?, parent: row.get(at::BASE_PARENT)?, name: row.get(at::BASE_NAME)? };
     let has_base = base != Base::default();
     let snapshot = StoredSnapshot {
@@ -97,7 +92,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         seq: row.get(at::SEQ)?,
         kind: known_kind.unwrap_or(OutboxKind::Update),
         item_id: row.get(at::ITEM_ID)?,
-        inode,
+        object: handle.as_deref().and_then(FileHandle::decode),
         rel: path_from(row.get_ref(at::REL)?),
         base: has_base.then_some(base),
         target_parent: row.get(at::TARGET_PARENT)?,
@@ -125,15 +120,6 @@ pub(super) fn rows_where(conn: &Connection, filter: &str, params: impl rusqlite:
     Ok(rows)
 }
 
-/// A row's local object out of its `dev`, `ino` and `handle` columns.
-fn inode_from(dev: Option<i64>, ino: Option<i64>, handle: Option<Vec<u8>>) -> Option<Inode> {
-    let handle = handle.as_deref().and_then(FileHandle::decode);
-    match (dev, ino) {
-        (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
-        _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
-    }
-}
-
 pub(super) fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {
     rows_where(conn, "", [])
 }
@@ -144,16 +130,10 @@ pub(super) fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {
 /// ([`TreeStore::outbox_set_bad_item`](crate::TreeStore::outbox_set_bad_item)).
 fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
     let base = row.base.clone().unwrap_or_default();
-    let (dev, ino, handle) = match &row.inode {
-        Some(inode) => (Some(inode.dev as i64), Some(inode.ino as i64), inode.handle.as_ref().map(FileHandle::encode)),
-        None => (None, None, None),
-    };
     let snapshot = StoredSnapshot::of(row.snapshot);
     vec![
         ("kind", row.kind.as_str().to_owned().into()),
         ("item_id", row.item_id.clone().into()),
-        ("dev", dev.into()),
-        ("ino", ino.into()),
         ("rel", path_value(&row.rel)),
         ("base_etag", base.etag.into()),
         ("base_ctag", base.ctag.into()),
@@ -171,7 +151,7 @@ fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
         ("session_url", row.session_url.as_ref().map(|url| url.as_str().to_owned()).into()),
         ("session_expires", row.session_expires.into()),
         ("session_next", row.session_next.map(|n| n as i64).into()),
-        ("handle", handle.into()),
+        ("handle", row.object.as_ref().map(FileHandle::encode).into()),
         ("confirmed", i64::from(row.confirmed).into()),
         ("size", row.size.map(|n| n as i64).into()),
     ]
