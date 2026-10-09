@@ -700,7 +700,7 @@ FormCard.FormCardPage {
 
         title: item ? i18nc("@title:window", "Remove %1?", item.account.label) : ""
         subtitle: item && item.sync.rootPath.length > 0
-            ? i18n("Your files stay in %1. Files that were never downloaded are left as empty placeholders.", item.sync.rootPath)
+            ? i18n("The files that were downloaded, and your own, stay in %1. Files that were never downloaded are not on this computer.", item.sync.rootPath)
             : i18n("KOneDrive signs out of this account and forgets it on this computer. Nothing in OneDrive is deleted.")
         onAboutToShow: item = Current.item
         dialogType: Kirigami.PromptDialog.Warning

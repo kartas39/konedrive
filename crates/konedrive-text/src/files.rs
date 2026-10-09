@@ -244,8 +244,8 @@ pub static REFUSALS: [RefusalText; 29] = [
     every(
         Refusal::NoSource,
         Each {
-            desktop: "KOneDrive does not know where to download “{file}” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).",
-            command_line: "KOneDrive does not know where to download {file} from yet. Run `{prefix} sync populate-from <dir>` first; the daemon does not remember that directory across a restart, so run it again after one (files already there are left alone).",
+            desktop: "The folder is not connected to OneDrive yet, so “{file}” cannot be downloaded. Try again in a moment.",
+            command_line: "The folder is not connected to OneDrive yet, so {file} cannot be downloaded. Try again in a moment.",
         },
     ),
     as_failed(Refusal::NoConflict),

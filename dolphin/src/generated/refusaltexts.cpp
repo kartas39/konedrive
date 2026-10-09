@@ -80,7 +80,7 @@ QString refusalSentence(Operation operation, const QString &errorName, const QSt
         return QString();
     }
     if (errorName == QLatin1String("org.konedrive.Error.NoSource")) {
-        return i18nc("@info", "KOneDrive does not know where to download “%1” from yet. Run “konedrivectl sync populate-from” first; KOneDrive does not remember that directory across a restart, so run it again after one (files already there are left alone).", file);
+        return i18nc("@info", "The folder is not connected to OneDrive yet, so “%1” cannot be downloaded. Try again in a moment.", file);
     }
     if (errorName == QLatin1String("org.konedrive.Error.NotAllowed")) {
         switch (operation) {
