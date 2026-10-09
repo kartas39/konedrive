@@ -63,7 +63,14 @@ pub(super) struct OpenedFile {
 }
 
 impl WriteOperations {
-    pub(super) fn new(view: Arc<View>, under: Arc<Under>, resolve: Arc<Resolve>, writers: Arc<Writers>, recorder: Arc<Recorder>, rules: Arc<UploadRules>) -> Self {
+    pub(super) fn new(
+        view: Arc<View>,
+        under: Arc<Under>,
+        resolve: Arc<Resolve>,
+        writers: Arc<Writers>,
+        recorder: Arc<Recorder>,
+        rules: Arc<UploadRules>,
+    ) -> Self {
         WriteOperations { view, under, resolve, writers, recorder, rules }
     }
 
