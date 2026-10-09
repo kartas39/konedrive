@@ -9,7 +9,6 @@ use fuser::{Errno, FileHandle, FopenFlags, INodeNo, OpenFlags, ReplyData, ReplyE
 use konedrive_graph::pool::Class;
 
 use super::{caller, Requests};
-use crate::fuse::fill::{Running, WRITTEN_BEHIND};
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::read::OpenFile;
 use crate::fuse::shared::{errno, Shared};
@@ -85,11 +84,8 @@ impl Requests {
             return reply.data(&[]);
         }
         // What a download under way has written already.
-        let running = crate::panic::lock(&s.running).get(&id).cloned();
-        if let Some(Running { mark, staged }) = running {
-            if end + WRITTEN_BEHIND <= mark.load(Ordering::SeqCst) {
-                return from_file(&staged, offset, size, reply);
-            }
+        if let Some(written_file) = s.download_states.find_written_file(&id, end) {
+            return from_file(&written_file, offset, size, reply);
         }
         tracing::debug!("read of {} by {}: {} bytes at {offset}, from OneDrive", rel.display(), caller(req), end - offset);
         let (shared, unique): (Arc<Shared>, u64) = (Arc::clone(s), req.unique().0);
@@ -98,17 +94,10 @@ impl Requests {
             crate::panic::lock(&shared.reads).remove(&unique);
             match fetched {
                 Ok(bytes) => {
-                    let asked = {
-                        let mut asked = crate::panic::lock(&shared.asked);
-                        let total = asked.entry(row.id.clone()).or_default();
-                        *total += bytes.len() as u64;
-                        *total
-                    };
+                    let read_enough = shared.download_states.count_bytes_read(&row.id, bytes.len() as u64, row.size);
                     reply.data(&bytes);
-                    // A file smaller than the threshold is downloaded once all of it was read:
-                    // it would be fetched again at every read otherwise.
-                    if asked >= shared.download_after.min(row.size) {
-                        shared.ensure(row, rel, Class::Open, None);
+                    if read_enough {
+                        shared.file_downloader.download(row, rel, Class::Open, None);
                     }
                 }
                 Err(e) => reply.error(Errno::from_i32(e)),

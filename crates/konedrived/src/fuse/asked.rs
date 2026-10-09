@@ -11,6 +11,7 @@ use tokio::sync::oneshot;
 
 use super::announce::Announce;
 use super::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
+use super::download_states::to_hydration_state;
 use super::mount::Mount;
 
 /// What a free-up did.
@@ -78,7 +79,7 @@ impl Mount {
             EntryState::Directory(_) => return Err(Refused::NoItem),
         };
         let (tell, told) = oneshot::channel();
-        self.shared.ensure(row, rel, Class::Open, Some(tell));
+        self.shared.file_downloader.download(row, rel, Class::Open, Some(tell));
         match told.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(errno)) => Err(Refused::Io(format!("hydration failed: {}", io::Error::from_raw_os_error(errno)))),
@@ -117,7 +118,7 @@ impl Mount {
                 };
                 // What a pin keeps, a download is filling, or a program holds open for
                 // writing, stays.
-                if s.open_for_writing(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
+                if s.open_for_writing(&file.id) || s.pinned_by(&file).is_some() || s.download_states.is_downloading(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -148,7 +149,7 @@ impl Mount {
         let above = s.directory_contents.parent(&row).and_then(|above| s.pinned_by(&above));
         let pinned_above = above.and_then(|by| s.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let (state, modified_here) = match &entry.state {
-            EntryState::File(file) => (s.state_of(file), matches!(file, FileSyncState::ModifiedHere(..))),
+            EntryState::File(file) => (to_hydration_state(file, s.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
             EntryState::Directory(_) => (None, false),
         };
         let changed = modified_here || s.open_for_writing(&row.id);

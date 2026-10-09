@@ -40,7 +40,7 @@ impl Shared {
                 let Some(row) = s.directory_contents.row(&id) else { continue };
                 for (file, rel) in s.directory_contents.files_below(&row) {
                     if let FileSyncState::RemoteOnly(file) = file {
-                        s.ensure(file, rel, Class::Download, None);
+                        s.file_downloader.download(file, rel, Class::Download, None);
                     }
                 }
             }

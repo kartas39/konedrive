@@ -17,7 +17,8 @@ use crate::hydration::source::{ContentSource, Share};
 use crate::status::report::Report;
 
 use super::announce::{announce, Announce};
-use super::fill::Waiter;
+use super::download_states::DownloadStates;
+use super::file_download::{AnnounceFileChange, FileDownloader};
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
 use super::conflict_copies::ConflictCopies;
@@ -61,7 +62,8 @@ pub struct Parts {
     pub report: Report,
     pub pool: Arc<TransferPool>,
     pub parts: Arc<Share>,
-    /// `[transfers] download_after`: see [`Shared::download_after`].
+    /// `[transfers] download_after`: once that many bytes of a file were read as ranges, the
+    /// file is downloaded whole.
     pub download_after: u64,
     /// What the folder shares with its sync when it takes changes.
     pub writing: Writing,
@@ -93,7 +95,28 @@ impl Mount {
                 Arc::clone(&outbox_recorder),
                 upload_rules,
             );
-            let shared = Arc::new(Shared {
+            let download_states = Arc::new(DownloadStates::new(download_after));
+            let shared = Arc::new_cyclic(|shared: &std::sync::Weak<Shared>| {
+                // The way to the announcer, which is the mount's.
+                let announcer = shared.clone();
+                let announce_file_change: AnnounceFileChange = Arc::new(move |rel, id| {
+                    if let Some(shared) = announcer.upgrade() {
+                        shared.announce(vec![Announce::Changed(rel, id)]);
+                    }
+                });
+                let file_downloader = Arc::new(FileDownloader {
+                    backing_directory: Arc::clone(&backing_directory),
+                    directory_contents: Arc::clone(&directory_contents),
+                    download_states: Arc::clone(&download_states),
+                    source: Arc::clone(&source),
+                    pool: Arc::clone(&pool),
+                    parts_share: parts,
+                    report: report.clone(),
+                    folder: root.path.clone(),
+                    announce_file_change,
+                    runtime: runtime.clone(),
+                });
+                Shared {
                 root: root.clone(),
                 backing_directory,
                 directory_contents,
@@ -103,15 +126,11 @@ impl Mount {
                 source,
                 report,
                 pool,
-                parts,
-                fills: Mutex::default(),
-                running: Mutex::default(),
-                unfinished: Mutex::default(),
+                download_states,
+                file_downloader,
                 handles: Mutex::default(),
                 next_handle: AtomicU64::new(1),
                 listings: Mutex::default(),
-                asked: Mutex::default(),
-                download_after,
                 readers: Mutex::default(),
                 reads: Mutex::default(),
                 pins: Mutex::new(pins),
@@ -126,6 +145,7 @@ impl Mount {
                 open_writers,
                 write_operations,
                 runtime,
+                }
             });
             let mut config = Config::default();
             config.mount_options = vec![
@@ -178,10 +198,7 @@ impl Mount {
         if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
             let _ = announcer.join();
         }
-        let waiting: Vec<Waiter> = crate::panic::lock(&s.fills).drain().flat_map(|(_, waiting)| waiting).collect();
-        waiting.into_iter().for_each(|waiter| {
-            let _ = waiter.send(Err(libc::EIO));
-        });
+        s.download_states.fail_waiters();
         crate::panic::lock(&s.reads).drain().for_each(|(_, read)| read.abort());
         if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
             tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", s.root.path.display());
@@ -213,8 +230,8 @@ impl Mount {
     /// checkpoint.
     #[cfg(any(test, feature = "fault-injection"))]
     pub fn staged(&self) -> Vec<(u64, Option<u64>)> {
-        let seen = |(_, file): &(String, Arc<fs::File>)| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
-        crate::panic::lock(&self.shared.unfinished).iter().filter_map(seen).collect()
+        let seen = |file: &Arc<fs::File>| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
+        self.shared.download_states.list_unfinished_files().iter().filter_map(seen).collect()
     }
 
     /// The folder under the mount, for what must not go through the mount: a walk of what is

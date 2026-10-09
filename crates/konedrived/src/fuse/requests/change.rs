@@ -38,7 +38,7 @@ fn with_content(s: &Arc<Shared>, ino: u64, empty: bool, job: impl FnOnce(&Arc<Sh
     let shared = Arc::clone(s);
     s.runtime.spawn(async move {
         let (tell, told) = oneshot::channel();
-        shared.ensure(row, rel, Class::Open, Some(tell));
+        shared.file_downloader.download(row, rel, Class::Open, Some(tell));
         match told.await {
             Ok(Ok(())) => on_recorder(&shared, job),
             Ok(Err(e)) => refused(Errno::from_i32(e)),

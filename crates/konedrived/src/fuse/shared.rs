@@ -10,9 +10,7 @@
 //! `impl Shared` in the module of its topic.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,11 +20,12 @@ use konedrive_graph::pool::TransferPool;
 use konedrive_tree::Store;
 
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::{ContentSource, Share};
+use crate::hydration::source::ContentSource;
 use crate::status::report::Report;
 
 use super::announce::{Announce, Told};
-use super::fill::{Running, Waiter};
+use super::download_states::DownloadStates;
+use super::file_download::FileDownloader;
 use super::conflict_copies::ConflictCopies;
 use super::node_table::NodeTable;
 use super::outbox_recorder::OutboxRecorder;
@@ -53,26 +52,16 @@ pub(super) struct Shared {
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
     pub(super) pool: Arc<TransferPool>,
-    /// What the daemon's large downloads in parts share.
-    pub(super) parts: Arc<Share>,
-    /// The downloads in progress, by item, and who waits for each.
-    pub(super) fills: Mutex<HashMap<String, Vec<Waiter>>>,
-    /// Of those, the ones in one stream: what of each is on disk already.
-    pub(super) running: Mutex<HashMap<String, Running>>,
-    /// The downloads that failed, by item, oldest first: each one's file, which has no name
-    /// and goes with the daemon. The next download of the item continues from its checkpoint.
-    pub(super) unfinished: Mutex<Vec<(String, Arc<File>)>>,
+    /// The state of each file's download ([`super::download_states`]).
+    pub(super) download_states: Arc<DownloadStates>,
+    /// What downloads a file whole ([`super::file_download`]).
+    pub(super) file_downloader: Arc<FileDownloader>,
     /// What programs hold open, by the handle the kernel was given.
     pub(super) handles: Mutex<HashMap<u64, OpenFile>>,
     pub(super) next_handle: AtomicU64,
     /// What each open directory held when it was first listed, by handle: a program that
     /// reads a directory in parts reads one listing, whatever changes meanwhile.
     pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::DirectoryEntry>>>>,
-    /// How many bytes of each item that is not downloaded were read as ranges.
-    pub(super) asked: Mutex<HashMap<String, u64>>,
-    /// Once that many bytes of a file were read as ranges, the file is downloaded whole
-    /// (`[transfers] download_after` in `config.toml`).
-    pub(super) download_after: u64,
     /// The files being read as ranges, by item: each holds the account's pool as a file being
     /// opened does, until `READ_LINGERS` after its last read. While one is held no pinned
     /// or other background download starts, so what the user reads goes first.
@@ -118,11 +107,6 @@ pub(super) fn other(e: impl ToString) -> io::Error {
 }
 
 impl Shared {
-    /// The path a download is shown under: the file's place in the folder.
-    pub(super) fn shown(&self, rel: &Path) -> String {
-        self.root.path.join(rel).display().to_string()
-    }
-
     /// The time the outbox's rows are dated by.
     pub(super) fn now(&self) -> i64 {
         crate::clock::unix_now()

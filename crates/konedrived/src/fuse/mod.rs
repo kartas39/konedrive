@@ -42,7 +42,7 @@ mod conflict_copies;
 mod detections;
 mod directory;
 mod download_states;
-mod fill;
+mod file_download;
 mod follow;
 mod local_only_entries;
 mod mode;

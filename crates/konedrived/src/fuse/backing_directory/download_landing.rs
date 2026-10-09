@@ -95,6 +95,14 @@ impl BackingDirectory {
     /// `modified`, and given the name unless what is there says otherwise
     /// ([`choose_landing_action`]).
     pub(in crate::fuse) fn land(&self, file: &File, rel: &Path, id: &str, modified: SystemTime) -> io::Result<LandingOutcome> {
+        // What is there is looked at first: a download that is dropped or refused is not
+        // marked and not written out to the disk.
+        let action = choose_landing_action(self.inspect_target(rel, id));
+        match action {
+            LandingAction::Keep => return Ok(LandingOutcome::Kept),
+            LandingAction::Refuse => return Ok(LandingOutcome::Refused),
+            LandingAction::Replace | LandingAction::Link => {}
+        }
         placeholder::write_item_id(file, id)?;
         placeholder::write_state(file, State::Hydrated)?;
         file.set_modified(modified)?;
@@ -102,11 +110,8 @@ impl BackingDirectory {
         file.set_permissions(fs::Permissions::from_mode(0o444))?;
         file.sync_all()?;
         let target = self.path(rel);
-        match choose_landing_action(self.inspect_target(rel, id)) {
-            LandingAction::Keep => return Ok(LandingOutcome::Kept),
-            LandingAction::Refuse => return Ok(LandingOutcome::Refused),
-            LandingAction::Replace => fs::remove_file(&target)?,
-            LandingAction::Link => {}
+        if action == LandingAction::Replace {
+            fs::remove_file(&target)?;
         }
         // Whole and checked: now it gets its name.
         let (unnamed, named) = (CString::new(konedrive_fs::proc_path(file).into_os_string().into_encoded_bytes())?, CString::new(target.into_os_string().into_encoded_bytes())?);
