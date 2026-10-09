@@ -16,7 +16,7 @@ use crate::fuse::entry_place::EntryPlace;
 use super::WriteOperations;
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 use crate::fuse::directory_contents::{EntryState, FileSyncState};
-use crate::fuse::open_files::OpenFile;
+use crate::fuse::open_handles::{CloseOutcome, Fh};
 use crate::fuse::errno::to_errno;
 
 impl WriteOperations {
@@ -31,8 +31,9 @@ impl WriteOperations {
         }
     }
 
-    /// Opens the node `node_id` for writing, cut to nothing when `truncate`.
-    pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId, truncate: bool) -> Result<OpenFile, Errno> {
+    /// Opens the node `node_id` for writing, cut to nothing when `truncate`: the `fh` the
+    /// program holds it open by.
+    pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId, truncate: bool) -> Result<Fh, Errno> {
         self.access_mode.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
@@ -41,18 +42,25 @@ impl WriteOperations {
         // Its content is the user's own already when it is modified here; from the first
         // writer on the outbox holds it in any case.
         let content_changed = truncate || matches!(file, FileSyncState::ModifiedHere(..));
-        if self.open_writers.add_writer(node_id, content_changed) {
+        let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file), content_changed);
+        if added.is_first {
             if let Err(e) = self.record_content(node_id, LocalOnlyFileWrite::Opened) {
-                self.open_writers.remove_writer(node_id);
+                self.open_handles.close_file(added.fh);
                 return Err(e);
             }
         }
-        Ok(OpenFile { node_id, onedrive_id: entry.onedrive_id().map(str::to_owned), rel, file_on_disk: Some(Arc::new(backing_file)), may_write: true })
+        Ok(added.fh)
     }
 
-    /// The last writer of the node `node_id` closed it: its content is ready to be sent when
-    /// it was `changed`; when nothing was written, the outbox lets go of a OneDrive file.
-    pub(in crate::fuse) fn close_last_writer(&self, node_id: NodeId, changed: bool) {
+    /// The last writer of the node `node_id` closed it, with `outcome`: its content is ready
+    /// to be sent when it was changed; when nothing was written, the outbox lets go of a
+    /// OneDrive file. Nothing is done for a file that is still open for writing, or was not.
+    pub(in crate::fuse) fn close_last_writer(&self, node_id: NodeId, outcome: CloseOutcome) {
+        let changed = match outcome {
+            CloseOutcome::ContentChanged => true,
+            CloseOutcome::ContentUntouched => false,
+            CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere => return,
+        };
         let untouched = self.node_resolver.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
         // A local-only file is sent all the same: it was never sent.
         let Some(untouched) = untouched else {
@@ -80,8 +88,8 @@ impl WriteOperations {
         let backing_file = self.backing_directory.write(&rel, false).map_err(|e| to_errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
-        if self.open_writers.is_open(node_id) {
-            self.open_writers.mark_written(node_id);
+        if self.open_handles.is_open_for_writing_by_node_id(node_id) {
+            self.open_handles.mark_written(node_id);
         } else {
             self.record_content(node_id, LocalOnlyFileWrite::Cut)?;
         }

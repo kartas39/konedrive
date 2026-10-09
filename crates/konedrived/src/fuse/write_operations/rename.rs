@@ -111,7 +111,7 @@ impl WriteOperations {
         }
         let uploaded = !self.is_ignored(&to_directory, new_name);
         let node_id = self.node_resolver.assign_node_id(&moved_entry, parent);
-        let open = self.open_writers.is_open(node_id);
+        let open = self.open_handles.is_open_for_writing_by_node_id(node_id);
         Ok(Some(RenamePlan { moved_entry, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
     }
 

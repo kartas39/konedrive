@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use fuser::{FileHandle, FileType, FopenFlags, Generation, INodeNo, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyOpen};
 
-use crate::fuse::open_files::Fh;
+use crate::fuse::open_handles::Fh;
 use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::attributes::TTL;
@@ -23,17 +23,17 @@ impl KernelRequests {
     /// reading after it.
     fn find_listed_names(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(DirectoryReference, Arc<Vec<ListedName>>)> {
         let directory = self.node_resolver.find_directory(NodeId::from(ino))?;
-        let kept = self.open_files.find_listed_names(Fh::from(fh)).filter(|_| offset > 0);
+        let kept = self.open_handles.find_listed_names(Fh::from(fh)).filter(|_| offset > 0);
         let listed_names = kept.unwrap_or_else(|| {
             let listed_names = Arc::new(self.directory_contents.list_names(&directory));
-            self.open_files.keep_listed_names(Fh::from(fh), Arc::clone(&listed_names));
+            self.open_handles.keep_listed_names(Fh::from(fh), Arc::clone(&listed_names));
             listed_names
         });
         Some((directory, listed_names))
     }
 
     pub(super) fn answer_opendir(&self, reply: ReplyOpen) {
-        reply.opened(FileHandle::from(self.open_files.add_directory()), FopenFlags::empty());
+        reply.opened(FileHandle::from(self.open_handles.add_directory()), FopenFlags::empty());
     }
 
     /// The names and the kinds: from the store alone for what is in OneDrive, with no sync
@@ -69,7 +69,7 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_releasedir(&self, fh: FileHandle, reply: ReplyEmpty) {
-        self.open_files.remove_directory(Fh::from(fh));
+        self.open_handles.close_directory(Fh::from(fh));
         reply.ok();
     }
 }

@@ -4,7 +4,7 @@
 //! [`FilesInterface`] holds the parts these need and no state of its own: what each
 //! directory holds ([`DirectoryContents`], and through it the backing directory), the state
 //! of the downloads ([`DownloadStates`]) and what downloads ([`FileDownloader`]), what
-//! programs hold open ([`OpenFiles`]), the [`Pins`], and the [`InotifyBridge`], which
+//! programs hold open ([`OpenHandles`]), the [`Pins`], and the [`InotifyBridge`], which
 //! announces what changed of a file to whoever shows it. A path it is asked about is a path
 //! of the mount; what is local only is not OneDrive's to download, free or pin, and is
 //! refused ([`FilesRefusal::NotInOneDrive`]).
@@ -22,7 +22,7 @@ use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, F
 use super::download_states::{to_state_attribute, DownloadStates};
 use super::file_downloader::FileDownloader;
 use super::inotify_bridge::{InotifyBridge, Announcement};
-use super::open_files::OpenFiles;
+use super::open_handles::OpenHandles;
 use super::pins::{download_pinned_files, Pins};
 use crate::status::report::Report;
 
@@ -70,7 +70,7 @@ pub(super) struct FilesInterface {
     pub(super) directory_contents: Arc<DirectoryContents>,
     pub(super) download_states: Arc<DownloadStates>,
     pub(super) file_downloader: Arc<FileDownloader>,
-    pub(super) open_files: Arc<OpenFiles>,
+    pub(super) open_handles: Arc<OpenHandles>,
     pub(super) pins: Arc<Pins>,
     pub(super) inotify_bridge: Arc<InotifyBridge>,
     pub(super) report: Report,
@@ -126,7 +126,7 @@ impl FilesInterface {
     }
 
     async fn free_up_below(&self, row: Row) -> FreedSpace {
-        let (directory_contents, open_files, pins) = (Arc::clone(&self.directory_contents), Arc::clone(&self.open_files), Arc::clone(&self.pins));
+        let (directory_contents, open_handles, pins) = (Arc::clone(&self.directory_contents), Arc::clone(&self.open_handles), Arc::clone(&self.pins));
         let (download_states, inotify_bridge) = (Arc::clone(&self.download_states), Arc::clone(&self.inotify_bridge));
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut announcements) = (FreedSpace::default(), Vec::new());
@@ -143,9 +143,9 @@ impl FilesInterface {
                 };
                 // What a pin keeps, a download is filling, or a program holds open for
                 // writing, stays. The sync state says the last too while the outbox holds
-                // the file's row; the open files say it also once that row is dropped under
+                // the file's row; the open handles say it also once that row is dropped under
                 // a writer, by a forced switch to read-only.
-                if open_files.is_open_for_writing(&file.id) || pins.find_pinning_row(&file).is_some() || download_states.is_downloading(&file.id) {
+                if open_handles.is_open_for_writing_by_onedrive_id(&file.id) || pins.find_pinning_row(&file).is_some() || download_states.is_downloading(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -179,7 +179,7 @@ impl FilesInterface {
             EntryState::File(file) => (to_state_attribute(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
             EntryState::Directory(_) => (None, false),
         };
-        let modified_here = modified_here || self.open_files.is_open_for_writing(&row.id);
+        let modified_here = modified_here || self.open_handles.is_open_for_writing_by_onedrive_id(&row.id);
         Ok(PathStatus { id: row.id, is_directory: row.kind == Kind::Folder, state, own_pin, pinned_above, modified_here })
     }
 

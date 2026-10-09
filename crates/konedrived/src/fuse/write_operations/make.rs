@@ -14,13 +14,14 @@ use super::WriteOperations;
 use crate::fuse::detections::EntryCreated;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::directory_contents::DirectoryEntry;
-use crate::fuse::open_files::OpenFile;
+use crate::fuse::open_handles::Fh;
 use crate::fuse::errno::to_errno;
 
 impl WriteOperations {
     /// Makes `name` in the directory node `parent`: a directory, or a file, which `open`
-    /// leaves open for writing. The entry that was made, and the file when it is open.
-    pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<OpenFile>), Errno> {
+    /// leaves open for writing. The entry that was made, and the `fh` of the file when it is
+    /// open.
+    pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<Fh>), Errno> {
         let parent_directory = self.check_make(parent, name, directory)?;
         let rel = parent_directory.path.join(name);
         self.directory_contents.make_marked_directories(&parent_directory.path).map_err(|e| to_errno(&e))?;
@@ -59,8 +60,7 @@ impl WriteOperations {
         let opened = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
-            self.open_writers.add_writer(node_id, true);
-            OpenFile { node_id, onedrive_id: removed.map(|base| base.id), rel, file_on_disk: Some(Arc::new(file)), may_write: true }
+            self.open_handles.add_writer(node_id, removed.map(|base| base.id), Arc::new(file), true).fh
         });
         Ok((entry, opened))
     }

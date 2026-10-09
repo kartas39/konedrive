@@ -8,13 +8,12 @@ use fuser::{Errno, FileHandle, FopenFlags, INodeNo, OpenFlags, ReplyData, ReplyE
 use konedrive_graph::pool::Class;
 
 use crate::fuse::kernel_requests::interruptible_reads::RequestId;
-use crate::fuse::open_files::Fh;
+use crate::fuse::open_handles::Fh;
 use crate::fuse::node_table::NodeId;
 use super::{describe_caller, KernelRequests};
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
-use crate::fuse::open_files::OpenFile;
-use crate::fuse::open_writers::CloseOutcome;
+use crate::fuse::open_handles::{CloseOutcome, OpenFile};
 
 /// Answers with `size` bytes of `file` at `offset`, or as many as it has.
 fn answer_from_file(file: &File, offset: u64, size: u32, reply: ReplyData) {
@@ -34,36 +33,38 @@ impl KernelRequests {
     /// Opening to read downloads nothing: a program may open a file and never read it.
     pub(super) fn answer_open_to_read(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let Some((entry, rel)) = self.node_resolver.find_entry(NodeId::from(ino)) else { return reply.error(Errno::ENOENT) };
-        // What is in OneDrive and not downloaded has no file in the backing directory.
-        let on_disk = !matches!(entry.state, EntryState::File(FileSyncState::RemoteOnly(_)) | EntryState::Directory(DirectorySyncState::InOneDrive(_)));
-        let file_on_disk = if on_disk {
-            match self.backing_directory.read(&rel) {
-                Ok(file) => Some(Arc::new(file)),
-                Err(e) => return reply.error(to_errno(&e)),
+        let file = match &entry.state {
+            // What is in OneDrive and not downloaded has no file in the backing directory.
+            EntryState::File(FileSyncState::RemoteOnly(row)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => {
+                tracing::debug!("open of {} by {}: flags {:#x}, not downloaded", rel.display(), describe_caller(req), flags.0);
+                OpenFile::ReadingRemoteOnly { onedrive_id: row.id.clone(), path: rel }
             }
-        } else {
-            None
+            _ => match self.backing_directory.read(&rel) {
+                Ok(backing_file) => {
+                    tracing::debug!("open of {} by {}: flags {:#x}, on disk", rel.display(), describe_caller(req), flags.0);
+                    OpenFile::ReadingBackingFile { backing_file: Arc::new(backing_file) }
+                }
+                Err(e) => return reply.error(to_errno(&e)),
+            },
         };
-        tracing::debug!("open of {} by {}: flags {:#x}, {}", rel.display(), describe_caller(req), flags.0, if file_on_disk.is_some() { "on disk" } else { "not downloaded" });
-        let fh = self.open_files.add_file(OpenFile { node_id: NodeId::from(ino), onedrive_id: entry.onedrive_id().map(str::to_owned), rel, file_on_disk, may_write: false });
-        reply.opened(FileHandle::from(fh), FopenFlags::FOPEN_KEEP_CACHE);
+        reply.opened(FileHandle::from(self.open_handles.add_file(file)), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
     /// The bytes asked for, from wherever they are: the file in the backing directory; what
     /// a download under way has written; or OneDrive, as a range. Enough read as ranges
     /// starts the download of the whole file, which no read waits for.
     pub(super) fn answer_read(&self, req: &Request, fh: FileHandle, offset: u64, size: u32, reply: ReplyData) {
-        let Some(OpenFile { onedrive_id, rel, file_on_disk, .. }) = self.open_files.find_file(Fh::from(fh)) else { return reply.error(Errno::EBADF) };
-        if let Some(file) = file_on_disk {
-            return answer_from_file(&file, offset, size, reply);
-        }
-        let Some(id) = onedrive_id else { return reply.error(Errno::EIO) };
+        let (id, rel) = match self.open_handles.find_file(Fh::from(fh)) {
+            None => return reply.error(Errno::EBADF),
+            Some(OpenFile::ReadingBackingFile { backing_file } | OpenFile::Writing { backing_file, .. }) => return answer_from_file(&backing_file, offset, size, reply),
+            Some(OpenFile::ReadingRemoteOnly { onedrive_id, path }) => (onedrive_id, path),
+        };
         // Downloaded since it was opened: the handle reads the downloaded copy from now on.
         if self.backing_directory.has_downloaded_copy(&rel, &id) {
             return match self.backing_directory.read(&rel) {
                 Ok(file) => {
                     let file = Arc::new(file);
-                    self.open_files.set_file_on_disk(Fh::from(fh), Arc::clone(&file));
+                    self.open_handles.switch_to_backing_file(Fh::from(fh), Arc::clone(&file));
                     answer_from_file(&file, offset, size, reply)
                 }
                 Err(e) => reply.error(to_errno(&e)),
@@ -102,17 +103,13 @@ impl KernelRequests {
 
     /// A handle is closed: the last one that wrote a file leaves its content ready to send.
     pub(super) fn answer_release(&self, fh: FileHandle, reply: ReplyEmpty) {
-        let closed = self.open_files.remove_file(Fh::from(fh));
-        if let Some(closed) = closed.filter(|closed| closed.may_write) {
-            let content_changed = match self.open_writers.remove_writer(closed.node_id) {
-                CloseOutcome::StillOpenElsewhere => None,
-                CloseOutcome::ContentChanged => Some(true),
-                CloseOutcome::ContentUntouched => Some(false),
-            };
-            if let Some(content_changed) = content_changed {
+        let (closed, outcome) = self.open_handles.close_file(Fh::from(fh));
+        match (closed, outcome) {
+            (Some(OpenFile::Writing { node_id, .. }), CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => {
                 let write_operations = Arc::clone(&self.write_operations);
-                self.outbox_recorder.run(move || write_operations.close_last_writer(closed.node_id, content_changed));
+                self.outbox_recorder.run(move || write_operations.close_last_writer(node_id, outcome));
             }
+            (_, CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere | CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => {}
         }
         reply.ok();
     }

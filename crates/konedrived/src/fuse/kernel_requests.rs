@@ -40,8 +40,7 @@ use super::file_downloader::FileDownloader;
 use super::inotify_bridge::InotifyBridge;
 use super::node_resolver::NodeResolver;
 use super::node_table::NodeId;
-use super::open_files::{Fh, OpenFiles};
-use super::open_writers::OpenWriters;
+use super::open_handles::{Fh, OpenHandles};
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::Pins;
 use super::range_readers::RangeReaders;
@@ -102,8 +101,7 @@ pub(super) struct KernelRequests {
     pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) directory_contents: Arc<DirectoryContents>,
     pub(super) node_resolver: Arc<NodeResolver>,
-    pub(super) open_files: Arc<OpenFiles>,
-    pub(super) open_writers: Arc<OpenWriters>,
+    pub(super) open_handles: Arc<OpenHandles>,
     pub(super) outbox_recorder: Arc<OutboxRecorder>,
     pub(super) write_operations: Arc<WriteOperations>,
     pub(super) download_states: Arc<DownloadStates>,

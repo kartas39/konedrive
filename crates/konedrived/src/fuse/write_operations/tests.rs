@@ -18,7 +18,7 @@ use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::{DirectoryContents, EntryState, FileSyncState};
 use crate::fuse::node_resolver::NodeResolver;
-use crate::fuse::open_writers::OpenWriters;
+use crate::fuse::open_handles::OpenHandles;
 use crate::fuse::outbox_recorder::OutboxRecorder;
 use crate::fuse::upload_rules::tests::rules;
 
@@ -30,7 +30,7 @@ pub(super) struct Folder {
     pub(super) directory_contents: Arc<DirectoryContents>,
     pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) node_resolver: Arc<NodeResolver>,
-    pub(super) open_writers: Arc<OpenWriters>,
+    pub(super) open_handles: Arc<OpenHandles>,
     pub(super) access_mode: Arc<AccessMode>,
     pub(super) ops: WriteOperations,
 }
@@ -50,9 +50,9 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
     let access_mode = Arc::new(AccessMode::read_write());
     let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&access_mode)).unwrap());
-    let open_writers = Arc::new(OpenWriters::default());
-    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_resolver), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()), Arc::clone(&access_mode));
-    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_resolver, open_writers, access_mode, ops }
+    let open_handles = Arc::new(OpenHandles::default());
+    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_resolver), Arc::clone(&open_handles), outbox_recorder, Arc::new(rules()), Arc::clone(&access_mode));
+    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_resolver, open_handles, access_mode, ops }
 }
 
 impl Folder {

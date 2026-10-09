@@ -4,7 +4,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 
 use crate::fuse::node_table::NodeId;
 use crate::fuse::directory_contents::FileSyncState;
-use crate::fuse::open_writers::CloseOutcome;
+use crate::fuse::open_handles::{CloseOutcome, OpenFile};
 use crate::fuse::write_operations::tests::{at, folder};
 
 #[test]
@@ -12,18 +12,20 @@ fn a_local_only_file_written_waits_for_its_writer_and_is_due_once_closed() {
     let f = folder(Vec::new());
     f.ops.make(NodeId::ROOT, "new.txt", false, false).unwrap();
     let node_id = f.node_id(NodeId::ROOT, "new.txt");
-    let opened = f.ops.open_to_write(node_id, false).unwrap();
-    assert!(opened.node_id == node_id && opened.onedrive_id.is_none() && opened.may_write && f.open_writers.is_open(node_id));
+    let fh = f.ops.open_to_write(node_id, false).unwrap();
+    assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, onedrive_id: None, .. }) if written == node_id));
+    assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
-    f.open_writers.mark_written(node_id);
-    assert_eq!(f.open_writers.remove_writer(node_id), CloseOutcome::ContentChanged);
-    f.ops.close_last_writer(node_id, true);
+    f.open_handles.mark_written(node_id);
+    let outcome = f.open_handles.close_file(fh).1;
+    assert_eq!(outcome, CloseOutcome::ContentChanged);
+    f.ops.close_last_writer(node_id, outcome);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Create, OutboxState::Waiting, Some(Reason::Changed)));
 }
 
 /// From its first writer on the outbox holds the file, so its sync state says it is modified
-/// here with nothing asked of the open writers; closed with nothing written, the outbox lets
+/// here with nothing asked of the open handles; closed with nothing written, the outbox lets
 /// go of it again and its copy matches.
 #[test]
 fn a_onedrive_file_is_modified_here_from_its_first_writer_until_it_is_closed_untouched() {
@@ -31,12 +33,13 @@ fn a_onedrive_file_is_modified_here_from_its_first_writer_until_it_is_closed_unt
     f.download("a.txt", "A", b"a");
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
-    let opened = f.ops.open_to_write(node_id, false).unwrap();
-    assert_eq!(opened.onedrive_id.as_deref(), Some("A"));
+    let fh = f.ops.open_to_write(node_id, false).unwrap();
+    assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
-    assert_eq!(f.open_writers.remove_writer(node_id), CloseOutcome::ContentUntouched);
-    f.ops.close_last_writer(node_id, false);
+    let outcome = f.open_handles.close_file(fh).1;
+    assert_eq!(outcome, CloseOutcome::ContentUntouched);
+    f.ops.close_last_writer(node_id, outcome);
     assert!(f.rows().is_empty());
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
 }
@@ -48,13 +51,18 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
     let f = folder(Vec::new());
     f.download("a.txt", "A", b"a");
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
-    f.ops.open_to_write(node_id, false).unwrap();
-    f.ops.open_to_write(node_id, false).unwrap();
+    let first = f.ops.open_to_write(node_id, false).unwrap();
+    let second = f.ops.open_to_write(node_id, false).unwrap();
     assert_eq!(f.rows().len(), 1);
-    assert_eq!(f.open_writers.remove_writer(node_id), CloseOutcome::StillOpenElsewhere);
+    let still_open = f.open_handles.close_file(first).1;
+    assert_eq!(still_open, CloseOutcome::StillOpenElsewhere);
+    // Nothing is recorded while another handle writes the file.
+    f.ops.close_last_writer(node_id, still_open);
+    assert_eq!(f.rows().len(), 1);
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
-    assert_eq!(f.open_writers.remove_writer(node_id), CloseOutcome::ContentChanged);
-    f.ops.close_last_writer(node_id, true);
+    let outcome = f.open_handles.close_file(second).1;
+    assert_eq!(outcome, CloseOutcome::ContentChanged);
+    f.ops.close_last_writer(node_id, outcome);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Update, OutboxState::Waiting, Some(Reason::Changed)));
 }

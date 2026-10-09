@@ -1,8 +1,8 @@
 //! Everything that changes the folder (`open` for writing, `create`, `mkdir`, `mknod`,
 //! `unlink`, `rmdir`, `rename`, `write`, `setattr`, `fsync`). A read-only folder refuses them
 //! all; a read-write one has each made on the recorder's thread
-//! ([`crate::fuse::write_operations`]), which answers it. A file an operation opens is put
-//! into the open files here.
+//! ([`crate::fuse::write_operations`]), which answers it. A file an operation opens is in
+//! the open handles when it answers.
 
 use std::ffi::OsStr;
 use std::os::unix::fs::FileExt;
@@ -13,7 +13,7 @@ use fuser::{Errno, FileHandle, FopenFlags, Generation, INodeNo, RenameFlags, Rep
 use konedrive_graph::pool::Class;
 use tokio::sync::oneshot;
 
-use crate::fuse::open_files::Fh;
+use crate::fuse::open_handles::Fh;
 use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::attributes::TTL;
@@ -56,7 +56,7 @@ impl KernelRequests {
             move |requests| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
                 match requests.write_operations.open_to_write(NodeId::from(ino), truncate) {
-                    Ok(opened) => reply.opened(FileHandle::from(requests.open_files.add_file(opened)), FopenFlags::empty()),
+                    Ok(fh) => reply.opened(FileHandle::from(fh), FopenFlags::empty()),
                     Err(e) => reply.error(e),
                 }
             },
@@ -91,7 +91,7 @@ impl KernelRequests {
         self.run_on_recorder(move |requests| match requests.write_operations.make(NodeId::from(parent), &name, false, true) {
             Ok((entry, opened)) => {
                 let node_id = requests.node_resolver.assign_node_id(&entry, NodeId::from(parent));
-                let fh = opened.map_or(Fh::NOT_OPENED, |opened| requests.open_files.add_file(opened));
+                let fh = opened.unwrap_or(Fh::NOT_OPENED);
                 reply.created(&TTL, &requests.attributes_of(&entry, node_id), Generation(0), FileHandle::from(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
@@ -128,8 +128,8 @@ impl KernelRequests {
     /// Bytes written through a handle that may write: into the file in the backing
     /// directory. The outbox holds the file since it was opened.
     pub(super) fn answer_write(&self, fh: FileHandle, offset: u64, data: &[u8], reply: ReplyWrite) {
-        let Some((node_id, file)) = self.open_files.find_file_to_write(Fh::from(fh)) else { return reply.error(Errno::EBADF) };
-        self.open_writers.mark_written(node_id);
+        let Some((node_id, file)) = self.open_handles.find_file_to_write(Fh::from(fh)) else { return reply.error(Errno::EBADF) };
+        self.open_handles.mark_written(node_id);
         match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
             Err(e) => reply.error(to_errno(&e)),
@@ -180,7 +180,7 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_fsync(&self, fh: FileHandle, reply: ReplyEmpty) {
-        match self.open_files.find_file_to_write(Fh::from(fh)).map(|(_, file)| file.sync_all()) {
+        match self.open_handles.find_file_to_write(Fh::from(fh)).map(|(_, file)| file.sync_all()) {
             Some(Err(e)) => reply.error(to_errno(&e)),
             _ => reply.ok(),
         }

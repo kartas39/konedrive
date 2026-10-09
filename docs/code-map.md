@@ -237,7 +237,7 @@ daemon shows OneDrive.
   ask, and the mount switches. `[tests]`
 - `open_writers.rs` — `OpenWriters`: the files programs hold open for writing, and what a
   close left (`CloseOutcome`). `[tests]`
-- `open_files.rs` — `OpenFiles`: the files (`OpenFile`) and the directories programs hold
+- `open_handles.rs` — `OpenHandles`: the files (`OpenFile`) and the directories programs hold
   open, by the file handle the kernel was given; what an open directory's entries were made
   from when it was first read; whether a OneDrive file is open for writing. `[tests]`
 - `kernel_requests.rs` — `KernelRequests`: the one implementation of the kernel's interface

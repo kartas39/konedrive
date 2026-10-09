@@ -3,7 +3,7 @@
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: what each
 //! directory holds ([`DirectoryContents`]), the disk ([`BackingDirectory`]), the node ids
-//! ([`NodeResolver`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`],
+//! ([`NodeResolver`]), what programs hold open ([`OpenHandles`]), the [`OutboxRecorder`],
 //! the [`UploadRules`] and the [`AccessMode`]. It owns no state of its own. Each operation is the same short
 //! sequence of steps:
 //!
@@ -15,8 +15,9 @@
 //!    ([`WriteOperations::record_or_undo`]);
 //! 4. the node ids, through the node resolver.
 //!
-//! An operation never touches the table of open files: one that opens a file returns it
-//! ([`OpenFile`](super::open_files::OpenFile)), and the request that asked keeps it.
+//! An operation that opens a file for writing puts it into the open handles itself, so that
+//! whether it is the file's first writer — the one the outbox is told of — is answered with
+//! the handle added, in one step; it returns the `fh`, which the request answers with.
 //!
 //! - [`make`]: a file or directory made;
 //! - [`remove`]: one removed;
@@ -36,7 +37,7 @@ use super::detections::FolderEvent;
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
 use super::node_resolver::NodeResolver;
-use super::open_writers::OpenWriters;
+use super::open_handles::OpenHandles;
 use super::outbox_recorder::OutboxRecorder;
 use super::upload_rules::UploadRules;
 
@@ -50,7 +51,7 @@ pub(super) struct WriteOperations {
     directory_contents: Arc<DirectoryContents>,
     backing_directory: Arc<BackingDirectory>,
     node_resolver: Arc<NodeResolver>,
-    open_writers: Arc<OpenWriters>,
+    open_handles: Arc<OpenHandles>,
     outbox_recorder: Arc<OutboxRecorder>,
     upload_rules: Arc<UploadRules>,
     access_mode: Arc<AccessMode>,
@@ -61,12 +62,12 @@ impl WriteOperations {
         directory_contents: Arc<DirectoryContents>,
         backing_directory: Arc<BackingDirectory>,
         node_resolver: Arc<NodeResolver>,
-        open_writers: Arc<OpenWriters>,
+        open_handles: Arc<OpenHandles>,
         outbox_recorder: Arc<OutboxRecorder>,
         upload_rules: Arc<UploadRules>,
         access_mode: Arc<AccessMode>,
     ) -> Self {
-        WriteOperations { directory_contents, backing_directory, node_resolver, open_writers, outbox_recorder, upload_rules, access_mode }
+        WriteOperations { directory_contents, backing_directory, node_resolver, open_handles, outbox_recorder, upload_rules, access_mode }
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive is ignored.

@@ -36,7 +36,7 @@
 //!   (what a change is recorded as, a function of typed events) depend on nothing but the
 //!   store's facts; the [`outbox_recorder`] records them on its own thread;
 //!   [`write_operations`] are the operations themselves, over the directory contents, the
-//!   backing directory, the node resolver, the [`open_writers`], the recorder and the rules.
+//!   backing directory, the node resolver, the [`open_handles`], the recorder and the rules.
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and fetches the ranges; [`download_states`] holds the state of each file's download and
 //!   does no I/O; [`file_downloader`] downloads a file whole, over the backing directory,
@@ -45,8 +45,8 @@
 //! - A change from OneDrive: [`cycle_step`] is the step of a cycle of the delta listing
 //!   over the backing directory; what finds the user's own in its way is moved aside by
 //!   [`conflict_copies`]; [`inotify_bridge`] brings the change to whoever watches the folder.
-//! - Who asks: [`kernel_requests`] answers the kernel, keeping what programs hold open in
-//!   [`open_files`]; [`files_interface`] answers the daemon's bus interface `Files`.
+//! - Who asks: [`kernel_requests`] answers the kernel; [`open_handles`] holds what programs
+//!   hold open, and alone says what is open for writing; [`files_interface`] answers the daemon's bus interface `Files`.
 
 mod access_mode;
 mod attributes;
@@ -63,7 +63,7 @@ mod kernel_requests;
 mod local_only_entry;
 mod mount;
 mod node_table;
-mod open_files;
+mod open_handles;
 mod unsent_changes;
 mod pins;
 mod stale_mount;
@@ -76,7 +76,6 @@ mod node_resolver;
 mod backing_directory;
 mod directory_contents;
 mod write_operations;
-mod open_writers;
 
 pub use files_interface::{FilesRefusal, FreedSpace, PathStatus};
 pub use conflict_copies::CycleConflicts;

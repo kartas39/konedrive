@@ -14,14 +14,15 @@
 //! 5. [`OutboxRecorder`]: the store's writer, the tree lock, the access mode;
 //! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
 //!    contents, the rules;
-//! 7. [`OpenWriters`], then [`WriteOperations`]: the directory contents, the backing
-//!    directory, the node resolver, the open writers, the recorder, the rules, the access mode;
+//! 7. [`OpenHandles`], which depends on no part, then [`WriteOperations`]: the directory
+//!    contents, the backing directory, the node resolver, the open handles, the recorder, the
+//!    rules, the access mode;
 //! 8. [`DownloadStates`], and [`Pins`] over the directory contents;
 //! 9. [`InotifyBridge`]: the node resolver and the directory contents — its thread is not
 //!    started yet;
 //! 10. [`FileDownloader`]: the backing directory, the directory contents, the download
 //!     states, and the way to announce a file's change, which is the bridge's;
-//! 11. [`RangeReaders`], [`OpenFiles`], [`InterruptibleReads`], which depend on no part;
+//! 11. [`RangeReaders`] and [`InterruptibleReads`], which depend on no part;
 //! 12. [`FilesInterface`] and [`KernelRequests`], each given exactly the parts it uses;
 //! 13. the session over the kernel requests, and the bridge's thread, started with the
 //!     session's notifier once the mount answers.
@@ -51,8 +52,7 @@ use super::files_interface::{FilesInterface, FilesRefusal, FreedSpace, PathStatu
 use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::kernel_requests::{InterruptibleReads, KernelRequests};
 use super::node_resolver::NodeResolver;
-use super::open_files::OpenFiles;
-use super::open_writers::OpenWriters;
+use super::open_handles::OpenHandles;
 use super::outbox_recorder::{OutboxRecorder, OutboxWaker};
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
@@ -155,12 +155,12 @@ impl Mount {
             let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock, Arc::clone(&access_mode))?);
             let upload_rules = Arc::new(UploadRules::new(write_setup.ignore));
             let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), write_setup.machine_name);
-            let open_writers = Arc::new(OpenWriters::default());
+            let open_handles = Arc::new(OpenHandles::default());
             let write_operations = Arc::new(WriteOperations::new(
                 Arc::clone(&directory_contents),
                 Arc::clone(&backing_directory),
                 Arc::clone(&node_resolver),
-                Arc::clone(&open_writers),
+                Arc::clone(&open_handles),
                 Arc::clone(&outbox_recorder),
                 upload_rules,
                 Arc::clone(&access_mode),
@@ -184,14 +184,13 @@ impl Mount {
                 runtime: runtime.clone(),
             });
             let range_readers = Arc::new(RangeReaders::new(pool, source, runtime.clone()));
-            let open_files = Arc::new(OpenFiles::default());
             let interruptible_reads = Arc::new(InterruptibleReads::default());
             let files_interface = FilesInterface {
                 folder: folder.clone(),
                 directory_contents: Arc::clone(&directory_contents),
                 download_states: Arc::clone(&download_states),
                 file_downloader: Arc::clone(&file_downloader),
-                open_files: Arc::clone(&open_files),
+                open_handles: Arc::clone(&open_handles),
                 pins: Arc::clone(&pins),
                 inotify_bridge: Arc::clone(&inotify_bridge),
                 report,
@@ -202,8 +201,7 @@ impl Mount {
                 backing_directory: Arc::clone(&backing_directory),
                 directory_contents: Arc::clone(&directory_contents),
                 node_resolver,
-                open_files,
-                open_writers,
+                open_handles,
                 outbox_recorder: Arc::clone(&outbox_recorder),
                 write_operations: Arc::clone(&write_operations),
                 download_states: Arc::clone(&download_states),
