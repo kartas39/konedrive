@@ -19,14 +19,14 @@ use super::{create_or_mkdir, rebase, LocalObject, OutboxBatch, FolderPlace};
 /// The local object `object` stood at `from`, where an item comes, and was renamed to `to`
 /// beside it. `uploaded`: the copy's name is one that is uploaded.
 #[derive(Debug)]
-pub(in crate::fuse) struct KeptCopy {
+pub(in crate::fuse) struct EntryKeptAside {
     pub(in crate::fuse) object: LocalObject,
     pub(in crate::fuse) from: PathBuf,
     pub(in crate::fuse) to: FolderPlace,
     pub(in crate::fuse) uploaded: bool,
 }
 
-impl KeptCopy {
+impl EntryKeptAside {
     /// The copy is created, or made, from its new place; the rows of what is below a
     /// directory follow it there.
     pub(in crate::fuse) fn detect(self, now: i64) -> OutboxBatch {

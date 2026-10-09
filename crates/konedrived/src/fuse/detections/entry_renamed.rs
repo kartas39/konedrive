@@ -15,11 +15,11 @@ use super::{FolderEvent, LocalEntry, LocalObject, OutboxBatch, FolderPlace, Stor
 
 /// A rename that was made in the folder.
 #[derive(Debug)]
-pub(in crate::fuse) enum Renamed {
+pub(in crate::fuse) enum EntryRenamed {
     /// A local file was renamed over the file of the item `over`, to the place `to`: the
     /// file is that item's new content, and what the outbox held of the file itself goes —
     /// it is never sent under its own name. `open`: a program still writes it.
-    SavedOver { file: LocalObject, open: bool, over: String, to: FolderPlace },
+    SavedOverOneDriveFile { file: LocalObject, open: bool, over: String, to: FolderPlace },
     /// Anything else: `entry` moved from `from` to `to`, where `displaced` stood.
     Moved { entry: MovedEntry, from: PathBuf, to: FolderPlace, displaced: Option<DisplacedEntry> },
 }
@@ -29,54 +29,54 @@ pub(in crate::fuse) enum Renamed {
 pub(in crate::fuse) enum MovedEntry {
     /// An item, a folder when `dir`: moved in OneDrive. `object` is what the backing
     /// directory holds of it, now at the new place: its downloaded copy, or its directory.
-    Item { id: String, dir: bool, object: Option<FileHandle> },
+    InOneDrive { id: String, dir: bool, object: Option<FileHandle> },
     /// A local file. `uploaded`: the new place is one things are uploaded from — else the
     /// file stays on this computer from now on. `open`: a program holds it open for writing.
-    LocalFile { file: LocalObject, open: bool, uploaded: bool },
+    LocalOnlyFile { file: LocalObject, open: bool, uploaded: bool },
     /// A local directory. `uploaded` is what of it is uploaded from the new place: itself
     /// first, then all it holds. Nothing, when it stays on this computer from now on.
-    LocalDir { handle: FileHandle, uploaded: Vec<LocalEntry> },
+    LocalOnlyDirectory { handle: FileHandle, uploaded: Vec<LocalEntry> },
 }
 
 /// What stood at the new place, and went.
 #[derive(Debug)]
 pub(in crate::fuse) enum DisplacedEntry {
     /// An item: removed from OneDrive.
-    Item(String),
+    InOneDrive(String),
     /// A local file, or an empty local directory.
-    LocalObject(FileHandle),
+    LocalOnly(FileHandle),
 }
 
-impl FolderEvent for Renamed {
+impl FolderEvent for EntryRenamed {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         match self {
-            Renamed::SavedOver { file, open, over, to } => save_over(facts, &file, open, &over, &to, now),
-            Renamed::Moved { entry, from, to, displaced } => {
+            EntryRenamed::SavedOverOneDriveFile { file, open, over, to } => save_over(facts, &file, open, &over, &to, now),
+            EntryRenamed::Moved { entry, from, to, displaced } => {
                 let at = to.rel();
                 // What stood at the new place first: it frees the name.
                 let mut batch = OutboxBatch::of(match &displaced {
-                    Some(DisplacedEntry::Item(id)) => delete_item(facts, id, &at)?,
-                    Some(DisplacedEntry::LocalObject(handle)) => forget_object(facts, handle, &at)?,
+                    Some(DisplacedEntry::InOneDrive(id)) => delete_item(facts, id, &at)?,
+                    Some(DisplacedEntry::LocalOnly(handle)) => forget_object(facts, handle, &at)?,
                     None => Vec::new(),
                 });
                 let dir = match entry {
-                    MovedEntry::Item { id, dir, object } => {
+                    MovedEntry::InOneDrive { id, dir, object } => {
                         batch.detections.extend(move_base_item(facts, &id, object, &to)?);
                         dir
                     }
-                    MovedEntry::LocalFile { file, open, uploaded: true } => {
+                    MovedEntry::LocalOnlyFile { file, open, uploaded: true } => {
                         batch.detections.push(upload_from(facts, &file, open, &to, now)?);
                         false
                     }
-                    MovedEntry::LocalFile { file, uploaded: false, .. } => {
+                    MovedEntry::LocalOnlyFile { file, uploaded: false, .. } => {
                         keep_local(facts, &file.handle, &from, &at, &mut batch)?;
                         false
                     }
-                    MovedEntry::LocalDir { handle, uploaded } if uploaded.is_empty() => {
+                    MovedEntry::LocalOnlyDirectory { handle, uploaded } if uploaded.is_empty() => {
                         keep_local(facts, &handle, &from, &at, &mut batch)?;
                         true
                     }
-                    MovedEntry::LocalDir { uploaded, .. } => {
+                    MovedEntry::LocalOnlyDirectory { uploaded, .. } => {
                         batch.detections.extend(create_entries(&uploaded, now));
                         true
                     }

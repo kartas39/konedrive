@@ -9,18 +9,18 @@ use super::{delete_item, forget_object, FolderEvent, OutboxBatch, StoreFacts};
 
 /// What a program removed, and from where.
 #[derive(Debug)]
-pub(in crate::fuse) enum Removed {
+pub(in crate::fuse) enum EntryRemoved {
     /// An item: removed from OneDrive by the outbox.
-    Item { id: String, rel: PathBuf },
+    InOneDrive { id: String, rel: PathBuf },
     /// A local object: what the outbox held of it goes.
-    LocalObject { handle: FileHandle, rel: PathBuf },
+    LocalOnly { handle: FileHandle, rel: PathBuf },
 }
 
-impl FolderEvent for Removed {
+impl FolderEvent for EntryRemoved {
     fn detect(self, facts: &impl StoreFacts, _now: i64) -> Result<OutboxBatch, TreeError> {
         Ok(OutboxBatch::of(match self {
-            Removed::Item { id, rel } => delete_item(facts, &id, &rel)?,
-            Removed::LocalObject { handle, rel } => forget_object(facts, &handle, &rel)?,
+            EntryRemoved::InOneDrive { id, rel } => delete_item(facts, &id, &rel)?,
+            EntryRemoved::LocalOnly { handle, rel } => forget_object(facts, &handle, &rel)?,
         }))
     }
 }

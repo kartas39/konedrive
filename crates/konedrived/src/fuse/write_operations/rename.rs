@@ -1,6 +1,6 @@
 //! A file or a directory a program renames or moves inside the folder, in four steps: the
 //! check gives a [`RenamePlan`]; the backing directory is renamed ([`BackingDirectoryMove`]); the
-//! rename is recorded as a [`Renamed`] event; the node takes its new place.
+//! rename is recorded as a [`EntryRenamed`] event; the node takes its new place.
 //!
 //! An item stands at its new place at once, and is moved in OneDrive by the outbox. A local
 //! object is uploaded from its new place, or no longer uploaded when that place stays on this
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use fuser::Errno;
 
 use super::WriteOperations;
-use crate::fuse::detections::{DisplacedEntry, MovedEntry, Renamed};
+use crate::fuse::detections::{DisplacedEntry, MovedEntry, EntryRenamed};
 use crate::fuse::local_only_entries::{collect_local_entries, folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry};
@@ -127,27 +127,27 @@ impl WriteOperations {
     }
 
     /// What the rename is recorded as.
-    fn renamed(&self, plan: &RenamePlan, backing: BackingDirectoryMove) -> Renamed {
+    fn renamed(&self, plan: &RenamePlan, backing: BackingDirectoryMove) -> EntryRenamed {
         let to = folder_place(&plan.to_dir, &plan.to_name);
         if let (Some(over), Entry::Local(local)) = (plan.saved_over(), &plan.source) {
-            return Renamed::SavedOver { file: local_object(&local.object), open: plan.open, over: over.to_owned(), to };
+            return EntryRenamed::SavedOverOneDriveFile { file: local_object(&local.object), open: plan.open, over: over.to_owned(), to };
         }
         let entry = match &plan.source {
             Entry::Item(row) => {
                 let object = (backing == BackingDirectoryMove::Moved).then(|| self.under.object(&plan.to())).flatten();
-                MovedEntry::Item { id: row.id.clone(), dir: plan.source.is_dir(), object: object.map(|o| o.handle) }
+                MovedEntry::InOneDrive { id: row.id.clone(), dir: plan.source.is_dir(), object: object.map(|o| o.handle) }
             }
             Entry::Local(local) if local.object.meta.is_dir() => {
                 let uploaded = if plan.uploaded { collect_local_entries(&self.under, &self.rules, &plan.to_dir, &plan.to_name) } else { Vec::new() };
-                MovedEntry::LocalDir { handle: local.object.handle.clone(), uploaded }
+                MovedEntry::LocalOnlyDirectory { handle: local.object.handle.clone(), uploaded }
             }
-            Entry::Local(local) => MovedEntry::LocalFile { file: local_object(&local.object), open: plan.open, uploaded: plan.uploaded },
+            Entry::Local(local) => MovedEntry::LocalOnlyFile { file: local_object(&local.object), open: plan.open, uploaded: plan.uploaded },
         };
         let displaced = plan.target.as_ref().map(|target| match target {
-            Entry::Item(row) => DisplacedEntry::Item(row.id.clone()),
-            Entry::Local(local) => DisplacedEntry::LocalObject(local.object.handle.clone()),
+            Entry::Item(row) => DisplacedEntry::InOneDrive(row.id.clone()),
+            Entry::Local(local) => DisplacedEntry::LocalOnly(local.object.handle.clone()),
         });
-        Renamed::Moved { entry, from: plan.from.clone(), to, displaced }
+        EntryRenamed::Moved { entry, from: plan.from.clone(), to, displaced }
     }
 
     /// The node takes its new place. A file saved over an item's file is that item's from

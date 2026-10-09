@@ -13,9 +13,9 @@ use super::{create_entries, FolderEvent, LocalEntry, OutboxBatch, StoreFacts};
 
 /// The local objects the folder holds, already without what stays on this computer.
 #[derive(Debug)]
-pub(in crate::fuse) struct UnrecordedObjects(pub(in crate::fuse) Vec<LocalEntry>);
+pub(in crate::fuse) struct UnrecordedEntries(pub(in crate::fuse) Vec<LocalEntry>);
 
-impl FolderEvent for UnrecordedObjects {
+impl FolderEvent for UnrecordedEntries {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         // An object whose rows cannot be read is left for the next walk.
         let unknown = |entry: &LocalEntry| facts.outbox_rows_of(&entry.object.handle).is_ok_and(|rows| rows.is_empty());

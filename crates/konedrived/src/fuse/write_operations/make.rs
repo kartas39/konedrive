@@ -8,7 +8,7 @@ use konedrive_tree::Row;
 
 use super::{OpenedFile, WriteOperations};
 use crate::fuse::attributes;
-use crate::fuse::detections::Made;
+use crate::fuse::detections::EntryCreated;
 use crate::fuse::local_only_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry, Local};
@@ -43,10 +43,10 @@ impl WriteOperations {
         let event = match &removed {
             Some(base) => {
                 self.under.mark_copy(&rel, &base.id).map_err(|e| errno(&e))?;
-                Some(Made::OverRemovedItem { place, file: local, open, base: base.clone() })
+                Some(EntryCreated::ReplacingRemovedFile { place, file: local, open, base: base.clone() })
             }
             None if self.stays_local(&above, name) => None,
-            None => Some(Made::New { place, object: local, open }),
+            None => Some(EntryCreated::Fresh { place, object: local, open }),
         };
         if let Some(event) = event {
             self.record_or_undo(event, format_args!("a new {}", rel.display()), unmake)?;

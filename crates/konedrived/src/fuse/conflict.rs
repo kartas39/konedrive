@@ -1,6 +1,6 @@
 //! Where a change from OneDrive meets something the user made here: what is done in the
 //! backing directory. What that is recorded as is decided in [`super::detections`]
-//! ([`KeptCopy`], [`is_folder_of`]).
+//! ([`EntryKeptAside`], [`is_folder_of`]).
 //!
 //! An item that comes to a name where a local object stands does not hide it: the object is
 //! kept beside it under a copy's name, `name-<machine>.ext`, and is uploaded from there. A
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use konedrive_tree::outbox::{Detection, OutboxOp};
 
-use super::detections::{create_entries, is_folder_of, KeptCopy};
+use super::detections::{create_entries, is_folder_of, EntryKeptAside};
 use super::local_only_entries::{collect_local_entries, folder_place, local_object};
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
@@ -58,7 +58,7 @@ impl Meeting<'_> {
                 return;
             }
             let uploaded = !self.rules.stays_local(&dir.rel, &copy, |at| self.under.carried(at).is_some());
-            let kept = KeptCopy { object: local_object(&object), from: rel.to_path_buf(), to: folder_place(&dir, &copy), uploaded }.detect(self.now);
+            let kept = EntryKeptAside { object: local_object(&object), from: rel.to_path_buf(), to: folder_place(&dir, &copy), uploaded }.detect(self.now);
             met.ops.extend(kept.ops);
             met.detections.extend(kept.detections);
             met.copied.push((rel.to_path_buf(), to));

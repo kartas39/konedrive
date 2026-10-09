@@ -6,23 +6,23 @@ use super::{create_or_mkdir, update_item, wait_for_writer, FolderEvent, LocalObj
 
 /// What a program made at a place where nothing stood.
 #[derive(Debug)]
-pub(in crate::fuse) enum Made {
+pub(in crate::fuse) enum EntryCreated {
     /// A new file or directory, which OneDrive has no item for: created or made there.
     /// `open`: a file the program holds open for writing.
-    New { place: FolderPlace, object: LocalObject, open: bool },
+    Fresh { place: FolderPlace, object: LocalObject, open: bool },
     /// A file made where the user just removed the file of the item `base`, whose removal
     /// is not sent yet: it is that item's new content. Programs replace a file that way, and
     /// the item keeps its history and its links.
-    OverRemovedItem { place: FolderPlace, file: LocalObject, open: bool, base: Row },
+    ReplacingRemovedFile { place: FolderPlace, file: LocalObject, open: bool, base: Row },
 }
 
-impl FolderEvent for Made {
+impl FolderEvent for EntryCreated {
     fn detect(self, _facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         Ok(OutboxBatch::of([match self {
-            Made::New { place, object, open } => create_or_mkdir(&place, &object, open, now),
+            EntryCreated::Fresh { place, object, open } => create_or_mkdir(&place, &object, open, now),
             // Not held back a moment when it is not open: it merges into the removal's row,
             // which was ready.
-            Made::OverRemovedItem { place, file, open, base } => {
+            EntryCreated::ReplacingRemovedFile { place, file, open, base } => {
                 let mut update = update_item(&place, &base, &file);
                 if open {
                     wait_for_writer(&mut update, now);

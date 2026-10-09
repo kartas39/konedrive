@@ -7,7 +7,7 @@ use konedrive_tree::{Store, TreeStore};
 
 use super::OutboxRecorder;
 use crate::fuse::detections::tests::{file, in_root};
-use crate::fuse::detections::Made;
+use crate::fuse::detections::EntryCreated;
 
 fn recorder(writable: bool) -> (Store, OutboxRecorder) {
     let store = Store::new(TreeStore::in_memory().unwrap());
@@ -15,8 +15,8 @@ fn recorder(writable: bool) -> (Store, OutboxRecorder) {
     (store, recorder)
 }
 
-fn made() -> Made {
-    Made::New { place: in_root("new.txt"), object: file(1, 3), open: false }
+fn made() -> EntryCreated {
+    EntryCreated::Fresh { place: in_root("new.txt"), object: file(1, 3), open: false }
 }
 
 #[test]

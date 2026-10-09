@@ -1,9 +1,9 @@
 //! What the folder holds of the user's own that the outbox has no row for, found again when
-//! the folder starts taking changes ([`UnrecordedObjects`]): one walk of the backing
+//! the folder starts taking changes ([`UnrecordedEntries`]): one walk of the backing
 //! directory, recorded in one go.
 
 use super::WriteOperations;
-use crate::fuse::detections::UnrecordedObjects;
+use crate::fuse::detections::UnrecordedEntries;
 use crate::fuse::local_only_entries::collect_local_entries;
 use crate::fuse::directory_contents::Directory;
 
@@ -28,7 +28,7 @@ impl WriteOperations {
         if found.is_empty() {
             return;
         }
-        match self.recorder.record(UnrecordedObjects(found)) {
+        match self.recorder.record(UnrecordedEntries(found)) {
             Ok(recorded) if !recorded.applied.queued.is_empty() => {
                 tracing::info!("{} file(s) and folder(s) made here were not waiting to be uploaded; they are now", recorded.applied.queued.len());
             }

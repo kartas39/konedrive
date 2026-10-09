@@ -10,14 +10,14 @@
 //!
 //! The events, each in a module of its own:
 //!
-//! - [`made`]: a file or directory a program made ([`Made`]);
-//! - [`removed`]: one it removed ([`Removed`]);
-//! - [`renamed`]: one it renamed or moved, and what that displaced ([`Renamed`]);
-//! - [`written`]: a file it opened for writing, closed or cut ([`Written`]);
-//! - [`unrecorded_objects`]: the local objects found in the folder that the outbox has no row for
-//!   ([`UnrecordedObjects`]);
-//! - [`kept_copy`]: a local object that a change from OneDrive met, and is kept
-//!   ([`KeptCopy`]).
+//! - [`entry_created`]: a file or directory a program made ([`EntryCreated`]);
+//! - [`entry_removed`]: one it removed ([`EntryRemoved`]);
+//! - [`entry_renamed`]: one it renamed or moved, and what that displaced ([`EntryRenamed`]);
+//! - [`file_written`]: a file it opened for writing, closed or cut ([`FileWritten`]);
+//! - [`unrecorded_entries`]: the local objects found in the folder that the outbox has no row for
+//!   ([`UnrecordedEntries`]);
+//! - [`entry_kept_aside`]: a local object that a change from OneDrive met, and is kept
+//!   ([`EntryKeptAside`]).
 //!
 //! Here is what they share: a [`FolderPlace`]; a file or directory OneDrive has no item for yet, as
 //! far as a row goes ([`LocalObject`]), and one at its place ([`LocalEntry`]); the detections
@@ -35,19 +35,19 @@ use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
 use crate::local::names;
 
-mod kept_copy;
-mod made;
-mod removed;
-mod renamed;
-mod unrecorded_objects;
-mod written;
+mod entry_kept_aside;
+mod entry_created;
+mod entry_removed;
+mod entry_renamed;
+mod unrecorded_entries;
+mod file_written;
 
-pub(super) use kept_copy::KeptCopy;
-pub(super) use made::Made;
-pub(super) use removed::Removed;
-pub(super) use renamed::{DisplacedEntry, MovedEntry, Renamed};
-pub(super) use unrecorded_objects::UnrecordedObjects;
-pub(super) use written::{ItemWrite, LocalWrite, Written};
+pub(super) use entry_kept_aside::EntryKeptAside;
+pub(super) use entry_created::EntryCreated;
+pub(super) use entry_removed::EntryRemoved;
+pub(super) use entry_renamed::{DisplacedEntry, MovedEntry, EntryRenamed};
+pub(super) use unrecorded_entries::UnrecordedEntries;
+pub(super) use file_written::{OneDriveFileWrite, LocalOnlyFileWrite, FileWritten};
 
 /// What one change puts into the outbox: its detections, in the order they are recorded, and
 /// the operations on rows that go with them.

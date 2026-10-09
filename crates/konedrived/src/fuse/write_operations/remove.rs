@@ -4,7 +4,7 @@
 use fuser::Errno;
 
 use super::WriteOperations;
-use crate::fuse::detections::Removed;
+use crate::fuse::detections::EntryRemoved;
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry};
 
@@ -26,8 +26,8 @@ impl WriteOperations {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry {
-            Entry::Item(row) => Removed::Item { id: row.id.clone(), rel: rel.clone() },
-            Entry::Local(local) => Removed::LocalObject { handle: local.object.handle.clone(), rel: rel.clone() },
+            Entry::Item(row) => EntryRemoved::InOneDrive { id: row.id.clone(), rel: rel.clone() },
+            Entry::Local(local) => EntryRemoved::LocalOnly { handle: local.object.handle.clone(), rel: rel.clone() },
         };
         self.record_or_undo(event, format_args!("the removal of {}", rel.display()), || {})?;
         match &entry {

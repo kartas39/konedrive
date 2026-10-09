@@ -9,16 +9,16 @@ use super::{create_or_mkdir, move_item, update_item, wait_for_quiet, wait_for_wr
 
 /// Whose file was written, where it stands, and what was done to it.
 #[derive(Debug)]
-pub(in crate::fuse) enum Written {
+pub(in crate::fuse) enum FileWritten {
     /// An item's file, in its downloaded copy.
-    Item { id: String, place: FolderPlace, write: ItemWrite },
+    InOneDrive { id: String, place: FolderPlace, write: OneDriveFileWrite },
     /// A file OneDrive has no item for yet.
-    LocalFile { place: FolderPlace, file: LocalObject, write: LocalWrite },
+    LocalOnly { place: FolderPlace, file: LocalObject, write: LocalOnlyFileWrite },
 }
 
 /// What was done to an item's file; with the copy as it is now, where its content counts.
 #[derive(Debug)]
-pub(in crate::fuse) enum ItemWrite {
+pub(in crate::fuse) enum OneDriveFileWrite {
     /// Its first writer opened it: its content is the user's own from here on, and waits.
     Opened(LocalObject),
     /// Its last writer closed it, and its content was changed: due a moment later.
@@ -33,7 +33,7 @@ pub(in crate::fuse) enum ItemWrite {
 /// What was done to a local file. One closed with nothing written is sent all the same: it
 /// was never sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::fuse) enum LocalWrite {
+pub(in crate::fuse) enum LocalOnlyFileWrite {
     /// Its first writer opened it: it waits for the last.
     Opened,
     /// Its last writer closed it: due a moment later.
@@ -42,24 +42,24 @@ pub(in crate::fuse) enum LocalWrite {
     Cut,
 }
 
-impl FolderEvent for Written {
+impl FolderEvent for FileWritten {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         match self {
-            Written::LocalFile { place, file, write } => Ok(OutboxBatch::of([create_or_mkdir(&place, &file, write == LocalWrite::Opened, now)])),
-            Written::Item { id, place, write } => {
+            FileWritten::LocalOnly { place, file, write } => Ok(OutboxBatch::of([create_or_mkdir(&place, &file, write == LocalOnlyFileWrite::Opened, now)])),
+            FileWritten::InOneDrive { id, place, write } => {
                 let Some(base) = facts.base_item(&id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {
-                    ItemWrite::Opened(copy) => {
+                    OneDriveFileWrite::Opened(copy) => {
                         let mut update = update_item(&place, &base, &copy);
                         wait_for_writer(&mut update, now);
                         update
                     }
-                    ItemWrite::ClosedChanged(copy) | ItemWrite::Cut(copy) => {
+                    OneDriveFileWrite::ClosedChanged(copy) | OneDriveFileWrite::Cut(copy) => {
                         let mut update = update_item(&place, &base, &copy);
                         wait_for_quiet(&mut update, now);
                         update
                     }
-                    ItemWrite::ClosedUntouched => {
+                    OneDriveFileWrite::ClosedUntouched => {
                         let mut here = move_item(&place, &base, None);
                         here.same_content = true;
                         here

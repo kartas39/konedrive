@@ -11,7 +11,7 @@ use fuser::Errno;
 use konedrive_tree::Row;
 
 use super::{OpenedFile, WriteOperations};
-use crate::fuse::detections::{ItemWrite, LocalWrite, Written};
+use crate::fuse::detections::{OneDriveFileWrite, LocalOnlyFileWrite, FileWritten};
 use crate::fuse::local_only_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::Entry;
@@ -39,7 +39,7 @@ impl WriteOperations {
         // the first writer on the outbox holds it in any case.
         let own = truncate || entry.id().is_some_and(|id| self.view.unsent_changes().changed.contains(id));
         if self.writers.opened(ino, own) {
-            if let Err(e) = self.record_content(ino, LocalWrite::Opened) {
+            if let Err(e) = self.record_content(ino, LocalOnlyFileWrite::Opened) {
                 self.writers.closed(ino);
                 return Err(e);
             }
@@ -54,7 +54,7 @@ impl WriteOperations {
             Some((Entry::Item(row), _)) if !changed => row,
             // A local file is sent all the same: it was never sent.
             _ => {
-                let _ = self.record_content(ino, LocalWrite::Closed);
+                let _ = self.record_content(ino, LocalOnlyFileWrite::Closed);
                 return;
             }
         };
@@ -64,7 +64,7 @@ impl WriteOperations {
             return;
         }
         let Some((_, above)) = self.resolve.above(ino) else { return };
-        let event = Written::Item { id: untouched.id.clone(), place: folder_place(&above, &untouched.name), write: ItemWrite::ClosedUntouched };
+        let event = FileWritten::InOneDrive { id: untouched.id.clone(), place: folder_place(&above, &untouched.name), write: OneDriveFileWrite::ClosedUntouched };
         if let Err(e) = self.recorder.record(event) {
             tracing::warn!("a file closed unchanged could not be let go of: {e}");
         }
@@ -84,7 +84,7 @@ impl WriteOperations {
         if self.writers.open(ino) {
             self.writers.written(ino);
         } else {
-            self.record_content(ino, LocalWrite::Cut)?;
+            self.record_content(ino, LocalOnlyFileWrite::Cut)?;
         }
         file.set_len(size).map_err(|e| errno(&e))
     }
@@ -107,21 +107,21 @@ impl WriteOperations {
 
     /// Records that the content of node `ino` is the user's own now, by `write`: still being
     /// written, closed, or cut.
-    fn record_content(&self, ino: u64, write: LocalWrite) -> Result<(), Errno> {
+    fn record_content(&self, ino: u64, write: LocalOnlyFileWrite) -> Result<(), Errno> {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, above))) = (self.resolve.node(ino), self.resolve.above(ino)) else { return Ok(()) };
         let Some(object) = self.under.object(&rel) else { return Ok(()) };
         let (place, file) = (folder_place(&above, entry.name()), local_object(&object));
         let event = match entry {
             Entry::Local(_) if self.stays_local(&above, &place.name) => return Ok(()),
-            Entry::Local(_) => Written::LocalFile { place, file, write },
+            Entry::Local(_) => FileWritten::LocalOnly { place, file, write },
             Entry::Item(row) => {
                 let write = match write {
-                    LocalWrite::Opened => ItemWrite::Opened(file),
-                    LocalWrite::Closed => ItemWrite::ClosedChanged(file),
-                    LocalWrite::Cut => ItemWrite::Cut(file),
+                    LocalOnlyFileWrite::Opened => OneDriveFileWrite::Opened(file),
+                    LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(file),
+                    LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(file),
                 };
-                Written::Item { id: row.id, place, write }
+                FileWritten::InOneDrive { id: row.id, place, write }
             }
         };
         self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {})
