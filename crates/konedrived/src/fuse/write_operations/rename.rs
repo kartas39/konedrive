@@ -1,5 +1,5 @@
 //! A file or a directory a program renames or moves inside the folder, in four steps: the
-//! check gives a [`RenamePlan`]; the backing directory is renamed ([`BackingRename`]); the
+//! check gives a [`RenamePlan`]; the backing directory is renamed ([`BackingDirectoryMove`]); the
 //! rename is recorded as a [`Renamed`] event; the node takes its new place.
 //!
 //! An item stands at its new place at once, and is moved in OneDrive by the outbox. A local
@@ -50,11 +50,11 @@ impl RenamePlan {
 
 /// What the backing directory held at the old place, which was renamed with the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BackingRename {
+enum BackingDirectoryMove {
     /// Something stood there, and is at the new place now.
-    Renamed,
+    Moved,
     /// Nothing: an item's file that is not downloaded, a folder no download made yet.
-    Absent,
+    NothingThere,
 }
 
 impl WriteOperations {
@@ -66,7 +66,7 @@ impl WriteOperations {
         let event = self.renamed(&plan, backing);
         let to = plan.to();
         let undo = || {
-            if backing == BackingRename::Renamed {
+            if backing == BackingDirectoryMove::Moved {
                 let _ = self.under.rename(&to, &plan.from);
             }
         };
@@ -111,30 +111,30 @@ impl WriteOperations {
 
     /// The backing directory first: whatever the item or the local object has there moves,
     /// and what stood at the new place goes.
-    fn rename_backing(&self, plan: &RenamePlan) -> Result<BackingRename, Errno> {
+    fn rename_backing(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
         let to = plan.to();
         self.view.backing(&plan.to_dir.rel).map_err(|e| errno(&e))?;
         let displaced = self.under.stat(&to);
-        let backing = if self.under.stat(&plan.from).is_some() { BackingRename::Renamed } else { BackingRename::Absent };
+        let backing = if self.under.stat(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
         // A file that moves over a file replaces it in the rename itself.
-        if let Some(meta) = displaced.filter(|m| m.is_dir() || backing == BackingRename::Absent) {
+        if let Some(meta) = displaced.filter(|m| m.is_dir() || backing == BackingDirectoryMove::NothingThere) {
             let _ = if meta.is_dir() { self.under.remove_dir(&to) } else { self.under.remove_file(&to) };
         }
-        if backing == BackingRename::Renamed {
+        if backing == BackingDirectoryMove::Moved {
             self.under.rename(&plan.from, &to).map_err(|e| errno(&e))?;
         }
         Ok(backing)
     }
 
     /// What the rename is recorded as.
-    fn renamed(&self, plan: &RenamePlan, backing: BackingRename) -> Renamed {
+    fn renamed(&self, plan: &RenamePlan, backing: BackingDirectoryMove) -> Renamed {
         let to = folder_place(&plan.to_dir, &plan.to_name);
         if let (Some(over), Entry::Local(local)) = (plan.saved_over(), &plan.source) {
             return Renamed::SavedOver { file: local_object(&local.object), open: plan.open, over: over.to_owned(), to };
         }
         let entry = match &plan.source {
             Entry::Item(row) => {
-                let object = (backing == BackingRename::Renamed).then(|| self.under.object(&plan.to())).flatten();
+                let object = (backing == BackingDirectoryMove::Moved).then(|| self.under.object(&plan.to())).flatten();
                 MovedEntry::Item { id: row.id.clone(), dir: plan.source.is_dir(), object: object.map(|o| o.handle) }
             }
             Entry::Local(local) if local.object.meta.is_dir() => {

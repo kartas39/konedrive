@@ -8,11 +8,11 @@ use std::sync::Mutex;
 
 /// The files open for writing, by node.
 #[derive(Default)]
-pub(super) struct OpenWriters(Mutex<HashMap<u64, Written>>);
+pub(super) struct OpenWriters(Mutex<HashMap<u64, FileWriters>>);
 
 /// One file open for writing.
 #[derive(Debug, Default, Clone, Copy)]
-pub(super) struct Written {
+pub(super) struct FileWriters {
     /// The handles that may write it.
     pub(super) open: u32,
     /// Its content was changed through one of them, or was the user's own before.
@@ -57,7 +57,7 @@ impl OpenWriters {
             return AfterClose::StillOpenElsewhere;
         }
         match writers.remove(&ino) {
-            Some(Written { changed: true, .. }) => AfterClose::ContentChanged,
+            Some(FileWriters { changed: true, .. }) => AfterClose::ContentChanged,
             _ => AfterClose::ContentUntouched,
         }
     }

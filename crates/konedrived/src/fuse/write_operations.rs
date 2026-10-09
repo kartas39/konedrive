@@ -41,7 +41,7 @@ use super::open_writers::OpenWriters;
 mod make;
 mod remove;
 mod rename;
-mod unrecorded_objects;
+mod unrecorded_entries;
 mod write;
 
 pub(super) struct WriteOperations {
