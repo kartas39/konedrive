@@ -31,7 +31,8 @@
 //!   mount holds, each entry with its sync state) is over those two; [`node_table`] holds the
 //!   node ids given to the kernel, and [`node_resolver`] is over the directory contents and
 //!   owns the table; [`access_mode_switch`] holds whether programs may change the folder,
-//!   and [`attributes`] is a function of an entry and the access mode.
+//!   and [`attributes`] is a function of an entry and the access mode; the values these
+//!   pass around are a [`directory_reference`], an [`entry_place`] and a [`local_only_entry`].
 //! - A change a program makes: [`upload_rules`] (what is uploaded at all) and [`detections`]
 //!   (what a change is recorded as, a function of typed events) depend on nothing but the
 //!   store's facts; the [`outbox_recorder`] records them on its own thread;
@@ -40,13 +41,16 @@
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and fetches the ranges; [`download_states`] holds the state of each file's download and
 //!   does no I/O; [`file_downloader`] downloads a file whole, over the backing directory,
-//!   the directory contents and the download states; [`pins`] holds the pins, over the
-//!   directory contents.
+//!   the directory contents and the download states; [`state_attribute`] is what is shown of
+//!   a file; [`pins`] holds the pins, over the directory contents.
 //! - A change from OneDrive: [`cycle_step`] is the step of a cycle of the delta listing
 //!   over the backing directory; what finds the user's own in its way is moved aside by
 //!   [`conflict_copies`]; [`inotify_bridge`] brings the change to whoever watches the folder.
 //! - Who asks: [`kernel_requests`] answers the kernel; [`open_handles`] holds what programs
-//!   hold open, and alone says what is open for writing; [`files_interface`] answers the daemon's bus interface `Files`.
+//!   hold open, and alone says what is open for writing; [`files_interface`] answers the
+//!   daemon's bus interface `Files`.
+//! - After the daemon's end: [`stale_mount`] takes off the mount a daemon that died left, and
+//!   [`tidy_step`] leaves each folder a plain directory without its write bits.
 
 mod access_mode_switch;
 mod attributes;
