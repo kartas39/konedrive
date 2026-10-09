@@ -1,10 +1,18 @@
 #!/bin/bash
 # Runs inside the virtme-ng guest as root: sets up an ext4 disk and runs the suite's tests with
-# the daemon and every program as uid 1000. Usage: guest.sh <bin-dir> [service cli]
+# the daemon and every program as uid 1000. Usage: guest.sh <bin-dir> [<group>…]
+#
+# The groups: `service`, the daemon's service command by command, whose lines are read by a
+# person; `file_writes` (file_writes.sh), scenarios with checks; `cli`, `konedrivectl`'s test
+# of a mounted folder. ONLY, when set, names the scenarios to run of the groups asked for.
 set -u
 bin=$1
 shift
-tests=${*:-service cli}
+tests=${*:-service file_writes cli}
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/scenario_checks.sh"
+. "$here/scenario_folder.sh"
+. "$here/file_writes.sh"
 
 modprobe loop
 modprobe fuse 2>/dev/null
@@ -44,7 +52,7 @@ service() {
     echo "hello, changed in the cloud" > $src/a2; echo "arrived later" > $src/new
     chown -R 1000:1000 $f $st $src
     mkfifo $st/in; chown 1000:1000 $st/in
-    $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
+    $U env RUST_LOG=info "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2>> $W/logs/svc.err &
     svc=$!
     exec 8> $st/in
     ask() {
@@ -145,7 +153,7 @@ service() {
     # that is not downloaded has its name.
     $U sh -c "chmod u+w $f/docs && echo 'the user own file' > $f/docs/big.bin"
     : > $W/logs/svc.out
-    $U "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2> $W/logs/svc.err &
+    $U env RUST_LOG=info "$bin/fuse-service" $st < $st/in > $W/logs/svc.out 2>> $W/logs/svc.err &
     svc=$!
     exec 8> $st/in
     for _ in $(seq 100); do grep -q ready $W/logs/svc.out && break; sleep 0.1; done
@@ -161,7 +169,7 @@ service() {
     echo "its modes after the forget, the user's again: $($U stat -c '%a' $f $f/docs | tr '\n' ' ')"
     echo "the user's own file after it all: $($U cat $f/docs/big.bin 2>&1)"
     exec 8>&-; wait $svc 2> /dev/null
-    grep -v "^$" $W/logs/svc.err | tail -8
+    grep -E " (WARN|ERROR) " $W/logs/svc.err | tail -8
 }
 
 # The daemon on a private bus, `konedrivectl` and plain file calls on a folder served through
@@ -173,7 +181,32 @@ cli() {
     $U env TMPDIR=$W/tmp "$CLI_TEST" --ignored --exact fuse::a_folder_served_through_fuse_is_driven_from_the_command_line --nocapture 2>&1 | tail -25
 }
 
+# run_group <group>: the group, and beside it a watch that ends it when it does not end by
+# itself within GROUP_SECONDS: a daemon that answers nothing any more holds every call on its
+# folder for ever. The watch prints the end of the daemon's logs and kills the suite's
+# programs, so that the calls return and the run goes on; the group is then counted as failed.
+run_group() {
+    local group=$1 overran=$W/logs/$1.overran watch
+    (
+        sleep "${GROUP_SECONDS:-1200}"
+        touch "$overran"
+        echo "==== $group did not end within ${GROUP_SECONDS:-1200} s: its programs are killed ===="
+        for log in $(find $W/logs -name '*.err' -mmin -30); do
+            echo "  the end of $log:"
+            tail -30 "$log" | sed 's/^/    /'
+        done
+        pkill -KILL -x fuse-service
+        pkill -KILL -x fake-onedrive
+        pkill -KILL -f sync_cli-
+    ) &
+    watch=$!
+    $group
+    kill $watch 2> /dev/null
+    [ -e "$overran" ] && FAILED_SCENARIOS+=("$group: it did not end by itself")
+}
+
 for t in $tests; do
-    $t
+    run_group $t
 done
+summarize_scenarios
 echo "guest-done"

@@ -1,0 +1,2 @@
+mass_delete_is_held_until_confirmed	the first removals of an rm -r are sent before the guard holds the rest (it counts the removals that still wait, and each unlink is recorded and sent by itself); how many get through depends on timing, so this one may pass
+file_held_open_for_writing_across_a_forced_switch_to_read_only_keeps_what_was_written	a cycle in a read-only folder replaces the copy a program holds open for writing with the version of OneDrive: what the program wrote is gone

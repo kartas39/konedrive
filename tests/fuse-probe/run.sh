@@ -1,6 +1,8 @@
 #!/bin/sh
 # Builds the suite's programs and runs its tests in a virtme-ng guest. Nothing is mounted on the
-# host. Usage: tests/fuse-probe/run.sh [service cli]
+# host. Usage: tests/fuse-probe/run.sh [<group>…] (guest.sh names the groups); ONLY="<scenario>…"
+# runs those scenarios alone. The run fails when a scenario fails that is not named in
+# expected-to-fail.txt, or when the guest does not reach its end.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 cargo build --release --manifest-path "$here/Cargo.toml"
@@ -11,6 +13,7 @@ trap 'rm -rf "$work"' EXIT
     # The CLI's end-to-end test of a folder served through FUSE, when it is built
     # (`cargo test -p konedrivectl --test sync_cli --no-run`): the newest binary.
     echo "export CLI_TEST='$(ls -t "$here"/../../target/debug/deps/sync_cli-* 2> /dev/null | grep -v '\.d$' | head -1)'"
+    echo "export ONLY='${ONLY:-}'"
     echo "bash '$here/guest.sh' '$here/target/release' $*"
 } > "$work/inner.sh"
 chmod +x "$work/inner.sh"
@@ -24,4 +27,6 @@ if [ ! -f "$img" ]; then
 fi
 vng --run --rw --memory "${VM_MEMORY:-8G}" --user root \
     --qemu-opts="-drive if=none,id=probe,file=$img,format=raw,cache=none,aio=native -device virtio-blk-pci,drive=probe" \
-    --exec "$work/inner.sh" < /dev/null 2>&1 | tr -d '\r'
+    --exec "$work/inner.sh" < /dev/null 2>&1 | tr -d '\r' | tee "$work/output"
+grep -q '^guest-done$' "$work/output" || { echo "the guest did not reach its end"; exit 1; }
+grep -q '^scenarios: [0-9]* passed, 0 failed,' "$work/output"
