@@ -52,9 +52,7 @@ fn classify(e: io::Error, dir: &Path, feature: &'static str) -> ProbeError {
 /// Opens the nameless file the probe works on.
 ///
 /// `O_TMPFILE` gives a real inode on the real filesystem, with a real
-/// directory as its parent, and no directory entry anywhere — the same
-/// construction `placeholder::create_placeholder` uses, minus the `linkat`
-/// that would give it a name. It is unlinked from birth, so it disappears
+/// directory as its parent, and no directory entry anywhere. It is unlinked from birth, so it disappears
 /// when the descriptor closes, *including* when that happens because the
 /// process was killed mid-probe.
 ///
@@ -103,20 +101,10 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
 
 /// Exercises `F_SETLEASE` on the probe's own file.
 ///
-/// Both dehydration (`hydration::dehydrate::punch_clean_file`) and startup
-/// recovery (`hydration::recovery::reset_interrupted`) take a write lease before they punch a file's
-/// blocks away, and `interpret_setlease_failure` treats only `EAGAIN`
-/// (somebody else has the file open) as "try again later" — every other
-/// refusal, including one that means "this filesystem does not grant leases
-/// at all", is a hard error there. Without this probe that error surfaces
-/// for the first time on the first crash-interrupted file startup recovery
-/// meets (every one of them `failed`, forever) or the first dehydration a
-/// user asks for, on a folder registration had already accepted. The probe's
-/// own file has never been opened anywhere else, so `EAGAIN` is as
-/// impossible here as `EACCES` (this process owns it) — either one reaching
-/// this function is exactly the filesystem-level refusal a real dehydration
-/// or recovery would meet later, reported now, against the folder the user
-/// is trying to register.
+/// The probe's own file has never been opened anywhere else, so `EAGAIN` is
+/// as impossible here as `EACCES` (this process owns it): either one reaching
+/// this function is the filesystem refusing leases, reported now, against the
+/// folder the user is trying to register.
 fn probe_lease(file: &File, dir: &Path) -> Result<(), ProbeError> {
     match WriteLease::take(file) {
         Ok(Some(lease)) => {

@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
-use std::time::SystemTime;
 
 use super::*;
 use crate::status::report::Report;
@@ -12,16 +11,14 @@ fn in_folder(root: &str) -> SyncStateHandle {
 }
 
 /// `LocalBytes` is what the files occupy (`st_blocks ×
-/// 512`): a placeholder counts as the nothing it takes, a downloaded file
+/// 512`): a file with nothing written counts as the nothing it takes, a downloaded file
 /// as its blocks, and neither konedrive's own `.konedrive-*` entries nor
 /// a symbolic link to a file count at all — the walk passes them by.
 #[test]
 fn local_bytes_count_what_files_occupy_not_their_size() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let handle = File::open(root).unwrap();
-    konedrive_fs::placeholder::create_placeholder(&handle, "online.bin", "P", 1 << 20, SystemTime::UNIX_EPOCH)
-        .unwrap();
+    File::create(root.join("online.bin")).unwrap().set_len(1 << 20).unwrap();
     std::fs::create_dir(root.join("docs")).unwrap();
     std::fs::write(root.join("docs/here.bin"), vec![7u8; 64 * 1024]).unwrap();
     std::fs::create_dir(root.join(".konedrive-holding")).unwrap();
@@ -30,7 +27,7 @@ fn local_bytes_count_what_files_occupy_not_their_size() {
     std::os::unix::fs::symlink(root.join("docs/here.bin"), root.join("link.bin")).unwrap();
 
     let blocks = |rel: &str| std::fs::symlink_metadata(root.join(rel)).unwrap().blocks() * 512;
-    assert!(blocks("online.bin") < 8 * 512, "a placeholder takes next to nothing");
+    assert!(blocks("online.bin") < 8 * 512, "a file with nothing written takes next to nothing");
     assert!(blocks("docs/here.bin") >= 64 * 1024);
     assert_eq!(local_bytes(root), blocks("online.bin") + blocks("docs/here.bin"));
 }

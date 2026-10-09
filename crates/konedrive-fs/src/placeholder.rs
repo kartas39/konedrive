@@ -1,4 +1,5 @@
-//! A placeholder is an ordinary sparse file whose state lives in its xattrs.
+//! What konedrive keeps on a file or a directory of a folder: its extended attributes
+//! (`user.konedrive.*`) and its modes.
 
 use std::fs::File;
 use std::io;
@@ -6,7 +7,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use nix::fcntl::{AtFlags, FallocateFlags, OFlag};
+use nix::fcntl::FallocateFlags;
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
@@ -140,8 +141,7 @@ impl AsRawFd for Lent<'_> {
 
 impl FileExt for Lent<'_> {}
 
-/// Reads through the descriptor it is given and opens nothing: the helper reads an
-/// intercepted open's attributes through the event's own descriptor.
+/// Reads through the descriptor it is given and opens nothing.
 fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
     // `xattr::FileExt::get_xattr` already turns a missing attribute
     // (ENODATA/ENOATTR) into `Ok(None)` internally (see the `xattr` crate's
@@ -157,13 +157,10 @@ fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
 /// Why `read_state` could not tell the caller what state a file is in.
 ///
 /// `Corrupt` exists because collapsing it into `Ok(None)` — "this file is not
-/// one of ours" — is a data-loss bug, not a simplification. The helper's
-/// decision table maps `Ok(None)` to `FAN_ALLOW`, so a placeholder
-/// whose `user.konedrive.state` had been truncated, half-written or set by
-/// hand to something we do not recognise would be handed to the application
-/// with its body still missing: zeros where the content should be. The whole
-/// point of hydration.md §5.1's last rule is that an unreadable or unintelligible state on
-/// a file that looks managed must deny, never allow.
+/// one of ours" — is a data-loss bug, not a simplification: a file whose
+/// `user.konedrive.state` had been truncated, half-written or set by hand to
+/// something we do not recognise would be taken for the user's own, whole
+/// file.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("cannot read {XATTR_STATE}: {0}")]
@@ -196,53 +193,8 @@ pub fn write_item_id(file: &File, item_id: &str) -> io::Result<()> {
     set_xattr(file, XATTR_ITEM_ID, item_id.as_bytes())
 }
 
-/// Takes the item id off `file`, which keeps its other attributes; one
-/// that carries none is left as it is.
-pub fn remove_item_id(file: &File) -> io::Result<()> {
-    remove_xattr(file, XATTR_ITEM_ID)
-}
-
-pub fn read_ctag(file: &impl AsFd) -> io::Result<Option<String>> {
-    read_xattr(file, XATTR_CTAG)
-}
-
 pub fn write_ctag(file: &File, ctag: &str) -> io::Result<()> {
     set_xattr(file, XATTR_CTAG, ctag.as_bytes())
-}
-
-/// Builds the placeholder nameless, then links it in, so no one can open a
-/// half-built one. A zero-size file is created `Hydrated`: nothing to fetch.
-pub fn create_placeholder(
-    dir: &File,
-    name: &str,
-    item_id: &str,
-    size: u64,
-    mtime: SystemTime,
-) -> io::Result<()> {
-    let raw = nix::fcntl::openat(
-        dir.as_fd(),
-        ".",
-        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
-        Mode::from_bits_truncate(0o644),
-    )?;
-    let file = File::from(raw);
-
-    file.set_len(size)?;
-    write_item_id(&file, item_id)?;
-    write_state(
-        &file,
-        if size == 0 { State::Hydrated } else { State::OnlineOnly },
-    )?;
-    set_mtime(&file, mtime)?;
-
-    nix::unistd::linkat(
-        file.as_fd(),
-        "",
-        dir.as_fd(),
-        name,
-        AtFlags::AT_EMPTY_PATH,
-    )?;
-    Ok(())
 }
 
 /// Sets the file's times to `mtime`, which may be before 1970: `futimens` takes a negative
@@ -338,27 +290,6 @@ pub fn remove_progress(file: &File) -> io::Result<()> {
     remove_xattr(file, XATTR_PROGRESS)
 }
 
-/// Whether the file or folder carries its own pin ([`XATTR_PIN`]). Any value
-/// counts: the attribute's presence is the pin.
-pub fn read_pin(file: &File) -> io::Result<bool> {
-    Ok(read_xattr(file, XATTR_PIN)?.is_some())
-}
-
-/// Pins the file or folder. Under the read-only lock, the owner's write bit
-/// is lifted for the moment of the write, as for every other attribute.
-pub fn write_pin(file: &File) -> io::Result<()> {
-    set_xattr(file, XATTR_PIN, b"1")
-}
-
-/// Takes the pin off; a file or folder with none is left as it is.
-pub fn remove_pin(file: &File) -> io::Result<()> {
-    remove_xattr(file, XATTR_PIN)
-}
-
-pub fn write_stamp(file: &File) -> io::Result<()> {
-    set_xattr(file, XATTR_STAMP, Stamp::of(file)?.encode().as_bytes())
-}
-
 /// Writes `stamp` rather than the file's own size and time: an upload's
 /// snapshot, the content that went up, so that an edit made while it went
 /// up still differs from the stamp (`docs/design/writes.md` §5).
@@ -366,27 +297,12 @@ pub fn write_given_stamp(file: &File, stamp: Stamp) -> io::Result<()> {
     set_xattr(file, XATTR_STAMP, stamp.encode().as_bytes())
 }
 
-pub fn read_stamp(file: &File) -> io::Result<Option<Stamp>> {
-    Ok(read_xattr(file, XATTR_STAMP)?.as_deref().and_then(Stamp::decode))
-}
-
-pub fn remove_stamp(file: &File) -> io::Result<()> {
-    remove_xattr(file, XATTR_STAMP)
-}
-
-/// True when the file still looks exactly as it did when hydration finished.
-pub fn stamp_matches(file: &File) -> io::Result<bool> {
-    Ok(read_stamp(file)? == Some(Stamp::of(file)?))
-}
-
 /// Releases every block while keeping the logical size.
 ///
 /// A zero-length file has no blocks to release, and `fallocate` with `len ==
 /// 0` returns `EINVAL` unconditionally at the VFS level (not filesystem
 /// specific), so that case is short-circuited before the syscall rather than
-/// surfaced as an error. Dehydration and startup recovery (hydration.md §9)
-/// both call this unconditionally, including on the zero-byte placeholders
-/// this crate already treats as a first-class case (see `create_placeholder`).
+/// surfaced as an error.
 pub fn punch_all(file: &File) -> io::Result<()> {
     let size = file.metadata()?.len() as i64;
     if size == 0 {
@@ -401,106 +317,9 @@ pub fn punch_all(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// A placeholder as the read phase makes it (see [`create_placeholder_with`]).
-pub struct PlaceholderSpec<'a> {
-    pub item_id: &'a str,
-    pub size: u64,
-    pub mtime: SystemTime,
-    pub ctag: Option<&'a str>,
-    /// [`LOCKED_FILE_MODE`] in a folder that shows OneDrive, [`OPEN_FILE_MODE`] otherwise.
-    pub mode: u32,
-}
-
-/// [`create_placeholder`] for the read phase: with the cTag of the version it
-/// stands for, the lock's mode, and — for an empty file, created `hydrated`
-/// since there is nothing to fetch — a stamp, so that an empty file is never
-/// taken for one changed locally. Built nameless and linked in last, like
-/// every placeholder; the caller holds a write window on `dir` when the
-/// folder is locked (`O_TMPFILE` and `linkat` need write permission on it).
-pub fn create_placeholder_with(dir: &File, name: &str, spec: &PlaceholderSpec<'_>) -> io::Result<()> {
-    let raw = nix::fcntl::openat(
-        dir.as_fd(),
-        ".",
-        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
-        Mode::from_bits_truncate(OPEN_FILE_MODE),
-    )?;
-    let file = File::from(raw);
-    file.set_len(spec.size)?;
-    write_item_id(&file, spec.item_id)?;
-    if let Some(ctag) = spec.ctag {
-        write_ctag(&file, ctag)?;
-    }
-    write_state(&file, if spec.size == 0 { State::Hydrated } else { State::OnlineOnly })?;
-    set_mtime(&file, spec.mtime)?;
-    if spec.size == 0 {
-        write_stamp(&file)?;
-    }
-    set_mode(&file, spec.mode)?;
-    nix::unistd::linkat(file.as_fd(), "", dir.as_fd(), name, AtFlags::AT_EMPTY_PATH)?;
-    Ok(())
-}
-
-/// A directory for a OneDrive folder, labelled before anything can be put in
-/// it: made under `temp_name`, given its item id, and returned open. The
-/// caller has it marked (invariant M1) and then renames it to its real name,
-/// so the real name never shows a folder without its id. A crash after the
-/// label leaves a `temp_name` the next reconcile recognises by that id; one
-/// before it — or a label the disk had no room for — leaves one with no id,
-/// which the caller clears when it next needs the name (the daemon's
-/// `Materializer::labelled_dir`).
-pub fn create_dir_item(parent: &File, temp_name: &str, item_id: &str) -> io::Result<File> {
-    nix::sys::stat::mkdirat(parent.as_fd(), temp_name, Mode::from_bits_truncate(OPEN_DIR_MODE))?;
-    let fd = nix::fcntl::openat(
-        parent.as_fd(),
-        temp_name,
-        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )?;
-    let dir = File::from(fd);
-    set_mode(&dir, OPEN_DIR_MODE)?;
-    write_item_id(&dir, item_id)?;
-    Ok(dir)
-}
-
-/// A writable descriptor for the inode `file` is open on — the same inode,
-/// whatever its name is by now — lifting the owner's write permission for the
-/// moment of the open when the lock has taken it away.
-///
-/// The reopen goes through `/proc/self/fd/<n>`, which resolves to the open
-/// inode itself rather than to a name, so nothing can be swapped in between.
-/// Drop `file` afterwards: a second descriptor of one's own makes a write
-/// lease on the file impossible to take.
-pub fn reopen_writable(file: &File) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let flags = OFlag::from_bits_truncate(nix::fcntl::fcntl(file.as_fd(), nix::fcntl::FcntlArg::F_GETFL)?);
-    if flags & OFlag::O_ACCMODE == OFlag::O_RDWR {
-        return file.try_clone();
-    }
-    let path = crate::proc_path(file);
-    with_owner_write(file, || {
-        std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_CLOEXEC).open(&path)
-    })
-}
-
-/// Releases every block from `offset` to the end, keeping the size — the part
-/// of an interrupted download past its checkpoint.
-pub fn punch_from(file: &File, offset: u64) -> io::Result<()> {
-    let size = file.metadata()?.len();
-    if offset >= size {
-        return Ok(());
-    }
-    nix::fcntl::fallocate(
-        file.as_fd(),
-        FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
-        offset as i64,
-        (size - offset) as i64,
-    )?;
-    Ok(())
-}
-
 /// Removes every `user.konedrive.*` attribute: a file that leaves the folder
 /// for the rescue directory is no longer konedrive's.
-pub fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
+fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
     let ours: Vec<_> = file
         .list_xattr()?
         .filter(|name| name.as_encoded_bytes().starts_with(b"user.konedrive."))
@@ -517,14 +336,12 @@ pub fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
 
 /// Takes konedrive's attributes off `file` for good: the item id first, then
 /// `fsync`, then the rest. With the id gone the object is an ordinary one (a
-/// state with no id is), whatever a crash leaves of the rest; an id with no
-/// state, the one combination the helper refuses, is never on disk.
+/// state with no id is), whatever a crash leaves of the rest.
 ///
 /// The rest is not waited for: a crash may leave some of it on an object
 /// that is the user's own by then, which nothing reads without an id. So
 /// this is only for an object whose content is there (a directory, or a
-/// downloaded file): a state that says "not downloaded" left behind with no
-/// id is not an ordinary file to the helper.
+/// downloaded file).
 ///
 /// Only what is there is touched: an object with no item id gets neither
 /// the removal (and its change of mode) nor the `fsync`.

@@ -1,20 +1,16 @@
 //! File handles: the kernel's name for an inode that survives renames.
 //!
-//! `name_to_handle_at(2)` needs no privilege, and its handle is byte-equal to
-//! the `FID`/`DFID` a fanotify notification group reports (measured by the kernel probe,
-//! `docs/kernel-behavior-7.2/notification.md` §14). The write phase keys an item's local
-//! object on it (`items.local_handle`): an event's object handle finds the item
-//! it touched, and a missing item's handle tells a delete from a move out of
-//! the folder. Turning a handle back into a descriptor (`open_by_handle_at`)
-//! needs `CAP_DAC_READ_SEARCH`, which only the helper has.
+//! `name_to_handle_at(2)` needs no privilege. The upload worker records the
+//! handle of the object an item was sent from (`items.local_handle`), and
+//! tells by it whether a directory that carries an item's id is that item's.
 //!
 //! The handle is taken without following a final symlink and without opening
-//! anything, so asking for a placeholder's handle never fills it.
+//! anything.
 
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 
 /// The largest handle the kernel hands out (`MAX_HANDLE_SZ`).
@@ -63,42 +59,6 @@ impl FileHandle {
         }
         let len = (raw.handle_bytes as usize).min(MAX_HANDLE_BYTES);
         Ok(Self { kind: raw.handle_type, bytes: raw.f_handle[..len].to_vec() })
-    }
-
-    /// Whether the kernel could take this as a handle at all: a type that is
-    /// not negative and between 1 and [`MAX_HANDLE_BYTES`] bytes. Checked
-    /// before any system call, by the helper on every `OpenByHandle`.
-    pub fn is_well_formed(&self) -> bool {
-        self.kind >= 0 && !self.bytes.is_empty() && self.bytes.len() <= MAX_HANDLE_BYTES
-    }
-
-    /// Opens the object this handle names (`open_by_handle_at(2)`), on the
-    /// filesystem and the mount of `mount`, with `flags`. No path is walked,
-    /// so no directory's permissions are checked; the object's own are, as
-    /// for any open. Needs `CAP_DAC_READ_SEARCH`: anyone else gets `EPERM`
-    /// (measured, `docs/kernel-behavior-7.2/notification.md` §14.6). A handle that names
-    /// nothing any more is `ESTALE`; a malformed one is `EINVAL`, without a
-    /// system call.
-    pub fn open(&self, mount: BorrowedFd<'_>, flags: libc::c_int) -> io::Result<OwnedFd> {
-        if !self.is_well_formed() {
-            return Err(io::Error::from_raw_os_error(libc::EINVAL));
-        }
-        let mut raw = RawHandle {
-            handle_bytes: self.bytes.len() as libc::c_uint,
-            handle_type: self.kind,
-            f_handle: [0; MAX_HANDLE_BYTES],
-        };
-        raw.f_handle[..self.bytes.len()].copy_from_slice(&self.bytes);
-        // SAFETY: `raw` is a `struct file_handle` whose `handle_bytes` says
-        // how many of the MAX_HANDLE_SZ bytes that follow are the handle.
-        let fd = unsafe {
-            libc::open_by_handle_at(mount.as_raw_fd(), (&mut raw as *mut RawHandle).cast(), flags)
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a descriptor the kernel just returned, owned by no one else.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
     /// Stored form: the type, 4 bytes little-endian, then the handle's bytes.
