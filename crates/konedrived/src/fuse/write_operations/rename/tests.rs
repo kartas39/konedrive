@@ -54,14 +54,14 @@ fn a_local_only_file_saved_over_a_onedrive_file_is_that_files_new_content() {
 }
 
 #[test]
-fn a_local_only_file_moved_into_an_ignored_directory_is_no_longer_uploaded() {
+fn a_local_only_file_moved_into_an_ignored_directory_leaves_no_row() {
     let f = folder(Vec::new());
     f.ops.make(NodeId::ROOT, "cache", EntryToMake::Directory).unwrap();
     f.ops.make(NodeId::ROOT, "x.txt", EntryToMake::File).unwrap();
     let cache = f.node_id(NodeId::ROOT, "cache");
     f.ops.rename(NodeId::ROOT, "x.txt", cache, "x.txt", RenameMode::Replace).unwrap();
     assert!(f.disk.join("cache/x.txt").is_file());
-    assert!(!f.rows().iter().any(|row| row.kind == OutboxKind::Create));
+    assert!(f.rows().is_empty(), "{:?}", f.said());
 }
 
 /// A program that copies it there and removes it here does what that means.
@@ -146,7 +146,7 @@ fn a_file_renamed_while_it_is_open_for_writing_still_waits_for_its_writer() {
 /// Nothing of it is uploaded from there: its own row and the rows of what it holds leave the
 /// outbox.
 #[test]
-fn a_local_only_directory_moved_where_nothing_is_uploaded_is_no_longer_uploaded() {
+fn a_local_only_directory_moved_into_an_ignored_directory_leaves_no_row() {
     let f = folder(Vec::new());
     f.ops.make(NodeId::ROOT, "cache", EntryToMake::Directory).unwrap();
     f.ops.make(NodeId::ROOT, "new", EntryToMake::Directory).unwrap();
@@ -154,7 +154,7 @@ fn a_local_only_directory_moved_where_nothing_is_uploaded_is_no_longer_uploaded(
     let cache = f.node_id(NodeId::ROOT, "cache");
     f.ops.rename(NodeId::ROOT, "new", cache, "new", RenameMode::Replace).unwrap();
     assert!(f.disk.join("cache/new/x.txt").is_file());
-    assert!(!f.rows().iter().any(|row| matches!(row.kind, OutboxKind::Mkdir | OutboxKind::Create)));
+    assert!(f.rows().is_empty(), "{:?}", f.said());
 }
 
 /// The name is its own: nothing moves and nothing is recorded, also when the rename is told

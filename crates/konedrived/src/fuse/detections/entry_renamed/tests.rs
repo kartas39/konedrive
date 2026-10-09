@@ -124,22 +124,23 @@ fn a_local_only_file_moved_while_it_is_uploaded_is_moved() {
     assert_eq!(kinds(renamed, &store), [pair(OutboxKind::Move, "#1")]);
 }
 
-/// Into a place that is ignored: its row is removed, and it is no longer sent.
+/// Into a place that is ignored: its row is removed, and nothing is recorded in its stead —
+/// a removal recorded beside it would find no row to cancel, and stay in the outbox.
 #[test]
-fn a_local_only_file_moved_where_nothing_is_uploaded_is_forgotten() {
+fn a_local_only_file_moved_to_an_ignored_place_leaves_no_row() {
     let mine = file(1, 3);
     let store = store(vec![detection_of(OutboxKind::Create, &mine, &in_root("mine.txt"), OutboxState::Ready)]);
     let all = rows(&store);
     let renamed = moved(MovedEntry::IgnoredLocalOnlyFile { file: mine.clone() }, "mine.txt", in_root("mine.tmp"), None);
     let batch = detect(renamed, &store);
-    let [delete] = batch.detections.as_slice() else { panic!("one detection: {batch:?}") };
-    assert_eq!((delete.kind, delete.object.as_ref(), delete.rel.as_path()), (OutboxKind::Delete, Some(&mine.handle), Path::new("mine.tmp")));
+    assert!(batch.detections.is_empty(), "{:?}", batch.detections);
     assert_eq!(batch.ops, removes(&all.iter().collect::<Vec<_>>()));
 }
 
-/// Its rows that are being sent are left to finish.
+/// Its row that is being sent is left to finish, and what it makes in OneDrive is removed
+/// after it.
 #[test]
-fn a_local_only_file_kept_here_while_it_is_uploaded_keeps_the_running_row() {
+fn a_local_only_file_moved_to_an_ignored_place_while_it_is_uploaded_keeps_the_running_row() {
     let mine = file(1, 3);
     let store = store(vec![detection_of(OutboxKind::Create, &mine, &in_root("mine.txt"), OutboxState::Running)]);
     let renamed = moved(MovedEntry::IgnoredLocalOnlyFile { file: mine.clone() }, "mine.txt", in_root("mine.tmp"), None);
@@ -147,6 +148,22 @@ fn a_local_only_file_kept_here_while_it_is_uploaded_keeps_the_running_row() {
     let [delete] = &batch.detections[..] else { panic!("one detection: {:?}", batch.detections) };
     assert_eq!((delete.kind, delete.object.as_ref(), delete.rel.as_path()), (OutboxKind::Delete, Some(&mine.handle), Path::new("mine.tmp")));
     assert!(batch.ops.is_empty());
+}
+
+/// A row that is being sent and one that waits behind it: the one that waits is removed, and
+/// the removal follows the one that is being sent.
+#[test]
+fn a_local_only_file_moved_to_an_ignored_place_loses_the_row_that_waits_behind_the_running_one() {
+    let mine = file(1, 3);
+    let store = store(vec![
+        detection_of(OutboxKind::Create, &mine, &in_root("mine.txt"), OutboxState::Running),
+        detection_of(OutboxKind::Create, &mine, &in_root("mine.txt"), OutboxState::Ready),
+    ]);
+    let all = rows(&store);
+    let renamed = moved(MovedEntry::IgnoredLocalOnlyFile { file: mine.clone() }, "mine.txt", in_root("mine.tmp"), None);
+    let batch = detect(renamed, &store);
+    assert_eq!(kinds_of(&batch), [pair(OutboxKind::Delete, "#1")]);
+    assert_eq!(batch.ops, removes(&all.iter().filter(|row| row.state != OutboxState::Running).collect::<Vec<_>>()));
 }
 
 #[test]
@@ -161,10 +178,10 @@ fn a_local_only_directory_moved_is_made_from_its_new_place_with_all_it_holds() {
 }
 
 /// Nothing of it is uploaded from the new place: its rows and those of the local-only
-/// entries below it are removed; a row of something of OneDrive below it stays, and moves
-/// along.
+/// entries below it are removed, and nothing is recorded in their stead; a row of something
+/// of OneDrive below it stays, and moves along.
 #[test]
-fn a_local_only_directory_moved_where_nothing_is_uploaded_takes_its_rows_out_of_the_outbox() {
+fn a_local_only_directory_moved_to_an_ignored_place_takes_its_rows_out_of_the_outbox() {
     let (new_directory, inside) = (directory(1), file(2, 4));
     let store = store(vec![
         detection_of(OutboxKind::Mkdir, &new_directory, &in_root("new"), OutboxState::Ready),
@@ -174,7 +191,7 @@ fn a_local_only_directory_moved_where_nothing_is_uploaded_takes_its_rows_out_of_
     let all = rows(&store);
     let renamed = moved(MovedEntry::IgnoredLocalOnlyDirectory { handle: new_directory.handle.clone() }, "new", in_root("new.tmp"), None);
     let batch = detect(renamed, &store);
-    assert_eq!(kinds_of(&batch), [pair(OutboxKind::Delete, "#1")]);
+    assert!(batch.detections.is_empty(), "{:?}", batch.detections);
     let mut ops = removes(&all.iter().filter(|row| row.item_id.is_none()).collect::<Vec<_>>());
     ops.push(OutboxOp::Rebase { from: rel("new"), to: rel("new.tmp") });
     assert_eq!(batch.ops, ops);

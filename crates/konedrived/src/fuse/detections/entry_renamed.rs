@@ -4,6 +4,7 @@
 //! new place, or no longer uploaded when the new place is ignored. A local-only
 //! file renamed over a OneDrive file is that file's new content: programs save that way.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
@@ -12,7 +13,7 @@ use konedrive_tree::TreeError;
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{detect_local_only_entries, detect_local_only_entry, detect_removed_by_id, detect_forgotten, detect_moved, rebase, detect_modified, wait_for_writer};
+use super::{detect_forgotten, detect_local_only_entries, detect_local_only_entry, detect_modified, detect_moved, detect_removed_at, detect_removed_by_id, rebase, wait_for_writer};
 use super::{FolderEvent, OutboxBatch, StoreFacts, WriteState};
 use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 
@@ -129,14 +130,19 @@ fn detect_uploaded_from(facts: &impl StoreFacts, file: &DiskEntry, write_state: 
     Ok(d)
 }
 
-/// A local-only entry is ignored from now on, with what is below it: what the
-/// outbox held of it is removed, and so is every row of a local-only entry at and below the
-/// place it came from that is not being sent.
+/// A local-only entry is ignored from now on, with what is below it: every row of it, and of
+/// a local-only entry at and below the place it came from, that is not being sent is removed
+/// from the outbox, and no row is left of it. A row of the entry itself that is being sent
+/// is left to finish, and is followed by the removal of what it made in OneDrive.
 fn detect_kept_off_onedrive(facts: &impl StoreFacts, handle: &FileHandle, from: &Path, at: &Path, batch: &mut OutboxBatch) -> Result<(), TreeError> {
-    batch.detections.extend(detect_forgotten(facts, handle, at)?);
+    let own = facts.outbox_rows_of(handle)?;
     let below = facts.rows_at_or_under(from)?;
-    let unsent = below.iter().filter(|row| row.item_id.is_none() && row.state != OutboxState::Running);
-    batch.ops.extend(unsent.map(|row| OutboxOp::Remove(row.seq)));
+    if own.iter().any(|row| row.state == OutboxState::Running) {
+        batch.detections.push(detect_removed_at(None, Some(handle.clone()), at));
+    }
+    let unsent = own.iter().chain(below.iter().filter(|row| row.item_id.is_none())).filter(|row| row.state != OutboxState::Running);
+    let seqs: BTreeSet<i64> = unsent.map(|row| row.seq).collect();
+    batch.ops.extend(seqs.into_iter().map(OutboxOp::Remove));
     Ok(())
 }
 

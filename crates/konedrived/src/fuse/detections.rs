@@ -225,8 +225,8 @@ fn detect_removed_by_id(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result
     Ok(facts.base_row(id)?.iter().map(|base| detect_removed_at(Some(base), None, rel)).collect())
 }
 
-/// A local-only entry is gone from `rel`, or is ignored from now on: what the
-/// outbox held of it is removed. Nothing for one the outbox never heard of.
+/// A local-only entry is gone from `rel`: what the outbox held of it is removed. Nothing for
+/// one the outbox never heard of.
 fn detect_forgotten(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
     Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![detect_removed_at(None, Some(handle.clone()), rel)] })
 }
