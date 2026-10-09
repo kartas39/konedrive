@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::nodes::Key;
-use super::outbox::{Above, Waiting};
+use super::overlay::{Above, Overlay};
 use super::shared::Shared;
 use super::under::Object;
 use crate::folder::disk::daemon_owned;
@@ -100,7 +100,7 @@ impl Shared {
         self.item_at(dir, name, &waiting).map(Entry::Item).or_else(|| self.local(&dir.rel.join(name)).map(Entry::Local))
     }
 
-    fn item_at(&self, dir: &Dir, name: &str, waiting: &Waiting) -> Option<Row> {
+    fn item_at(&self, dir: &Dir, name: &str, waiting: &Overlay) -> Option<Row> {
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         let stays = |row: &Row| row.placement == Placement::Placed && !waiting.gone.contains(&row.id) && !waiting.moved.contains_key(&row.id);
         // What the user moved to this name is what the name is: an item OneDrive has there
@@ -260,5 +260,17 @@ impl Shared {
 
     fn backing_by(&self, rel: &Path, root: Option<String>, item: impl Fn(&Dir, &str) -> Option<String>) -> std::io::Result<()> {
         self.under.backing(rel, root, |id, dir, name| item(&Dir { id: id.map(str::to_owned), rel: dir.to_owned() }, name))
+    }
+
+    /// What the outbox says now. Read again only when the store changed since.
+    pub(super) fn waiting(&self) -> std::sync::Arc<Overlay> {
+        let store = crate::panic::lock(&self.reader);
+        let mut kept = crate::panic::lock(&self.waiting);
+        // A version that cannot be read is never the one kept.
+        let version = store.data_version().ok();
+        if version.is_none() || version != kept.0 {
+            *kept = (version, std::sync::Arc::new(Overlay::of(&store)));
+        }
+        std::sync::Arc::clone(&kept.1)
     }
 }

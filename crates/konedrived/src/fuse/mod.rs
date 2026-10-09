@@ -32,7 +32,7 @@ mod make;
 mod mode;
 mod mount;
 mod nodes;
-mod outbox;
+mod overlay;
 mod pins;
 mod read;
 mod recorder;

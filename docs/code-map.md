@@ -219,8 +219,8 @@ daemon shows OneDrive.
 - `attr.rs` — what the mount says of an item: kind, size, times, modes.
 - `local.rs` — what a directory holds: the store's items as the outbox's rows leave them,
   and the files and directories OneDrive has no item for yet, each known by its file handle.
-- `outbox.rs` — the outbox's rows laid over the store: items moved, removed or changed here.
-  `[tests]`
+- `overlay.rs` — `Overlay`: what the outbox's rows say of the folder, a function of the store
+  alone: the items moved, removed or changed here. `[tests]`
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
   background downloads.
 - `fill.rs` — the download of a whole file into a file without a name, which then lands; the

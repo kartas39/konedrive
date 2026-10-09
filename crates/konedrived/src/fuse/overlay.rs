@@ -4,15 +4,15 @@
 //! The store has every item where OneDrive has it; a change made in the folder is a row of
 //! the outbox until it is sent. The mount shows the folder as the user left it: the store,
 //! with what these rows say laid over it.
+//!
+//! [`Overlay`] is a function of the store's rows and of nothing else: no disk, no node, no
+//! mount. Who reads it, and when it is read again, is its reader's to say.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
-
-use super::shared::Shared;
 
 /// The directory a moved item stands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,11 +22,9 @@ pub(super) enum Above {
     Local(PathBuf),
 }
 
-/// What the rows say, as of one version of the store.
+/// What the rows say, as of one reading of the store.
 #[derive(Default)]
-pub(super) struct Waiting {
-    /// The store's version this was read at; `None` before the first reading.
-    version: Option<i64>,
+pub(super) struct Overlay {
     /// Items that stand elsewhere than the store has them: the directory, and the name there.
     pub(super) moved: HashMap<String, (Above, String)>,
     /// Items removed here and not yet in OneDrive.
@@ -35,10 +33,10 @@ pub(super) struct Waiting {
     pub(super) changed: HashSet<String>,
 }
 
-impl Waiting {
-    /// What the rows of `store` say, which is at `version`.
-    pub(super) fn of(store: &TreeStore, version: Option<i64>) -> Self {
-        let mut now = Waiting { version, ..Waiting::default() };
+impl Overlay {
+    /// What the rows of `store` say now.
+    pub(super) fn of(store: &TreeStore) -> Self {
+        let mut now = Overlay::default();
         for row in store.outbox_rows().unwrap_or_default() {
             let Some(id) = row.item_id.clone() else { continue };
             if row.kind.removes() {
@@ -63,20 +61,6 @@ impl Waiting {
             }
         }
         now
-    }
-}
-
-impl Shared {
-    /// What the outbox says now. Read again only when the store changed since.
-    pub(super) fn waiting(&self) -> Arc<Waiting> {
-        let store = crate::panic::lock(&self.reader);
-        let mut kept = crate::panic::lock(&self.waiting);
-        // A version that cannot be read is never the one kept.
-        let version = store.data_version().ok();
-        if version.is_none() || version != kept.version {
-            *kept = Arc::new(Waiting::of(&store, version));
-        }
-        Arc::clone(&kept)
     }
 }
 

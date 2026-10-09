@@ -19,7 +19,7 @@ use crate::status::report::Report;
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
-use super::outbox::Waiting;
+use super::overlay::Overlay;
 use super::recorder::Job;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
@@ -85,8 +85,9 @@ pub(super) struct Shared {
     pub(super) jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The files programs hold open for writing, by node ([`super::writers`]).
     pub(super) writers: Writers,
-    /// What the outbox's rows say of the folder, as last read ([`super::outbox`]).
-    pub(super) waiting: Mutex<Arc<Waiting>>,
+    /// What the outbox's rows say of the folder, as last read, and the store's version it was
+    /// read at ([`super::overlay`]).
+    pub(super) waiting: Mutex<(Option<i64>, Arc<Overlay>)>,
     pub(super) runtime: tokio::runtime::Handle,
 }
 
