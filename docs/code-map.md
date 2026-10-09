@@ -188,10 +188,13 @@ daemon shows OneDrive.
 - `mount.rs` — `Mount`: made, served, taken off. It holds the fuser session, the
   `FuseConnection` and the parts, and calls the parts in order three times: at the start, at
   the stop, and at a switch of the access mode — to read-only on the write-operation thread,
-  and waited for. A cycle is applied and announced by its `CycleStep`; the `Files`
-  interface is handed out (`files_interface()`). `[tests]`
-- `mount/build_order.rs` — `Mount::build`: the parts built in the order they depend on each
-  other, each given only what stands before it; nothing is mounted.
+  and waited for. It answers for no part: the access mode switch, the cycle step, the
+  `Files` interface and the backing directory are handed out (`access_mode_switch()`,
+  `cycle_step()`, `files_interface()`, `backing_directory()`), and a cycle and the folder's
+  sync ask them. `[tests]`
+- `mount/build_order.rs` — `Mount::build`: a stale mount taken off the folder, then the parts
+  built in the order they depend on each other, each given only what stands before it;
+  nothing is mounted.
 - `mount/mount_setup.rs` — `MountSetup`, what a mount is made with, and `WriteSetup`, what a
   folder that takes changes shares with its sync.
 - `fuse_connection.rs` — `FuseConnection`: the mount's connection to the kernel by its
@@ -202,7 +205,8 @@ daemon shows OneDrive.
   of an entry and of the folder. `[tests]`
 - `backing_directory/file_handles.rs` — `DiskEntry`, `DiskMetadata`, `EntryKind`: the file or
   directory at a path, with its file handle and what the filesystem says of it; the OneDrive
-  id an entry is marked with, and the entry that is marked with none. `[tests]`
+  id an entry is marked with, whether it is marked with one, and the one rule of an
+  unmarked entry (`find_unmarked_disk_entry`), which a walk and a cycle go by. `[tests]`
 - `backing_directory/downloaded_copies.rs` — `DiskMarks`: what a file's marks say, with the
   one test of a downloaded copy (marked with the file's OneDrive id, and whole), which the
   lookup, the landing and the legacy check read through; marking a copy, removing one by its
@@ -228,11 +232,13 @@ daemon shows OneDrive.
   configuration records as showing OneDrive (`tidy_served_folders`); the directories a file
   manager is told to read again (`list_directories`). `[tests]`
 - `directory_reference.rs` — `DirectoryReference`: a reference to a directory of the mount, by
-  its OneDrive id and its path.
+  its OneDrive id and its path. `[tests]`
 - `entry_place.rs` — `EntryPlace`: a name in a directory.
 - `local_only_entry.rs` — `LocalOnlyEntry`: a file or directory made here that is not in
-  OneDrive yet, on disk and at its place; the walk that collects the local-only entries at
-  and below a place.
+  OneDrive yet, on disk and at its place; the one place that puts the upload rules together
+  with the backing directory's marks: whether what is at a place is uploaded from there
+  (`find_upload_status`, `is_in_ignored_directory`), and the walk that collects the unmarked
+  entries at and below a place. `[tests]`
 - `unsent_changes.rs` — `UnsentChanges`: what was moved, removed or changed here and is not
   sent yet, a function of the store's outbox alone. `[tests]`
 - `directory_contents.rs` — `DirectoryContents`: what each directory of the mount holds; it
@@ -240,20 +246,22 @@ daemon shows OneDrive.
   `BackingDirectory`, is the one place that works out a sync state and the one part that
   says a file is on disk, and is asked only named questions. A row, the row of the directory
   it is in, the files below it with their states, whether a path holds a file's downloaded
-  copy, the path the store has an id at. `[tests]`
+  copy, the path the store has an id at, whether an id is removed here. `[tests]`
 - `directory_contents/sync_states.rs` — `FileSyncState`, `DirectorySyncState`, `EntryState`
   and `DirectoryEntry`: a name with its state, each state carrying what exists in it.
   `[tests]`
 - `directory_contents/directory_entries.rs` — the entry a directory holds under a name, and
   the names it lists (`ListedName`): the store's rows as the unsent changes leave them, read
   without the backing directory, and the local-only entries, by the one rule of what the
-  mount shows as local-only. The entry made from a listed name, with its sync state; the
-  entry a disk entry is marked as.
+  mount shows as local-only (`find_local_only_at`), which the node resolver and the scan
+  for unrecorded entries ask too. The entry made from a listed name, with its sync state;
+  the entry a disk entry is marked as.
 - `directory_contents/entry_paths.rs` — the path the mount shows a OneDrive id at, the entry
   at a path, and the directories down to a path marked with the ids the mount shows there.
 - `node_table.rs` — `NodeTable`: the node ids (`NodeId`) given to the kernel, each with a
   `NodeRecord`: its `NodeKey` — in OneDrive by its id, or local only by its file handle —
-  the node id of the directory it is in, and its name. Its maps are its own. `[tests]`
+  the node id of the directory it is in, and its name. Its maps are its own. A node id is
+  the kernel's inode number: the pair of conversions is here. `[tests]`
 - `node_resolver.rs` — `NodeResolver`: over the directory contents and the backing directory,
   and owning the node table: the entry a node id stands for now and the node id of an entry
   or of a listed name; a local-only entry that got into OneDrive keeps its node id.
@@ -262,14 +270,16 @@ daemon shows OneDrive.
   `DirectoryEntry` and the `AccessMode`: kind, size, times, modes. `[tests]`
 - `access_mode_switch.rs` — `AccessModeSwitch`: the one holder of whether programs may change
   the folder, answered as an `AccessMode` (`ReadOnly`, `ReadWrite`); a write request asks it
-  before it queues its operation, the operation asks it again on the write-operation thread,
-  and the mount switches it to read-only on that thread, so nothing is recorded after that
-  switch; to read-write it is switched at once. `[tests]`
+  before it queues its operation, the operation asks it again on the write-operation thread
+  — twice by design, and the second answer counts — and the mount switches it to read-only
+  on that thread, so nothing is recorded after that switch; to read-write it is switched at
+  once. The folder's sync asks it whether the folder takes changes. `[tests]`
 - `open_handles.rs` — `OpenHandles`: the files (`OpenFile`: read while not downloaded, read
   from the backing directory, or written) and the directories programs hold open, by the
   kernel's `fh` (`Fh`); it alone counts the writers of a node, remembers whether one wrote,
-  says what closing a file left (`CloseOutcome`) and whether a file is open for writing, by
-  node id and by OneDrive id; the names an open directory listed when it was first read.
+  says what closing a file left (`ClosedFile`, with its `CloseOutcome` and the node whose
+  last writer it was) and whether a file is open for writing, by node id and by OneDrive id;
+  the names an open directory listed when it was first read.
   `[tests]`
 - `state_attribute.rs` — `to_state_attribute`: what is shown of a file — online-only, being
   downloaded, downloaded — from its sync state and whether it is being downloaded; the value
@@ -277,28 +287,36 @@ daemon shows OneDrive.
 - `kernel_requests.rs` — `KernelRequests`: the one implementation of the kernel's interface
   (`Filesystem`); it holds the five groups and the inotify bridge, asks whether a request
   is the bridge's own, and hands each request on.
-- `kernel_requests/kernel_numbers.rs` — fuser's numbers turned into the layer's own
-  (`NodeId`, `Fh`, `RequestId`).
+- `kernel_requests/kernel_numbers.rs` — fuser's numbers of a request turned into the layer's
+  own (`Fh`, `RequestId`).
 - `kernel_requests/lookup_requests.rs` — `LookupRequests`: a name looked up, the attributes
-  of a node, `access`, `statfs`, and the answers the inotify bridge's own requests get.
+  of a node, `access`, `statfs`, and the answers the inotify bridge's own requests get; each
+  answer is found as a value, and the handler replies with it. `[tests]`
 - `kernel_requests/directory_requests.rs` — `DirectoryRequests`: a directory opened, read and
   closed: `readdir` from the listed names alone, `readdirplus` making the entries it answers
-  with.
+  with. `[tests]`
 - `kernel_requests/xattr_requests.rs` — `XattrRequests`: the extended attributes the mount
-  shows.
+  shows, and their names. `[tests]`
 - `kernel_requests/xattr_value.rs` — `to_xattr_value`: the value of an attribute of what is
   in OneDrive, from the entry, its pin and whether it is being downloaded. `[tests]`
-- `kernel_requests/read_requests.rs` — `ReadRequests`: a file opened to be read, and read.
-- `kernel_requests/read_origin.rs` — `choose_read_origin`: where a read's bytes come from
-  (`ReadOrigin`: the backing file, a running download, OneDrive as a range, nothing), from
-  the open file and what is known of it (`ReadFacts`). `[tests]`
+- `kernel_requests/read_requests.rs` — `ReadRequests`: a file opened to be read, and read:
+  where a read's bytes come from is found as a value (`find_read_origin`) — the file a
+  handle was opened from, or its downloaded copy once there is one — and the read is
+  answered from it. `[tests]`
+- `kernel_requests/read_origin.rs` — `ReadOrigin`: where a read's bytes come from, each case
+  carrying what it reads from (the backing file, the file of a running download, the row
+  and range of OneDrive, nothing); `choose_read_origin` decides it for a file that is not
+  downloaded, from its row and a running download. `[tests]`
 - `kernel_requests/write_requests.rs` — `WriteRequests`: everything that changes the folder,
-  and a file closed, each made by a write operation on the write-operation thread; a
-  read-only folder's is refused before it is put there. `[tests]`
+  and the close of a file's last writer, each made by a write operation on the
+  write-operation thread — the time set on a file too; a read-only folder's is refused
+  before it is put there. `write` and `fsync` go into the file a write operation opened,
+  and are answered on the mount's own thread. `[tests]`
 - `kernel_requests/interruptible_reads.rs` — `InterruptibleReads`: the reads that wait for a
   range from OneDrive, by the kernel's request number (`RequestId`), which an `interrupt` or the mount's
   end gives up. `[tests]`
-- `errno.rs` — the errno a program is answered with when the disk refused.
+- `errno.rs` — the errno of a disk error: as a request is answered with it, and as a number
+  for a download.
 - `range_readers.rs` — `RangeReaders`: the files being read as ranges, each holding its slot
   of the pool until a moment after its last read (`ActiveRangeRead`, one read in flight), so
   that what is read goes before the background downloads. `[tests]`
@@ -310,11 +328,11 @@ daemon shows OneDrive.
   file read as ranges, which decides when the file is downloaded whole; no I/O. `[tests]`
 - `file_downloader.rs` — `FileDownloader`: the download of a whole file into a file without a
   name, which then lands; it keeps no state, reports to `DownloadStates` and announces
-  through the inotify bridge.
+  through the inotify bridge. `[tests]`
 - `file_downloader/landing_attempt.rs` — `to_download_result`: what a download reports, from
   how its landing went (`LandingAttempt`). `[tests]`
 - `file_downloader/watermarked_source.rs` — the download's source, telling how far the file
-  is written as its one stream is read.
+  is written as its one stream is read. `[tests]`
 - `pins.rs` — `Pins`: the OneDrive ids that carry a pin, changed with the store, which it
   writes, and what keeps a file; it starts nothing. `[tests]`
 - `pinned_file_downloader.rs` — `PinnedFileDownloader`: every pinned file that is not
@@ -326,7 +344,7 @@ daemon shows OneDrive.
 - `files_interface.rs` — `FilesInterface`: what the daemon's bus interface `Files` asks of a
   mount for a path, over exactly the parts it uses: download, free up (`FreedSpace`), pin,
   how the path stands; the downloaded copies below a path (`DownloadedCopies`); why it
-  refuses (`FilesRefusal`).
+  refuses (`FilesRefusal`). `[tests]`
 - `files_interface/path_status.rs` — `PathStatus`: a path's id and pin, and its sync state,
   whether it is being downloaded and whether it is open for writing, which what is shown of
   it and what a free-up does with it are asked of. `[tests]`
@@ -353,15 +371,17 @@ daemon shows OneDrive.
   came to its name from OneDrive. `[tests]`
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
   the switch to read-only and the scan for unrecorded entries run on, each job under
-  the folder's tree lock. `[tests]`
+  the folder's tree lock. Stopped, it runs nothing any more: the stop waits for the job in
+  flight, drops the jobs that wait, and never waits for the tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's
   writer and what wakes the outbox's worker (`OutboxWaker`), records an event in one
   transaction, and a cycle's batch inside the cycle's own; it does not ask the access mode.
   `[tests]`
 - `conflict_copies.rs` — `ConflictCopies`: the user's own moved aside, to a conflict copy's
   name, where something of OneDrive comes, and a directory removed from OneDrive kept while
-  it holds the user's own; it owns the machine's name. `CycleConflicts`, what a cycle's
-  conflicts left, and `ConflictCopy`, one entry moved aside. `[tests]`
+  it holds the user's own, in either access mode; recorded for the outbox in a read-write
+  folder alone. It owns the machine's name. `CycleConflicts`, what a cycle's conflicts
+  left, and `ConflictCopy`, one entry moved aside. `[tests]`
 - `write_operations.rs` — `WriteOperations`: the operations that change the folder, each the
   access mode asked, what stands at the places looked up, a decision, a step on disk, a
   record and the node ids; it holds the parts they use and owns nothing. A file it opens for
@@ -374,11 +394,15 @@ daemon shows OneDrive.
 - `write_operations/remove_plan.rs` — `plan_remove`: what a remove takes out of the folder
   (`RemovePlan`), or the errno. `[tests]`
 - `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
-  folder: the plan, the backing directory renamed, the event, the node. `[tests]`
-- `write_operations/rename_plan.rs` — `plan_rename`: what a rename moves where and over what
-  (`RenamePlan`, `RenameMode`), or the errno. `[tests]`
-- `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened,
-  closed, cut, and the time it was last modified set. `[tests]`
+  folder: the lookups, the backing directory renamed, the record, the node. `[tests]`
+- `write_operations/rename_plan.rs` — the decisions of a rename: `plan_rename`, what it
+  moves where and over what (`RenamePlan`, `RenameMode`), or the errno;
+  `choose_removed_at_new_place`, what is removed there before the move
+  (`BackingDirectoryMove`); `describe_rename`, what it is recorded as. `[tests]`
+- `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened with
+  its content or to be overwritten, closed, cut, and the time it was last modified set;
+  what a write and the last close are recorded as (`describe_file_write`,
+  `describe_last_close`). `[tests]`
 - `unrecorded_entry_scan.rs` — `UnrecordedEntryScan`: the local-only entries the outbox has
   no row for, found by one walk and recorded once the folder takes changes. `[tests]`
 - `cycle_step.rs` — `CycleStep`: the step of a cycle of the delta listing over the backing
