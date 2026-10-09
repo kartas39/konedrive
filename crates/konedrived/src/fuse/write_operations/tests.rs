@@ -16,7 +16,7 @@ use crate::fuse::access_mode::AccessMode;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::{DirectoryContents, EntryState, FileSyncState};
-use crate::fuse::node_lookup::NodeLookup;
+use crate::fuse::node_resolver::NodeResolver;
 use crate::fuse::open_writers::OpenWriters;
 use crate::fuse::outbox_recorder::OutboxRecorder;
 use crate::fuse::upload_rules::tests::rules;
@@ -28,7 +28,7 @@ pub(super) struct Folder {
     pub(super) store: Store,
     pub(super) directory_contents: Arc<DirectoryContents>,
     pub(super) backing_directory: Arc<BackingDirectory>,
-    pub(super) node_lookup: Arc<NodeLookup>,
+    pub(super) node_resolver: Arc<NodeResolver>,
     pub(super) open_writers: Arc<OpenWriters>,
     pub(super) access_mode: Arc<AccessMode>,
     pub(super) ops: WriteOperations,
@@ -46,12 +46,12 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let store = Store::new(written);
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
     let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));
-    let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents)));
+    let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
     let access_mode = Arc::new(AccessMode::read_write());
     let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&access_mode)).unwrap());
     let open_writers = Arc::new(OpenWriters::default());
-    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_lookup), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()), Arc::clone(&access_mode));
-    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_lookup, open_writers, access_mode, ops }
+    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_resolver), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()), Arc::clone(&access_mode));
+    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_resolver, open_writers, access_mode, ops }
 }
 
 impl Folder {
@@ -67,8 +67,8 @@ impl Folder {
 
     /// The node id of what is `name` in the directory node `parent`.
     pub(super) fn node_id(&self, parent: u64, name: &str) -> u64 {
-        let directory = self.node_lookup.find_directory(parent).unwrap();
-        self.node_lookup.assign_node_id(&self.directory_contents.find_entry(&directory, name).unwrap(), parent)
+        let directory = self.node_resolver.find_directory(parent).unwrap();
+        self.node_resolver.assign_node_id(&self.directory_contents.find_entry(&directory, name).unwrap(), parent)
     }
 
     /// The node id of `docs`.

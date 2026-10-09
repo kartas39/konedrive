@@ -3,7 +3,7 @@
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: what each
 //! directory holds ([`DirectoryContents`]), the disk ([`BackingDirectory`]), the node ids
-//! ([`NodeLookup`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`],
+//! ([`NodeResolver`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`],
 //! the [`UploadRules`] and the [`AccessMode`]. It owns no state of its own. Each operation is the same short
 //! sequence of steps:
 //!
@@ -13,7 +13,7 @@
 //! 3. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
 //!    failure what was done on disk is undone and the program is answered `EIO`
 //!    ([`WriteOperations::record_or_undo`]);
-//! 4. the node ids, through the node lookup.
+//! 4. the node ids, through the node resolver.
 //!
 //! An operation never touches the table of open files: one that opens a file returns it
 //! ([`OpenFile`](super::open_files::OpenFile)), and the request that asked keeps it.
@@ -35,7 +35,7 @@ use super::backing_directory::BackingDirectory;
 use super::detections::FolderEvent;
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
-use super::node_lookup::NodeLookup;
+use super::node_resolver::NodeResolver;
 use super::open_writers::OpenWriters;
 use super::outbox_recorder::OutboxRecorder;
 use super::upload_rules::UploadRules;
@@ -49,7 +49,7 @@ mod write;
 pub(super) struct WriteOperations {
     directory_contents: Arc<DirectoryContents>,
     backing_directory: Arc<BackingDirectory>,
-    node_lookup: Arc<NodeLookup>,
+    node_resolver: Arc<NodeResolver>,
     open_writers: Arc<OpenWriters>,
     outbox_recorder: Arc<OutboxRecorder>,
     upload_rules: Arc<UploadRules>,
@@ -60,13 +60,13 @@ impl WriteOperations {
     pub(super) fn new(
         directory_contents: Arc<DirectoryContents>,
         backing_directory: Arc<BackingDirectory>,
-        node_lookup: Arc<NodeLookup>,
+        node_resolver: Arc<NodeResolver>,
         open_writers: Arc<OpenWriters>,
         outbox_recorder: Arc<OutboxRecorder>,
         upload_rules: Arc<UploadRules>,
         access_mode: Arc<AccessMode>,
     ) -> Self {
-        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, upload_rules, access_mode }
+        WriteOperations { directory_contents, backing_directory, node_resolver, open_writers, outbox_recorder, upload_rules, access_mode }
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.

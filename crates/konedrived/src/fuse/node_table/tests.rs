@@ -48,7 +48,7 @@ fn a_local_only_entry_that_gets_into_onedrive_keeps_its_node_id() {
     let file = node_table.assign(local_only(42, 1), 1, "new.txt");
     node_table.rekey(&local_only(42, 1), in_onedrive("N"));
     assert_eq!(node_table.assign(in_onedrive("N"), 1, "new.txt"), file);
-    assert_eq!(node_table.node_ids.get(&local_only(42, 1)), None);
+    assert_eq!(node_table.find_node_id(&local_only(42, 1)), None);
 }
 
 /// The filesystem gives the inode number of a removed file to the next one made. The two are
@@ -66,11 +66,11 @@ fn two_local_only_entries_that_had_one_inode_number_have_two_node_ids() {
 /// The node of a removed local-only entry is dropped whole: nothing is left of it, and the
 /// next entry gets a node id of its own.
 #[test]
-fn a_forgotten_key_leaves_nothing_behind() {
+fn a_dropped_node_leaves_nothing_behind() {
     let mut node_table = NodeTable::new();
     let gone = node_table.assign(local_only(42, 1), 1, "a.txt");
-    node_table.forget(&local_only(42, 1));
-    assert!(node_table.nodes.is_empty() && node_table.node_ids.is_empty());
+    node_table.drop_node(&local_only(42, 1));
+    assert!(node_table.find_record(gone).is_none() && node_table.find_node_id(&local_only(42, 1)).is_none());
     assert_eq!(node_table.find_path(gone), None);
     assert_ne!(node_table.assign(local_only(42, 1), 1, "a.txt"), gone);
 }

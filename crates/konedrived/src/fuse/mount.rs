@@ -9,15 +9,15 @@
 //!
 //! 1. [`BackingDirectory`]: opened before the mount lies over it;
 //! 2. [`DirectoryContents`]: over the store's reader and the backing directory;
-//! 3. [`NodeLookup`]: over the directory contents;
+//! 3. [`NodeResolver`]: over the directory contents;
 //! 4. [`AccessMode`], read-only at first;
 //! 5. [`OutboxRecorder`]: the store's writer, the tree lock, the access mode;
 //! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
 //!    contents, the rules;
 //! 7. [`OpenWriters`], then [`WriteOperations`]: the directory contents, the backing
-//!    directory, the node lookup, the open writers, the recorder, the rules, the access mode;
+//!    directory, the node resolver, the open writers, the recorder, the rules, the access mode;
 //! 8. [`DownloadStates`], and [`Pins`] over the directory contents;
-//! 9. [`InotifyBridge`]: the node lookup and the directory contents — its thread is not
+//! 9. [`InotifyBridge`]: the node resolver and the directory contents — its thread is not
 //!    started yet;
 //! 10. [`FileDownloader`]: the backing directory, the directory contents, the download
 //!     states, and the way to announce a file's change, which is the bridge's;
@@ -50,7 +50,7 @@ use super::file_downloader::{FileChangeAnnouncer, FileDownloader};
 use super::files_interface::{FilesInterface, FilesRefusal, FreedSpace, PathStatus};
 use super::inotify_bridge::{InotifyBridge, RemoteChange};
 use super::kernel_requests::{InterruptibleReads, KernelRequests};
-use super::node_lookup::NodeLookup;
+use super::node_resolver::NodeResolver;
 use super::open_files::OpenFiles;
 use super::open_writers::OpenWriters;
 use super::outbox_recorder::OutboxRecorder;
@@ -150,7 +150,7 @@ impl Mount {
             // Before the mount: afterwards this path is the mount.
             let backing_directory = Arc::new(BackingDirectory::open(&folder)?);
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(to_io_error)?, Arc::clone(&backing_directory)));
-            let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents)));
+            let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
             let access_mode = Arc::new(AccessMode::read_only());
             let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock, Arc::clone(&access_mode))?);
             let upload_rules = Arc::new(UploadRules::new(write_setup.ignore));
@@ -159,7 +159,7 @@ impl Mount {
             let write_operations = Arc::new(WriteOperations::new(
                 Arc::clone(&directory_contents),
                 Arc::clone(&backing_directory),
-                Arc::clone(&node_lookup),
+                Arc::clone(&node_resolver),
                 Arc::clone(&open_writers),
                 Arc::clone(&outbox_recorder),
                 upload_rules,
@@ -167,7 +167,7 @@ impl Mount {
             ));
             let download_states = Arc::new(DownloadStates::new(download_after));
             let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
-            let inotify_bridge = Arc::new(InotifyBridge::new(folder.clone(), Arc::clone(&node_lookup), Arc::clone(&directory_contents)));
+            let inotify_bridge = Arc::new(InotifyBridge::new(folder.clone(), Arc::clone(&node_resolver), Arc::clone(&directory_contents)));
             // All the downloader knows of the bridge: the way to announce a file's change.
             let announcing = Arc::clone(&inotify_bridge);
             let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| announcing.announce(vec![RemoteChange::ContentChanged { rel, id }]));
@@ -201,7 +201,7 @@ impl Mount {
                 access_mode: Arc::clone(&access_mode),
                 backing_directory: Arc::clone(&backing_directory),
                 directory_contents: Arc::clone(&directory_contents),
-                node_lookup,
+                node_resolver,
                 open_files,
                 open_writers,
                 outbox_recorder: Arc::clone(&outbox_recorder),

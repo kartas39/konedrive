@@ -30,7 +30,7 @@ fn answer_from_file(file: &File, offset: u64, size: u32, reply: ReplyData) {
 impl KernelRequests {
     /// Opening to read downloads nothing: a program may open a file and never read it.
     pub(super) fn answer_open_to_read(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        let Some((entry, rel)) = self.node_lookup.find_entry(ino.0) else { return reply.error(Errno::ENOENT) };
+        let Some((entry, rel)) = self.node_resolver.find_entry(ino.0) else { return reply.error(Errno::ENOENT) };
         // What is in OneDrive and not downloaded has no file in the backing directory.
         let on_disk = !matches!(entry.state, EntryState::File(FileSyncState::RemoteOnly(_)) | EntryState::Directory(DirectorySyncState::Synced(_)));
         let file_on_disk = if on_disk {

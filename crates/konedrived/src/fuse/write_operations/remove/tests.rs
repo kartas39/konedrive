@@ -21,7 +21,7 @@ fn a_local_only_file_removed_is_forgotten_by_the_outbox() {
     let node_id = f.node_id(1, "new.txt");
     f.ops.remove(1, "new.txt", false).unwrap();
     assert!(!f.disk.join("new.txt").exists() && f.rows().is_empty());
-    assert!(f.node_lookup.find_entry(node_id).is_none() && f.node_lookup.find_parent(node_id).is_none());
+    assert!(f.node_resolver.find_entry(node_id).is_none() && f.node_resolver.find_parent(node_id).is_none());
 }
 
 #[test]

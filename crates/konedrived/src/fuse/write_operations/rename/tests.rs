@@ -45,7 +45,7 @@ fn a_local_only_file_saved_over_a_onedrive_file_is_that_files_new_content() {
     f.ops.rename(1, "a.new", 1, "a.txt", false).unwrap();
     assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    assert_eq!(f.node_lookup.find_node_id("A"), Some(node_id));
+    assert_eq!(f.node_resolver.find_node_id("A"), Some(node_id));
     assert_eq!(f.shown("a.txt"), Some(Some("A".into())));
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
 }

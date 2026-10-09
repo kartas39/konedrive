@@ -31,10 +31,10 @@ impl KernelRequests {
 
     /// Answers with the entry `name` of `parent`, as the folder has it now.
     pub(super) fn answer_with_entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let found = self.node_lookup.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| self.directory_contents.find_entry(&dir, name));
+        let found = self.node_resolver.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| self.directory_contents.find_entry(&dir, name));
         match found {
             Some(entry) => {
-                let node_id = self.node_lookup.assign_node_id(&entry, parent.0);
+                let node_id = self.node_resolver.assign_node_id(&entry, parent.0);
                 reply.entry(&TTL, &self.attributes_of(&entry, node_id), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
@@ -57,7 +57,7 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_getattr(&self, ino: INodeNo, reply: ReplyAttr) {
-        match self.node_lookup.find_entry(ino.0) {
+        match self.node_resolver.find_entry(ino.0) {
             Some((entry, _)) => reply.attr(&TTL, &self.attributes_of(&entry, ino.0)),
             None => reply.error(Errno::ENOENT),
         }

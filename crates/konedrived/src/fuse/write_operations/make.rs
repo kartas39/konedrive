@@ -54,7 +54,7 @@ impl WriteOperations {
                 DirectoryEntry::from_local_only(local_only)
             }
         };
-        let node_id = self.node_lookup.assign_node_id(&entry, parent);
+        let node_id = self.node_resolver.assign_node_id(&entry, parent);
         let opened = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
@@ -69,7 +69,7 @@ impl WriteOperations {
     /// manager's trash in the folder itself are made.
     fn check_make(&self, parent: u64, name: &str, directory: bool) -> Result<DirectoryReference, Errno> {
         self.access_mode.check_read_write()?;
-        let parent_directory = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         if self.upload_rules.daemon_owned(name) || (directory && parent == 1 && self.upload_rules.is_trash(name)) {
             return Err(Errno::EPERM);
         }

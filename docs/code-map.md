@@ -227,7 +227,7 @@ daemon shows OneDrive.
   at a path, and the directories down to a path marked with the ids the mount shows there.
 - `node_table.rs` — `NodeTable`: the node ids given to the kernel, each under a `NodeKey` —
   in OneDrive by its id, or local only by its file handle — and its place. `[tests]`
-- `node_lookup.rs` — `NodeLookup`: over the directory contents, and owning the node table:
+- `node_resolver.rs` — `NodeResolver`: over the directory contents, and owning the node table:
   the entry a node id stands for now and the node id of an entry or of an entry's source; a
   local-only entry that got into OneDrive keeps its node id. `[tests]`
 - `attributes.rs` — the attributes the mount gives the kernel for a name, a function of a

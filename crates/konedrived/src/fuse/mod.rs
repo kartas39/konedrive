@@ -29,14 +29,14 @@
 //!   by its descriptor) and [`unsent_changes`] (what was moved, removed or changed here and
 //!   is not sent yet) depend on nothing; [`directory_contents`] (what each directory of the
 //!   mount holds, each entry with its sync state) is over those two; [`node_table`] holds the
-//!   node ids given to the kernel, and [`node_lookup`] is over the directory contents and
+//!   node ids given to the kernel, and [`node_resolver`] is over the directory contents and
 //!   owns the table; [`access_mode`] holds whether programs may change the folder, and
 //!   [`attributes`] is a function of an entry and the access mode.
 //! - A change a program makes: [`upload_rules`] (what is uploaded at all) and [`detections`]
 //!   (what a change is recorded as, a function of typed events) depend on nothing but the
 //!   store's facts; the [`outbox_recorder`] records them on its own thread;
 //!   [`write_operations`] are the operations themselves, over the directory contents, the
-//!   backing directory, the node lookup, the [`open_writers`], the recorder and the rules.
+//!   backing directory, the node resolver, the [`open_writers`], the recorder and the rules.
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and fetches the ranges; [`download_states`] holds the state of each file's download and
 //!   does no I/O; [`file_downloader`] downloads a file whole, over the backing directory,
@@ -70,7 +70,7 @@ mod range_readers;
 mod remote_changes;
 mod upload_rules;
 mod outbox_recorder;
-mod node_lookup;
+mod node_resolver;
 mod backing_directory;
 mod directory_contents;
 mod write_operations;

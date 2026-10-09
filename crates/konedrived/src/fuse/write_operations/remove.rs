@@ -15,7 +15,7 @@ impl WriteOperations {
     /// local-only entry is forgotten there.
     pub(in crate::fuse) fn remove(&self, parent: u64, name: &str, directory: bool) -> Result<(), Errno> {
         self.access_mode.check_read_write()?;
-        let parent_directory = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         let entry = self.directory_contents.find_entry(&parent_directory, name).ok_or(Errno::ENOENT)?;
         match (&entry.state, directory) {
             (EntryState::Directory(_), false) => return Err(Errno::EISDIR),
@@ -43,7 +43,7 @@ impl WriteOperations {
             None => self.backing_directory.remove_file(&rel).map_err(|e| to_errno(&e))?,
         }
         if let Some(local_only) = entry.local_only() {
-            self.node_lookup.forget(&local_only.on_disk.handle);
+            self.node_resolver.drop_node(&local_only.on_disk.handle);
         }
         Ok(())
     }

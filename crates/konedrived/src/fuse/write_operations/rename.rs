@@ -84,8 +84,8 @@ impl WriteOperations {
     /// is its own.
     fn check_rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
         self.access_mode.check_read_write()?;
-        let from_directory = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
-        let to_directory = self.node_lookup.find_directory(new_parent).ok_or(Errno::ENOENT)?;
+        let from_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let to_directory = self.node_resolver.find_directory(new_parent).ok_or(Errno::ENOENT)?;
         if self.upload_rules.daemon_owned(new_name) {
             return Err(Errno::EPERM);
         }
@@ -109,7 +109,7 @@ impl WriteOperations {
             return Err(Errno::EXDEV);
         }
         let uploaded = !self.stays_local(&to_directory, new_name);
-        let node_id = self.node_lookup.assign_node_id(&source, parent);
+        let node_id = self.node_resolver.assign_node_id(&source, parent);
         let open = self.open_writers.is_open(node_id);
         Ok(Some(RenamePlan { source, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
     }
@@ -164,9 +164,9 @@ impl WriteOperations {
             let _ = self.backing_directory.mark_downloaded_copy(&plan.to(), over);
             (&file.on_disk.handle, over)
         });
-        self.node_lookup.move_node(plan.node_id, plan.to_node, &plan.to_name, taken);
+        self.node_resolver.move_node(plan.node_id, plan.to_node, &plan.to_name, taken);
         if let Some(displaced) = plan.target.as_ref().and_then(DirectoryEntry::local_only) {
-            self.node_lookup.forget(&displaced.on_disk.handle);
+            self.node_resolver.drop_node(&displaced.on_disk.handle);
         }
     }
 }

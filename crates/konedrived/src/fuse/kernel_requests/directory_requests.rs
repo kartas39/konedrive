@@ -20,7 +20,7 @@ impl KernelRequests {
     /// made from: listed when it is read from its start, and the same for every part of the
     /// reading after it.
     fn find_entry_sources(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(DirectoryReference, Arc<Vec<EntrySource>>)> {
-        let directory = self.node_lookup.find_directory(ino.0)?;
+        let directory = self.node_resolver.find_directory(ino.0)?;
         let kept = self.open_files.find_entry_sources(fh.0).filter(|_| offset > 0);
         let entry_sources = kept.unwrap_or_else(|| {
             let entry_sources = Arc::new(self.directory_contents.list_entry_sources(&directory));
@@ -39,7 +39,7 @@ impl KernelRequests {
     pub(super) fn answer_readdir(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
         let Some((_, entry_sources)) = self.find_entry_sources(ino, fh, offset) else { return reply.ok() };
         for (i, source) in entry_sources.iter().enumerate().skip(offset as usize) {
-            let child = self.node_lookup.assign_node_id_of_source(source, ino.0);
+            let child = self.node_resolver.assign_node_id_of_source(source, ino.0);
             let kind = match source.kind() {
                 EntryKind::Directory => FileType::Directory,
                 EntryKind::File => FileType::RegularFile,
@@ -57,7 +57,7 @@ impl KernelRequests {
         let Some((directory, entry_sources)) = self.find_entry_sources(ino, fh, offset) else { return reply.ok() };
         for (i, source) in entry_sources.iter().enumerate().skip(offset as usize) {
             let entry = self.directory_contents.describe_source(source, &directory);
-            let child = self.node_lookup.assign_node_id(&entry, ino.0);
+            let child = self.node_resolver.assign_node_id(&entry, ino.0);
             let attr = self.attributes_of(&entry, child);
             if reply.add(INodeNo(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;

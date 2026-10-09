@@ -38,7 +38,7 @@ use super::download_states::DownloadStates;
 use super::errno::to_errno;
 use super::file_downloader::FileDownloader;
 use super::inotify_bridge::InotifyBridge;
-use super::node_lookup::NodeLookup;
+use super::node_resolver::NodeResolver;
 use super::open_files::OpenFiles;
 use super::open_writers::OpenWriters;
 use super::outbox_recorder::OutboxRecorder;
@@ -67,7 +67,7 @@ pub(super) struct KernelRequests {
     pub(super) access_mode: Arc<AccessMode>,
     pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) directory_contents: Arc<DirectoryContents>,
-    pub(super) node_lookup: Arc<NodeLookup>,
+    pub(super) node_resolver: Arc<NodeResolver>,
     pub(super) open_files: Arc<OpenFiles>,
     pub(super) open_writers: Arc<OpenWriters>,
     pub(super) outbox_recorder: Arc<OutboxRecorder>,
@@ -94,7 +94,7 @@ impl KernelRequests {
     /// Whether the folder holds no `name` in the directory node `parent`: what the inotify
     /// bridge removes is gone from the store already.
     fn is_absent(&self, parent: INodeNo, name: &OsStr) -> bool {
-        self.node_lookup.find_directory(parent.0).zip(name.to_str()).is_none_or(|(dir, name)| self.directory_contents.find_entry(&dir, name).is_none())
+        self.node_resolver.find_directory(parent.0).zip(name.to_str()).is_none_or(|(dir, name)| self.directory_contents.find_entry(&dir, name).is_none())
     }
 
     /// Answers a remove the inotify bridge announces: done, as the name is gone already.

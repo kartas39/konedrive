@@ -13,7 +13,7 @@
 //! answered what was true before the change ([`find_name_before_change`]) — a name that
 //! appeared as absent, and one that vanished as still there.
 //!
-//! The node ids come from the [`NodeLookup`]: a directory the kernel was never told of has
+//! The node ids come from the [`NodeResolver`]: a directory the kernel was never told of has
 //! nobody watching it, and nothing is announced in it.
 
 use std::ffi::{CString, OsStr};
@@ -27,7 +27,7 @@ use fuser::INodeNo;
 use konedrive_tree::Kind;
 
 use super::directory_contents::DirectoryContents;
-use super::node_lookup::NodeLookup;
+use super::node_resolver::NodeResolver;
 
 /// A change from OneDrive, or of what the mount shows of a OneDrive file, to announce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub(super) fn find_name_before_change(in_progress: Option<&AnnouncementInProgres
 pub(super) struct InotifyBridge {
     /// The folder's path, which is the mount: where the changes are made.
     folder: PathBuf,
-    node_lookup: Arc<NodeLookup>,
+    node_resolver: Arc<NodeResolver>,
     directory_contents: Arc<DirectoryContents>,
     /// The way to the thread; `None` once the bridge is stopped.
     changes: Mutex<Option<mpsc::Sender<Vec<RemoteChange>>>>,
@@ -93,11 +93,11 @@ pub(super) struct InotifyBridge {
 impl InotifyBridge {
     /// The bridge of the folder mounted at `folder`. What it is given to announce waits
     /// until its thread is started ([`start`](Self::start)), once the mount answers.
-    pub(super) fn new(folder: PathBuf, node_lookup: Arc<NodeLookup>, directory_contents: Arc<DirectoryContents>) -> Self {
+    pub(super) fn new(folder: PathBuf, node_resolver: Arc<NodeResolver>, directory_contents: Arc<DirectoryContents>) -> Self {
         let (changes, queued) = mpsc::channel();
         InotifyBridge {
             folder,
-            node_lookup,
+            node_resolver,
             directory_contents,
             changes: Mutex::new(Some(changes)),
             queued: Mutex::new(Some(queued)),
@@ -160,7 +160,7 @@ impl InotifyBridge {
         if self.directory_contents.find_root_id().as_deref() == Some(id) {
             return Some(1);
         }
-        self.node_lookup.find_node_id(id)
+        self.node_resolver.find_node_id(id)
     }
 
     /// The thread: makes each change by path through the mount, which answers it from the
@@ -190,7 +190,7 @@ impl InotifyBridge {
                     }
                     RemoteChange::NameVanished { rel, kind, id, parent_id } => {
                         // A name the kernel was never told of has nobody watching it go.
-                        let (Some(parent), Some(node_id)) = (self.find_directory_node_id(parent_id.as_deref()), self.node_lookup.find_node_id(&id)) else { continue };
+                        let (Some(parent), Some(node_id)) = (self.find_directory_node_id(parent_id.as_deref()), self.node_resolver.find_node_id(&id)) else { continue };
                         begin(AnnouncementInProgress::NameVanishing { parent, name: name(&rel), node_id, kind });
                         match kind {
                             Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
@@ -199,7 +199,7 @@ impl InotifyBridge {
                     }
                     RemoteChange::ContentChanged { rel, id } => {
                         // The kernel's cached pages of the old content go first.
-                        if let Some(node_id) = self.node_lookup.find_node_id(&id) {
+                        if let Some(node_id) = self.node_resolver.find_node_id(&id) {
                             let _ = notifier.inval_inode(INodeNo(node_id), 0, 0);
                         }
                         libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);

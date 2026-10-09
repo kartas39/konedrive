@@ -23,7 +23,7 @@ impl WriteOperations {
     /// downloaded first: a OneDrive file that is not downloaded and is not cut to nothing
     /// (`empty`).
     pub(in crate::fuse) fn needs_download(&self, node_id: u64, empty: bool) -> Option<(Row, PathBuf)> {
-        let (entry, rel) = self.node_lookup.find_entry(node_id)?;
+        let (entry, rel) = self.node_resolver.find_entry(node_id)?;
         match entry.state {
             EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some((row, rel)),
             _ => None,
@@ -33,7 +33,7 @@ impl WriteOperations {
     /// Opens the node `node_id` for writing, cut to nothing when `truncate`.
     pub(in crate::fuse) fn open_to_write(&self, node_id: u64, truncate: bool) -> Result<OpenFile, Errno> {
         self.access_mode.check_read_write()?;
-        let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
+        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, truncate)?;
         let backing_file = self.backing_directory.write(&rel, truncate).map_err(|e| to_errno(&e))?;
@@ -52,7 +52,7 @@ impl WriteOperations {
     /// The last writer of the node `node_id` closed it: its content is ready to be sent when
     /// it was `changed`; when nothing was written, the outbox lets go of a OneDrive file.
     pub(in crate::fuse) fn close_last_writer(&self, node_id: u64, changed: bool) {
-        let untouched = self.node_lookup.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
+        let untouched = self.node_resolver.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
         // A local-only file is sent all the same: it was never sent.
         let Some(untouched) = untouched else {
             let _ = self.record_content(node_id, LocalOnlyFileWrite::Closed);
@@ -60,10 +60,10 @@ impl WriteOperations {
         };
         // A node that no longer stands for the file — its name was taken over by a file saved
         // over it — says nothing of the file's content.
-        if self.node_lookup.find_node_id(&untouched.id) != Some(node_id) {
+        if self.node_resolver.find_node_id(&untouched.id) != Some(node_id) {
             return;
         }
-        let Some((_, parent_directory)) = self.node_lookup.find_parent(node_id) else { return };
+        let Some((_, parent_directory)) = self.node_resolver.find_parent(node_id) else { return };
         let event = FileWritten::InOneDrive { id: untouched.id.clone(), place: EntryPlace::new(&parent_directory, &untouched.name), write: OneDriveFileWrite::ClosedUntouched };
         if let Err(e) = self.outbox_recorder.record(event) {
             tracing::warn!("a file closed unchanged could not be let go of: {e}");
@@ -73,7 +73,7 @@ impl WriteOperations {
     /// Cuts or extends the node `node_id` to `size`.
     pub(in crate::fuse) fn truncate(&self, node_id: u64, size: u64) -> Result<(), Errno> {
         self.access_mode.check_read_write()?;
-        let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
+        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, size == 0)?;
         let backing_file = self.backing_directory.write(&rel, false).map_err(|e| to_errno(&e))?;
@@ -111,7 +111,7 @@ impl WriteOperations {
     /// still being written, closed, or cut.
     fn record_content(&self, node_id: u64, write: LocalOnlyFileWrite) -> Result<(), Errno> {
         // Gone since: removed while it was open.
-        let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_lookup.find_entry(node_id), self.node_lookup.find_parent(node_id)) else { return Ok(()) };
+        let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
         if let Some(local_only) = entry.local_only() {
             if self.stays_local(&parent_directory, &entry.name) {
                 return Ok(());

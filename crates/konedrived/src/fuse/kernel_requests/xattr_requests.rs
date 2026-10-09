@@ -21,7 +21,7 @@ impl KernelRequests {
             // The folder's own: what its registration and its first cycle wrote on it.
             return self.backing_directory.read_attribute(Path::new(""), name);
         }
-        let (entry, rel) = self.node_lookup.find_entry(ino.0)?;
+        let (entry, rel) = self.node_resolver.find_entry(ino.0)?;
         if name == XATTR_SYNC {
             return self.backing_directory.read_attribute(&rel, name);
         }

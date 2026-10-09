@@ -2,12 +2,12 @@
 //!
 //! The kernel names what it asks about by node id. [`NodeTable`] is the table alone: it
 //! knows a key and a place for each node id, and nothing of the store or the disk.
-//! [`NodeLookup`] is the part over it and the [`DirectoryContents`]: it gives an entry its
+//! [`NodeResolver`] is the part over it and the [`DirectoryContents`]: it gives an entry its
 //! node id, finds the entry a node id stands for now — what is in OneDrive is looked up again
 //! in the directory contents, a local-only entry by its file handle in the backing directory
 //! — and keeps the node id of a local-only entry once it is in OneDrive.
 //!
-//! The node lookup owns the table: whoever needs a node id, or changes a node's key or
+//! The node resolver owns the table: whoever needs a node id, or changes a node's key or
 //! place, asks here.
 
 use std::path::{Path, PathBuf};
@@ -38,15 +38,15 @@ fn key_of(entry: &DirectoryEntry) -> NodeKey {
     }
 }
 
-pub(super) struct NodeLookup {
+pub(super) struct NodeResolver {
     directory_contents: Arc<DirectoryContents>,
     node_table: Mutex<NodeTable>,
 }
 
-impl NodeLookup {
-    /// The node lookup of a folder the kernel was told nothing of yet.
+impl NodeResolver {
+    /// The node resolver of a folder the kernel was told nothing of yet.
     pub(super) fn new(directory_contents: Arc<DirectoryContents>) -> Self {
-        NodeLookup { directory_contents, node_table: Mutex::new(NodeTable::new()) }
+        NodeResolver { directory_contents, node_table: Mutex::new(NodeTable::new()) }
     }
 
     /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a
@@ -72,7 +72,7 @@ impl NodeLookup {
     /// entry that got into OneDrive keeps the node id it had.
     fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: u64) -> u64 {
         let mut node_table = crate::panic::lock(&self.node_table);
-        if matches!(key, NodeKey::InOneDrive(_)) && !node_table.node_ids.contains_key(&key) {
+        if matches!(key, NodeKey::InOneDrive(_)) && !node_table.has_key(&key) {
             let on_disk = node_table.find_path(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
             if let Some(handle) = on_disk {
                 node_table.rekey(&NodeKey::LocalOnly(handle), key.clone());
@@ -85,8 +85,8 @@ impl NodeLookup {
     fn find_node(&self, node_id: u64) -> Option<NodeTarget> {
         let (key, rel, name, parent) = {
             let node_table = crate::panic::lock(&self.node_table);
-            let node = node_table.nodes.get(&node_id)?;
-            (node.key.clone(), node_table.find_path(node_id)?, node.place.1.clone(), node.place.0)
+            let record = node_table.find_record(node_id)?;
+            (record.key.clone(), node_table.find_path(node_id)?, record.name.clone(), record.parent_node_id)
         };
         match key {
             NodeKey::InOneDrive(id) => {
@@ -138,13 +138,13 @@ impl NodeLookup {
 
     /// The directory the node `node_id` is in, and that directory's node id.
     pub(super) fn find_parent(&self, node_id: u64) -> Option<(u64, DirectoryReference)> {
-        let parent = crate::panic::lock(&self.node_table).nodes.get(&node_id)?.place.0;
+        let parent = crate::panic::lock(&self.node_table).find_record(node_id)?.parent_node_id;
         Some((parent, self.find_directory(parent)?))
     }
 
     /// The node id that stands for the OneDrive id `id`, when the kernel was told of one.
     pub(super) fn find_node_id(&self, id: &str) -> Option<u64> {
-        crate::panic::lock(&self.node_table).node_ids.get(&NodeKey::InOneDrive(id.to_owned())).copied()
+        crate::panic::lock(&self.node_table).find_node_id(&NodeKey::InOneDrive(id.to_owned()))
     }
 
     /// The node `node_id` is `name` in the directory node `parent` now. `taken`: it is the
@@ -164,8 +164,8 @@ impl NodeLookup {
     /// file open goes on through its own descriptor, which needs no node; the kernel's later
     /// questions about the node id are answered as of something gone, as they were once the
     /// entry left the disk.
-    pub(super) fn forget(&self, handle: &FileHandle) {
-        crate::panic::lock(&self.node_table).forget(&NodeKey::LocalOnly(handle.clone()));
+    pub(super) fn drop_node(&self, handle: &FileHandle) {
+        crate::panic::lock(&self.node_table).drop_node(&NodeKey::LocalOnly(handle.clone()));
     }
 }
 

@@ -74,7 +74,7 @@ impl KernelRequests {
         }
         self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, directory, false) {
             Ok((entry, _)) => {
-                let node_id = requests.node_lookup.assign_node_id(&entry, parent.0);
+                let node_id = requests.node_resolver.assign_node_id(&entry, parent.0);
                 reply.entry(&TTL, &requests.attributes_of(&entry, node_id), Generation(0))
             }
             Err(e) => reply.error(e),
@@ -88,7 +88,7 @@ impl KernelRequests {
         }
         self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, false, true) {
             Ok((entry, opened)) => {
-                let node_id = requests.node_lookup.assign_node_id(&entry, parent.0);
+                let node_id = requests.node_resolver.assign_node_id(&entry, parent.0);
                 let fh = opened.map_or(0, |opened| requests.open_files.add_file(opened));
                 reply.created(&TTL, &requests.attributes_of(&entry, node_id), Generation(0), FileHandle(fh), FopenFlags::empty())
             }
@@ -141,7 +141,7 @@ impl KernelRequests {
             return reply.error(e);
         }
         let set_mtime = move |requests: &KernelRequests| {
-            let (Some(mtime), Some((_, rel))) = (mtime, requests.node_lookup.find_entry(ino.0)) else { return };
+            let (Some(mtime), Some((_, rel))) = (mtime, requests.node_resolver.find_entry(ino.0)) else { return };
             let at = match mtime {
                 TimeOrNow::SpecificTime(at) => at,
                 TimeOrNow::Now => SystemTime::now(),

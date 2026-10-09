@@ -19,62 +19,82 @@ pub(super) enum NodeKey {
     LocalOnly(FileHandle),
 }
 
-/// The node ids given to the kernel.
+/// The node ids given to the kernel. Only the table itself reads or changes its maps: whoever
+/// needs a node id, a record or a key asks one of its functions.
 pub(super) struct NodeTable {
-    pub(super) nodes: HashMap<u64, Node>,
-    pub(super) node_ids: HashMap<NodeKey, u64>,
+    records: HashMap<u64, NodeRecord>,
+    node_ids: HashMap<NodeKey, u64>,
     /// The node id given last. The root is 1 and is never in the table.
     last_node_id: u64,
 }
 
-pub(super) struct Node {
+/// What the table knows of one node id: what it stands for, and where the kernel was told
+/// it is.
+pub(super) struct NodeRecord {
     pub(super) key: NodeKey,
-    /// The node id of the directory this one is in, and its name there.
-    pub(super) place: (u64, String),
+    /// The node id of the directory this one is in.
+    pub(super) parent_node_id: u64,
+    /// Its name in that directory.
+    pub(super) name: String,
 }
 
 impl NodeTable {
     /// A table that holds no node yet: the root alone is known.
     pub(super) fn new() -> Self {
-        NodeTable { nodes: HashMap::new(), node_ids: HashMap::new(), last_node_id: 1 }
+        NodeTable { records: HashMap::new(), node_ids: HashMap::new(), last_node_id: 1 }
     }
 
-    /// The node id of `key`, which is `name` in the directory node `parent`: the one it has,
-    /// or a new one.
-    pub(super) fn assign(&mut self, key: NodeKey, parent: u64, name: &str) -> u64 {
-        let place = (parent, name.to_owned());
+    /// The node id of `key`, which is `name` in the directory node `parent_node_id`: the one
+    /// it has, or a new one.
+    pub(super) fn assign(&mut self, key: NodeKey, parent_node_id: u64, name: &str) -> u64 {
         if let Some(node_id) = self.node_ids.get(&key) {
-            self.nodes.get_mut(node_id).expect("a node of every known key").place = place;
+            let record = self.records.get_mut(node_id).expect("a record of every known key");
+            (record.parent_node_id, record.name) = (parent_node_id, name.to_owned());
             return *node_id;
         }
         self.last_node_id += 1;
         self.node_ids.insert(key.clone(), self.last_node_id);
-        self.nodes.insert(self.last_node_id, Node { key, place });
+        self.records.insert(self.last_node_id, NodeRecord { key, parent_node_id, name: name.to_owned() });
         self.last_node_id
+    }
+
+    /// Whether the kernel was given a node id for `key`.
+    pub(super) fn has_key(&self, key: &NodeKey) -> bool {
+        self.node_ids.contains_key(key)
+    }
+
+    /// The node id that stands for `key`, when the kernel was given one.
+    pub(super) fn find_node_id(&self, key: &NodeKey) -> Option<u64> {
+        self.node_ids.get(key).copied()
+    }
+
+    /// What the table knows of the node `node_id`.
+    pub(super) fn find_record(&self, node_id: u64) -> Option<&NodeRecord> {
+        self.records.get(&node_id)
     }
 
     /// The node of `was` stands for `now` from here on: a local-only entry that is in
     /// OneDrive now keeps the node id programs hold it by.
     pub(super) fn rekey(&mut self, was: &NodeKey, now: NodeKey) {
         let Some(node_id) = self.node_ids.remove(was) else { return };
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            node.key = now.clone();
+        if let Some(record) = self.records.get_mut(&node_id) {
+            record.key = now.clone();
         }
         self.node_ids.insert(now, node_id);
     }
 
-    /// The node `node_id` is `name` in the directory node `parent` now.
-    pub(super) fn move_node(&mut self, node_id: u64, parent: u64, name: &str) {
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            node.place = (parent, name.to_owned());
+    /// The node `node_id` is `name` in the directory node `parent_node_id` now.
+    pub(super) fn move_node(&mut self, node_id: u64, parent_node_id: u64, name: &str) {
+        if let Some(record) = self.records.get_mut(&node_id) {
+            (record.parent_node_id, record.name) = (parent_node_id, name.to_owned());
         }
     }
 
     /// What `key` stood for is gone, and nothing else is ever that key: its node id and its
-    /// place are dropped. The kernel may still name the node id; it is answered as gone.
-    pub(super) fn forget(&mut self, key: &NodeKey) {
+    /// record are dropped. The kernel may still name the node id; it is answered as gone.
+    pub(super) fn drop_node(&mut self, key: &NodeKey) {
         if let Some(node_id) = self.node_ids.remove(key) {
-            self.nodes.remove(&node_id);
+            self.records.remove(&node_id);
         }
     }
 
@@ -82,9 +102,9 @@ impl NodeTable {
     pub(super) fn find_path(&self, mut node_id: u64) -> Option<PathBuf> {
         let mut names = Vec::new();
         while node_id != 1 {
-            let (parent, name) = &self.nodes.get(&node_id)?.place;
-            names.push(name.as_str());
-            node_id = *parent;
+            let record = self.records.get(&node_id)?;
+            names.push(record.name.as_str());
+            node_id = record.parent_node_id;
         }
         Some(names.iter().rev().collect())
     }
