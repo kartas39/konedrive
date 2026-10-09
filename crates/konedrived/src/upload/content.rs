@@ -517,10 +517,7 @@ impl Job<'_> {
     /// Wherever the file went during the upload — renamed, moved out, deleted
     /// and held open only here, or with another inode at its name (an
     /// editor's backup-and-rewrite save, a move out and back in) — the item is
-    /// the object that was sent, and its handle is recorded: the examination
-    /// then decides it as if the change came just after the commit. Committed
-    /// with no local object, the item could never be proved gone, and a later
-    /// delete would be lost (limitations log F54).
+    /// the object that was sent, and its handle is recorded.
     async fn commit(&self, item: DriveItem) -> Result<Outcome, Fail> {
         let answer = answer_row(&item, Some(self.parent))?;
         let tree = tree(self.e).await;

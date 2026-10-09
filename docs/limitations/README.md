@@ -16,21 +16,10 @@ D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md`
 
 ## What the kernel and the filesystem decide
 
-- [P2](P2.md) — Opening a file while it is leased fails with "operation not permitted"
-- [Z1](Z1.md) — When the helper crashes or is killed, every waiting open reads zeros; while none runs, nothing is intercepted
-- [Z2](Z2.md) — A placeholder moved into a just-created directory can read zeros
-- [Z3](Z3.md) — A hard link or a move out of the folder escapes interception
-- [Z5](Z5.md) — Freeing a file's space while it is still exempt leaves zeros forever
 - [F53](F53.md) — A move is told from a copy only by the recorded inode
-- [F54](F54.md) — A local delete reaches OneDrive only when the helper proves it
 - [F72](F72.md) — A subvolume or mount inside the folder is not synced
-- [F74](F74.md) — Every change in a read-write folder must come from the daemon process
-- [F75](F75.md) — A truncate by path and a write through a mapping are not seen
-- [F120](F120.md) — A placeholder moved out of the folder reads zeros until marked again
-- [F121](F121.md) — A move out is finished only when the object can be reached
 - [F187](F187.md) — A program holding a file open can lose writes when OneDrive removes it
 - [F193](F193.md) — A file saved by rename and moved at once loses its history
-- [F261](F261.md) — After the folder's filesystem changes, an unfinished move out is given up
 - [F16](F16.md) — A rescue fails when the sync folder is itself a mount point
 
 ## What OneDrive and Microsoft decide
@@ -53,8 +42,6 @@ D33) was removed then, and `git log --diff-filter=D -- docs/limitations/<id>.md`
 
 ## What we chose
 
-- [P6](P6.md) — Anything that opens a placeholder downloads the whole file
-- [F47](F47.md) — Removing an account leaves undownloaded files as empty placeholders
 - [F140](F140.md) — A read-only folder with changes waiting to upload stops following OneDrive
 - [F255](F255.md) — A local-only file keeps a folder that OneDrive no longer has
 - [F38](F38.md) — Finding pins means walking the whole folder

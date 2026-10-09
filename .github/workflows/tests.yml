@@ -41,16 +41,12 @@ jobs:
           rustup default "$RUST_VERSION"
           rustc --version
 
-      # dbus-daemon for the tests' private buses. Unprivileged user
-      # namespaces, which Ubuntu restricts through AppArmor, for the test
-      # that mounts a tmpfs in one. Setup only: the tests run without sudo.
+      # dbus-daemon for the tests' private buses. Setup only: the tests run
+      # without sudo.
       - name: Set up the runner
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends dbus-daemon
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
 
       - name: Cache the crates and the test build
         uses: actions/cache@v6

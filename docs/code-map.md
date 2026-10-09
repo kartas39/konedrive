@@ -19,27 +19,25 @@ A change that adds, moves or removes a file changes its line here.
 | Part | What it is |
 |---|---|
 | `crates/konedrived` | The user's daemon: sign-in, the sync, the folder as a FUSE mount, the D-Bus API |
-| `crates/konedrive-helper` | The privileged helper: fanotify permission events, and nothing about OneDrive |
 | `crates/konedrivectl` | The command line: everything the window can do |
 | `crates/konedrive-graph` | Sign-in with Microsoft and everything that talks to Microsoft Graph |
 | `crates/konedrive-tree` | The tree store (SQLite): items, staging, the outbox |
-| `crates/konedrive-fs` | Placeholders on the local filesystem: extended attributes, sparse files, leases, handles |
-| `crates/konedrive-proto` | The messages between the helper and the daemon |
+| `crates/konedrive-fs` | A folder's files on the local filesystem: konedrive's extended attributes and modes, leases, handles, the feature probe |
 | `crates/konedrive-reason` | Why a change is kept back: the reasons of outbox rows and local skips, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
 | `crates/konedrive-text` | What the codes mean, in words: the one catalogue of sentences, and the C++ generated from it |
 | `dbus/` | The D-Bus interfaces as XML: the contract between the daemon and its clients |
 | `app/` | The window and the tray icon (Qt 6, Kirigami) |
 | `dolphin/` | The Dolphin plugins: overlay emblems and the context menu |
-| `tests/vm` | The suite that needs root and a real kernel, run in a virtme-ng VM |
+| `tests/fuse-probe` | The suite of the mount, run in a virtme-ng VM |
 | `tests/write-account` | The guarded harness for the test account |
 | `tests/stress`, `tests/kio` | Tools run by hand: the upload stress run, the KIO probe |
 | `scripts/`, `packaging/`, `.github/` | Building, installing, the RPM packages, the release workflow |
 
-Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `konedrive-reason`
+Which crate uses which, lowest first: `konedrive-fs` and `konedrive-reason`
 (which use nothing); `konedrive-graph`; `konedrive-tree` (uses `konedrive-fs`, and re-exports
 `konedrive-reason` in `outbox`; it does not know `konedrive-graph`); `konedrive-dbus`;
-`konedrive-text` (uses `konedrive-reason` and `konedrive-dbus`); then `konedrive-helper`,
+`konedrive-text` (uses `konedrive-reason` and `konedrive-dbus`); then
 `konedrived` (which uses `konedrive-text` in its tests only) and `konedrivectl`.
 
 ## How each suite is run
@@ -51,10 +49,7 @@ Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `kon
 | The development build's tests | `cargo test -p konedrived -p konedrivectl --features konedrived/dev-tools,konedrivectl/dev-tools` | The token export and the signed-out account (`dbus/token_export.rs`, `dbus/dev_tools.rs`, `konedrivectl dev`) |
 | The window | `cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure` | `app/tests/` |
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
-| The VM suite | `tests/vm/run.sh quick` (ext4); `tests/vm/run.sh full` (btrfs, ext4, xfs) | `tests/vm/scenarios/`: the real helper as root. Only when a change touches the helper path |
-| The helper's unit | `tests/vm/run.sh unit` | `tests/vm/helper_unit_test.sh`: the shipped systemd unit, under systemd in the VM |
-| The helper's installer | `tests/vm/run.sh tests/vm/install_helper_test.sh` | `scripts/install-helper.sh`, as root in the VM |
-| The kernel measurements | `tests/vm/run.sh measure`; `tests/vm/run.sh <binary>` for the built `poc-marks`, `vm-ignore-mark` and `watch-probe` | The probes behind `docs/kernel-behavior-7.2/` |
+| The VM suite | `tests/fuse-probe/run.sh` (`service`, `cli`) | The daemon's service and `konedrivectl` over a folder that is mounted for real, on ext4 in a virtme-ng VM: nothing is mounted on the host |
 | The test account | `konedrive-write-test` (`tests/write-account`) | Writes to OneDrive itself, through the guards; rare, never the user's real account |
 | The structure | `scripts/check-structure.sh` | The files over the advised sizes (listed only), tests outside source files, the daemon's layer order |
 
@@ -65,7 +60,7 @@ Design: [`README.md`](design/README.md) for the processes; each directory below 
 ### `crates/konedrived/`
 
 - `Cargo.toml` — the crate; the features `dev-tools` (the token export) and `fault-injection`
-  (a stall the VM suite arms).
+  (the fake OneDrive and the test support of `sync/`, for the VM suite).
 
 ### `crates/konedrived/src/`
 
@@ -108,7 +103,7 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 - `quota.rs` — the quota of the account's drive, and its figures (`QuotaFigures`). `[tests]`
 - `cache.rs` — the cached profile and quota (`account.json`), shown offline. `[tests]`
 - `secret.rs` — the refresh token's storage in the Secret Service, an item for each account. `[tests]`
-- `testing.rs` — test support, also for `konedrivectl`'s tests and the VM suite: a wallet in
+- `testing.rs` — test support, also for `konedrivectl`'s tests: a wallet in
   memory, and one account with no accounts manager. Built only under the `testing` feature.
 
 ### `crates/konedrived/src/folder/`
@@ -227,6 +222,8 @@ daemon shows OneDrive.
 - `conflict.rs` — where a change from OneDrive meets something the user made here: what is
   kept, and under which name.
 - `announce.rs` — changes told to the kernel through the mount, for whoever watches.
+- `older.rs` — a folder that holds an older konedrive's placeholders: no mount is put over
+  it. `[tests]`
 - `lock.rs` — the folder on disk locked while no mount lies over it; `tidy`, what follows the
   daemon's end. `[tests]`
 
@@ -366,39 +363,6 @@ Integration tests: the daemon over a private bus, Microsoft as wiremock.
 - `dbus_api.rs` — `org.konedrive.Account`, and the introspection against the XML.
 - `mode.rs` — the account's mode.
 
-## `crates/konedrive-helper`: the privileged helper
-
-Design: `hydration.md`; [`SECURITY.md`](../SECURITY.md). Its end-to-end tests are the VM suite.
-
-### `crates/konedrive-helper/`
-
-- `Cargo.toml` — the crate; the feature `fault-injection`, for the VM suite only.
-
-### `crates/konedrive-helper/src/`
-
-- `main.rs` — the startup.
-- `lib.rs` — the modules worth exercising on their own.
-- `shared.rs` — what the helper's threads share, by subject; the hydrations in hand.
-- `shared/registrations.rs` — the registered roots behind their two locks; the count of
-  unregistrations. `[tests]`
-- `shared/daemons.rs` — the connected daemons, and waiting for one. `[tests]`
-- `shared/slots.rs` — a bounded number of places per uid. `[tests]`
-- `shared/refusals.rs` — the throttled log of refusals. `[tests]`
-- `events.rs` — the loop that reads the fanotify group. `[tests]`
-- `events/decision.rs` — what an intercepted open is answered, and carrying it out. `[tests]`
-- `events/hydration.rs` — asking the owner's daemon, and passing its answer on.
-- `connection.rs` — accepting connections, and the connection with one daemon. `[tests]`
-- `registration.rs` — registering and unregistering a root, with its filesystem check.
-  `[tests]`
-- `marks.rs` — the fanotify permission group: marks on directories, ignore marks on files.
-  `[tests]`
-- `roots.rs` — the registered roots, and the rules for what the helper acts on. `[tests]`
-- `jobs.rs` — coalescing: many opens of one file wait on one hydration. `[tests]`
-- `outbox.rs` — everything sent to one daemon, and the thread that sends it. `[tests]`
-- `pool.rs` — a bounded pool of threads that answer permission events.
-- `by_handle.rs` — `OpenByHandle`: a descriptor for an object of the folder. `[tests]`
-- `errno.rs` — `Errno`: the errno of a refusal, and the integer a message carries for it. `[tests]`
-
 ## `crates/konedrivectl`: the command line
 
 Design: `desktop.md`.
@@ -470,11 +434,13 @@ Integration tests: the compiled binary against a daemon on a private bus.
 - `mode_cli.rs` — `account mode`, and the token export's `--read-write`.
 - `version_cli.rs` — `--version`.
 - `sync_cli/main.rs` — the test binary `sync_cli`: its harness.
-- `sync_cli/registration.rs` — register, populate, hydrate, dehydrate.
+- `sync_cli/registration.rs` — what `sync register` refuses, and a path that does not exist.
 - `sync_cli/status.rs` — `sync status`, skipped items.
-- `sync_cli/activity.rs` — activity, transfers, conflicts, free-up.
+- `sync_cli/activity.rs` — transfers, conflicts, `sync open`, refresh.
 - `sync_cli/refusals.rs` — the named refusals, explained.
-- `sync_cli/settings.rs` — pause, the ignore list, the settings, the upload queue.
+- `sync_cli/settings.rs` — pause, the ignore list, the settings.
+- `sync_cli/fuse.rs` — a mounted folder driven from the command line; run in the VM only
+  (`tests/fuse-probe/run.sh cli`).
 - `sync_cli/token_export.rs` — `dev export-access-token`.
 - `sync_cli/wording.rs` — the wording shared with the window.
 
@@ -524,11 +490,10 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   written. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
-- `schema/migrations.rs` — the numbered steps that bring an older store to today's schema.
+- `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to
+  today's schema: none yet.
 - `meta.rs` — what the store keeps one of: every key of `meta`, and its typed accessors.
 - `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
-- `plan.rs` — the plan of a reconcile, item by item: the base's row and place, the new tree's.
-  `[tests]`
 - `read.rs` — `ReadStore`: the store as its read-only connection gives it.
 - `forget.rs` — forgetting local objects: the one walk of a subtree, and the rule that a row the
   base does not place records none.
@@ -542,18 +507,18 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `thumbs.rs` — the thumbnails still to make, and what each cached one was made for.
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
 - `outbox/stored.rs` — a row in the database: read, written and removed in one place.
-- `outbox/row.rs` — a row, a detection, and what an examination and a commit hand the store.
+- `outbox/row.rs` — a row, a detection, and what a recording and a commit hand the store.
 - `outbox/encoded.rs` — a row's snapshot, as the row has it and as its columns keep it, and the
-  forms of its `target_name`. `[tests]`
+  temporary name in its `target_name`. `[tests]`
 - `outbox/record.rs` — a detection recorded.
 - `outbox/pick.rs` — which rows run next. `[tests]`
 - `outbox/dependencies.rs` — every row's blockers at once; test code.
 - `outbox/worker.rs` — the worker's own transactions.
 - `outbox/sums.rs` — what the outbox holds, summed.
-- `outbox/handles.rs` — an item's local object.
+- `outbox/handles.rs` — an item's local object, as the worker recorded it.
 - `outbox/changes.rs` — telling those who wait that the outbox changed.
 
-## `crates/konedrive-fs`: placeholders
+## `crates/konedrive-fs`: a folder's files
 
 Design: `hydration.md`.
 
@@ -565,20 +530,11 @@ Design: `hydration.md`.
 
 - `lib.rs` — the list of the modules, the limits the crates share (`MAX_DEPTH`, `NAME_MAX`,
   `RESERVED_PREFIX`), and `proc_path`, the path of an open descriptor.
-- `placeholder.rs` — a placeholder: a sparse file whose state is in its extended attributes.
-  `[tests]`
+- `placeholder.rs` — what konedrive keeps on a file or a directory: its extended attributes
+  and its modes. `[tests]`
 - `lease.rs` — a write lease: proof that no other process has the file open. `[tests]`
 - `handle.rs` — file handles: the kernel's name for an inode. `[tests]`
-- `probe.rs` — whether a directory's filesystem can host placeholders. `[tests]`
-
-## `crates/konedrive-proto`: the helper's protocol
-
-Design: `hydration.md` (the helper–daemon protocol).
-
-### `crates/konedrive-proto/`
-
-- `Cargo.toml` — the crate.
-- `src/lib.rs` — the messages between the helper and the daemon, and their framing. `[tests]`
+- `probe.rs` — whether a directory's filesystem can be a sync folder's. `[tests]`
 
 ## `crates/konedrive-reason`: why a change is kept back
 
@@ -602,7 +558,6 @@ Design: `desktop.md`.
 - `src/rows.rs` — the rows the daemon answers with, by name. `[tests]`
 - `src/overall.rs` — `Folder.Overall`: the states and the reasons, as they are spelled. `[tests]`
 - `src/refusal.rs` — `Refusal`: every name a call is refused under. `[tests]`
-- `src/helper.rs` — `HelperState`: `Accounts.HelperState`, and what to say in each state. `[tests]`
 - `src/version.rs` — the version line, the same in every program. `[tests]`
 - `src/testing.rs` — a private session bus for tests; only with the feature `testing`.
 - `tests/test_bus.rs` — tests: the private bus starts no program; a test's connection has the method timeout.
@@ -760,59 +715,23 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
 - `refusaltextstest.cpp`, `refusaltexts.expected` — every operation and refusal reads as it did
   before its sentence was generated: the strings of the hand-written table, a line each.
 
-## `tests/vm`: the VM suite
+## `tests/fuse-probe`: the VM suite of the mount
 
-A crate of its own, outside the workspace. Everything that needs root runs here, in a
-virtme-ng VM, never on the host. Design: `hydration.md`; `docs/kernel-behavior-7.2/` for what
-the probes measured.
+A crate of its own, outside the workspace. A folder is mounted for real here, in a virtme-ng
+VM, never on the host.
 
-### `tests/vm/`
+### `tests/fuse-probe/`
 
-- `Cargo.toml` — the crate and its four programs.
-- `run.sh` — boots the VM and runs a program in it as root; `quick`, `full`, `unit`,
-  `measure`; `host` runs the suite as root on a GitHub runner, with no VM.
-- `helper_unit_test.sh` — the helper as systemd starts it from the shipped unit.
-- `install_helper_test.sh` — `scripts/install-helper.sh`, as root.
-- `poc_marks.rs` — `poc-marks`: the proof of concept of the interception.
-- `ignore_mark.rs` — `vm-ignore-mark`: the ignore mark the helper ships really lands.
-
-### `tests/vm/scenarios/`
-
-The program `vm-scenarios`: the real helper binary, end to end.
-
-- `main.rs` — the entry and the suite.
-- `harness.rs` — the harness: the helper started, its marks read, the scenarios' tools.
-- `child.rs` — the child modes: the processes that open, hold and attack.
-- `kernel_facts.rs` — the kernel facts the design rests on.
-- `measure.rs` — the measurement mode.
-- `fills.rs` — an open fills the file.
-- `dehydrate.rs` — freeing up, and the ignore mark after it.
-- `registration.rs` — registering and forgetting a folder.
-- `coverage.rs` — what the marks cover: new directories, moves, hard links.
-- `lifecycle.rs` — the daemon or the helper dying and coming back.
-- `clients.rs` — hostile and too many clients.
-- `burst.rs` — a burst of opens, and the caps on waiters.
-- `faults.rs` — out of descriptors, panics, a full disk.
-- `races.rs` — races between fills, forgets and marks.
-- `punch_rule.rs` — what must never be punched or denied.
-- `walk.rs` — the startup walk and its hazards.
-- `accounts.rs` — two accounts on one link.
-- `open_by_handle.rs` — `OpenByHandle`.
-- `move_out.rs` — moves out of the folder.
-- `watch.rs` — the write phase's watcher.
-- `writes.rs` — the write phase end to end, with the fake OneDrive.
-- `graph.rs` — the real account: one folder, read only.
-- `unit.rs` — the daemon's side of `run.sh unit`.
-
-### `tests/vm/watch_probe/`
-
-The program `watch-probe`: what the watcher's fanotify group reports.
-
-- `main.rs` — the entry.
-- `root.rs` — the part run as root.
-- `child.rs` — the part run as the user.
-- `events.rs` — parsing fanotify events.
-- `sys.rs` — the system calls.
+- `Cargo.toml` — the crate and its two programs.
+- `run.sh` — builds the programs, boots the VM and runs `guest.sh` in it.
+- `guest.sh` — inside the VM: an ext4 disk, and the tests as an ordinary user. `service`: the
+  daemon's service over the fake OneDrive, command by command. `cli`: `konedrivectl`'s test
+  of a mounted folder (`crates/konedrivectl/tests/sync_cli/fuse.rs`).
+- `try-on-host.sh` — a trial of this tree's daemon on the developer's machine, beside the
+  installed one, with a configuration and a state of its own.
+- `src/bin/fuse-service.rs` — `fuse-service`: the daemon's service for one account, taking a
+  command a line.
+- `src/bin/watch-client.rs` — `watch-client`: an inotify watch on a directory, every event printed.
 
 ## `tests/write-account`: the test account's harness
 
@@ -861,21 +780,19 @@ Design: `packaging.md`; `docs/releasing.md`.
 - `check-structure.sh` — the guard of the structure rules.
 - `dev-install.sh` — builds and installs for the current user: a development install.
 - `dev-uninstall.sh` — removes it.
-- `install-helper.sh` — installs the helper, as root.
 
 ### `packaging/`
 
 - `rpm/konedrive.spec` — the two packages.
 - `systemd/konedrived.service` — the daemon's user unit.
-- `systemd/konedrive-helper.service` — the helper's system unit.
 - `dbus/org.konedrive.Daemon.service` — the daemon started by the bus.
 
 ### `.github/workflows/`
 
 - `release.yml` — a release on every push to `main`: the RPMs for each Fedora, each tried in a
   clean container, then the tag and the release.
-- `tests.yml` — the tests of a pull request: the fast ones into `dev`, the suite that needs root
-  into `main`.
+- `tests.yml` — the tests of a pull request into `dev`: the daemon's unit tests, the window's and
+  the Dolphin plugins'.
 - `structure.yml` — on every pull request: the guard, the check of the links in the doc comments,
   and the generated C++ against the catalogue of sentences (`cargo test -p konedrive-text`).
 
@@ -884,7 +801,7 @@ Design: `packaging.md`; `docs/releasing.md`.
 - `README.md` — what KOneDrive is and does, in short, and where to read more.
 - `docs/user-guide.md` — installing and using it: the window, the tray, Dolphin.
 - `docs/command-line.md` — the same from a terminal, with `konedrivectl`.
-- `docs/developing.md` — building, the development install, the helper, the tests.
+- `docs/developing.md` — building, the development install, the tests.
 - `CONTRIBUTING.md` — building, the tests, the structure rules, the limitations log.
 - `SECURITY.md` — the helper's security model.
 - `docs/design/` — how the system works and why; its `README.md` is the index.

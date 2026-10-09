@@ -9,7 +9,7 @@ KOneDrive is, in short: [the README](../README.md). How it works inside:
 
 KOneDrive is two packages, for Fedora 44 and 45 (x86_64):
 
-- `konedrive` — the service, the window, `konedrivectl` and the helper;
+- `konedrive` — the service, the window and `konedrivectl`;
 - `konedrive-kde` — the Dolphin plugins. `konedrive` recommends it, so it is installed too.
 
 Download both for your Fedora from the Releases page of the repository on GitHub
@@ -31,7 +31,7 @@ lists their checksums (`sha256sum -c --ignore-missing SHA256SUMS`).
 3. When the sign-in is done, a folder picker opens. Choose an **empty** folder.
 
 Your OneDrive appears in that folder: every file with its real name and size, taking no space until
-you open it. Opening a file downloads it, and the program that opened it just reads it.
+it is read. Reading a file downloads it, and the program that opened it just reads it.
 
 A cancelled or failed sign-in leaves nothing behind. Only personal Microsoft accounts work; work and
 school accounts are not supported yet.
@@ -119,8 +119,8 @@ own. Two accounts' folders cannot be inside one another, and one Microsoft accou
 once.
 
 **Remove Account…** on the Account page signs the account out and forgets it on this computer. Its
-files stay where they are — those never downloaded stay as empty placeholders — and nothing in
-OneDrive is deleted.
+files stay where they are — those that were downloaded, and your own; a file that was never
+downloaded is not on this computer — and nothing in OneDrive is deleted.
 
 ## Uploading changes
 
@@ -154,24 +154,15 @@ another empty folder.
 If you move or rename the OneDrive folder itself, KOneDrive stops syncing that account and says
 so. Move it back, or forget the folder and choose it again.
 
-## The helper
-
-A small service that runs as root and makes a file download the moment a program opens it. The
-package installs and starts it, and one helper serves every account. It has no network access and
-no credentials ([SECURITY.md](../SECURITY.md)).
-
-Right after an install the service takes up to half a minute to reach it. While it is not
-connected, a card on the Status page says so and what to do, and a folder cannot be chosen yet.
-
 ## Upgrading and removing
 
 - **Upgrading** is the same `dnf install` with the newer packages. The service and the window
-  restart by themselves. The helper restarts too: a program waiting for a file to download at that
-  moment gets an error, so close programs that are opening files in the folder first (limitations
-  log, Z1).
+  restart by themselves. While the service restarts, the folder shows only the files that are
+  downloaded, and a program reading a file in it gets an error: close programs that have files of
+  the folder open first.
 - **Removing**: first **Forget Folder** for every account, then
-  `sudo dnf remove konedrive konedrive-kde`. A folder still registered when the package goes reads
-  as zeros where its files are not downloaded (limitations log, R3).
+  `sudo dnf remove konedrive konedrive-kde`. A folder still registered when the package goes
+  stays locked, and shows only the files that were downloaded.
 
 ## Troubleshooting
 
@@ -181,7 +172,7 @@ connected, a card on the Status page says so and what to do, and a folder cannot
 - Files: `~/.config/konedrive/config.toml` (the client ID, and each account with its name and
   folder; `config.toml.v1` is the single-account file it was migrated from, if any). Each
   account's state is in `~/.local/state/konedrive/accounts/<id>/`: `account.json` (cached name
-  and quota) and `tree.sqlite` (the map of the drive, the activity log and the conflicts).
+  and quota) and `fuse.sqlite` (the map of the drive, the activity log and the conflicts).
   Changed files moved out of the way are in `~/.local/share/konedrive/rescued/<id>/`. Each
   account's refresh token is in KWallet, under `KOneDrive: <email>`, and never leaves it (see
   SECURITY.md). Where everything else lives:

@@ -33,21 +33,13 @@ konedrivectl login                              # sign in again
 
 ```
 konedrivectl sync register ~/OneDrive           # bind an empty folder to the account
-konedrivectl sync status                        # the folder, its state, the helper
+konedrivectl sync status                        # the folder and its state
 konedrivectl sync refresh                       # ask OneDrive for changes now
 konedrivectl sync forget                        # unbind it; the files stay as they are
 ```
 
 `sync status` says how changes made in OneDrive arrive — `live`, within seconds, or
-`every minute (connecting)` — and has a `Helper:` line:
-
-- `connected` — files download when opened;
-- `not-installed` — there is no konedrive-helper service on this system;
-- `stopped` — installed, not running: `sudo systemctl start konedrive-helper`;
-- `failed` — `systemctl status konedrive-helper` says why;
-- `unknown` — systemd cannot be asked, or the helper has just started.
-
-Right after the helper starts, `register` is refused (`NoHelper`) for up to half a minute.
+`every minute (connecting)`.
 
 ## Files
 
@@ -106,4 +98,4 @@ The settings that are the window's own — start at login, progress, Places, a t
 
 When the service refuses a command, `konedrivectl` says what that means and what to do, and exits
 non-zero. The refusals have D-Bus error names — `org.konedrive.Error.ModifiedLocally`,
-`.NotHydrated`, `.NoHelper`, … — which is what a script calling the service directly should match.
+`.NotHydrated`, `.NotUp`, … — which is what a script calling the service directly should match.

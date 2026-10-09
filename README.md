@@ -1,12 +1,11 @@
 # KOneDrive
 
-A OneDrive client for KDE Plasma on Linux, with Windows' "Files On-Demand" and no FUSE: your
-OneDrive is a folder of real files at their real sizes, and a file downloads the moment something
-opens it.
+A OneDrive client for KDE Plasma on Linux, with Windows' "Files On-Demand": your OneDrive is a
+folder of files at their real sizes, and a file downloads when something reads it.
 
 ## Features
 
-- **Files on demand.** Every file is there from the start and takes no space until it is opened;
+- **Files on demand.** Every file is there from the start and takes no space until it is read;
   then it downloads by itself, and the program that opened it just reads it.
 - **Always keep on this device** and **Free up space**, for files and folders.
 - **Uploads.** What you change, move or delete in the folder goes back to OneDrive. Off until you
@@ -22,8 +21,7 @@ opens it.
   if you want.
 - **Notifications and progress** in Plasma, and an entry per account in Places.
 - **Everything from the command line too**: `konedrivectl` does whatever the window does.
-- **Little runs as root.** A small helper intercepts the opens; it has no network and no
-  credentials. Everything else runs as you.
+- **Nothing runs as root.** The folder is a FUSE mount the daemon serves as you.
 
 ## Screenshots
 
@@ -41,8 +39,8 @@ school accounts are not supported yet.
 
 ## Install
 
-Needs Linux 6.0 or later (6.14 for exact error messages when a download fails), KDE Plasma 6, Qt
-6.8+ and KDE Frameworks 6.8+.
+Needs FUSE 3 (`fuse3`, which the package asks for), KDE Plasma 6, Qt 6.8+ and KDE Frameworks
+6.8+.
 
 Download the two RPMs of the latest release for your Fedora (`.fc44` or `.fc45` in the name) from
 the Releases page — `konedrive` and `konedrive-kde` (the Dolphin plugins), not the `.src.rpm` — and
@@ -58,18 +56,16 @@ repository yet. Upgrading, removing and the details: [the user guide](docs/user-
 ## How it works
 
 ```
-   fanotify pre-content events                  D-Bus (org.konedrive.*)
-┌───────────────────┐   permission events   ┌───────────────┐   status, actions   ┌──────────┐
-│ konedrive-helper   │ ───────────────────► │ konedrived     │ ──────────────────► │ KOneDrive│
-│ (root, tiny)       │ ◄─────────────────── │ (your user)    │ ◄────────────────── │ window   │
-└───────────────────┘    fill/allow/deny    └───────────────┘                     └──────────┘
+        the folder: a FUSE mount                D-Bus (org.konedrive.*)
+┌───────────────────┐   reads, changes     ┌───────────────┐   status, actions   ┌──────────┐
+│ your programs      │ ───────────────────► │ konedrived     │ ──────────────────► │ KOneDrive│
+│                    │ ◄─────────────────── │ (your user)    │ ◄────────────────── │ window   │
+└───────────────────┘      the files       └───────────────┘                     └──────────┘
 ```
 
-- **The helper** (`konedrive-helper`) is the only part that runs as root, and is kept small. It
-  uses the kernel's fanotify pre-content events to suspend an open of a file that is not
-  downloaded yet, and hands it to the daemon.
 - **The daemon** (`konedrived`) runs as you. It talks to Microsoft Graph, keeps the local index,
-  fills the file the helper asked about, uploads your changes, and serves the D-Bus API.
+  serves the folder as a FUSE mount — every name from the index, a file's content downloaded when
+  it is read — uploads your changes, and serves the D-Bus API. Nothing runs as root.
 - **The window** (`konedrive`) and `konedrivectl` only talk to the daemon; closing the window does
   not stop syncing.
 
@@ -83,7 +79,7 @@ repository yet. Upgrading, removing and the details: [the user guide](docs/user-
   it before filing a bug.
 - [Developing](docs/developing.md) and [CONTRIBUTING.md](CONTRIBUTING.md) — building, a
   development install, the tests, the checklist for a change.
-- [SECURITY.md](SECURITY.md) — what runs as root, what it can do, and how to report a
+- [SECURITY.md](SECURITY.md) — what runs with which rights, the credentials, and how to report a
   vulnerability privately.
 
 ## Roadmap
