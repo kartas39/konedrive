@@ -209,8 +209,9 @@ daemon shows OneDrive.
   unmarked entry (`find_unmarked_disk_entry`), which a walk and a cycle go by. `[tests]`
 - `backing_directory/downloaded_copies.rs` — `DiskMarks`: what a file's marks say, with the
   one test of a downloaded copy (marked with the file's OneDrive id, and whole), which the
-  lookup, the landing and the legacy check read through; marking a copy, removing one by its
-  OneDrive id alone. `[tests]`
+  lookup, the landing and the legacy check read through; a file made marked with an id and
+  not whole (`make_partial_file`), marking a copy, removing one by its OneDrive id alone.
+  `[tests]`
 - `backing_directory/file_operations.rs` — the files and directories a change makes, renames
   and removes, and a file opened to read or to write. `[tests]`
 - `backing_directory/directory_marks.rs` — the directories down to a path, each marked with
@@ -405,7 +406,8 @@ daemon shows OneDrive.
 - `write_operations/make_check.rs` — `check_make`: whether an entry (`EntryToMake`) may be
   made at a place, or the errno; `choose_made_entry_record`: what one that was made is
   recorded as. `[tests]`
-- `write_operations/remove.rs` — a file or a directory a program removes. `[tests]`
+- `write_operations/remove.rs` — a file or a directory a program removes: recorded, then
+  removed; a local-only entry that cannot be removed is recorded again. `[tests]`
 - `write_operations/remove_plan.rs` — `plan_remove`: what a remove takes out of the folder
   (`RemovePlan`), or the errno. `[tests]`
 - `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
@@ -417,7 +419,8 @@ daemon shows OneDrive.
   `BackingDirectoryMove`, whether the backing directory held anything to move;
   `describe_rename`, what it is recorded as. `[tests]`
 - `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened with
-  its content or to be overwritten, closed, truncated, and the time it was last modified set;
+  its content or to be overwritten, closed, truncated, and the time it was last modified set
+  — recorded before its content changes and before a copy made for it is marked whole;
   what was done to the file (`FileWrite`: opened, closed, truncated), and what a write and
   the last close are recorded as from it (`describe_file_write`, `describe_last_close`).
   `[tests]`

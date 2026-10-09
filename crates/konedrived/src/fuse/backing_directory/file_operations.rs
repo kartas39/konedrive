@@ -58,11 +58,6 @@ impl BackingDirectory {
         OpenOptions::new().read(true).write(true).open(self.resolve_path(rel))
     }
 
-    /// The file at `rel`, open to read and write, truncated to nothing.
-    pub(in crate::fuse) fn open_to_overwrite(&self, rel: &Path) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).truncate(true).open(self.resolve_path(rel))
-    }
-
     /// Gives the file at `rel` its owner's write bit: a downloaded copy has none.
     pub(in crate::fuse) fn grant_write_bit(&self, rel: &Path) -> io::Result<()> {
         fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(to_mode_bits(EntryKind::File, WriteBits::Present)))

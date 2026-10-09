@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxRow};
-use konedrive_tree::{Store, TreeStore};
+use konedrive_tree::{Change, Store, TreeStore};
 
 use super::WriteOperations;
 use crate::fuse::node_table::NodeId;
@@ -43,23 +43,31 @@ pub(in crate::fuse) struct Folder {
 /// the root), with `detections` waiting in the outbox, in a folder that takes changes and
 /// ignores `*.tmp` and `cache`.
 pub(in crate::fuse) fn folder(detections: Vec<Detection>) -> Folder {
-    folder_recording_into(detections, |written, _| Store::new(written))
+    folder_recording_into(detections, &[], |written, _| Store::new(written))
 }
 
 /// The [`folder`] whose every record fails: its recorder writes through a connection to the
 /// store that is opened for reading alone.
 pub(in crate::fuse) fn folder_that_records_nothing() -> Folder {
-    folder_recording_into(Vec::new(), |_, path| Store::new(TreeStore::open_read_only(path).unwrap()))
+    folder_that_records_nothing_with(&[])
 }
 
-/// The [`folder`], with the store its recorder writes into made by `open_store` from the
-/// store the drive was written into and that store's path.
-fn folder_recording_into(detections: Vec<Detection>, open_store: impl FnOnce(TreeStore, &Path) -> Store) -> Folder {
+/// The [`folder_that_records_nothing`], with `more` committed after the drive.
+pub(in crate::fuse) fn folder_that_records_nothing_with(more: &[Change]) -> Folder {
+    folder_recording_into(Vec::new(), more, |_, path| Store::new(TreeStore::open_read_only(path).unwrap()))
+}
+
+/// The [`folder`], with `more` committed after the drive, and the store its recorder writes
+/// into made by `open_store` from the store the drive was written into and that store's path.
+fn folder_recording_into(detections: Vec<Detection>, more: &[Change], open_store: impl FnOnce(TreeStore, &Path) -> Store) -> Folder {
     let tmp = tempfile::tempdir().unwrap();
     let (disk, path) = (tmp.path().join("folder"), tmp.path().join("tree.db"));
     fs::create_dir(&disk).unwrap();
     let mut written = TreeStore::open(&path).unwrap();
     drive(&mut written, detections);
+    if !more.is_empty() {
+        written.commit_page(more, "after").unwrap();
+    }
     let store = open_store(written, &path);
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
     let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));

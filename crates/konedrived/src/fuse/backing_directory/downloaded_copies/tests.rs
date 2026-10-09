@@ -115,3 +115,20 @@ fn the_marks_of_a_file_say_what_it_is() {
     assert!(!unmarked.is_downloaded_copy_of("A") && !unmarked.has_onedrive_id() && !unmarked.is_partial_file() && !unmarked.is_legacy_placeholder());
     assert_eq!(DiskMarks::read(&dir.path().join("nothing-there")), unmarked);
 }
+
+/// Made where nothing is: marked with the id, not whole, and no downloaded copy. One that is
+/// there already is taken as it is; anything else at the path is not replaced.
+#[test]
+fn a_partial_file_is_made_where_nothing_is_or_taken_as_it_is() {
+    let (dir, backing_directory) = empty_backing_directory();
+    backing_directory.make_partial_file(Path::new(AT), "A").unwrap();
+    assert!(DiskMarks::read(&dir.path().join(AT)).is_partial_file());
+    assert!(backing_directory.find_downloaded_copy(Path::new(AT), "A").is_none());
+    backing_directory.make_partial_file(Path::new(AT), "A").unwrap();
+    assert_eq!(backing_directory.make_partial_file(Path::new(AT), "B").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+    for (id, state) in [(Some("A"), Some(State::Hydrated)), (None, None)] {
+        file(dir.path(), id, state);
+        assert_eq!(backing_directory.make_partial_file(Path::new(AT), "A").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(dir.path().join(AT)).unwrap(), b"abc");
+    }
+}

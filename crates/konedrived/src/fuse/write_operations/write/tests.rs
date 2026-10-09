@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
-use konedrive_tree::Kind;
+use konedrive_tree::{Change, Kind, Row};
 
 use super::{describe_file_write, describe_last_close, FileWrite};
 use crate::fuse::access_mode_switch::AccessMode;
@@ -15,7 +15,7 @@ use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{CloseOutcome, OpenFile};
 use crate::fuse::upload_rules::UploadDecision;
-use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing};
+use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing, folder_that_records_nothing_with};
 use crate::fuse::write_operations::EntryToMake;
 
 fn root() -> DirectoryReference {
@@ -256,6 +256,90 @@ fn a_truncate_that_cannot_be_recorded_truncates_nothing_and_is_answered_as_an_io
     let node_id = f.node_id(NodeId::ROOT, "mine.txt");
     assert_eq!(f.ops.truncate(node_id, 1, None).err(), Some(Errno::EIO));
     assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
+}
+
+/// Recorded before it is truncated: an open that truncates a local-only file and cannot be
+/// recorded truncates nothing.
+#[test]
+fn an_open_to_overwrite_of_a_local_only_file_that_cannot_be_recorded_truncates_nothing() {
+    let f = folder_that_records_nothing();
+    std::fs::write(f.disk.join("mine.txt"), b"mine").unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "mine.txt");
+    assert_eq!(f.ops.open_to_overwrite(node_id).err(), Some(Errno::EIO));
+    assert!(!f.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
+}
+
+/// The downloaded copy of a OneDrive file keeps its content: no empty copy is left shown as
+/// matching what OneDrive has.
+#[test]
+fn an_open_to_overwrite_of_a_downloaded_file_that_cannot_be_recorded_truncates_nothing() {
+    let f = folder_that_records_nothing();
+    f.download("a.txt", "A", b"from OneDrive");
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    assert_eq!(f.ops.open_to_overwrite(node_id).err(), Some(Errno::EIO));
+    assert_eq!(std::fs::read(f.disk.join("a.txt")).unwrap(), b"from OneDrive");
+    assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(_, copy) if copy.size == 13));
+}
+
+/// A OneDrive file that is not downloaded gets no copy unless the change is recorded: it
+/// stays not downloaded, with the size OneDrive has.
+#[test]
+fn an_open_to_overwrite_of_a_file_that_is_not_downloaded_and_cannot_be_recorded_leaves_no_copy() {
+    let f = folder_that_records_nothing();
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    assert_eq!(f.ops.open_to_overwrite(node_id).err(), Some(Errno::EIO));
+    assert!(!f.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert!(!f.disk.join("a.txt").exists(), "nothing is left at its path");
+    assert!(matches!(f.file_state("a.txt"), FileSyncState::RemoteOnly(row) if row.size == 1));
+}
+
+#[test]
+fn a_truncate_to_nothing_of_a_file_that_is_not_downloaded_and_cannot_be_recorded_leaves_no_copy() {
+    let f = folder_that_records_nothing();
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    assert_eq!(f.ops.truncate(node_id, 0, None).err(), Some(Errno::EIO));
+    assert!(!f.disk.join("a.txt").exists(), "nothing is left at its path");
+    assert!(matches!(f.file_state("a.txt"), FileSyncState::RemoteOnly(row) if row.size == 1));
+}
+
+/// A OneDrive file that holds nothing needs no download to be written: its empty copy is
+/// made by the open, and is not left when the open cannot be recorded.
+#[test]
+fn an_open_for_writing_of_an_empty_file_that_is_not_downloaded_and_cannot_be_recorded_leaves_no_copy() {
+    let f = folder_that_records_nothing_with(&[Change::Upsert(Row { size: 0, ..row("E", Some("R"), "empty.txt", Kind::File) })]);
+    let node_id = f.node_id(NodeId::ROOT, "empty.txt");
+    assert_eq!(f.ops.open_to_write(node_id).err(), Some(Errno::EIO));
+    assert!(!f.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert!(!f.disk.join("empty.txt").exists(), "nothing is left at its path");
+    assert!(matches!(f.file_state("empty.txt"), FileSyncState::RemoteOnly(_)));
+}
+
+/// What a failed open or a daemon that died left at the path of a OneDrive file — marked
+/// with its id, and not whole — is the copy the next write takes.
+#[test]
+fn a_file_that_is_not_downloaded_is_overwritten_over_the_partial_file_at_its_path() {
+    let f = folder(Vec::new());
+    std::fs::write(f.disk.join("a.txt"), b"").unwrap();
+    xattr::set(f.disk.join("a.txt"), konedrive_fs::placeholder::XATTR_ITEM_ID, b"A").unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    let fh = f.ops.open_to_overwrite(node_id).unwrap();
+    assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(_, copy) if copy.size == 0));
+    f.ops.close_writer(fh);
+    assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
+}
+
+/// The file is opened with what it holds, recorded, and only then truncated to nothing.
+#[test]
+fn a_file_opened_to_be_overwritten_is_recorded_and_truncated_to_nothing() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"from OneDrive");
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    let fh = f.ops.open_to_overwrite(node_id).unwrap();
+    assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().len(), 0);
+    f.ops.close_writer(fh);
+    let row = &f.rows()[0];
+    assert_eq!((row.kind, row.item_id.as_deref(), row.reason.clone()), (OutboxKind::Update, Some("A"), Some(Reason::Changed)));
 }
 
 /// A writer that is not of any file the handles hold — closed already, or never opened — is

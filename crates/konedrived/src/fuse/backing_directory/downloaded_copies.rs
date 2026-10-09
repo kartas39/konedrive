@@ -74,6 +74,23 @@ impl BackingDirectory {
         DiskMetadata::from_filesystem(&metadata)
     }
 
+    /// A file at `path` that is marked with the OneDrive id `onedrive_id` and is not whole:
+    /// it holds nothing of that file yet, and the mount shows nothing of it. Made where
+    /// nothing is; one that is there already, marked with the same id and not whole, is
+    /// taken as it is. Anything else at the path is not replaced (`EEXIST`).
+    pub(in crate::fuse) fn make_partial_file(&self, path: &Path, onedrive_id: &str) -> io::Result<()> {
+        match self.make_file(path) {
+            Ok(_) => self.mark_with_onedrive_id(path, onedrive_id),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let resolved = self.resolve_path(path);
+                let is_file = fs::symlink_metadata(&resolved).is_ok_and(|metadata| metadata.is_file());
+                let is_partial_file_of_id = DiskMarks::read(&resolved).is_partial_file() && self.read_onedrive_id(path).as_deref() == Some(onedrive_id);
+                if is_file && is_partial_file_of_id { Ok(()) } else { Err(e) }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Marks the file at `rel` as the whole content of the OneDrive file `id`: its downloaded
     /// copy from here on.
     pub(in crate::fuse) fn mark_downloaded_copy(&self, rel: &Path, id: &str) -> io::Result<()> {

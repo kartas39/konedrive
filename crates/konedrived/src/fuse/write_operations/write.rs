@@ -4,9 +4,17 @@
 //! A OneDrive file is written in its downloaded copy: from the first change on the outbox
 //! holds the file, so nothing from OneDrive replaces the copy, and the file is modified
 //! here — what the mount shows of it is the copy's own.
+//!
+//! A row before the disk, in every operation here: nothing of a file's content is changed,
+//! and no file is marked as the whole copy of a OneDrive file, before the change is
+//! recorded. A file is opened with what it holds and truncated once its writer is recorded;
+//! the empty copy of a OneDrive file that is not downloaded is made as a file that is not
+//! whole, which the mount does not show, and is marked whole once the change is recorded.
+//! A change that cannot be recorded leaves the content as it was, and no copy it made; a
+//! daemon that dies in between leaves a row for content that did not change, or a file
+//! that is not whole at the path, which the next download replaces and the next write
+//! takes — never an empty file shown as what OneDrive has.
 
-use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -70,33 +78,53 @@ impl WriteOperations {
     pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId) -> Result<Fh, Errno> {
         let (entry, file, path) = self.find_file_to_write(node_id)?;
         self.make_writable(&file, &path)?;
-        self.add_writer(node_id, &entry, self.backing_directory.open_to_write(&path))
+        self.add_writer(node_id, &entry, &file, &path)
     }
 
     /// Opens the node `node_id` for writing, truncated to nothing (`O_TRUNC`): the `fh` the
-    /// program holds it open by. Nothing of a OneDrive file is downloaded for it.
+    /// program holds it open by. Nothing of a OneDrive file is downloaded for it. The file is
+    /// opened with what it holds, and truncated only once its writer is recorded: an open
+    /// that cannot be recorded changes nothing of its content.
     pub(in crate::fuse) fn open_to_overwrite(&self, node_id: NodeId) -> Result<Fh, Errno> {
         let (entry, file, path) = self.find_file_to_write(node_id)?;
         self.make_writable_without_content(&file, &path)?;
-        let fh = self.add_writer(node_id, &entry, self.backing_directory.open_to_overwrite(&path))?;
+        let fh = self.add_writer(node_id, &entry, &file, &path)?;
+        let truncated = self.open_handles.find_file_to_write(fh).ok_or(Errno::EBADF).and_then(|(_, backing_file)| backing_file.set_len(0).map_err(|e| to_errno(&e)));
+        if let Err(e) = truncated {
+            self.close_writer(fh);
+            return Err(e);
+        }
         // Truncated to nothing: its content is the user's own from here on.
         self.open_handles.mark_written(node_id);
         Ok(fh)
     }
 
-    /// Puts the writer of the node `node_id`, which stands for `entry`, into the open
-    /// handles: the `fh` it holds `opened`, its file in the backing directory, open by. The
-    /// node's first writer is recorded: from it on the outbox holds the file. An open that
-    /// cannot be recorded is closed again. A file that was modified here before is marked
-    /// written: its content is the user's own already.
-    fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, opened: io::Result<File>) -> Result<Fh, Errno> {
-        let backing_file = opened.map_err(|e| to_errno(&e))?;
+    /// Opens the file at `path` in the backing directory, which the node `node_id` stands
+    /// for as `entry` and which was made writable as `file` stood, and puts its writer into
+    /// the open handles: the `fh` it is held open by. The node's first writer is recorded:
+    /// from it on the outbox holds the file. Only then is the copy that was made for a
+    /// OneDrive file that was not downloaded marked whole
+    /// ([`mark_copy_whole`](Self::mark_copy_whole)). An open that cannot be made or recorded
+    /// is closed again, and the copy that was made for it is removed. A file that was
+    /// modified here before is marked written: its content is the user's own already.
+    fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, file: &FileSyncState, path: &Path) -> Result<Fh, Errno> {
+        let backing_file = self.backing_directory.open_to_write(path).map_err(|e| {
+            self.remove_partial_file(file, path);
+            to_errno(&e)
+        })?;
         let (fh, rank) = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
-        if rank == WriterRank::First {
-            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Opened)) {
-                self.open_handles.close_file(fh);
-                return Err(e);
-            }
+        let recorded = match rank {
+            WriterRank::First => self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Opened)),
+            WriterRank::Later => Ok(()),
+        };
+        if let Err(e) = recorded {
+            self.open_handles.close_file(fh);
+            self.remove_partial_file(file, path);
+            return Err(e);
+        }
+        if let Err(e) = self.mark_copy_whole(file, path) {
+            self.close_writer(fh);
+            return Err(e);
         }
         if matches!(entry.state, EntryState::File(FileSyncState::ModifiedHere(..))) {
             self.open_handles.mark_written(node_id);
@@ -171,14 +199,20 @@ impl WriteOperations {
             0 => self.make_writable_without_content(&file, &path)?,
             _ => self.make_writable(&file, &path)?,
         }
-        let backing_file = self.backing_directory.open_to_write(&path).map_err(|e| to_errno(&e))?;
-        // Recorded before it is truncated: a daemon that dies in between leaves a row for content
-        // that did not change, never a changed file without a row.
-        if self.open_handles.is_open_for_writing_by_node_id(node_id) {
-            self.open_handles.mark_written(node_id);
-        } else {
-            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Truncated))?;
-        }
+        // Recorded before it is truncated, and before the copy made for a file that was not
+        // downloaded is marked whole: a daemon that dies in between leaves a row for content
+        // that did not change, never a changed file without a row; a truncate that cannot be
+        // recorded leaves no copy it made.
+        let recorded = self.backing_directory.open_to_write(&path).map_err(|e| to_errno(&e)).and_then(|backing_file| {
+            if self.open_handles.is_open_for_writing_by_node_id(node_id) {
+                self.open_handles.mark_written(node_id);
+            } else {
+                self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Truncated))?;
+            }
+            Ok(backing_file)
+        });
+        let backing_file = recorded.inspect_err(|_| self.remove_partial_file(&file, &path))?;
+        self.mark_copy_whole(&file, &path)?;
         backing_file.set_len(size).map_err(|e| to_errno(&e))?;
         self.write_modified_time(node_id, modified);
         Ok(())
@@ -196,20 +230,46 @@ impl WriteOperations {
     }
 
     /// The file at `rel` in the backing directory, made ready to be written by whoever does
-    /// not need its content — it is truncated to nothing: the downloaded copy of a OneDrive file
-    /// made writable, and a OneDrive file that is not downloaded given an empty copy,
+    /// not need its content — it is truncated to nothing: the downloaded copy of a OneDrive
+    /// file made writable, and a OneDrive file that is not downloaded given an empty file,
     /// whatever it holds in OneDrive.
+    ///
+    /// That empty file is marked with the file's OneDrive id and is not whole
+    /// ([`BackingDirectory::make_partial_file`](crate::fuse::backing_directory::BackingDirectory::make_partial_file)):
+    /// the mount shows the file as not downloaded still, and a daemon that dies here leaves
+    /// nothing shown as the file's content. It is the file's copy once the change is
+    /// recorded ([`mark_copy_whole`](Self::mark_copy_whole)), and is removed when the change
+    /// cannot be ([`remove_partial_file`](Self::remove_partial_file)).
     fn make_writable_without_content(&self, file: &FileSyncState, rel: &Path) -> Result<(), Errno> {
         match file {
             FileSyncState::LocalOnly(_) => return Ok(()),
             FileSyncState::RemoteOnly(row) => {
                 self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(|e| to_errno(&e))?;
-                self.backing_directory.make_file(rel).map_err(|e| to_errno(&e))?;
-                self.backing_directory.mark_downloaded_copy(rel, &row.id).map_err(|e| to_errno(&e))?;
+                self.backing_directory.make_partial_file(rel, &row.id).map_err(|e| to_errno(&e))?;
             }
             FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => {}
         }
         self.backing_directory.grant_write_bit(rel).map_err(|e| to_errno(&e))
+    }
+
+    /// The change of the file at `path`, which stood as `file` before it, is recorded: the
+    /// empty file made for a OneDrive file that was not downloaded is that file's whole copy
+    /// from here on. Nothing for a file that had its copy, or is local-only.
+    fn mark_copy_whole(&self, file: &FileSyncState, path: &Path) -> Result<(), Errno> {
+        match file {
+            FileSyncState::RemoteOnly(row) => self.backing_directory.mark_downloaded_copy(path, &row.id).map_err(|e| to_errno(&e)),
+            FileSyncState::LocalOnly(_) | FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => Ok(()),
+        }
+    }
+
+    /// The change of the file at `path`, which stood as `file` before it, could not be made
+    /// or recorded: the empty file made for a OneDrive file that was not downloaded is
+    /// removed, and the file is not downloaded, as it was. Nothing for a file that had its
+    /// copy, or is local-only: nothing of its content was changed.
+    fn remove_partial_file(&self, file: &FileSyncState, path: &Path) {
+        if let FileSyncState::RemoteOnly(row) = file {
+            self.backing_directory.remove_downloaded_copy(path, &row.id);
+        }
     }
 }
 
