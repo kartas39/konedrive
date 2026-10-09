@@ -6,18 +6,18 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Detection, OutboxKind};
 use konedrive_tree::Row;
 
-use super::Resolve;
+use super::NodeLookup;
 use crate::fuse::node_table::NodeTable;
 use crate::fuse::directory_contents::tests::{of, view};
 use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 
 /// The nodes of the drive the view's tests have (`docs` with `c.txt`, and `a.txt` and
 /// `b.txt` in the root), over a folder on disk that holds nothing.
-fn resolve(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, Resolve) {
+fn resolve(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, NodeLookup) {
     let (dir, view) = view(detections);
     let view = Arc::new(view);
     let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
-    (dir, Arc::clone(&view), Resolve::new(view, nodes))
+    (dir, Arc::clone(&view), NodeLookup::new(view, nodes))
 }
 
 fn item(view: &DirectoryContents, id: &str) -> Entry {

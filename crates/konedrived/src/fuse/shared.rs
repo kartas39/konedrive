@@ -2,7 +2,7 @@
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
 //! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`DirectoryContents`]), the kernel's nodes
-//! ([`NodeTable`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
+//! ([`NodeTable`]) and what resolves them ([`NodeLookup`]), the files open for writing ([`Writers`]),
 //! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
 //! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
 //! downloads, the reads, the pins, the announcer, the mode — is still a field here with its
@@ -32,7 +32,7 @@ use super::recorder::Recorder;
 use super::write_operations::WriteOperations;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
-use super::resolve::Resolve;
+use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
 
@@ -47,8 +47,8 @@ pub(super) struct Shared {
     /// The node ids the kernel knows ([`super::node_table`]): shared by what resolves them and what
     /// tells the kernel of changes.
     pub(super) nodes: Arc<Mutex<NodeTable>>,
-    /// Which entry of the folder a node is ([`super::resolve`]).
-    pub(super) resolve: Arc<Resolve>,
+    /// Which entry of the folder a node is ([`super::node_lookup`]).
+    pub(super) resolve: Arc<NodeLookup>,
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
     pub(super) pool: Arc<TransferPool>,

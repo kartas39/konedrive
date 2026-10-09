@@ -2,7 +2,7 @@
 //! entry is.
 //!
 //! The kernel names what it asks about by node. [`NodeTable`] is the map alone: it knows a key
-//! and a place for each node, and nothing of the store or the disk. [`Resolve`] is the part
+//! and a place for each node, and nothing of the store or the disk. [`NodeLookup`] is the part
 //! over it and the [`DirectoryContents`]: it gives an entry its node, says what a node is now — an item is
 //! looked up again in the view, an object without an item by its handle in the folder under
 //! the mount — and keeps the node of an object that got its item.
@@ -18,14 +18,14 @@ use konedrive_fs::handle::FileHandle;
 use super::node_table::{NodeKey, NodeTable};
 use super::directory_contents::{Directory, Entry, Local, DirectoryContents};
 
-pub(super) struct Resolve {
+pub(super) struct NodeLookup {
     view: Arc<DirectoryContents>,
     nodes: Arc<Mutex<NodeTable>>,
 }
 
-impl Resolve {
+impl NodeLookup {
     pub(super) fn new(view: Arc<DirectoryContents>, nodes: Arc<Mutex<NodeTable>>) -> Self {
-        Resolve { view, nodes }
+        NodeLookup { view, nodes }
     }
 
     /// The node of `entry`, which stands in the directory `parent`. An object that got its

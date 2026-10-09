@@ -2,7 +2,7 @@
 //! write, each in a module of its own.
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
-//! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`Resolve`]), the files
+//! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`NodeLookup`]), the files
 //! open for writing ([`Writers`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
 //! of its own. Each operation is the same short sequence of steps:
 //!
@@ -11,7 +11,7 @@
 //! 3. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
 //!    failure what was done on disk is undone and the program is answered `EIO`
 //!    ([`WriteOperations::record_or_undo`]);
-//! 4. the nodes, through `Resolve`.
+//! 4. the nodes, through `NodeLookup`.
 //!
 //! An operation never touches the table of open handles: one that opens a file returns it
 //! ([`OpenedFile`]), and the request that asked keeps the handle.
@@ -32,7 +32,7 @@ use fuser::Errno;
 
 use super::detections::FolderEvent;
 use super::recorder::Recorder;
-use super::resolve::Resolve;
+use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
 use super::directory_contents::{Directory, DirectoryContents};
@@ -47,7 +47,7 @@ mod write;
 pub(super) struct WriteOperations {
     view: Arc<DirectoryContents>,
     under: Arc<BackingDirectory>,
-    resolve: Arc<Resolve>,
+    resolve: Arc<NodeLookup>,
     writers: Arc<Writers>,
     recorder: Arc<Recorder>,
     rules: Arc<UploadRules>,
@@ -66,7 +66,7 @@ impl WriteOperations {
     pub(super) fn new(
         view: Arc<DirectoryContents>,
         under: Arc<BackingDirectory>,
-        resolve: Arc<Resolve>,
+        resolve: Arc<NodeLookup>,
         writers: Arc<Writers>,
         recorder: Arc<Recorder>,
         rules: Arc<UploadRules>,
