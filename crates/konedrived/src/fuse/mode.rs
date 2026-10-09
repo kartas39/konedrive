@@ -22,32 +22,25 @@ impl Shared {
             Err(Errno::EROFS)
         }
     }
-
-    /// Wakes the outbox's worker: a row was written.
-    pub(super) fn wake(&self) {
-        let wake = crate::panic::lock(&self.wake).clone();
-        if let Some(wake) = wake {
-            wake();
-        }
-    }
 }
 
 impl Mount {
     /// The folder takes changes from now on, and `wake` is called for each one recorded:
     /// its sync uploads. Whether the modes shown changed with that.
     pub fn read_write(&self, wake: Arc<dyn Fn() + Send + Sync>) -> bool {
-        *crate::panic::lock(&self.shared.wake) = Some(wake);
+        self.shared.recorder.set_wake(Some(wake));
         let changed = !self.shared.writable.swap(true, Ordering::SeqCst);
         if changed {
-            // What a lost row left unsent is found again ([`super::settle`]).
-            self.shared.change(|s| s.settle());
+            // What a lost row left unsent is found again.
+            let s = Arc::clone(&self.shared);
+            self.shared.recorder.run(move || s.write_operations.record_unrecorded_objects());
         }
         changed
     }
 
     /// The folder takes no change from now on. Whether the modes shown changed with that.
     pub fn read_only(&self) -> bool {
-        *crate::panic::lock(&self.shared.wake) = None;
+        self.shared.recorder.set_wake(None);
         self.shared.writable.swap(false, Ordering::SeqCst)
     }
 

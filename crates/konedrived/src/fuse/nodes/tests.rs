@@ -66,3 +66,15 @@ fn two_objects_that_had_one_inode_number_are_two_nodes() {
     assert_ne!(first, second);
     assert_eq!(nodes.ino(local(42, 1), 1, "a.txt"), first);
 }
+
+/// A removed object's node is dropped whole: nothing is left of it, and the next object is
+/// a node of its own.
+#[test]
+fn a_forgotten_node_leaves_nothing_behind() {
+    let mut nodes = nodes();
+    let gone = nodes.ino(local(42, 1), 1, "a.txt");
+    nodes.forget(&local(42, 1));
+    assert!(nodes.items.is_empty() && nodes.inos.is_empty());
+    assert_eq!(nodes.rel(gone), None);
+    assert_ne!(nodes.ino(local(42, 1), 1, "a.txt"), gone);
+}

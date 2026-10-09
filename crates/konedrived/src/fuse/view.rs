@@ -11,13 +11,15 @@
 //! What it answers:
 //!
 //! - here: an item's row ([`View::row`]), the row above it ([`View::parent`]), the folder's
-//!   own item ([`View::root`]), the files at and below an item ([`View::files_below`]);
+//!   own item ([`View::root`]), the files at and below an item ([`View::files_below`]), the
+//!   item whose file the user just removed from a place ([`View::removed_item_at`]);
 //! - [`entries`]: what a directory holds under a name and in whole ([`Entry`], [`Dir`]);
 //! - [`places`]: where the folder shows an item, and what stands at a path.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
 use super::overlay::Overlay;
@@ -49,9 +51,18 @@ impl View {
         &self.under
     }
 
-    /// One question to the store. `None` when it cannot be answered.
+    /// One question to the store, for what has no named question here yet (`asked.rs`).
+    /// `None` when it cannot be answered.
     pub(super) fn read<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, TreeError>) -> Option<T> {
         ask(&crate::panic::lock(&self.reader)).ok()
+    }
+
+    /// The item whose file the user removed from `rel` and whose removal is not sent yet, as
+    /// the store has it: a file made there now is that item's new content.
+    pub(super) fn removed_item_at(&self, rel: &Path) -> Option<Row> {
+        let rows = self.read(|s| s.outbox_at_or_under(rel))?;
+        let removed = rows.into_iter().find(|row| row.rel == rel && row.kind == OutboxKind::Delete && row.state != OutboxState::Running)?;
+        self.row(&removed.item_id?).filter(|base| base.kind == Kind::File)
     }
 
     /// The item `id`, as the store has it.

@@ -1,8 +1,10 @@
 //! The requests that change the folder. A read-only folder refuses them all; a read-write
-//! one has each made on the recorder's thread, which answers it.
+//! one has each made on the recorder's thread ([`crate::fuse::write_operations`]), which
+//! answers it. A file an operation opens is kept here, in the table of open handles.
 
 use std::ffi::OsStr;
 use std::os::unix::fs::FileExt;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -12,18 +14,35 @@ use tokio::sync::oneshot;
 
 use super::Requests;
 use crate::fuse::attr::{self, TTL};
+use crate::fuse::read::Handle;
 use crate::fuse::shared::{errno, Shared};
+use crate::fuse::write_operations::OpenedFile;
+
+/// Has `job` run on the recorder's thread.
+pub(super) fn on_recorder(s: &Arc<Shared>, job: impl FnOnce(&Arc<Shared>) + Send + 'static) {
+    let shared = Arc::clone(s);
+    s.recorder.run(move || job(&shared));
+}
+
+/// Keeps `opened`, a file opened to be written, in the table of open handles: the handle the
+/// program is given.
+fn keep_handle(s: &Shared, opened: OpenedFile) -> u64 {
+    let OpenedFile { ino, id, rel, file } = opened;
+    let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
+    crate::panic::lock(&s.handles).insert(fh, Handle { ino, id, rel, copy: Some(Arc::new(file)), writes: true });
+    fh
+}
 
 /// Has `job` run on the recorder's thread once the content of node `ino` is in the folder,
 /// when writing it needs that; `refused` is called instead when the download fails.
 fn with_content(s: &Arc<Shared>, ino: u64, empty: bool, job: impl FnOnce(&Arc<Shared>) + Send + 'static, refused: impl FnOnce(Errno) + Send + 'static) {
-    let Some((row, rel)) = s.needs_download(ino, empty) else { return s.change(job) };
+    let Some((row, rel)) = s.write_operations.needs_download(ino, empty) else { return on_recorder(s, job) };
     let shared = Arc::clone(s);
     s.runtime.spawn(async move {
         let (tell, told) = oneshot::channel();
         shared.ensure(row, rel, Class::Open, Some(tell));
         match told.await {
-            Ok(Ok(())) => shared.change(job),
+            Ok(Ok(())) => on_recorder(&shared, job),
             Ok(Err(e)) => refused(Errno::from_i32(e)),
             Err(_) => refused(Errno::EIO),
         }
@@ -45,8 +64,8 @@ impl Requests {
             truncate,
             move |s| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
-                match s.open_to_write(ino.0, truncate) {
-                    Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
+                match s.write_operations.open_to_write(ino.0, truncate) {
+                    Ok(opened) => reply.opened(FileHandle(keep_handle(s, opened)), FopenFlags::empty()),
                     Err(e) => reply.error(e),
                 }
             },
@@ -63,7 +82,7 @@ impl Requests {
         if let Err(e) = self.0.may_change() {
             return reply.error(e);
         }
-        self.0.change(move |s| match s.make(parent.0, &name, dir, false) {
+        on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, dir, false) {
             Ok(made) => reply.entry(&TTL, &made.attr, Generation(0)),
             Err(e) => reply.error(e),
         });
@@ -74,8 +93,11 @@ impl Requests {
         if let Err(e) = self.0.may_change() {
             return reply.error(e);
         }
-        self.0.change(move |s| match s.make(parent.0, &name, false, true) {
-            Ok(made) => reply.created(&TTL, &made.attr, Generation(0), FileHandle(made.handle.unwrap_or(0)), FopenFlags::empty()),
+        on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, false, true) {
+            Ok(made) => {
+                let fh = made.opened.map_or(0, |opened| keep_handle(s, opened));
+                reply.created(&TTL, &made.attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+            }
             Err(e) => reply.error(e),
         });
     }
@@ -85,7 +107,7 @@ impl Requests {
         if let Err(e) = self.0.may_change() {
             return reply.error(e);
         }
-        self.0.change(move |s| match s.remove(parent.0, &name, dir) {
+        on_recorder(&self.0, move |s| match s.write_operations.remove(parent.0, &name, dir) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         });
@@ -100,7 +122,7 @@ impl Requests {
             return reply.error(Errno::EINVAL);
         }
         let keep = flags.contains(RenameFlags::RENAME_NOREPLACE);
-        self.0.change(move |s| match s.rename(parent.0, &name, new_parent.0, &new_name, keep) {
+        on_recorder(&self.0, move |s| match s.write_operations.rename(parent.0, &name, new_parent.0, &new_name, keep) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         });
@@ -153,7 +175,7 @@ impl Requests {
             size == 0,
             move |s| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
-                match s.truncate(ino.0, size) {
+                match s.write_operations.truncate(ino.0, size) {
                     Ok(()) => {
                         timed(s);
                         answer(s, reply)

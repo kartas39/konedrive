@@ -1,0 +1,96 @@
+//! The operations a program asks for that change the folder: make, remove, rename and
+//! write, each in a module of its own.
+//!
+//! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
+//! the mount shows it ([`View`]) and on disk ([`Under`]), the nodes ([`Resolve`]), the files
+//! open for writing ([`Writers`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
+//! of its own. Each operation is the same short sequence of steps:
+//!
+//! 1. check, through the view and the rules: what stands where, and the errno of a refusal;
+//! 2. do it in the backing directory, through `Under`;
+//! 3. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
+//!    failure what was done on disk is undone and the program is answered `EIO`
+//!    ([`WriteOperations::record_or_undo`]);
+//! 4. the nodes, through `Resolve`.
+//!
+//! An operation never touches the table of open handles: one that opens a file returns it
+//! ([`OpenedFile`]), and the request that asked keeps the handle.
+//!
+//! - [`make`]: a file or directory made;
+//! - [`remove`]: one removed;
+//! - [`rename`]: one renamed or moved;
+//! - [`write`](mod@write): a file opened for writing, closed, cut;
+//! - [`unrecorded_objects`]: what the folder holds that the outbox has no row for, recorded
+//!   once the folder takes changes.
+
+use std::fmt::Display;
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use fuser::Errno;
+
+use super::detections::FolderEvent;
+use super::recorder::Recorder;
+use super::resolve::Resolve;
+use super::under::Under;
+use super::upload_rules::UploadRules;
+use super::view::{Dir, View};
+use super::writers::Writers;
+
+mod make;
+mod remove;
+mod rename;
+mod unrecorded_objects;
+mod write;
+
+pub(super) struct WriteOperations {
+    view: Arc<View>,
+    under: Arc<Under>,
+    resolve: Arc<Resolve>,
+    writers: Arc<Writers>,
+    recorder: Arc<Recorder>,
+    rules: Arc<UploadRules>,
+}
+
+/// A file an operation opened for writing: the node, its item when it has one, its place,
+/// and the file in the backing directory. Whoever asked keeps the handle.
+pub(super) struct OpenedFile {
+    pub(super) ino: u64,
+    pub(super) id: Option<String>,
+    pub(super) rel: PathBuf,
+    pub(super) file: File,
+}
+
+impl WriteOperations {
+    pub(super) fn new(view: Arc<View>, under: Arc<Under>, resolve: Arc<Resolve>, writers: Arc<Writers>, recorder: Arc<Recorder>, rules: Arc<UploadRules>) -> Self {
+        WriteOperations { view, under, resolve, writers, recorder, rules }
+    }
+
+    /// Refuses a change to a read-only folder as a read-only filesystem does.
+    fn check_writable(&self) -> Result<(), Errno> {
+        if self.recorder.is_writable() {
+            Ok(())
+        } else {
+            Err(Errno::EROFS)
+        }
+    }
+
+    /// Whether what stands as `name` in `dir` and has no item stays on this computer.
+    fn stays_local(&self, dir: &Dir, name: &str) -> bool {
+        self.rules.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
+    }
+
+    /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done
+    /// on disk, and the program is answered `EIO`.
+    fn record_or_undo(&self, event: impl FolderEvent, what: impl Display, undo: impl FnOnce()) -> Result<(), Errno> {
+        self.recorder.record(event).map(drop).map_err(|e| {
+            tracing::warn!("{what} could not be recorded: {e}");
+            undo();
+            Errno::EIO
+        })
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests;

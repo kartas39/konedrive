@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 
 use super::announce::Announce;
-use super::changes::rebase;
-use super::conflict::Met;
+use super::conflict::{Meeting, Met};
+use super::detections::rebase;
 use super::mount::Mount;
 use super::under::Under;
 use crate::local::held::Rw;
@@ -81,6 +81,7 @@ impl Mount {
             Kind::Folder => s.under.stat(rel).is_some_and(|m| m.is_dir()) && s.under.carried(rel).is_none_or(|carried| carried == id),
         };
         let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), Met::default(), Vec::new());
+        let meeting = Meeting { under: &s.under, view: &s.view, rules: &s.upload_rules, now: s.now() };
         for step in &steps {
             // Whatever its source remembered of the item is of what it was.
             s.source.forget(&step.id);
@@ -94,12 +95,12 @@ impl Mount {
                     told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
                 }
                 (None, Some((new, now))) => {
-                    s.out_of_the_way(now, new.parent_id.as_deref(), &mut met);
+                    meeting.keep_beside_item(now, new.parent_id.as_deref(), &mut met);
                     told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
                 }
                 (Some((old, was)), Some((new, now))) => {
                     if was != now {
-                        s.out_of_the_way(now, new.parent_id.as_deref(), &mut met);
+                        meeting.keep_beside_item(now, new.parent_id.as_deref(), &mut met);
                     }
                     if was != now && new.kind == Kind::Folder {
                         // The rows of what the user changed below it are found by place.
@@ -125,7 +126,7 @@ impl Mount {
         // below it went.
         gone.sort_by_key(|(_, rel)| std::cmp::Reverse(rel.components().count()));
         for (id, rel) in &gone {
-            s.folder_gone(id, rel, rw.is_some(), &mut met);
+            meeting.keep_gone_folder(id, rel, rw.is_some(), &mut met);
         }
         let Met { detections, ops, copied, kept } = met;
         if !detections.is_empty() || !ops.is_empty() {
@@ -154,6 +155,6 @@ impl Mount {
         self.shared.announce(told);
         self.shared.sweep();
         // What the cycle kept of the user's own is the outbox's to send.
-        self.shared.wake();
+        self.shared.recorder.wake();
     }
 }

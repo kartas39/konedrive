@@ -185,9 +185,9 @@ the folder on disk holding only what is downloaded and what the user made. The o
 daemon shows OneDrive.
 
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
-- `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
-- `shared.rs` — `Shared`: the parts of a mount held together, and what is under way;
-  `Writing`, what a folder that takes changes shares with its sync.
+- `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with, and `Writing`,
+  what a folder that takes changes shares with its sync.
+- `shared.rs` — `Shared`: the parts of a mount held together, and what is under way.
 - `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
   mount; it knows the disk and nothing else. Opening the folder, a path of it, its space, an
   attribute. `[tests]`
@@ -233,21 +233,46 @@ daemon shows OneDrive.
   state of a file: downloaded, being downloaded, or neither.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
-- `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the account's ignore list
-  and the machine's name and touches nothing. What stays on this computer, the names no program
-  may make, a kept copy's name. `[tests]`
-- `recorder.rs` — the one thread that makes and records each change a program asks for,
-  under the folder's tree lock.
-- `changes.rs` — what a change means for the outbox: the detections.
-- `make.rs` — a file or a directory a program makes.
-- `remove.rs` — a file or a directory a program removes.
-- `rename.rs` — a file or a directory a program renames or moves inside the folder.
-- `write.rs` — a file a program writes, in its downloaded copy.
+- `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the
+  account's ignore list and the machine's name and touches nothing. What stays on this
+  computer, the names no program may make, a kept copy's name. `[tests]`
+- `detections.rs` — what a change in the folder is recorded as: a decision from a typed event
+  (`FolderEvent`) and the store's facts (`StoreFacts`), with no disk or mount in it; the
+  detections of a local object (`LocalObject`, `LocalEntry`) or an item at a `FolderPlace`,
+  in an `OutboxBatch`. `[tests]`
+- `detections/made.rs` — `Made`: a file or directory a program made, also where an item's
+  file was just removed. `[tests]`
+- `detections/removed.rs` — `Removed`: an item or a local object removed. `[tests]`
+- `detections/renamed.rs` — `Renamed`: a move of an item, a local file or a local directory,
+  over what it displaced (`MovedEntry`, `DisplacedEntry`); a local file saved over an item's.
+  `[tests]`
+- `detections/written.rs` — `Written`: a file opened for writing, closed changed or untouched,
+  or cut (`ItemWrite`, `LocalWrite`). `[tests]`
+- `detections/unrecorded_objects.rs` — `UnrecordedObjects`: the local objects a walk found that
+  the outbox has no row for. `[tests]`
+- `detections/kept_copy.rs` — `KeptCopy`: a local object kept beside an item that came to its
+  name. `[tests]`
+- `recorder.rs` — `Recorder`: the one thread that makes and records each change a program asks
+  for, under the folder's tree lock; it owns the store's writer and what wakes the outbox's
+  worker. `[tests]`
+- `local_entries.rs` — the local objects of the backing directory as a row sees them, and the
+  walk that collects those at and below a place.
+- `write_operations.rs` — `WriteOperations`: the operations that change the folder, each a
+  check, a step on disk, a record and the nodes; it holds the parts they use and owns
+  nothing. A file it opens is handed back (`OpenedFile`). `[tests]`
+- `write_operations/make.rs` — a file or a directory a program makes. `[tests]`
+- `write_operations/remove.rs` — a file or a directory a program removes. `[tests]`
+- `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
+  folder: a `RenamePlan`, the backing directory renamed, the event, the node. `[tests]`
+- `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened,
+  closed, cut. `[tests]`
+- `write_operations/unrecorded_objects.rs` — what the folder holds that the outbox has no row
+  for, recorded once the folder takes changes. `[tests]`
 - `writers.rs` — the files held open for writing: a file is sent once its last writer closed
   it. `[tests]`
 - `follow.rs` — the folder under the mount made to follow a cycle of the listing (`Step`).
 - `conflict.rs` — where a change from OneDrive meets something the user made here: what is
-  kept, and under which name.
+  done in the backing directory; what that is recorded as is in `detections/`.
 - `announce.rs` — changes told to the kernel through the mount, for whoever watches.
 
 ### `crates/konedrived/src/upload/`

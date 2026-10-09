@@ -24,7 +24,10 @@ use super::nodes::Nodes;
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::resolve::Resolve;
-use super::shared::{other, Shared, Writing};
+use super::recorder::Recorder;
+use super::shared::{other, Shared};
+use super::write_operations::WriteOperations;
+use super::writers::Writers;
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
@@ -33,6 +36,17 @@ pub struct Mount {
     pub(super) announcer: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The mount's connection, as the kernel numbers it (`/sys/fs/fuse/connections/<n>`).
     pub(super) connection: u32,
+}
+
+/// What a folder that takes changes shares with its sync.
+pub struct Writing {
+    /// The folder's tree lock: a change is recorded under it, as a cycle of the delta listing
+    /// holds it from staging to its swap.
+    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The account's ignore list: what stays on this computer only.
+    pub ignore: crate::local::SharedIgnore,
+    /// For conflict copies: `name-<machine>.ext`.
+    pub machine_name: String,
 }
 
 /// What a mount is made with.
@@ -65,6 +79,18 @@ impl Mount {
             let view = Arc::new(View::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
             let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
             let resolve = Arc::new(Resolve::new(Arc::clone(&view), Arc::clone(&nodes)));
+            let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let recorder = Arc::new(Recorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
+            let upload_rules = Arc::new(UploadRules::new(writing.ignore, writing.machine_name));
+            let writers = Arc::new(Writers::default());
+            let write_operations = WriteOperations::new(
+                Arc::clone(&view),
+                Arc::clone(&under),
+                Arc::clone(&resolve),
+                Arc::clone(&writers),
+                Arc::clone(&recorder),
+                Arc::clone(&upload_rules),
+            );
             let shared = Arc::new(Shared {
                 root: root.clone(),
                 under,
@@ -92,12 +118,11 @@ impl Mount {
                 tell: Mutex::new(None),
                 pending: Mutex::default(),
                 stopping: std::sync::atomic::AtomicBool::new(false),
-                writable: std::sync::atomic::AtomicBool::new(false),
-                upload_rules: Arc::new(UploadRules::new(Arc::clone(&writing.ignore), writing.machine_name.clone())),
-                writing,
-                wake: Mutex::new(None),
-                jobs: Mutex::new(None),
-                writers: Default::default(),
+                writable,
+                upload_rules,
+                recorder,
+                writers,
+                write_operations,
                 runtime,
             });
             let mut config = Config::default();
@@ -113,10 +138,6 @@ impl Mount {
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
             crate::folder::root::mounted_over(&root.path, Arc::new(shared.under.descriptor()?));
-            let (jobs, queued) = mpsc::channel();
-            *crate::panic::lock(&shared.jobs) = Some(jobs);
-            let recording = Arc::clone(&shared);
-            std::thread::Builder::new().name("konedrive-record".into()).spawn(move || super::recorder::run(&recording, queued))?;
             let (tell, told) = mpsc::channel::<Vec<Announce>>();
             *crate::panic::lock(&shared.tell) = Some(tell);
             let session = match session.spawn() {
@@ -151,7 +172,7 @@ impl Mount {
         s.stopping.store(true, Ordering::SeqCst);
         *crate::panic::lock(&s.tell) = None;
         // The recorder ends with the last change it was given; what comes later is refused.
-        *crate::panic::lock(&s.jobs) = None;
+        s.recorder.stop();
         if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
             let _ = announcer.join();
         }

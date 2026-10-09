@@ -61,6 +61,14 @@ impl Nodes {
         }
     }
 
+    /// The node of `key` is gone, and no other is ever that key: its id and its place are
+    /// dropped. The kernel may still name the node; it is answered as gone.
+    pub(super) fn forget(&mut self, key: &Key) {
+        if let Some(ino) = self.inos.remove(key) {
+            self.items.remove(&ino);
+        }
+    }
+
     /// The node's path below the folder, from the names the kernel was told.
     pub(super) fn rel(&self, mut ino: u64) -> Option<PathBuf> {
         let mut names = Vec::new();

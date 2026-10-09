@@ -133,7 +133,7 @@ impl Requests {
                 Closed::Untouched => Some(false),
             };
             if let Some(changed) = changed {
-                s.change(move |s| s.closed(handle.ino, changed));
+                super::change::on_recorder(s, move |s| s.write_operations.closed(handle.ino, changed));
             }
         }
         reply.ok();

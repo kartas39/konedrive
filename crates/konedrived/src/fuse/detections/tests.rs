@@ -11,40 +11,40 @@ use super::{is_folder_of, FolderEvent, FolderPlace, LocalObject, ObjectKind, Out
 use crate::fuse::view::tests::drive;
 
 /// The time the tests decide at.
-pub(super) const NOW: i64 = 1_000;
+pub(in crate::fuse) const NOW: i64 = 1_000;
 
 /// The view's drive (`docs` with `c.txt`; `a.txt` and `b.txt` in the root), with
 /// `detections` waiting in the outbox.
-pub(super) fn store(detections: Vec<Detection>) -> TreeStore {
+pub(in crate::fuse) fn store(detections: Vec<Detection>) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     drive(&mut store, detections);
     store
 }
 
-pub(super) fn handle(n: u8) -> FileHandle {
+pub(in crate::fuse) fn handle(n: u8) -> FileHandle {
     FileHandle { kind: 1, bytes: vec![n, 0, 0, 0, 1, 0, 0, 0] }
 }
 
-pub(super) fn file(n: u8, size: u64) -> LocalObject {
+pub(in crate::fuse) fn file(n: u8, size: u64) -> LocalObject {
     LocalObject { handle: handle(n), kind: ObjectKind::File { size } }
 }
 
-pub(super) fn dir(n: u8) -> LocalObject {
+pub(in crate::fuse) fn dir(n: u8) -> LocalObject {
     LocalObject { handle: handle(n), kind: ObjectKind::Dir }
 }
 
 /// `name` in the folder itself.
-pub(super) fn in_root(name: &str) -> FolderPlace {
+pub(in crate::fuse) fn in_root(name: &str) -> FolderPlace {
     FolderPlace::new(Some("R"), Path::new(""), name)
 }
 
 /// `name` in `docs`.
-pub(super) fn in_docs(name: &str) -> FolderPlace {
+pub(in crate::fuse) fn in_docs(name: &str) -> FolderPlace {
     FolderPlace::new(Some("D"), Path::new("docs"), name)
 }
 
 /// The detection that the local object `object` stands at `place`, in `state`.
-pub(super) fn local(kind: OutboxKind, object: &LocalObject, place: &FolderPlace, state: OutboxState) -> Detection {
+pub(in crate::fuse) fn local(kind: OutboxKind, object: &LocalObject, place: &FolderPlace, state: OutboxState) -> Detection {
     Detection {
         kind,
         item_id: None,
@@ -65,31 +65,31 @@ pub(super) fn local(kind: OutboxKind, object: &LocalObject, place: &FolderPlace,
 }
 
 /// `d`, waiting for its last writer.
-pub(super) fn writing(mut d: Detection) -> Detection {
+pub(in crate::fuse) fn writing(mut d: Detection) -> Detection {
     super::wait_for_writer(&mut d, NOW);
     d
 }
 
 /// `d`, due a moment later.
-pub(super) fn quiet(mut d: Detection) -> Detection {
+pub(in crate::fuse) fn quiet(mut d: Detection) -> Detection {
     super::wait_for_quiet(&mut d, NOW);
     d
 }
 
-pub(super) fn detect(event: impl FolderEvent, store: &TreeStore) -> OutboxBatch {
+pub(in crate::fuse) fn detect(event: impl FolderEvent, store: &TreeStore) -> OutboxBatch {
     event.detect(store, NOW).unwrap()
 }
 
 /// The outbox's rows, oldest first.
-pub(super) fn rows(store: &TreeStore) -> Vec<OutboxRow> {
+pub(in crate::fuse) fn rows(store: &TreeStore) -> Vec<OutboxRow> {
     store.outbox_rows().unwrap()
 }
 
-pub(super) fn removes(rows: &[&OutboxRow]) -> Vec<OutboxOp> {
+pub(in crate::fuse) fn removes(rows: &[&OutboxRow]) -> Vec<OutboxOp> {
     rows.iter().map(|row| OutboxOp::Remove(row.seq)).collect()
 }
 
-pub(super) fn rel(rel: &str) -> PathBuf {
+pub(in crate::fuse) fn rel(rel: &str) -> PathBuf {
     PathBuf::from(rel)
 }
 

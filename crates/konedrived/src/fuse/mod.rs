@@ -24,17 +24,20 @@
 //! [`under`] (the folder on disk, by its descriptor) and [`overlay`] (what the outbox's rows
 //! say) depend on nothing; [`view`] (the folder as it is shown) is over those two; [`nodes`]
 //! is the map of the kernel's node ids, and [`resolve`] is over the view and the nodes;
-//! [`attr`] is a function of facts. `shared` holds them together.
+//! [`attr`] is a function of facts. A change a program makes: [`upload_rules`] (what is
+//! uploaded at all) and [`detections`] (what a change is recorded as, a function of typed
+//! events) depend on nothing but the store's facts; the [`recorder`] records them on its own
+//! thread; [`write_operations`] are the operations themselves, over the view, the disk, the
+//! nodes, the writers, the recorder and the rules. `shared` holds them together.
 
 mod announce;
 mod asked;
 mod attr;
-mod changes;
 mod conflict;
 mod detections;
 mod fill;
 mod follow;
-mod make;
+mod local_entries;
 mod mode;
 mod mount;
 mod nodes;
@@ -43,19 +46,16 @@ mod pins;
 mod upload_rules;
 mod read;
 mod recorder;
-mod remove;
-mod rename;
-mod settle;
 mod requests;
 mod resolve;
 mod shared;
 mod under;
 mod view;
-mod write;
+mod write_operations;
 mod writers;
 
 pub use asked::{Freed, Looked, Refused};
 pub use follow::{Followed, Step};
 pub use under::{clear_stale, directories, tidy, tidy_all};
 pub use mount::{Mount, Parts};
-pub use shared::Writing;
+pub use mount::Writing;

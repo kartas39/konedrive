@@ -208,3 +208,13 @@ fn the_directories_down_to_a_place_carry_the_items_the_view_has_there() {
     assert_eq!(view.under().carried(Path::new("papers")).as_deref(), Some("D"));
     assert_eq!(view.under().carried(Path::new("papers/own")), None);
 }
+
+/// A file made where the user just removed an item's file is that item's: the removal not
+/// sent yet says which item.
+#[test]
+fn the_item_whose_file_was_just_removed_from_a_place_is_told() {
+    let (_dir, view) = view(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None)), of(OutboxKind::Delete, "D", "docs", "docs", (None, None))]);
+    assert_eq!(view.removed_item_at(Path::new("b.txt")).map(|row| row.id).as_deref(), Some("B"));
+    // A folder is not a file's, and a place nothing was removed from has none.
+    assert!(view.removed_item_at(Path::new("docs")).is_none() && view.removed_item_at(Path::new("a.txt")).is_none());
+}

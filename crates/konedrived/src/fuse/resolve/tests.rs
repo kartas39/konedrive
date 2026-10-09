@@ -126,5 +126,6 @@ fn an_object_that_is_forgotten_gets_a_new_node_if_it_is_ever_seen_again() {
     let Entry::Local(made) = &entry else { unreachable!() };
     let node = resolve.ino_of(&entry, 1);
     resolve.forget(&made.object.handle);
+    assert!(resolve.node(node).is_none() && resolve.above(node).is_none());
     assert_ne!(resolve.ino_of(&entry, 1), node);
 }

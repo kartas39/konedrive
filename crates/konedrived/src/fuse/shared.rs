@@ -2,15 +2,17 @@
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
 //! the mount ([`Under`]), the folder as the mount shows it ([`View`]), the kernel's nodes
-//! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]).
-//! What is not a part yet — the downloads, the reads, the pins, the announcer, the mode — is
-//! still a field here with its code in `impl Shared` in the module of its topic.
+//! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
+//! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
+//! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
+//! downloads, the reads, the pins, the announcer, the mode — is still a field here with its
+//! code in `impl Shared` in the module of its topic.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicI32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +28,8 @@ use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
 use super::upload_rules::UploadRules;
-use super::recorder::Job;
+use super::recorder::Recorder;
+use super::write_operations::WriteOperations;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
 use super::resolve::Resolve;
@@ -87,30 +90,17 @@ pub(super) struct Shared {
     pub(super) pending: Mutex<(Vec<Announce>, Vec<String>)>,
     /// The mount is being taken off: the announcer says nothing more through it.
     pub(super) stopping: std::sync::atomic::AtomicBool,
-    /// Whether programs may change the folder ([`super::mode`]).
-    pub(super) writable: std::sync::atomic::AtomicBool,
-    /// What of the folder is sent at all ([`super::upload_rules`]).
+    /// Whether programs may change the folder ([`super::mode`]): shared with the recorder.
+    pub(super) writable: Arc<AtomicBool>,
+    /// What of the folder is uploaded at all ([`super::upload_rules`]).
     pub(super) upload_rules: Arc<UploadRules>,
-    /// What a folder that takes changes shares with its sync.
-    pub(super) writing: Writing,
-    /// Wakes the outbox's worker: set while a sync that uploads runs.
-    pub(super) wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    /// The way to the recorder's thread ([`super::recorder`]).
-    pub(super) jobs: Mutex<Option<mpsc::Sender<Job>>>,
+    /// The thread that makes and records each change ([`super::recorder`]).
+    pub(super) recorder: Arc<Recorder>,
     /// The files programs hold open for writing, by node ([`super::writers`]).
-    pub(super) writers: Writers,
+    pub(super) writers: Arc<Writers>,
+    /// The operations that change the folder ([`super::write_operations`]).
+    pub(super) write_operations: WriteOperations,
     pub(super) runtime: tokio::runtime::Handle,
-}
-
-/// What a folder that takes changes shares with its sync.
-pub struct Writing {
-    /// The folder's tree lock: a change is recorded under it, as a cycle of the listing
-    /// holds it from staging to its swap.
-    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The account's ignore list: what stays on this computer only.
-    pub ignore: crate::local::SharedIgnore,
-    /// For conflict copies: `name-<machine>.ext`.
-    pub machine_name: String,
 }
 
 pub(super) fn errno(e: &io::Error) -> Errno {

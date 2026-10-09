@@ -104,10 +104,12 @@ impl Resolve {
         }
     }
 
-    /// The object `object` is gone, and no other is ever this one: nothing is found by it
-    /// again.
+    /// The object `object` is gone, and no other is ever this one: its node is dropped, and
+    /// nothing is found by it again. A program that still holds the file open goes on through
+    /// its own descriptor, which needs no node; the kernel's later questions about the node
+    /// are answered as of something gone, as they were once the object left the disk.
     pub(super) fn forget(&self, object: &FileHandle) {
-        crate::panic::lock(&self.nodes).inos.remove(&Key::Local(object.clone()));
+        crate::panic::lock(&self.nodes).forget(&Key::Local(object.clone()));
     }
 }
 
