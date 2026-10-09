@@ -28,6 +28,6 @@ impl SyncService {
     /// through the mount would start, asked for by name. A file that is downloaded already is
     /// left as it is.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
-        Ok(self.require_mount()?.hydrate(path).await?)
+        Ok(self.require_mount()?.download(path).await?)
     }
 }

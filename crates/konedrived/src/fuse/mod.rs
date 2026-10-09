@@ -42,7 +42,7 @@
 //!   does no I/O; [`file_downloader`] downloads a file whole, over the backing directory,
 //!   the directory contents and the download states; [`pins`] holds the pins, over the
 //!   directory contents.
-//! - A change from OneDrive: [`remote_changes`] is the step of a cycle of the delta listing
+//! - A change from OneDrive: [`cycle_step`] is the step of a cycle of the delta listing
 //!   over the backing directory; what finds the user's own in its way is moved aside by
 //!   [`conflict_copies`]; [`inotify_bridge`] brings the change to whoever watches the folder.
 //! - Who asks: [`kernel_requests`] answers the kernel, keeping what programs hold open in
@@ -67,7 +67,7 @@ mod open_files;
 mod unsent_changes;
 mod pins;
 mod range_readers;
-mod remote_changes;
+mod cycle_step;
 mod upload_rules;
 mod outbox_recorder;
 mod node_resolver;
@@ -78,6 +78,6 @@ mod open_writers;
 
 pub use files_interface::{FilesRefusal, FreedSpace, PathStatus};
 pub use conflict_copies::CycleConflicts;
-pub use remote_changes::{CycleOutcome, OneDriveChange};
+pub use cycle_step::{CycleOutcome, OneDriveChange};
 pub use backing_directory::{clear_stale, directories, tidy, tidy_all};
 pub use mount::{Mount, MountSetup, WriteSetup};

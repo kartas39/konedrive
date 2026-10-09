@@ -47,7 +47,7 @@ impl WriteOperations {
             }
             None => {
                 let local_only = LocalOnlyEntry { on_disk, place };
-                if !self.stays_local(&parent_directory, name) {
+                if !self.is_ignored(&parent_directory, name) {
                     let event = EntryCreated::Fresh { entry: local_only.clone(), open };
                     self.record_or_undo(event, format_args!("a new {}", rel.display()), unmake)?;
                 }

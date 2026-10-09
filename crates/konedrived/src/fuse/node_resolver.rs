@@ -90,7 +90,7 @@ impl NodeResolver {
         };
         match key {
             NodeKey::InOneDrive(id) => {
-                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.read_unsent_changes().removed.contains(&id))?;
+                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.read_unsent_changes().removed_ids.contains(&id))?;
                 Some(NodeTarget::InOneDrive { entry, rel })
             }
             NodeKey::LocalOnly(handle) => {

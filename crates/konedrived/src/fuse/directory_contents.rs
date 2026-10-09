@@ -129,7 +129,7 @@ impl DirectoryContents {
     /// downloaded copy, when the backing directory holds one, and from the unsent changes.
     fn file_sync_state(&self, row: Row, rel: &Path, unsent_changes: &UnsentChanges) -> FileSyncState {
         let downloaded_copy = self.backing_directory.find_downloaded_copy(rel, &row.id);
-        let changed_here = unsent_changes.changed.contains(&row.id);
+        let changed_here = unsent_changes.modified_ids.contains(&row.id);
         FileSyncState::of_onedrive_file(row, downloaded_copy, changed_here)
     }
 }

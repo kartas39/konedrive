@@ -83,7 +83,7 @@ impl FileDownloader {
             DownloadStart::Started { unfinished_file } => unfinished_file,
             DownloadStart::Joined => return,
         };
-        // `hydrating`, for whoever shows the state.
+        // Being downloaded, for whoever shows the state.
         (self.announce_file_change)(rel.clone(), row.id.clone());
         let downloader = Arc::clone(self);
         self.runtime.spawn(async move {

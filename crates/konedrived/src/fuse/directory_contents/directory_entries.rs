@@ -57,7 +57,7 @@ impl ListedName {
 
 /// Whether a row the store has in a directory is still shown there, for the unsent changes.
 fn stays(row: &Row, unsent_changes: &UnsentChanges) -> bool {
-    row.placement == Placement::Placed && !unsent_changes.removed.contains(&row.id) && !unsent_changes.moved.contains_key(&row.id)
+    row.placement == Placement::Placed && !unsent_changes.removed_ids.contains(&row.id) && !unsent_changes.moved_ids.contains_key(&row.id)
 }
 
 impl DirectoryContents {
@@ -115,7 +115,7 @@ impl DirectoryContents {
         let stored = directory.onedrive_id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         // What the user moved to this name is what the name is: what OneDrive has there too
         // is shown once the move is sent, or refused.
-        let moved = unsent_changes.moved.iter().find(|(_, (to, as_))| directory.matches(to) && as_ == name);
+        let moved = unsent_changes.moved_ids.iter().find(|(_, (to, as_))| directory.matches(to) && as_ == name);
         match moved {
             Some((id, _)) => self.find_placed_row(id, name),
             None => stored.filter(|row| stays(row, &unsent_changes)),
@@ -136,7 +136,7 @@ impl DirectoryContents {
     pub(in crate::fuse) fn list_names(&self, directory: &DirectoryReference) -> Vec<ListedName> {
         let unsent_changes = self.read_unsent_changes();
         let stored = directory.onedrive_id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
-        let mut rows: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (to, _))| directory.matches(to)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
+        let mut rows: Vec<Row> = unsent_changes.moved_ids.iter().filter(|(_, (to, _))| directory.matches(to)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
         let moved_here: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
         rows.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();

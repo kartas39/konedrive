@@ -19,7 +19,7 @@ use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
-use super::download_states::{to_hydration_state, DownloadStates};
+use super::download_states::{to_state_attribute, DownloadStates};
 use super::file_downloader::FileDownloader;
 use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::open_files::OpenFiles;
@@ -93,7 +93,7 @@ impl FilesInterface {
     }
 
     /// Downloads the file at `path` now, and waits for it.
-    pub(super) async fn hydrate(&self, path: &Path) -> Result<(), FilesRefusal> {
+    pub(super) async fn download(&self, path: &Path) -> Result<(), FilesRefusal> {
         let (entry, rel) = self.find_onedrive_entry(path)?;
         let row = match entry.state {
             EntryState::File(FileSyncState::RemoteOnly(row)) => row,
@@ -105,7 +105,7 @@ impl FilesInterface {
         self.file_downloader.download(row, rel, Class::Open, Some(waiter));
         match downloaded.await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(errno)) => Err(FilesRefusal::Io(format!("hydration failed: {}", io::Error::from_raw_os_error(errno)))),
+            Ok(Err(errno)) => Err(FilesRefusal::Io(format!("the download failed: {}", io::Error::from_raw_os_error(errno)))),
             Err(_) => Err(FilesRefusal::Io("the download was given up".into())),
         }
     }
@@ -176,7 +176,7 @@ impl FilesInterface {
         let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.find_pinning_row(&above));
         let pinned_above = above.and_then(|by| self.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| self.folder.join(at.rel));
         let (state, modified_here) = match &entry.state {
-            EntryState::File(file) => (to_hydration_state(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
+            EntryState::File(file) => (to_state_attribute(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
             EntryState::Directory(_) => (None, false),
         };
         let modified_here = modified_here || self.open_files.is_open_for_writing(&row.id);

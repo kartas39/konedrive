@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{reaches_download_threshold, to_hydration_state, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
+use super::{reaches_download_threshold, to_state_attribute, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::FileSyncState;
@@ -235,30 +235,30 @@ fn the_mounts_stop_fails_whoever_waits_and_the_download_still_ends() {
 }
 
 #[test]
-fn a_file_being_downloaded_is_shown_as_hydrating_whatever_is_on_disk() {
+fn a_file_being_downloaded_is_shown_as_downloading_whatever_is_on_disk() {
     let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_hydration_state(&FileSyncState::RemoteOnly(file.clone()), true), Some(State::Hydrating));
-    assert_eq!(to_hydration_state(&FileSyncState::Synced(file.clone(), copy()), true), Some(State::Hydrating));
-    assert_eq!(to_hydration_state(&FileSyncState::ModifiedHere(file, copy()), true), Some(State::Hydrating));
+    assert_eq!(to_state_attribute(&FileSyncState::RemoteOnly(file.clone()), true), Some(State::Hydrating));
+    assert_eq!(to_state_attribute(&FileSyncState::Synced(file.clone(), copy()), true), Some(State::Hydrating));
+    assert_eq!(to_state_attribute(&FileSyncState::ModifiedHere(file, copy()), true), Some(State::Hydrating));
 }
 
 #[test]
 fn a_file_with_nothing_on_disk_is_shown_as_online_only() {
     let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_hydration_state(&FileSyncState::RemoteOnly(file), false), Some(State::OnlineOnly));
+    assert_eq!(to_state_attribute(&FileSyncState::RemoteOnly(file), false), Some(State::OnlineOnly));
 }
 
 #[test]
-fn a_file_with_its_downloaded_copy_is_shown_as_hydrated_also_when_modified_here() {
+fn a_file_with_its_downloaded_copy_is_shown_as_downloaded_also_when_modified_here() {
     let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_hydration_state(&FileSyncState::Synced(file.clone(), copy()), false), Some(State::Hydrated));
-    assert_eq!(to_hydration_state(&FileSyncState::ModifiedHere(file, copy()), false), Some(State::Hydrated));
+    assert_eq!(to_state_attribute(&FileSyncState::Synced(file.clone(), copy()), false), Some(State::Hydrated));
+    assert_eq!(to_state_attribute(&FileSyncState::ModifiedHere(file, copy()), false), Some(State::Hydrated));
 }
 
 #[test]
 fn a_local_only_file_has_no_state_to_show() {
     let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: copy() };
     let local_only = FileSyncState::LocalOnly(LocalOnlyEntry { on_disk, place: EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: "own".into() } });
-    assert_eq!(to_hydration_state(&local_only, false), None);
-    assert_eq!(to_hydration_state(&local_only, true), None);
+    assert_eq!(to_state_attribute(&local_only, false), None);
+    assert_eq!(to_state_attribute(&local_only, true), None);
 }

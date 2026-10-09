@@ -35,7 +35,7 @@ pub(super) fn collect_local_only_entries(backing_directory: &BackingDirectory, u
 fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &DirectoryReference, name: &str, into: &mut Vec<LocalOnlyEntry>) {
     let rel = directory.path.join(name);
     let Some(on_disk) = backing_directory.find_disk_entry(&rel) else { return };
-    let stays = upload_rules.stays_local(&directory.path, name, |at| backing_directory.read_onedrive_id(at).is_some());
+    let stays = upload_rules.is_ignored(&directory.path, name, |at| backing_directory.read_onedrive_id(at).is_some());
     if stays || backing_directory.read_onedrive_id(&rel).is_some() {
         return;
     }

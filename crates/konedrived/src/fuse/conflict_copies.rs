@@ -17,7 +17,7 @@ use konedrive_tree::outbox::{Detection, OutboxOp};
 
 use crate::fuse::entry_place::EntryPlace;
 use super::backing_directory::BackingDirectory;
-use super::detections::{create_local_only_entries, is_directory_of, EntryKeptAside};
+use super::detections::{detect_local_only_entries, is_directory_of, EntryKeptAside};
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
 use super::local_only_entry::collect_local_only_entries;
@@ -75,7 +75,7 @@ impl ConflictCopies {
                 tracing::warn!("{} could not be kept beside what comes to its name from OneDrive: {e}", rel.display());
                 return;
             }
-            let uploaded = !self.upload_rules.stays_local(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
+            let uploaded = !self.upload_rules.is_ignored(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
             let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), uploaded }.detect(now);
             conflicts.ops.extend(kept.ops);
             conflicts.detections.extend(kept.detections);
@@ -98,7 +98,7 @@ impl ConflictCopies {
             // The directory it is in is found by its path: it may be removed and kept as
             // well.
             let directory = DirectoryReference { onedrive_id: None, path: parent.to_path_buf() };
-            conflicts.detections.extend(create_local_only_entries(&collect_local_only_entries(&self.backing_directory, &self.upload_rules, &directory, name), now));
+            conflicts.detections.extend(detect_local_only_entries(&collect_local_only_entries(&self.backing_directory, &self.upload_rules, &directory, name), now));
             conflicts.kept_directories.push(id.to_owned());
         }
     }

@@ -105,10 +105,10 @@ impl WriteOperations {
                 _ => {}
             }
         }
-        if moved_entry.onedrive_id().is_some() && self.upload_rules.in_local_dir(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
+        if moved_entry.onedrive_id().is_some() && self.upload_rules.is_in_ignored_directory(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
             return Err(Errno::EXDEV);
         }
-        let uploaded = !self.stays_local(&to_directory, new_name);
+        let uploaded = !self.is_ignored(&to_directory, new_name);
         let node_id = self.node_resolver.assign_node_id(&moved_entry, parent);
         let open = self.open_writers.is_open(node_id);
         Ok(Some(RenamePlan { moved_entry, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))

@@ -54,8 +54,8 @@ fn recorded(detections: Vec<Detection>) -> UnsentChanges {
 fn a_moved_file_is_where_its_row_takes_it() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
     let to = DirectoryReference { onedrive_id: Some("D".into()), path: PathBuf::from("docs") };
-    assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "new.txt".to_owned())));
-    assert!(unsent_changes.removed.is_empty() && unsent_changes.changed.is_empty());
+    assert_eq!(unsent_changes.moved_ids.get("A"), Some(&(to, "new.txt".to_owned())));
+    assert!(unsent_changes.removed_ids.is_empty() && unsent_changes.modified_ids.is_empty());
 }
 
 /// Moved into a directory that is not in OneDrive yet: found by the directory's path.
@@ -63,25 +63,25 @@ fn a_moved_file_is_where_its_row_takes_it() {
 fn a_file_moved_into_a_local_only_directory_is_found_by_that_directorys_path() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt")))]);
     let to = DirectoryReference { onedrive_id: None, path: PathBuf::from("new") };
-    assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "a.txt".to_owned())));
+    assert_eq!(unsent_changes.moved_ids.get("A"), Some(&(to, "a.txt".to_owned())));
 }
 
 /// A file removed here is gone from the folder though OneDrive still has it.
 #[test]
 fn a_file_removed_here_is_removed() {
     let unsent_changes = recorded(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    assert!(unsent_changes.removed.contains("B") && unsent_changes.moved.is_empty());
+    assert!(unsent_changes.removed_ids.contains("B") && unsent_changes.moved_ids.is_empty());
 }
 
 /// New content where the file is: its content is the user's own, and it has not moved.
 #[test]
 fn a_file_with_new_content_is_changed_and_stays_in_place() {
     let unsent_changes = recorded(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
-    assert!(unsent_changes.changed.contains("A") && unsent_changes.moved.is_empty() && unsent_changes.removed.is_empty());
+    assert!(unsent_changes.modified_ids.contains("A") && unsent_changes.moved_ids.is_empty() && unsent_changes.removed_ids.is_empty());
 }
 
 #[test]
 fn an_empty_outbox_says_nothing() {
     let unsent_changes = UnsentChanges::of(&store());
-    assert!(unsent_changes.moved.is_empty() && unsent_changes.removed.is_empty() && unsent_changes.changed.is_empty());
+    assert!(unsent_changes.moved_ids.is_empty() && unsent_changes.removed_ids.is_empty() && unsent_changes.modified_ids.is_empty());
 }

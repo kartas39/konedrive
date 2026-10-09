@@ -125,7 +125,7 @@ impl RangeReaders {
 
     /// The OneDrive file `id` changed or is gone: whatever the source remembered of it
     /// between its range reads is of what it was, and is dropped.
-    pub(super) fn forget_file(&self, id: &str) {
+    pub(super) fn drop_cached_ranges(&self, id: &str) {
         self.source.forget(id);
     }
 }

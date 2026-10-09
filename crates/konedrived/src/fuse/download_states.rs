@@ -260,7 +260,7 @@ pub(super) fn reaches_download_threshold(bytes_read: u64, download_after: u64, f
 
 /// What the daemon shows of a file: being downloaded, downloaded, or neither. `None` for a
 /// file that is not in OneDrive yet.
-pub(super) fn to_hydration_state(file: &FileSyncState, is_downloading: bool) -> Option<State> {
+pub(super) fn to_state_attribute(file: &FileSyncState, is_downloading: bool) -> Option<State> {
     match file {
         FileSyncState::LocalOnly(_) => None,
         _ if is_downloading => Some(State::Hydrating),

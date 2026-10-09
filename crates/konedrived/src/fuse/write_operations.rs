@@ -70,8 +70,8 @@ impl WriteOperations {
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.
-    fn stays_local(&self, directory: &DirectoryReference, name: &str) -> bool {
-        self.upload_rules.stays_local(&directory.path, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
+    fn is_ignored(&self, directory: &DirectoryReference, name: &str) -> bool {
+        self.upload_rules.is_ignored(&directory.path, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
     }
 
     /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done

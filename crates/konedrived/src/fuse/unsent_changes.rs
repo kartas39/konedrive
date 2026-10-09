@@ -24,11 +24,11 @@ pub(super) struct UnsentChanges {
     /// Moved here and not moved in OneDrive yet: the directory each is in now, and its name
     /// there. The directory is referred to by its OneDrive id, or by its path alone when
     /// OneDrive does not have it yet.
-    pub(super) moved: HashMap<String, (DirectoryReference, String)>,
+    pub(super) moved_ids: HashMap<String, (DirectoryReference, String)>,
     /// Removed here and not removed from OneDrive yet.
-    pub(super) removed: HashSet<String>,
+    pub(super) removed_ids: HashSet<String>,
     /// Files whose content was changed here and is not sent yet.
-    pub(super) changed: HashSet<String>,
+    pub(super) modified_ids: HashSet<String>,
 }
 
 impl UnsentChanges {
@@ -38,11 +38,11 @@ impl UnsentChanges {
         for row in store.outbox_rows().unwrap_or_default() {
             let Some(id) = row.item_id.clone() else { continue };
             if row.kind.removes() {
-                now.removed.insert(id);
+                now.removed_ids.insert(id);
                 continue;
             }
             if row.kind == OutboxKind::Update {
-                now.changed.insert(id.clone());
+                now.modified_ids.insert(id.clone());
             }
             // Moved: the row takes it elsewhere than the base has it. It is where the row
             // last saw it, under the name it has there.
@@ -51,7 +51,7 @@ impl UnsentChanges {
             if let (Some(base), Some(name)) = (base, name) {
                 if base != (row.target_parent.as_deref(), row.target_name.as_deref()) {
                     let directory = DirectoryReference { onedrive_id: row.target_parent.clone(), path: row.rel.parent().map(PathBuf::from).unwrap_or_default() };
-                    now.moved.insert(id, (directory, name.to_owned()));
+                    now.moved_ids.insert(id, (directory, name.to_owned()));
                 }
             }
         }

@@ -20,11 +20,11 @@ impl DirectoryContents {
         let unsent_changes = self.read_unsent_changes();
         let (mut names, mut at) = (Vec::new(), id.to_owned());
         for _ in 0..konedrive_fs::MAX_DEPTH {
-            if unsent_changes.removed.contains(&at) {
+            if unsent_changes.removed_ids.contains(&at) {
                 return None;
             }
             let row = self.find_row(&at).filter(|r| r.placement == Placement::Placed)?;
-            let (parent_id, name) = match unsent_changes.moved.get(&at) {
+            let (parent_id, name) = match unsent_changes.moved_ids.get(&at) {
                 // Moved into a directory that is not in OneDrive yet: found by its path.
                 Some((DirectoryReference { onedrive_id: None, path }, name)) => {
                     names.push(name.clone());

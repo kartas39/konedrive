@@ -10,8 +10,8 @@
 //! What it answers:
 //!
 //! - whether what is not in OneDrive stays on this computer: by its own name
-//!   ([`UploadRules::stays_local`]), or by a directory it is in
-//!   ([`UploadRules::in_local_dir`]);
+//!   ([`UploadRules::is_ignored`]), or by a directory it is in
+//!   ([`UploadRules::is_in_ignored_directory`]);
 //! - which names a program may not make: the daemon's own ([`UploadRules::daemon_owned`])
 //!   and a file manager's trash ([`UploadRules::is_trash`]).
 
@@ -34,7 +34,7 @@ impl UploadRules {
     /// whatever its name: a directory it is in, which is not in OneDrive either, is on the
     /// ignore list. `in_onedrive` says whether the directory at a path is marked with a
     /// OneDrive id: one that is, is OneDrive's, whatever its name.
-    pub(super) fn in_local_dir(&self, dir: &Path, in_onedrive: impl Fn(&Path) -> bool) -> bool {
+    pub(super) fn is_in_ignored_directory(&self, dir: &Path, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignore = crate::panic::read(&self.ignore);
         let mut at = dir;
         while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
@@ -48,10 +48,10 @@ impl UploadRules {
 
     /// Whether what is `name` in the directory `dir` and is not in OneDrive stays on this
     /// computer: its name is on the ignore list, or it is in a directory that stays
-    /// ([`Self::in_local_dir`]).
-    pub(super) fn stays_local(&self, dir: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
+    /// ([`Self::is_in_ignored_directory`]).
+    pub(super) fn is_ignored(&self, dir: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignored = crate::panic::read(&self.ignore).matches(name.as_ref());
-        ignored || self.in_local_dir(dir, in_onedrive)
+        ignored || self.is_in_ignored_directory(dir, in_onedrive)
     }
 
     /// Whether `name` is one the daemon uses for itself in the folder: no program makes it

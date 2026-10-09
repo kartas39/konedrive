@@ -56,7 +56,7 @@ use super::open_writers::OpenWriters;
 use super::outbox_recorder::{OutboxRecorder, OutboxWaker};
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
-use super::remote_changes::{self, CycleOutcome, UncommittedCycle};
+use super::cycle_step::{self, CycleOutcome, UncommittedCycle};
 use super::upload_rules::UploadRules;
 use super::write_operations::WriteOperations;
 
@@ -89,7 +89,7 @@ pub struct Mount {
     /// ([`super::inotify_bridge`]).
     inotify_bridge: Arc<InotifyBridge>,
     /// What the cycle now being committed leaves to be done once it is
-    /// ([`super::remote_changes`]).
+    /// ([`super::cycle_step`]).
     uncommitted_cycle: UncommittedCycle,
     /// The reads that wait for a range from OneDrive, which the kernel requests keep
     /// ([`super::kernel_requests`]).
@@ -295,7 +295,7 @@ impl Mount {
 
     /// [`stop`](Self::stop), for a folder that is forgotten: it is the user's again, to keep
     /// or to remove, and is left unlocked.
-    pub fn forget(&self) {
+    pub fn stop_and_restore_write_bits(&self) {
         self.stop();
         set_tree(&self.folder, false);
     }
@@ -325,22 +325,22 @@ impl Mount {
     }
 
     /// Makes the backing directory follow the cycle of the delta listing that `store` has
-    /// staged and not yet committed ([`remote_changes::apply_staged_cycle`]); `rw` is what
+    /// staged and not yet committed ([`cycle_step::apply_staged_cycle`]); `rw` is what
     /// the outbox holds, in a read-write folder.
     pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
-        remote_changes::apply_staged_cycle(store, rw, &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
+        cycle_step::apply_staged_cycle(store, rw, &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
     }
 
     /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its
     /// changes are announced to whoever watches the folder, and what is pinned and not
-    /// downloaded is downloaded ([`remote_changes::announce_committed_cycle`]).
+    /// downloaded is downloaded ([`cycle_step::announce_committed_cycle`]).
     pub fn announce_committed_cycle(&self) {
-        remote_changes::announce_committed_cycle(&self.uncommitted_cycle, &self.pins, &self.inotify_bridge, &self.directory_contents, &self.file_downloader, &self.runtime, &self.outbox_recorder);
+        cycle_step::announce_committed_cycle(&self.uncommitted_cycle, &self.pins, &self.inotify_bridge, &self.directory_contents, &self.file_downloader, &self.runtime, &self.outbox_recorder);
     }
 
     /// Downloads the file at `path` now, and waits for it.
-    pub async fn hydrate(&self, path: &Path) -> Result<(), FilesRefusal> {
-        self.files_interface.hydrate(path).await
+    pub async fn download(&self, path: &Path) -> Result<(), FilesRefusal> {
+        self.files_interface.download(path).await
     }
 
     /// Frees the space of the downloaded copies at and below `path`; what a pin keeps, a

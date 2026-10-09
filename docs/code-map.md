@@ -311,7 +311,7 @@ daemon shows OneDrive.
   closed, cut. `[tests]`
 - `write_operations/unrecorded_entries.rs` — the local-only entries the outbox has no row
   for, recorded once the folder takes changes. `[tests]`
-- `remote_changes.rs` — the step of a cycle of the delta listing over the backing directory:
+- `cycle_step.rs` — the step of a cycle of the delta listing over the backing directory:
   a cycle's `OneDriveChange`s applied (`CycleOutcome`), what each is announced as, and what
   the cycle leaves to be done once it is committed (`UncommittedCycle`). `[tests]`
 - `inotify_bridge.rs` — `InotifyBridge`: a change from OneDrive (`Announcement`) brought to

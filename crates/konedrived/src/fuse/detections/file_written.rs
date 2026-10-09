@@ -7,7 +7,7 @@ use konedrive_tree::TreeError;
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
+use super::{detect_local_only_entry, detect_moved, detect_modified, wait_for_quiet, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// Which file was written, where it is, and what was done to it.
@@ -48,22 +48,22 @@ pub(in crate::fuse) enum LocalOnlyFileWrite {
 impl FolderEvent for FileWritten {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         match self {
-            FileWritten::LocalOnly { file, write } => Ok(OutboxBatch::of([create_or_mkdir(&file.place, &file.on_disk, write == LocalOnlyFileWrite::Opened, now)])),
+            FileWritten::LocalOnly { file, write } => Ok(OutboxBatch::of([detect_local_only_entry(&file.place, &file.on_disk, write == LocalOnlyFileWrite::Opened, now)])),
             FileWritten::InOneDrive { id, place, write } => {
                 let Some(base) = facts.base_row(&id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {
                     OneDriveFileWrite::Opened(copy) => {
-                        let mut update = update_content(&place, &base, &copy);
+                        let mut update = detect_modified(&place, &base, &copy);
                         wait_for_writer(&mut update, now);
                         update
                     }
                     OneDriveFileWrite::ClosedChanged(copy) | OneDriveFileWrite::Cut(copy) => {
-                        let mut update = update_content(&place, &base, &copy);
+                        let mut update = detect_modified(&place, &base, &copy);
                         wait_for_quiet(&mut update, now);
                         update
                     }
                     OneDriveFileWrite::ClosedUntouched => {
-                        let mut here = move_in_onedrive(&place, &base, None);
+                        let mut here = detect_moved(&place, &base, None);
                         here.same_content = true;
                         here
                     }

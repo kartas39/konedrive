@@ -144,7 +144,7 @@ pub(super) fn apply_staged_cycle(
     let recorded_at = crate::clock::unix_now();
     for change in &changes {
         // Whatever the source of the content remembered of the file is of what it was.
-        range_readers.forget_file(&change.id);
+        range_readers.drop_cached_ranges(&change.id);
         match (&change.old, &change.new) {
             (Some((old, was)), None) => {
                 match old.kind {

@@ -115,7 +115,7 @@ fn base(row: &Row) -> Base {
     Base { etag: row.etag.clone(), ctag: row.ctag.clone(), parent: row.parent_id.clone(), name: Some(row.name.clone()) }
 }
 
-fn detection_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
+fn detect_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
     Detection {
         kind,
         item_id: None,
@@ -136,12 +136,12 @@ fn detection_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>
 /// directory to make. A name OneDrive refuses, or a file too large for it, is said on the row
 /// and waits for the user; a file a program still writes (`open`) waits for its last writer,
 /// and one just closed is due a moment later.
-fn create_or_mkdir(place: &EntryPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
+fn detect_local_only_entry(place: &EntryPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
     let (kind, size) = match on_disk.metadata.kind {
         EntryKind::Directory => (OutboxKind::Mkdir, None),
         EntryKind::File => (OutboxKind::Create, Some(on_disk.metadata.size)),
     };
-    let mut d = detection_at(place, kind, Some(on_disk.handle.clone()), size);
+    let mut d = detect_at(place, kind, Some(on_disk.handle.clone()), size);
     let too_large = size.is_some_and(|size| size > names::MAX_FILE_SIZE);
     let refused = names::refused(place.name.as_ref()).or(too_large.then_some(names::Refused::TooLarge));
     if let Some(refused) = refused {
@@ -157,20 +157,20 @@ fn create_or_mkdir(place: &EntryPlace, on_disk: &DiskEntry, open: bool, now: i64
 
 /// The detections of `entries`, each by the rules of a new local-only entry that no program
 /// holds open: a directory that is uploaded from now on, and all it holds.
-pub(super) fn create_local_only_entries(entries: &[LocalOnlyEntry], now: i64) -> Vec<Detection> {
-    entries.iter().map(|entry| create_or_mkdir(&entry.place, &entry.on_disk, false, now)).collect()
+pub(super) fn detect_local_only_entries(entries: &[LocalOnlyEntry], now: i64) -> Vec<Detection> {
+    entries.iter().map(|entry| detect_local_only_entry(&entry.place, &entry.on_disk, false, now)).collect()
 }
 
 /// The file or directory of OneDrive that `row` is, is at `place`, with the entry `handle`
 /// identifies when the backing directory holds one for it: a move, and how something of
 /// OneDrive is said to be where it is.
-fn move_in_onedrive(place: &EntryPlace, row: &Row, handle: Option<FileHandle>) -> Detection {
-    Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detection_at(place, OutboxKind::Move, handle, None) }
+fn detect_moved(place: &EntryPlace, row: &Row, handle: Option<FileHandle>) -> Detection {
+    Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detect_at(place, OutboxKind::Move, handle, None) }
 }
 
 /// The file `copy` at `place` is the new content of the OneDrive file `row`.
-fn update_content(place: &EntryPlace, row: &Row, copy: &DiskEntry) -> Detection {
-    let update = detection_at(place, OutboxKind::Update, Some(copy.handle.clone()), copy.metadata.file_size());
+fn detect_modified(place: &EntryPlace, row: &Row, copy: &DiskEntry) -> Detection {
+    let update = detect_at(place, OutboxKind::Update, Some(copy.handle.clone()), copy.metadata.file_size());
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..update }
 }
 
@@ -192,7 +192,7 @@ pub(super) fn wait_for_quiet(d: &mut Detection, now: i64) {
 
 /// What was at `rel` is removed: the file or directory of OneDrive that `row` is, or a
 /// local-only entry by its `handle`.
-fn delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
+fn detect_delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
@@ -211,14 +211,14 @@ fn delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detectio
 
 /// The file or directory of OneDrive `id` was removed from `rel` here. Nothing when the base
 /// no longer has it.
-fn delete_in_onedrive(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(facts.base_row(id)?.iter().map(|base| delete(Some(base), None, rel)).collect())
+fn detect_removed(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(facts.base_row(id)?.iter().map(|base| detect_delete(Some(base), None, rel)).collect())
 }
 
 /// A local-only entry is gone from `rel`, or stays on this computer from now on: what the
 /// outbox held of it is removed. Nothing for one the outbox never heard of.
-fn forget_local_only(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![delete(None, Some(handle.clone()), rel)] })
+fn detect_forgotten(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![detect_delete(None, Some(handle.clone()), rel)] })
 }
 
 /// Whether a directory on disk that is marked with `marked_with` backs the OneDrive

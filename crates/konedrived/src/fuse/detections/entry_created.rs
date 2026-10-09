@@ -4,7 +4,7 @@ use konedrive_tree::{Row, TreeError};
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{create_or_mkdir, update_content, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
+use super::{detect_local_only_entry, detect_modified, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// What a program made at a place where nothing was.
@@ -22,11 +22,11 @@ pub(in crate::fuse) enum EntryCreated {
 impl FolderEvent for EntryCreated {
     fn detect(self, _facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         Ok(OutboxBatch::of([match self {
-            EntryCreated::Fresh { entry, open } => create_or_mkdir(&entry.place, &entry.on_disk, open, now),
+            EntryCreated::Fresh { entry, open } => detect_local_only_entry(&entry.place, &entry.on_disk, open, now),
             // Not held back a moment when it is not open: it merges into the removal's row,
             // which was ready.
             EntryCreated::ReplacingRemovedFile { place, file, open, base } => {
-                let mut update = update_content(&place, &base, &file);
+                let mut update = detect_modified(&place, &base, &file);
                 if open {
                     wait_for_writer(&mut update, now);
                 }

@@ -113,7 +113,7 @@ impl WriteOperations {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
         if let Some(local_only) = entry.local_only() {
-            if self.stays_local(&parent_directory, &entry.name) {
+            if self.is_ignored(&parent_directory, &entry.name) {
                 return Ok(());
             }
             let event = FileWritten::LocalOnly { file: local_only.clone(), write };

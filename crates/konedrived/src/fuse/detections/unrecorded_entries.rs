@@ -10,7 +10,7 @@
 use konedrive_tree::TreeError;
 
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{create_local_only_entries, FolderEvent, OutboxBatch, StoreFacts};
+use super::{detect_local_only_entries, FolderEvent, OutboxBatch, StoreFacts};
 
 /// The local-only entries the folder holds, already without what stays on this computer.
 #[derive(Debug)]
@@ -21,7 +21,7 @@ impl FolderEvent for UnrecordedEntries {
         // An entry whose rows cannot be read is left for the next walk.
         let unknown = |entry: &LocalOnlyEntry| facts.outbox_rows_of(&entry.on_disk.handle).is_ok_and(|rows| rows.is_empty());
         let unknown: Vec<LocalOnlyEntry> = self.0.into_iter().filter(unknown).collect();
-        Ok(OutboxBatch::of(create_local_only_entries(&unknown, now)))
+        Ok(OutboxBatch::of(detect_local_only_entries(&unknown, now)))
     }
 }
 
