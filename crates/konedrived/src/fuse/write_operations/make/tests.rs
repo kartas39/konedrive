@@ -95,3 +95,16 @@ fn an_ignored_name_is_made_without_the_outbox() {
     f.ops.make(NodeId::ROOT, "x.tmp", EntryToMake::File).unwrap();
     assert!(f.disk.join("x.tmp").is_file());
 }
+
+/// A make puts the entry at its place, and its node with it: a file made where a OneDrive
+/// file was just removed is that file's, whose node the table may have at another place.
+#[test]
+fn the_node_of_a_file_made_where_a_onedrive_file_was_removed_is_at_the_place_it_was_made_at() {
+    let f = folder(Vec::new());
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    f.ops.remove(NodeId::ROOT, "a.txt", crate::fuse::backing_directory::EntryKind::File).unwrap();
+    f.node_resolver.move_node(node_id, f.docs(), "elsewhere.txt");
+    let (made, _, _) = f.ops.make(NodeId::ROOT, "a.txt", EntryToMake::File).unwrap();
+    assert_eq!(made, node_id);
+    assert_eq!(f.node_resolver.find_parent(node_id).map(|(parent, _)| parent), Some(NodeId::ROOT));
+}

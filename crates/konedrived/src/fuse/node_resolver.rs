@@ -60,7 +60,8 @@ impl NodeResolver {
     }
 
     /// The node id of `entry`, which whoever asks found in the directory node `parent` — a
-    /// lookup of its name, a make, a rename: the one it has, or a new one. A local-only
+    /// lookup of its name, a rename before it moves it, a make, which then puts its node
+    /// there itself ([`move_node`](Self::move_node)): the one it has, or a new one. A local-only
     /// entry that got into OneDrive since the kernel was told of it keeps its node id.
     ///
     /// A node the table has at another place moves to this one only when the mount shows

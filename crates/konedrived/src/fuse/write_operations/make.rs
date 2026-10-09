@@ -44,6 +44,10 @@ impl WriteOperations {
         let local_only = LocalOnlyEntry { on_disk, place: EntryPlace::new(&parent_directory, name) };
         let made = self.describe_made_entry(&record, &local_only, &path)?;
         let node_id = self.node_resolver.assign_node_id(&made, parent);
+        // A make puts the entry here, and its node with it: a file made where a OneDrive
+        // file was just removed is that file's, and the mount shows the file nowhere until
+        // this is recorded, so the node resolver would leave its node where the table has it.
+        self.node_resolver.move_node(node_id, parent, name);
         let opened = file.filter(|_| entry_to_make == EntryToMake::FileOpenedForWriting).map(|file| self.add_writer_of_made_file(node_id, file));
         let handle = local_only.on_disk.handle.clone();
         let undo = || {
