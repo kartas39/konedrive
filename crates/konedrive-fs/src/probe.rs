@@ -1,4 +1,4 @@
-//! Checks that a directory's filesystem can host placeholders at all.
+//! Checks that a directory's filesystem can hold a folder at all.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -7,6 +7,7 @@ use std::path::Path;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
+use crate::handle::FileHandle;
 use crate::lease::WriteLease;
 use crate::placeholder::punch_all;
 
@@ -73,9 +74,12 @@ fn open_probe_file(dir: &Path) -> io::Result<File> {
     Ok(File::from(fd))
 }
 
+/// What a filesystem that gives no file handle is said to lack.
+const HANDLES: &str = "file handles (name_to_handle_at)";
+
 /// Creates one nameless temporary file in `dir` and exercises every feature
-/// a placeholder needs: sparse size, hole punching, user xattrs and a write
-/// lease.
+/// a folder needs: sparse size, hole punching, user xattrs, a write lease
+/// and a file handle.
 pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     let unusable = |e: io::Error| ProbeError::Unusable {
         path: dir.display().to_string(),
@@ -96,6 +100,9 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     xattr::FileExt::set_xattr(&file, crate::placeholder::XATTR_STATE, b"probe")
         .map_err(|e| classify(e, dir, "user.* extended attributes"))?;
     probe_lease(&file, dir)?;
+    // A file or directory of the folder is its handle, and nothing else: a
+    // filesystem that gives none cannot say which object is which.
+    FileHandle::of(&file).map_err(|e| classify(e, dir, HANDLES))?;
     Ok(())
 }
 
