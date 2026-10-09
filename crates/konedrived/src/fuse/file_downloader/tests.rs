@@ -1,10 +1,11 @@
 //! A download on the parts of a folder without a mount: the folder of the write operations'
-//! tests, a bridge whose thread is not started, and a source whose every file holds what
-//! the test gives it.
+//! tests, a write-operation thread over a tree lock the test may hold, as a cycle does, a
+//! bridge whose thread is not started, and a source whose every file holds what the test
+//! gives it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use konedrive_graph::pool::{Class, TransferPool};
 use konedrive_tree::Kind;
@@ -14,7 +15,10 @@ use super::{FileDownloader, RunningDownload};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::download_states::DownloadStates;
 use crate::fuse::inotify_bridge::{Announcement, InotifyBridge};
+use crate::fuse::node_table::NodeId;
+use crate::fuse::write_operation_thread::WriteOperationThread;
 use crate::fuse::write_operations::tests::{at, folder, Folder};
+use crate::fuse::write_operations::{RenameMode, WriteOperations};
 use crate::hydration::source::{ContentSource, Fetched, Share, SourceError};
 use crate::status::report::Report;
 
@@ -41,6 +45,9 @@ struct Downloads {
     folder: Folder,
     download_states: Arc<DownloadStates>,
     inotify_bridge: Arc<InotifyBridge>,
+    /// The folder's tree lock, which the write-operation thread runs each job under.
+    tree_lock: Arc<tokio::sync::Mutex<()>>,
+    write_operation_thread: Arc<WriteOperationThread>,
     file_downloader: Arc<FileDownloader>,
     _runtime: tokio::runtime::Runtime,
 }
@@ -52,11 +59,14 @@ fn downloads() -> Downloads {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let download_states = Arc::new(DownloadStates::new(1 << 20));
     let inotify_bridge = Arc::new(InotifyBridge::new(folder.disk.clone(), Arc::clone(&folder.node_resolver), Arc::clone(&folder.directory_contents)));
+    let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let write_operation_thread = Arc::new(WriteOperationThread::start(Arc::clone(&tree_lock)).unwrap());
     let file_downloader = Arc::new(FileDownloader::new(
         Arc::clone(&folder.backing_directory),
         Arc::clone(&folder.directory_contents),
         Arc::clone(&download_states),
         Arc::clone(&inotify_bridge),
+        Arc::clone(&write_operation_thread),
         Arc::new(SameContent(b"x")),
         TransferPool::new(4),
         Share::new(),
@@ -64,15 +74,46 @@ fn downloads() -> Downloads {
         folder.disk.clone(),
         runtime.handle().clone(),
     ));
-    Downloads { folder, download_states, inotify_bridge, file_downloader, _runtime: runtime }
+    Downloads { folder, download_states, inotify_bridge, tree_lock, write_operation_thread, file_downloader, _runtime: runtime }
 }
 
 impl Downloads {
-    /// Downloads the fixture's file `A` to `rel`, and waits for how it ended.
-    fn download_to(&self, rel: &str) -> Result<(), i32> {
+    /// Starts the download of the fixture's file `A` to `rel`; how it ended comes once it
+    /// did.
+    fn start_download_to(&self, rel: &str) -> oneshot::Receiver<Result<(), i32>> {
         let (waiter, told) = oneshot::channel();
         self.file_downloader.download(row("A", Some("R"), "a.txt", Kind::File), PathBuf::from(rel), Class::Open, Some(waiter));
-        told.blocking_recv().expect("a download answers whoever waits for it")
+        told
+    }
+
+    /// Downloads the fixture's file `A` to `rel`, and waits for how it ended.
+    fn download_to(&self, rel: &str) -> Result<(), i32> {
+        self.start_download_to(rel).blocking_recv().expect("a download answers whoever waits for it")
+    }
+
+    /// The write operations over the folder's parts, to be put on the write-operation
+    /// thread.
+    fn write_operations(&self) -> Arc<WriteOperations> {
+        let folder = &self.folder;
+        Arc::new(WriteOperations::new(
+            Arc::clone(&folder.directory_contents),
+            Arc::clone(&folder.backing_directory),
+            Arc::clone(&folder.node_resolver),
+            Arc::clone(&folder.open_handles),
+            Arc::clone(&folder.outbox_recorder),
+            Arc::clone(&folder.upload_rules),
+            Arc::clone(&folder.access_mode_switch),
+        ))
+    }
+
+    /// Waits until `count` jobs wait for the write-operation thread, which runs none of
+    /// them while the test holds the tree lock.
+    fn wait_for_queued_write_operations(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.write_operation_thread.count_queued_jobs() < count {
+            assert!(Instant::now() < deadline, "{count} jobs were to wait for the write-operation thread, and {} do", self.write_operation_thread.count_queued_jobs());
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -113,6 +154,40 @@ fn a_download_of_a_file_that_moved_meanwhile_lands_nowhere() {
     let downloads = downloads();
     assert_eq!(downloads.download_to("docs/a.txt"), Err(libc::ESTALE));
     assert!(!downloads.folder.disk.join("docs/a.txt").exists() && !downloads.folder.disk.join("a.txt").exists());
+    assert!(!downloads.file_downloader.is_downloading("A"));
+}
+
+/// A cycle holds the tree lock; a program's rename of the file waits on the write-operation
+/// thread; the download's content is fetched whole meanwhile. Where the file is is asked on
+/// the thread, in the landing's own job, after the rename that came before it: the file is
+/// no longer where the download was asked for, and no marked copy is left at the old path —
+/// nor at the new one.
+#[test]
+fn a_download_that_ends_behind_a_queued_rename_of_its_file_lands_nowhere() {
+    let downloads = downloads();
+    let held = downloads.tree_lock.blocking_lock();
+    let write_operations = downloads.write_operations();
+    let renamed = downloads.write_operation_thread.run_and_wait(move || write_operations.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "moved.txt", RenameMode::NoReplace));
+    let told = downloads.start_download_to("a.txt");
+    // The rename, and behind it the landing: the download's content is fetched by now.
+    downloads.wait_for_queued_write_operations(2);
+    assert!(!downloads.folder.disk.join("a.txt").exists(), "nothing lands beside a write operation that waits");
+    drop(held);
+    assert_eq!(renamed.blocking_recv(), Ok(Ok(())));
+    assert_eq!(told.blocking_recv(), Ok(Err(libc::ESTALE)));
+    assert_eq!(downloads.folder.shown("moved.txt"), Some(Some("A".into())));
+    assert!(!downloads.folder.disk.join("a.txt").exists() && !downloads.folder.disk.join("moved.txt").exists());
+    assert!(!downloads.file_downloader.is_downloading("A"));
+}
+
+/// No write operation runs on a stopped thread, and nothing lands beside one: the download
+/// fails, and its file is at no path.
+#[test]
+fn a_download_of_a_folder_whose_write_operation_thread_is_stopped_lands_nowhere() {
+    let downloads = downloads();
+    downloads.write_operation_thread.stop();
+    assert_eq!(downloads.download_to("a.txt"), Err(libc::EIO));
+    assert!(!downloads.folder.disk.join("a.txt").exists());
     assert!(!downloads.file_downloader.is_downloading("A"));
 }
 

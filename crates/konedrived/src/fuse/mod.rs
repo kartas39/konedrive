@@ -66,8 +66,9 @@
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and the [`range_fetcher`] fetches the ranges, over it; [`download_states`] holds the
 //!   state of each file's download and does no I/O; [`file_downloader`] downloads a file
-//!   whole, over the backing directory, the directory contents, the download states and the
-//!   bridge; [`state_attribute`] is what is shown of a file; [`pins`] holds the pins, over
+//!   whole, over the backing directory, the directory contents, the download states, the
+//!   bridge and the write-operation thread, on which it lands the file where it is by
+//!   then; [`state_attribute`] is what is shown of a file; [`pins`] holds the pins, over
 //!   the directory contents, and the [`pinned_file_downloader`] downloads what they keep,
 //!   over the pins, the directory contents and the file downloader; [`free_up_decision`] is
 //!   whether a downloaded copy is freed.

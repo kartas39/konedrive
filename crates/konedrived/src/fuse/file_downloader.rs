@@ -16,9 +16,12 @@
 //!    the version it belongs to, the hash), through a source that shows its progress
 //!    ([`Tracked`]) and tells the download states how far the file is written
 //!    ([`WatermarkedSource`]), for the reads that come meanwhile;
-//! 6. the directories down to the file's path are made, and the file lands
-//!    ([`BackingDirectory::land`]) unless it was moved or removed here meanwhile; what the
-//!    download reports of that is decided in [`landing_attempt`];
+//! 6. the file lands, in one job on the write-operation thread
+//!    ([`FileDownloader::land_at_asked_path`]): where the file is now is asked there, and
+//!    the directories down to its path are made and the file is given its name
+//!    ([`BackingDirectory::land`]) there, unless it was moved or removed here meanwhile —
+//!    no rename runs between the question and the landing; what the download reports of
+//!    that is decided in [`landing_attempt`];
 //! 7. the activity records what happened, the space on disk is counted again, the download
 //!    states are told how it ended, which answers whoever waits, and the change is announced
 //!    through the [`InotifyBridge`].
@@ -41,6 +44,7 @@ use super::directory_contents::DirectoryContents;
 use super::download_states::{DownloadStart, DownloadStates, Waiter};
 use super::errno::to_raw_errno;
 use super::inotify_bridge::{Announcement, InotifyBridge};
+use super::write_operation_thread::WriteOperationThread;
 
 mod landing_attempt;
 mod watermarked_source;
@@ -64,6 +68,8 @@ pub(super) struct FileDownloader {
     download_states: Arc<DownloadStates>,
     /// What tells whoever watches the folder that what is shown of a file changed.
     inotify_bridge: Arc<InotifyBridge>,
+    /// Where a finished download lands: beside no write operation.
+    write_operation_thread: Arc<WriteOperationThread>,
     source: Arc<dyn ContentSource>,
     pool: Arc<TransferPool>,
     /// What the daemon's large downloads in parallel streams share.
@@ -97,6 +103,7 @@ impl FileDownloader {
         directory_contents: Arc<DirectoryContents>,
         download_states: Arc<DownloadStates>,
         inotify_bridge: Arc<InotifyBridge>,
+        write_operation_thread: Arc<WriteOperationThread>,
         source: Arc<dyn ContentSource>,
         pool: Arc<TransferPool>,
         split_download_share: Arc<Share>,
@@ -104,7 +111,7 @@ impl FileDownloader {
         folder: PathBuf,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        FileDownloader { backing_directory, directory_contents, download_states, inotify_bridge, source, pool, split_download_share, report, folder, runtime }
+        FileDownloader { backing_directory, directory_contents, download_states, inotify_bridge, write_operation_thread, source, pool, split_download_share, report, folder, runtime }
     }
 
     /// Tells whoever watches the folder that what is shown of the OneDrive file
@@ -154,7 +161,7 @@ impl FileDownloader {
     /// Downloads `row` into a file without a name, continuing `unfinished_file` when an
     /// earlier download left it, and lands it at `rel`. Its size, or the errno it failed
     /// with.
-    async fn download_and_land(&self, row: &Row, rel: &Path, class: Class, unfinished_file: Option<Arc<File>>) -> Result<u64, i32> {
+    async fn download_and_land(self: &Arc<Self>, row: &Row, rel: &Path, class: Class, unfinished_file: Option<Arc<File>>) -> Result<u64, i32> {
         let io_errno = |e: io::Error| to_raw_errno(&e);
         let mut slot = self.pool.acquire_sized(class, Size::of(row.size)).await;
         // The file a download is built in has no name: it is in the backing directory's
@@ -178,16 +185,11 @@ impl FileDownloader {
             let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
             download_staged(&file, &row.id, row.size, &watermarked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
-            // The directories down to its path, each marked with its OneDrive id.
-            self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
-            // Moved or removed here while it was downloaded: the download is of no path now.
-            let attempt = if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
-                LandingAttempt::FileMovedMeanwhile
-            } else {
-                let (id, modified, at, file, backing_directory) = (row.id.clone(), crate::clock::to_system_time(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.backing_directory));
-                // The file's own steps wait for the disk: not on the runtime's threads.
-                LandingAttempt::Landed(tokio::task::spawn_blocking(move || backing_directory.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?)
-            };
+            // On the write-operation thread, which is no thread of the runtime: the file's
+            // own steps wait for the disk. A thread that is stopped drops the job: the
+            // folder is no longer served, and nothing lands.
+            let (downloader, row, at, file) = (Arc::clone(self), row.clone(), rel.to_owned(), Arc::clone(&file));
+            let attempt = self.write_operation_thread.run_and_wait(move || downloader.land_at_asked_path(&file, &row, &at)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
             to_download_result(attempt).map(|()| size)
         }
         .await;
@@ -196,6 +198,25 @@ impl FileDownloader {
             slot.succeeded();
         }
         landed
+    }
+
+    /// Lands `file`, the whole and checked content of the OneDrive file `row`, at `rel`, the
+    /// path its download was asked for — unless the file is no longer there: moved or
+    /// removed here while it was downloaded, the download is of no path now, and nothing
+    /// lands. The directories down to the path are made first, each marked with its
+    /// OneDrive id.
+    ///
+    /// Called on the write-operation thread. Where the mount shows the file now is read
+    /// here, by its OneDrive id, and the file is given its name here: no write operation —
+    /// a rename, a remove — runs in between, so the copy lands where the file is. What is
+    /// at the path by then is never replaced unless it holds nothing
+    /// ([`BackingDirectory::land`]).
+    fn land_at_asked_path(&self, file: &File, row: &Row, rel: &Path) -> io::Result<LandingAttempt> {
+        if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
+            return Ok(LandingAttempt::FileMovedMeanwhile);
+        }
+        self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new("")))?;
+        self.backing_directory.land(file, rel, &row.id, crate::clock::to_system_time(row.mtime)).map(LandingAttempt::Landed)
     }
 }
 

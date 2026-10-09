@@ -20,8 +20,8 @@
 //! 9. [`InotifyBridge`]: the node resolver and the directory contents — its thread is not
 //!    started yet;
 //! 10. [`FileDownloader`]: the backing directory, the directory contents, the download
-//!     states, the bridge; then [`PinnedFileDownloader`]: the pins, the directory contents,
-//!     the file downloader;
+//!     states, the bridge, the write-operation thread; then [`PinnedFileDownloader`]: the
+//!     pins, the directory contents, the file downloader;
 //! 11. [`RangeReaders`] and [`InterruptibleReads`], which depend on no part, and
 //!     [`RangeFetcher`] over the range readers;
 //! 12. who asks, each given exactly the parts it uses: [`CycleStep`] — the backing
@@ -101,6 +101,7 @@ impl Mount {
             Arc::clone(&directory_contents),
             Arc::clone(&download_states),
             Arc::clone(&inotify_bridge),
+            Arc::clone(&write_operation_thread),
             Arc::clone(&source),
             Arc::clone(&pool),
             split_download_share,

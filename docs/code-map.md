@@ -333,8 +333,10 @@ daemon shows OneDrive.
   far it is written (`RunningDownloadFile`), and the unfinished file a failed one left; and, beside the states, the count of the bytes of each
   file read as ranges, which decides when the file is downloaded whole; no I/O. `[tests]`
 - `file_downloader.rs` — `FileDownloader`: the download of a whole file into a file without a
-  name, which then lands; it keeps no state, reports to `DownloadStates` and announces
-  through the inotify bridge. `[tests]`
+  name, which then lands, in one job on the write-operation thread: where the file is now
+  is asked there and the file is given its name there, so no rename runs in between; it
+  keeps no state, reports to `DownloadStates` and announces through the inotify bridge.
+  `[tests]`
 - `file_downloader/landing_attempt.rs` — `to_download_result`: what a download reports, from
   how its landing went (`LandingAttempt`). `[tests]`
 - `file_downloader/watermarked_source.rs` — the download's source, telling how far the file
@@ -378,8 +380,8 @@ daemon shows OneDrive.
 - `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
   came to its name from OneDrive. `[tests]`
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
-  the switch to read-only, the scan for unrecorded entries and the freeing of each
-  downloaded copy run on, each job under
+  the switch to read-only, the scan for unrecorded entries, the freeing of each
+  downloaded copy and the landing of a finished download run on, each job under
   the folder's tree lock. Stopped, it runs nothing any more: the stop waits for the job in
   flight, drops the jobs that wait, and never waits for the tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's

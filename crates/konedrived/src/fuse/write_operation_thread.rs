@@ -5,8 +5,8 @@
 //! So a change is in the outbox before the program hears it was made, the mount's own
 //! threads never wait for the store or for a cycle, and no two changes of names interleave.
 //! What runs here besides the write operations is what must not run beside one: the switch
-//! of the folder to read-only, the scan for unrecorded entries, and the freeing of a
-//! downloaded copy, one copy a job.
+//! of the folder to read-only, the scan for unrecorded entries, the freeing of a downloaded
+//! copy, one copy a job, and the landing of a finished download.
 //!
 //! [`WriteOperationThread`] owns the jobs that wait for its thread, and the one fact of the
 //! thread others need: whether a job runs on it now. The thread itself owns the tree lock.
