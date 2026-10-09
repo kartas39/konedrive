@@ -252,3 +252,32 @@ fn a_directory_that_holds_something_in_the_backing_directory_is_not_replaced() {
     assert!(f.disk.join("new").join(&hidden).is_file() && f.disk.join("other").join(&hidden).is_file());
     assert!(f.rows().is_empty());
 }
+
+/// A file of the user's own lies in the backing directory under the name of a OneDrive file
+/// — a move aside that could not be made, a file put there while nothing was mounted — and
+/// the mount shows the OneDrive file. A rename onto that name replaces the OneDrive file,
+/// and never the file it does not show: it is refused, as a download is refused the path.
+#[test]
+fn a_rename_onto_a_onedrive_name_never_removes_the_unmarked_file_hidden_under_it() {
+    let f = folder(Vec::new());
+    std::fs::write(f.disk.join("b.txt"), b"the user's own").unwrap();
+    f.download("a.txt", "A", b"a");
+    assert_eq!(f.shown("b.txt"), Some(Some("B".into())));
+    assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).err(), Some(Errno::EEXIST));
+    assert_eq!(std::fs::read(f.disk.join("b.txt")).unwrap(), b"the user's own");
+    assert_eq!(std::fs::read(f.disk.join("a.txt")).unwrap(), b"a");
+    assert!(f.rows().is_empty());
+    // Nor when nothing of what moves is in the backing directory.
+    assert_eq!(f.ops.rename(f.docs(), "c.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).err(), Some(Errno::EEXIST));
+    assert_eq!(std::fs::read(f.disk.join("b.txt")).unwrap(), b"the user's own");
+}
+
+/// The copy of another OneDrive file at the new place is not what the rename replaces
+/// either.
+#[test]
+fn a_rename_never_removes_the_copy_of_another_onedrive_file_at_the_new_place() {
+    let f = folder(Vec::new());
+    f.download("b.txt", "C", b"another file's");
+    assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).err(), Some(Errno::EEXIST));
+    assert!(f.backing_directory.find_downloaded_copy(&at("b.txt"), "C").is_some());
+}

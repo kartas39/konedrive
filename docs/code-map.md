@@ -419,9 +419,9 @@ daemon shows OneDrive.
 - `write_operations/remove_plan.rs` — `plan_remove`: what a remove takes out of the folder
   (`RemovePlan`), or the errno. `[tests]`
 - `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
-  folder: the lookups, the backing directory renamed — what it held at the new place kept at
-  the old one until the rename is recorded, and put back when it cannot be — the record,
-  the node. `[tests]`
+  folder: the lookups, the backing directory renamed — what it held at the new place of what
+  the mount shows there kept at the old one until the rename is recorded, and put back when
+  it cannot be; anything else there refuses the rename — the record, the node. `[tests]`
 - `write_operations/rename_plan.rs` — the decisions of a rename: `plan_rename`, what it
   moves where and over what (`RenamePlan`, `RenameMode`), or the errno;
   `BackingDirectoryMove`, whether the backing directory held anything to move;

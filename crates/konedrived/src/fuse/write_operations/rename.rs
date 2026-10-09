@@ -6,7 +6,10 @@
 //! its new place. Every decision is in [`rename_plan`](super::rename_plan): here are the
 //! lookups, the disk and the record.
 //!
-//! What the backing directory holds at the new place is not removed before the rename is
+//! What the backing directory holds at the new place is displaced only when it is what the
+//! mount shows there: a file of the user's own hidden under a OneDrive name, or the copy of
+//! another OneDrive file, is never removed by a rename, which is refused (`EEXIST`). What is
+//! displaced is not removed before the rename is
 //! recorded: a rename that cannot be recorded is undone whole, and what it would have
 //! replaced is back at its place. Until then it is kept at the old place, which the move
 //! frees — the two are exchanged in one step when both places hold something — so that no
@@ -25,7 +28,8 @@ use fuser::Errno;
 use super::rename_plan::{describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaceContents, RenamePlan};
 use super::WriteOperations;
 use crate::fuse::backing_directory::EntryKind;
-use crate::fuse::directory_contents::DirectoryEntry;
+use crate::fuse::detections::is_directory_of;
+use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
 use crate::fuse::local_only_entry::{collect_local_only_entries, is_in_ignored_directory, LocalOnlyEntry};
 use crate::fuse::node_table::NodeId;
@@ -42,7 +46,7 @@ impl WriteOperations {
         };
         let node_id = self.node_resolver.assign_node_id(&plan.moved_entry, parent);
         let write_state = self.find_write_state(node_id);
-        let (moved, displaced) = (self.find_backing_directory_move(&plan), self.find_displaced_kind(&plan));
+        let (moved, displaced) = (self.find_backing_directory_move(&plan), self.find_displaced_kind(&plan)?);
         self.move_in_backing_directory(&plan, moved, displaced)?;
         let to = plan.to.path();
         // What the record is decided from, gathered now that the backing directory moved.
@@ -92,14 +96,40 @@ impl WriteOperations {
     /// replace is not displaced either, and stays where it is, so that the move is refused
     /// as the filesystem refuses it: a directory that holds something, and a file a
     /// directory moves onto.
-    fn find_displaced_kind(&self, plan: &RenamePlan) -> Option<EntryKind> {
+    ///
+    /// Only what the mount shows at the new place is displaced
+    /// ([`is_of_target`](Self::is_of_target)). Anything else the backing directory holds
+    /// there is not the rename's to remove — a file of the user's own hidden under the name
+    /// of a OneDrive file, the copy of another OneDrive file: the rename is refused
+    /// (`EEXIST`), as a download is refused that path, and nothing is touched.
+    fn find_displaced_kind(&self, plan: &RenamePlan) -> Result<Option<EntryKind>, Errno> {
         let to = plan.to.path();
-        match self.backing_directory.read_metadata(&to)?.is_dir() {
+        let Some(at_new_place) = self.backing_directory.read_metadata(&to) else { return Ok(None) };
+        if !self.is_of_target(plan.target.as_ref(), &to) {
+            return Err(Errno::EEXIST);
+        }
+        Ok(match at_new_place.is_dir() {
             true => self.backing_directory.list_directory(&to).next().is_none().then_some(EntryKind::Directory),
             false => {
                 let directory_moves = self.backing_directory.read_metadata(&plan.from).is_some_and(|moved| moved.is_dir());
                 (!directory_moves).then_some(EntryKind::File)
             }
+        })
+    }
+
+    /// Whether what the backing directory holds at `path` is what it has of `target`, the
+    /// entry the mount shows there: a local-only entry by its file handle; a OneDrive file
+    /// by a file marked with its id, as a remove goes by; a OneDrive directory by a
+    /// directory marked with its id, or with none. Nothing is, where the mount shows no
+    /// entry.
+    fn is_of_target(&self, target: Option<&DirectoryEntry>, path: &Path) -> bool {
+        let Some(target) = target else { return false };
+        let marked_with = self.backing_directory.read_onedrive_id(path);
+        let is_directory = self.backing_directory.read_metadata(path).is_some_and(|metadata| metadata.is_dir());
+        match &target.state {
+            EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => self.backing_directory.find_file_handle(path).as_ref() == Some(&local_only.on_disk.handle),
+            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) => !is_directory && marked_with.as_deref() == Some(row.id.as_str()),
+            EntryState::Directory(DirectorySyncState::InOneDrive(row)) => is_directory && is_directory_of(marked_with.as_deref(), &row.id),
         }
     }
 
