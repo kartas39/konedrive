@@ -17,7 +17,7 @@
 //! - the file to write through an `fh` ([`OpenHandles::find_file_to_write`]): the write
 //!   requests;
 //! - something was written to a node ([`OpenHandles::mark_written`]): the write requests,
-//!   and the write operation that cuts a file a program holds open;
+//!   and the write operation that truncates a file a program holds open;
 //! - a file closed ([`OpenHandles::close_file`]), and for one that was open for writing the
 //!   node it wrote and what the close left of its content (a [`ClosedFile`] with its
 //!   [`CloseOutcome`]): the release request closes a file opened to be read, at once; a
@@ -27,7 +27,7 @@
 //!   record;
 //! - whether a file is open for writing, by node id
 //!   ([`OpenHandles::is_open_for_writing_by_node_id`]): the write operations (a rename, a
-//!   cut), and by OneDrive id ([`OpenHandles::is_open_for_writing_by_onedrive_id`]): the
+//!   truncate), and by OneDrive id ([`OpenHandles::is_open_for_writing_by_onedrive_id`]): the
 //!   `Files` interface, for a free-up and for how a path stands. The sync state does not
 //!   say this: a file is modified here only while the outbox holds its row, and a forced
 //!   switch to read-only drops that row under a program that still writes the file;
@@ -180,7 +180,7 @@ impl OpenHandles {
 
     /// The content of the node `node_id` is the user's own: something was written to it
     /// through a handle that writes it, or it was so when the handle was added — a file just
-    /// made, one cut to nothing at its open, one that was modified here before.
+    /// made, one truncated to nothing at its open, one that was modified here before.
     pub(super) fn mark_written(&self, node_id: NodeId) {
         let mut handles = crate::panic::lock(&self.handles);
         if handles.has_writer(node_id) {

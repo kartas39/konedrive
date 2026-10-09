@@ -58,7 +58,7 @@ impl BackingDirectory {
         OpenOptions::new().read(true).write(true).open(self.resolve_path(rel))
     }
 
-    /// The file at `rel`, open to read and write, cut to nothing.
+    /// The file at `rel`, open to read and write, truncated to nothing.
     pub(in crate::fuse) fn open_to_overwrite(&self, rel: &Path) -> io::Result<File> {
         OpenOptions::new().read(true).write(true).truncate(true).open(self.resolve_path(rel))
     }

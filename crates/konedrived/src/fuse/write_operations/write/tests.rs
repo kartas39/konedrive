@@ -4,7 +4,7 @@ use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 use konedrive_tree::Kind;
 
-use super::{describe_file_write, describe_last_close};
+use super::{describe_file_write, describe_last_close, FileWrite};
 use crate::fuse::access_mode_switch::AccessMode;
 use crate::fuse::detections::tests::{file, in_root, local_only};
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
@@ -83,23 +83,32 @@ fn a_local_only_file_closed_is_due_whatever_was_written() {
 
 #[test]
 fn a_write_of_an_ignored_local_only_file_records_nothing() {
-    for write in [LocalOnlyFileWrite::Opened, LocalOnlyFileWrite::Closed, LocalOnlyFileWrite::Cut] {
+    for write in [FileWrite::Opened, FileWrite::Closed, FileWrite::Truncated] {
         assert_eq!(describe_file_write(&local_only_file(), &root(), Some(file(1, 3)), UploadDecision::Ignore, write), None);
     }
 }
 
 #[test]
+fn a_write_of_a_local_only_file_is_recorded_as_what_was_done_to_it() {
+    let described = |write| describe_file_write(&local_only_file(), &root(), Some(file(1, 3)), UploadDecision::Upload, write);
+    let local_only_write = |write| Some(FileWritten::LocalOnly { file: local_only(&file(1, 3), &in_root("new.txt")), write });
+    assert_eq!(described(FileWrite::Opened), local_only_write(LocalOnlyFileWrite::Opened));
+    assert_eq!(described(FileWrite::Closed), local_only_write(LocalOnlyFileWrite::Closed));
+    assert_eq!(described(FileWrite::Truncated), local_only_write(LocalOnlyFileWrite::Truncated));
+}
+
+#[test]
 fn a_write_of_a_onedrive_file_is_recorded_with_its_copy_as_it_is() {
     let described = |write| describe_file_write(&onedrive_file(), &root(), Some(file(9, 1)), UploadDecision::Upload, write);
-    assert_eq!(described(LocalOnlyFileWrite::Opened), onedrive_write(OneDriveFileWrite::Opened(file(9, 1))));
-    assert_eq!(described(LocalOnlyFileWrite::Closed), onedrive_write(OneDriveFileWrite::ClosedChanged(file(9, 1))));
-    assert_eq!(described(LocalOnlyFileWrite::Cut), onedrive_write(OneDriveFileWrite::Cut(file(9, 1))));
+    assert_eq!(described(FileWrite::Opened), onedrive_write(OneDriveFileWrite::Opened(file(9, 1))));
+    assert_eq!(described(FileWrite::Closed), onedrive_write(OneDriveFileWrite::ClosedChanged(file(9, 1))));
+    assert_eq!(described(FileWrite::Truncated), onedrive_write(OneDriveFileWrite::Truncated(file(9, 1))));
 }
 
 /// There is no content of the user's own to send.
 #[test]
 fn a_write_of_a_onedrive_file_the_backing_directory_holds_no_copy_of_records_nothing() {
-    assert_eq!(describe_file_write(&onedrive_file(), &root(), None, UploadDecision::Upload, LocalOnlyFileWrite::Closed), None);
+    assert_eq!(describe_file_write(&onedrive_file(), &root(), None, UploadDecision::Upload, FileWrite::Closed), None);
 }
 
 #[test]
@@ -168,10 +177,10 @@ fn a_onedrive_file_that_is_not_downloaded_is_downloaded_before_it_is_written() {
     assert!(f.ops.find_file_to_download(node_id).unwrap().is_none());
 }
 
-/// Cut to nothing it needs no download: the copy is made empty, and is the file's new
+/// Truncated to nothing it needs no download: the copy is made empty, and is the file's new
 /// content, modified here.
 #[test]
-fn a_onedrive_file_cut_to_nothing_is_its_empty_copy() {
+fn a_onedrive_file_truncated_to_nothing_is_its_empty_copy() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
     f.ops.truncate(node_id, 0, None).unwrap();
@@ -239,9 +248,9 @@ fn an_open_for_writing_that_cannot_be_recorded_is_closed_and_answered_as_an_io_e
     assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
 }
 
-/// Recorded before it is cut: a cut that cannot be recorded cuts nothing.
+/// Recorded before it is truncated: a truncate that cannot be recorded truncates nothing.
 #[test]
-fn a_cut_that_cannot_be_recorded_cuts_nothing_and_is_answered_as_an_io_error() {
+fn a_truncate_that_cannot_be_recorded_truncates_nothing_and_is_answered_as_an_io_error() {
     let f = folder_that_records_nothing();
     std::fs::write(f.disk.join("mine.txt"), b"mine").unwrap();
     let node_id = f.node_id(NodeId::ROOT, "mine.txt");
@@ -261,11 +270,11 @@ fn the_close_of_what_is_not_open_for_writing_records_nothing() {
     assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
 }
 
-/// A cut by its path of a file a program holds open is that program's write: the node is
+/// A truncate by its path of a file a program holds open is that program's write: the node is
 /// marked written, and nothing is recorded — the outbox waits for the writer already. Its
 /// close then leaves the content to be sent.
 #[test]
-fn a_cut_of_a_file_a_program_holds_open_marks_it_written_and_records_nothing() {
+fn a_truncate_of_a_file_a_program_holds_open_marks_it_written_and_records_nothing() {
     let f = folder(Vec::new());
     f.download("a.txt", "A", b"content");
     let node_id = f.node_id(NodeId::ROOT, "a.txt");

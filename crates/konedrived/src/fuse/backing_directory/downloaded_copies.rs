@@ -85,7 +85,7 @@ impl BackingDirectory {
     /// Removes the file at `rel` if it is marked with the OneDrive id `id` and no other. Its
     /// size on disk, when it was removed. By the id alone, and not by the one test of a
     /// downloaded copy: a file that is marked with the id and is not whole — a copy whose
-    /// marking was cut short — goes with its OneDrive file too, and would else be left behind
+    /// marking was interrupted — goes with its OneDrive file too, and would else be left behind
     /// to be shown as a file of the user's own.
     pub(in crate::fuse) fn remove_downloaded_copy(&self, rel: &Path, id: &str) -> Option<u64> {
         let path = self.resolve_path(rel);

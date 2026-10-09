@@ -1,4 +1,4 @@
-//! A file a program writes: opened for writing, closed by its last writer, or cut.
+//! A file a program writes: opened for writing, closed by its last writer, or truncated.
 //!
 //! From its first writer on the outbox holds the file, so that nothing from OneDrive
 //! replaces what a program is about to write; it is sent once the last writer closed it.
@@ -26,8 +26,8 @@ pub(in crate::fuse) enum OneDriveFileWrite {
     Opened(DiskEntry),
     /// Its last writer closed it, and its content was changed: due a moment later.
     ClosedChanged(DiskEntry),
-    /// It was cut or extended by a program that does not hold it open: as closed.
-    Cut(DiskEntry),
+    /// It was truncated or extended by a program that does not hold it open: as closed.
+    Truncated(DiskEntry),
     /// Its last writer closed it, and nothing was written: the file is where it is with the
     /// content the base has, and the row that held it is removed, or is the move it was.
     ClosedUntouched,
@@ -41,8 +41,8 @@ pub(in crate::fuse) enum LocalOnlyFileWrite {
     Opened,
     /// Its last writer closed it: due a moment later.
     Closed,
-    /// It was cut or extended by a program that does not hold it open: as closed.
-    Cut,
+    /// It was truncated or extended by a program that does not hold it open: as closed.
+    Truncated,
 }
 
 impl FolderEvent for FileWritten {
@@ -51,7 +51,7 @@ impl FolderEvent for FileWritten {
             FileWritten::LocalOnly { file, write } => {
                 let write_state = match write {
                     LocalOnlyFileWrite::Opened => WriteState::OpenForWriting,
-                    LocalOnlyFileWrite::Closed | LocalOnlyFileWrite::Cut => WriteState::NotOpen,
+                    LocalOnlyFileWrite::Closed | LocalOnlyFileWrite::Truncated => WriteState::NotOpen,
                 };
                 Ok(OutboxBatch::of([detect_local_only_entry(&file.place, &file.on_disk, write_state, now)]))
             }
@@ -63,7 +63,7 @@ impl FolderEvent for FileWritten {
                         wait_for_writer(&mut update, now);
                         update
                     }
-                    OneDriveFileWrite::ClosedChanged(copy) | OneDriveFileWrite::Cut(copy) => {
+                    OneDriveFileWrite::ClosedChanged(copy) | OneDriveFileWrite::Truncated(copy) => {
                         let mut update = detect_modified(&place, &base, &copy);
                         wait_for_quiet(&mut update, now);
                         update

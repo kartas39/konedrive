@@ -1,6 +1,6 @@
 //! The requests that change a file's content or its time: one opened for writing (`open`),
-//! written (`write`), cut or given a time (`setattr`), written out (`fsync`) and closed
-//! (`release`). The open, the cut, the time and the close of a writer are write operations,
+//! written (`write`), truncated or given a time (`setattr`), written out (`fsync`) and closed
+//! (`release`). The open, the truncate, the time and the close of a writer are write operations,
 //! on the write-operation thread; `write` and `fsync` go into the file an open put into the
 //! open handles, on the mount's own thread.
 
@@ -23,7 +23,7 @@ impl WriteRequests {
         });
     }
 
-    /// A file opened for writing and cut to nothing (`O_TRUNC`): nothing of it is
+    /// A file opened for writing and truncated to nothing (`O_TRUNC`): nothing of it is
     /// downloaded first.
     pub(in crate::fuse::kernel_requests) fn answer_open_to_overwrite(&self, node_id: NodeId, reply: ReplyOpen) {
         self.run_in_read_write_folder(reply, move |requests, reply| match requests.write_operations.open_to_overwrite(node_id) {
@@ -49,7 +49,7 @@ impl WriteRequests {
         Ok(data.len() as u32)
     }
 
-    /// A size set cuts or extends the file; a time set alone is the file's own from then
+    /// A size set truncates or extends the file; a time set alone is the file's own from then
     /// on. Either is a write operation, made on the write-operation thread. Modes and owners
     /// are the mount's to say and are not kept.
     pub(in crate::fuse::kernel_requests) fn answer_setattr(&self, node_id: NodeId, size: Option<u64>, mtime: Option<TimeOrNow>, reply: ReplyAttr) {
@@ -58,7 +58,7 @@ impl WriteRequests {
             Ok(()) => requests.answer_with_attributes(node_id, reply),
             Err(e) => reply.error(e),
         };
-        // Cut to nothing, its content is not needed.
+        // Truncated to nothing, its content is not needed.
         match size {
             0 => self.run_in_read_write_folder(reply, truncate),
             _ => self.run_with_content(node_id, reply, truncate),
@@ -109,7 +109,7 @@ impl WriteRequests {
     /// and the node it writes is given: whether it was the node's last writer, and what that
     /// leaves to send, is asked of the open handles there and recorded in the same step —
     /// an answer taken here would be acted on only after every operation that waits for the
-    /// thread, an open or a cut of the same file among them. Until then the file counts as
+    /// thread, an open or a truncate of the same file among them. Until then the file counts as
     /// open for writing.
     fn close_file(&self, fh: Fh) -> Option<NodeId> {
         let Some((node_id, _)) = self.open_handles.find_file_to_write(fh) else {

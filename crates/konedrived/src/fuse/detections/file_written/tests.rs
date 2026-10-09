@@ -19,11 +19,11 @@ fn a_onedrive_file_opened_for_writing_is_its_new_content_and_waits() {
 }
 
 #[test]
-fn a_onedrive_file_closed_changed_or_cut_is_sent_a_moment_later() {
+fn a_onedrive_file_closed_changed_or_truncated_is_sent_a_moment_later() {
     let quiet = (OutboxKind::Update, Some("C".into()), OutboxState::Waiting, Some(Reason::Changed), false);
     assert_eq!(said(in_onedrive(OneDriveFileWrite::ClosedChanged(file(1, 4)))), quiet);
-    assert_eq!(said(in_onedrive(OneDriveFileWrite::Cut(file(1, 0)))), quiet);
-    let batch = detect(in_onedrive(OneDriveFileWrite::Cut(file(1, 0))), &store(Vec::new()));
+    assert_eq!(said(in_onedrive(OneDriveFileWrite::Truncated(file(1, 0)))), quiet);
+    let batch = detect(in_onedrive(OneDriveFileWrite::Truncated(file(1, 0))), &store(Vec::new()));
     assert_eq!((batch.detections[0].object.as_ref(), batch.detections[0].size), (Some(&file(1, 0).handle), Some(0)));
 }
 
@@ -51,5 +51,5 @@ fn a_local_only_file_written_is_created_when_its_last_writer_closed_it() {
     let ready = detection_of(OutboxKind::Create, &new, &in_root("new.txt"), OutboxState::Ready);
     assert_eq!(created(LocalOnlyFileWrite::Opened), [writing(ready.clone())]);
     assert_eq!(created(LocalOnlyFileWrite::Closed), [quiet(ready.clone())]);
-    assert_eq!(created(LocalOnlyFileWrite::Cut), [quiet(ready)]);
+    assert_eq!(created(LocalOnlyFileWrite::Truncated), [quiet(ready)]);
 }

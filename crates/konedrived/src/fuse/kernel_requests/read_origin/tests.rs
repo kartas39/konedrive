@@ -34,7 +34,7 @@ fn a_file_that_is_not_downloaded_is_read_from_onedrive_as_a_range_of_it() {
 }
 
 #[test]
-fn a_range_is_cut_at_the_end_of_the_file() {
+fn a_range_ends_at_the_end_of_the_file() {
     let origin = origin(None, 95, 10);
     assert!(is_range(&origin, 95, 100), "{origin:?}");
 }

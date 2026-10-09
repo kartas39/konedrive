@@ -37,7 +37,7 @@ pub(super) enum ReadOrigin {
 
 /// Where the `size` bytes at `offset` of the OneDrive file `row` come from, which was opened
 /// at `path` and is not downloaded; `running_download` is the file a download of it that
-/// runs now writes into, and how far. The read is cut at the file's size: nothing at or
+/// runs now writes into, and how far. The read ends at the file's size: nothing at or
 /// past its end; what a running download has surely written from its file; anything else
 /// from OneDrive, as a range.
 pub(super) fn choose_read_origin(row: Row, path: PathBuf, running_download: Option<RunningDownloadFile>, offset: u64, size: u32) -> ReadOrigin {

@@ -26,9 +26,21 @@ use crate::fuse::errno::to_errno;
 use crate::fuse::file_downloader::FileToDownload;
 use crate::fuse::upload_rules::UploadDecision;
 
+/// What a write operation did to a file, of OneDrive or local-only: what is recorded of it
+/// is built from this ([`describe_file_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FileWrite {
+    /// Its first writer opened it.
+    Opened,
+    /// Its last writer closed it, and its content is to be sent.
+    Closed,
+    /// It was truncated or extended by a program that does not hold it open.
+    Truncated,
+}
+
 impl WriteOperations {
     /// The file that writing the node `node_id` needs downloaded first: a OneDrive file that
-    /// is not downloaded and holds something. Not asked for a file that is cut to nothing: its
+    /// is not downloaded and holds something. Not asked for a file that is truncated to nothing: its
     /// content is not needed. A read-only folder refuses here, before anything is
     /// downloaded for a write it will not take.
     pub(in crate::fuse) fn find_file_to_download(&self, node_id: NodeId) -> Result<Option<FileToDownload>, Errno> {
@@ -61,13 +73,13 @@ impl WriteOperations {
         self.add_writer(node_id, &entry, self.backing_directory.open_to_write(&path))
     }
 
-    /// Opens the node `node_id` for writing, cut to nothing (`O_TRUNC`): the `fh` the
+    /// Opens the node `node_id` for writing, truncated to nothing (`O_TRUNC`): the `fh` the
     /// program holds it open by. Nothing of a OneDrive file is downloaded for it.
     pub(in crate::fuse) fn open_to_overwrite(&self, node_id: NodeId) -> Result<Fh, Errno> {
         let (entry, file, path) = self.find_file_to_write(node_id)?;
         self.make_writable_without_content(&file, &path)?;
         let fh = self.add_writer(node_id, &entry, self.backing_directory.open_to_overwrite(&path))?;
-        // Cut to nothing: its content is the user's own from here on.
+        // Truncated to nothing: its content is the user's own from here on.
         self.open_handles.mark_written(node_id);
         Ok(fh)
     }
@@ -81,7 +93,7 @@ impl WriteOperations {
         let backing_file = opened.map_err(|e| to_errno(&e))?;
         let (fh, rank) = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
         if rank == WriterRank::First {
-            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Opened)) {
+            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Opened)) {
                 self.open_handles.close_file(fh);
                 return Err(e);
             }
@@ -94,7 +106,7 @@ impl WriteOperations {
 
     /// The program closed the file it held open for writing by `fh`. The handle is closed
     /// here, on the write-operation thread, and what its close left is recorded in the same
-    /// step: no other write operation — an open of the same file, a cut of it — runs between
+    /// step: no other write operation — an open of the same file, a truncate of it — runs between
     /// the answer of the open handles and the record made from it. Nothing for an `fh` that
     /// holds no file open for writing.
     pub(in crate::fuse) fn close_writer(&self, fh: Fh) {
@@ -151,7 +163,7 @@ impl WriteOperations {
         }
     }
 
-    /// Cuts or extends the node `node_id` to `size`, and then sets the time it was last
+    /// Truncates or extends the node `node_id` to `size`, and then sets the time it was last
     /// modified, when `modified` gives one.
     pub(in crate::fuse) fn truncate(&self, node_id: NodeId, size: u64, modified: Option<TimeOrNow>) -> Result<(), Errno> {
         let (_, file, path) = self.find_file_to_write(node_id)?;
@@ -160,12 +172,12 @@ impl WriteOperations {
             _ => self.make_writable(&file, &path)?,
         }
         let backing_file = self.backing_directory.open_to_write(&path).map_err(|e| to_errno(&e))?;
-        // Recorded before it is cut: a daemon that dies in between leaves a row for content
+        // Recorded before it is truncated: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
         if self.open_handles.is_open_for_writing_by_node_id(node_id) {
             self.open_handles.mark_written(node_id);
         } else {
-            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Cut))?;
+            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Truncated))?;
         }
         backing_file.set_len(size).map_err(|e| to_errno(&e))?;
         self.write_modified_time(node_id, modified);
@@ -184,7 +196,7 @@ impl WriteOperations {
     }
 
     /// The file at `rel` in the backing directory, made ready to be written by whoever does
-    /// not need its content — it is cut to nothing: the downloaded copy of a OneDrive file
+    /// not need its content — it is truncated to nothing: the downloaded copy of a OneDrive file
     /// made writable, and a OneDrive file that is not downloaded given an empty copy,
     /// whatever it holds in OneDrive.
     fn make_writable_without_content(&self, file: &FileSyncState, rel: &Path) -> Result<(), Errno> {
@@ -209,15 +221,22 @@ impl WriteOperations {
 /// - a local-only file that is ignored at its place;
 /// - a file of OneDrive the backing directory holds no copy of: there is no content of the
 ///   user's own to send.
-pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &DirectoryReference, copy: Option<DiskEntry>, upload_decision: UploadDecision, write: LocalOnlyFileWrite) -> Option<FileWritten> {
+pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &DirectoryReference, copy: Option<DiskEntry>, upload_decision: UploadDecision, write: FileWrite) -> Option<FileWritten> {
     if let Some(local_only) = entry.local_only() {
+        let write = match write {
+            FileWrite::Opened => LocalOnlyFileWrite::Opened,
+            FileWrite::Closed => LocalOnlyFileWrite::Closed,
+            FileWrite::Truncated => LocalOnlyFileWrite::Truncated,
+        };
         return (upload_decision == UploadDecision::Upload).then(|| FileWritten::LocalOnly { file: local_only.clone(), write });
     }
     let (row, copy) = (entry.row()?, copy?);
+    // A close that comes here left content to send: one that left a OneDrive file untouched
+    // is told apart by its `CloseOutcome`, in `describe_last_close`.
     let write = match write {
-        LocalOnlyFileWrite::Opened => OneDriveFileWrite::Opened(copy),
-        LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
-        LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(copy),
+        FileWrite::Opened => OneDriveFileWrite::Opened(copy),
+        FileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
+        FileWrite::Truncated => OneDriveFileWrite::Truncated(copy),
     };
     Some(FileWritten::InOneDrive { onedrive_id: row.id.clone(), place: EntryPlace::new(parent_directory, &entry.name), write })
 }
@@ -247,7 +266,7 @@ pub(super) fn describe_last_close(
         (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, Some(row)) => {
             node_stands_for_file.then(|| FileWritten::InOneDrive { onedrive_id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
         }
-        (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Closed),
+        (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Closed),
     }
 }
 

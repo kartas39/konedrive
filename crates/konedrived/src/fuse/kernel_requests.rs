@@ -100,7 +100,7 @@ impl KernelRequests {
 impl Filesystem for KernelRequests {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> io::Result<()> {
         let _ = config.set_max_readahead(1 << 20);
-        // The cut to nothing comes with the open: a file that is not downloaded and is
+        // The truncate to nothing comes with the open: a file that is not downloaded and is
         // overwritten whole is never downloaded first.
         let _ = config.add_capabilities(InitFlags::FUSE_DO_READDIRPLUS | InitFlags::FUSE_READDIRPLUS_AUTO | InitFlags::FUSE_PARALLEL_DIROPS | InitFlags::FUSE_ATOMIC_O_TRUNC);
         Ok(())

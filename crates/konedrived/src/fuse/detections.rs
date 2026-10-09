@@ -13,7 +13,7 @@
 //! - [`entry_created`]: a file or directory a program made ([`EntryCreated`]);
 //! - [`entry_removed`]: one it removed ([`EntryRemoved`]);
 //! - [`entry_renamed`]: one it renamed or moved, and what that displaced ([`EntryRenamed`]);
-//! - [`file_written`]: a file it opened for writing, closed or cut ([`FileWritten`]);
+//! - [`file_written`]: a file it opened for writing, closed or truncated ([`FileWritten`]);
 //! - [`unrecorded_entries`]: the local-only entries found in the folder that the outbox has
 //!   no row for ([`UnrecordedEntries`]);
 //! - [`entry_kept_aside`]: a local-only entry that was in the way of a change from OneDrive,

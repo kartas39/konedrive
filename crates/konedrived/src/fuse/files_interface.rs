@@ -19,7 +19,7 @@
 //! OneDrive ids of the downloaded copies below a path, and decides nothing. Each copy is
 //! then freed in a job of its own on the thread, waited for before the next is put there:
 //! the job reads how the file stands now, decides, and removes the copy, and no write
-//! operation — an open for writing, a close, a cut, a rename — runs between what it read
+//! operation — an open for writing, a close, a truncate, a rename — runs between what it read
 //! and what it did. One job a file, so that a program's write waits for one file of a long
 //! free-up and not for all of them. What a [`PathStatus`] says of a path was read off the
 //! thread, and is what the folder's sync refuses by before anything is freed; the job

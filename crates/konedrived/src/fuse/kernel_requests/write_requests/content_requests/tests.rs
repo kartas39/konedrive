@@ -95,20 +95,20 @@ fn a_writer_closed_behind_another_programs_open_leaves_the_outbox_holding_the_fi
     assert_eq!(rows.iter().map(|row| (row.kind, row.item_id.as_deref(), row.reason.clone())).collect::<Vec<_>>(), [(OutboxKind::Update, Some("A"), Some(Reason::OpenForWriting))]);
 }
 
-/// A cycle holds the tree lock; a cut of the file by its path waits on the thread; the
-/// program closes its writer, with nothing written. The cut finds the file open and marks it
-/// written, and the close that follows it on the thread leaves the cut content to be sent.
+/// A cycle holds the tree lock; a truncate of the file by its path waits on the thread; the
+/// program closes its writer, with nothing written. The truncate finds the file open and marks it
+/// written, and the close that follows it on the thread leaves the truncated content to be sent.
 #[test]
-fn a_writer_closed_behind_a_cut_of_its_file_leaves_the_cut_content_to_be_sent() {
+fn a_writer_closed_behind_a_truncate_of_its_file_leaves_the_truncated_content_to_be_sent() {
     let (built, node_id) = build_mount_with_downloaded_file();
     let write_requests = &built.kernel_requests.write_requests;
     let writer = queue_open_to_write(&built, node_id).blocking_recv().unwrap().unwrap();
     let held = built.tree_lock.blocking_lock();
     let write_operations = Arc::clone(&write_requests.write_operations);
-    let cut = write_requests.write_operation_thread.run_and_wait(move || write_operations.truncate(node_id, 0, None));
+    let truncated = write_requests.write_operation_thread.run_and_wait(move || write_operations.truncate(node_id, 0, None));
     assert_eq!(write_requests.close_file(writer), Some(node_id));
     drop(held);
-    assert_eq!(cut.blocking_recv().unwrap(), Ok(()));
+    assert_eq!(truncated.blocking_recv().unwrap(), Ok(()));
     built.run_on_write_operation_thread(|| {});
     assert_eq!(std::fs::metadata(built.disk.join("a.txt")).unwrap().len(), 0);
     let rows = outbox_rows(&built);

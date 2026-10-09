@@ -316,7 +316,7 @@ daemon shows OneDrive.
 - `kernel_requests/write_requests/name_requests.rs` — the requests that change a name: one
   made, removed, renamed. `[tests]`
 - `kernel_requests/write_requests/content_requests.rs` — the requests that change a file's
-  content or its time: opened for writing, cut, the time set, and the close of a writer,
+  content or its time: opened for writing, truncated, the time set, and the close of a writer,
   which is answered at once and made on the thread; `write` and `fsync` go into the file a
   write operation opened, and are answered on the mount's own thread. `[tests]`
 - `kernel_requests/interruptible_reads.rs` — `InterruptibleReads`: the reads that wait for a
@@ -376,7 +376,7 @@ daemon shows OneDrive.
   local-only file or a local-only directory, over what it displaced (`MovedEntry`,
   `DisplacedEntry`); a local-only file saved over a OneDrive file. `[tests]`
 - `detections/file_written.rs` — `FileWritten`: a file opened for writing, closed changed or
-  untouched, or cut (`OneDriveFileWrite`, `LocalOnlyFileWrite`). `[tests]`
+  untouched, or truncated (`OneDriveFileWrite`, `LocalOnlyFileWrite`). `[tests]`
 - `detections/unrecorded_entries.rs` — `UnrecordedEntries`: the local-only entries a walk
   found that the outbox has no row for. `[tests]`
 - `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
@@ -415,9 +415,10 @@ daemon shows OneDrive.
   `BackingDirectoryMove`, whether the backing directory held anything to move;
   `describe_rename`, what it is recorded as. `[tests]`
 - `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened with
-  its content or to be overwritten, closed, cut, and the time it was last modified set;
-  what a write and the last close are recorded as (`describe_file_write`,
-  `describe_last_close`). `[tests]`
+  its content or to be overwritten, closed, truncated, and the time it was last modified set;
+  what was done to the file (`FileWrite`: opened, closed, truncated), and what a write and
+  the last close are recorded as from it (`describe_file_write`, `describe_last_close`).
+  `[tests]`
 - `unrecorded_entry_scan.rs` — `UnrecordedEntryScan`: the local-only entries the outbox has
   no row for, found by one walk and recorded once the folder takes changes. `[tests]`
 - `cycle_step.rs` — `CycleStep`: the step of a cycle of the delta listing over the backing

@@ -31,7 +31,8 @@
 //! - [`make`]: a file or directory made;
 //! - [`remove`]: one removed;
 //! - [`rename`]: one renamed or moved;
-//! - [`write`](mod@write): a file opened for writing, closed, cut, and the time set on it.
+//! - [`write`](mod@write): a file opened for writing, closed, truncated, and the time set on
+//!   it.
 
 use std::fmt::Display;
 use std::path::Path;

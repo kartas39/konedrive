@@ -28,7 +28,7 @@
 //!
 //! - [`name_requests`]: a name of the folder — made, removed, renamed;
 //! - [`content_requests`]: a file's content and its time — opened for writing, written,
-//!   cut, synced, closed.
+//!   truncated, synced, closed.
 //!
 //! [`WriteRequests`] is given the [`WriteOperations`] and the [`WriteOperationThread`]; the
 //! [`AccessModeSwitch`]; the [`NodeResolver`], for the node id and the attributes it answers

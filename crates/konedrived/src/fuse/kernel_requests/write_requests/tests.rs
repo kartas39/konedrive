@@ -68,9 +68,9 @@ fn a_write_to_a_read_only_folder_is_refused_before_anything_is_downloaded() {
     drop(held);
 }
 
-/// A file cut to nothing needs nothing of its content: nothing is downloaded for it.
+/// A file truncated to nothing needs nothing of its content: nothing is downloaded for it.
 #[test]
-fn a_write_that_cuts_its_file_to_nothing_runs_without_a_download() {
+fn a_write_that_truncates_its_file_to_nothing_runs_without_a_download() {
     let built = build_mount();
     let write_requests = &built.kernel_requests.write_requests;
     write_requests.access_mode_switch.switch_to_read_write();

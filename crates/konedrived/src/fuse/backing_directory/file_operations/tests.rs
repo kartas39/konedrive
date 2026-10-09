@@ -45,7 +45,7 @@ fn a_link_that_leads_nowhere_is_at_its_name() {
 }
 
 #[test]
-fn a_file_opened_to_write_keeps_its_content_and_one_opened_to_overwrite_is_cut_to_nothing() {
+fn a_file_opened_to_write_keeps_its_content_and_one_opened_to_overwrite_is_truncated_to_nothing() {
     let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
     assert_eq!(backing_directory.open_to_write(Path::new("a.txt")).unwrap().metadata().unwrap().len(), 3);
