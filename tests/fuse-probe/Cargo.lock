@@ -470,9 +470,12 @@ dependencies = [
 name = "fuse-probe"
 version = "0.1.0"
 dependencies = [
+ "konedrive-graph",
  "konedrived",
  "libc",
  "tokio",
+ "tracing-subscriber",
+ "url",
  "wiremock",
 ]
 
