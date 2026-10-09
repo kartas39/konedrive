@@ -23,14 +23,14 @@ impl WriteOperations {
             _ => {}
         }
         let rel = parent_directory.path.join(name);
-        if directory && !self.directory_contents.list_entry_sources(&DirectoryReference { onedrive_id: entry.onedrive_id().map(str::to_owned), path: rel.clone() }).is_empty() {
+        if directory && !self.directory_contents.list_names(&DirectoryReference { onedrive_id: entry.onedrive_id().map(str::to_owned), path: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry.state {
             EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => {
                 EntryRemoved::LocalOnly { handle: local_only.on_disk.handle.clone(), rel: rel.clone() }
             }
-            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => {
+            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => {
                 EntryRemoved::InOneDrive { id: row.id.clone(), rel: rel.clone() }
             }
         };

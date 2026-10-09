@@ -6,7 +6,7 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
-use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
+use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, ListedName, EntryState, FileSyncState};
 use crate::folder::disk::HOLDING;
 use crate::fuse::backing_directory::{BackingDirectory, EntryKind};
 use crate::fuse::directory_reference::DirectoryReference;
@@ -72,7 +72,7 @@ fn docs() -> DirectoryReference {
 }
 
 fn names(contents: &DirectoryContents, directory: &DirectoryReference) -> Vec<String> {
-    let mut names: Vec<String> = contents.list_entry_sources(directory).iter().map(|source| source.name().to_owned()).collect();
+    let mut names: Vec<String> = contents.list_names(directory).iter().map(|listed_name| listed_name.name().to_owned()).collect();
     names.sort();
     names
 }
@@ -148,9 +148,9 @@ fn a_file_made_here_is_local_only() {
 #[test]
 fn a_onedrive_directory_is_synced_whether_or_not_the_disk_has_it() {
     let (dir, contents) = directory_contents(Vec::new());
-    assert!(matches!(directory_state(&contents, "docs"), DirectorySyncState::Synced(row) if row.id == "D"));
+    assert!(matches!(directory_state(&contents, "docs"), DirectorySyncState::InOneDrive(row) if row.id == "D"));
     fs::create_dir(dir.path().join("docs")).unwrap();
-    assert!(matches!(directory_state(&contents, "docs"), DirectorySyncState::Synced(row) if row.id == "D"));
+    assert!(matches!(directory_state(&contents, "docs"), DirectorySyncState::InOneDrive(row) if row.id == "D"));
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn the_folder_itself_is_the_drives_root() {
     let (_dir, contents) = directory_contents(Vec::new());
     assert_eq!(contents.find_root_id().as_deref(), Some("R"));
     assert_eq!(in_onedrive(contents.find_entry_at(Path::new(""))), pair("R", ""));
-    assert!(matches!(contents.find_root_entry().state, EntryState::Directory(DirectorySyncState::Synced(_))));
+    assert!(matches!(contents.find_root_entry().state, EntryState::Directory(DirectorySyncState::InOneDrive(_))));
     assert_eq!(contents.find_path("R").as_deref(), Some(Path::new("")));
     assert_eq!(contents.find_row("A").and_then(|a| contents.find_parent_row(&a)).map(|parent| parent.id).as_deref(), Some("R"));
     assert!(contents.find_parent_row(&contents.find_root_row()).is_none());
@@ -280,23 +280,23 @@ fn what_is_the_daemons_or_onedrives_is_not_a_local_only_entry() {
 
 /// A directory is listed from the store's rows alone: what the backing directory holds of a
 /// OneDrive file changes nothing of what is listed, and the sync state comes only once the
-/// entry is made from its source.
+/// entry is made from its listed name.
 #[test]
 fn a_directory_of_onedrive_files_is_listed_from_the_stores_rows_whatever_the_disk_holds() {
     let (dir, contents) = directory_contents(Vec::new());
     let root = contents.find_root_directory();
     let listed = |contents: &DirectoryContents| {
-        let mut sources = contents.list_entry_sources(&root);
-        sources.sort_by(|a, b| a.name().cmp(b.name()));
-        sources
+        let mut listed_names = contents.list_names(&root);
+        listed_names.sort_by(|a, b| a.name().cmp(b.name()));
+        listed_names
     };
-    let rows = [contents.find_row("A").unwrap(), contents.find_row("B").unwrap(), contents.find_row("D").unwrap()].map(EntrySource::InOneDrive);
+    let rows = [contents.find_row("A").unwrap(), contents.find_row("B").unwrap(), contents.find_row("D").unwrap()].map(ListedName::InOneDrive);
     assert_eq!(listed(&contents), rows);
     download(dir.path(), &contents, "a.txt", "A", b"whole");
     assert_eq!(listed(&contents), rows);
-    assert_eq!(listed(&contents).iter().map(EntrySource::kind).collect::<Vec<_>>(), [EntryKind::File, EntryKind::File, EntryKind::Directory]);
-    // The entry made from a source has the state the disk gives it.
-    let described = contents.describe_source(&listed(&contents)[0], &root);
+    assert_eq!(listed(&contents).iter().map(ListedName::kind).collect::<Vec<_>>(), [EntryKind::File, EntryKind::File, EntryKind::Directory]);
+    // The entry made from a listed name has the state the disk gives it.
+    let described = contents.describe_listed_name(&listed(&contents)[0], &root);
     assert!(matches!(described.state, EntryState::File(FileSyncState::Synced(row, copy)) if row.id == "A" && copy.size == 5));
 }
 
@@ -306,10 +306,10 @@ fn a_listed_local_only_entry_carries_what_the_disk_says_of_it() {
     let (dir, contents) = directory_contents(Vec::new());
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
     let root = contents.find_root_directory();
-    let sources = contents.list_entry_sources(&root);
-    let own = sources.iter().find(|source| source.name() == "own.txt").unwrap();
-    assert!(matches!(own, EntrySource::LocalOnly(entry) if entry.on_disk.metadata.size == 4) && own.kind() == EntryKind::File);
-    assert!(matches!(contents.describe_source(own, &root).state, EntryState::File(FileSyncState::LocalOnly(_))));
+    let listed_names = contents.list_names(&root);
+    let own = listed_names.iter().find(|listed_name| listed_name.name() == "own.txt").unwrap();
+    assert!(matches!(own, ListedName::LocalOnly(entry) if entry.on_disk.metadata.size == 4) && own.kind() == EntryKind::File);
+    assert!(matches!(contents.describe_listed_name(own, &root).state, EntryState::File(FileSyncState::LocalOnly(_))));
 }
 
 #[test]

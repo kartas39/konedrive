@@ -19,7 +19,7 @@ use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::backing_directory::{DiskEntry, EntryKind};
 use super::directory_reference::DirectoryReference;
-use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
+use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, ListedName, EntryState, FileSyncState};
 use super::node_table::{NodeKey, NodeTable};
 
 /// What a node id stands for, found again in the directory contents or on disk.
@@ -34,7 +34,7 @@ enum NodeTarget {
 fn key_of(entry: &DirectoryEntry) -> NodeKey {
     match &entry.state {
         EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
-        EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => NodeKey::InOneDrive(row.id.clone()),
+        EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => NodeKey::InOneDrive(row.id.clone()),
     }
 }
 
@@ -56,15 +56,15 @@ impl NodeResolver {
         self.assign_node_id_of_key(key_of(entry), &entry.name, parent)
     }
 
-    /// The node id of what `source` is the source of, which is in the directory node
+    /// The node id of what `listed_name` names, which is in the directory node
     /// `parent`: the node id its entry has ([`assign_node_id`](Self::assign_node_id)), given
     /// without the entry being made.
-    pub(super) fn assign_node_id_of_source(&self, source: &EntrySource, parent: u64) -> u64 {
-        let key = match source {
-            EntrySource::InOneDrive(row) => NodeKey::InOneDrive(row.id.clone()),
-            EntrySource::LocalOnly(local_only) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
+    pub(super) fn assign_node_id_of_listed_name(&self, listed_name: &ListedName, parent: u64) -> u64 {
+        let key = match listed_name {
+            ListedName::InOneDrive(row) => NodeKey::InOneDrive(row.id.clone()),
+            ListedName::LocalOnly(local_only) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
         };
-        self.assign_node_id_of_key(key, source.name(), parent)
+        self.assign_node_id_of_key(key, listed_name.name(), parent)
     }
 
     /// The node id of `key`, which is `name` in the directory node `parent`. A OneDrive id

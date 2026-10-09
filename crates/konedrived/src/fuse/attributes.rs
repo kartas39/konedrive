@@ -37,7 +37,7 @@ fn permissions(access_mode: &AccessMode, directory: bool) -> u16 {
 /// - A local-only entry has what the filesystem says of it; a directory shows no size.
 pub(super) fn attributes(node_id: u64, access_mode: &AccessMode, entry: &DirectoryEntry) -> FileAttr {
     let (directory, size, blocks, modified): (bool, u64, u64, SystemTime) = match &entry.state {
-        EntryState::Directory(DirectorySyncState::Synced(row)) => (true, 0, 0, to_system_time(row.mtime)),
+        EntryState::Directory(DirectorySyncState::InOneDrive(row)) => (true, 0, 0, to_system_time(row.mtime)),
         EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => (true, 0, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),
         EntryState::File(FileSyncState::RemoteOnly(row)) => (false, row.size, 0, to_system_time(row.mtime)),
         EntryState::File(FileSyncState::Synced(row, copy)) => (false, copy.size, copy.blocks, to_system_time(row.mtime)),

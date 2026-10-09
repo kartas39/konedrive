@@ -32,7 +32,7 @@ impl KernelRequests {
     pub(super) fn answer_open_to_read(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let Some((entry, rel)) = self.node_resolver.find_entry(ino.0) else { return reply.error(Errno::ENOENT) };
         // What is in OneDrive and not downloaded has no file in the backing directory.
-        let on_disk = !matches!(entry.state, EntryState::File(FileSyncState::RemoteOnly(_)) | EntryState::Directory(DirectorySyncState::Synced(_)));
+        let on_disk = !matches!(entry.state, EntryState::File(FileSyncState::RemoteOnly(_)) | EntryState::Directory(DirectorySyncState::InOneDrive(_)));
         let file_on_disk = if on_disk {
             match self.backing_directory.read(&rel) {
                 Ok(file) => Some(Arc::new(file)),

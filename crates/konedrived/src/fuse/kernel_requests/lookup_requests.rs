@@ -16,7 +16,7 @@ use crate::fuse::inotify_bridge::NameBeforeChange;
 fn make_vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
     let row = Row { id: String::new(), parent_id: None, name: name.to_owned(), kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
     let state = match kind {
-        Kind::Folder => EntryState::Directory(DirectorySyncState::Synced(row)),
+        Kind::Folder => EntryState::Directory(DirectorySyncState::InOneDrive(row)),
         Kind::File => EntryState::File(FileSyncState::RemoteOnly(row)),
     };
     DirectoryEntry { name: name.to_owned(), state }

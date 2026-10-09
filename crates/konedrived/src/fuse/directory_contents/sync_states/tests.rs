@@ -58,6 +58,6 @@ fn a_local_only_entry_is_a_file_or_a_directory_by_what_it_is_on_disk() {
 #[test]
 fn an_entry_in_onedrive_has_its_id_and_no_local_only_entry() {
     let docs = row("D", Some("R"), "docs", Kind::Folder);
-    let entry = DirectoryEntry { name: "docs".into(), state: EntryState::Directory(DirectorySyncState::Synced(docs)) };
+    let entry = DirectoryEntry { name: "docs".into(), state: EntryState::Directory(DirectorySyncState::InOneDrive(docs)) };
     assert_eq!((entry.onedrive_id(), entry.local_only()), (Some("D"), None));
 }

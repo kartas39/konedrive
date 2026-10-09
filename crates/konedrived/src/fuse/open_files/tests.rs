@@ -5,7 +5,7 @@ use konedrive_tree::Kind;
 
 use super::{OpenFile, OpenFiles};
 use crate::fuse::directory_contents::tests::row;
-use crate::fuse::directory_contents::EntrySource;
+use crate::fuse::directory_contents::ListedName;
 
 /// A file held open by the node `node_id`, with nothing on disk.
 fn open_file(node_id: u64, onedrive_id: Option<&str>, may_write: bool) -> OpenFile {
@@ -76,15 +76,15 @@ fn a_onedrive_file_is_open_for_writing_while_a_handle_that_may_write_holds_it() 
 fn an_open_directory_keeps_what_it_held_when_it_was_first_read_until_it_is_closed() {
     let open_files = OpenFiles::default();
     let (first, second) = (open_files.add_directory(), open_files.add_directory());
-    assert!(open_files.find_entry_sources(first).is_none());
-    let entry_sources = Arc::new(vec![EntrySource::InOneDrive(row("A", Some("R"), "a.txt", Kind::File))]);
-    open_files.keep_entry_sources(first, Arc::clone(&entry_sources));
-    assert_eq!(open_files.find_entry_sources(first), Some(entry_sources));
+    assert!(open_files.find_listed_names(first).is_none());
+    let listed_names = Arc::new(vec![ListedName::InOneDrive(row("A", Some("R"), "a.txt", Kind::File))]);
+    open_files.keep_listed_names(first, Arc::clone(&listed_names));
+    assert_eq!(open_files.find_listed_names(first), Some(listed_names));
     // Another open directory has its own.
-    assert!(open_files.find_entry_sources(second).is_none());
+    assert!(open_files.find_listed_names(second).is_none());
     // Read from its start again, it is listed anew.
-    open_files.keep_entry_sources(first, Arc::new(Vec::new()));
-    assert!(open_files.find_entry_sources(first).unwrap().is_empty());
+    open_files.keep_listed_names(first, Arc::new(Vec::new()));
+    assert!(open_files.find_listed_names(first).unwrap().is_empty());
     open_files.remove_directory(first);
-    assert!(open_files.find_entry_sources(first).is_none());
+    assert!(open_files.find_listed_names(first).is_none());
 }

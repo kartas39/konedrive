@@ -42,7 +42,7 @@ fn local_only(kind: EntryKind) -> LocalOnlyEntry {
 
 #[test]
 fn a_onedrive_directory_has_the_stores_time_and_no_size() {
-    let shown = attributes(7, &AccessMode::read_write(), &directory(DirectorySyncState::Synced(stored(Kind::Folder))));
+    let shown = attributes(7, &AccessMode::read_write(), &directory(DirectorySyncState::InOneDrive(stored(Kind::Folder))));
     assert_eq!((shown.ino.0, shown.kind, shown.size, shown.blocks, shown.nlink), (7, FileType::Directory, 0, 0, 2));
     assert_eq!((shown.atime, shown.mtime, shown.ctime), (at(100), at(100), at(100)));
 }
@@ -90,7 +90,7 @@ fn the_modes_are_the_access_modes_in_every_state() {
     for entry in &files {
         assert_eq!((attributes(2, &AccessMode::read_write(), entry).perm, attributes(2, &AccessMode::read_only(), entry).perm), (0o644, 0o444), "{entry:?}");
     }
-    let directories = [directory(DirectorySyncState::Synced(stored(Kind::Folder))), directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory)))];
+    let directories = [directory(DirectorySyncState::InOneDrive(stored(Kind::Folder))), directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory)))];
     for entry in &directories {
         assert_eq!((attributes(2, &AccessMode::read_write(), entry).perm, attributes(2, &AccessMode::read_only(), entry).perm), (0o755, 0o555), "{entry:?}");
     }

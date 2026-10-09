@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::directory_contents::EntrySource;
+use super::directory_contents::ListedName;
 
 /// A file a program holds open. A write operation that opens a file returns one, and the
 /// request that asked puts it into [`OpenFiles`].
@@ -40,7 +40,7 @@ pub(super) struct OpenFiles {
     /// What the entries of each open directory were made from when it was first read, in
     /// the order they are handed out: a program that reads a directory in parts reads the
     /// same names, whatever changes meanwhile.
-    directories: Mutex<HashMap<u64, Arc<Vec<EntrySource>>>>,
+    directories: Mutex<HashMap<u64, Arc<Vec<ListedName>>>>,
     /// The file handle given next. None is ever 0: that is the handle of a file made
     /// without being opened.
     next_handle: AtomicU64,
@@ -96,21 +96,21 @@ impl OpenFiles {
     }
 
     /// A program opened a directory: the file handle it holds it by. What the directory
-    /// holds is kept once it is first read ([`keep_entry_sources`](Self::keep_entry_sources)).
+    /// holds is kept once it is first read ([`keep_listed_names`](Self::keep_listed_names)).
     pub(super) fn add_directory(&self) -> u64 {
         self.take_next_handle()
     }
 
     /// What the entries of the directory held open by `handle` were made from when it was
     /// first read.
-    pub(super) fn find_entry_sources(&self, handle: u64) -> Option<Arc<Vec<EntrySource>>> {
+    pub(super) fn find_listed_names(&self, handle: u64) -> Option<Arc<Vec<ListedName>>> {
         crate::panic::lock(&self.directories).get(&handle).cloned()
     }
 
-    /// The directory held open by `handle` is read from its start: `entry_sources` is what
+    /// The directory held open by `handle` is read from its start: `listed_names` is what
     /// it holds, for every part of the reading after this one.
-    pub(super) fn keep_entry_sources(&self, handle: u64, entry_sources: Arc<Vec<EntrySource>>) {
-        crate::panic::lock(&self.directories).insert(handle, entry_sources);
+    pub(super) fn keep_listed_names(&self, handle: u64, listed_names: Arc<Vec<ListedName>>) {
+        crate::panic::lock(&self.directories).insert(handle, listed_names);
     }
 
     /// The program closed the directory it held open by `handle`.

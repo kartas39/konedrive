@@ -220,7 +220,7 @@ daemon shows OneDrive.
   and `DirectoryEntry`: a name with its state, each state carrying what exists in it.
   `[tests]`
 - `directory_contents/directory_entries.rs` — the entry a directory holds under a name, and
-  what all its entries are made from (`EntrySource`): the store's rows as the unsent changes
+  what all its entries are made from (`ListedName`): the store's rows as the unsent changes
   leave them, read without the backing directory, and the local-only entries. The entry
   made from a source, with its sync state.
 - `directory_contents/entry_paths.rs` — the path the mount shows a OneDrive id at, the entry

@@ -35,7 +35,7 @@ mod directory_entries;
 mod entry_paths;
 mod sync_states;
 
-pub(super) use directory_entries::EntrySource;
+pub(super) use directory_entries::ListedName;
 pub(super) use sync_states::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 
 pub(super) struct DirectoryContents {
@@ -97,7 +97,7 @@ impl DirectoryContents {
 
     /// The folder itself, as an entry: a directory of OneDrive, without a name.
     pub(super) fn find_root_entry(&self) -> DirectoryEntry {
-        DirectoryEntry { name: String::new(), state: EntryState::Directory(DirectorySyncState::Synced(self.find_root_row())) }
+        DirectoryEntry { name: String::new(), state: EntryState::Directory(DirectorySyncState::InOneDrive(self.find_root_row())) }
     }
 
     /// The unsent changes now. Read again only when the store changed since.

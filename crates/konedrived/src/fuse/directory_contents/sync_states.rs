@@ -64,7 +64,7 @@ impl FileSyncState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::fuse) enum DirectorySyncState {
     /// In OneDrive.
-    Synced(Row),
+    InOneDrive(Row),
     /// Made here, not in OneDrive yet.
     LocalOnly(LocalOnlyEntry),
 }
@@ -102,7 +102,7 @@ impl DirectoryEntry {
     pub(in crate::fuse) fn row(&self) -> Option<&Row> {
         match &self.state {
             EntryState::File(file) => file.row(),
-            EntryState::Directory(DirectorySyncState::Synced(row)) => Some(row),
+            EntryState::Directory(DirectorySyncState::InOneDrive(row)) => Some(row),
             EntryState::Directory(DirectorySyncState::LocalOnly(_)) => None,
         }
     }
@@ -116,7 +116,7 @@ impl DirectoryEntry {
     pub(in crate::fuse) fn local_only(&self) -> Option<&LocalOnlyEntry> {
         match &self.state {
             EntryState::File(FileSyncState::LocalOnly(entry)) | EntryState::Directory(DirectorySyncState::LocalOnly(entry)) => Some(entry),
-            EntryState::File(_) | EntryState::Directory(DirectorySyncState::Synced(_)) => None,
+            EntryState::File(_) | EntryState::Directory(DirectorySyncState::InOneDrive(_)) => None,
         }
     }
 }

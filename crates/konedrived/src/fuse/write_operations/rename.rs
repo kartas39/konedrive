@@ -25,7 +25,7 @@ use crate::fuse::errno::to_errno;
 /// A rename the check let through: what moves where, and over what.
 struct RenamePlan {
     /// What moves, its node id, and whether a program holds it open for writing.
-    source: DirectoryEntry,
+    moved_entry: DirectoryEntry,
     node_id: u64,
     open: bool,
     /// What is at the new place.
@@ -46,7 +46,7 @@ impl RenamePlan {
     /// The local-only file that is saved, by rename, over a OneDrive file, and that file's
     /// OneDrive id.
     fn saved_over(&self) -> Option<(&LocalOnlyEntry, &str)> {
-        match (&self.source.state, self.target.as_ref().and_then(DirectoryEntry::onedrive_id)) {
+        match (&self.moved_entry.state, self.target.as_ref().and_then(DirectoryEntry::onedrive_id)) {
             (EntryState::File(FileSyncState::LocalOnly(file)), Some(over)) => Some((file, over)),
             _ => None,
         }
@@ -89,15 +89,15 @@ impl WriteOperations {
         if self.upload_rules.daemon_owned(new_name) {
             return Err(Errno::EPERM);
         }
-        let source = self.directory_contents.find_entry(&from_directory, name).ok_or(Errno::ENOENT)?;
+        let moved_entry = self.directory_contents.find_entry(&from_directory, name).ok_or(Errno::ENOENT)?;
         let target = self.directory_contents.find_entry(&to_directory, new_name);
         let (from, to) = (from_directory.path.join(name), to_directory.path.join(new_name));
         if from == to {
             return Ok(None);
         }
         if let Some(target) = &target {
-            let holds = || !self.directory_contents.list_entry_sources(&DirectoryReference { onedrive_id: target.onedrive_id().map(str::to_owned), path: to.clone() }).is_empty();
-            match (&source.state, &target.state) {
+            let holds = || !self.directory_contents.list_names(&DirectoryReference { onedrive_id: target.onedrive_id().map(str::to_owned), path: to.clone() }).is_empty();
+            match (&moved_entry.state, &target.state) {
                 _ if keep => return Err(Errno::EEXIST),
                 (EntryState::File(_), EntryState::Directory(_)) => return Err(Errno::EISDIR),
                 (EntryState::Directory(_), EntryState::File(_)) => return Err(Errno::ENOTDIR),
@@ -105,13 +105,13 @@ impl WriteOperations {
                 _ => {}
             }
         }
-        if source.onedrive_id().is_some() && self.upload_rules.in_local_dir(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
+        if moved_entry.onedrive_id().is_some() && self.upload_rules.in_local_dir(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
             return Err(Errno::EXDEV);
         }
         let uploaded = !self.stays_local(&to_directory, new_name);
-        let node_id = self.node_resolver.assign_node_id(&source, parent);
+        let node_id = self.node_resolver.assign_node_id(&moved_entry, parent);
         let open = self.open_writers.is_open(node_id);
-        Ok(Some(RenamePlan { source, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
+        Ok(Some(RenamePlan { moved_entry, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
     }
 
     /// The backing directory first: whatever it holds at the old place moves, and what was
@@ -137,10 +137,10 @@ impl WriteOperations {
         if let Some((file, over)) = plan.saved_over() {
             return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), open: plan.open, over: over.to_owned(), to };
         }
-        let entry = match &plan.source.state {
-            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => {
+        let entry = match &plan.moved_entry.state {
+            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => {
                 let handle = (moved == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_file_handle(&plan.to())).flatten();
-                MovedEntry::InOneDrive { id: row.id.clone(), directory: matches!(plan.source.state, EntryState::Directory(_)), handle }
+                MovedEntry::InOneDrive { id: row.id.clone(), directory: matches!(plan.moved_entry.state, EntryState::Directory(_)), handle }
             }
             EntryState::Directory(DirectorySyncState::LocalOnly(directory)) => {
                 let uploaded = if plan.uploaded { collect_local_only_entries(&self.backing_directory, &self.upload_rules, &plan.to_directory, &plan.to_name) } else { Vec::new() };
@@ -149,7 +149,7 @@ impl WriteOperations {
             EntryState::File(FileSyncState::LocalOnly(file)) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), open: plan.open, uploaded: plan.uploaded },
         };
         let displaced = plan.target.as_ref().map(|target| match &target.state {
-            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => DisplacedEntry::InOneDrive(row.id.clone()),
+            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => DisplacedEntry::InOneDrive(row.id.clone()),
             EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => DisplacedEntry::LocalOnly(local_only.on_disk.handle.clone()),
         });
         EntryRenamed::Moved { entry, from: plan.from.clone(), to, displaced }
