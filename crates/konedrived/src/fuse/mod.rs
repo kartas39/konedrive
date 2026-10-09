@@ -19,6 +19,12 @@
 //!   the store, and the kernel tells whoever watches the directory.
 //! - Pins are rows of the store ([`konedrive_tree::TreeStore::pins`]): a file that is not
 //!   downloaded has no object to carry one.
+//!
+//! The mount is built of parts that own their state, each usable and tested without a mount:
+//! [`under`] (the folder on disk, by its descriptor) and [`overlay`] (what the outbox's rows
+//! say) depend on nothing; [`view`] (the folder as it is shown) is over those two; [`nodes`]
+//! is the map of the kernel's node ids, and [`resolve`] is over the view and the nodes;
+//! [`attr`] is a function of facts. `shared` holds them together.
 
 mod announce;
 mod asked;

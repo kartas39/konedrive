@@ -1,4 +1,10 @@
-//! What every part of a mount works on: the folder under it, the store, and what is under way.
+//! What holds a mount together: its parts, and what is under way.
+//!
+//! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
+//! the mount ([`Under`]), the folder as the mount shows it ([`View`]), the kernel's nodes
+//! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]).
+//! What is not a part yet — the downloads, the reads, the pins, the announcer, the mode — is
+//! still a field here with its code in `impl Shared` in the module of its topic.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
