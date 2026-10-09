@@ -364,7 +364,7 @@ daemon shows OneDrive.
   how the path stands; the space the downloaded copies below a path take (`DownloadedSpace`); why it
   refuses (`FilesRefusal`). A free-up lists the copies off the write-operation thread and
   frees each in a job of its own on it, where it reads how the file stands, decides and
-  removes the copy. `[tests]`
+  removes the copy; the facts of a path are gathered once, as its `PathStatus`. `[tests]`
 - `files_interface/path_status.rs` — `PathStatus`: a path's id and pin, and its sync state,
   whether it is being downloaded and whether it is open for writing, which what is shown of
   it and what a free-up does with it are asked of. `[tests]`

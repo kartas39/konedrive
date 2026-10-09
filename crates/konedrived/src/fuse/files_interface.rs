@@ -13,8 +13,9 @@
 //! ([`FilesRefusal::NotInOneDrive`]).
 //!
 //! Whether a downloaded copy is freed is decided in one place
-//! ([`super::free_up_decision`]): for each copy below a path here, and for a path the
-//! folder's sync asks about, through its [`PathStatus`].
+//! ([`super::free_up_decision`]), from facts gathered in one place
+//! ([`FilesInterface::read_path_status`], a [`PathStatus`]): for each copy below a path
+//! here, and for a path the folder's sync asks about.
 //!
 //! A free-up walks off the write-operation thread and frees on it. The walk lists the
 //! OneDrive ids of the downloaded copies below a path, and decides nothing. Each copy is
@@ -38,7 +39,7 @@ use super::backing_directory::BackingDirectory;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::DownloadStates;
 use super::file_downloader::{FileDownloader, FileToDownload};
-use super::free_up_decision::{decide_free_up, FreeUpDecision};
+use super::free_up_decision::FreeUpDecision;
 use super::inotify_bridge::{Announcement, InotifyBridge};
 use super::node_resolver::NodeResolver;
 use super::open_handles::OpenHandles;
@@ -213,20 +214,19 @@ impl FilesInterface {
     /// no downloaded copy any more, or is gone from the folder.
     ///
     /// Called on the write-operation thread. How the file stands — where the mount shows
-    /// it, its sync state, its pin, its download, its writers — is read here, and the copy
-    /// is removed here: no write operation runs in between, so what is decided is true of
-    /// the copy that is removed.
+    /// it, and its [`PathStatus`]: its sync state, its pin, its download, its writers — is
+    /// read here, and the copy is removed here: no write operation runs in between, so what
+    /// is decided is true of the copy that is removed.
     fn free_downloaded_copy(&self, onedrive_id: &str) -> FreedSpace {
         let nothing = FreedSpace::default();
         let Some(path) = self.directory_contents.find_path(onedrive_id) else { return nothing };
         let Some(entry) = path.file_name().and_then(|name| name.to_str()).and_then(|name| self.directory_contents.find_entry_by_id(onedrive_id, name, &path)) else { return nothing };
-        let (EntryState::File(file), Some(row)) = (&entry.state, entry.row()) else { return nothing };
-        if file.downloaded_copy().is_none() {
+        let Some(row) = entry.row().cloned() else { return nothing };
+        // What is not downloaded takes no space, whatever keeps it.
+        if !matches!(&entry.state, EntryState::File(file) if file.downloaded_copy().is_some()) {
             return nothing;
         }
-        let (is_pinned, is_downloading) = (self.pins.find_pinning_row(row).is_some(), self.download_states.is_downloading(onedrive_id));
-        let is_open_for_writing = self.is_open_for_writing(onedrive_id);
-        let freed_bytes = match decide_free_up(&entry.state, is_pinned, is_downloading, is_open_for_writing) {
+        let freed_bytes = match self.read_path_status(entry, row).decide_free_up() {
             FreeUpDecision::Free => self.backing_directory.remove_downloaded_copy(&path, onedrive_id),
             FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => None,
             FreeUpDecision::NothingToFree => return nothing,
@@ -245,12 +245,18 @@ impl FilesInterface {
     pub fn find_path_status(&self, path: &Path) -> Result<PathStatus, FilesRefusal> {
         let (entry, _) = self.find_onedrive_entry(path)?;
         let Some(row) = entry.row().cloned() else { return Err(FilesRefusal::NotInOneDrive) };
+        Ok(self.read_path_status(entry, row))
+    }
+
+    /// How `entry`, the file or directory of OneDrive that `row` is, stands now: the facts
+    /// of a path gathered in one place, for whoever shows them and for a free-up alike.
+    fn read_path_status(&self, entry: DirectoryEntry, row: Row) -> PathStatus {
         let own_pin = self.pins.is_pinned(&row.id);
         let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.find_pinning_row(&above));
         let pinned_above = above.and_then(|by| self.directory_contents.find_stored_path(&by.id)).map(|at| self.folder.join(at));
         let is_downloading = self.download_states.is_downloading(&row.id);
         let is_open_for_writing = self.is_open_for_writing(&row.id);
-        Ok(PathStatus { onedrive_id: row.id, own_pin, pinned_above, entry_state: entry.state, is_downloading, is_open_for_writing })
+        PathStatus { onedrive_id: row.id, own_pin, pinned_above, entry_state: entry.state, is_downloading, is_open_for_writing }
     }
 
     /// Puts the pin on what is at `path`, or takes it off. A pin put on downloads what it
