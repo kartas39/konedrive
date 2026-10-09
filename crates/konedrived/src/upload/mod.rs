@@ -504,3 +504,6 @@ impl Drop for Waited<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
