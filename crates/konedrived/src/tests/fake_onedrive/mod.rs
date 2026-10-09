@@ -1,5 +1,5 @@
 //! A fake OneDrive for the daemon's tests (`remote/`, `local/`, `sync/`, `upload/`) and the VM
-//! suite's write scenarios (built with `fault-injection`): an in-memory drive behind a
+//! suite (built with `fault-injection`): an in-memory drive behind a
 //! wiremock server, answering the requests `DriveClient` makes as Graph
 //! documents them — `If-Match` on eTag or cTag, `409` on a name taken
 //! (without case), a folder's cTag changing with anything below it, deletes

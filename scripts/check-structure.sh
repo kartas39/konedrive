@@ -11,7 +11,7 @@
 #      after a panic (konedrived: panic::lock, read, write), never with
 #      `.lock().unwrap()` or a recovery written out. Test code is exempt.
 #
-# It reads the files git tracks, prints one line for each thing against a rule
+# It reads the files git tracks, except the vendored crates (vendor/), prints one line for each thing against a rule
 # and exits with 1 if there is any. A file over the advised size is printed too,
 # and does not change the exit status. Run from anywhere in the checkout:
 #
@@ -31,7 +31,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-git ls-files -- '*.rs' '*.cpp' '*.h' '*.qml' '*.sh' '*.py' '*.md' | LC_ALL=C awk '
+git ls-files -- '*.rs' '*.cpp' '*.h' '*.qml' '*.sh' '*.py' '*.md' ':!vendor' | LC_ALL=C awk '
 BEGIN {
     SOURCE_MAX = 1000
     TEST_MAX = 1500
@@ -96,15 +96,12 @@ function uses(file, number, line, own, top,    text, name) {
 }
 
 # Whether rule 7 is asked of a file: not of the files that hold the one
-# function, not of test doubles (`testing.rs`, `testing/`), and not of the helper
-# (it has its own `lock`, and root code is not changed for tidiness):
+# function and not of test doubles (`testing.rs`, `testing/`):
 # CONTRIBUTING.md, rule 7.
 function locks_checked(file) {
     if (file == DAEMON "panic.rs" || file == "crates/konedrive-graph/src/lib.rs" || file == "crates/konedrive-tree/src/outbox/changes.rs")
         return 0
-    if (file ~ /(^|\/)testing(\.rs$|\/)/)
-        return 0
-    return index(file, "crates/konedrive-helper/") != 1
+    return file !~ /(^|\/)testing(\.rs$|\/)/
 }
 
 # A lock, a read or a write taken with nothing passed (or as `Mutex::lock(…)`),

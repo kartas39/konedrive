@@ -1125,33 +1125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "konedrive-helper"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "konedrive-fs",
- "konedrive-proto",
- "libc",
- "nix",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "konedrive-proto"
-version = "0.1.2"
-dependencies = [
- "libc",
- "nix",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "konedrive-reason"
 version = "0.1.2"
 
@@ -1209,7 +1182,6 @@ dependencies = [
  "konedrive-dbus",
  "konedrive-fs",
  "konedrive-graph",
- "konedrive-proto",
  "konedrive-reason",
  "konedrive-text",
  "konedrive-tree",

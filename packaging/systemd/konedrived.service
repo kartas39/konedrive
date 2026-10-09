@@ -11,17 +11,12 @@ Restart=on-failure
 # failure that comes back at every start is tried every few seconds, not in a
 # tight loop.
 RestartSec=5
-# After the daemon's end, however it ended: a folder served through FUSE loses the mount the
-# daemon left on it and is locked, so that it shows its downloaded files and takes nothing
-# until the daemon is back.
+# After the daemon's end, however it ended: a folder loses the mount the daemon left on it and
+# is locked, so that it shows its downloaded files and takes nothing until the daemon is back.
+# The same program as ExecStart: the packages rewrite both lines (packaging/rpm/konedrive.spec).
 ExecStopPost=%h/.local/bin/konedrived --tidy
-# Startup recovery (docs/design/hydration.md §9) walks every registered root holding one file
-# descriptor at a time plus one per directory level, so the daemon's real need
-# is the tree's depth plus the 64 opens it may take from the helper at once, the helper socket
-# and D-Bus -- but running out is the failure that cost us 991 files left
-# `hydrating` with untrusted content and no error, so this is deliberately an
-# order of magnitude clear of anything the daemon can plausibly need rather
-# than inheriting systemd's default of 1024.
+# Deliberately an order of magnitude clear of anything the daemon can plausibly need, rather
+# than systemd's default of 1024.
 LimitNOFILE=16384
 
 [Install]

@@ -2,10 +2,10 @@
 resolver = "2"
 # fuser with FUSE_INTERRUPT handed on (vendor/fuser/README.konedrive.md).
 exclude = ["vendor/fuser"]
-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-helper", "crates/konedrive-proto", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree", "tests/write-account"]
+members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree", "tests/write-account"]
 # The test-account harness is built only when asked for (`-p konedrive-write-test`, or
 # `--workspace`): a plain `cargo build --release` builds what ships (safety review m11).
-default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-helper", "crates/konedrive-proto", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree"]
+default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-graph", "crates/konedrive-reason", "crates/konedrive-text", "crates/konedrive-tree"]
 
 [workspace.package]
 # The next release's version, and the only place it is kept (docs/releasing.md, "The version"). Only

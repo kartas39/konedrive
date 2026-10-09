@@ -22,7 +22,7 @@ pub mod clock;
 pub mod panic;
 
 /// A fake OneDrive on wiremock: the tests of every area that talks to OneDrive, and the VM
-/// suite's write scenarios (`fault-injection`).
+/// suite (`fault-injection`).
 #[cfg(any(test, feature = "fault-injection"))]
 #[path = "tests/fake_onedrive/mod.rs"]
 pub mod fake_onedrive;
