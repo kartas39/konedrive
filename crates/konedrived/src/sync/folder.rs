@@ -368,13 +368,6 @@ impl SyncService {
         let folder = self.folder.write().await;
         // Dropped from here on, the change publishes what it leaves.
         let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
-        // No sync, no uploads: the mount takes no change until a read-write sync runs again.
-        // The switch is waited for: when it returns, every change a program asked for before
-        // it is recorded, and none is recorded after it, so that what a forced switch drops
-        // from the outbox next (`drop_outbox`) leaves no row behind.
-        if let Some(mount) = stopped.folder.mount() {
-            stopped.was_writable = mount.switch_to_read_only().await;
-        }
         if let Some(sync) = stopped.folder.sync_mut() {
             match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {
                 // Dropped here: told again, and its parts handed over to be waited for.
@@ -382,6 +375,16 @@ impl SyncService {
                 Sync::Stopped(Why::Interrupted) => stopped.ran = true,
                 Sync::Stopped(why) => *sync = Sync::Stopped(why),
             }
+        }
+        // No sync, no uploads: the mount takes no change until a read-write sync runs again.
+        // The switch is made on the mount's write-operation thread and waited for: when it
+        // returns, every change a program asked for before it is recorded, and none is
+        // recorded after it, so that what a forced switch drops from the outbox next
+        // (`drop_outbox`) leaves no row behind. That thread runs under the tree lock, which a
+        // cycle holds while it waits for the folder's state, held here: so the switch comes
+        // only now, with the sync taken out and told to stop, which a cycle gives up on.
+        if let Some(mount) = stopped.folder.mount() {
+            stopped.was_writable = mount.switch_to_read_only().await;
         }
         // What the folder is now, before the parts are waited for: another change may have
         // started a sync, and published it, since this one took it out of the view.
