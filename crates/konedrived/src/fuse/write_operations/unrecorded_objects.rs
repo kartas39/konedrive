@@ -4,7 +4,7 @@
 
 use super::WriteOperations;
 use crate::fuse::detections::UnrecordedObjects;
-use crate::fuse::local_entries::collect_local_entries;
+use crate::fuse::local_only_entries::collect_local_entries;
 use crate::fuse::directory_contents::Directory;
 
 impl WriteOperations {

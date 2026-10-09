@@ -1,6 +1,6 @@
 //! What the mount says of a name: its kind, size, times and modes.
 //!
-//! [`attr`] is a function of facts and of nothing else: whether the folder takes changes,
+//! [`attributes`] is a function of facts and of nothing else: whether the folder takes changes,
 //! which says the modes, and what the name is ([`Shown`]). The facts of an entry are gathered
 //! by [`Shown::of`], from the view and from the files open for writing; [`of_entry`] is the
 //! two together, for a request's answer.

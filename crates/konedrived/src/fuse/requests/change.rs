@@ -13,7 +13,7 @@ use konedrive_graph::pool::Class;
 use tokio::sync::oneshot;
 
 use super::Requests;
-use crate::fuse::attr::{self, TTL};
+use crate::fuse::attributes::{self, TTL};
 use crate::fuse::read::Handle;
 use crate::fuse::shared::{errno, Shared};
 use crate::fuse::write_operations::OpenedFile;
@@ -150,7 +150,7 @@ impl Requests {
             return reply.error(e);
         }
         let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.resolve.node(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &attr::of_entry(&entry, ino.0, &rel, s.writable(), &s.view, &s.writers)),
+            Some((entry, rel)) => reply.attr(&TTL, &attributes::of_entry(&entry, ino.0, &rel, s.writable(), &s.view, &s.writers)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {

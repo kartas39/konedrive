@@ -12,7 +12,7 @@ use konedrive_tree::Row;
 
 use super::{OpenedFile, WriteOperations};
 use crate::fuse::detections::{ItemWrite, LocalWrite, Written};
-use crate::fuse::local_entries::{folder_place, local_object};
+use crate::fuse::local_only_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::Entry;
 

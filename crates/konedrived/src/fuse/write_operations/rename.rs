@@ -14,7 +14,7 @@ use fuser::Errno;
 
 use super::WriteOperations;
 use crate::fuse::detections::{DisplacedEntry, MovedEntry, Renamed};
-use crate::fuse::local_entries::{collect_local_entries, folder_place, local_object};
+use crate::fuse::local_only_entries::{collect_local_entries, folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry};
 

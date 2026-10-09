@@ -11,7 +11,7 @@ use konedrive_tree::Kind;
 
 use super::Requests;
 use crate::fuse::announce::Told;
-use crate::fuse::attr::{self, Shown, TTL};
+use crate::fuse::attributes::{self, Shown, TTL};
 use crate::fuse::directory_contents::{Directory, Entry};
 use crate::fuse::shared::errno;
 
@@ -19,7 +19,7 @@ impl Requests {
     /// What the mount shows of `entry`, which is node `ino` at `rel`.
     fn shown(&self, entry: &Entry, ino: u64, rel: &Path) -> FileAttr {
         let s = &self.0;
-        attr::of_entry(entry, ino, rel, s.writable(), &s.view, &s.writers)
+        attributes::of_entry(entry, ino, rel, s.writable(), &s.view, &s.writers)
     }
 
     /// The entry `name` of `parent`, as the folder has it now.
@@ -40,7 +40,7 @@ impl Requests {
             match &*crate::panic::lock(&self.0.told) {
                 Some(Told::Came { parent: in_, name: came }) if *in_ == parent.0 && name == came.as_str() => return reply.error(Errno::ENOENT),
                 Some(Told::Gone { parent: in_, name: gone, ino, kind }) if *in_ == parent.0 && name == gone.as_str() => {
-                    return reply.entry(&Duration::ZERO, &attr::attr(*ino, self.0.writable(), &Shown::gone(*kind)), Generation(0));
+                    return reply.entry(&Duration::ZERO, &attributes::attr(*ino, self.0.writable(), &Shown::gone(*kind)), Generation(0));
                 }
                 _ => {}
             }

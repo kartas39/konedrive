@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::outbox::{Detection, OutboxOp};
 
 use super::detections::{create_entries, is_folder_of, KeptCopy};
-use super::local_entries::{collect_local_entries, folder_place, local_object};
+use super::local_only_entries::{collect_local_entries, folder_place, local_object};
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
 use super::directory_contents::{Directory, DirectoryContents};

@@ -24,7 +24,7 @@
 //! [`backing_directory`] (the folder on disk, by its descriptor) and [`unsent_changes`] (what the outbox's rows
 //! say) depend on nothing; [`directory_contents`] (the folder as it is shown) is over those two; [`node_table`]
 //! is the map of the kernel's node ids, and [`node_lookup`] is over the view and the nodes;
-//! [`attr`] is a function of facts. A change a program makes: [`upload_rules`] (what is
+//! [`attributes`] is a function of facts. A change a program makes: [`upload_rules`] (what is
 //! uploaded at all) and [`detections`] (what a change is recorded as, a function of typed
 //! events) depend on nothing but the store's facts; the [`outbox_recorder`] records them on its own
 //! thread; [`write_operations`] are the operations themselves, over the view, the disk, the
@@ -32,12 +32,12 @@
 
 mod announce;
 mod asked;
-mod attr;
+mod attributes;
 mod conflict;
 mod detections;
 mod fill;
 mod follow;
-mod local_entries;
+mod local_only_entries;
 mod mode;
 mod mount;
 mod node_table;

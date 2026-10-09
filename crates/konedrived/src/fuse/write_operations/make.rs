@@ -7,9 +7,9 @@ use fuser::{Errno, FileAttr};
 use konedrive_tree::Row;
 
 use super::{OpenedFile, WriteOperations};
-use crate::fuse::attr;
+use crate::fuse::attributes;
 use crate::fuse::detections::Made;
-use crate::fuse::local_entries::{folder_place, local_object};
+use crate::fuse::local_only_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry, Local};
 
@@ -56,7 +56,7 @@ impl WriteOperations {
             None => Entry::Local(Local { name: name.to_owned(), object }),
         };
         let ino = self.resolve.ino_of(&entry, parent);
-        let attr = attr::of_entry(&entry, ino, &rel, self.recorder.is_writable(), &self.view, &self.writers);
+        let attr = attributes::of_entry(&entry, ino, &rel, self.recorder.is_writable(), &self.view, &self.writers);
         let opened = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
