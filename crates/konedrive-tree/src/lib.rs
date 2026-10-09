@@ -34,7 +34,6 @@ mod meta;
 mod model;
 pub mod outbox;
 mod pins;
-mod plan;
 mod query;
 mod read;
 pub mod reconcile;
@@ -50,7 +49,6 @@ pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
 pub use model::{usable_id, Chain, Change, Counts, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
 pub use konedrive_reason::WaitsFor;
-pub use plan::{Plan, Planned, Side};
 pub use query::Skipped;
 pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
@@ -87,13 +85,6 @@ impl TreeStore {
         self.conn.execute_batch(sql)?;
         Ok(())
     }
-}
-
-/// Runs `f` on a plain thread of its own and waits for it: for tests that
-/// call blocking code (the activity log, the examiner) from async code.
-#[cfg(any(test, feature = "testing"))]
-pub fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
-    std::thread::scope(|scope| scope.spawn(f).join().expect("the plain thread panicked"))
 }
 
 #[cfg(test)]

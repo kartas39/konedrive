@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::engine::{outcome_of, Engine, NoSpace, Outcome};
 use super::local;
 use crate::folder::disk::Disk;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, Reason};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow};
 
 mod meta;
 mod sections;
@@ -27,9 +27,6 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Ou
         OutboxKind::Mkdir => meta::mkdir(e, disk, row).await,
         OutboxKind::Move => meta::moved(e, disk, row).await,
         OutboxKind::Delete => delete(e, row).await,
-        // Never recorded, and never picked: through a mount nothing is moved out of the
-        // folder (the kernel answers a rename across it with `EXDEV`).
-        OutboxKind::MoveOut => Ok(Outcome::Blocked(Reason::Forbidden)),
     };
     match result.or_else(outcome_of) {
         Ok(outcome) => outcome,

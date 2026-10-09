@@ -455,7 +455,6 @@ fn the_local_handle_travels_with_its_row() {
     store.stage(&[file("A", "R", "again")]).unwrap();
     store.commit_staging("link-3").unwrap();
     assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a delta");
-    assert_eq!(store.item_by_handle(&handle).unwrap().map(|r| r.id), Some("A".into()));
 
     // A page placed: the handle was recorded in `staging` before the
     // item was in `items`.
@@ -486,7 +485,7 @@ fn forgetting_below_a_row_placed_again_is_cheap_at_scale() {
     let time = |root: &str| {
         let started = std::time::Instant::now();
         for _ in 0..10 {
-            forget_subtrees(&tx, &[root.to_owned()], false, &[]).unwrap();
+            forget_subtrees(&tx, &[root.to_owned()], false).unwrap();
         }
         started.elapsed() / 10
     };

@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 
-use konedrive_fs::handle::FileHandle;
 use rusqlite::OptionalExtension;
 
 use crate::meta::{self, ROOT_ITEM_ID};
@@ -26,23 +25,9 @@ use crate::{TreeError, MAX_CHAIN};
 
 /// The subtrees at `roots` — `roots` themselves when `with_roots`, and
 /// everything `items` or `staging` has below them — forget their local
-/// objects in both tables, and so does every row recording one of
-/// `handles`: seeded from a temporary table, one statement per
-/// table, whatever the number of roots.
-pub(crate) fn forget_subtrees(tx: &rusqlite::Transaction<'_>, roots: &[String], with_roots: bool, handles: &[FileHandle]) -> Result<(), TreeError> {
-    if !handles.is_empty() {
-        tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS forget_handles (handle BLOB PRIMARY KEY); DELETE FROM forget_handles;")?;
-        {
-            let mut handle = tx.prepare_cached("INSERT OR IGNORE INTO forget_handles (handle) VALUES (?1)")?;
-            for h in handles {
-                handle.execute([h.encode()])?;
-            }
-        }
-        for table in ["items", "staging"] {
-            tx.execute(&format!("UPDATE {table} SET local_handle = NULL WHERE local_handle IN (SELECT handle FROM forget_handles)"), [])?;
-        }
-        tx.execute_batch("DELETE FROM forget_handles;")?;
-    }
+/// objects in both tables: seeded from a temporary table, one statement
+/// per table, whatever the number of roots.
+pub(crate) fn forget_subtrees(tx: &rusqlite::Transaction<'_>, roots: &[String], with_roots: bool) -> Result<(), TreeError> {
     if roots.is_empty() {
         return Ok(());
     }
@@ -147,7 +132,7 @@ pub(crate) fn forget_unplaced<'a>(tx: &rusqlite::Transaction<'_>, ids: impl Into
             roots.push(id.to_owned());
         }
     }
-    forget_subtrees(tx, &roots, true, &[])
+    forget_subtrees(tx, &roots, true)
 }
 
 /// I1 for the whole of `items`, after a full listing took its place: every

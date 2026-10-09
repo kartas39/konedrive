@@ -1,6 +1,6 @@
 //! The store's schema: its version, what a new store is created with, how
-//! an older one is brought to it ([`migrations`]), and when a store is
-//! rebuilt.
+//! a store of an earlier version would be brought to it ([`migrations`]),
+//! and when a store is rebuilt.
 
 use std::path::Path;
 
@@ -13,15 +13,14 @@ use crate::{meta, outbox, TreeError, TreeStore};
 mod migrations;
 
 /// The schema this daemon reads and writes, kept in `meta` as
-/// `schema_version`. A store of an older version is brought to it in place,
-/// one numbered step at a time ([`migrations`]); one of a version no step
-/// starts from — older than the outbox, or a newer daemon's — is rebuilt
-/// from a full listing.
+/// `schema_version`. A store of a version a step starts from is brought to
+/// it in place, one numbered step at a time ([`migrations`]); one of any
+/// other version — a newer daemon's — is rebuilt from a full listing.
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "8";
+pub const SCHEMA_VERSION: &str = "9";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -38,8 +37,7 @@ pub const SCHEMA_VERSION: &str = "8";
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
 ///   at commit can never be mistaken for a new one by a worker still
 ///   holding it. The content being sent is `snapshot_size`,
-///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`; a
-///   `move-out` row's marker is `moved_out`.
+///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`.
 /// - `upload_sessions`: the upload sessions opened and not yet completed,
 ///   cancelled or found gone, with the place a new file's
 ///   session holds in OneDrive with its empty placeholder until then. A row
@@ -50,8 +48,7 @@ pub const SCHEMA_VERSION: &str = "8";
 ///   recorded before the request that opens it, so that a stop
 ///   before its URL is persisted still knows the placeholder it may have
 ///   left. One per row (`at` its first time, `last` the latest attempt
-///   whose outcome is not known, read as `at` when a store older than it
-///   left none); the URL replaces it. `upload_openings_left`: a record
+///   whose outcome is not known); the URL replaces it. `upload_openings_left`: a record
 ///   whose row left, or moved to another place, kept until a
 ///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
 /// - `items_unplaced` and `items_skipped` ask whether a row is placed as
@@ -99,7 +96,6 @@ fn schema() -> String {
              state TEXT NOT NULL,
              reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER,
              snapshot_size INTEGER, snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER,
-             moved_out TEXT,
              session_url TEXT, session_expires INTEGER, session_next INTEGER,
              handle BLOB,
              confirmed INTEGER NOT NULL DEFAULT 0,
@@ -188,18 +184,6 @@ impl TreeStore {
         Self::prepare(Connection::open_in_memory()?)
     }
 
-    /// Tests only: brings the store to [`SCHEMA_VERSION`] where it stands,
-    /// as an open does, after a test wrote an older version into it.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn upgrade_in_place(&mut self) -> Result<(), TreeError> {
-        let mut version = meta::get(&self.conn, meta::SCHEMA_VERSION)?;
-        while let Some(step) = migrations::from(version.as_deref()) {
-            at_version(&self.conn, step.to, step.run)?;
-            version = meta::get(&self.conn, meta::SCHEMA_VERSION)?;
-        }
-        Ok(())
-    }
-
     fn open_file(path: &Path) -> Result<Self, TreeError> {
         use std::os::unix::fs::PermissionsExt;
         let conn = Connection::open(path)?;
@@ -257,7 +241,7 @@ impl TreeStore {
             return Err(TreeError::Schema(version));
         }
         let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [meta::STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
-        // The outbox's point queries run thousands of times in one examination.
+        // The outbox's point queries run thousands of times.
         conn.set_prepared_statement_cache_capacity(64);
         let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
         outbox::watch(&conn, &changes)?;

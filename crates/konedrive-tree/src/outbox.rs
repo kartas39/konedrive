@@ -11,7 +11,7 @@
 //! **Order.** Rows run in `seq` order, the order of first detection, which a
 //! merge keeps. Four rules hold a row back ([`pick`]):
 //! an earlier row of the same item; the `mkdir` of the directory it is in,
-//! whose item id it needs; for a folder's `delete` or `move-out`, every row
+//! whose item id it needs; for a folder's `delete`, every row
 //! of an item the base has inside the folder; and a row that frees the name
 //! in OneDrive a row takes. The last three are structural, whatever the
 //! rows' `seq`: a move out of a folder detected after the folder's delete
@@ -62,8 +62,7 @@ mod worker;
 pub use changes::OutboxChanges;
 pub(super) use changes::watch;
 pub use pick::{due, Pick, Picked, PORTION};
-pub use encoded::{place_name, Snapshot};
-use handles::set_local_handle;
+pub use encoded::Snapshot;
 pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
 pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded, SessionUrl};
@@ -298,7 +297,6 @@ impl TreeStore {
                         out.removed.push(*seq);
                     }
                 }
-                OutboxOp::SetHandle { item_id, handle } => set_local_handle(&tx, item_id, handle.as_ref())?,
                 OutboxOp::Skip { rel, reason, size } => {
                     tx.execute(
                         "INSERT INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)
@@ -355,85 +353,11 @@ impl TreeStore {
         rows_for(&self.conn, None, Some(inode))
     }
 
-    /// Whether any of `objects` — a local object, and its item id when it has one — has
-    /// a live row: what [`outbox_for_item`](Self::outbox_for_item) and
-    /// [`outbox_for_inode`](Self::outbox_for_inode) answer for each, asked as one query
-    /// for them all.
-    pub fn outbox_holds_any(&self, objects: &[(Option<String>, Inode)]) -> Result<bool, TreeError> {
-        stored::holds_any(&self.conn, objects)
-    }
-
-    /// The row whose local object has `handle`: for the watcher, which maps an
-    /// event's object to what it concerns.
-    pub fn outbox_by_handle(&self, handle: &FileHandle) -> Result<Option<OutboxRow>, TreeError> {
-        Ok(rows_where(&self.conn, "WHERE handle = ?1", [handle.encode()])?.into_iter().next())
-    }
-
-    /// Rows strictly below `rel`.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn outbox_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
-        rows_under(&self.conn, rel)
-    }
-
-    /// The object of item `id`, which can no longer be placed and waits,
-    /// stepped aside in its directory for another item that takes its name:
-    /// it stands at `to` now, under `name`, where it stood at `from`. In one
-    /// transaction the base follows — the same folder, the new name, the
-    /// version as it was; OneDrive's place of the item is in its deferred
-    /// change alone — and so do the rows: those of the item itself are made
-    /// against the new name, as if recorded there, so that none of them
-    /// sends it, and those below it follow as below any directory renamed.
-    ///
-    /// `repair`: the rename was made by a cycle that stopped before this
-    /// was written, and an examination since took it for a rename made
-    /// here: that row goes, since nobody made it.
-    pub fn step_aside(&mut self, id: &str, from: &Path, to: &Path, name: &str, repair: bool) -> Result<(), TreeError> {
-        let tx = self.conn.transaction()?;
-        let was: Option<String> = tx.query_row("SELECT name FROM items WHERE id = ?1", [id], |r| r.get(0)).optional()?;
-        tx.execute("UPDATE items SET name = ?2 WHERE id = ?1", params![id, name])?;
-        for mut row in rows_where(&tx, "WHERE item_id = ?1", [id])? {
-            if repair && row.kind == OutboxKind::Move && row.rel == to && row.state != OutboxState::Running {
-                remove(&tx, row.seq)?;
-                continue;
-            }
-            // Its own rows, by its id: wherever they say it stood.
-            row.rel = to.to_path_buf();
-            if row.target_name.is_some() && row.target_name == was {
-                row.target_name = Some(name.to_owned());
-            }
-            if let Some(base) = &mut row.base {
-                if base.name == was {
-                    base.name = Some(name.to_owned());
-                }
-            }
-            rewrite(&tx, &row)?;
-        }
-        rebase(&tx, from, to)?;
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Rows at `rel` or below it.
     pub fn outbox_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
         let mut rows = rows_under(&self.conn, rel)?;
         rows.extend(all_rows(&self.conn)?.into_iter().filter(|row| row.rel == rel));
         rows.sort_by_key(|row| row.seq);
-        Ok(rows)
-    }
-
-    /// What OneDrive removed at `rel` was taken off the disk:
-    /// the rows that would upload, create or move something there or below
-    /// it have nothing left to send, and go — not one the worker is running,
-    /// whose commit meets OneDrive's answer, nor a removal, which the cycle's
-    /// [`outbox_drop_removed`](Self::outbox_drop_removed) settles. What went.
-    pub fn outbox_drop_under(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
-        let rows: Vec<OutboxRow> =
-            self.outbox_at_or_under(rel)?.into_iter().filter(|row| row.state != OutboxState::Running && !row.kind.removes()).collect();
-        let tx = self.conn.transaction()?;
-        for row in &rows {
-            remove(&tx, row.seq)?;
-        }
-        tx.commit()?;
         Ok(rows)
     }
 
@@ -452,6 +376,7 @@ impl TreeStore {
         Ok(attempts.unwrap_or(0) as u32)
     }
 
+    #[cfg(test)]
     pub fn outbox_set_snapshot(&self, seq: i64, snapshot: Option<Snapshot>) -> Result<(), TreeError> {
         set_snapshot(&self.conn, seq, snapshot)
     }
@@ -486,7 +411,7 @@ impl TreeStore {
         // and swap cannot give the items their local objects back (the
         // outbox on the bus).
         let items: Vec<String> = held.iter().filter_map(|row| row.item_id.clone()).collect();
-        forget_subtrees(&tx, &items, true, &[])?;
+        forget_subtrees(&tx, &items, true)?;
         for row in &held {
             remove(&tx, row.seq)?;
         }
@@ -494,18 +419,16 @@ impl TreeStore {
         Ok(held)
     }
 
-    /// A held or pending `delete` or `move-out` row whose item the delta or
+    /// A held or pending `delete` row whose item the delta or
     /// a Full reconcile just found gone from OneDrive — `items` (already
     /// swapped in for this cycle) holds no row for it — has nothing left to
     /// send: dropped without a request. Not a `running` row: its own commit
     /// meets the `404` itself and drops it there ([`Committed::Gone`]).
-    /// Returns what was dropped, so that a dropped `move-out`'s placeholder
-    /// outside the folder can be tidied the way a dropped `move-out` always
-    /// is (`Tidy::dropped`, `upload::move_out`), and the outbox's
-    /// counts and signals can be refreshed.
+    /// Returns what was dropped, so that the outbox's counts and signals
+    /// can be refreshed.
     pub fn outbox_drop_removed(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;
-        let gone: Vec<OutboxRow> = rows_where(&tx, "WHERE kind IN ('delete', 'move-out') AND state != 'running'", [])?
+        let gone: Vec<OutboxRow> = rows_where(&tx, "WHERE kind = 'delete' AND state != 'running'", [])?
             .into_iter()
             .filter(|row| row.item_id.as_deref().is_some_and(|id| item_gone(&tx, id)))
             .collect();

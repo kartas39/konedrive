@@ -1,7 +1,6 @@
 //! A row of the outbox in the database: the one place it is read from
 //! SQLite, written to it and removed from it.
 
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -18,7 +17,7 @@ use crate::TreeError;
 /// What a query that reads rows selects, in the order [`outbox_row`] finds
 /// them by name.
 const OUTBOX_COLUMNS: &str = "seq, kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name, \
-     target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, moved_out, \
+     target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, \
      session_url, session_expires, session_next, handle, confirmed, size";
 
 /// A path as the store keeps it: text when it is UTF-8, its bytes otherwise
@@ -62,7 +61,6 @@ mod at {
     pub(super) const SNAPSHOT_SIZE: usize = column(OUTBOX_COLUMNS, "snapshot_size");
     pub(super) const SNAPSHOT_MTIME: usize = column(OUTBOX_COLUMNS, "snapshot_mtime");
     pub(super) const SNAPSHOT_MTIME_NSEC: usize = column(OUTBOX_COLUMNS, "snapshot_mtime_nsec");
-    pub(super) const MOVED_OUT: usize = column(OUTBOX_COLUMNS, "moved_out");
     pub(super) const SESSION_URL: usize = column(OUTBOX_COLUMNS, "session_url");
     pub(super) const SESSION_EXPIRES: usize = column(OUTBOX_COLUMNS, "session_expires");
     pub(super) const SESSION_NEXT: usize = column(OUTBOX_COLUMNS, "session_next");
@@ -85,16 +83,14 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         size: row.get(at::SNAPSHOT_SIZE)?,
         mtime: row.get(at::SNAPSHOT_MTIME)?,
         mtime_nsec: row.get(at::SNAPSHOT_MTIME_NSEC)?,
-        moved_out: row.get(at::MOVED_OUT)?,
     }
     .read();
     // A value no konedrive writes fails closed: the row is blocked, never
     // run as a guess.
     let (known_kind, known_state) = (OutboxKind::parse(&kind), OutboxState::parse(&state));
-    let unreadable = match (known_kind, known_state, &snapshot) {
-        (None, _, _) => Some(format!("unreadable kind {kind:?}")),
-        (_, None, _) => Some(format!("unreadable state {state:?}")),
-        (_, _, Err(marker)) => Some(format!("unreadable marker {marker:?}")),
+    let unreadable = match (known_kind, known_state) {
+        (None, _) => Some(format!("unreadable kind {kind:?}")),
+        (_, None) => Some(format!("unreadable state {state:?}")),
         _ => None,
     };
     Ok(OutboxRow {
@@ -113,7 +109,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         },
         attempts: row.get::<_, i64>(at::ATTEMPTS)? as u32,
         next_try: row.get(at::NEXT_TRY)?,
-        snapshot: snapshot.unwrap_or(None),
+        snapshot,
         session_url: row.get::<_, Option<String>>(at::SESSION_URL)?.map(SessionUrl::new),
         session_expires: row.get(at::SESSION_EXPIRES)?,
         session_next: row.get::<_, Option<i64>>(at::SESSION_NEXT)?.map(|n| n as u64),
@@ -136,39 +132,6 @@ fn inode_from(dev: Option<i64>, ino: Option<i64>, handle: Option<Vec<u8>>) -> Op
         (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
         _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
     }
-}
-
-/// Whether any of `objects` — a local object, and its item id when it has one — has a
-/// row: a row of that item, or a row with no item id whose object it is
-/// ([`Inode::same_object`]). One pass over the outbox, whatever the number of objects.
-pub(super) fn holds_any(conn: &Connection, objects: &[(Option<String>, Inode)]) -> Result<bool, TreeError> {
-    if objects.is_empty() {
-        return Ok(false);
-    }
-    let ids: HashSet<&str> = objects.iter().filter_map(|(id, _)| id.as_deref()).collect();
-    let handles: HashSet<&FileHandle> = objects.iter().filter_map(|(_, inode)| inode.handle.as_ref()).collect();
-    let numbered = |with_handle: Option<bool>| -> HashSet<(u64, u64)> {
-        let wanted = |inode: &&Inode| with_handle.is_none_or(|with| inode.handle.is_some() == with);
-        objects.iter().map(|(_, inode)| inode).filter(wanted).map(|inode| (inode.dev, inode.ino)).collect()
-    };
-    let (all, without_handle) = (numbered(None), numbered(Some(false)));
-    let mut statement = conn.prepare_cached("SELECT item_id, dev, ino, handle FROM outbox")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let held = match row.get::<_, Option<String>>(0)? {
-            Some(id) => ids.contains(id.as_str()),
-            None => match inode_from(row.get(1)?, row.get(2)?, row.get(3)?) {
-                // Two handles are compared, and nothing else; with one missing, the numbers.
-                Some(Inode { dev, ino, handle: Some(handle) }) => handles.contains(&handle) || without_handle.contains(&(dev, ino)),
-                Some(Inode { dev, ino, handle: None }) => all.contains(&(dev, ino)),
-                None => false,
-            },
-        };
-        if held {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 pub(super) fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {
@@ -205,7 +168,6 @@ fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
         ("snapshot_size", snapshot.size.into()),
         ("snapshot_mtime", snapshot.mtime.into()),
         ("snapshot_mtime_nsec", snapshot.mtime_nsec.into()),
-        ("moved_out", snapshot.moved_out.into()),
         ("session_url", row.session_url.as_ref().map(|url| url.as_str().to_owned()).into()),
         ("session_expires", row.session_expires.into()),
         ("session_next", row.session_next.map(|n| n as i64).into()),
@@ -234,11 +196,11 @@ pub(super) fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeErro
     Ok(())
 }
 
-/// The content row `seq` sends, or its marker, is `snapshot` from now on.
+/// The content row `seq` sends is `snapshot` from now on.
 pub(super) fn set_snapshot(conn: &Connection, seq: i64, snapshot: Option<super::Snapshot>) -> Result<(), TreeError> {
     let stored = StoredSnapshot::of(snapshot);
-    conn.prepare_cached("UPDATE outbox SET snapshot_size = ?2, snapshot_mtime = ?3, snapshot_mtime_nsec = ?4, moved_out = ?5 WHERE seq = ?1")?
-        .execute(params![seq, stored.size, stored.mtime, stored.mtime_nsec, stored.moved_out])?;
+    conn.prepare_cached("UPDATE outbox SET snapshot_size = ?2, snapshot_mtime = ?3, snapshot_mtime_nsec = ?4 WHERE seq = ?1")?
+        .execute(params![seq, stored.size, stored.mtime, stored.mtime_nsec])?;
     Ok(())
 }
 

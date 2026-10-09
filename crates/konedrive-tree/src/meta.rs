@@ -21,8 +21,6 @@ pub(crate) const STAGING_WHOLE: &str = "staging_whole";
 const DRIVE_ID: &str = "drive_id";
 /// When a cycle last ended, unix seconds.
 const LAST_CHECKED: &str = "last_checked";
-/// The filesystem the recorded file handles were taken on.
-const HANDLES_FILESYSTEM: &str = "handles_root";
 /// The count of outbox commits: `items.local_seq` of the row a commit
 /// writes (the stale-delta guard, `docs/design/writes.md` §9).
 pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
@@ -114,16 +112,6 @@ impl TreeStore {
 
     pub fn set_last_checked(&self, at: i64) -> Result<(), TreeError> {
         self.set_meta(LAST_CHECKED, Some(&at.to_string()))
-    }
-
-    /// The filesystem the recorded file handles were taken on, as the
-    /// daemon names one; `None` until it is recorded.
-    pub fn handles_filesystem(&self) -> Result<Option<String>, TreeError> {
-        self.meta(HANDLES_FILESYSTEM)
-    }
-
-    pub fn set_handles_filesystem(&self, filesystem: &str) -> Result<(), TreeError> {
-        self.set_meta(HANDLES_FILESYSTEM, Some(filesystem))
     }
 
     /// The outbox commits so far.

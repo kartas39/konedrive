@@ -134,7 +134,7 @@ fn a_running_row_gets_one_follow_up() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].item_id.as_deref(), Some("N"), "the follow-up is now an update of the new item");
     assert_eq!(rows[0].base.as_ref().and_then(|b| b.etag.as_deref()), Some("e-N"));
-    assert_eq!(s.item_by_handle(inode(7).handle.as_ref().unwrap()).unwrap().map(|r| r.id), Some("N".into()));
+    assert_eq!(s.local_handle("N").unwrap(), inode(7).handle);
     assert!(s.checked_blockers(rows[0].seq).unwrap().is_empty());
 
     // Behind a running update, the follow-up's base becomes what that
@@ -553,33 +553,5 @@ fn no_statement_but_removes_deletes_an_outbox_row() {
         }
     }
     deleting.sort();
-    // And the step to version 8, which keeps the opening the same way.
-    assert_eq!(deleting, [Path::new("outbox/stored.rs"), Path::new("schema/migrations.rs")], "the one delete is `remove`'s");
-}
-
-/// One question for a whole selection: it is held when a row is of one of its items, or
-/// has no item yet and is of one of its objects — what the questions about one item and
-/// one object answer.
-#[test]
-fn a_selection_is_asked_about_in_one_query() {
-    use OutboxKind::{Create, Update};
-    let a = base_row("A", "R", "a.txt", Kind::File);
-    let mut s = store(std::slice::from_ref(&a));
-    let asked = |s: &TreeStore, objects: &[(Option<&str>, Inode)]| {
-        let objects: Vec<(Option<String>, Inode)> = objects.iter().map(|(id, inode)| (id.map(str::to_owned), inode.clone())).collect();
-        s.outbox_holds_any(&objects).unwrap()
-    };
-    assert!(!asked(&s, &[(Some("A"), inode(1)), (None, inode(10))]), "an empty outbox");
-    assert!(!asked(&s, &[]));
-
-    s.outbox_record(&detect(Update, Some(&a), Some(inode(1)), "a.txt", Some("R"))).unwrap();
-    s.outbox_record(&detect(Create, None, Some(inode(10)), "n.txt", Some("R"))).unwrap();
-    assert!(asked(&s, &[(Some("B"), inode(2)), (Some("A"), inode(3))]), "by the item");
-    assert!(asked(&s, &[(Some("B"), inode(2)), (None, inode(10))]), "by the object of a row with no item");
-    // A row of an item is that item's alone: another item's object is not asked by it.
-    assert!(!asked(&s, &[(Some("B"), inode(1)), (None, inode(11))]));
-    // With a handle missing on one side, the numbers decide.
-    let bare = Inode { handle: None, ..inode(10) };
-    assert!(asked(&s, &[(None, bare.clone())]));
-    assert_eq!(asked(&s, &[(None, bare)]), !s.outbox_for_inode(&Inode { handle: None, ..inode(10) }).unwrap().is_empty());
+    assert_eq!(deleting, [Path::new("outbox/stored.rs")], "the one delete is `remove`'s");
 }

@@ -2,10 +2,9 @@ use crate::outbox::{Detection, OutboxKind, OutboxOp, OutboxState, SessionUrl, Sn
 use crate::TreeStore;
 
 /// A row's snapshot comes back as it was written, whatever the time (one
-/// before 1970, one past what nanoseconds in 64 bits hold), and so do a
-/// `move-out` row's markers; a session opened for other content goes with
-/// the content. A marker no konedrive writes blocks the row. The forms of
-/// the target name are told apart.
+/// before 1970, one past what nanoseconds in 64 bits hold); a session
+/// opened for other content goes with the content. A temporary name in the
+/// target name is told from a name.
 #[test]
 fn a_rows_snapshot_and_target_name_are_read_as_written() {
     let mut s = TreeStore::in_memory().unwrap();
@@ -43,25 +42,12 @@ fn a_rows_snapshot_and_target_name_are_read_as_written() {
         assert_eq!(dropped.is_some(), other == Snapshot::content(1, -1, 5), "the session of the content before goes, once");
     }
 
-    for marker in [Snapshot::ContentLocal, Snapshot::Trashed] {
-        s.outbox_set_snapshot(seq, Some(marker)).unwrap();
-        let row = s.outbox_row(seq).unwrap().unwrap();
-        assert_eq!((row.snapshot(), row.snapshot_size(), row.snapshot_sent()), (Some(marker), None, None));
-        assert!(marker.is_marker() && row.snapshot_is(marker));
-    }
-    s.bench_sql("UPDATE outbox SET moved_out = 'elsewhere'").unwrap();
-    let row = s.outbox_row(seq).unwrap().unwrap();
-    assert_eq!((row.snapshot(), row.state), (None, OutboxState::Blocked));
-    assert!(row.reason_text().unwrap().contains("elsewhere"));
     s.outbox_set_snapshot(seq, None).unwrap();
     assert_eq!((s.outbox_row(seq).unwrap().unwrap().snapshot(), s.outbox_row(seq).unwrap().unwrap().state), (None, OutboxState::Ready));
 
     let row = s.outbox_row(seq).unwrap().unwrap();
-    assert_eq!((row.swap_name(), row.last_place()), (None, None), "a name");
+    assert_eq!(row.swap_name(), None, "a name");
     s.outbox_set_target(seq, Some("R"), Some(".konedrive-swap-7")).unwrap();
     let row = s.outbox_row(seq).unwrap().unwrap();
-    assert_eq!((row.swap_name(), row.last_place()), (Some(".konedrive-swap-7"), None));
-    s.outbox_set_target(seq, None, crate::outbox::place_name(std::path::Path::new("/home/u/a.txt"))).unwrap();
-    let row = s.outbox_row(seq).unwrap().unwrap();
-    assert_eq!((row.swap_name(), row.last_place()), (None, Some(std::path::Path::new("/home/u/a.txt"))));
+    assert_eq!(row.swap_name(), Some(".konedrive-swap-7"));
 }

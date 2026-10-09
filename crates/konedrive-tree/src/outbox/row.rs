@@ -14,7 +14,6 @@ pub enum OutboxKind {
     Update,
     Move,
     Delete,
-    MoveOut,
 }
 
 impl OutboxKind {
@@ -25,17 +24,16 @@ impl OutboxKind {
             Self::Update => "update",
             Self::Move => "move",
             Self::Delete => "delete",
-            Self::MoveOut => "move-out",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        [Self::Create, Self::Mkdir, Self::Update, Self::Move, Self::Delete, Self::MoveOut].into_iter().find(|k| k.as_str() == value)
+        [Self::Create, Self::Mkdir, Self::Update, Self::Move, Self::Delete].into_iter().find(|k| k.as_str() == value)
     }
 
     /// Whether the row ends with the item gone from OneDrive.
     pub fn removes(self) -> bool {
-        matches!(self, Self::Delete | Self::MoveOut)
+        matches!(self, Self::Delete)
     }
 
     /// Whether the row sends content (`mkdir`, `move` and `delete` are
@@ -177,15 +175,13 @@ pub struct OutboxRow {
     /// land (the row waits for it, and finds the id by `rel` then).
     pub target_parent: Option<String>,
     /// The name the item takes; a temporary one on its way there
-    /// ([`OutboxRow::swap_name`]); for a `move-out` row, where its object
-    /// was last proved to be ([`OutboxRow::last_place`]).
+    /// ([`OutboxRow::swap_name`]).
     pub target_name: Option<String>,
     pub state: OutboxState,
     pub reason: Option<Reason>,
     pub attempts: u32,
     pub next_try: Option<i64>,
-    /// What the row holds of the content it sends: its size and time, or
-    /// a `move-out` row's marker.
+    /// What the row holds of the content it sends: its size and time.
     pub snapshot: Option<Snapshot>,
     pub session_url: Option<SessionUrl>,
     pub session_expires: Option<i64>,
@@ -280,8 +276,6 @@ pub enum OutboxOp {
     /// Rows under `from` are now under `to`: a directory they are in moved.
     Rebase { from: PathBuf, to: PathBuf },
     Remove(i64),
-    /// The inode the item is now (a scan's refresh).
-    SetHandle { item_id: String, handle: Option<FileHandle> },
     /// Something never uploaded, listed under "Not uploaded" (§4.2 rule 2),
     /// with its size when it is a file.
     Skip { rel: PathBuf, reason: LocalSkip, size: u64 },

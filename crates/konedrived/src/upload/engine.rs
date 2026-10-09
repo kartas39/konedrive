@@ -420,7 +420,7 @@ impl Engine {
             .store()
             .call(move |s| {
                 let allows = |s: &TreeStore, r: &OutboxRow| space::allows(r, full, &looked, || s.outbox_removed_behind(r));
-                s.outbox_pick(&Pick { now, flying: &flying, move_outs: false, want: PICK_WANT, allows: &allows })
+                s.outbox_pick(&Pick { now, flying: &flying, want: PICK_WANT, allows: &allows })
             })
             .await?;
         if !picked.stalled.is_empty() {

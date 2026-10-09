@@ -50,7 +50,7 @@ fn add_activity(tx: &rusqlite::Transaction<'_>, event: Option<&ActivityRow>) -> 
 /// In both tables, so that a cycle between staging and swap cannot give them
 /// back (the outbox on the bus).
 fn forget_local(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), TreeError> {
-    forget_subtrees(tx, &[id.to_owned()], true, &[])
+    forget_subtrees(tx, &[id.to_owned()], true)
 }
 
 fn amend_in(conn: &Connection, seq: i64, amend: impl FnOnce(&mut OutboxRow)) -> Result<bool, TreeError> {
@@ -329,13 +329,6 @@ impl TreeStore {
         Ok(windows)
     }
 
-    /// The earliest time of the openings recorded at `name` (without case)
-    /// in `parent`.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
-        Ok(self.upload_opening_windows(parent, name)?.into_iter().map(|(at, _)| at).min())
-    }
-
     /// Row `seq`'s session completed, or is gone: the row and the list
     /// forget it, with nothing to cancel.
     pub fn outbox_session_ended(&mut self, seq: i64) -> Result<(), TreeError> {
@@ -473,12 +466,6 @@ impl TreeStore {
         Ok(())
     }
 
-    /// The kind of the conflict whose copy (or rescued file) is at `rescued`,
-    /// a full path: `rescued` or `copy`.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn conflict_kind(&self, rescued: &str) -> Result<Option<String>, TreeError> {
-        Ok(self.conn.query_row("SELECT kind FROM conflicts WHERE rescued = ?1", [rescued], |r| r.get(0)).optional()?)
-    }
 
     /// Drops every row (`docs/design/writes.md` §2: a forced switch to
     /// read-only). The rows, for whatever marks their files carry. A rename

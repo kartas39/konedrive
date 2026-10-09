@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
 use crate::model::{at, placed, row_from, Change, NewTree, Row, Table, COLUMNS, ROW_COLUMNS, ROW_WIDTH};
@@ -289,36 +288,6 @@ impl TreeStore {
         }
         self.whole = false;
         Ok(())
-    }
-
-    /// A replacement landed (`docs/design/writes.md` §9): the new version of `id` is
-    /// in place as `ctag`, on the inode `handle`. Its deferred change becomes
-    /// the base if it is that very version; the handle is recorded either
-    /// way. Whether the base moved.
-    pub fn land_deferred(&mut self, id: &str, ctag: Option<&str>, handle: Option<&FileHandle>) -> Result<bool, TreeError> {
-        let tx = self.conn.transaction()?;
-        let waiting = tx
-            .query_row(&format!("SELECT {} FROM deferred WHERE id = ?1", deferred_columns()), [id], deferred_change)
-            .optional()?;
-        let landed = match waiting {
-            Some((Change::Upsert(row), _)) if row.ctag.is_some() && row.ctag.as_deref() == ctag => {
-                // Through `apply`, so that a row placed again carries no
-                // local object but the one landed here.
-                apply(&tx, Source::Items, &[Change::Upsert(row)])?;
-                tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
-                true
-            }
-            _ => false,
-        };
-        if let Some(handle) = handle {
-            let stored = handle.encode();
-            for table in [Table::Items, Table::Staging] {
-                tx.execute(&format!("UPDATE {} SET local_handle = ?2 WHERE id = ?1", table.name()), params![id, stored])?;
-            }
-            crate::forget::forget_unplaced(&tx, [id])?;
-        }
-        tx.commit()?;
-        Ok(landed)
     }
 
     /// Rows that were to go into one of `folders` — folders gone from

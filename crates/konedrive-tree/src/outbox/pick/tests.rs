@@ -3,7 +3,7 @@ use std::path::Path;
 use konedrive_fs::handle::FileHandle;
 
 use super::*;
-use crate::outbox::{Base, Inode};
+use crate::outbox::{Base, Inode, OutboxKind};
 use crate::{Change, Placement, Row};
 
 fn item(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
@@ -71,7 +71,7 @@ fn of_item(kind: OutboxKind, of: &Row, rel: &str, parent: Option<&str>, n: u64) 
 }
 
 fn pick(s: &TreeStore, flying: &HashSet<i64>, now: i64) -> Picked {
-    s.outbox_pick(&Pick { now, flying, move_outs: true, want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap()
+    s.outbox_pick(&Pick { now, flying, want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap()
 }
 
 fn seqs(picked: &Picked) -> Vec<i64> {
@@ -106,7 +106,7 @@ fn a_folder_removal_waits_for_what_is_inside_it_even_later() {
     let mut s = store(&[d.clone(), x.clone(), e.clone()]);
     s.bench_insert(&[of_item(OutboxKind::Delete, &d, "d", None, 1), of_item(OutboxKind::Move, &x, "e/x", Some("E"), 2)]).unwrap();
     assert_eq!(s.checked_blockers(1).unwrap(), vec![2]);
-    let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
+    let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), want: 1, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
     assert_eq!(seqs(&picked), vec![2]);
 }
 
@@ -125,7 +125,7 @@ fn a_swap_among_many_rows_waits_on_nothing() {
     s.bench_insert(&rows).unwrap();
     assert_eq!(name_edges(&s.conn).unwrap(), HashMap::new(), "the circle's edges are dropped");
     assert!(s.checked_blockers(501).unwrap().is_empty() && s.checked_blockers(502).unwrap().is_empty());
-    let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1000, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
+    let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), want: 1000, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
     assert_eq!(picked.rows.len(), 502);
     // A later freer that is no circle is still waited for.
     let c = item("C", Some("R"), "c", Kind::File);
@@ -167,6 +167,6 @@ fn nothing_runnable_says_why() {
     // Waiting for space: ready, and not allowed.
     let mut s = store(&[]);
     s.bench_insert(&[mkdir(OutboxState::Ready, None), file]).unwrap();
-    let full = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(false) }).unwrap();
+    let full = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(false) }).unwrap();
     assert!(full.rows.is_empty() && full.user && full.stalled.is_empty(), "{full:?}");
 }

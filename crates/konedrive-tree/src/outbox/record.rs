@@ -15,9 +15,7 @@ fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
         rel: d.rel.clone(),
         base,
         target_parent: if removes { None } else { d.target_parent.clone() },
-        // A `move-out` keeps where the object was last proved to be: what a
-        // later `ESTALE` is checked against.
-        target_name: if removes && kind != OutboxKind::MoveOut { None } else { d.target_name.clone() },
+        target_name: if removes { None } else { d.target_name.clone() },
         state: d.state,
         reason: d.reason.clone(),
         attempts: 0,
@@ -37,20 +35,19 @@ fn merged_kind(row: OutboxKind, d: &Detection) -> Option<OutboxKind> {
     use OutboxKind::*;
     Some(match (row, d.kind) {
         // Never sent: nothing to take back.
-        (Create | Mkdir, Delete | MoveOut) => return None,
+        (Create | Mkdir, Delete) => return None,
         // The newest content, at the newest place.
         (Create, _) => Create,
         (Mkdir, _) => Mkdir,
         (Update, Move) if d.same_content => Move,
         (Update, Move | Update | Create | Mkdir) => Update,
         // The base of the update is kept.
-        (Update | Move | Delete | MoveOut, Delete) => Delete,
-        (Update | Move | Delete | MoveOut, MoveOut) => MoveOut,
+        (Update | Move | Delete, Delete) => Delete,
         (Move, Update | Create) => Update,
         (Move, Move | Mkdir) => Move,
         // Save-by-rename over a deleted name, or the item back again.
-        (Delete | MoveOut, Update | Create) => Update,
-        (Delete | MoveOut, Move | Mkdir) => Move,
+        (Delete, Update | Create) => Update,
+        (Delete, Move | Mkdir) => Move,
     })
 }
 
@@ -124,7 +121,7 @@ fn follow_up(running: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
         Create | Update => Update,
         Mkdir | Move if d.target() == running.target() => return None,
         Mkdir | Move => Move,
-        Delete | MoveOut if running.kind.removes() => return None,
+        Delete if running.kind.removes() => return None,
         other => other,
     };
     // Behind a create the item has no id or base yet: the commit fills them.

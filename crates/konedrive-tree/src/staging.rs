@@ -230,14 +230,14 @@ fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<()
             let was = placement_in_items(tx, &row.id)?;
             upsert(tx, Table::Items, row)?;
             if turns_placed(was, row) {
-                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true)?;
             }
         }
         Source::Whole => {
             upsert(tx, Table::Staging, row)?;
             // What is below it, by `items`: the swap would give it back.
             if turns_placed(placement_in_items(tx, &row.id)?, row) {
-                forget_subtrees(tx, std::slice::from_ref(&row.id), false, &[])?;
+                forget_subtrees(tx, std::slice::from_ref(&row.id), false)?;
             }
         }
         Source::Overlay => {
@@ -249,7 +249,7 @@ fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<()
                 // The row itself, and everything below it in both tables:
                 // the rows below that the delta does not stage show through
                 // from `items` at the swap.
-                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true)?;
             }
         }
     }

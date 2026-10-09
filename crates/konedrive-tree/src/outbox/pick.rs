@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
 use konedrive_reason::TOO_BIG_PREFIX;
-use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, Reason, FREES};
+use super::{circles, frees, path_value, rows_where, takes, OutboxRow, OutboxState, Reason, FREES};
 use crate::{Kind, TreeError, TreeStore, MAX_CHAIN};
 
 /// Due rows read at a time (a guess: large enough that a portion is one
@@ -51,8 +51,6 @@ pub struct Pick<'a> {
     pub now: i64,
     /// Rows the worker holds already.
     pub flying: &'a HashSet<i64>,
-    /// Whether `move-out` rows can run (a worker built with what they need).
-    pub move_outs: bool,
     /// Enough rows: portions stop being read once this many are found.
     pub want: usize,
     /// Whether a row with nothing to wait for may be taken as the space in
@@ -450,10 +448,6 @@ impl TreeStore {
                 }
                 continue;
             }
-            if row.kind == OutboxKind::MoveOut && !pick.move_outs {
-                out.user = true;
-                continue;
-            }
             let mut blockers = structural(&self.conn, &row, Some(memo))?;
             blockers.extend(names.get(&row.seq).into_iter().flatten().copied());
             if blockers.is_empty() {
@@ -504,11 +498,6 @@ impl TreeStore {
         Ok(out)
     }
 
-    /// The `move-out` rows, through the kind index.
-    pub fn outbox_move_outs(&self) -> Result<Vec<OutboxRow>, TreeError> {
-        rows_where(&self.conn, "WHERE kind = 'move-out'", [])
-    }
-
     /// The first `limit` rows, in `seq` order (`Changes(limit)`).
     pub fn outbox_first(&self, limit: usize) -> Result<Vec<OutboxRow>, TreeError> {
         rows_where(&self.conn, "ORDER BY seq LIMIT ?1", [limit.min(i64::MAX as usize) as i64])
@@ -527,7 +516,7 @@ impl TreeStore {
 
     /// The blocked rows (`NotUploaded()`), through the due index.
     pub fn outbox_blocked(&self) -> Result<Vec<OutboxRow>, TreeError> {
-        Ok(rows_where(&self.conn, "WHERE state = 'blocked' OR kind NOT IN ('create', 'mkdir', 'update', 'move', 'delete', 'move-out')
+        Ok(rows_where(&self.conn, "WHERE state = 'blocked' OR kind NOT IN ('create', 'mkdir', 'update', 'move', 'delete')
                                      OR state NOT IN ('waiting', 'ready', 'running', 'retry', 'blocked', 'held')", [])?
         .into_iter()
         .filter(|row| row.state == OutboxState::Blocked)
