@@ -44,7 +44,6 @@ fn onedrive_write(write: OneDriveFileWrite) -> Option<FileWritten> {
 
 #[test]
 fn a_close_that_is_not_the_last_writers_records_nothing() {
-    assert_eq!(last_close(CloseOutcome::NotOpen, &onedrive_file(), true), None);
     assert_eq!(last_close(CloseOutcome::StillOpenElsewhere, &onedrive_file(), true), None);
     assert_eq!(last_close(CloseOutcome::StillOpenElsewhere, &local_only_file(), false), None);
 }
@@ -113,9 +112,8 @@ fn a_local_only_file_written_waits_for_its_writer_and_is_due_once_closed() {
     assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     f.open_handles.mark_written(node_id);
-    let outcome = f.open_handles.close_file(fh).outcome;
-    assert_eq!(outcome, CloseOutcome::ContentChanged);
-    f.ops.close_last_writer(node_id, outcome);
+    f.ops.close_writer(fh);
+    assert!(!f.open_handles.is_open_for_writing_by_node_id(node_id));
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Create, OutboxState::Waiting, Some(Reason::Changed)));
 }
@@ -133,9 +131,8 @@ fn a_onedrive_file_is_modified_here_from_its_first_writer_until_it_is_closed_unt
     assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
-    let outcome = f.open_handles.close_file(fh).outcome;
-    assert_eq!(outcome, CloseOutcome::ContentUntouched);
-    f.ops.close_last_writer(node_id, outcome);
+    f.ops.close_writer(fh);
+    assert!(!f.open_handles.is_open_for_writing_by_onedrive_id("A"));
     assert!(f.rows().is_empty());
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
 }
@@ -150,16 +147,13 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
     let first = f.ops.open_to_write(node_id).unwrap();
     let second = f.ops.open_to_write(node_id).unwrap();
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    let still_open = f.open_handles.close_file(first).outcome;
-    assert_eq!(still_open, CloseOutcome::StillOpenElsewhere);
     // Nothing is recorded while another handle writes the file.
-    f.ops.close_last_writer(node_id, still_open);
+    f.ops.close_writer(first);
+    assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
-    let outcome = f.open_handles.close_file(second).outcome;
-    assert_eq!(outcome, CloseOutcome::ContentChanged);
-    f.ops.close_last_writer(node_id, outcome);
+    f.ops.close_writer(second);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Update, OutboxState::Waiting, Some(Reason::Changed)));
 }
@@ -214,9 +208,7 @@ fn the_last_writer_of_a_file_closed_in_a_folder_switched_to_read_only_records_no
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     f.access_mode_switch.switch_to_read_only();
     f.open_handles.mark_written(node_id);
-    let outcome = f.open_handles.close_file(fh).outcome;
-    assert_eq!(outcome, CloseOutcome::ContentChanged);
-    f.ops.close_last_writer(node_id, outcome);
+    f.ops.close_writer(fh);
     let rows = f.rows();
     assert_eq!((rows.len(), rows[0].reason.clone()), (1, Some(Reason::OpenForWriting)));
 }
@@ -255,4 +247,16 @@ fn a_cut_that_cannot_be_recorded_cuts_nothing_and_is_answered_as_an_io_error() {
     let node_id = f.node_id(NodeId::ROOT, "mine.txt");
     assert_eq!(f.ops.truncate(node_id, 1, None).err(), Some(Errno::EIO));
     assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
+}
+
+/// A writer that is not of any file the handles hold — closed already, or never opened — is
+/// closed as nothing: no row is touched.
+#[test]
+fn the_close_of_what_is_not_open_for_writing_records_nothing() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"a");
+    let fh = f.ops.open_to_write(f.node_id(NodeId::ROOT, "a.txt")).unwrap();
+    f.ops.close_writer(crate::fuse::open_handles::Fh(fh.0 + 1));
+    assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
+    assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
 }

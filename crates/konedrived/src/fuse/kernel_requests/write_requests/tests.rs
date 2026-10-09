@@ -3,14 +3,16 @@
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use fuser::{Errno, RenameFlags};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, Reason};
 
 use super::{check_mknod_mode, ErrnoReply};
-use crate::fuse::mount::tests::build_mount;
+use crate::fuse::mount::tests::{build_mount, BuiltMount};
 use crate::fuse::node_table::NodeId;
+use crate::fuse::open_handles::Fh;
 use crate::fuse::write_operations::RenameMode;
 
 /// What a request was answered: the errno it was refused with, or that its operation ran.
@@ -192,4 +194,65 @@ fn a_write_that_cuts_its_file_to_nothing_runs_without_a_download() {
     write_requests.run_without_content(ToldReply(tell), |_, reply| reply.0.send(Answer::OperationRan("without content".into())).unwrap());
     assert_eq!(told.recv_timeout(Duration::from_secs(5)), Ok(Answer::OperationRan("without content".into())));
     assert!(!write_requests.file_downloader.is_downloading("A"));
+}
+
+/// The parts of a read-write mount whose `a.txt` is downloaded, with the node id of `a.txt`.
+fn build_mount_with_downloaded_file() -> (BuiltMount, NodeId) {
+    let built = build_mount();
+    built.kernel_requests.write_requests.access_mode_switch.switch_to_read_write();
+    built.download("a.txt", "A", b"content");
+    let a = built.kernel_requests.lookup_requests.find_lookup_answer(false, NodeId::ROOT, OsStr::new("a.txt")).unwrap().0.ino;
+    (built, NodeId::from(a))
+}
+
+/// A program opens the node `node_id` for writing: the open is put on the write-operation
+/// thread, and its `fh` comes once it ran.
+fn queue_open_to_write(built: &BuiltMount, node_id: NodeId) -> tokio::sync::oneshot::Receiver<Result<Fh, Errno>> {
+    let write_requests = &built.kernel_requests.write_requests;
+    let write_operations = Arc::clone(&write_requests.write_operations);
+    write_requests.write_operation_thread.run_and_wait(move || write_operations.open_to_write(node_id))
+}
+
+fn outbox_rows(built: &BuiltMount) -> Vec<OutboxRow> {
+    built.store.call_blocking(|s| s.outbox_rows()).unwrap()
+}
+
+/// A cycle holds the tree lock; another program's open of the file waits on the thread; the
+/// first program closes its writer, with nothing written. What that close means is decided
+/// on the thread, after the open that came before it: the file is still open for writing,
+/// and the outbox keeps holding it.
+#[test]
+fn a_writer_closed_behind_another_programs_open_leaves_the_outbox_holding_the_file() {
+    let (built, node_id) = build_mount_with_downloaded_file();
+    let write_requests = &built.kernel_requests.write_requests;
+    let first = queue_open_to_write(&built, node_id).blocking_recv().unwrap().unwrap();
+    let held = built.tree_lock.blocking_lock();
+    let second = queue_open_to_write(&built, node_id);
+    assert_eq!(write_requests.close_file(first), Some(node_id));
+    drop(held);
+    let second = second.blocking_recv().unwrap().unwrap();
+    built.run_on_write_operation_thread(|| {});
+    assert!(write_requests.open_handles.find_file_to_write(second).is_some());
+    let rows = outbox_rows(&built);
+    assert_eq!(rows.iter().map(|row| (row.kind, row.item_id.as_deref(), row.reason.clone())).collect::<Vec<_>>(), [(OutboxKind::Update, Some("A"), Some(Reason::OpenForWriting))]);
+}
+
+/// A cycle holds the tree lock; a cut of the file by its path waits on the thread; the
+/// program closes its writer, with nothing written. The cut finds the file open and marks it
+/// written, and the close that follows it on the thread leaves the cut content to be sent.
+#[test]
+fn a_writer_closed_behind_a_cut_of_its_file_leaves_the_cut_content_to_be_sent() {
+    let (built, node_id) = build_mount_with_downloaded_file();
+    let write_requests = &built.kernel_requests.write_requests;
+    let writer = queue_open_to_write(&built, node_id).blocking_recv().unwrap().unwrap();
+    let held = built.tree_lock.blocking_lock();
+    let write_operations = Arc::clone(&write_requests.write_operations);
+    let cut = write_requests.write_operation_thread.run_and_wait(move || write_operations.truncate(node_id, 0, None));
+    assert_eq!(write_requests.close_file(writer), Some(node_id));
+    drop(held);
+    assert_eq!(cut.blocking_recv().unwrap(), Ok(()));
+    built.run_on_write_operation_thread(|| {});
+    assert_eq!(std::fs::metadata(built.disk.join("a.txt")).unwrap().len(), 0);
+    let rows = outbox_rows(&built);
+    assert_eq!(rows.iter().map(|row| (row.kind, row.item_id.as_deref(), row.reason.clone())).collect::<Vec<_>>(), [(OutboxKind::Update, Some("A"), Some(Reason::Changed))]);
 }

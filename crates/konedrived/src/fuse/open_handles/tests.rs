@@ -14,6 +14,11 @@ fn backing_file() -> Arc<File> {
 }
 
 /// A file of OneDrive opened to be read while it is not downloaded.
+/// What the close of a writer of the node `node_id` gives.
+fn closed(node_id: u64, outcome: CloseOutcome) -> Option<ClosedFile> {
+    Some(ClosedFile { node_id: NodeId(node_id), outcome })
+}
+
 fn remote_only(onedrive_id: &str) -> OpenFile {
     OpenFile::ReadingRemoteOnly { onedrive_id: onedrive_id.to_owned(), path: PathBuf::from("a.txt") }
 }
@@ -43,7 +48,7 @@ fn the_file_held_open_by_an_fh_is_found_until_it_is_closed() {
     let fh = open_handles.add_file(remote_only("A"));
     assert!(matches!(open_handles.find_file(fh), Some(OpenFile::ReadingRemoteOnly { onedrive_id, .. }) if onedrive_id == "A"));
     assert!(open_handles.find_file(Fh(fh.0 + 1)).is_none());
-    assert!(matches!(open_handles.close_file(fh), ClosedFile { file: Some(OpenFile::ReadingRemoteOnly { .. }), outcome: CloseOutcome::NotOpen }));
+    assert_eq!(open_handles.close_file(fh), None, "it was not open for writing");
     assert!(open_handles.find_file(fh).is_none());
 }
 
@@ -80,9 +85,9 @@ fn closing_one_of_two_writers_leaves_the_file_open_elsewhere() {
     let open_handles = OpenHandles::default();
     let (first, _) = add_writer(&open_handles, 7, None, false);
     let (second, _) = add_writer(&open_handles, 7, None, false);
-    assert_eq!(open_handles.close_file(first).outcome, CloseOutcome::StillOpenElsewhere);
+    assert_eq!(open_handles.close_file(first), closed(7, CloseOutcome::StillOpenElsewhere));
     assert!(open_handles.is_open_for_writing_by_node_id(NodeId(7)));
-    assert_eq!(open_handles.close_file(second).outcome, CloseOutcome::ContentUntouched);
+    assert_eq!(open_handles.close_file(second), closed(7, CloseOutcome::ContentUntouched));
     assert!(!open_handles.is_open_for_writing_by_node_id(NodeId(7)));
 }
 
@@ -91,10 +96,10 @@ fn the_last_writer_of_a_file_that_was_written_leaves_its_content_changed() {
     let open_handles = OpenHandles::default();
     let (fh, _) = add_writer(&open_handles, 7, None, false);
     open_handles.mark_written(NodeId(7));
-    assert_eq!(open_handles.close_file(fh).outcome, CloseOutcome::ContentChanged);
+    assert_eq!(open_handles.close_file(fh), closed(7, CloseOutcome::ContentChanged));
     // What was written is remembered only while the file is open for writing.
     let (again, _) = add_writer(&open_handles, 7, None, false);
-    assert_eq!(open_handles.close_file(again).outcome, CloseOutcome::ContentUntouched);
+    assert_eq!(open_handles.close_file(again), closed(7, CloseOutcome::ContentUntouched));
 }
 
 /// A file whose content is the user's own already when it is opened counts as changed with
@@ -103,7 +108,7 @@ fn the_last_writer_of_a_file_that_was_written_leaves_its_content_changed() {
 fn a_writer_of_content_that_was_the_users_own_leaves_it_changed() {
     let open_handles = OpenHandles::default();
     let (fh, _) = add_writer(&open_handles, 7, None, true);
-    assert_eq!(open_handles.close_file(fh).outcome, CloseOutcome::ContentChanged);
+    assert_eq!(open_handles.close_file(fh), closed(7, CloseOutcome::ContentChanged));
 }
 
 #[test]
@@ -112,19 +117,20 @@ fn the_last_writer_of_a_file_nothing_was_written_to_leaves_its_content_untouched
     let (fh, _) = add_writer(&open_handles, 7, None, false);
     // Written to another node, and to one that no handle writes: neither counts.
     open_handles.mark_written(NodeId(8));
-    assert_eq!(open_handles.close_file(fh).outcome, CloseOutcome::ContentUntouched);
+    assert_eq!(open_handles.close_file(fh), closed(7, CloseOutcome::ContentUntouched));
 }
 
 #[test]
-fn closing_what_was_not_open_for_writing_says_so() {
+fn closing_what_was_not_open_for_writing_names_no_node() {
     let open_handles = OpenHandles::default();
     let reader = open_handles.add_file(remote_only("A"));
     let directory = open_handles.add_directory();
-    assert_eq!(open_handles.close_file(reader).outcome, CloseOutcome::NotOpen);
-    assert!(matches!(open_handles.close_file(Fh(99)), ClosedFile { file: None, outcome: CloseOutcome::NotOpen }));
-    assert!(matches!(open_handles.close_file(Fh::NOT_OPENED), ClosedFile { file: None, outcome: CloseOutcome::NotOpen }));
+    assert_eq!(open_handles.close_file(reader), None);
+    assert!(open_handles.find_file(reader).is_none(), "the file opened to be read is closed");
+    assert_eq!(open_handles.close_file(Fh(99)), None);
+    assert_eq!(open_handles.close_file(Fh::NOT_OPENED), None);
     // A directory is not closed as a file: it is still open.
-    assert!(matches!(open_handles.close_file(directory), ClosedFile { file: None, outcome: CloseOutcome::NotOpen }));
+    assert_eq!(open_handles.close_file(directory), None);
     open_handles.keep_listed_names(directory, Arc::new(Vec::new()));
     assert!(open_handles.find_listed_names(directory).is_some());
 }
@@ -163,19 +169,4 @@ fn an_open_directory_keeps_the_names_it_listed_until_it_is_closed() {
     assert_eq!(open_handles.find_listed_names(fh), Some(listed_names));
     open_handles.close_directory(fh);
     assert!(open_handles.find_listed_names(fh).is_none());
-}
-
-/// Only the close of a node's last writer leaves anything to record.
-#[test]
-fn a_close_names_the_node_whose_last_writer_it_was() {
-    let open_handles = OpenHandles::default();
-    let (first, _) = add_writer(&open_handles, 7, None, false);
-    let (second, _) = add_writer(&open_handles, 7, None, false);
-    assert_eq!(open_handles.close_file(first).find_last_writer_node_id(), None, "another handle still writes the node");
-    assert_eq!(open_handles.close_file(second).find_last_writer_node_id(), Some(NodeId(7)));
-    let (changed, _) = add_writer(&open_handles, 8, None, true);
-    assert_eq!(open_handles.close_file(changed).find_last_writer_node_id(), Some(NodeId(8)));
-    let reader = open_handles.add_file(OpenFile::ReadingRemoteOnly { onedrive_id: "A".into(), path: "a.txt".into() });
-    assert_eq!(open_handles.close_file(reader).find_last_writer_node_id(), None);
-    assert_eq!(open_handles.close_file(Fh(99)).find_last_writer_node_id(), None);
 }

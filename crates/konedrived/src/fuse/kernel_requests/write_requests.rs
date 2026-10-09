@@ -1,8 +1,13 @@
 //! Everything that changes the folder (`open` for writing, `create`, `mkdir`, `mknod`,
-//! `unlink`, `rmdir`, `rename`, `setattr`, and the `release` of a file's last writer).
+//! `unlink`, `rmdir`, `rename`, `setattr`, and the `release` of a file opened for writing).
 //! Each is made by a write operation ([`crate::fuse::write_operations`]) on the
 //! write-operation thread, which answers it. A file an operation opens is in the open
 //! handles when it answers.
+//!
+//! The `release` alone is answered before its operation ran: the kernel does not wait for
+//! it, and neither does the program. The file it closes stays in the open handles, open for
+//! writing, until the operation closes it there on the thread and records in the same step
+//! what the close left ([`WriteRequests::close_file`]).
 //!
 //! Two requests are answered here, on the mount's own thread, and are no write operation:
 //! `write` and `fsync` go into the file a write operation opened, through the handle it put
@@ -281,14 +286,27 @@ impl WriteRequests {
         }
     }
 
-    /// A handle of a file is closed (`release`): the last one that wrote a file leaves its
-    /// content ready to send, which a write operation records.
+    /// A handle of a file is closed (`release`). Answered at once: the kernel does not wait
+    /// for what the close of a writer records.
     pub(super) fn answer_release(&self, fh: Fh, reply: ReplyEmpty) {
-        let closed = self.open_handles.close_file(fh);
-        if let Some(node_id) = closed.find_last_writer_node_id() {
-            self.run_on_thread(move |requests| requests.write_operations.close_last_writer(node_id, closed.outcome));
-        }
+        self.close_file(fh);
         reply.ok();
+    }
+
+    /// Closes the file a program held open by `fh`. One opened to be read is closed here.
+    /// One opened for writing is closed by a write operation, on the write-operation thread,
+    /// and the node it writes is given: whether it was the node's last writer, and what that
+    /// leaves to send, is asked of the open handles there and recorded in the same step —
+    /// an answer taken here would be acted on only after every operation that waits for the
+    /// thread, an open or a cut of the same file among them. Until then the file counts as
+    /// open for writing.
+    fn close_file(&self, fh: Fh) -> Option<NodeId> {
+        let Some((node_id, _)) = self.open_handles.find_file_to_write(fh) else {
+            self.open_handles.close_file(fh);
+            return None;
+        };
+        self.run_on_thread(move |requests| requests.write_operations.close_writer(fh));
+        Some(node_id)
     }
 }
 

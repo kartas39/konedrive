@@ -93,10 +93,21 @@ impl WriteOperations {
         Ok(added.fh)
     }
 
-    /// The last writer of the node `node_id` closed it, with `outcome`: what that is
+    /// The program closed the file it held open for writing by `fh`. The handle is closed
+    /// here, on the write-operation thread, and what its close left is recorded in the same
+    /// step: no other write operation — an open of the same file, a cut of it — runs between
+    /// the answer of the open handles and the record made from it. Nothing for an `fh` that
+    /// holds no file open for writing.
+    pub(in crate::fuse) fn close_writer(&self, fh: Fh) {
+        if let Some(closed) = self.open_handles.close_file(fh) {
+            self.record_close(closed.node_id, closed.outcome);
+        }
+    }
+
+    /// Records the close of a writer of the node `node_id`, with `outcome`: what it is
     /// recorded as is decided by [`describe_last_close`], from what the node stands for now.
     /// Nothing for a node whose file is gone.
-    pub(in crate::fuse) fn close_last_writer(&self, node_id: NodeId, outcome: CloseOutcome) {
+    fn record_close(&self, node_id: NodeId, outcome: CloseOutcome) {
         let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return };
         let copy = self.backing_directory.find_disk_entry(&rel);
         let upload_status = self.find_upload_status(&parent_directory, &entry.name);
@@ -216,10 +227,10 @@ pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &Dir
     Some(FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &entry.name), write })
 }
 
-/// What the close of the last writer of the file `entry` is recorded as, for the `outcome`
-/// of the close and the folder's `access_mode`; `None` when nothing is.
+/// What the close of a writer of the file `entry` is recorded as, for the `outcome` of the
+/// close and the folder's `access_mode`; `None` when nothing is.
 ///
-/// - Still open for writing elsewhere, or not open for writing at all: nothing.
+/// - Still open for writing elsewhere: nothing.
 /// - In a read-only folder: nothing — what a program still held open when the folder was
 ///   switched to read-only is not sent.
 /// - A file of OneDrive closed with nothing written: the outbox lets go of it — unless the
@@ -237,7 +248,7 @@ pub(super) fn describe_last_close(
     node_stands_for_file: bool,
 ) -> Option<FileWritten> {
     match (outcome, access_mode, entry.row()) {
-        (CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere, _, _) | (_, AccessMode::ReadOnly, _) => None,
+        (CloseOutcome::StillOpenElsewhere, _, _) | (_, AccessMode::ReadOnly, _) => None,
         (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, Some(row)) => {
             node_stands_for_file.then(|| FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
         }
