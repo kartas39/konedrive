@@ -61,7 +61,7 @@ struct StepProgress {
     announcements: Vec<Announcement>,
 }
 
-pub(super) struct CycleStep {
+pub struct CycleStep {
     backing_directory: Arc<BackingDirectory>,
     directory_contents: Arc<DirectoryContents>,
     /// Whether what is kept of the user's own is recorded, to be sent: in a read-write
@@ -106,7 +106,7 @@ impl CycleStep {
     /// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`])
     /// whatever the access mode; it is recorded, to be sent, in a folder that is read-write
     /// alone — a read-only folder's cycle leaves no row in the outbox.
-    pub(super) fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
+    pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
         let changed_ids = list_changed_ids(store, rw)?;
         // Whatever the source of the content remembered of a file is of what it was.
         changed_ids.iter().for_each(|id| self.range_fetcher.drop_cached_ranges(id));
@@ -133,7 +133,7 @@ impl CycleStep {
     /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: the
     /// pins of what is gone are taken off, its changes are announced through the mount, what
     /// is pinned and not downloaded is downloaded, and the outbox's worker is woken.
-    pub(super) fn announce_committed_cycle(&self) {
+    pub fn announce_committed_cycle(&self) {
         let UncommittedCycle { announcements, removed_ids } = std::mem::take(&mut *crate::panic::lock(&self.uncommitted_cycle));
         // What is gone from OneDrive keeps nothing on this device.
         self.pins.unpin_removed(removed_ids);

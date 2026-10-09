@@ -108,7 +108,7 @@ impl SyncService {
                 // A file manager that showed the folder before this mount reads it again: its
                 // own watch ended with the mount that went.
                 stopped.read_again();
-                self.report.space.measure_at(Some(mount.backing_directory_path()));
+                self.report.space.measure_at(Some(mount.backing_directory().resolve_root_path()));
                 mount
             }
         };

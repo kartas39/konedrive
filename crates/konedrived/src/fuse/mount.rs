@@ -3,8 +3,9 @@
 //! [`Mount`] holds the session the kernel's requests are answered in, the
 //! [`FuseConnection`], and the parts of a served folder, and nothing else. What the folder's
 //! sync, a cycle of the delta listing and the daemon's `Files` interface ask is answered by
-//! a part: the [`CycleStep`], and the [`FilesInterface`], which it hands out. What it does
-//! itself is call the parts in order, three times:
+//! a part, which it hands out and does not answer for: the [`AccessModeSwitch`], the
+//! [`CycleStep`], the [`FilesInterface`] and the [`BackingDirectory`]. What it does itself
+//! is call the parts in order, three times:
 //!
 //! - at the start ([`Mount::start`]): the parts are built ([`build_order`]), the folder is
 //!   mounted over, and what waits for the mount — the write bits of the backing directory,
@@ -21,13 +22,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fuser::{Config, MountOption};
-use konedrive_tree::{TreeError, TreeStore};
 
-use crate::local::held::Rw;
-
-use super::access_mode_switch::{AccessMode, AccessModeSwitch};
+use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::{remove_write_bits, restore_write_bits, BackingDirectory};
-use super::cycle_step::{CycleOutcome, CycleStep};
+use super::cycle_step::CycleStep;
 use super::download_states::DownloadStates;
 use super::files_interface::FilesInterface;
 use super::fuse_connection::FuseConnection;
@@ -203,28 +201,15 @@ impl Mount {
         self.access_mode_switch.switch_to_read_only_on_thread(&self.write_operation_thread).await
     }
 
-    /// Whether the folder takes changes now.
-    pub fn is_read_write(&self) -> bool {
-        self.access_mode_switch.access_mode() == AccessMode::ReadWrite
+    /// What says whether the folder takes changes now. It is switched through the mount
+    /// alone.
+    pub fn access_mode_switch(&self) -> &AccessModeSwitch {
+        &self.access_mode_switch
     }
 
-    /// Makes the backing directory follow the cycle of the delta listing that `store` has
-    /// staged and not yet committed ([`CycleStep::apply_staged_cycle`]); `rw` is what the
-    /// outbox holds, in a read-write folder.
-    pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
-        self.cycle_step.apply_staged_cycle(store, rw)
-    }
-
-    /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its
-    /// changes are announced to whoever watches the folder, and what is pinned and not
-    /// downloaded is downloaded ([`CycleStep::announce_committed_cycle`]).
-    pub fn announce_committed_cycle(&self) {
-        self.cycle_step.announce_committed_cycle();
-    }
-
-    /// The step of a cycle, for the tests that drive it without a mount.
-    #[cfg(test)]
-    pub(super) fn cycle_step(&self) -> &Arc<CycleStep> {
+    /// The step of a cycle of the delta listing over the backing directory: what a cycle
+    /// asks, before and after its commit.
+    pub fn cycle_step(&self) -> &Arc<CycleStep> {
         &self.cycle_step
     }
 
@@ -233,10 +218,10 @@ impl Mount {
         &self.files_interface
     }
 
-    /// The path of the backing directory, for what must not go through the mount: a walk of
-    /// what is downloaded.
-    pub fn backing_directory_path(&self) -> PathBuf {
-        self.backing_directory.resolve_root_path()
+    /// The backing directory, for what must not go through the mount: its path is asked of
+    /// it by what walks what is downloaded.
+    pub fn backing_directory(&self) -> &BackingDirectory {
+        &self.backing_directory
     }
 }
 

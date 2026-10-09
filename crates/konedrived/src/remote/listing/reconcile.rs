@@ -6,11 +6,11 @@
 //!
 //! 1. [`Reconcile::follow_mount`]: nothing is placed, since the folder's mount
 //!    shows the store; the folder under the mount follows what changed
-//!    ([`Mount::apply_staged_cycle`]);
+//!    ([`CycleStep::apply_staged_cycle`], the mount's);
 //! 2. [`commit_cycle`]: `staging` swapped in with its link, or a first
 //!    listing's page put into `items`. In read-write mode it decides what
 //!    waits: the changes of what the outbox holds keep their base row;
-//! 3. [`Reconcile::after_commit`]: the mount told ([`Mount::announce_committed_cycle`]),
+//! 3. [`Reconcile::after_commit`]: the mount told ([`CycleStep::announce_committed_cycle`]),
 //!    removals of items already gone dropped from the outbox, the activity
 //!    and the conflicts recorded, and rows let wait for a folder made again.
 //!
@@ -22,8 +22,8 @@
 //! read-only folder's reconcile, or a read-write folder's
 //! (`docs/design/writes.md` §9), which holds the tree lock until the swap.
 //!
-//! [`Mount::apply_staged_cycle`]: crate::fuse::Mount::apply_staged_cycle
-//! [`Mount::announce_committed_cycle`]: crate::fuse::Mount::announce_committed_cycle
+//! [`CycleStep::apply_staged_cycle`]: crate::fuse::CycleStep::apply_staged_cycle
+//! [`CycleStep::announce_committed_cycle`]: crate::fuse::CycleStep::announce_committed_cycle
 //! [`Reconcile::run`]: crate::remote::listing::reconcile::Reconcile::run
 //! [`Reconcile::follow_mount`]: crate::remote::listing::reconcile::Reconcile::follow_mount
 //! [`Reconcile::after_commit`]: crate::remote::listing::reconcile::Reconcile::after_commit
@@ -192,7 +192,7 @@ impl Reconcile {
         let done = self.follow_mount(plan.as_ref().map(|plan| Arc::clone(&plan.rw)))?;
         match commit_cycle(&self.store, plan.as_ref(), commit) {
             Ok(said) => {
-                self.mount.announce_committed_cycle();
+                self.mount.cycle_step().announce_committed_cycle();
                 self.after_commit(&done.applied, said);
                 Ok(done)
             }
@@ -214,17 +214,17 @@ impl Reconcile {
             tracing::warn!("cannot record the account's drive in config.toml: {e}");
         }
         // Through the mount the folder takes no attribute: its own directory does.
-        let root = SyncRoot { path: self.mount.backing_directory_path(), root_id: self.root.root_id.clone() };
+        let root = SyncRoot { path: self.mount.backing_directory().resolve_root_path(), root_id: self.root.root_id.clone() };
         if let Err(e) = crate::folder::root::mark_drive(&root, &id) {
             tracing::warn!("cannot record the drive on {}: {e}", self.root.path.display());
         }
     }
 
     /// Step 1: nothing is placed, since the mount shows the store. The folder under the mount
-    /// follows what changed ([`Mount::apply_staged_cycle`]), and the changes are counted and named for
+    /// follows what changed ([`CycleStep::apply_staged_cycle`]), and the changes are counted and named for
     /// the activity log.
     fn follow_mount(&self, rw: Mode<Arc<Rw>>) -> Result<Reconciled, CycleError> {
-        let following = Arc::clone(&self.mount);
+        let following = Arc::clone(self.mount.cycle_step());
         let outcome = self.store.call_blocking(move |s| following.apply_staged_cycle(s, rw.read_write().map(|rw| &**rw)))?;
         let mut applied = Applied::default();
         applied.on_disk.copies = outcome.conflicts.moved_aside.into_iter().map(|moved_aside| Copied { original: moved_aside.original, copy: moved_aside.copy }).collect();

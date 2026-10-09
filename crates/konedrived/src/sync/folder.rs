@@ -309,7 +309,7 @@ impl<'a> Stopped<'a> {
 
     /// Whether the folder's mount takes changes now.
     fn writable(&self) -> bool {
-        self.folder.mount().is_some_and(|mount| mount.is_read_write())
+        self.folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write())
     }
 
     /// Publishes the state as it is now.

@@ -43,7 +43,7 @@ pub(super) enum AccessMode {
 }
 
 /// The holder of a folder's access mode.
-pub(super) struct AccessModeSwitch {
+pub struct AccessModeSwitch {
     is_read_write: AtomicBool,
 }
 
@@ -59,6 +59,11 @@ impl AccessModeSwitch {
             true => AccessMode::ReadWrite,
             false => AccessMode::ReadOnly,
         }
+    }
+
+    /// Whether the folder takes changes now.
+    pub fn is_read_write(&self) -> bool {
+        self.access_mode() == AccessMode::ReadWrite
     }
 
     /// Refuses a change to a read-only folder as a read-only filesystem does.

@@ -17,7 +17,7 @@
 //! - The kernel's requests read the store through a connection of their own, opened for
 //!   reading alone: they never wait for the cycle that writes it.
 //! - What changes in OneDrive is announced through the mount
-//!   ([`Mount::announce_committed_cycle`]): the inotify bridge's thread creates, touches or
+//!   ([`CycleStep::announce_committed_cycle`]): the inotify bridge's thread creates, touches or
 //!   removes the name by path, the mount answers it from the store, and the kernel tells
 //!   whoever watches the directory.
 //! - Pins are rows of the store ([`konedrive_tree::TreeStore::pins`]): a file that is not
@@ -107,8 +107,10 @@ mod upload_rules;
 mod write_operation_thread;
 mod write_operations;
 
+pub use access_mode_switch::AccessModeSwitch;
+pub use backing_directory::BackingDirectory;
 pub use conflict_copies::{ConflictCopy, CycleConflicts};
-pub use cycle_step::{CycleOutcome, OneDriveChange};
+pub use cycle_step::{CycleOutcome, CycleStep, OneDriveChange};
 #[cfg(any(test, feature = "fault-injection"))]
 pub use file_downloader::UnfinishedDownload;
 pub use files_interface::{DownloadedCopies, FilesInterface, FilesRefusal, FreedSpace, PathStatus};

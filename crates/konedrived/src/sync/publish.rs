@@ -79,7 +79,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
         SyncView::Stopped(why) => why.clone(),
         _ => None,
     };
-    let writable = folder.up().is_some() && folder.mount().is_some_and(|mount| mount.is_read_write());
+    let writable = folder.up().is_some() && folder.mount().is_some_and(|mount| mount.access_mode_switch().is_read_write());
     Published { path, state, error, writable, cannot_start, view: view(down) }
 }
 

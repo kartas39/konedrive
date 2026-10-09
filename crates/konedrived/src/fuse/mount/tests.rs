@@ -115,7 +115,7 @@ impl BuiltMount {
 #[test]
 fn the_parts_of_a_mount_are_built_over_a_folder_that_no_mount_lies_over() {
     let built = build_mount_with(&[], &["D"]);
-    assert!(!built.mount.is_read_write(), "a mount starts every folder read-only");
+    assert!(!built.mount.access_mode_switch().is_read_write(), "a mount starts every folder read-only");
     assert_eq!(built.mount.files_interface().count_pins(), 1);
     let status = built.mount.files_interface().find_path_status(&built.path("docs/c.txt")).unwrap();
     assert_eq!((status.id.as_str(), status.own_pin, status.pinned_above.as_deref()), ("C", false, Some(built.path("docs").as_path())));
@@ -133,13 +133,13 @@ fn a_mount_is_switched_to_read_write_at_once_and_to_read_only_on_the_write_opera
     let built = build_mount();
     let held = built.tree_lock.try_lock().unwrap();
     assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
-    assert!(built.mount.is_read_write());
+    assert!(built.mount.access_mode_switch().is_read_write());
     // Switched again, it changes nothing.
     assert!(!built.mount.switch_to_read_write(Arc::new(|| {})));
     drop(held);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     assert!(runtime.block_on(built.mount.switch_to_read_only()));
-    assert!(!built.mount.is_read_write());
+    assert!(!built.mount.access_mode_switch().is_read_write());
     assert!(!runtime.block_on(built.mount.switch_to_read_only()));
 }
 
@@ -152,6 +152,6 @@ fn the_access_mode_of_a_mount_whose_thread_is_stopped_is_switched_at_once() {
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     let held = built.tree_lock.try_lock().unwrap();
     assert!(runtime.block_on(built.mount.switch_to_read_only()));
-    assert!(!built.mount.is_read_write());
+    assert!(!built.mount.access_mode_switch().is_read_write());
     drop(held);
 }

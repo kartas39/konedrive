@@ -47,7 +47,7 @@ pub(super) use write_bits::{mode_bits, remove_write_bits, restore_write_bits, Wr
 const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
 
 /// The backing directory, by the descriptor opened on it before the mount.
-pub(super) struct BackingDirectory {
+pub struct BackingDirectory {
     descriptor: File,
 }
 
@@ -76,7 +76,7 @@ impl BackingDirectory {
     /// which whoever opens or walks it follows; one who looks at the path without following
     /// links sees the link ([`resolve_root_directory_path`](Self::resolve_root_directory_path)
     /// names the directory).
-    pub(super) fn resolve_root_path(&self) -> PathBuf {
+    pub fn resolve_root_path(&self) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor)
     }
 
