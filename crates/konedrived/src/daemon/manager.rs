@@ -30,7 +30,7 @@ pub fn own_drive() -> DriveOf {
     Arc::new(|account| account.drive().map(Some))
 }
 
-/// No drive: every folder is a local one, filled with `PopulateFromDirectory`.
+/// No drive: no folder can be registered.
 pub fn no_drive() -> DriveOf {
     Arc::new(|_| Ok(None))
 }

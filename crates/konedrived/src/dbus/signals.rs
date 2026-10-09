@@ -1,6 +1,5 @@
 //! What the daemon announces by itself: `PropertiesChanged` for the properties of
-//! `properties` (what it decides of the account as a whole among them), `ActivityLog.Added`,
-//! and `Accounts.HelperState`.
+//! `properties` (what it decides of the account as a whole among them) and `ActivityLog.Added`.
 
 use std::collections::BTreeMap;
 use std::future::Future;

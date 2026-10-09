@@ -5,7 +5,7 @@
 //! order: metadata rows (`mkdir`, `move`, `delete`) one at a time, content
 //! rows (`create`, `update`) beside them, each in a slot of the account's
 //! transfer pool (`konedrive_graph::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
-//! an examination never merges into it; a `running` row the worker does not
+//! a change recorded meanwhile never merges into it; a `running` row the worker does not
 //! hold (a crash, a stop) is replayed first, as its dependencies allow.
 //!
 //! **Each step can be replayed** (WR7). A new file or folder goes up with
@@ -28,9 +28,8 @@
 //!
 //! **Throttling, offline, pause, sign-in** stop the whole worker: the rows
 //! keep their states. **A full OneDrive** stops only what sends content, and
-//! a file too big for what is left waits alone ([`space`]). A read-write folder's sync starts it beside the
-//! watcher and stops it with it (`sync::start_stop`); the watcher's
-//! examination wakes it whenever it records rows.
+//! a file too big for what is left waits alone ([`space`]). A read-write folder's sync starts it
+//! and stops it (`sync::start_stop`); the folder's mount wakes it whenever it records rows.
 //!
 //! [`TreeStore::outbox_pick`]: konedrive_tree::TreeStore::outbox_pick
 //! [`TreeStore::outbox_commit`]: konedrive_tree::TreeStore::outbox_commit
@@ -331,11 +330,6 @@ pub enum Fault {
     CommitStep1Partial,
     /// Commit step 1 done, step 2 not.
     AfterCommitStep1,
-    /// A move out: the content local and the attributes taken off, the
-    /// item not deleted yet.
-    AfterStrip,
-    /// A folder's move out: the first of its files stripped, the rest not.
-    MidStrip,
 }
 
 /// The worker of one account's outbox. Nothing runs until [`start`]; the
@@ -386,7 +380,7 @@ impl OutboxHandle {
     }
 
     /// Looks at the outbox now: new rows, or anything that may have unblocked
-    /// them. The examination calls it after recording rows.
+    /// them. The folder's mount calls it after recording rows.
     pub fn wake(&self) {
         self.engine.wake();
     }

@@ -32,7 +32,7 @@ pub struct Writes {
     /// trouble closed is open again, and
     /// the outbox worker that met it closed is woken, rather than left to its own timer.
     pub reopened: Arc<dyn Fn() + Send + Sync>,
-    /// A held or pending `delete` or `move-out` row was dropped because its
+    /// A held or pending `delete` row was dropped because its
     /// item is already gone from OneDrive ([`TreeStore::outbox_drop_removed`]):
     /// wakes the outbox worker at once, so `HeldCount`/`PendingCount` and the
     /// bus signal count it gone without waiting for the worker's own timer.

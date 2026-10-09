@@ -28,7 +28,7 @@ pub(crate) use outcome::Class;
 pub(super) use outcome::{outcome_of, Fail, NoSpace, Outcome};
 
 /// The slot of the account's transfer pool a row of `class` takes: content is an upload;
-/// metadata, and a move out of the folder (a download, then a delete), go before transfers.
+/// metadata goes before transfers.
 fn pool_class(class: Class) -> PoolClass {
     match class {
         Class::Content => PoolClass::Upload,
@@ -388,7 +388,7 @@ impl Engine {
         closed.is_none()
     }
 
-    /// Whether a row of `class` may start beside those running: metadata and move-outs
+    /// Whether a row of `class` may start beside those running: metadata
     /// one at a time; content as the pool allows.
     fn slot_free(&self, class: Class) -> bool {
         let busy = self.shared().flights.of(class);
@@ -406,8 +406,7 @@ impl Engine {
     }
 
     /// The rows that may run now, in `seq` order: due, waiting for no other
-    /// row, not held here already, and as the space allows; never a
-    /// `move-out` row, which nothing records for a folder under a mount. Read a portion at a time ([`TreeStore::outbox_pick`]),
+    /// row, not held here already, and as the space allows. Read a portion at a time ([`TreeStore::outbox_pick`]),
     /// off the async runtime. What stands in front of the rest is kept
     /// (`Shared::waits`, [`next_due`](Self::next_due)), and a time it names wakes the worker.
     ///

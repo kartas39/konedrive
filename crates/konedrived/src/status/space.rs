@@ -127,7 +127,7 @@ async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure, at:
 }
 
 /// `LocalBytes`: what the folder's regular files take on disk, `st_blocks ×
-/// 512` — a placeholder counts as what it occupies, not its size.
+/// 512` — a file counts as what it occupies, not its size.
 pub fn local_bytes(root: &Path) -> u64 {
     let mut total = 0u64;
     walk_files(root, &mut |_, meta| total += meta.blocks() * 512);

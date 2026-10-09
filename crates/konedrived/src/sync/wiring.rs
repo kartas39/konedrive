@@ -88,7 +88,7 @@ pub struct Wiring {
     pub account: Arc<dyn FolderAccount>,
     /// The account's entry in `config.toml`.
     pub persist: Persist,
-    /// `None`: every folder is a local one, filled with `PopulateFromDirectory`.
+    /// `None`: the account has no drive, and no folder can be registered for it.
     pub onedrive: Option<OneDrive>,
     /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a forgotten one
     /// back in (`desktop::baloo`). Only `main` gives the real `balooctl6`.

@@ -41,7 +41,7 @@ pub enum RegisterError {
     NotADirectory,
     #[error("the folder must be empty")]
     NotEmpty,
-    /// The folder cannot be a sync root: its filesystem lacks something a placeholder
+    /// The folder cannot be a sync root: its filesystem lacks something a sync root
     /// needs, or it is a symbolic link. The sentence names the folder and what is missing.
     #[error("{0}")]
     Unsupported(String),
@@ -82,14 +82,7 @@ fn not_a_directory(path: &Path) -> RegisterError {
 /// Everything about a candidate folder that can be decided locally.
 ///
 /// The write probe (`probe_dir`, `konedrive_fs::probe`) runs *here* and
-/// nowhere else. The helper runs under `ProtectSystem=strict` and
-/// `ProtectHome=read-only` and without `CAP_DAC_OVERRIDE`, so a write of its
-/// own into a perfectly good directory in the user's home is normally
-/// refused (`EROFS`, `EACCES`): it checks the filesystem's type with `fstatfs`
-/// (`check_filesystem_type` in `konedrive-helper/src/registration.rs`) and
-/// probes nothing. The daemon runs unprivileged,
-/// in the user's own home, with no such sandbox, so this is the one place in
-/// the system where a write probe's result means something.
+/// nowhere else.
 pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
     let dir = open_root_dir(path)?;
     check_root_dir(&dir, path)
@@ -105,9 +98,8 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// A folder that already carries a valid `user.konedrive.root` is not a
 /// candidate being registered for the first time — it is a root the daemon
 /// (this run or a previous one) already claimed, and re-registering it is
-/// exactly what startup recovery needs to do before it can safely touch
-/// anything inside it. Such a folder is *expected* to be full: placeholders,
-/// hydrated files, subdirectories, all of this daemon's own making. Refusing
+/// what a start does. Such a folder is *expected* to be full: downloaded
+/// files, the user's own, subdirectories. Refusing
 /// it as `NotEmpty` — the same refusal a stranger's populated folder gets —
 /// would make every restart unregister every root the moment anything had
 /// been written into it, which is always, immediately after the first
@@ -124,17 +116,16 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// errno, naming an attribute the user never heard of, about a folder the
 /// message does not name — instead of the probe's purpose-built "the
 /// filesystem does not support user xattrs" against the folder they typed.
-/// The probe is also the more fundamental refusal: a folder that cannot hold
-/// a placeholder at all cannot be a sync root whether it is empty or not.
+/// The probe is also the more fundamental refusal: a folder whose filesystem
+/// lacks what a sync root needs cannot be one whether it is empty or not.
 ///
 /// # A folder that already carries one of our root ids is not probed again
 ///
 /// It was probed when it was first registered, and a folder that shows
 /// OneDrive is locked read-only since, the folder itself included, so
 /// the probe's write is refused there: no such folder came back after a
-/// restart, in either mode — "cannot bring up the sync folder: Permission
-/// denied" — and none could be switched to interception once the helper
-/// arrived. The id is still only *looked
+/// restart — "cannot bring up the sync folder: Permission denied". The id is
+/// still only *looked
 /// for* first, and a folder where looking fails is probed, whose answer is
 /// what is reported.
 fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
@@ -304,8 +295,7 @@ fn resolved_path(dir: &File, path: &Path) -> Result<PathBuf, RegisterError> {
 }
 
 /// The folder's own root id, minted only if it has none. An
-/// empty value is treated as none: it names no registration the helper could
-/// be holding, so there is nothing to preserve.
+/// empty value is treated as none: there is nothing to preserve.
 fn root_id_of(dir: &File) -> Result<String, RegisterError> {
     if let Some(id) = read_root_id(dir)? {
         return Ok(id);
@@ -328,10 +318,7 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 /// folder full of somebody's existing data: the empty check is skipped
 /// for anything that "carries a root id", and nothing ever removes the
 /// xattr again, so one `setfattr` disarms that check for that folder
-/// permanently. It matters because `PopulateFromDirectory` skips names that already
-/// exist — those files never get an item id, never get a placeholder, and
-/// yet live inside a tree the helper now marks and this module now walks and
-/// punches.
+/// permanently.
 ///
 /// So the shape is checked before the value is believed: the 36-character
 /// `8-4-4-4-12` hex form with version nibble `4` that [`uuid_v4`] mints and
@@ -339,8 +326,7 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 /// absent, empty, a word, a truncated id — reads as *no* id: the folder must
 /// then be empty to be registered, and [`root_id_of`] mints a real one over
 /// the top. Overwriting is safe precisely because the value is not one we
-/// could ever have minted, so no helper registration can be named by it
-/// ("never overwrite" protects ids we *did* mint).
+/// could ever have minted ("never overwrite" protects ids we *did* mint).
 fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
     let read = dir.get_xattr(XATTR_ROOT).map_err(|e| RegisterError::Io(format!("cannot read {XATTR_ROOT}: {e}")))?;
     let Some(raw) = read else {

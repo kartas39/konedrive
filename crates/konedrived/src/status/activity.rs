@@ -2,9 +2,8 @@
 //! versions it moved out of the way.
 //!
 //! Both live in the folder's tree store (`activity`, `conflicts`), which a
-//! Forget drops and a rebuild empties. A folder with no tree store — one
-//! filled with `PopulateFromDirectory` — keeps its activity in memory only,
-//! and has no conflicts: only a reconcile with OneDrive rescues anything.
+//! Forget drops and a rebuild empties. With no tree store attached the activity
+//! is kept in memory only, and there are no conflicts: only a reconcile with OneDrive rescues anything.
 
 use std::collections::VecDeque;
 use std::io;

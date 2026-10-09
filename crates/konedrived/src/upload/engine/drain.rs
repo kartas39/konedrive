@@ -50,16 +50,16 @@ impl Engine {
     ///    or not rows may run (`docs/design/writes.md` §8);
     /// 2. if the worker may send ([`may_send`](Engine::may_send)), the quota is read when
     ///    its read is due and no row is in flight, and the rows that may run are taken in `seq` order
-    ///    ([`candidates`](Engine::candidates)): metadata rows one at a time, move-outs one
-    ///    at a time, content rows as the account's transfer pool gives slots. A row with
+    ///    ([`candidates`](Engine::candidates)): metadata rows one at a time,
+    ///    content rows as the account's transfer pool gives slots. A row with
     ///    no slot waits for one and holds back the later rows of its pool class and size,
     ///    and no others: a large file waiting for the large-file limit does not hold up
     ///    the small ones. Before each row the worker asks again whether it may send — the
     ///    pause, the stop, the write gate — and takes nothing more once it may not;
     /// 3. with nothing in flight and no row waiting for a slot, the drain ends. Otherwise
     ///    the worker waits for the first of: a row ending, which is settled
-    ///    (`engine/settle.rs`); a slot for a row that waited; a wake (new rows, the helper
-    ///    back, a quota read); the time something falls due ([`next_due`](Engine::next_due):
+    ///    (`engine/settle.rs`); a slot for a row that waited; a wake (new rows,
+    ///    a quota read); the time something falls due ([`next_due`](Engine::next_due):
     ///    a backoff, a throttle or a timed pause running out), so that a row that is due
     ///    does not wait for an unrelated long upload to end; the stop. Then it looks again.
     ///
@@ -74,8 +74,7 @@ impl Engine {
                 Arc::new(disk)
             }
             // Nothing is taken until a drain opens it: at the next wake, or the worker's
-            // five-minute look. A folder that is gone stops the sync, and this worker
-            // with it (`sync/watcher.rs`); for any other failure the folder's note says
+            // five-minute look. For a failure the folder's note says
             // that uploads wait, and a throttle that ran out meanwhile is no longer said.
             Err(e) => {
                 tracing::warn!("the OneDrive folder cannot be opened, so nothing is uploaded: {e}");
@@ -213,7 +212,7 @@ impl Engine {
         tokio::select! {
             // A slot for a row that waited for one: taken at the next look.
             slot = waited => flying.spare.push(slot),
-            // New rows, or the helper back: looked at while the others run.
+            // New rows: looked at while the others run.
             _ = self.wake.notified() => {}
             // A row in backoff is due, a throttle or a timed pause ran out.
             _ = tokio::time::sleep(due) => {}
