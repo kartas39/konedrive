@@ -431,3 +431,17 @@ pub(super) fn rename_to_copy(disk: &Disk, found: &Found, machine: &str) -> io::R
     }
     Err(io::Error::other(format!("no free name for a copy of {name}")))
 }
+
+/// The first [`copy_name`] of the name of `rel` that nothing stands at on disk, beside
+/// `rel`: the name a file or directory with nothing on disk takes where a conflict copy
+/// would be made of it.
+pub(super) fn pick_copy_name(disk: &Disk, rel: &Path, machine: &str) -> io::Result<String> {
+    let name = rel.file_name().and_then(OsStr::to_str).ok_or_else(|| io::Error::other("a name that is not UTF-8 gets no copy"))?;
+    for n in 1..=100 {
+        let candidate = copy_name(name, machine, n);
+        if is_free(disk, &rel.with_file_name(&candidate))? {
+            return Ok(candidate);
+        }
+    }
+    Err(io::Error::other(format!("no free name for a copy of {name}")))
+}

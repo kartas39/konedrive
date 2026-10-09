@@ -195,9 +195,9 @@ fn a_renamed_file_that_is_not_downloaded_keeps_its_name_where_onedrives_name_is_
 }
 
 /// A file that is not downloaded, renamed onto a name another file took in OneDrive
-/// meanwhile: nothing is on disk to keep as a copy, and the row must still come to an end.
+/// meanwhile: nothing is on disk to keep as a copy, and the row still comes to the end a
+/// downloaded file's does — the file takes the copy's name, and the conflict is on record.
 #[test]
-#[ignore = "a move of a file with no downloaded copy onto a name taken in OneDrive waits as `not-found` and is tried every 30 s for ever: `steps::shared::name_taken` makes a copy only of an entry on disk"]
 fn a_renamed_file_that_is_not_downloaded_does_not_wait_for_ever_for_a_taken_name() {
     let w = World::new(&[file("A", "R", "a.txt", b"old")]);
     w.rename_entry("a.txt", "b.txt");
@@ -205,6 +205,25 @@ fn a_renamed_file_that_is_not_downloaded_does_not_wait_for_ever_for_a_taken_name
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_eq!(w.content("b.txt").unwrap(), b"theirs");
+    assert_eq!(w.cloud(|c| c.paths()), vec!["b-fedora.txt", "b.txt"]);
+    assert_eq!(w.id_at("b-fedora.txt").as_deref(), Some("A"));
+    assert_eq!(w.base("A").unwrap().name, "b-fedora.txt");
+    assert!(kept_as_copy(&w, "b.txt", "b-fedora.txt"), "the conflict is on record");
+    assert!(w.names_in("").is_empty(), "nothing was made on disk: {:?}", w.names_in(""));
+}
+
+/// The copy's name of a file that is not downloaded is one nothing stands at on disk: a
+/// file of the user's own at the first is not hidden behind it.
+#[test]
+fn a_renamed_file_that_is_not_downloaded_takes_a_copys_name_that_is_free_on_disk() {
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.rename_entry("a.txt", "b.txt");
+    w.write("b-fedora.txt", b"mine");
+    w.cloud(|c| c.add_file("X", "R", "b.txt", b"theirs"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["b-fedora-2.txt", "b.txt"]);
+    assert_eq!(w.id_at("b-fedora-2.txt").as_deref(), Some("A"));
 }
 
 /// A delete × edit dropped while a cycle is between staging and swap: the drop waits for

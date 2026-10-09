@@ -349,9 +349,10 @@ pub(in crate::upload) enum Named {
 /// way for every kind of row ([`taken`] says what holds the name): a name
 /// free again is tried again; one held for now goes through a temporary
 /// name, or waits for the unfinished upload that holds it; anything else is
-/// kept beside the local object `found`, as a copy — with no object here to
-/// keep, the row looks again later. Only what the row itself makes comes
-/// back to the caller, to be adopted its own way.
+/// kept beside the local object `found`, as a copy. A move of what the folder
+/// holds nothing of on disk — a file that is not downloaded — has no object to
+/// rename, and takes the copy's name all the same ([`move_to_copy_name`]). Only
+/// what the row itself makes comes back to the caller, to be adopted its own way.
 pub(in crate::upload) async fn name_taken(
     e: &Arc<Engine>,
     disk: &Arc<Disk>,
@@ -368,6 +369,8 @@ pub(in crate::upload) async fn name_taken(
         Taken::Held => Named::Settled(held(row)),
         Taken::Copy => Named::Settled(match found {
             Some(found) => copy(e, disk, row, found, parent).await?,
+            None if row.kind == OutboxKind::Move => move_to_copy_name(e, disk, row, parent).await?,
+            // New content or a new folder whose object went meanwhile.
             None => Outcome::later(Reason::NotFound, RECHECK),
         }),
     })
@@ -436,6 +439,53 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
         cancel_session(e, url).await?;
     }
     tracing::info!("{} was changed in OneDrive too: the local version is kept as {}", found.rel.display(), copy_rel.display());
+    e.host().activity(&event);
+    e.host().cycle_wanted();
+    Ok(Outcome::again())
+}
+
+/// §7's copy for a move of what the folder holds nothing of on disk: the same end as
+/// [`copy`] gives a downloaded file that was moved — the item goes to the copy's name
+/// beside what OneDrive holds at the name it was moved to, and the conflict is recorded —
+/// with nothing to rename. The copy's name is the first that nothing on disk stands at.
+///
+/// The choice of the name and its record (`outbox_copied`) are one section under the tree
+/// lock, as in [`copy`].
+async fn move_to_copy_name(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, parent: &str) -> Result<Outcome, Fail> {
+    let folder = match row.item_id.clone() {
+        Some(id) => e.store().call(move |s| s.get(Table::Items, &id)).await?.is_some_and(|item| item.kind == Kind::Folder),
+        None => false,
+    };
+    let tree = tree(e).await;
+    let (engine, on, rel) = (Arc::clone(e), Arc::clone(disk), row.rel.clone());
+    let (seq, parent) = (row.seq, parent.to_owned());
+    let (event, copy_rel) = blocking_under(Arc::clone(&tree), move || {
+        let copy_name = local::pick_copy_name(&on, &rel, engine.machine_name())?;
+        let copy_rel = rel.with_file_name(&copy_name);
+        let original = engine.root().path.join(&rel).display().to_string();
+        let copy_path = engine.root().path.join(&copy_rel).display().to_string();
+        let event = engine.event(ActivityKind::Conflict, &rel, copy_path.clone());
+        let to = copy_rel.clone();
+        let amend = move |next: &mut OutboxRow| {
+            next.rel = to;
+            next.target_parent = Some(parent);
+            next.target_name = Some(copy_name);
+            next.state = OutboxState::Running;
+            next.reset_for_resend();
+        };
+        let stored = event.clone();
+        let recorded = engine.store().call_blocking(move |s| {
+            let copied = ConflictCopy { at: now(), original: &original, copy: &copy_path };
+            s.outbox_copied(seq, amend, &copied, Some(&stored))
+        });
+        Ok(recorded.map(|()| (event, copy_rel)))
+    })
+    .await??;
+    if folder {
+        let rebase = [OutboxOp::Rebase { from: row.rel.clone(), to: copy_rel.clone() }];
+        e.store().call(move |s| s.outbox_apply(&rebase, now())).await?;
+    }
+    tracing::info!("{} is the name of something else in OneDrive by now: what was moved to it is {}", row.rel.display(), copy_rel.display());
     e.host().activity(&event);
     e.host().cycle_wanted();
     Ok(Outcome::again())
