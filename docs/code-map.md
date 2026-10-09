@@ -186,8 +186,8 @@ daemon shows OneDrive.
 
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
-- `shared.rs` — `Shared`: the parts of a mount held together, the store read for the requests,
-  and what is under way; a path's row; `Writing`, what a folder that takes changes shares
+- `shared.rs` — `Shared`: the parts of a mount held together, and what is under way;
+  `Writing`, what a folder that takes changes shares
   with its sync.
 - `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
   mount; it knows the disk and nothing else. Opening the folder, a path of it, its space, an
@@ -217,8 +217,14 @@ daemon shows OneDrive.
 - `nodes.rs` — the node ids the kernel knows, each an item, or an object without one by its
   file handle, and its place. `[tests]`
 - `attr.rs` — what the mount says of an item: kind, size, times, modes.
-- `local.rs` — what a directory holds: the store's items as the outbox's rows leave them,
-  and the files and directories OneDrive has no item for yet, each known by its file handle.
+- `view.rs` — `View`: the folder as the mount shows it; it owns the mount's reading connection
+  to the store and the overlay as last read, and uses `Under`. An item's row, its parent, the
+  files below it. `[tests]`
+- `view/entries.rs` — what a directory holds (`Entry`, `Local`, `Dir`): the store's items as
+  the overlay leaves them, and the files and directories OneDrive has no item for yet.
+- `view/places.rs` — where the folder shows an item, what stands at a path, and the
+  directories down to a place marked with the view's items.
+- `local.rs` — a node resolved: the entry of the folder it is now.
 - `overlay.rs` — `Overlay`: what the outbox's rows say of the folder, a function of the store
   alone: the items moved, removed or changed here. `[tests]`
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the

@@ -42,6 +42,7 @@ mod settle;
 mod requests;
 mod shared;
 mod under;
+mod view;
 mod write;
 mod writers;
 

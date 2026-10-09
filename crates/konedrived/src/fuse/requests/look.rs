@@ -12,14 +12,14 @@ use konedrive_tree::{Kind, Placement, Row};
 use super::Requests;
 use crate::fuse::announce::Told;
 use crate::fuse::attr::TTL;
-use crate::fuse::local::{Dir, Entry};
+use crate::fuse::view::{Dir, Entry};
 use crate::fuse::shared::errno;
 
 impl Requests {
     /// The entry `name` of `parent`, as the folder has it now.
     pub(super) fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let s = &self.0;
-        let found = s.dir(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.entry(&dir, name)?, dir.rel.join(name))));
+        let found = s.dir(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.view.entry(&dir, name)?, dir.rel.join(name))));
         match found {
             Some((entry, rel)) => {
                 let ino = s.ino_of(&entry, parent.0);
@@ -57,7 +57,7 @@ impl Requests {
         let dir = s.dir(ino.0)?;
         let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
         let entries = kept.unwrap_or_else(|| {
-            let entries = Arc::new(s.entries(&dir));
+            let entries = Arc::new(s.view.entries(&dir));
             crate::panic::lock(&s.listings).insert(fh.0, Arc::clone(&entries));
             entries
         });

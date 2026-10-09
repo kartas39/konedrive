@@ -3,7 +3,7 @@
 use fuser::Errno;
 
 use super::changes::{based, forgotten, leaves};
-use super::local::{Dir, Entry};
+use super::view::{Dir, Entry};
 use super::nodes::Key;
 use super::shared::{errno, Shared};
 
@@ -14,14 +14,14 @@ impl Shared {
     pub(super) fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
         self.may_change()?;
         let above = self.dir(parent).ok_or(Errno::ENOENT)?;
-        let entry = self.entry(&above, name).ok_or(Errno::ENOENT)?;
+        let entry = self.view.entry(&above, name).ok_or(Errno::ENOENT)?;
         match (entry.is_dir(), dir) {
             (true, false) => return Err(Errno::EISDIR),
             (false, true) => return Err(Errno::ENOTDIR),
             _ => {}
         }
         let rel = above.rel.join(name);
-        if dir && !self.entries(&Dir { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        if dir && !self.view.entries(&Dir { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let at = rel.clone();

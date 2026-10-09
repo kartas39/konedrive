@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::outbox::{Detection, OutboxOp};
 
 use super::changes::{rebase, Place};
-use super::local::Dir;
+use super::view::Dir;
 use super::shared::Shared;
 use crate::local::names::copy_name;
 
@@ -38,7 +38,7 @@ impl Shared {
         for n in 1..=100 {
             let copy = copy_name(name, &self.writing.machine_name, n);
             let to = parent.join(&copy);
-            if self.under.stat(&to).is_some() || self.entry(&dir, &copy).is_some() {
+            if self.under.stat(&to).is_some() || self.view.entry(&dir, &copy).is_some() {
                 continue;
             }
             if let Err(e) = self.under.rename(rel, &to) {

@@ -113,10 +113,10 @@ impl Shared {
             download_staged(&file, &row.id, row.size, &marked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
             // The directories down to its place, each marked as its item's.
-            self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
+            self.view.backing(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
             // Moved or removed here while it was downloaded: the download is of no place now,
             // and the next read starts one where the item stands.
-            if self.place(&row.id).as_deref() != Some(rel) {
+            if self.view.place(&row.id).as_deref() != Some(rel) {
                 return Err(libc::ESTALE);
             }
             let (id, modified, at, file, under) = (row.id.clone(), seconds(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.under));

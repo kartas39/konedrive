@@ -10,7 +10,7 @@ use konedrive_graph::pool::Class;
 
 use super::{caller, Requests};
 use crate::fuse::fill::{Running, WRITTEN_BEHIND};
-use crate::fuse::local::Entry;
+use crate::fuse::view::Entry;
 use crate::fuse::read::Handle;
 use crate::fuse::shared::{errno, Shared};
 use crate::fuse::writers::Closed;
@@ -81,7 +81,7 @@ impl Requests {
                 Err(e) => reply.error(errno(&e)),
             };
         }
-        let Some(row) = s.row(&id) else { return reply.error(Errno::ENOENT) };
+        let Some(row) = s.view.row(&id) else { return reply.error(Errno::ENOENT) };
         let end = (offset + u64::from(size)).min(row.size);
         if offset >= end {
             return reply.data(&[]);

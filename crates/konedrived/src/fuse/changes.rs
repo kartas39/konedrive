@@ -9,7 +9,7 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState, Reason};
 use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
-use super::local::Dir;
+use super::view::Dir;
 use super::under::Object;
 use super::shared::Shared;
 use crate::local::names;

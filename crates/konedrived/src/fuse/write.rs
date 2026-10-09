@@ -14,7 +14,7 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Row;
 
 use super::changes::{based, settles, waits, Place};
-use super::local::Entry;
+use super::view::Entry;
 use super::nodes::Key;
 use super::read::Handle;
 use super::shared::{errno, Shared};
@@ -29,7 +29,7 @@ impl Shared {
             if !empty && row.size > 0 {
                 return Err(Errno::EIO);
             }
-            self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(|e| errno(&e))?;
+            self.view.backing(rel.parent().unwrap_or(Path::new(""))).map_err(|e| errno(&e))?;
             self.under.make_file(rel).map_err(|e| errno(&e))?;
             self.under.mark_copy(rel, &row.id).map_err(|e| errno(&e))?;
         }
@@ -56,7 +56,7 @@ impl Shared {
         let file = self.under.write(&rel, truncate).map_err(|e| errno(&e))?;
         // Its content is the user's own already when the outbox holds a change of it; from
         // the first writer on the outbox holds it in any case.
-        let own = truncate || entry.id().is_some_and(|id| self.waiting().changed.contains(id));
+        let own = truncate || entry.id().is_some_and(|id| self.view.overlay().changed.contains(id));
         if self.writers.opened(ino, own) {
             if let Err(e) = self.content(ino, true) {
                 self.writers.closed(ino);

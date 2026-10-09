@@ -19,6 +19,7 @@ use crate::status::report::Report;
 use super::announce::{announce, Announce};
 use super::fill::Waiter;
 use super::under::{set_tree, Under};
+use super::view::View;
 use super::nodes::Nodes;
 use super::requests::Requests;
 use super::shared::{other, Shared, Writing};
@@ -59,11 +60,11 @@ impl Mount {
         tokio::task::spawn_blocking(move || {
             // Before the mount: afterwards this path is the mount.
             let under = Arc::new(Under::open(&root.path)?);
-            let reader = TreeStore::open_read_only(&store_path).map_err(other)?;
+            let view = Arc::new(View::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
             let shared = Arc::new(Shared {
                 root: root.clone(),
                 under,
-                reader: Mutex::new(reader),
+                view,
                 store,
                 nodes: Mutex::new(Nodes { next: 1, ..Nodes::default() }),
                 source,
@@ -91,7 +92,6 @@ impl Mount {
                 wake: Mutex::new(None),
                 jobs: Mutex::new(None),
                 writers: Default::default(),
-                waiting: Mutex::default(),
                 runtime,
             });
             let mut config = Config::default();

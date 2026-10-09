@@ -49,7 +49,7 @@ pub(super) fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: m
     // The node of an item the kernel was told: the root is always known.
     let node = |id: &Option<String>| -> Option<u64> {
         let id = id.as_deref()?;
-        if shared.read(|s| s.root_item_id()).flatten().as_deref() == Some(id) {
+        if shared.view.root_id().as_deref() == Some(id) {
             return Some(1);
         }
         crate::panic::lock(&shared.nodes).inos.get(&Key::Item(id.to_owned())).copied()

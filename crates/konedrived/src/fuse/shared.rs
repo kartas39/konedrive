@@ -3,14 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{Kind, Row, Store, Table, TreeStore};
+use konedrive_tree::Store;
 
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{ContentSource, Share};
@@ -19,18 +19,18 @@ use crate::status::report::Report;
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
-use super::overlay::Overlay;
 use super::recorder::Job;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
 use super::under::Under;
+use super::view::View;
 
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
     /// The folder under the mount ([`super::under`]).
     pub(super) under: Arc<Under>,
-    /// The store, for reading alone: what the mount's requests ask.
-    pub(super) reader: Mutex<TreeStore>,
+    /// The folder as the mount shows it ([`super::view`]).
+    pub(super) view: Arc<View>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
     pub(super) nodes: Mutex<Nodes>,
@@ -51,7 +51,7 @@ pub(super) struct Shared {
     pub(super) next_handle: AtomicU64,
     /// What each open directory held when it was first listed, by handle: a program that
     /// reads a directory in parts reads one listing, whatever changes meanwhile.
-    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::local::Entry>>>>,
+    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::view::Entry>>>>,
     /// How many bytes of each item that is not downloaded were read as ranges.
     pub(super) asked: Mutex<HashMap<String, u64>>,
     /// Once that many bytes of a file were read as ranges, the file is downloaded whole
@@ -85,9 +85,6 @@ pub(super) struct Shared {
     pub(super) jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The files programs hold open for writing, by node ([`super::writers`]).
     pub(super) writers: Writers,
-    /// What the outbox's rows say of the folder, as last read, and the store's version it was
-    /// read at ([`super::overlay`]).
-    pub(super) waiting: Mutex<(Option<i64>, Arc<Overlay>)>,
     pub(super) runtime: tokio::runtime::Handle,
 }
 
@@ -115,27 +112,9 @@ pub(super) fn other(e: impl ToString) -> io::Error {
 }
 
 impl Shared {
-    pub(super) fn read<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, konedrive_tree::TreeError>) -> Option<T> {
-        ask(&crate::panic::lock(&self.reader)).ok()
-    }
-
-    pub(super) fn row(&self, id: &str) -> Option<Row> {
-        self.read(|s| s.get(Table::Items, id)).flatten()
-    }
-
     /// The path a download is shown under: the file's place in the folder.
     pub(super) fn shown(&self, rel: &Path) -> String {
         self.root.path.join(rel).display().to_string()
-    }
-
-    /// The files at and below `row`, each with its place in the folder.
-    pub(super) fn files_below(&self, row: &Row) -> Vec<(Row, PathBuf)> {
-        // One question at a time: the mount's requests read through the same connection, and
-        // none waits for a whole walk.
-        let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
-        ids.push(row.id.clone());
-        let files: Vec<Row> = ids.iter().filter_map(|id| self.row(id).filter(|r| r.kind == Kind::File)).collect();
-        files.into_iter().filter_map(|file| self.place(&file.id).map(|at| (file, at))).collect()
     }
 
     /// The time the outbox's rows are dated by.

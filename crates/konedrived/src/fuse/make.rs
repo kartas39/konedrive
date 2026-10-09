@@ -11,7 +11,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Row};
 
 use super::changes::{waits, Place};
-use super::local::{Entry, Local};
+use super::view::{Entry, Local};
 use super::read::Handle;
 use super::shared::{errno, Shared};
 use crate::folder::disk::daemon_owned;
@@ -33,11 +33,11 @@ impl Shared {
         if daemon_owned(name.as_ref()) || (dir && parent == 1 && name.starts_with(".Trash")) {
             return Err(Errno::EPERM);
         }
-        if self.entry(&above, name).is_some() {
+        if self.view.entry(&above, name).is_some() {
             return Err(Errno::EEXIST);
         }
         let rel = above.rel.join(name);
-        self.backing(&above.rel).map_err(|e| errno(&e))?;
+        self.view.backing(&above.rel).map_err(|e| errno(&e))?;
         let file: Option<File> = if dir {
             self.under.make_dir(&rel).map_err(|e| errno(&e))?;
             None
@@ -94,8 +94,8 @@ impl Shared {
     /// The item whose file the user removed from `rel` and whose removal is not sent yet, as
     /// the base has it.
     fn removed_here(&self, rel: &Path) -> Option<Row> {
-        let rows = self.read(|s| s.outbox_at_or_under(rel))?;
+        let rows = self.view.read(|s| s.outbox_at_or_under(rel))?;
         let removed = rows.into_iter().find(|row| row.rel == rel && row.kind == OutboxKind::Delete && row.state != OutboxState::Running)?;
-        self.row(&removed.item_id?).filter(|base| base.kind == Kind::File)
+        self.view.row(&removed.item_id?).filter(|base| base.kind == Kind::File)
     }
 }

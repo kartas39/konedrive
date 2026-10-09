@@ -3,12 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
-use konedrive_tree::{Kind, Row, Table, TreeStore};
+use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 
 use super::announce::Announce;
 use super::changes::rebase;
 use super::conflict::Met;
 use super::mount::Mount;
+use super::under::Under;
 use crate::local::held::Rw;
 
 /// One item a cycle changed: where the store had it and where the new tree has it.
@@ -37,6 +38,17 @@ pub struct Followed {
     pub copied: Vec<(PathBuf, PathBuf)>,
     /// The folders gone from OneDrive that stay here as the user's own, by item.
     pub kept: Vec<String>,
+}
+
+/// The directories of the folder under the mount down to `rel`, each marked as its item's,
+/// inside a cycle of the listing, for a place of the tree it has staged: on the store's own
+/// thread, where the mount's reader would not see it.
+fn backing_staged(under: &Under, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
+    let staged = |above: Option<&str>, _: &Path, name: &str| {
+        let row = store.child(Table::Staging, above?, name).ok().flatten()?;
+        (row.placement == Placement::Placed).then_some(row.id)
+    };
+    under.backing(rel, store.root_item_id().ok().flatten(), staged)
 }
 
 impl Mount {
@@ -96,7 +108,7 @@ impl Mount {
                     if step.content_changed() {
                         s.under.remove_copy(was, &step.id);
                     } else if was != now && ours(was, &step.id, old.kind) && s.under.stat(now).is_none() {
-                        let _ = now.parent().map(|dir| s.backing_staged(store, dir));
+                        let _ = now.parent().map(|dir| backing_staged(&s.under, store, dir));
                         let _ = s.under.rename(was, now);
                     }
                     if was != now {

@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fuser::{FileAttr, FileType, INodeNo};
 use konedrive_tree::{Kind, Row};
 
-use super::local::Entry;
+use super::view::Entry;
 use super::shared::{seconds, Shared};
 
 pub(super) const TTL: Duration = Duration::from_secs(1);
@@ -56,7 +56,7 @@ impl Shared {
         }
         attr.size = row.size;
         if let Some(meta) = rel.and_then(|rel| self.under.copy(rel, &row.id)) {
-            if self.waiting().changed.contains(&row.id) || self.writers.open(ino) {
+            if self.view.overlay().changed.contains(&row.id) || self.writers.open(ino) {
                 self.of_object(&mut attr, &meta);
             } else {
                 (attr.size, attr.blocks) = (meta.size(), meta.blocks());

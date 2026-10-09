@@ -9,7 +9,7 @@ use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
 use super::changes::{based, forgotten, leaves, rebase, waits, Place};
-use super::local::{Dir, Entry};
+use super::view::{Dir, Entry};
 use super::nodes::Key;
 use super::shared::{errno, Shared};
 use crate::folder::disk::daemon_owned;
@@ -23,14 +23,14 @@ impl Shared {
         if daemon_owned(new_name.as_ref()) {
             return Err(Errno::EPERM);
         }
-        let src = self.entry(&from_dir, name).ok_or(Errno::ENOENT)?;
-        let dst = self.entry(&to_dir, new_name);
+        let src = self.view.entry(&from_dir, name).ok_or(Errno::ENOENT)?;
+        let dst = self.view.entry(&to_dir, new_name);
         let (from, to) = (from_dir.rel.join(name), to_dir.rel.join(new_name));
         if from == to {
             return Ok(());
         }
         if let Some(dst) = &dst {
-            let holds = |dst: &Entry| !self.entries(&Dir { id: dst.id().map(str::to_owned), rel: to.clone() }).is_empty();
+            let holds = |dst: &Entry| !self.view.entries(&Dir { id: dst.id().map(str::to_owned), rel: to.clone() }).is_empty();
             match (src.is_dir(), dst.is_dir()) {
                 _ if keep => return Err(Errno::EEXIST),
                 (false, true) => return Err(Errno::EISDIR),
@@ -49,7 +49,7 @@ impl Shared {
         let open = self.writers.open(src_ino);
         // The folder under the mount first: whatever the item or object has there moves, and
         // what stood at the new place goes.
-        self.backing(&to_dir.rel).map_err(|e| errno(&e))?;
+        self.view.backing(&to_dir.rel).map_err(|e| errno(&e))?;
         let displaced = self.under.stat(&to);
         let moved = self.under.stat(&from).is_some();
         if let Some(meta) = displaced.as_ref().filter(|m| m.is_dir() || !moved) {

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use konedrive_graph::pool::Class;
-use konedrive_tree::{Row, Table};
+use konedrive_tree::Row;
 
 use super::announce::Announce;
 use super::asked::Refused;
@@ -15,13 +15,13 @@ impl Shared {
     /// The item that keeps `row` on this device: itself or a folder above it, whichever
     /// carries a pin.
     pub(super) fn pinned_by(&self, row: &Row) -> Option<Row> {
-        let (pins, store) = (crate::panic::lock(&self.pins), crate::panic::lock(&self.reader));
+        let pins = crate::panic::lock(&self.pins);
         let mut at = Some(row.clone());
         while let Some(row) = at {
             if pins.contains(&row.id) {
                 return Some(row);
             }
-            at = row.parent_id.as_deref().and_then(|p| store.get(Table::Items, p).ok().flatten());
+            at = self.view.parent(&row);
         }
         None
     }
@@ -36,8 +36,8 @@ impl Shared {
         self.runtime.spawn_blocking(move || {
             let pins: Vec<String> = crate::panic::lock(&s.pins).iter().cloned().collect();
             for id in pins {
-                let Some(row) = s.row(&id) else { continue };
-                for (file, rel) in s.files_below(&row) {
+                let Some(row) = s.view.row(&id) else { continue };
+                for (file, rel) in s.view.files_below(&row) {
                     if !s.under.has_copy(&rel, &file.id) {
                         s.ensure(file, rel, Class::Download, None);
                     }
