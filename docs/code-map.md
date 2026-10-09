@@ -257,7 +257,7 @@ daemon shows OneDrive.
   without the backing directory, and the local-only entries, by the one rule of what the
   mount shows as local-only (`find_local_only_at`), which the node resolver and the scan
   for unrecorded entries ask too. The entry made from a listed name, with its sync state;
-  the entry a disk entry is marked as.
+  the entry a disk entry is marked as. `[tests]`
 - `directory_contents/entry_paths.rs` — the path the mount shows a OneDrive id at, the entry
   at a path, and the directories down to a path marked with the ids the mount shows there.
 - `node_table.rs` — `NodeTable`: the node ids (`NodeId`) given to the kernel, each with a

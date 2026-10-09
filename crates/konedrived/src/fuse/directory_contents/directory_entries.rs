@@ -168,3 +168,6 @@ impl DirectoryContents {
         all
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -398,3 +398,32 @@ fn the_entry_a_disk_entry_is_marked_as_is_found_by_its_mark() {
     xattr::set(dir.path().join("a.txt"), XATTR_ITEM_ID, b"unknown").unwrap();
     assert!(contents.find_entry_by_mark(Path::new("a.txt"), "a.txt").is_none());
 }
+
+/// A directory `depth` directories below the root of a drive that holds one chain of
+/// directories, `d1/d2/…`: its OneDrive id.
+fn chain_of_directories(store: &mut TreeStore, depth: usize) -> String {
+    let mut changes = vec![Change::Root(row("R", None, "root", Kind::Folder))];
+    let mut parent = "R".to_owned();
+    for n in 1..=depth {
+        let id = format!("D{n}");
+        changes.push(Change::Upsert(row(&id, Some(&parent), &format!("d{n}"), Kind::Folder)));
+        parent = id;
+    }
+    store.commit_page(&changes, "next").unwrap();
+    parent
+}
+
+/// The walk up from an id ends after `MAX_DEPTH` rows, the root among them: what is deeper
+/// has no path in the mount.
+#[test]
+fn a_path_is_found_down_to_the_depth_the_walk_is_capped_at_and_no_deeper() {
+    let deepest_found = konedrive_fs::MAX_DEPTH - 1;
+    let mut store = TreeStore::in_memory().unwrap();
+    let too_deep = chain_of_directories(&mut store, deepest_found + 1);
+    let dir = tempfile::tempdir().unwrap();
+    let contents = DirectoryContents::new(store, Arc::new(BackingDirectory::open(dir.path()).unwrap()));
+    let found = contents.find_path(&format!("D{deepest_found}")).unwrap();
+    assert_eq!(found.components().count(), deepest_found);
+    assert!(found.ends_with(format!("d{}/d{deepest_found}", deepest_found - 1)));
+    assert_eq!(contents.find_path(&too_deep), None);
+}
