@@ -153,7 +153,7 @@ impl Filesystem for Requests {
 
     /// A symbolic link has nothing OneDrive could hold: none is made.
     fn symlink(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _target: &Path, reply: ReplyEntry) {
-        reply.error(if self.0.writable() { Errno::EPERM } else { Errno::EROFS });
+        reply.error(if self.0.access_mode.is_read_write() { Errno::EPERM } else { Errno::EROFS });
     }
 
     fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -185,10 +185,10 @@ impl Filesystem for Requests {
     /// The attributes are konedrive's own to write; a program that copies a file's along is
     /// told the folder keeps none.
     fn setxattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, _value: &[u8], _flags: i32, _position: u32, reply: ReplyEmpty) {
-        reply.error(if self.0.writable() { Errno::ENOTSUP } else { Errno::EROFS });
+        reply.error(if self.0.access_mode.is_read_write() { Errno::ENOTSUP } else { Errno::EROFS });
     }
 
     fn removexattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, reply: ReplyEmpty) {
-        reply.error(if self.0.writable() { Errno::ENOTSUP } else { Errno::EROFS });
+        reply.error(if self.0.access_mode.is_read_write() { Errno::ENOTSUP } else { Errno::EROFS });
     }
 }

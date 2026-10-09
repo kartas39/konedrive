@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
@@ -89,7 +88,7 @@ fn a_directory_or_a_read_only_folder_is_not_written() {
     let f = folder(Vec::new());
     assert_eq!(f.ops.open_to_write(f.docs(), false).err(), Some(Errno::EISDIR));
     assert_eq!(f.ops.truncate(f.docs(), 0).err(), Some(Errno::EISDIR));
-    f.writable.store(false, Ordering::SeqCst);
+    f.access_mode.switch_to_read_only();
     assert_eq!(f.ops.open_to_write(f.node_id(1, "a.txt"), true).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
 }

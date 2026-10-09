@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+use std::sync::atomic::{AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,6 +22,7 @@ use fuser::Errno;
 use crate::folder::root::SyncRoot;
 use crate::status::report::Report;
 
+use super::access_mode::AccessMode;
 use super::announce::{Announce, Told};
 use super::download_states::DownloadStates;
 use super::file_download::FileDownloader;
@@ -76,8 +77,8 @@ pub(super) struct Shared {
     pub(super) pending: Mutex<(Vec<Announce>, Vec<String>)>,
     /// The mount is being taken off: the announcer says nothing more through it.
     pub(super) stopping: std::sync::atomic::AtomicBool,
-    /// Whether programs may change the folder ([`super::mode`]): shared with the recorder.
-    pub(super) writable: Arc<AtomicBool>,
+    /// Whether programs may change the folder ([`super::access_mode`]).
+    pub(super) access_mode: Arc<AccessMode>,
     /// What moves the user's own out of the way of a change from OneDrive
     /// ([`super::conflict_copies`]).
     pub(super) conflict_copies: ConflictCopies,

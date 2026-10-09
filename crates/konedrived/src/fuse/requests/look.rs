@@ -32,7 +32,7 @@ impl Requests {
     /// The attributes of `entry`, which the node `ino` stands for, in the folder's access
     /// mode.
     fn attributes_of(&self, entry: &DirectoryEntry, ino: u64) -> FileAttr {
-        attributes(ino, self.0.access_mode(), entry)
+        attributes(ino, &self.0.access_mode, entry)
     }
 
     /// The entry `name` of `parent`, as the folder has it now.
@@ -130,7 +130,7 @@ impl Requests {
 
     /// Whether the caller may do what it asks: anything, but write to a read-only folder.
     pub(super) fn allowed(&self, mask: fuser::AccessFlags, reply: ReplyEmpty) {
-        if mask.contains(fuser::AccessFlags::W_OK) && !self.0.writable() {
+        if mask.contains(fuser::AccessFlags::W_OK) && !self.0.access_mode.is_read_write() {
             return reply.error(Errno::EROFS);
         }
         reply.ok();

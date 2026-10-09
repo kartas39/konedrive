@@ -52,8 +52,8 @@ impl SyncService {
         let mount = Arc::clone(&prepared.mount);
         let sync = self.build(prepared, &reg, wanted);
         match sync.handles().outbox().cloned() {
-            Some(outbox) => mount.read_write(Arc::new(move || outbox.wake())),
-            None => mount.read_only(),
+            Some(outbox) => mount.switch_to_read_write(Arc::new(move || outbox.wake())),
+            None => mount.switch_to_read_only(),
         };
         if let Some(running) = stopped.folder_mut().sync_mut() {
             *running = Sync::Running(Box::new(sync));

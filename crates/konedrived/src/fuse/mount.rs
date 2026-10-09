@@ -15,6 +15,7 @@ use crate::folder::root::SyncRoot;
 use crate::hydration::source::{ContentSource, Share};
 use crate::status::report::Report;
 
+use super::access_mode::AccessMode;
 use super::announce::{announce, Announce};
 use super::download_states::DownloadStates;
 use super::file_download::{FileChangeAnnouncer, FileDownloader};
@@ -83,8 +84,8 @@ impl Mount {
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&backing_directory)));
             let node_table = Arc::new(Mutex::new(NodeTable::new()));
             let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::clone(&node_table)));
-            let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
+            let access_mode = Arc::new(AccessMode::read_only());
+            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&access_mode))?);
             let upload_rules = Arc::new(UploadRules::new(writing.ignore));
             let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), writing.machine_name);
             let open_writers = Arc::new(OpenWriters::default());
@@ -95,6 +96,7 @@ impl Mount {
                 Arc::clone(&open_writers),
                 Arc::clone(&outbox_recorder),
                 upload_rules,
+                Arc::clone(&access_mode),
             );
             let download_states = Arc::new(DownloadStates::new(download_after));
             let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
@@ -138,7 +140,7 @@ impl Mount {
                     tell: Mutex::new(None),
                     pending: Mutex::default(),
                     stopping: std::sync::atomic::AtomicBool::new(false),
-                    writable,
+                    access_mode,
                     conflict_copies,
                     outbox_recorder,
                     open_writers,
@@ -223,6 +225,30 @@ impl Mount {
     pub fn forget(&self) {
         self.stop();
         set_tree(&self.shared.root.path, false);
+    }
+
+    /// The folder takes changes from now on, and `wake` is called for each one recorded:
+    /// its sync uploads. Whether the modes shown changed with that.
+    pub fn switch_to_read_write(&self, wake: Arc<dyn Fn() + Send + Sync>) -> bool {
+        self.shared.outbox_recorder.set_wake(Some(wake));
+        let changed = self.shared.access_mode.switch_to_read_write();
+        if changed {
+            // What a lost row left unsent is found again.
+            let s = Arc::clone(&self.shared);
+            self.shared.outbox_recorder.run(move || s.write_operations.record_unrecorded_entries());
+        }
+        changed
+    }
+
+    /// The folder takes no change from now on. Whether the modes shown changed with that.
+    pub fn switch_to_read_only(&self) -> bool {
+        self.shared.outbox_recorder.set_wake(None);
+        self.shared.access_mode.switch_to_read_only()
+    }
+
+    /// Whether the folder takes changes now.
+    pub fn is_read_write(&self) -> bool {
+        self.shared.access_mode.is_read_write()
     }
 
     /// The downloads that failed and can be continued: each one's size on disk and its

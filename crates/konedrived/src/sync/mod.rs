@@ -346,7 +346,7 @@ impl SyncService {
     }
 
     /// `Writable`: whether the folder takes changes now, and what is changed in it is
-    /// uploaded: its mount says ([`Mount::is_writable`](crate::fuse::Mount::is_writable)).
+    /// uploaded: its mount says ([`Mount::is_read_write`](crate::fuse::Mount::is_read_write)).
     pub fn writable(&self) -> bool {
         self.state.get().folder.writable
     }

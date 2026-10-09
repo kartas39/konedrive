@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
@@ -45,7 +44,7 @@ fn what_may_not_be_made_is_refused_and_nothing_is_made() {
     assert_eq!(f.ops.make(1, crate::folder::disk::HOLDING, true, false).err(), Some(Errno::EPERM));
     assert_eq!(f.ops.make(1, ".Trash-1000", true, false).err(), Some(Errno::EPERM));
     assert_eq!(f.ops.make(99, "new.txt", false, false).err(), Some(Errno::ENOENT));
-    f.writable.store(false, Ordering::SeqCst);
+    f.access_mode.switch_to_read_only();
     assert_eq!(f.ops.make(1, "new.txt", false, false).err(), Some(Errno::EROFS));
     assert_eq!(std::fs::read_dir(&f.disk).unwrap().count(), 0);
     assert!(f.rows().is_empty());

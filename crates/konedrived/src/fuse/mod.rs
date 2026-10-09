@@ -8,7 +8,7 @@
 //! until it is complete and checked, and is then given the file's.
 //!
 //! A read-only folder's mount refuses every change. A read-write one's takes them
-//! ([`Mount::read_write`]): each change a program asks for is made in the backing
+//! ([`Mount::switch_to_read_write`]): each change a program asks for is made in the backing
 //! directory and recorded in the outbox by one thread, under the folder's tree lock, before the
 //! program is answered; the outbox worker sends what is recorded.
 //!
@@ -49,7 +49,6 @@ mod download_states;
 mod file_download;
 mod follow;
 mod local_only_entries;
-mod mode;
 mod mount;
 mod node_table;
 mod unsent_changes;

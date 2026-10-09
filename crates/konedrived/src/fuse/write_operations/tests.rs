@@ -6,13 +6,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxRow};
 use konedrive_tree::{Store, TreeStore};
 
 use super::WriteOperations;
+use crate::fuse::access_mode::AccessMode;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::{DirectoryContents, EntryState, FileSyncState};
@@ -31,7 +31,7 @@ pub(super) struct Folder {
     pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) node_lookup: Arc<NodeLookup>,
     pub(super) open_writers: Arc<OpenWriters>,
-    pub(super) writable: Arc<AtomicBool>,
+    pub(super) access_mode: Arc<AccessMode>,
     pub(super) ops: WriteOperations,
 }
 
@@ -48,11 +48,11 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
     let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));
     let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::new(Mutex::new(NodeTable::new()))));
-    let writable = Arc::new(AtomicBool::new(true));
-    let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&writable)).unwrap());
+    let access_mode = Arc::new(AccessMode::read_write());
+    let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&access_mode)).unwrap());
     let open_writers = Arc::new(OpenWriters::default());
-    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_lookup), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()));
-    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_lookup, open_writers, writable, ops }
+    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_lookup), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()), Arc::clone(&access_mode));
+    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_lookup, open_writers, access_mode, ops }
 }
 
 impl Folder {

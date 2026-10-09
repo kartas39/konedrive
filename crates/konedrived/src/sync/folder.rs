@@ -309,7 +309,7 @@ impl<'a> Stopped<'a> {
 
     /// Whether the folder's mount takes changes now.
     fn writable(&self) -> bool {
-        self.folder.mount().is_some_and(|mount| mount.is_writable())
+        self.folder.mount().is_some_and(|mount| mount.is_read_write())
     }
 
     /// Publishes the state as it is now.
@@ -370,7 +370,7 @@ impl SyncService {
         let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
         // No sync, no uploads: the mount takes no change until a read-write sync runs again.
         if let Some(mount) = stopped.folder.mount() {
-            stopped.was_writable = mount.read_only();
+            stopped.was_writable = mount.switch_to_read_only();
         }
         if let Some(sync) = stopped.folder.sync_mut() {
             match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {

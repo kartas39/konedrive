@@ -32,7 +32,7 @@ impl WriteOperations {
 
     /// Opens the node `node_id` for writing, cut to nothing when `truncate`.
     pub(in crate::fuse) fn open_to_write(&self, node_id: u64, truncate: bool) -> Result<OpenFile, Errno> {
-        self.check_writable()?;
+        self.access_mode.check_read_write()?;
         let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, truncate)?;
@@ -72,7 +72,7 @@ impl WriteOperations {
 
     /// Cuts or extends the node `node_id` to `size`.
     pub(in crate::fuse) fn truncate(&self, node_id: u64, size: u64) -> Result<(), Errno> {
-        self.check_writable()?;
+        self.access_mode.check_read_write()?;
         let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, size == 0)?;

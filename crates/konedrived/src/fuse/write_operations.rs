@@ -3,8 +3,8 @@
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: what each
 //! directory holds ([`DirectoryContents`]), the disk ([`BackingDirectory`]), the node ids
-//! ([`NodeLookup`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`]
-//! and the [`UploadRules`]. It owns no state of its own. Each operation is the same short
+//! ([`NodeLookup`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`],
+//! the [`UploadRules`] and the [`AccessMode`]. It owns no state of its own. Each operation is the same short
 //! sequence of steps:
 //!
 //! 1. check, through the directory contents and the rules: what is where, and the errno of a
@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use fuser::Errno;
 
+use super::access_mode::AccessMode;
 use super::backing_directory::BackingDirectory;
 use super::detections::FolderEvent;
 use super::directory::Directory;
@@ -52,6 +53,7 @@ pub(super) struct WriteOperations {
     open_writers: Arc<OpenWriters>,
     outbox_recorder: Arc<OutboxRecorder>,
     upload_rules: Arc<UploadRules>,
+    access_mode: Arc<AccessMode>,
 }
 
 impl WriteOperations {
@@ -62,17 +64,9 @@ impl WriteOperations {
         open_writers: Arc<OpenWriters>,
         outbox_recorder: Arc<OutboxRecorder>,
         upload_rules: Arc<UploadRules>,
+        access_mode: Arc<AccessMode>,
     ) -> Self {
-        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, upload_rules }
-    }
-
-    /// Refuses a change to a read-only folder as a read-only filesystem does.
-    fn check_writable(&self) -> Result<(), Errno> {
-        if self.outbox_recorder.is_writable() {
-            Ok(())
-        } else {
-            Err(Errno::EROFS)
-        }
+        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, upload_rules, access_mode }
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.

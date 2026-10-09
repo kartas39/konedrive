@@ -50,7 +50,7 @@ fn with_content(s: &Arc<Shared>, ino: u64, empty: bool, job: impl FnOnce(&Arc<Sh
 impl Requests {
     pub(super) fn opened_to_write(&self, ino: INodeNo, truncate: bool, reply: ReplyOpen) {
         let s = &self.0;
-        if let Err(e) = s.may_change() {
+        if let Err(e) = s.access_mode.check_read_write() {
             return reply.error(e);
         }
         // The two ends of one reply: whichever is called answers.
@@ -77,13 +77,13 @@ impl Requests {
 
     pub(super) fn made(&self, parent: INodeNo, name: &OsStr, dir: bool, reply: ReplyEntry) {
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(Errno::EINVAL) };
-        if let Err(e) = self.0.may_change() {
+        if let Err(e) = self.0.access_mode.check_read_write() {
             return reply.error(e);
         }
         on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, dir, false) {
             Ok((entry, _)) => {
                 let ino = s.node_lookup.assign_node_id(&entry, parent.0);
-                reply.entry(&TTL, &attributes(ino, s.access_mode(), &entry), Generation(0))
+                reply.entry(&TTL, &attributes(ino, &s.access_mode, &entry), Generation(0))
             }
             Err(e) => reply.error(e),
         });
@@ -91,14 +91,14 @@ impl Requests {
 
     pub(super) fn created(&self, parent: INodeNo, name: &OsStr, reply: ReplyCreate) {
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(Errno::EINVAL) };
-        if let Err(e) = self.0.may_change() {
+        if let Err(e) = self.0.access_mode.check_read_write() {
             return reply.error(e);
         }
         on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, false, true) {
             Ok((entry, opened)) => {
                 let ino = s.node_lookup.assign_node_id(&entry, parent.0);
                 let fh = opened.map_or(0, |opened| keep_handle(s, opened));
-                reply.created(&TTL, &attributes(ino, s.access_mode(), &entry), Generation(0), FileHandle(fh), FopenFlags::empty())
+                reply.created(&TTL, &attributes(ino, &s.access_mode, &entry), Generation(0), FileHandle(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
         });
@@ -106,7 +106,7 @@ impl Requests {
 
     pub(super) fn removed(&self, parent: INodeNo, name: &OsStr, dir: bool, reply: ReplyEmpty) {
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(Errno::ENOENT) };
-        if let Err(e) = self.0.may_change() {
+        if let Err(e) = self.0.access_mode.check_read_write() {
             return reply.error(e);
         }
         on_recorder(&self.0, move |s| match s.write_operations.remove(parent.0, &name, dir) {
@@ -117,7 +117,7 @@ impl Requests {
 
     pub(super) fn renamed(&self, parent: INodeNo, name: &OsStr, new_parent: INodeNo, new_name: &OsStr, flags: RenameFlags, reply: ReplyEmpty) {
         let (Some(name), Some(new_name)) = (name.to_str().map(str::to_owned), new_name.to_str().map(str::to_owned)) else { return reply.error(Errno::EINVAL) };
-        if let Err(e) = self.0.may_change() {
+        if let Err(e) = self.0.access_mode.check_read_write() {
             return reply.error(e);
         }
         if flags.contains(RenameFlags::RENAME_EXCHANGE) {
@@ -148,11 +148,11 @@ impl Requests {
     /// and owners are the mount's to say and are not kept.
     pub(super) fn set(&self, ino: INodeNo, size: Option<u64>, mtime: Option<TimeOrNow>, reply: ReplyAttr) {
         let s = &self.0;
-        if let Err(e) = s.may_change() {
+        if let Err(e) = s.access_mode.check_read_write() {
             return reply.error(e);
         }
         let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.node_lookup.find_entry(ino.0) {
-            Some((entry, _)) => reply.attr(&TTL, &attributes(ino.0, s.access_mode(), &entry)),
+            Some((entry, _)) => reply.attr(&TTL, &attributes(ino.0, &s.access_mode, &entry)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {
