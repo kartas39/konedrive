@@ -9,19 +9,14 @@
 //! the item's.
 
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::XATTR_ITEM_ID;
-use nix::fcntl::OFlag;
-use nix::sys::stat::Mode;
 use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::nodes::Key;
 use super::outbox::{Above, Waiting};
 use super::shared::Shared;
+use super::under::Object;
 use crate::folder::disk::daemon_owned;
 
 /// One name in a directory of the mount.
@@ -35,14 +30,6 @@ pub(super) enum Entry {
 pub(super) struct Local {
     pub(super) name: String,
     pub(super) object: Object,
-}
-
-/// A file or directory of the folder under the mount: its file handle, which is what it is,
-/// and what the filesystem says of it.
-#[derive(Debug, Clone)]
-pub(super) struct Object {
-    pub(super) handle: FileHandle,
-    pub(super) meta: fs::Metadata,
 }
 
 impl Entry {
@@ -87,33 +74,17 @@ impl Dir {
     }
 }
 
-/// The item id the object at `path` carries.
-pub(super) fn carried(path: &Path) -> Option<String> {
-    xattr::get(path, XATTR_ITEM_ID).ok().flatten().map(|id| String::from_utf8_lossy(&id).into_owned())
-}
-
 impl Shared {
-    /// What stands at `rel` in the folder under the mount, looked at once, through the
-    /// folder's descriptor and without following a link at its name: the handle and the
-    /// rest are of one object, whatever takes the name meanwhile. `None` when nothing
-    /// stands there.
-    pub(super) fn object(&self, rel: &Path) -> Option<Object> {
-        let found = nix::fcntl::openat(self.folder.as_fd(), rel, OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC, Mode::empty()).ok()?;
-        let found = File::from(found);
-        Some(Object { handle: FileHandle::of(&found).ok()?, meta: found.metadata().ok()? })
-    }
-
     /// The object without an item at `rel` in the folder under the mount.
     pub(super) fn local(&self, rel: &Path) -> Option<Local> {
         let name = rel.file_name()?;
         if daemon_owned(name) {
             return None;
         }
-        let path = self.under(rel);
-        let object = self.object(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
+        let object = self.under.object(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
         // One that carries the id of an item the store does not have is not an item's yet:
         // its upload is being committed, or the store was made anew.
-        let of_an_item = carried(&path).is_some_and(|id| self.row(&id).is_some());
+        let of_an_item = self.under.carried(rel).is_some_and(|id| self.row(&id).is_some());
         (!of_an_item).then(|| Local { name: name.to_string_lossy().into_owned(), object })
     }
 
@@ -151,7 +122,7 @@ impl Shared {
         items.extend(stored.into_iter().filter(|row| stays(row) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
         let mut all: Vec<Entry> = items.into_iter().map(Entry::Item).collect();
-        let listed = fs::read_dir(self.under(&dir.rel)).into_iter().flatten().flatten();
+        let listed = self.under.list(&dir.rel);
         for name in listed.map(|e| e.file_name()) {
             if name.to_str().is_some_and(|n| !taken.contains(n)) {
                 all.extend(self.local(&dir.rel.join(&name)).map(Entry::Local));
@@ -169,7 +140,7 @@ impl Shared {
             Entry::Item(row) => {
                 let key = Key::Item(row.id.clone());
                 if !nodes.inos.contains_key(&key) {
-                    let on_disk = nodes.rel(parent).and_then(|dir| self.object(&dir.join(&row.name)));
+                    let on_disk = nodes.rel(parent).and_then(|dir| self.under.object(&dir.join(&row.name)));
                     if let Some(object) = on_disk {
                         nodes.rekey(&Key::Local(object.handle), key.clone());
                     }
@@ -199,9 +170,9 @@ impl Shared {
             }
             Key::Local(handle) => {
                 // Another object at its place is not this node.
-                let object = self.object(&rel).filter(|o| o.handle == handle)?;
+                let object = self.under.object(&rel).filter(|o| o.handle == handle)?;
                 // It got its item since: the node is the item's from now on.
-                if let Some(row) = carried(&self.under(&rel)).and_then(|id| self.shown_as(&id, &name)) {
+                if let Some(row) = self.under.carried(&rel).and_then(|id| self.shown_as(&id, &name)) {
                     crate::panic::lock(&self.nodes).rekey(&Key::Local(handle), Key::Item(row.id.clone()));
                     return Some((Entry::Item(row), rel));
                 }
@@ -292,15 +263,14 @@ impl Shared {
         for name in rel.components() {
             let at = dir.rel.join(name);
             let id = name.as_os_str().to_str().and_then(|n| item(&dir, n));
-            let path = self.under(&at);
-            match fs::create_dir(&path) {
+            match self.under.make_dir(&at) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e),
             }
             if let Some(id) = &id {
-                if carried(&path).as_deref() != Some(id.as_str()) {
-                    xattr::set(&path, XATTR_ITEM_ID, id.as_bytes())?;
+                if self.under.carried(&at).as_deref() != Some(id.as_str()) {
+                    self.under.carry(&at, id)?;
                 }
             }
             dir = Dir { id, rel: at };

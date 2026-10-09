@@ -1,11 +1,8 @@
 //! A file or a directory a program removes from the folder.
 
-use std::fs;
-
 use fuser::Errno;
 
 use super::changes::{based, forgotten, leaves};
-use super::copies::remove_copy;
 use super::local::{Dir, Entry};
 use super::nodes::Key;
 use super::shared::{errno, Shared};
@@ -27,7 +24,7 @@ impl Shared {
         if dir && !self.entries(&Dir { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
-        let (path, at) = (self.under(&rel), rel.clone());
+        let at = rel.clone();
         let recorded = match &entry {
             Entry::Item(row) => {
                 let id = row.id.clone();
@@ -44,10 +41,10 @@ impl Shared {
         }
         match &entry {
             // The directory under the mount goes when nothing is left in it.
-            Entry::Item(_) if dir => drop(fs::remove_dir(&path)),
-            Entry::Item(row) => drop(remove_copy(&path, &row.id)),
-            Entry::Local(_) if dir => fs::remove_dir(&path).map_err(|e| errno(&e))?,
-            Entry::Local(_) => fs::remove_file(&path).map_err(|e| errno(&e))?,
+            Entry::Item(_) if dir => drop(self.under.remove_dir(&rel)),
+            Entry::Item(row) => drop(self.under.remove_copy(&rel, &row.id)),
+            Entry::Local(_) if dir => self.under.remove_dir(&rel).map_err(|e| errno(&e))?,
+            Entry::Local(_) => self.under.remove_file(&rel).map_err(|e| errno(&e))?,
         }
         if let Entry::Local(local) = &entry {
             // The object is gone, and no other is ever this one: nothing is found by it again.

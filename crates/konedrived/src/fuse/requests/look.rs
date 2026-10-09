@@ -1,8 +1,7 @@
 //! The requests that look: a name, a node, a directory's content, attributes.
 
 use std::ffi::OsStr;
-use std::io;
-use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -101,12 +100,10 @@ impl Requests {
     }
 
     pub(super) fn space(&self, reply: ReplyStatfs) {
-        // SAFETY: a plain structure the call fills.
-        let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
-        // SAFETY: the folder's own descriptor.
-        if unsafe { libc::fstatvfs(self.0.folder.as_raw_fd(), &mut v) } != 0 {
-            return reply.error(errno(&io::Error::last_os_error()));
-        }
+        let v = match self.0.under.space() {
+            Ok(v) => v,
+            Err(e) => return reply.error(errno(&e)),
+        };
         reply.statfs(v.f_blocks, v.f_bfree, v.f_bavail, v.f_files, v.f_ffree, v.f_bsize as u32, 255, v.f_frsize as u32);
     }
 
@@ -124,11 +121,11 @@ impl Requests {
         let s = &self.0;
         if ino.0 == 1 && (name == XATTR_ROOT || name == XATTR_DRIVE) {
             // The folder's own: what its registration and its first cycle wrote on it.
-            return xattr::FileExt::get_xattr(&s.folder, name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned());
+            return s.under.attribute(Path::new(""), name);
         }
         let (entry, rel) = s.node(ino.0)?;
         if name == XATTR_SYNC {
-            return xattr::get(s.under(&rel), name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned());
+            return s.under.attribute(&rel, name);
         }
         let Entry::Item(row) = entry else { return None };
         match name {

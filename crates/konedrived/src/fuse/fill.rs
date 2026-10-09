@@ -20,10 +20,6 @@ use crate::status::activity::{self, Kind as EventKind};
 use super::announce::Announce;
 use super::shared::{seconds, Shared};
 
-/// Where an earlier build of this module built its downloads, inside the folder: taken off at
-/// the mount. A download is built in a file without a name now ([`Shared::fill`]).
-pub(super) const OLD_STAGING: &str = ".konedrive-staging";
-
 /// How many downloads that failed keep what they have, to be continued from.
 pub(super) const UNFINISHED: usize = 16;
 
@@ -101,7 +97,7 @@ impl Shared {
             Some(file) => file,
             None => {
                 use std::os::unix::fs::OpenOptionsExt;
-                let opened = File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.under(Path::new("")));
+                let opened = File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.under.path(Path::new("")));
                 Arc::new(opened.map_err(io_errno)?)
             }
         };
@@ -127,7 +123,7 @@ impl Shared {
             if self.place(&row.id).as_deref() != Some(rel) {
                 return Err(libc::ESTALE);
             }
-            let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under(rel), Arc::clone(&file));
+            let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under.path(rel), Arc::clone(&file));
             // The file's own steps wait for the disk: not on the runtime's threads.
             tokio::task::spawn_blocking(move || {
                 placeholder::write_item_id(&file, &id)?;
@@ -183,6 +179,17 @@ impl Shared {
             }
         }
         done
+    }
+
+    /// What the folder has of the file `row` at `rel`: being downloaded, downloaded, or neither.
+    pub(super) fn state_of(&self, row: &Row, rel: &Path) -> State {
+        if crate::panic::lock(&self.fills).contains_key(&row.id) {
+            State::Hydrating
+        } else if self.under.has_copy(rel, &row.id) {
+            State::Hydrated
+        } else {
+            State::OnlineOnly
+        }
     }
 
     /// Downloads `row` to `rel` unless a download of it runs already; `waiter` is answered when

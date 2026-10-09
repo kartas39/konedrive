@@ -1,7 +1,7 @@
 //! A mount: made, served, and taken off.
 
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -17,11 +17,12 @@ use crate::hydration::source::{ContentSource, Share};
 use crate::status::report::Report;
 
 use super::announce::{announce, Announce};
-use super::fill::{Waiter, OLD_STAGING};
+use super::fill::Waiter;
 use super::lock::{clear_stale, set_tree};
 use super::nodes::Nodes;
 use super::requests::Requests;
 use super::shared::{other, Shared, Writing};
+use super::under::Under;
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
@@ -61,19 +62,12 @@ impl Mount {
             if super::older::left_by_an_older(&root.path) {
                 return Err(super::older::refusal(&root.path));
             }
-            // `fusermount3` mounts only where its user may write; the folder was locked when the
-            // daemon last ended.
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&root.path, fs::Permissions::from_mode(0o755));
-            }
             // Before the mount: afterwards this path is the mount.
-            let folder = File::open(&root.path)?;
-            let _ = fs::remove_dir_all(konedrive_fs::proc_path(&folder).join(OLD_STAGING));
+            let under = Arc::new(Under::open(&root.path)?);
             let reader = TreeStore::open_read_only(&store_path).map_err(other)?;
             let shared = Arc::new(Shared {
                 root: root.clone(),
-                folder,
+                under,
                 reader: Mutex::new(reader),
                 store,
                 nodes: Mutex::new(Nodes { next: 1, ..Nodes::default() }),
@@ -117,7 +111,7 @@ impl Mount {
             let session = fuser::Session::new(Requests(Arc::clone(&shared)), &root.path, &config)?;
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
-            crate::folder::root::mounted_over(&root.path, Arc::new(shared.folder.try_clone()?));
+            crate::folder::root::mounted_over(&root.path, Arc::new(shared.under.descriptor()?));
             let (jobs, queued) = mpsc::channel();
             *crate::panic::lock(&shared.jobs) = Some(jobs);
             let recording = Arc::clone(&shared);
@@ -133,7 +127,7 @@ impl Mount {
             };
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
             // Under the mount the folder is the daemon's alone, and open to it.
-            set_tree(&shared.under(Path::new("")), false);
+            set_tree(&shared.under.path(Path::new("")), false);
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
             shared.sweep();
@@ -195,14 +189,14 @@ impl Mount {
     /// checkpoint.
     #[cfg(any(test, feature = "fault-injection"))]
     pub fn staged(&self) -> Vec<(u64, Option<u64>)> {
-        let seen = |(_, file): &(String, Arc<File>)| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
+        let seen = |(_, file): &(String, Arc<fs::File>)| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
         crate::panic::lock(&self.shared.unfinished).iter().filter_map(seen).collect()
     }
 
     /// The folder under the mount, for what must not go through the mount: a walk of what is
     /// downloaded.
     pub fn under(&self) -> PathBuf {
-        konedrive_fs::proc_path(&self.shared.folder)
+        self.shared.under.path(Path::new(""))
     }
 }
 

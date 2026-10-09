@@ -1,7 +1,6 @@
 //! The folder under the mount made to follow a cycle of the listing: what changed, and what
 //! of it the folder holds.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use konedrive_tree::{Kind, Row, Table, TreeStore};
@@ -9,8 +8,6 @@ use konedrive_tree::{Kind, Row, Table, TreeStore};
 use super::announce::Announce;
 use super::changes::rebase;
 use super::conflict::Met;
-use super::copies::remove_copy;
-use super::local::carried;
 use super::mount::Mount;
 use crate::local::held::Rw;
 
@@ -68,8 +65,8 @@ impl Mount {
         // The copy of item `id` at `rel`, or its directory: a file that is not that item's
         // download is never moved or removed.
         let ours = |rel: &Path, id: &str, kind: Kind| match kind {
-            Kind::File => s.has_copy(rel, id),
-            Kind::Folder => fs::symlink_metadata(s.under(rel)).is_ok_and(|m| m.is_dir()) && carried(&s.under(rel)).is_none_or(|carried| carried == id),
+            Kind::File => s.under.has_copy(rel, id),
+            Kind::Folder => s.under.stat(rel).is_some_and(|m| m.is_dir()) && s.under.carried(rel).is_none_or(|carried| carried == id),
         };
         let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), Met::default(), Vec::new());
         for step in &steps {
@@ -78,7 +75,7 @@ impl Mount {
             match (&step.old, &step.new) {
                 (Some((old, was)), None) => {
                     match old.kind {
-                        Kind::File => drop(remove_copy(&s.under(was), &step.id)),
+                        Kind::File => drop(s.under.remove_copy(was, &step.id)),
                         Kind::Folder => gone.push((step.id.clone(), was.clone())),
                     }
                     unpinned.push(step.id.clone());
@@ -97,10 +94,10 @@ impl Mount {
                         met.ops.push(rebase(was, now));
                     }
                     if step.content_changed() {
-                        remove_copy(&s.under(was), &step.id);
-                    } else if was != now && ours(was, &step.id, old.kind) && fs::symlink_metadata(s.under(now)).is_err() {
+                        s.under.remove_copy(was, &step.id);
+                    } else if was != now && ours(was, &step.id, old.kind) && s.under.stat(now).is_none() {
                         let _ = now.parent().map(|dir| s.backing_staged(store, dir));
-                        let _ = fs::rename(s.under(was), s.under(now));
+                        let _ = s.under.rename(was, now);
                     }
                     if was != now {
                         told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));

@@ -137,7 +137,7 @@ impl Requests {
                 TimeOrNow::SpecificTime(at) => at,
                 TimeOrNow::Now => SystemTime::now(),
             };
-            if let Ok(file) = std::fs::File::open(s.under(&rel)) {
+            if let Ok(file) = s.under.read(&rel) {
                 let _ = konedrive_fs::placeholder::set_mtime(&file, at);
             }
         };

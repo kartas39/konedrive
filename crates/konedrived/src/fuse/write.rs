@@ -5,8 +5,6 @@
 //! change on the outbox holds the item, so nothing from OneDrive replaces the copy, and what
 //! the mount shows of the file is the copy's own.
 
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,7 +14,6 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Row;
 
 use super::changes::{based, settles, waits, Place};
-use super::copies::mark_copy;
 use super::local::Entry;
 use super::nodes::Key;
 use super::read::Handle;
@@ -28,23 +25,22 @@ impl Shared {
     /// that is needed and missing is the caller's to download first.
     fn writable_file(&self, entry: &Entry, rel: &Path, empty: bool) -> Result<(), Errno> {
         let Entry::Item(row) = entry else { return Ok(()) };
-        let path = self.under(rel);
-        if !self.has_copy(rel, &row.id) {
+        if !self.under.has_copy(rel, &row.id) {
             if !empty && row.size > 0 {
                 return Err(Errno::EIO);
             }
             self.backing(rel.parent().unwrap_or(Path::new(""))).map_err(|e| errno(&e))?;
-            OpenOptions::new().write(true).create_new(true).mode(0o644).open(&path).map_err(|e| errno(&e))?;
-            mark_copy(&path, &row.id).map_err(|e| errno(&e))?;
+            self.under.make_file(rel).map_err(|e| errno(&e))?;
+            self.under.mark_copy(rel, &row.id).map_err(|e| errno(&e))?;
         }
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).map_err(|e| errno(&e))
+        self.under.writable(rel).map_err(|e| errno(&e))
     }
 
     /// Whether writing node `ino` needs its content downloaded first: an item's file that
     /// is not downloaded and is not cut to nothing.
     pub(super) fn needs_download(&self, ino: u64, empty: bool) -> Option<(Row, std::path::PathBuf)> {
         match self.node(ino)? {
-            (Entry::Item(row), rel) if !empty && row.size > 0 && !self.has_copy(&rel, &row.id) => Some((row, rel)),
+            (Entry::Item(row), rel) if !empty && row.size > 0 && !self.under.has_copy(&rel, &row.id) => Some((row, rel)),
             _ => None,
         }
     }
@@ -57,7 +53,7 @@ impl Shared {
             return Err(Errno::EISDIR);
         }
         self.writable_file(&entry, &rel, truncate)?;
-        let file = OpenOptions::new().read(true).write(true).truncate(truncate).open(self.under(&rel)).map_err(|e| errno(&e))?;
+        let file = self.under.write(&rel, truncate).map_err(|e| errno(&e))?;
         // Its content is the user's own already when the outbox holds a change of it; from
         // the first writer on the outbox holds it in any case.
         let own = truncate || entry.id().is_some_and(|id| self.waiting().changed.contains(id));
@@ -110,7 +106,7 @@ impl Shared {
             return Err(Errno::EISDIR);
         }
         self.writable_file(&entry, &rel, size == 0)?;
-        let file: File = OpenOptions::new().write(true).open(self.under(&rel)).map_err(|e| errno(&e))?;
+        let file = self.under.write(&rel, false).map_err(|e| errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
         if self.writers.open(ino) {
@@ -126,7 +122,7 @@ impl Shared {
     pub(super) fn content(&self, ino: u64, open: bool) -> Result<(), Errno> {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, above))) = (self.node(ino), self.above(ino)) else { return Ok(()) };
-        let Some(object) = self.object(&rel) else { return Ok(()) };
+        let Some(object) = self.under.object(&rel) else { return Ok(()) };
         let name = entry.name().to_owned();
         let recorded = match entry {
             Entry::Local(_) if self.stays_local(&above, &name) => return Ok(()),

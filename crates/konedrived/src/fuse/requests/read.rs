@@ -39,11 +39,11 @@ impl Requests {
         }
         let Some((entry, rel)) = s.node(ino.0) else { return reply.error(Errno::ENOENT) };
         let on_disk = match &entry {
-            Entry::Item(row) => s.has_copy(&rel, &row.id),
+            Entry::Item(row) => s.under.has_copy(&rel, &row.id),
             Entry::Local(_) => true,
         };
         let copy = if on_disk {
-            match File::open(s.under(&rel)) {
+            match s.under.read(&rel) {
                 Ok(file) => Some(Arc::new(file)),
                 Err(e) => return reply.error(errno(&e)),
             }
@@ -69,8 +69,8 @@ impl Requests {
         }
         let Some(id) = id else { return reply.error(Errno::EIO) };
         // Downloaded since it was opened: the handle reads the copy from now on.
-        if s.has_copy(&rel, &id) {
-            return match File::open(s.under(&rel)) {
+        if s.under.has_copy(&rel, &id) {
+            return match s.under.read(&rel) {
                 Ok(file) => {
                     let file = Arc::new(file);
                     if let Some(handle) = crate::panic::lock(&s.handles).get_mut(&fh.0) {

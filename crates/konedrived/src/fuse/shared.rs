@@ -23,11 +23,12 @@ use super::outbox::Waiting;
 use super::recorder::Job;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
+use super::under::Under;
 
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
-    /// The folder under the mount, opened before the mount.
-    pub(super) folder: File,
+    /// The folder under the mount ([`super::under`]).
+    pub(super) under: Arc<Under>,
     /// The store, for reading alone: what the mount's requests ask.
     pub(super) reader: Mutex<TreeStore>,
     /// The store's one writer, for the pins.
@@ -113,11 +114,6 @@ pub(super) fn other(e: impl ToString) -> io::Error {
 }
 
 impl Shared {
-    /// A path in the folder under the mount: through the descriptor, never through the mount.
-    pub(super) fn under(&self, rel: &Path) -> PathBuf {
-        konedrive_fs::proc_path(&self.folder).join(rel)
-    }
-
     pub(super) fn read<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, konedrive_tree::TreeError>) -> Option<T> {
         ask(&crate::panic::lock(&self.reader)).ok()
     }

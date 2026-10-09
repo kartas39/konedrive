@@ -11,7 +11,6 @@ use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
 use super::announce::Announce;
-use super::copies::remove_copy;
 use super::local::Entry;
 use super::mount::Mount;
 
@@ -72,7 +71,7 @@ impl Mount {
         if row.kind != Kind::File {
             return Err(Refused::NoItem);
         }
-        if self.shared.has_copy(&rel, &row.id) {
+        if self.shared.under.has_copy(&rel, &row.id) {
             return Ok(());
         }
         let (tell, told) = oneshot::channel();
@@ -103,7 +102,7 @@ impl Mount {
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
             for (file, at) in s.files_below(&row) {
-                if !s.has_copy(&at, &file.id) {
+                if !s.under.has_copy(&at, &file.id) {
                     continue;
                 }
                 // What a pin keeps, a download is filling, or holds content of the user's own
@@ -112,7 +111,7 @@ impl Mount {
                     freed.kept += 1;
                     continue;
                 }
-                match remove_copy(&s.under(&at), &file.id) {
+                match s.under.remove_copy(&at, &file.id) {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
@@ -146,7 +145,7 @@ impl Mount {
     pub fn downloaded_under(&self, path: &Path) -> Result<(u64, u64), Refused> {
         let (row, _) = self.item(path)?;
         let s = &self.shared;
-        let sizes = s.files_below(&row).into_iter().filter_map(|(file, at)| s.copy(&at, &file.id));
+        let sizes = s.files_below(&row).into_iter().filter_map(|(file, at)| s.under.copy(&at, &file.id));
         Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks() * 512)))
     }
 }

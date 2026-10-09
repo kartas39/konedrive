@@ -9,7 +9,8 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState, Reason};
 use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
-use super::local::{carried, Dir, Object};
+use super::local::Dir;
+use super::under::Object;
 use super::shared::Shared;
 use crate::local::names;
 
@@ -133,7 +134,7 @@ impl Shared {
         }
         let mut at = dir.rel.as_path();
         while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
-            if ignore.matches(name) && carried(&self.under(at)).is_none() {
+            if ignore.matches(name) && self.under.carried(at).is_none() {
                 return true;
             }
             at = parent;
@@ -145,14 +146,14 @@ impl Shared {
     /// is sent from now on: itself, and what it holds, by the same rules as anything new.
     pub(super) fn below(&self, dir: &Dir, name: &str, into: &mut Vec<Detection>) {
         let rel = dir.rel.join(name);
-        let Some(object) = self.object(&rel) else { return };
-        if self.stays_local(dir, name) || carried(&self.under(&rel)).is_some() || !(object.meta.is_dir() || object.meta.is_file()) {
+        let Some(object) = self.under.object(&rel) else { return };
+        if self.stays_local(dir, name) || self.under.carried(&rel).is_some() || !(object.meta.is_dir() || object.meta.is_file()) {
             return;
         }
         into.push(Place { dir, name }.new(&object, false));
         if object.meta.is_dir() && into.len() < MOST_BELOW {
             let inside = Dir { id: None, rel: rel.clone() };
-            for entry in std::fs::read_dir(self.under(&rel)).into_iter().flatten().flatten() {
+            for entry in self.under.list(&rel) {
                 if let Some(name) = entry.file_name().to_str() {
                     self.below(&inside, name, into);
                 }

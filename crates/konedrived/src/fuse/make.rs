@@ -1,8 +1,7 @@
 //! A file or a directory a program makes in the folder: made in the folder under the mount,
 //! where it has no item yet, and recorded for the outbox to send.
 
-use std::fs::{self, File, OpenOptions};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -12,7 +11,6 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Row};
 
 use super::changes::{waits, Place};
-use super::copies::mark_copy;
 use super::local::{Entry, Local};
 use super::read::Handle;
 use super::shared::{errno, Shared};
@@ -40,16 +38,15 @@ impl Shared {
         }
         let rel = above.rel.join(name);
         self.backing(&above.rel).map_err(|e| errno(&e))?;
-        let path = self.under(&rel);
         let file: Option<File> = if dir {
-            fs::create_dir(&path).map_err(|e| errno(&e))?;
+            self.under.make_dir(&rel).map_err(|e| errno(&e))?;
             None
         } else {
-            Some(OpenOptions::new().read(true).write(true).create_new(true).mode(0o644).open(&path).map_err(|e| errno(&e))?)
+            Some(self.under.make_file(&rel).map_err(|e| errno(&e))?)
         };
-        let unmake = || drop(if dir { fs::remove_dir(&path) } else { fs::remove_file(&path) });
+        let unmake = || drop(if dir { self.under.remove_dir(&rel) } else { self.under.remove_file(&rel) });
         // What cannot be looked at is not recorded, and is not left in the folder either.
-        let Some(object) = self.object(&rel) else {
+        let Some(object) = self.under.object(&rel) else {
             unmake();
             return Err(Errno::EIO);
         };
@@ -62,7 +59,7 @@ impl Shared {
                 if open {
                     waits(&mut update);
                 }
-                mark_copy(&path, &base.id).map_err(|e| errno(&e))?;
+                self.under.mark_copy(&rel, &base.id).map_err(|e| errno(&e))?;
                 self.record(move |_| Ok((vec![update], Vec::new()))).map(drop)
             }
             None if self.stays_local(&above, name) => Ok(()),

@@ -5,12 +5,9 @@
 //! on this computer. A file without an item renamed over an item's file is that item's new
 //! content: programs save that way.
 
-use std::fs;
-
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
-use super::copies::mark_copy;
 use super::changes::{based, forgotten, leaves, rebase, waits, Place};
 use super::local::{Dir, Entry};
 use super::nodes::Key;
@@ -53,14 +50,13 @@ impl Shared {
         // The folder under the mount first: whatever the item or object has there moves, and
         // what stood at the new place goes.
         self.backing(&to_dir.rel).map_err(|e| errno(&e))?;
-        let (was, now) = (self.under(&from), self.under(&to));
-        let displaced = fs::symlink_metadata(&now).ok();
-        let moved = fs::symlink_metadata(&was).is_ok();
+        let displaced = self.under.stat(&to);
+        let moved = self.under.stat(&from).is_some();
         if let Some(meta) = displaced.as_ref().filter(|m| m.is_dir() || !moved) {
-            let _ = if meta.is_dir() { fs::remove_dir(&now) } else { fs::remove_file(&now) };
+            let _ = if meta.is_dir() { self.under.remove_dir(&to) } else { self.under.remove_file(&to) };
         }
         if moved {
-            fs::rename(&was, &now).map_err(|e| errno(&e))?;
+            self.under.rename(&from, &to).map_err(|e| errno(&e))?;
         }
         let taken_over = match (&src, &dst) {
             (Entry::Local(local), Some(Entry::Item(over))) if !local.object.meta.is_dir() && !over.name.is_empty() => Some(over.id.clone()),
@@ -80,7 +76,7 @@ impl Shared {
         let src_item = src.id().map(str::to_owned);
         let src_object = match &src {
             Entry::Local(local) => Some(local.object.clone()),
-            Entry::Item(_) => self.object(&to).filter(|_| moved),
+            Entry::Item(_) => self.under.object(&to).filter(|_| moved),
         };
         let (src_dir, dst_item) = (src.is_dir(), dst.as_ref().and_then(|d| d.id().map(str::to_owned)));
         let dst_object = match &dst {
@@ -142,13 +138,13 @@ impl Shared {
         if let Err(e) = recorded {
             tracing::warn!("the move of {} to {} could not be recorded: {e}", from.display(), to.display());
             if moved {
-                let _ = fs::rename(&now, &was);
+                let _ = self.under.rename(&to, &from);
             }
             return Err(Errno::EIO);
         }
         if let Some(id) = &taken_over {
             // The file is the item's content from here on: read as its downloaded copy.
-            let _ = mark_copy(&now, id);
+            let _ = self.under.mark_copy(&to, id);
         }
         let mut nodes = crate::panic::lock(&self.nodes);
         nodes.moved(src_ino, new_parent, new_name);

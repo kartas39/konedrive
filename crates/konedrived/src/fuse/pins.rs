@@ -38,7 +38,7 @@ impl Shared {
             for id in pins {
                 let Some(row) = s.row(&id) else { continue };
                 for (file, rel) in s.files_below(&row) {
-                    if !s.has_copy(&rel, &file.id) {
+                    if !s.under.has_copy(&rel, &file.id) {
                         s.ensure(file, rel, Class::Download, None);
                     }
                 }

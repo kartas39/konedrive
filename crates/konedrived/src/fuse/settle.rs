@@ -7,11 +7,10 @@
 //! without an item and without a row would then never be sent, and a directory without one
 //! holds back everything below it. One walk of the folder under the mount records them anew.
 
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::local::{carried, Dir};
+use super::local::Dir;
 use super::shared::Shared;
 
 impl Shared {
@@ -21,14 +20,14 @@ impl Shared {
         let mut found = Vec::new();
         let mut dirs = vec![Dir { id: self.read(|s| s.root_item_id()).flatten(), rel: PathBuf::new() }];
         while let Some(dir) = dirs.pop() {
-            for entry in fs::read_dir(self.under(&dir.rel)).into_iter().flatten().flatten() {
+            for entry in self.under.list(&dir.rel) {
                 let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
                 let rel = dir.rel.join(&name);
                 if self.local(&rel).is_some() {
                     // With what it holds, when it is a directory.
                     self.below(&dir, &name, &mut found);
                 } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    dirs.push(Dir { id: carried(&self.under(&rel)), rel });
+                    dirs.push(Dir { id: self.under.carried(&rel), rel });
                 }
             }
         }

@@ -186,9 +186,17 @@ daemon shows OneDrive.
 
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
-- `shared.rs` — `Shared`: the folder under the mount, the store read for the requests, and
-  what is under way; a path's row; `Writing`, what a folder that takes changes shares with
-  its sync.
+- `shared.rs` — `Shared`: the parts of a mount held together, the store read for the requests,
+  and what is under way; a path's row; `Writing`, what a folder that takes changes shares
+  with its sync.
+- `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
+  mount; it knows the disk and nothing else. A path of the folder, its space, an attribute.
+  `[tests]`
+- `under/objects.rs` — `Object`: what stands at a place, its file handle, the item id it
+  carries. `[tests]`
+- `under/copies.rs` — an item's downloaded copy: whether a place holds it whole, marking one,
+  removing one only when it is that item's. `[tests]`
+- `under/files.rs` — the files and directories a change makes, renames and removes. `[tests]`
 - `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
   `is_writable`.
 - `requests.rs` — the mount's requests (`Filesystem`), each handed on.
@@ -204,10 +212,10 @@ daemon shows OneDrive.
   and the files and directories OneDrive has no item for yet, each known by its file handle.
 - `outbox.rs` — the outbox's rows laid over the store: items moved, removed or changed here.
   `[tests]`
-- `copies.rs` — the downloaded copies: which file is an item's, its state, its removal.
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
   background downloads.
-- `fill.rs` — the download of a whole file into a file without a name, and its naming.
+- `fill.rs` — the download of a whole file into a file without a name, and its naming; the
+  state of a file: downloaded, being downloaded, or neither.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
 - `recorder.rs` — the one thread that makes and records each change a program asks for,
