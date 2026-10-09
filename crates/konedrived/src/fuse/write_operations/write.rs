@@ -104,7 +104,7 @@ impl WriteOperations {
             }
             FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => {}
         }
-        self.backing_directory.make_writable(rel).map_err(|e| to_errno(&e))
+        self.backing_directory.grant_write_bit(rel).map_err(|e| to_errno(&e))
     }
 
     /// Records that the content of the node `node_id` is the user's own now, by `write`:
