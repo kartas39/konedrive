@@ -96,10 +96,9 @@ pub(crate) enum AccountCmd {
     /// Remove an account: forget its folder, sign it out, delete its token and cached data
     ///
     /// Asks nothing. Deleted: the refresh token, the cached name and quota, the list of
-    /// OneDrive items, the activity and the conflicts list. Kept: the folder's files, as they
-    /// are (a file that was never downloaded stays as an empty placeholder, which reads as
-    /// zeros), and rescued files. Refused, changing nothing, while the folder needs the helper
-    /// to be forgotten and the helper is not connected.
+    /// OneDrive items, the activity and the conflicts list. Kept: what the folder holds on
+    /// this computer — the files that were downloaded and your own (a file that was never
+    /// downloaded is not there) — and rescued files.
     Remove {
         /// The account: its id, label or email
         #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
@@ -142,12 +141,10 @@ pub(crate) enum SettingsCmd {
 #[derive(Subcommand)]
 pub(crate) enum DevCmd {
     /// Add an account under a label, signed out and with no folder yet, which never has to
-    /// sign in: for a folder that shows a local directory (`sync
-    /// register-without-interception`, `sync populate-from`)
+    /// sign in
     // The rule is the daemon's sentence, so the help says what the daemon takes.
     #[command(long_about = format!(
-        "Add an account under a label, signed out and with no folder yet, which never has to sign in: for a \
-         folder that shows a local directory\n\n{}.",
+        "Add an account under a label, signed out and with no folder yet, which never has to sign in\n\n{}.",
         konedrive_dbus::LABEL_RULE
     ))]
     AddAccount {
@@ -184,20 +181,8 @@ pub(crate) enum SyncCmd {
 pub(crate) enum FolderCmd {
     /// Bind an empty folder to the account
     Register { path: String },
-    /// The developer's mode: bind a local folder with NOTHING intercepting opens inside it
-    ///
-    /// The folder is filled from a directory with `populate-from`. Without
-    /// the helper, files that are not downloaded read as zeros until you
-    /// `hydrate` them by hand. It never shows OneDrive: that takes `register`
-    /// and the helper. Named after the D-Bus method it calls
-    /// (`Folder.RegisterWithoutInterception`) rather than something shorter, on
-    /// purpose: the cost this mode carries belongs in the word you type, not
-    /// just in a warning you might scroll past.
-    RegisterWithoutInterception { path: String },
     /// Forget the account's folder (local files are left as they are)
     Forget,
-    /// Fill the account's folder with placeholders mirroring a local directory
-    PopulateFrom { source_dir: String },
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
     /// Ask OneDrive for changes now

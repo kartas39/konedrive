@@ -71,10 +71,6 @@ pub trait Accounts {
     /// What every account does on battery: `sync`, `power-saver` or `pause`.
     #[zbus(property)]
     fn on_battery(&self) -> zbus::Result<String>;
-    /// The privileged helper as the daemon sees it, as [`HelperState`](crate::HelperState)
-    /// spells it.
-    #[zbus(property)]
-    fn helper_state(&self) -> zbus::Result<String>;
     /// Trouble that belongs to no account; empty when there is none.
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
@@ -189,9 +185,7 @@ pub trait Folder {
     /// Refused `Overlaps` for a folder that is, is inside, or contains
     /// another account's folder.
     fn register(&self, path: &str) -> zbus::Result<()>;
-    fn register_without_interception(&self, path: &str) -> zbus::Result<()>;
     fn unregister(&self) -> zbus::Result<()>;
-    fn populate_from_directory(&self, source_dir: &str) -> zbus::Result<u64>;
     fn refresh(&self) -> zbus::Result<()>;
     fn skipped(&self) -> zbus::Result<Vec<NotInFolder>>;
     fn free_up_space(&self) -> zbus::Result<FreedSpace>;
@@ -210,7 +204,7 @@ pub trait Folder {
 
     #[zbus(property)]
     fn path(&self) -> zbus::Result<String>;
-    /// `none`, `listing`, `ready`, `no-interception` or `error`.
+    /// `none`, `waiting`, `listing`, `ready` or `error`.
     #[zbus(property)]
     fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]

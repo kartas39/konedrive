@@ -55,9 +55,8 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             let conflicts = sync.conflicts.list().await.unwrap_or_default();
             let result = daemon.manager.remove(&target.path.as_ref()).await;
             if let Err(error) = result {
-                let helper = daemon.manager.helper_state().await.unwrap_or_default();
                 let source = sync.folder.source().await.unwrap_or_default();
-                let context = Context { root: &folder, source: &source, helper: &helper, ..Default::default() };
+                let context = Context { root: &folder, source: &source, ..Default::default() };
                 let action = SyncAction::Remove(&target.label);
                 bail!("{}", explain_sync_error_in(action, &error, context));
             }

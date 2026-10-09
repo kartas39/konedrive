@@ -17,7 +17,6 @@
 //! `/org/konedrive/Daemon`, the single-account object of earlier versions.
 
 pub mod accounts;
-mod helper;
 pub mod overall;
 mod refusal;
 pub mod rows;
@@ -27,7 +26,6 @@ pub mod version;
 
 use zbus::zvariant::OwnedObjectPath;
 
-pub use helper::HelperState;
 pub use refusal::Refusal;
 
 pub const SERVICE_NAME: &str = "org.konedrive.Daemon";

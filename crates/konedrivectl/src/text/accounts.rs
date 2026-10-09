@@ -77,8 +77,8 @@ pub fn removed_text(label: &str, folder: &str, conflicts: &[Conflict]) -> String
         out.push_str("It had no folder.\n");
     } else {
         out.push_str(&format!(
-            "Kept: the folder {folder}, as it is. A file in it that was never downloaded stays as an empty \
-             placeholder, which reads as zeros.\n"
+            "Kept: the folder {folder}, with the files that were downloaded and your own. A file that was \
+             never downloaded is not in it.\n"
         ));
     }
     let rescued = conflicts.iter().filter(|c| !c.is_copy()).count();

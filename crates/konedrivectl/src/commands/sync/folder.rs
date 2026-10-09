@@ -5,7 +5,7 @@ use anyhow::{bail, Context as _};
 use konedrive_dbus::accounts::FolderProxies;
 use konedrivectl::text::files::{conflicts_text, free_up_text};
 use konedrivectl::text::folder as said;
-use konedrivectl::text::formats::{parse_duration, warning_text, NOT_ABSOLUTE, NOT_UTF8_PATH};
+use konedrivectl::text::formats::{parse_duration, NOT_ABSOLUTE, NOT_UTF8_PATH};
 use konedrivectl::text::refusals::SyncAction;
 use konedrivectl::text::transfers::{transfers_text, uploading_line};
 use konedrivectl::text::uploads::{not_uploaded_text, outbox_text, quota_text, PER_FILE_SHOWN};
@@ -30,33 +30,13 @@ pub(super) async fn folder_command(
         FolderCmd::Register { path } => {
             let absolute = absolute_str(&path)?;
             let result = proxy.folder.register(&absolute).await;
-            explained(daemon, chosen, proxy, SyncAction::Register(&absolute), result).await?;
+            explained(chosen, proxy, SyncAction::Register(&absolute), result).await?;
             fail_if_not_recovered(proxy, &absolute).await?;
-            println!("{tag}{}", said::registered_text(&absolute, true));
-        }
-        FolderCmd::RegisterWithoutInterception { path } => {
-            let absolute = absolute_str(&path)?;
-            let result = proxy.folder.register_without_interception(&absolute).await;
-            explained(daemon, chosen, proxy, SyncAction::RegisterWithoutInterception(&absolute), result).await?;
-            fail_if_not_recovered(proxy, &absolute).await?;
-            println!("{tag}{}", said::registered_text(&absolute, false));
-            // Shown every time: a placeholder nobody intercepts reads as zeros, and that is
-            // never left to be inferred.
-            let last_error = proxy.folder.last_error().await?;
-            if !last_error.is_empty() {
-                eprintln!("{}", warning_text(&last_error));
-            }
+            println!("{tag}{}", said::registered_text(&absolute));
         }
         FolderCmd::Forget => {
-            explained(daemon, chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
+            explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
-            fail_if_folder_unhealthy(proxy).await?;
-        }
-        FolderCmd::PopulateFrom { source_dir } => {
-            let absolute = absolute_str(&source_dir)?;
-            let result = proxy.folder.populate_from_directory(&absolute).await;
-            let created = explained(daemon, chosen, proxy, SyncAction::PopulateFrom(&absolute), result).await?;
-            println!("{tag}{}", said::populated_text(created));
             fail_if_folder_unhealthy(proxy).await?;
         }
         FolderCmd::Skipped => {
@@ -68,12 +48,12 @@ pub(super) async fn folder_command(
                 // Read before `Skipped()` itself: a listing that finishes in between means
                 // only that the list is a little more complete than the note says.
                 let listing = proxy.folder.state().await? == "listing";
-                let skipped = explained(daemon, chosen, proxy, SyncAction::Skipped, proxy.folder.skipped().await).await?;
+                let skipped = explained(chosen, proxy, SyncAction::Skipped, proxy.folder.skipped().await).await?;
                 print!("{}", said::skipped_text(&skipped, listing));
             }
         }
         FolderCmd::Refresh => {
-            explained(daemon, chosen, proxy, SyncAction::Refresh, proxy.folder.refresh().await).await?;
+            explained(chosen, proxy, SyncAction::Refresh, proxy.folder.refresh().await).await?;
             println!("{tag}{}", said::REFRESHED);
             // `Refresh` read the quota again, the account's one: what it read.
             let account = daemon.account(&chosen.account.path).await?;
@@ -81,7 +61,7 @@ pub(super) async fn folder_command(
             print!("{}", quota_text(&state, free, proxy.queue.quota_full().await?));
         }
         FolderCmd::Activity { limit } => {
-            let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.activity.recent(limit).await).await?;
+            let events = explained(chosen, proxy, SyncAction::Activity, proxy.activity.recent(limit).await).await?;
             print!("{}", said::activity_text(&events));
         }
         FolderCmd::Transfers => {
@@ -91,7 +71,7 @@ pub(super) async fn folder_command(
         }
         FolderCmd::Outbox { all } => {
             let limit = if all { 0 } else { OUTBOX_SHOWN + 1 };
-            let mut rows = explained(daemon, chosen, proxy, SyncAction::Outbox, proxy.queue.changes(limit).await).await?;
+            let mut rows = explained(chosen, proxy, SyncAction::Outbox, proxy.queue.changes(limit).await).await?;
             let more = !all && rows.len() > OUTBOX_SHOWN as usize;
             if more {
                 rows.truncate(OUTBOX_SHOWN as usize);
@@ -104,17 +84,17 @@ pub(super) async fn folder_command(
                 None => 0,
                 Some(text) => parse_duration(text).ok_or_else(|| Usage(said::not_a_duration_text(text)))?,
             };
-            explained(daemon, chosen, proxy, SyncAction::Pause, proxy.folder.pause(seconds).await).await?;
+            explained(chosen, proxy, SyncAction::Pause, proxy.folder.pause(seconds).await).await?;
             let until = if seconds == 0 { None } else { Some(proxy.folder.paused_until().await?) };
             println!("{tag}{}", said::paused_now_text(until, &prefix));
         }
         FolderCmd::Resume => {
-            explained(daemon, chosen, proxy, SyncAction::Resume, proxy.folder.resume().await).await?;
+            explained(chosen, proxy, SyncAction::Resume, proxy.folder.resume().await).await?;
             println!("{tag}{}", said::RESUMED);
         }
         FolderCmd::Anyway { .. } => {
             let held = proxy.folder.held_back().await?;
-            explained(daemon, chosen, proxy, SyncAction::Anyway, proxy.folder.sync_anyway().await).await?;
+            explained(chosen, proxy, SyncAction::Anyway, proxy.folder.sync_anyway().await).await?;
             println!("{tag}{}", said::anyway_text(&held));
         }
         FolderCmd::Thumbnails { state } => {
@@ -122,34 +102,34 @@ pub(super) async fn folder_command(
                 None => proxy.folder.thumbnails().await?,
                 Some(state) => {
                     let on = state == "on";
-                    explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_thumbnails(on).await).await?;
+                    explained(chosen, proxy, SyncAction::Settings, proxy.folder.set_thumbnails(on).await).await?;
                     on
                 }
             };
             println!("{tag}{}", said::thumbnails_text(on));
         }
-        FolderCmd::Ignore { action } => ignore(daemon, chosen, proxy, action.unwrap_or(IgnoreCmd::List)).await?,
+        FolderCmd::Ignore { action } => ignore(chosen, proxy, action.unwrap_or(IgnoreCmd::List)).await?,
         FolderCmd::NotUploaded { all } => {
             let action = SyncAction::NotUploaded;
-            let summary = explained(daemon, chosen, proxy, action, proxy.queue.not_uploaded_summary().await).await?;
+            let summary = explained(chosen, proxy, action, proxy.queue.not_uploaded_summary().await).await?;
             let limit = if all { 0 } else { PER_FILE_SHOWN };
             let mut files = Vec::new();
             for row in summary.iter().filter(|row| all || row.group == "per-file") {
                 let result = proxy.queue.not_uploaded_files(&row.reason, limit).await;
-                files.push((row.reason.clone(), explained(daemon, chosen, proxy, action, result).await?));
+                files.push((row.reason.clone(), explained(chosen, proxy, action, result).await?));
             }
             print!("{}", not_uploaded_text(&summary, &files, &prefix));
         }
         FolderCmd::Deletes { action: DeletesCmd::Confirm } => {
-            let count = explained(daemon, chosen, proxy, SyncAction::Deletes, proxy.queue.confirm_deletes().await).await?;
+            let count = explained(chosen, proxy, SyncAction::Deletes, proxy.queue.confirm_deletes().await).await?;
             println!("{tag}{}", said::deletes_confirmed_text(count));
         }
         FolderCmd::Deletes { action: DeletesCmd::Restore } => {
-            let count = explained(daemon, chosen, proxy, SyncAction::Deletes, proxy.queue.restore_deletes().await).await?;
+            let count = explained(chosen, proxy, SyncAction::Deletes, proxy.queue.restore_deletes().await).await?;
             println!("{tag}{}", said::deletes_restored_text(count));
         }
         FolderCmd::Conflicts => {
-            let conflicts = explained(daemon, chosen, proxy, SyncAction::Conflicts, proxy.conflicts.list().await).await?;
+            let conflicts = explained(chosen, proxy, SyncAction::Conflicts, proxy.conflicts.list().await).await?;
             print!("{}", conflicts_text(&conflicts));
         }
         FolderCmd::Dismiss { path } => {
@@ -158,12 +138,12 @@ pub(super) async fn folder_command(
             let absolute = std::path::absolute(&path).context(NOT_ABSOLUTE)?;
             let absolute = absolute.to_str().context(NOT_UTF8_PATH)?;
             let result = proxy.conflicts.dismiss(absolute).await;
-            explained(daemon, chosen, proxy, SyncAction::Dismiss(absolute), result).await?;
+            explained(chosen, proxy, SyncAction::Dismiss(absolute), result).await?;
             println!("{tag}{}", said::DISMISSED);
         }
         FolderCmd::FreeUpSpace => {
             let result = proxy.folder.free_up_space().await;
-            let freed = explained(daemon, chosen, proxy, SyncAction::FreeUpSpace, result).await?;
+            let freed = explained(chosen, proxy, SyncAction::FreeUpSpace, result).await?;
             println!("{tag}{}", free_up_text(&freed));
             if proxy.folder.pinned_count().await? > 0 {
                 println!("{}", said::PINS_LEFT);
@@ -183,7 +163,7 @@ async fn fail_if_not_recovered(proxy: &FolderProxies<'_>, path: &str) -> anyhow:
 }
 
 /// `sync ignore`: the list, or one pattern added to it or taken off it.
-async fn ignore(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -> anyhow::Result<()> {
+async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -> anyhow::Result<()> {
     let tag = chosen.tag();
     let mut patterns = proxy.folder.ignore_patterns().await?;
     let done = match action {
@@ -211,7 +191,7 @@ async fn ignore(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<'_>, act
         }
     };
     let refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
-    explained(daemon, chosen, proxy, SyncAction::Ignore, proxy.folder.set_ignore_patterns(&refs).await).await?;
+    explained(chosen, proxy, SyncAction::Ignore, proxy.folder.set_ignore_patterns(&refs).await).await?;
     println!("{tag}{done}");
     Ok(())
 }

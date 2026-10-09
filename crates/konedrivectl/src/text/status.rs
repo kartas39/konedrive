@@ -2,7 +2,6 @@
 //! printed.
 
 use konedrive_dbus::overall::{Overall, Reason};
-use konedrive_dbus::HelperState;
 
 use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text};
 use super::transfers::waiting_download_text;
@@ -205,22 +204,16 @@ pub struct FolderStatus {
 /// and something needs attention; `LastError` then carries the detail and is always printed
 /// with it.
 ///
-/// A registered folder gets an `Opens:` line, saying whether anything fills a file when it is
-/// opened. That matters most for `no-interception`: without the helper, a file that is not
-/// downloaded reads as zeros, and that is on screen every time.
+/// A registered folder gets a `Files:` line, saying what reading a file that is not
+/// downloaded does.
 ///
 /// The `Overall:` line is the state of the account as a whole, as the daemon decided it
 /// ([`overall_text`]); the lines after it are what the daemon counts and measures.
 ///
-/// `helper` is `Accounts.HelperState` when this folder is all `sync status` shows: the
-/// `Helper:` line says how the helper stands and, when it is not connected, what to do. One
-/// helper serves every account, so when `sync status` shows several, it prints that line
-/// once above them and each block is printed with `None`.
-///
 /// The lines about OneDrive are printed for a folder that shows OneDrive; `On this
 /// computer:` and `Always on this device:` for a folder that is up; `Conflicts:` when there
 /// are any. `prefix` is how a suggested command starts.
-pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &str, now: i64) -> String {
+pub fn sync_status_text(status: &FolderStatus, prefix: &str, now: i64) -> String {
     const W: usize = SYNC_STATUS_WIDTH;
     let mut out = String::new();
     let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<W$}{value}\n"));
@@ -232,11 +225,8 @@ pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &st
     if status.state.is_some() {
         line("State:", state);
     }
-    if let Some(opens) = opens_line(state) {
-        line("Opens:", opens);
-    }
-    if let Some(helper) = helper {
-        line("Helper:", &helper_text(helper));
+    if let Some(files) = files_line(state) {
+        line("Files:", files);
     }
     if !status.last_error.is_empty() {
         line("Last error:", &status.last_error);
@@ -400,34 +390,16 @@ pub fn held_text(reason: &str) -> &str {
     }
 }
 
-/// `sync status`'s `Helper:` line ([`helper_text`]).
-pub fn helper_line(helper: &str) -> String {
-    format!("{:<W$}{}\n", "Helper:", helper_text(helper), W = SYNC_STATUS_WIDTH)
-}
-
-/// What happens when something opens a file in a folder in `state`, for the
-/// states where that is known: `ready` (the helper intercepts and fills) and
-/// `no-interception` (nothing does); `waiting` is a folder that is not up yet. `error` can
-/// mean either — `LastError` says which — and `none` has no folder to talk about.
-fn opens_line(state: &str) -> Option<&'static str> {
+/// What reading a file does in a folder in `state`, for the states where that is known:
+/// `ready` (the folder's mount downloads it), `listing`, and `waiting`, a folder that is not
+/// up yet. `error` says nothing of it — `LastError` does — and `none` has no folder to talk
+/// about.
+fn files_line(state: &str) -> Option<&'static str> {
     match state {
-        "ready" => Some("intercepted: a file is downloaded when something opens it"),
-        "no-interception" => Some(
-            "NOT intercepted: a file that is not downloaded reads as zeros until you run \
-             `konedrivectl sync hydrate <file>`",
-        ),
+        "ready" => Some("a file that is not downloaded is read from OneDrive when something reads it"),
         "listing" => Some("the folder is being filled with your OneDrive's items"),
-        "waiting" => Some("not yet: the folder is being brought up, or waits for the helper to connect"),
+        "waiting" => Some("not yet: the folder is being brought up"),
         _ => None,
-    }
-}
-
-/// The `Helper:` line's text (HS4): `HelperState`, and what to do about it
-/// when the helper is not connected — the same words `LastError` uses.
-pub fn helper_text(state: &str) -> String {
-    match HelperState::parse(state).and_then(HelperState::advice) {
-        Some(advice) => format!("{state} — {advice}"),
-        None => state.to_owned(),
     }
 }
 

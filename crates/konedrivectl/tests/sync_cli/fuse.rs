@@ -42,13 +42,12 @@ async fn a_folder_served_through_fuse_is_driven_from_the_command_line() {
     wait_for(|| file.symlink_metadata().is_ok()).await;
     tokio::time::sleep(Duration::from_millis(500)).await; // counters are coalesced
 
-    // The folder is a mount, and says what it is as a folder of placeholders does.
+    // The folder is a mount.
     let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap();
     assert!(mounts.lines().any(|l| l.contains(root.to_str().unwrap()) && l.contains("fuse.konedrive")), "{mounts}");
     let status = shown(&["sync", "status"]);
     assert!(status.lines().any(|l| l == "State:                  ready"), "{status}");
     assert!(status.lines().any(|l| l.starts_with("Items:") && l.contains("3 in OneDrive") && l.contains("2 in the folder")), "{status}");
-    assert!(!status.contains("WITHOUT interception"), "{status}");
 
     // Not downloaded: its size is the item's, it takes no space, and nothing of it is on disk.
     let meta = file.metadata().unwrap();

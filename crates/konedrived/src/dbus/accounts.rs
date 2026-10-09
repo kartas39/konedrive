@@ -89,7 +89,7 @@ impl Accounts {
     async fn helper_state(&self) -> String {
         // No helper is used any more: the word that says nothing is wrong with it, for the
         // clients that still read the property.
-        konedrive_dbus::HelperState::Connected.as_str().to_owned()
+        "connected".to_owned()
     }
 
     #[zbus(property)]

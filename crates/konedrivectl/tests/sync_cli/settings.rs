@@ -177,27 +177,3 @@ async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold()
     wait_for(|| live() == LiveChanges::Connecting).await;
 }
 
-/// A folder not connected to OneDrive has no sync settings.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_sync_settings_of_a_local_folder_say_it_has_none() {
-    let f = harness().await;
-    let root = f.dir.path().join("local");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    let out = run(f._bus.address(), &["sync", "thumbnails", "off"]);
-    assert!(!out.status.success(), "{out:?}");
-    assert!(err_text(&out).contains("not connected to OneDrive, so it has no sync settings"), "{}", err_text(&out));
-}
-
-/// A folder not connected to OneDrive uploads nothing: the outbox commands say
-/// so, by the refusal's name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_outbox_of_a_local_folder_says_nothing_is_uploaded_from_it() {
-    let f = harness().await;
-    let root = f.dir.path().join("local");
-    std::fs::create_dir(&root).unwrap();
-    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    let out = run(f._bus.address(), &["sync", "outbox"]);
-    assert!(!out.status.success(), "{out:?}");
-    assert!(err_text(&out).contains("not connected to OneDrive, so nothing is uploaded from it"), "{}", err_text(&out));
-}

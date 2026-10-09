@@ -1180,7 +1180,6 @@ dependencies = [
  "clap",
  "futures-util",
  "konedrive-dbus",
- "konedrive-fs",
  "konedrive-graph",
  "konedrive-reason",
  "konedrive-text",

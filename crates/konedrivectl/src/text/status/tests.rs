@@ -73,8 +73,7 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         "Folder:                 /home/u/OneDrive\n\
          Overall:                warning — deletions made here wait for you: delete them in OneDrive too, or restore them\n\
          State:                  ready\n\
-         Opens:                  intercepted: a file is downloaded when something opens it\n\
-         Helper:                 connected\n\
+         Files:                  a file that is not downloaded is read from OneDrive when something reads it\n\
          Last error:             one file could not be placed\n\
          Items:                  120 in OneDrive, 118 in the folder\n\
          Skipped:                2 (see `{p} sync skipped`)\n\
@@ -96,17 +95,13 @@ fn sync_status_prints_every_line_of_a_folder_that_shows_onedrive() {
         waiting = crate::text::uploads::waiting_text(2, 2048),
         space = crate::text::uploads::space_waiting_text(4, 1 << 30),
     );
-    assert_eq!(super::sync_status_text(&status, Some("connected"), p, now), expected);
+    assert_eq!(super::sync_status_text(&status, p, now), expected);
 
     let none = super::FolderStatus { state: Some("none".into()), ..Default::default() };
     assert_eq!(
-        super::sync_status_text(&none, None, p, now),
+        super::sync_status_text(&none, p, now),
         "Folder:                 (none)\nState:                  none\n",
         "an account with no folder, in a list of several"
-    );
-    assert_eq!(
-        super::helper_text("stopped"),
-        "stopped — the konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`"
     );
 }
 
@@ -123,10 +118,10 @@ fn a_value_the_daemon_does_not_have_leaves_its_line_out() {
         ..Default::default()
     };
     assert_eq!(
-        super::sync_status_text(&folder, None, "konedrivectl", 1_000),
+        super::sync_status_text(&folder, "konedrivectl", 1_000),
         "Folder:                 /home/u/OneDrive\n\
          State:                  ready\n\
-         Opens:                  intercepted: a file is downloaded when something opens it\n\
+         Files:                  a file that is not downloaded is read from OneDrive when something reads it\n\
          Items:                  3 in OneDrive, 3 in the folder\n"
     );
     let account = super::AccountStatus { state: Some("signed-in".into()), email: "ann@outlook.com".into(), ..Default::default() };

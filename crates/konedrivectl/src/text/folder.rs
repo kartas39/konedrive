@@ -8,13 +8,9 @@ use super::files::{skip_reason_text, still_here_text, where_here_text};
 use super::formats::local_time;
 use super::status::held_text;
 
-/// `sync register` and `sync register-without-interception`, done.
-pub fn registered_text(path: &str, intercepted: bool) -> String {
-    if intercepted {
-        format!("Folder registered: {path}")
-    } else {
-        format!("Folder registered without interception: {path}")
-    }
+/// `sync register`, done.
+pub fn registered_text(path: &str) -> String {
+    format!("Folder registered: {path}")
 }
 
 /// A registration that went through and left the folder in `error`: `detail` is its
@@ -36,11 +32,6 @@ pub fn needs_attention_text(root: &str, detail: &str) -> String {
 
 /// `sync forget`, done.
 pub const FORGOTTEN: &str = "Folder forgotten. Local files were left untouched.";
-
-/// `sync populate-from`, done.
-pub fn populated_text(created: u64) -> String {
-    format!("Created {created} placeholders.")
-}
 
 /// `sync skipped` with no folder.
 pub const NO_FOLDER: &str = "No folder is registered.";
