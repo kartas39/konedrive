@@ -88,14 +88,18 @@ impl WriteOperations {
     }
 
     /// The kind of what the backing directory holds at the new place, and the rename
-    /// displaces; `None` when it holds nothing there. A directory that holds something is
-    /// not displaced either: no directory replaces it, as the filesystem refuses, and it
-    /// stays where it is.
+    /// displaces; `None` when it holds nothing there. What the filesystem would refuse to
+    /// replace is not displaced either, and stays where it is, so that the move is refused
+    /// as the filesystem refuses it: a directory that holds something, and a file a
+    /// directory moves onto.
     fn find_displaced_kind(&self, plan: &RenamePlan) -> Option<EntryKind> {
         let to = plan.to.path();
         match self.backing_directory.read_metadata(&to)?.is_dir() {
             true => self.backing_directory.list_directory(&to).next().is_none().then_some(EntryKind::Directory),
-            false => Some(EntryKind::File),
+            false => {
+                let directory_moves = self.backing_directory.read_metadata(&plan.from).is_some_and(|moved| moved.is_dir());
+                (!directory_moves).then_some(EntryKind::File)
+            }
         }
     }
 

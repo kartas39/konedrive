@@ -220,7 +220,7 @@ impl FilesInterface {
         };
         match freed_bytes {
             Some(bytes) => {
-                self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path: path, onedrive_id: onedrive_id.to_owned() }]);
+                self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path, onedrive_id: onedrive_id.to_owned() }]);
                 FreedSpace { files: 1, bytes, kept: 0 }
             }
             None => FreedSpace { kept: 1, ..nothing },

@@ -235,3 +235,20 @@ fn what_a_rename_replaced_is_removed_once_the_rename_is_recorded() {
     assert!(!f.disk.join("new").exists());
     assert_eq!(f.backing_directory.find_file_handle(&at("empty")), new);
 }
+
+/// What the filesystem refuses to replace is not taken out of the way for the rename: a
+/// directory that holds something in the backing directory, where the mount shows it empty,
+/// stays as it is, and the rename is refused as the filesystem refuses it.
+#[test]
+fn a_directory_that_holds_something_in_the_backing_directory_is_not_replaced() {
+    let f = folder(Vec::new());
+    std::fs::create_dir(f.disk.join("new")).unwrap();
+    // Under one of the daemon's own names the mount shows nothing of it.
+    let hidden = format!("{}x", crate::folder::disk::NEW_PREFIX);
+    std::fs::write(f.disk.join("new").join(&hidden), b"kept").unwrap();
+    std::fs::create_dir(f.disk.join("other")).unwrap();
+    std::fs::write(f.disk.join("other").join(&hidden), b"kept").unwrap();
+    assert_eq!(f.ops.rename(NodeId::ROOT, "new", NodeId::ROOT, "other", RenameMode::Replace).err(), Some(Errno::ENOTEMPTY));
+    assert!(f.disk.join("new").join(&hidden).is_file() && f.disk.join("other").join(&hidden).is_file());
+    assert!(f.rows().is_empty());
+}
