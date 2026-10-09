@@ -84,18 +84,18 @@ impl SyncService {
         let mount = match stopped.folder().mount().cloned() {
             Some(mount) => mount,
             None => {
-                let parts = crate::fuse::Parts {
+                let setup = crate::fuse::MountSetup {
                     root: reg.root.clone(),
                     store_path: paths.tree_db.clone(),
                     store: store.clone(),
                     source: Arc::clone(&source),
                     report: self.report.clone(),
                     pool: Arc::clone(&self.pool),
-                    parts: Arc::clone(&self.parts),
+                    split_download_share: Arc::clone(&self.parts),
                     download_after: self.wiring.transfers.download_after,
-                    writing: crate::fuse::Writing { tree_lock: Arc::clone(&tree_lock), ignore: Arc::clone(&self.ignore), machine_name: self.machine_name() },
+                    write_setup: crate::fuse::WriteSetup { tree_lock: Arc::clone(&tree_lock), ignore: Arc::clone(&self.ignore), machine_name: self.machine_name() },
                 };
-                let mount = Mount::start(parts).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
+                let mount = Mount::start(setup).await.map_err(|e| format!("{} cannot be mounted: {e}", reg.root.path.display()))?;
                 if let Some(record) = stopped.folder_mut().record_mut() {
                     record.kept.mount = Some(Arc::clone(&mount));
                 }
@@ -103,7 +103,7 @@ impl SyncService {
                 // A file manager that showed the folder before this mount reads it again: its
                 // own watch ended with the mount that went.
                 stopped.read_again();
-                self.report.space.measure_at(Some(mount.under()));
+                self.report.space.measure_at(Some(mount.backing_directory_path()));
                 mount
             }
         };

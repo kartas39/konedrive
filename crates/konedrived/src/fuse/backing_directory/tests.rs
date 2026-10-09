@@ -16,9 +16,9 @@ pub(super) fn empty_backing_directory() -> (tempfile::TempDir, BackingDirectory)
 #[test]
 fn a_path_of_the_backing_directory_leads_into_the_directory_itself() {
     let (dir, backing_directory) = empty_backing_directory();
-    fs::write(backing_directory.path(Path::new("a.txt")), b"a").unwrap();
+    fs::write(backing_directory.resolve_path(Path::new("a.txt")), b"a").unwrap();
     assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"a");
-    assert_eq!(fs::read_dir(backing_directory.path(Path::new(""))).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(backing_directory.resolve_path(Path::new(""))).unwrap().count(), 1);
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn the_staging_directory_of_an_earlier_build_is_removed_when_the_backing_directo
     fs::create_dir(dir.path().join(LEGACY_STAGING_DIRECTORY)).unwrap();
     fs::write(dir.path().join(LEGACY_STAGING_DIRECTORY).join("part"), b"x").unwrap();
     let backing_directory = BackingDirectory::open(dir.path()).unwrap();
-    assert!(backing_directory.stat(Path::new(LEGACY_STAGING_DIRECTORY)).is_none());
+    assert!(backing_directory.read_metadata(Path::new(LEGACY_STAGING_DIRECTORY)).is_none());
 }
 
 /// The empty path is the backing directory itself, which has attributes of its own.
@@ -37,15 +37,15 @@ fn an_attribute_is_read_of_the_backing_directory_and_of_what_it_holds() {
     xattr::set(dir.path(), XATTR_ROOT, b"R").unwrap();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     xattr::set(dir.path().join("a.txt"), "user.test", b"v").unwrap();
-    assert_eq!(backing_directory.attribute(Path::new(""), XATTR_ROOT).as_deref(), Some("R"));
-    assert_eq!(backing_directory.attribute(Path::new("a.txt"), "user.test").as_deref(), Some("v"));
-    assert_eq!(backing_directory.attribute(Path::new("a.txt"), XATTR_ROOT), None);
+    assert_eq!(backing_directory.read_attribute(Path::new(""), XATTR_ROOT).as_deref(), Some("R"));
+    assert_eq!(backing_directory.read_attribute(Path::new("a.txt"), "user.test").as_deref(), Some("v"));
+    assert_eq!(backing_directory.read_attribute(Path::new("a.txt"), XATTR_ROOT), None);
 }
 
 #[test]
 fn the_backing_directorys_filesystem_says_how_much_space_it_has() {
     let (_dir, backing_directory) = empty_backing_directory();
-    assert!(backing_directory.space().unwrap().f_bsize > 0);
+    assert!(backing_directory.measure_space().unwrap().f_bsize > 0);
 }
 
 /// What an older konedrive left would be taken for downloaded copies or the user's own files.

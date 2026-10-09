@@ -16,7 +16,7 @@ use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite
 use crate::fuse::directory_contents::{EntryState, FileSyncState};
 use crate::fuse::local_only_entries::folder_place;
 use crate::fuse::open_files::OpenFile;
-use crate::fuse::shared::errno;
+use crate::fuse::errno::to_errno;
 
 impl WriteOperations {
     /// The row of the file and its path, when writing the node `node_id` needs its content
@@ -36,7 +36,7 @@ impl WriteOperations {
         let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, truncate)?;
-        let backing_file = self.backing_directory.write(&rel, truncate).map_err(|e| errno(&e))?;
+        let backing_file = self.backing_directory.write(&rel, truncate).map_err(|e| to_errno(&e))?;
         // Its content is the user's own already when it is modified here; from the first
         // writer on the outbox holds it in any case.
         let content_changed = truncate || matches!(file, FileSyncState::ModifiedHere(..));
@@ -76,7 +76,7 @@ impl WriteOperations {
         let (entry, rel) = self.node_lookup.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, size == 0)?;
-        let backing_file = self.backing_directory.write(&rel, false).map_err(|e| errno(&e))?;
+        let backing_file = self.backing_directory.write(&rel, false).map_err(|e| to_errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
         if self.open_writers.is_open(node_id) {
@@ -84,7 +84,7 @@ impl WriteOperations {
         } else {
             self.record_content(node_id, LocalOnlyFileWrite::Cut)?;
         }
-        backing_file.set_len(size).map_err(|e| errno(&e))
+        backing_file.set_len(size).map_err(|e| to_errno(&e))
     }
 
     /// The file at `rel` in the backing directory, made ready to be written: the downloaded
@@ -98,13 +98,13 @@ impl WriteOperations {
                 if !empty && row.size > 0 {
                     return Err(Errno::EIO);
                 }
-                self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(|e| errno(&e))?;
-                self.backing_directory.make_file(rel).map_err(|e| errno(&e))?;
-                self.backing_directory.mark_downloaded_copy(rel, &row.id).map_err(|e| errno(&e))?;
+                self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(|e| to_errno(&e))?;
+                self.backing_directory.make_file(rel).map_err(|e| to_errno(&e))?;
+                self.backing_directory.mark_downloaded_copy(rel, &row.id).map_err(|e| to_errno(&e))?;
             }
             FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => {}
         }
-        self.backing_directory.writable(rel).map_err(|e| errno(&e))
+        self.backing_directory.writable(rel).map_err(|e| to_errno(&e))
     }
 
     /// Records that the content of the node `node_id` is the user's own now, by `write`:

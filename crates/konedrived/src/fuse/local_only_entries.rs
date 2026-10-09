@@ -40,7 +40,7 @@ fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules
     into.push(LocalOnlyEntry { on_disk, place: folder_place(directory, name) });
     if is_directory && into.len() < MOST_ENTRIES {
         let inside = Directory { id: None, rel: rel.clone() };
-        for entry in backing_directory.list(&rel) {
+        for entry in backing_directory.list_directory(&rel) {
             if let Some(name) = entry.file_name().to_str() {
                 collect_into(backing_directory, upload_rules, &inside, name, into);
             }

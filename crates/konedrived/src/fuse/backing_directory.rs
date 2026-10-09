@@ -66,26 +66,26 @@ impl BackingDirectory {
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
         }
         let backing_directory = BackingDirectory { descriptor: File::open(folder)? };
-        let _ = fs::remove_dir_all(backing_directory.path(Path::new(LEGACY_STAGING_DIRECTORY)));
+        let _ = fs::remove_dir_all(backing_directory.resolve_path(Path::new(LEGACY_STAGING_DIRECTORY)));
         Ok(backing_directory)
     }
 
     /// The path of the backing directory itself, through the descriptor: for what walks it
     /// without going through the mount.
-    pub(super) fn root(&self) -> PathBuf {
+    pub(super) fn resolve_root_path(&self) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor)
     }
 
     /// The path of `rel` in the backing directory: through the descriptor, never through the
     /// mount. Good for as long as this lives.
-    pub(super) fn path(&self, rel: &Path) -> PathBuf {
+    pub(super) fn resolve_path(&self, rel: &Path) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor).join(rel)
     }
 
     /// With the mount over it the backing directory is the daemon's alone, and open to it:
     /// its owner's write bits are given back, which were taken off when the daemon last ended.
     pub(super) fn unlock(&self) {
-        set_tree(&self.path(Path::new("")), false);
+        set_tree(&self.resolve_path(Path::new("")), false);
     }
 
     /// One more descriptor of the backing directory, for what in the daemon opens the folder
@@ -95,7 +95,7 @@ impl BackingDirectory {
     }
 
     /// The space of the filesystem the backing directory is on.
-    pub(super) fn space(&self) -> io::Result<libc::statvfs> {
+    pub(super) fn measure_space(&self) -> io::Result<libc::statvfs> {
         // SAFETY: a plain structure the call fills.
         let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
         // SAFETY: the backing directory's own descriptor.
@@ -107,10 +107,10 @@ impl BackingDirectory {
 
     /// The extended attribute `name` of the entry at `rel`; of the backing directory itself
     /// for the empty path.
-    pub(super) fn attribute(&self, rel: &Path, name: &str) -> Option<String> {
+    pub(super) fn read_attribute(&self, rel: &Path, name: &str) -> Option<String> {
         let value = match rel.as_os_str().is_empty() {
             true => xattr::FileExt::get_xattr(&self.descriptor, name),
-            false => xattr::get(self.path(rel), name),
+            false => xattr::get(self.resolve_path(rel), name),
         };
         value.ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
     }

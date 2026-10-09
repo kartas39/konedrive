@@ -1,4 +1,30 @@
 //! A mount: made, served, and taken off.
+//!
+//! [`Mount`] holds the parts of a served folder and nothing else: what it is asked — by the
+//! folder's sync, by a cycle of the delta listing, by the daemon's `Files` interface — it
+//! hands on to the part that answers. [`Mount::start`] builds the parts in the order they
+//! depend on each other, and [`Mount::stop`] stops each one that runs something.
+//!
+//! The order the parts are built in; each is given only what stands before it:
+//!
+//! 1. [`BackingDirectory`]: opened before the mount lies over it;
+//! 2. [`DirectoryContents`]: over the store's reader and the backing directory;
+//! 3. [`NodeLookup`]: over the directory contents;
+//! 4. [`AccessMode`], read-only at first;
+//! 5. [`OutboxRecorder`]: the store's writer, the tree lock, the access mode;
+//! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
+//!    contents, the rules;
+//! 7. [`OpenWriters`], then [`WriteOperations`]: the directory contents, the backing
+//!    directory, the node lookup, the open writers, the recorder, the rules, the access mode;
+//! 8. [`DownloadStates`], and [`Pins`] over the directory contents;
+//! 9. [`InotifyBridge`]: the node lookup and the directory contents — its thread is not
+//!    started yet;
+//! 10. [`FileDownloader`]: the backing directory, the directory contents, the download
+//!     states, and the way to announce a file's change, which is the bridge's;
+//! 11. [`RangeReaders`], [`OpenFiles`], [`InterruptibleReads`], which depend on no part;
+//! 12. [`FilesInterface`] and [`KernelRequests`], each given exactly the parts it uses;
+//! 13. the session over the kernel requests, and the bridge's thread, started with the
+//!     session's notifier once the mount answers.
 
 use std::fs;
 use std::io;
@@ -16,37 +42,70 @@ use crate::local::held::Rw;
 use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
+use super::backing_directory::{set_tree, BackingDirectory};
+use super::conflict_copies::ConflictCopies;
+use super::directory_contents::DirectoryContents;
 use super::download_states::DownloadStates;
 use super::file_downloader::{FileChangeAnnouncer, FileDownloader};
 use super::files_interface::{FilesInterface, FilesRefusal, FreedSpace, PathStatus};
-use super::backing_directory::{set_tree, BackingDirectory};
-use super::directory_contents::DirectoryContents;
-use super::conflict_copies::ConflictCopies;
 use super::inotify_bridge::{InotifyBridge, RemoteChange};
-use super::upload_rules::UploadRules;
-use super::requests::Requests;
+use super::kernel_requests::{InterruptibleReads, KernelRequests};
 use super::node_lookup::NodeLookup;
 use super::open_files::OpenFiles;
+use super::open_writers::OpenWriters;
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
 use super::remote_changes::{self, CycleOutcome, UncommittedCycle};
-use super::shared::{other, Shared};
+use super::upload_rules::UploadRules;
 use super::write_operations::WriteOperations;
-use super::open_writers::OpenWriters;
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
-    pub(super) shared: Arc<Shared>,
+    /// The folder's path, which is the mount.
+    folder: PathBuf,
+    /// Whether programs may change the folder ([`super::access_mode`]).
+    access_mode: Arc<AccessMode>,
+    /// The directory on disk the mount lies over ([`super::backing_directory`]).
+    backing_directory: Arc<BackingDirectory>,
+    /// What each directory of the mount holds ([`super::directory_contents`]).
+    directory_contents: Arc<DirectoryContents>,
+    /// The thread that makes and records each change ([`super::outbox_recorder`]).
+    outbox_recorder: Arc<OutboxRecorder>,
+    /// The operations that change the folder ([`super::write_operations`]).
+    write_operations: Arc<WriteOperations>,
+    /// What moves the user's own out of the way of a change from OneDrive
+    /// ([`super::conflict_copies`]).
+    conflict_copies: ConflictCopies,
+    /// The state of each file's download ([`super::download_states`]).
+    download_states: Arc<DownloadStates>,
+    /// What downloads a file whole ([`super::file_downloader`]).
+    file_downloader: Arc<FileDownloader>,
+    /// The files being read as ranges ([`super::range_readers`]).
+    range_readers: Arc<RangeReaders>,
+    /// The pins ([`super::pins`]).
+    pins: Arc<Pins>,
+    /// What brings a change from OneDrive to whoever watches the folder
+    /// ([`super::inotify_bridge`]).
+    inotify_bridge: Arc<InotifyBridge>,
+    /// What the cycle now being committed leaves to be done once it is
+    /// ([`super::remote_changes`]).
+    uncommitted_cycle: UncommittedCycle,
+    /// The reads that wait for a range from OneDrive, which the kernel requests keep
+    /// ([`super::kernel_requests`]).
+    interruptible_reads: Arc<InterruptibleReads>,
     /// What the daemon's bus interface `Files` asks ([`super::files_interface`]).
     files_interface: FilesInterface,
-    pub(super) session: Mutex<Option<fuser::BackgroundSession>>,
+    /// Where what a pin keeps is downloaded.
+    runtime: tokio::runtime::Handle,
+    /// The session the kernel's requests are answered in; `None` once the mount is stopped.
+    session: Mutex<Option<fuser::BackgroundSession>>,
     /// The mount's connection, as the kernel numbers it (`/sys/fs/fuse/connections/<n>`).
-    pub(super) connection: u32,
+    connection: u32,
 }
 
 /// What a folder that takes changes shares with its sync.
-pub struct Writing {
+pub struct WriteSetup {
     /// The folder's tree lock: a change is recorded under it, as a cycle of the delta listing
     /// holds it from staging to its swap.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
@@ -57,7 +116,7 @@ pub struct Writing {
 }
 
 /// What a mount is made with.
-pub struct Parts {
+pub struct MountSetup {
     pub root: SyncRoot,
     /// The folder's tree store: its file, for the mount's own reading connection, and its one
     /// writer.
@@ -66,32 +125,38 @@ pub struct Parts {
     pub source: Arc<dyn ContentSource>,
     pub report: Report,
     pub pool: Arc<TransferPool>,
-    pub parts: Arc<Share>,
+    /// What the daemon's large downloads in parallel streams share.
+    pub split_download_share: Arc<Share>,
     /// `[transfers] download_after`: once that many bytes of a file were read as ranges, the
     /// file is downloaded whole.
     pub download_after: u64,
     /// What the folder shares with its sync when it takes changes.
-    pub writing: Writing,
+    pub write_setup: WriteSetup,
+}
+
+fn to_io_error(e: impl ToString) -> io::Error {
+    io::Error::other(e.to_string())
 }
 
 impl Mount {
-    /// Mounts over `parts.root` and serves it. The folder on disk must carry its root id
+    /// Mounts over `setup.root` and serves it. The folder on disk must carry its root id
     /// already: after this its path is the mount.
-    pub async fn start(parts: Parts) -> io::Result<Arc<Mount>> {
-        let Parts { root, store_path, store, source, report, pool, parts, download_after, writing } = parts;
-        let pinned_ids = Pins::load_pinned_ids(&store).await.map_err(other)?;
+    pub async fn start(setup: MountSetup) -> io::Result<Arc<Mount>> {
+        let MountSetup { root, store_path, store, source, report, pool, split_download_share, download_after, write_setup } = setup;
+        let pinned_ids = Pins::load_pinned_ids(&store).await.map_err(to_io_error)?;
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
+            let folder = root.path;
             // Before the mount: afterwards this path is the mount.
-            let backing_directory = Arc::new(BackingDirectory::open(&root.path)?);
-            let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&backing_directory)));
+            let backing_directory = Arc::new(BackingDirectory::open(&folder)?);
+            let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(to_io_error)?, Arc::clone(&backing_directory)));
             let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents)));
             let access_mode = Arc::new(AccessMode::read_only());
-            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&access_mode))?);
-            let upload_rules = Arc::new(UploadRules::new(writing.ignore));
-            let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), writing.machine_name);
+            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock, Arc::clone(&access_mode))?);
+            let upload_rules = Arc::new(UploadRules::new(write_setup.ignore));
+            let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), write_setup.machine_name);
             let open_writers = Arc::new(OpenWriters::default());
-            let write_operations = WriteOperations::new(
+            let write_operations = Arc::new(WriteOperations::new(
                 Arc::clone(&directory_contents),
                 Arc::clone(&backing_directory),
                 Arc::clone(&node_lookup),
@@ -99,10 +164,11 @@ impl Mount {
                 Arc::clone(&outbox_recorder),
                 upload_rules,
                 Arc::clone(&access_mode),
-            );
+            ));
             let download_states = Arc::new(DownloadStates::new(download_after));
             let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
-            let inotify_bridge = Arc::new(InotifyBridge::new(root.path.clone(), Arc::clone(&node_lookup), Arc::clone(&directory_contents)));
+            let inotify_bridge = Arc::new(InotifyBridge::new(folder.clone(), Arc::clone(&node_lookup), Arc::clone(&directory_contents)));
+            // All the downloader knows of the bridge: the way to announce a file's change.
             let announcing = Arc::clone(&inotify_bridge);
             let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| announcing.announce(vec![RemoteChange::ContentChanged { rel, id }]));
             let file_downloader = Arc::new(FileDownloader {
@@ -111,44 +177,43 @@ impl Mount {
                 download_states: Arc::clone(&download_states),
                 source: Arc::clone(&source),
                 pool: Arc::clone(&pool),
-                parts_share: parts,
+                split_download_share,
                 report: report.clone(),
-                folder: root.path.clone(),
+                folder: folder.clone(),
                 announce_file_change,
                 runtime: runtime.clone(),
             });
+            let range_readers = Arc::new(RangeReaders::new(pool, source, runtime.clone()));
             let open_files = Arc::new(OpenFiles::default());
+            let interruptible_reads = Arc::new(InterruptibleReads::default());
             let files_interface = FilesInterface {
-                folder: root.path.clone(),
+                folder: folder.clone(),
                 directory_contents: Arc::clone(&directory_contents),
                 download_states: Arc::clone(&download_states),
                 file_downloader: Arc::clone(&file_downloader),
                 open_files: Arc::clone(&open_files),
                 pins: Arc::clone(&pins),
                 inotify_bridge: Arc::clone(&inotify_bridge),
-                report: report.clone(),
+                report,
                 runtime: runtime.clone(),
             };
-            let shared = Arc::new(Shared {
-                root: root.clone(),
-                backing_directory,
-                directory_contents,
+            let kernel_requests = KernelRequests {
+                access_mode: Arc::clone(&access_mode),
+                backing_directory: Arc::clone(&backing_directory),
+                directory_contents: Arc::clone(&directory_contents),
                 node_lookup,
-                range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
-                download_states,
-                file_downloader,
                 open_files,
-                reads: Mutex::default(),
-                pins,
-                inotify_bridge,
-                uncommitted_cycle: UncommittedCycle::default(),
-                access_mode,
-                conflict_copies,
-                outbox_recorder,
                 open_writers,
-                write_operations,
-                runtime,
-            });
+                outbox_recorder: Arc::clone(&outbox_recorder),
+                write_operations: Arc::clone(&write_operations),
+                download_states: Arc::clone(&download_states),
+                file_downloader: Arc::clone(&file_downloader),
+                range_readers: Arc::clone(&range_readers),
+                pins: Arc::clone(&pins),
+                inotify_bridge: Arc::clone(&inotify_bridge),
+                interruptible_reads: Arc::clone(&interruptible_reads),
+                runtime: runtime.clone(),
+            };
             let mut config = Config::default();
             config.mount_options = vec![
                 MountOption::FSName("konedrive".into()),
@@ -158,41 +223,61 @@ impl Mount {
             ];
             config.n_threads = Some(4);
             config.clone_fd = true;
-            let session = fuser::Session::new(Requests(Arc::clone(&shared)), &root.path, &config)?;
+            let session = fuser::Session::new(kernel_requests, &folder, &config)?;
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
-            crate::folder::root::mounted_over(&root.path, Arc::new(shared.backing_directory.descriptor()?));
+            crate::folder::root::mounted_over(&folder, Arc::new(backing_directory.descriptor()?));
             let session = session.spawn()?;
-            let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
-            // BackingDirectory the mount the folder is the daemon's alone, and open to it.
-            shared.backing_directory.unlock();
-            shared.inotify_bridge.start(notifier)?;
-            download_pinned_files(&shared.pins, &shared.directory_contents, &shared.file_downloader, &shared.runtime);
-            Ok(Arc::new(Mount { shared, files_interface, session: Mutex::new(Some(session)), connection }))
+            let connection = fs::metadata(&folder).map_or(0, |m| libc::minor(m.dev()));
+            // With the mount over it the backing directory is the daemon's alone, and open
+            // to it.
+            backing_directory.unlock();
+            inotify_bridge.start(notifier)?;
+            download_pinned_files(&pins, &directory_contents, &file_downloader, &runtime);
+            Ok(Arc::new(Mount {
+                folder,
+                access_mode,
+                backing_directory,
+                directory_contents,
+                outbox_recorder,
+                write_operations,
+                conflict_copies,
+                download_states,
+                file_downloader,
+                range_readers,
+                pins,
+                inotify_bridge,
+                uncommitted_cycle: UncommittedCycle::default(),
+                interruptible_reads,
+                files_interface,
+                runtime,
+                session: Mutex::new(Some(session)),
+                connection,
+            }))
         })
         .await
-        .map_err(other)?
+        .map_err(to_io_error)?
     }
 
-    /// Takes the mount off. The folder on disk then shows the downloaded files alone.
+    /// Takes the mount off. The folder on disk then shows the downloaded copies alone.
     ///
-    /// In this order: the inotify bridge stops while the mount still answers it (what it
-    /// does by path would otherwise land in the backing directory), every open that waits for a download
-    /// is failed, and the connection is aborted before the mount is detached — a program that
-    /// still holds a file of the mount open would otherwise keep the session, and this call,
-    /// waiting for it.
+    /// In this order: the recorder takes no more changes; the inotify bridge stops while the
+    /// mount still answers it (what it does by path would otherwise land in the backing
+    /// directory); every open that waits for a download is failed, and every read that waits
+    /// for OneDrive is given up; and the connection is aborted before the mount is detached
+    /// — a program that still holds a file of the mount open would otherwise keep the
+    /// session, and this call, waiting for it.
     pub fn stop(&self) {
         let Some(session) = crate::panic::lock(&self.session).take() else { return };
-        let s = &self.shared;
         // The recorder ends with the last change it was given; what comes later is refused.
-        s.outbox_recorder.stop();
-        s.inotify_bridge.stop();
-        s.download_states.fail_waiters();
-        crate::panic::lock(&s.reads).drain().for_each(|(_, read)| read.abort());
+        self.outbox_recorder.stop();
+        self.inotify_bridge.stop();
+        self.download_states.fail_waiters();
+        self.interruptible_reads.abort_all();
         if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
-            tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", s.root.path.display());
+            tracing::warn!("the connection of {} could not be aborted ({e}); its mount is taken off all the same", self.folder.display());
             // Not waited for: it ends when the last program lets go of the mount.
-            let folder = s.root.path.clone();
+            let folder = self.folder.clone();
             std::thread::spawn(move || {
                 let _ = session.umount_and_join();
                 crate::folder::root::mount_gone(&folder);
@@ -201,58 +286,56 @@ impl Mount {
             return;
         }
         if let Err(e) = session.umount_and_join() {
-            tracing::warn!("taking the mount off {}: {e}", s.root.path.display());
+            tracing::warn!("taking the mount off {}: {e}", self.folder.display());
         }
-        crate::folder::root::mount_gone(&s.root.path);
+        crate::folder::root::mount_gone(&self.folder);
         // A plain directory again: locked, so that nothing is put into it by mistake.
-        set_tree(&s.root.path, true);
+        set_tree(&self.folder, true);
     }
 
     /// [`stop`](Self::stop), for a folder that is forgotten: it is the user's again, to keep
     /// or to remove, and is left unlocked.
     pub fn forget(&self) {
         self.stop();
-        set_tree(&self.shared.root.path, false);
+        set_tree(&self.folder, false);
     }
 
     /// The folder takes changes from now on, and `wake` is called for each one recorded:
     /// its sync uploads. Whether the modes shown changed with that.
     pub fn switch_to_read_write(&self, wake: Arc<dyn Fn() + Send + Sync>) -> bool {
-        self.shared.outbox_recorder.set_wake(Some(wake));
-        let changed = self.shared.access_mode.switch_to_read_write();
+        self.outbox_recorder.set_wake(Some(wake));
+        let changed = self.access_mode.switch_to_read_write();
         if changed {
             // What a lost row left unsent is found again.
-            let s = Arc::clone(&self.shared);
-            self.shared.outbox_recorder.run(move || s.write_operations.record_unrecorded_entries());
+            let write_operations = Arc::clone(&self.write_operations);
+            self.outbox_recorder.run(move || write_operations.record_unrecorded_entries());
         }
         changed
     }
 
     /// The folder takes no change from now on. Whether the modes shown changed with that.
     pub fn switch_to_read_only(&self) -> bool {
-        self.shared.outbox_recorder.set_wake(None);
-        self.shared.access_mode.switch_to_read_only()
+        self.outbox_recorder.set_wake(None);
+        self.access_mode.switch_to_read_only()
     }
 
     /// Whether the folder takes changes now.
     pub fn is_read_write(&self) -> bool {
-        self.shared.access_mode.is_read_write()
+        self.access_mode.is_read_write()
     }
 
     /// Makes the backing directory follow the cycle of the delta listing that `store` has
     /// staged and not yet committed ([`remote_changes::apply_staged_cycle`]); `rw` is what
     /// the outbox holds, in a read-write folder.
     pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
-        let s = &self.shared;
-        remote_changes::apply_staged_cycle(store, rw, &s.backing_directory, &s.range_readers, &s.conflict_copies, &s.uncommitted_cycle)
+        remote_changes::apply_staged_cycle(store, rw, &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
     }
 
     /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its
     /// changes are announced to whoever watches the folder, and what is pinned and not
     /// downloaded is downloaded ([`remote_changes::announce_committed_cycle`]).
     pub fn announce_committed_cycle(&self) {
-        let s = &self.shared;
-        remote_changes::announce_committed_cycle(&s.uncommitted_cycle, &s.pins, &s.inotify_bridge, &s.directory_contents, &s.file_downloader, &s.runtime, &s.outbox_recorder);
+        remote_changes::announce_committed_cycle(&self.uncommitted_cycle, &self.pins, &self.inotify_bridge, &self.directory_contents, &self.file_downloader, &self.runtime, &self.outbox_recorder);
     }
 
     /// Downloads the file at `path` now, and waits for it.
@@ -296,15 +379,15 @@ impl Mount {
     /// The downloads that failed and can be continued: each one's size on disk and its
     /// checkpoint.
     #[cfg(any(test, feature = "fault-injection"))]
-    pub fn staged(&self) -> Vec<(u64, Option<u64>)> {
-        let seen = |file: &Arc<fs::File>| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
-        self.shared.download_states.list_unfinished_files().iter().filter_map(seen).collect()
+    pub fn list_unfinished_downloads(&self) -> Vec<(u64, Option<u64>)> {
+        let measure = |file: &Arc<fs::File>| Some((file.metadata().ok()?.len(), konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|p| p.bytes)));
+        self.download_states.list_unfinished_files().iter().filter_map(measure).collect()
     }
 
-    /// The folder under the mount, for what must not go through the mount: a walk of what is
-    /// downloaded.
-    pub fn under(&self) -> PathBuf {
-        self.shared.backing_directory.root()
+    /// The path of the backing directory, for what must not go through the mount: a walk of
+    /// what is downloaded.
+    pub fn backing_directory_path(&self) -> PathBuf {
+        self.backing_directory.resolve_root_path()
     }
 }
 

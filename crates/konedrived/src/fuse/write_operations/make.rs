@@ -13,7 +13,7 @@ use crate::fuse::directory::Directory;
 use crate::fuse::directory_contents::DirectoryEntry;
 use crate::fuse::local_only_entries::folder_place;
 use crate::fuse::open_files::OpenFile;
-use crate::fuse::shared::errno;
+use crate::fuse::errno::to_errno;
 
 impl WriteOperations {
     /// Makes `name` in the directory node `parent`: a directory, or a file, which `open`
@@ -21,12 +21,12 @@ impl WriteOperations {
     pub(in crate::fuse) fn make(&self, parent: u64, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<OpenFile>), Errno> {
         let parent_directory = self.check_make(parent, name, directory)?;
         let rel = parent_directory.rel.join(name);
-        self.directory_contents.make_marked_directories(&parent_directory.rel).map_err(|e| errno(&e))?;
+        self.directory_contents.make_marked_directories(&parent_directory.rel).map_err(|e| to_errno(&e))?;
         let file: Option<File> = if directory {
-            self.backing_directory.make_dir(&rel).map_err(|e| errno(&e))?;
+            self.backing_directory.make_dir(&rel).map_err(|e| to_errno(&e))?;
             None
         } else {
-            Some(self.backing_directory.make_file(&rel).map_err(|e| errno(&e))?)
+            Some(self.backing_directory.make_file(&rel).map_err(|e| to_errno(&e))?)
         };
         let unmake = || drop(if directory { self.backing_directory.remove_dir(&rel) } else { self.backing_directory.remove_file(&rel) });
         // What cannot be looked at is not recorded, and is not left in the folder either.
@@ -38,7 +38,7 @@ impl WriteOperations {
         let place = folder_place(&parent_directory, name);
         let entry = match &removed {
             Some(base) => {
-                self.backing_directory.mark_downloaded_copy(&rel, &base.id).map_err(|e| errno(&e))?;
+                self.backing_directory.mark_downloaded_copy(&rel, &base.id).map_err(|e| to_errno(&e))?;
                 let event = EntryCreated::ReplacingRemovedFile { place, file: on_disk, open, base: base.clone() };
                 self.record_or_undo(event, format_args!("a new {}", rel.display()), unmake)?;
                 // Read after it is recorded: the file is modified here from now on.

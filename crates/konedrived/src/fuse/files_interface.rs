@@ -121,7 +121,7 @@ impl FilesInterface {
 
     /// Frees the space of every downloaded copy that no pin keeps.
     pub(super) async fn free_up_all(&self) -> FreedSpace {
-        let Some(root) = self.directory_contents.root_id().and_then(|id| self.directory_contents.row(&id)) else { return FreedSpace::default() };
+        let Some(root) = self.directory_contents.find_root_id().and_then(|id| self.directory_contents.find_row(&id)) else { return FreedSpace::default() };
         self.free_up_below(root).await
     }
 
@@ -173,7 +173,7 @@ impl FilesInterface {
         let (entry, _) = self.find_onedrive_entry(path)?;
         let Some(row) = entry.row().cloned() else { return Err(FilesRefusal::NotInOneDrive) };
         let own_pin = self.pins.is_pinned(&row.id);
-        let above = self.directory_contents.parent(&row).and_then(|above| self.pins.pinned_by(&above));
+        let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.pinned_by(&above));
         let pinned_above = above.and_then(|by| self.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| self.folder.join(at.rel));
         let (state, modified_here) = match &entry.state {
             EntryState::File(file) => (to_hydration_state(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),

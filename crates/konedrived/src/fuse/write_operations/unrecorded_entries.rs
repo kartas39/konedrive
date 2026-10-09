@@ -14,7 +14,7 @@ impl WriteOperations {
         let mut found = Vec::new();
         let mut directories = vec![self.directory_contents.root_directory()];
         while let Some(directory) = directories.pop() {
-            for listed in self.backing_directory.list(&directory.rel) {
+            for listed in self.backing_directory.list_directory(&directory.rel) {
                 let Some(name) = listed.file_name().to_str().map(str::to_owned) else { continue };
                 let rel = directory.rel.join(&name);
                 if self.directory_contents.find_local_only(&directory, &name).is_some() {

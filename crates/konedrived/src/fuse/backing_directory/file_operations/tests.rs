@@ -12,10 +12,10 @@ fn a_file_and_a_directory_are_made_renamed_and_removed_in_the_backing_directory(
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap().write_all(b"abc").unwrap();
     assert_eq!(fs::read(dir.path().join("docs/a.txt")).unwrap(), b"abc");
     backing_directory.rename(Path::new("docs/a.txt"), Path::new("b.txt")).unwrap();
-    assert!(backing_directory.stat(Path::new("docs/a.txt")).is_none() && backing_directory.stat(Path::new("b.txt")).is_some_and(|m| m.is_file()));
+    assert!(backing_directory.read_metadata(Path::new("docs/a.txt")).is_none() && backing_directory.read_metadata(Path::new("b.txt")).is_some_and(|m| m.is_file()));
     backing_directory.remove_dir(Path::new("docs")).unwrap();
     backing_directory.remove_file(Path::new("b.txt")).unwrap();
-    assert_eq!(backing_directory.list(Path::new("")).count(), 0);
+    assert_eq!(backing_directory.list_directory(Path::new("")).count(), 0);
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn a_directory_that_holds_something_is_not_removed() {
     backing_directory.make_dir(Path::new("docs")).unwrap();
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap();
     assert!(backing_directory.remove_dir(Path::new("docs")).is_err());
-    assert_eq!(backing_directory.list(Path::new("docs")).map(|e| e.file_name()).collect::<Vec<_>>(), ["a.txt"]);
+    assert_eq!(backing_directory.list_directory(Path::new("docs")).map(|e| e.file_name()).collect::<Vec<_>>(), ["a.txt"]);
 }
 
 /// A name is looked at itself: a link that leads nowhere is still there.
@@ -40,8 +40,8 @@ fn a_directory_that_holds_something_is_not_removed() {
 fn a_link_that_leads_nowhere_is_at_its_name() {
     let (dir, backing_directory) = empty_backing_directory();
     std::os::unix::fs::symlink("none", dir.path().join("link")).unwrap();
-    assert!(backing_directory.stat(Path::new("link")).is_some_and(|m| m.is_symlink()));
-    assert!(backing_directory.stat(Path::new("none")).is_none());
+    assert!(backing_directory.read_metadata(Path::new("link")).is_some_and(|m| m.is_symlink()));
+    assert!(backing_directory.read_metadata(Path::new("none")).is_none());
 }
 
 #[test]
@@ -59,5 +59,5 @@ fn a_file_without_a_write_bit_is_given_its_owners() {
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
     fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o444)).unwrap();
     backing_directory.writable(Path::new("a.txt")).unwrap();
-    assert_eq!(backing_directory.stat(Path::new("a.txt")).unwrap().permissions().mode() & 0o777, 0o644);
+    assert_eq!(backing_directory.read_metadata(Path::new("a.txt")).unwrap().permissions().mode() & 0o777, 0o644);
 }

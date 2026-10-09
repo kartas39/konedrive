@@ -16,7 +16,7 @@ fn id_of(parent_id: Option<&str>, _parent: &Path, name: &str) -> Option<String> 
 fn each_directory_down_to_a_path_is_made_and_marked_with_its_onedrive_id() {
     let (_dir, backing_directory) = empty_backing_directory();
     backing_directory.make_marked_directories(Path::new("docs/deep"), Some("R".into()), id_of).unwrap();
-    assert!(backing_directory.stat(Path::new("docs/deep")).is_some_and(|m| m.is_dir()));
+    assert!(backing_directory.read_metadata(Path::new("docs/deep")).is_some_and(|m| m.is_dir()));
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("D"));
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs/deep")).as_deref(), Some("E"));
 }
@@ -28,7 +28,7 @@ fn a_directory_no_onedrive_id_is_known_for_is_made_and_left_unmarked() {
     let (_dir, backing_directory) = empty_backing_directory();
     backing_directory.make_marked_directories(Path::new("docs/new/deep"), Some("R".into()), id_of).unwrap();
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("D"));
-    assert!(backing_directory.stat(Path::new("docs/new/deep")).is_some_and(|m| m.is_dir()));
+    assert!(backing_directory.read_metadata(Path::new("docs/new/deep")).is_some_and(|m| m.is_dir()));
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs/new")), None);
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs/new/deep")), None);
 }
@@ -43,7 +43,7 @@ fn a_directory_that_is_there_already_is_kept_and_marked_with_its_onedrive_id() {
     backing_directory.mark_with_onedrive_id(Path::new("docs"), "other").unwrap();
     backing_directory.make_marked_directories(Path::new("docs"), Some("R".into()), id_of).unwrap();
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("D"));
-    assert!(backing_directory.stat(Path::new("docs/a.txt")).is_some());
+    assert!(backing_directory.read_metadata(Path::new("docs/a.txt")).is_some());
 }
 
 #[test]
@@ -65,5 +65,5 @@ fn a_file_in_the_way_of_a_directory_is_an_error() {
 fn the_backing_directory_itself_needs_no_directory() {
     let (_dir, backing_directory) = empty_backing_directory();
     backing_directory.make_marked_directories(Path::new(""), Some("R".into()), id_of).unwrap();
-    assert_eq!(backing_directory.list(Path::new("")).count(), 0);
+    assert_eq!(backing_directory.list_directory(Path::new("")).count(), 0);
 }

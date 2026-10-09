@@ -18,7 +18,7 @@ use crate::fuse::detections::{DisplacedEntry, EntryRenamed, LocalOnlyEntry, Move
 use crate::fuse::directory::Directory;
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::local_only_entries::{collect_local_only_entries, folder_place};
-use crate::fuse::shared::errno;
+use crate::fuse::errno::to_errno;
 
 /// A rename the check let through: what moves where, and over what.
 struct RenamePlan {
@@ -116,15 +116,15 @@ impl WriteOperations {
     /// at the new place is removed.
     fn move_in_backing_directory(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
         let to = plan.to();
-        self.directory_contents.make_marked_directories(&plan.to_directory.rel).map_err(|e| errno(&e))?;
-        let displaced = self.backing_directory.stat(&to);
-        let moved = if self.backing_directory.stat(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
+        self.directory_contents.make_marked_directories(&plan.to_directory.rel).map_err(|e| to_errno(&e))?;
+        let displaced = self.backing_directory.read_metadata(&to);
+        let moved = if self.backing_directory.read_metadata(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
         // A file that moves over a file replaces it in the rename itself.
         if let Some(metadata) = displaced.filter(|m| m.is_dir() || moved == BackingDirectoryMove::NothingThere) {
             let _ = if metadata.is_dir() { self.backing_directory.remove_dir(&to) } else { self.backing_directory.remove_file(&to) };
         }
         if moved == BackingDirectoryMove::Moved {
-            self.backing_directory.rename(&plan.from, &to).map_err(|e| errno(&e))?;
+            self.backing_directory.rename(&plan.from, &to).map_err(|e| to_errno(&e))?;
         }
         Ok(moved)
     }

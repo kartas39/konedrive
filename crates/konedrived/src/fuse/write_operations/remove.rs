@@ -7,7 +7,7 @@ use super::WriteOperations;
 use crate::fuse::detections::EntryRemoved;
 use crate::fuse::directory::Directory;
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::shared::errno;
+use crate::fuse::errno::to_errno;
 
 impl WriteOperations {
     /// Removes `name` from the directory node `parent`: a directory (`directory`), which must
@@ -39,8 +39,8 @@ impl WriteOperations {
             // The directory in the backing directory is removed when nothing is left in it.
             Some(_) if directory => drop(self.backing_directory.remove_dir(&rel)),
             Some(row) => drop(self.backing_directory.remove_downloaded_copy(&rel, &row.id)),
-            None if directory => self.backing_directory.remove_dir(&rel).map_err(|e| errno(&e))?,
-            None => self.backing_directory.remove_file(&rel).map_err(|e| errno(&e))?,
+            None if directory => self.backing_directory.remove_dir(&rel).map_err(|e| to_errno(&e))?,
+            None => self.backing_directory.remove_file(&rel).map_err(|e| to_errno(&e))?,
         }
         if let Some(local_only) = entry.local_only() {
             self.node_lookup.forget(&local_only.on_disk.handle);

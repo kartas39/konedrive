@@ -20,7 +20,7 @@ fn node_lookup(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryC
 
 /// The entry of the OneDrive id `id`, at the path the store has it.
 fn in_onedrive(contents: &DirectoryContents, id: &str) -> DirectoryEntry {
-    contents.describe(contents.row(id).unwrap(), &contents.find_path(id).unwrap())
+    contents.describe(contents.find_row(id).unwrap(), &contents.find_path(id).unwrap())
 }
 
 /// The local-only entry `name` in the root.
@@ -40,7 +40,7 @@ fn an_entry_gets_one_node_id_and_keeps_it_when_it_is_renamed() {
     assert!(file != docs && file != 1 && node_lookup.assign_node_id(&in_onedrive(&contents, "A"), 1) == file);
     assert_eq!(id(node_lookup.find_entry(file)), Some((Some("A".into()), PathBuf::from("a.txt"))));
     // Shown under another name in another directory: the same node id, at its new place.
-    let renamed = contents.describe(Row { name: "b.txt".into(), ..contents.row("A").unwrap() }, Path::new("docs/b.txt"));
+    let renamed = contents.describe(Row { name: "b.txt".into(), ..contents.find_row("A").unwrap() }, Path::new("docs/b.txt"));
     assert_eq!(node_lookup.assign_node_id(&renamed, docs), file);
     assert_eq!(id(node_lookup.find_entry(file)), Some((Some("A".into()), PathBuf::from("docs/b.txt"))));
     assert!(matches!(node_lookup.find_entry(file), Some((entry, _)) if entry.name == "b.txt"));
@@ -141,7 +141,7 @@ fn a_node_id_whose_local_only_entry_is_gone_stands_for_nothing() {
 #[test]
 fn a_node_id_whose_onedrive_file_was_removed_here_stands_for_nothing() {
     let (_dir, contents, node_lookup) = node_lookup(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    let node_id = node_lookup.assign_node_id(&contents.describe(contents.row("B").unwrap(), Path::new("b.txt")), 1);
+    let node_id = node_lookup.assign_node_id(&contents.describe(contents.find_row("B").unwrap(), Path::new("b.txt")), 1);
     assert!(node_lookup.find_entry(node_id).is_none());
 }
 

@@ -73,7 +73,7 @@ impl Pins {
             if pinned_ids.contains(&row.id) {
                 return Some(row);
             }
-            at = self.directory_contents.parent(&row);
+            at = self.directory_contents.find_parent_row(&row);
         }
         None
     }
@@ -103,7 +103,7 @@ pub(super) fn download_pinned_files(pins: &Arc<Pins>, directory_contents: &Arc<D
     // a large pinned directory is a long walk.
     runtime.spawn_blocking(move || {
         for id in pins.list_pinned_ids() {
-            let Some(row) = directory_contents.row(&id) else { continue };
+            let Some(row) = directory_contents.find_row(&id) else { continue };
             for (file, rel) in directory_contents.files_below(&row) {
                 if let FileSyncState::RemoteOnly(file) = file {
                     file_downloader.download(file, rel, Class::Download, None);

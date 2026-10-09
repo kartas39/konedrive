@@ -200,12 +200,12 @@ fn a_onedrive_file_is_shown_where_the_store_has_it() {
 #[test]
 fn the_folder_itself_is_the_drives_root() {
     let (_dir, contents) = directory_contents(Vec::new());
-    assert_eq!(contents.root_id().as_deref(), Some("R"));
+    assert_eq!(contents.find_root_id().as_deref(), Some("R"));
     assert_eq!(in_onedrive(contents.find_entry_at(Path::new(""))), pair("R", ""));
     assert!(matches!(contents.root_entry().state, EntryState::Directory(DirectorySyncState::Synced(_))));
     assert_eq!(contents.find_path("R").as_deref(), Some(Path::new("")));
-    assert_eq!(contents.row("A").and_then(|a| contents.parent(&a)).map(|parent| parent.id).as_deref(), Some("R"));
-    assert!(contents.parent(&contents.root_row()).is_none());
+    assert_eq!(contents.find_row("A").and_then(|a| contents.find_parent_row(&a)).map(|parent| parent.id).as_deref(), Some("R"));
+    assert!(contents.find_parent_row(&contents.root_row()).is_none());
 }
 
 /// Until its move is sent the store has the file where it was; the mount shows it where the
@@ -290,7 +290,7 @@ fn a_listing_of_onedrive_files_is_the_stores_rows_whatever_the_disk_holds_of_the
         sources.sort_by(|a, b| a.name().cmp(b.name()));
         sources
     };
-    let rows = [contents.row("A").unwrap(), contents.row("B").unwrap(), contents.row("D").unwrap()].map(EntrySource::InOneDrive);
+    let rows = [contents.find_row("A").unwrap(), contents.find_row("B").unwrap(), contents.find_row("D").unwrap()].map(EntrySource::InOneDrive);
     assert_eq!(listed(&contents), rows);
     download(dir.path(), &contents, "a.txt", "A", b"whole");
     assert_eq!(listed(&contents), rows);
@@ -334,7 +334,7 @@ fn a_file_below_a_directory_moved_into_a_local_only_directory_is_found_below_it(
 fn the_files_below_a_row_come_with_their_paths() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
     let below = |id: &str| {
-        let mut files: Vec<(String, PathBuf)> = contents.files_below(&contents.row(id).unwrap()).into_iter().filter_map(|(file, at)| Some((file.row()?.id.clone(), at))).collect();
+        let mut files: Vec<(String, PathBuf)> = contents.files_below(&contents.find_row(id).unwrap()).into_iter().filter_map(|(file, at)| Some((file.row()?.id.clone(), at))).collect();
         files.sort();
         files
     };

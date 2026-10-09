@@ -75,7 +75,7 @@ fn a_downloaded_copy_is_removed_by_its_own_onedrive_id() {
     let (dir, backing_directory) = empty_backing_directory();
     file(dir.path(), Some("A"), Some(State::Hydrated));
     assert!(backing_directory.remove_downloaded_copy(Path::new(AT), "A").is_some());
-    assert!(backing_directory.stat(Path::new(AT)).is_none());
+    assert!(backing_directory.read_metadata(Path::new(AT)).is_none());
 }
 
 #[test]
@@ -85,6 +85,6 @@ fn the_copy_of_another_onedrive_file_and_a_file_of_the_users_own_are_not_removed
     assert_eq!(backing_directory.remove_downloaded_copy(Path::new(AT), "A"), None);
     file(dir.path(), None, None);
     assert_eq!(backing_directory.remove_downloaded_copy(Path::new(AT), "A"), None);
-    assert!(backing_directory.stat(Path::new(AT)).is_some());
+    assert!(backing_directory.read_metadata(Path::new(AT)).is_some());
     assert_eq!(backing_directory.remove_downloaded_copy(Path::new("none.txt"), "A"), None);
 }

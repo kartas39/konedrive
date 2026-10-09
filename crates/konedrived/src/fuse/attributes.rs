@@ -10,7 +10,7 @@ use fuser::{FileAttr, FileType, INodeNo};
 
 use super::access_mode::AccessMode;
 use super::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
-use super::shared::seconds;
+use crate::clock::to_system_time;
 
 /// For how long the kernel may keep an entry and its attributes without asking again.
 pub(super) const TTL: Duration = Duration::from_secs(1);
@@ -37,10 +37,10 @@ fn permissions(access_mode: &AccessMode, directory: bool) -> u16 {
 /// - A local-only entry has what the filesystem says of it; a directory shows no size.
 pub(super) fn attributes(node_id: u64, access_mode: &AccessMode, entry: &DirectoryEntry) -> FileAttr {
     let (directory, size, blocks, modified): (bool, u64, u64, SystemTime) = match &entry.state {
-        EntryState::Directory(DirectorySyncState::Synced(row)) => (true, 0, 0, seconds(row.mtime)),
+        EntryState::Directory(DirectorySyncState::Synced(row)) => (true, 0, 0, to_system_time(row.mtime)),
         EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => (true, 0, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),
-        EntryState::File(FileSyncState::RemoteOnly(row)) => (false, row.size, 0, seconds(row.mtime)),
-        EntryState::File(FileSyncState::Synced(row, copy)) => (false, copy.size, copy.blocks, seconds(row.mtime)),
+        EntryState::File(FileSyncState::RemoteOnly(row)) => (false, row.size, 0, to_system_time(row.mtime)),
+        EntryState::File(FileSyncState::Synced(row, copy)) => (false, copy.size, copy.blocks, to_system_time(row.mtime)),
         EntryState::File(FileSyncState::ModifiedHere(_, copy)) => (false, copy.size, copy.blocks, copy.modified),
         EntryState::File(FileSyncState::LocalOnly(local_only)) => (false, local_only.on_disk.metadata.size, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),
     };

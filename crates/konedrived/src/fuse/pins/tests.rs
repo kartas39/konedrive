@@ -17,7 +17,7 @@ fn pins(pinned_ids: &[&str]) -> (tempfile::TempDir, Store, Pins) {
 
 /// The id of what keeps the OneDrive id `id` on this device.
 fn pinned_by(pins: &Pins, id: &str) -> Option<String> {
-    let row = pins.directory_contents.row(id).expect("a row of the fixture");
+    let row = pins.directory_contents.find_row(id).expect("a row of the fixture");
     pins.pinned_by(&row).map(|by| by.id)
 }
 

@@ -11,7 +11,7 @@ use crate::fuse::directory::Directory;
 impl DirectoryContents {
     /// The folder itself, as a directory.
     pub(in crate::fuse) fn root_directory(&self) -> Directory {
-        Directory { id: self.root_id(), rel: PathBuf::new() }
+        Directory { id: self.find_root_id(), rel: PathBuf::new() }
     }
 
     /// The path the mount shows the OneDrive id `id` at: where the store has it, or where
@@ -23,7 +23,7 @@ impl DirectoryContents {
             if unsent_changes.removed.contains(&at) {
                 return None;
             }
-            let row = self.row(&at).filter(|r| r.placement == Placement::Placed)?;
+            let row = self.find_row(&at).filter(|r| r.placement == Placement::Placed)?;
             let (parent_id, name) = match unsent_changes.moved.get(&at) {
                 // Moved into a directory that is not in OneDrive yet: found by its path.
                 Some((Directory { id: None, rel }, name)) => {
@@ -67,6 +67,6 @@ impl DirectoryContents {
     /// ([`BackingDirectory::make_marked_directories`](crate::fuse::backing_directory::BackingDirectory::make_marked_directories)).
     pub(in crate::fuse) fn make_marked_directories(&self, rel: &Path) -> io::Result<()> {
         let id_of = |parent_id: Option<&str>, parent: &Path, name: &str| self.find_row_at(&Directory { id: parent_id.map(str::to_owned), rel: parent.to_owned() }, name).map(|row| row.id);
-        self.backing_directory.make_marked_directories(rel, self.root_id(), id_of)
+        self.backing_directory.make_marked_directories(rel, self.find_root_id(), id_of)
     }
 }

@@ -13,8 +13,8 @@
 //!
 //! What it answers:
 //!
-//! - here: a row of the store ([`DirectoryContents::row`]), the row of the directory it is
-//!   in ([`DirectoryContents::parent`]), the folder's own row and entry, the files at and
+//! - here: a row of the store ([`DirectoryContents::find_row`]), the row of the directory it is
+//!   in ([`DirectoryContents::find_parent_row`]), the folder's own row and entry, the files at and
 //!   below a row with their sync states ([`DirectoryContents::files_below`]), the OneDrive
 //!   file the user just removed from a path ([`DirectoryContents::find_file_removed_at`]);
 //! - [`sync_states`]: the sync state of a file and of a directory, and a directory entry;
@@ -70,28 +70,28 @@ impl DirectoryContents {
     pub(super) fn find_file_removed_at(&self, rel: &Path) -> Option<Row> {
         let rows = self.read(|s| s.outbox_at_or_under(rel))?;
         let removed = rows.into_iter().find(|row| row.rel == rel && row.kind == OutboxKind::Delete && row.state != OutboxState::Running)?;
-        self.row(&removed.item_id?).filter(|base| base.kind == Kind::File)
+        self.find_row(&removed.item_id?).filter(|base| base.kind == Kind::File)
     }
 
     /// The row of the OneDrive id `id`, as the store has it.
-    pub(super) fn row(&self, id: &str) -> Option<Row> {
+    pub(super) fn find_row(&self, id: &str) -> Option<Row> {
         self.read(|s| s.get(Table::Items, id)).flatten()
     }
 
     /// The row of the directory `row` is in, as the store has it.
-    pub(super) fn parent(&self, row: &Row) -> Option<Row> {
-        row.parent_id.as_deref().and_then(|parent| self.row(parent))
+    pub(super) fn find_parent_row(&self, row: &Row) -> Option<Row> {
+        row.parent_id.as_deref().and_then(|parent| self.find_row(parent))
     }
 
     /// The OneDrive id of the folder itself: the root of the drive.
-    pub(super) fn root_id(&self) -> Option<String> {
+    pub(super) fn find_root_id(&self) -> Option<String> {
         self.read(|s| s.root_item_id()).flatten()
     }
 
     /// The folder itself, as a row: without a name, and without an id before the store has
     /// the drive's root.
     pub(super) fn root_row(&self) -> Row {
-        let id = self.root_id().unwrap_or_default();
+        let id = self.find_root_id().unwrap_or_default();
         Row { id, parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed }
     }
 
@@ -119,7 +119,7 @@ impl DirectoryContents {
         // none waits for a whole walk.
         let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
         ids.push(row.id.clone());
-        let files: Vec<Row> = ids.iter().filter_map(|id| self.row(id).filter(|r| r.kind == Kind::File)).collect();
+        let files: Vec<Row> = ids.iter().filter_map(|id| self.find_row(id).filter(|r| r.kind == Kind::File)).collect();
         let placed: Vec<(Row, PathBuf)> = files.into_iter().filter_map(|file| self.find_path(&file.id).map(|at| (file, at))).collect();
         let unsent_changes = self.unsent_changes();
         placed.into_iter().map(|(file, at)| (self.file_sync_state(file, &at, &unsent_changes), at)).collect()

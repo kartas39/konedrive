@@ -137,7 +137,7 @@ pub(super) fn apply_staged_cycle(
     // a file that is not that file's download is never moved or removed.
     let holds = |rel: &Path, id: &str, kind: Kind| match kind {
         Kind::File => backing_directory.has_downloaded_copy(rel, id),
-        Kind::Folder => backing_directory.stat(rel).is_some_and(|m| m.is_dir()) && backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
+        Kind::Folder => backing_directory.read_metadata(rel).is_some_and(|m| m.is_dir()) && backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
     };
     let (mut announcements, mut removed_ids, mut conflicts, mut removed_directories) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
     // The time the rows of what is kept are dated by.
@@ -164,7 +164,7 @@ pub(super) fn apply_staged_cycle(
                 }
                 if change.has_new_content() {
                     backing_directory.remove_downloaded_copy(was, &change.id);
-                } else if was != now && holds(was, &change.id, old.kind) && backing_directory.stat(now).is_none() {
+                } else if was != now && holds(was, &change.id, old.kind) && backing_directory.read_metadata(now).is_none() {
                     let _ = now.parent().map(|dir| make_staged_directories(backing_directory, store, dir));
                     let _ = backing_directory.rename(was, now);
                 }

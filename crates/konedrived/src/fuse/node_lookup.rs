@@ -128,7 +128,7 @@ impl NodeLookup {
     /// The directory the node `node_id` stands for.
     pub(super) fn find_directory(&self, node_id: u64) -> Option<Directory> {
         if node_id == 1 {
-            return Some(Directory { id: self.directory_contents.root_id().filter(|id| !id.is_empty()), rel: PathBuf::new() });
+            return Some(Directory { id: self.directory_contents.find_root_id().filter(|id| !id.is_empty()), rel: PathBuf::new() });
         }
         match self.find_node(node_id)? {
             NodeTarget::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| Directory { id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), rel }),

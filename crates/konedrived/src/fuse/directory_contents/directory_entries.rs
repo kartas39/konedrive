@@ -71,7 +71,7 @@ impl DirectoryContents {
         let on_disk = self.backing_directory.find_disk_entry(&rel)?;
         // One that is marked with an id the store does not have is not in OneDrive yet: its
         // upload is being committed, or the store was made anew.
-        let in_onedrive = self.backing_directory.read_onedrive_id(&rel).is_some_and(|id| self.row(&id).is_some());
+        let in_onedrive = self.backing_directory.read_onedrive_id(&rel).is_some_and(|id| self.find_row(&id).is_some());
         (!in_onedrive).then(|| LocalOnlyEntry { on_disk, place: folder_place(directory, &name.to_string_lossy()) })
     }
 
@@ -79,7 +79,7 @@ impl DirectoryContents {
     /// the store has it out of the folder. What the unsent changes say of it is the caller's
     /// to ask.
     fn find_placed_row(&self, id: &str, name: &str) -> Option<Row> {
-        let row = self.row(id).filter(|r| r.placement == Placement::Placed)?;
+        let row = self.find_row(id).filter(|r| r.placement == Placement::Placed)?;
         Some(Row { name: name.to_owned(), ..row })
     }
 
@@ -141,7 +141,7 @@ impl DirectoryContents {
         rows.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
         let mut all: Vec<EntrySource> = rows.into_iter().map(EntrySource::InOneDrive).collect();
-        for name in self.backing_directory.list(&directory.rel).map(|e| e.file_name()) {
+        for name in self.backing_directory.list_directory(&directory.rel).map(|e| e.file_name()) {
             if let Some(name) = name.to_str().filter(|name| !taken.contains(*name)) {
                 all.extend(self.find_local_only(directory, name).map(EntrySource::LocalOnly));
             }

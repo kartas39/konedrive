@@ -83,7 +83,7 @@ fn a_download_lands_as_the_files_downloaded_copy() {
     assert_eq!(land(&backing_directory), LandingOutcome::Placed);
     assert_eq!(fs::read(dir.path().join(AT)).unwrap(), b"downloaded");
     let copy = backing_directory.find_downloaded_copy(Path::new(AT), "A").expect("the downloaded copy");
-    let mode = backing_directory.stat(Path::new(AT)).unwrap().permissions().mode() & 0o777;
+    let mode = backing_directory.read_metadata(Path::new(AT)).unwrap().permissions().mode() & 0o777;
     assert_eq!((copy.modified, mode), (UNIX_EPOCH + Duration::from_secs(1_000), 0o444));
 }
 

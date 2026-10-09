@@ -67,7 +67,7 @@ impl ConflictCopies {
         for n in 1..=100 {
             let copy = self.copy_name(name, n);
             let to = parent.join(&copy);
-            if self.backing_directory.stat(&to).is_some() || self.directory_contents.find_entry(&directory, &copy).is_some() {
+            if self.backing_directory.read_metadata(&to).is_some() || self.directory_contents.find_entry(&directory, &copy).is_some() {
                 continue;
             }
             if let Err(e) = self.backing_directory.rename(rel, &to) {
@@ -88,7 +88,7 @@ impl ConflictCopies {
     /// holds local-only entries stays as a local-only directory, and, when the folder
     /// `uploads`, is made again in OneDrive with what it holds.
     pub(super) fn keep_removed_directory(&self, id: &str, rel: &Path, uploads: bool, now: i64, conflicts: &mut CycleConflicts) {
-        if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) || self.backing_directory.remove_dir(rel).is_ok() || self.backing_directory.stat(rel).is_none() {
+        if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) || self.backing_directory.remove_dir(rel).is_ok() || self.backing_directory.read_metadata(rel).is_none() {
             return;
         }
         self.backing_directory.clear_onedrive_id(rel);

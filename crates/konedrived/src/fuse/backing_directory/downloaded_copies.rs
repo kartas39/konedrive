@@ -19,7 +19,7 @@ impl BackingDirectory {
     /// The downloaded copy of the OneDrive file `id` at `rel`, if the backing directory
     /// holds it: its metadata.
     pub(in crate::fuse) fn find_downloaded_copy(&self, rel: &Path, id: &str) -> Option<DiskMetadata> {
-        let path = self.path(rel);
+        let path = self.resolve_path(rel);
         let metadata = fs::symlink_metadata(&path).ok().filter(fs::Metadata::is_file)?;
         let marked_with = xattr::get(&path, XATTR_ITEM_ID).ok().flatten()?;
         // Whole, too: a placeholder an older konedrive left under the file's name holds
@@ -38,7 +38,7 @@ impl BackingDirectory {
     /// Marks the file at `rel` as the whole content of the OneDrive file `id`: its downloaded
     /// copy from here on.
     pub(in crate::fuse) fn mark_downloaded_copy(&self, rel: &Path, id: &str) -> io::Result<()> {
-        let path = self.path(rel);
+        let path = self.resolve_path(rel);
         xattr::set(&path, XATTR_ITEM_ID, id.as_bytes())?;
         xattr::set(&path, XATTR_STATE, State::Hydrated.as_str().as_bytes())
     }
@@ -46,7 +46,7 @@ impl BackingDirectory {
     /// Removes the file at `rel` if it is marked with the OneDrive id `id` and no other. Its
     /// size on disk, when it was removed.
     pub(in crate::fuse) fn remove_downloaded_copy(&self, rel: &Path, id: &str) -> Option<u64> {
-        let path = self.path(rel);
+        let path = self.resolve_path(rel);
         let file = File::open(&path).ok()?;
         if placeholder::read_item_id(&file).ok().flatten().as_deref() != Some(id) {
             return None;

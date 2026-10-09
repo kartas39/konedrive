@@ -38,7 +38,6 @@ use crate::status::report::Report;
 use super::backing_directory::{BackingDirectory, LandingOutcome};
 use super::directory_contents::DirectoryContents;
 use super::download_states::{DownloadStart, DownloadStates, Waiter};
-use super::shared::seconds;
 
 /// Tells whoever watches the folder that what is shown of the OneDrive file at a path
 /// changed: the path in the folder, and the file's OneDrive id.
@@ -51,8 +50,8 @@ pub(super) struct FileDownloader {
     pub(super) download_states: Arc<DownloadStates>,
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) pool: Arc<TransferPool>,
-    /// What the daemon's large downloads in parts share.
-    pub(super) parts_share: Arc<Share>,
+    /// What the daemon's large downloads in parallel streams share.
+    pub(super) split_download_share: Arc<Share>,
     pub(super) report: Report,
     /// The folder's path, which is the mount: a download is shown under its file's path there.
     pub(super) folder: PathBuf,
@@ -132,7 +131,7 @@ impl FileDownloader {
         let landed = async {
             // A large file that nothing waits to open (a pinned one) goes in parallel parts,
             // the slot held here being its first stream's.
-            let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts_share)));
+            let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
             download_staged(&file, &row.id, row.size, &watermarked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
             // The directories down to its path, each marked with its OneDrive id.
@@ -142,7 +141,7 @@ impl FileDownloader {
             if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
                 return Err(libc::ESTALE);
             }
-            let (id, modified, at, file, backing_directory) = (row.id.clone(), seconds(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.backing_directory));
+            let (id, modified, at, file, backing_directory) = (row.id.clone(), crate::clock::to_system_time(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.backing_directory));
             // The file's own steps wait for the disk: not on the runtime's threads.
             let landed = tokio::task::spawn_blocking(move || backing_directory.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
             if landed == LandingOutcome::Refused {

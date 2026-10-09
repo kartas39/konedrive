@@ -87,18 +87,18 @@ impl BackingDirectory {
 
     /// The OneDrive id the entry at `rel` is marked with.
     pub(in crate::fuse) fn read_onedrive_id(&self, rel: &Path) -> Option<String> {
-        self.attribute(rel, XATTR_ITEM_ID)
+        self.read_attribute(rel, XATTR_ITEM_ID)
     }
 
     /// Marks the entry at `rel` with the OneDrive id `id`: it belongs to that file or
     /// directory of OneDrive from here on.
     pub(in crate::fuse) fn mark_with_onedrive_id(&self, rel: &Path, id: &str) -> io::Result<()> {
-        xattr::set(self.path(rel), XATTR_ITEM_ID, id.as_bytes())
+        xattr::set(self.resolve_path(rel), XATTR_ITEM_ID, id.as_bytes())
     }
 
     /// Takes the OneDrive id off the entry at `rel`: it is the user's own from here on.
     pub(in crate::fuse) fn clear_onedrive_id(&self, rel: &Path) {
-        let _ = xattr::remove(self.path(rel), XATTR_ITEM_ID);
+        let _ = xattr::remove(self.resolve_path(rel), XATTR_ITEM_ID);
     }
 }
 

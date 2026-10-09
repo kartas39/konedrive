@@ -72,12 +72,12 @@ impl BackingDirectory {
     /// A file of the backing directory's filesystem that is in no directory, to build a
     /// download in.
     pub(in crate::fuse) fn unnamed(&self) -> io::Result<File> {
-        File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.path(Path::new("")))
+        File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.resolve_path(Path::new("")))
     }
 
     /// What is at `rel`, for a download of the OneDrive file `id`.
     pub(in crate::fuse) fn inspect_target(&self, rel: &Path, id: &str) -> TargetContents {
-        let path = self.path(rel);
+        let path = self.resolve_path(rel);
         if fs::symlink_metadata(&path).is_err() {
             return TargetContents::Nothing;
         }
@@ -109,7 +109,7 @@ impl BackingDirectory {
         // No write bit on a downloaded copy, as the mount shows it.
         file.set_permissions(fs::Permissions::from_mode(0o444))?;
         file.sync_all()?;
-        let target = self.path(rel);
+        let target = self.resolve_path(rel);
         if action == LandingAction::Replace {
             fs::remove_file(&target)?;
         }

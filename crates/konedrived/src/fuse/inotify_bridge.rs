@@ -157,7 +157,7 @@ impl InotifyBridge {
     /// it: the root is always known.
     fn find_directory_node_id(&self, id: Option<&str>) -> Option<u64> {
         let id = id?;
-        if self.directory_contents.root_id().as_deref() == Some(id) {
+        if self.directory_contents.find_root_id().as_deref() == Some(id) {
             return Some(1);
         }
         self.node_lookup.find_node_id(id)

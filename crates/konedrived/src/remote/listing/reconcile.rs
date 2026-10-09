@@ -214,7 +214,7 @@ impl Reconcile {
             tracing::warn!("cannot record the account's drive in config.toml: {e}");
         }
         // Through the mount the folder takes no attribute: its own directory does.
-        let root = SyncRoot { path: self.mount.under(), root_id: self.root.root_id.clone() };
+        let root = SyncRoot { path: self.mount.backing_directory_path(), root_id: self.root.root_id.clone() };
         if let Err(e) = crate::folder::root::mark_drive(&root, &id) {
             tracing::warn!("cannot record the drive on {}: {e}", self.root.path.display());
         }
