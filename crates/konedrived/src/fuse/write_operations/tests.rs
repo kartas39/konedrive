@@ -12,7 +12,7 @@ use konedrive_tree::outbox::{Detection, OutboxKind, OutboxRow};
 use konedrive_tree::{Store, TreeStore};
 
 use super::WriteOperations;
-use crate::fuse::nodes::Nodes;
+use crate::fuse::node_table::NodeTable;
 use crate::fuse::recorder::Recorder;
 use crate::fuse::resolve::Resolve;
 use crate::fuse::backing_directory::BackingDirectory;
@@ -46,7 +46,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let store = Store::new(written);
     let under = Arc::new(BackingDirectory::open(&disk).unwrap());
     let view = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&under)));
-    let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
+    let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
     let resolve = Arc::new(Resolve::new(Arc::clone(&view), nodes));
     let writable = Arc::new(AtomicBool::new(true));
     let recorder = Arc::new(Recorder::start(store.clone(), Arc::default(), Arc::clone(&writable)).unwrap());

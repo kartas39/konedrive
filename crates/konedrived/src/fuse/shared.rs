@@ -2,7 +2,7 @@
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
 //! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`DirectoryContents`]), the kernel's nodes
-//! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
+//! ([`NodeTable`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
 //! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
 //! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
 //! downloads, the reads, the pins, the announcer, the mode — is still a field here with its
@@ -26,7 +26,7 @@ use crate::status::report::Report;
 
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
-use super::nodes::Nodes;
+use super::node_table::NodeTable;
 use super::upload_rules::UploadRules;
 use super::recorder::Recorder;
 use super::write_operations::WriteOperations;
@@ -44,9 +44,9 @@ pub(super) struct Shared {
     pub(super) view: Arc<DirectoryContents>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
-    /// The node ids the kernel knows ([`super::nodes`]): shared by what resolves them and what
+    /// The node ids the kernel knows ([`super::node_table`]): shared by what resolves them and what
     /// tells the kernel of changes.
-    pub(super) nodes: Arc<Mutex<Nodes>>,
+    pub(super) nodes: Arc<Mutex<NodeTable>>,
     /// Which entry of the folder a node is ([`super::resolve`]).
     pub(super) resolve: Arc<Resolve>,
     pub(super) source: Arc<dyn ContentSource>,

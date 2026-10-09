@@ -7,7 +7,7 @@ use konedrive_tree::outbox::{Detection, OutboxKind};
 use konedrive_tree::Row;
 
 use super::Resolve;
-use crate::fuse::nodes::Nodes;
+use crate::fuse::node_table::NodeTable;
 use crate::fuse::directory_contents::tests::{of, view};
 use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 
@@ -16,7 +16,7 @@ use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 fn resolve(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, Resolve) {
     let (dir, view) = view(detections);
     let view = Arc::new(view);
-    let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
+    let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
     (dir, Arc::clone(&view), Resolve::new(view, nodes))
 }
 

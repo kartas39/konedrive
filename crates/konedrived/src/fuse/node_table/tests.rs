@@ -2,19 +2,19 @@ use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
 
-use super::{Key, Nodes};
+use super::{NodeKey, NodeTable};
 
-fn item(id: &str) -> Key {
-    Key::Item(id.into())
+fn item(id: &str) -> NodeKey {
+    NodeKey::InOneDrive(id.into())
 }
 
 /// An object by a handle as ext4 gives it: the inode's number, then its generation.
-fn local(ino: u32, generation: u32) -> Key {
-    Key::Local(FileHandle { kind: 1, bytes: [ino.to_le_bytes(), generation.to_le_bytes()].concat() })
+fn local(ino: u32, generation: u32) -> NodeKey {
+    NodeKey::LocalOnly(FileHandle { kind: 1, bytes: [ino.to_le_bytes(), generation.to_le_bytes()].concat() })
 }
 
-fn nodes() -> Nodes {
-    Nodes { next: 1, ..Nodes::default() }
+fn nodes() -> NodeTable {
+    NodeTable { next: 1, ..NodeTable::default() }
 }
 
 /// The kernel keeps a node id for as long as it knows the item: the id an item was given is
