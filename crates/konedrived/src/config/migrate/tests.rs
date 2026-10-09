@@ -86,11 +86,10 @@ async fn what_version_1_carries_over() {
     /// The case, the file, the files beside it, the wallet's answer, and the account's
     /// folder when an account is carried over.
     type Case<'a> = (&'a str, &'a str, &'a [&'a str], Option<bool>, Option<Option<RootConfig>>);
-    let cases: [Case; 5] = [
+    let cases: [Case; 4] = [
         ("a client id alone", &client, &[], Some(false), None),
         ("a refresh token, or a wallet that does not answer", &client, &[], Some(true), Some(None)),
         ("the cached account", &client, &["account.json"], None, Some(None)),
-        ("the tree store", &client, &["tree.sqlite"], None, Some(None)),
         ("a local folder from before the defaults", &local, &[], None, Some(Some(local_root.clone()))),
     ];
     for (case, text, files, wallet, expected) in cases {

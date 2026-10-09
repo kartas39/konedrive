@@ -82,6 +82,7 @@ async fn binary_conflicts_are_listed_and_dismissed() {
 /// `xdg-open` that records what it is given is alone in `PATH`, `KONEDRIVE_NO_BROWSER` is
 /// empty, and the piped stdout alone, or `--print`, keeps it from being called.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_open_prints_the_address_and_starts_no_opener() {
     use std::os::unix::fs::PermissionsExt;
     use wiremock::matchers::{method, path};
@@ -128,6 +129,7 @@ async fn binary_open_prints_the_address_and_starts_no_opener() {
 /// `sync status` says when the folder was last checked with OneDrive, and
 /// how much of this computer's disk it takes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
     let (f, _graph) = harness_onedrive().await;
     let addr = f._bus.address();
@@ -144,6 +146,7 @@ async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_refresh_asks_onedrive_now() {
     let (f, graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");

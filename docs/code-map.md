@@ -569,8 +569,8 @@ Each has its file in `crates/konedrived/src/dbus/`. Design: `desktop.md`.
 
 ### `dbus/`
 
-- `org.konedrive.Accounts.xml` — the manager: the accounts, the shared settings, the helper's
-  state, the version.
+- `org.konedrive.Accounts.xml` — the manager: the accounts, the shared settings, `HelperState`
+  (which reads `connected`), the version.
 - `org.konedrive.Account.xml` — one account: sign-in, label, mode, profile, quota.
 - `org.konedrive.Folder.xml` — one account's folder: registration, refresh, pause, settings.
 - `org.konedrive.Files.xml` — the per-file calls, by path, for any account.

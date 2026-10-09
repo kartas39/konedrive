@@ -6,6 +6,7 @@ use super::*;
 /// and `sync deletes`, end to end through the binary on a OneDrive folder; and a
 /// duration that is none is a usage error (exit status 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -62,6 +63,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
 /// `sync thumbnails` prints the setting without an argument and changes it with
 /// one; a choice that is none is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_shows_and_changes_the_thumbnail_setting() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -114,6 +116,7 @@ async fn binary_shows_and_changes_the_settings_every_account_shares() {
 /// While the account holds back by itself, `sync status` says why; `sync anyway`
 /// lifts the hold, and the line goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -141,6 +144,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
 /// account is held back — and `sync anyway --all` lifts the hold of every account that holds
 /// back by itself, but not the user's pause; with `--account` it is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold() {
     use konedrived::status::snapshot::LiveChanges;
     let (f, _graph) = harness_onedrive().await;

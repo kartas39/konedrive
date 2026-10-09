@@ -185,7 +185,7 @@ something the project chose to keep. It is written for whoever implements.
 Look at `git log` before writing a commit message: this project writes commits as
 `type(scope): a plain-language sentence describing what changed`, in the imperative-adjacent,
 descriptive style already in the history (`fix(app): …`, `feat(daemon): …`, `docs(log): …`,
-`test(vm): …`), rather than a terse label. Keep the scope to the part of the tree that changed
+rather than a terse label. Keep the scope to the part of the tree that changed
 (`app`, `daemon`, `dbus`, `docs`, …).
 
 ## Licensing

@@ -18,6 +18,7 @@ async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
 // --- `sync skipped`, `sync refresh`, and OneDrive-folder `sync status` ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -36,6 +37,7 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
 /// registered OneDrive folder follow `Account.Mode`: read-write takes the read-only lock off,
 /// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn the_folder_follows_the_accounts_mode() {
     use std::os::unix::fs::PermissionsExt;
     use konedrived::config::Mode;
@@ -67,6 +69,7 @@ async fn the_folder_follows_the_accounts_mode() {
 /// `sync status` says how the local scan goes: a read-only folder has none.
 /// (How a read-write folder's scan reads is `text::status::local_scan_text`'s test.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
@@ -99,6 +102,7 @@ async fn binary_skipped_with_no_folder_registered_says_so() {
 /// subprocess needs to start and call `sync skipped`, so `Folder.State` is
 /// still `listing` for the whole call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -138,6 +142,7 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "mounts a filesystem: run in the VM"]
 async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read_only() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
