@@ -30,7 +30,7 @@ impl Shared {
         let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
         // No trash directory of a file manager either: what is removed here goes to
         // OneDrive's recycle bin, and a trash inside the folder would be uploaded.
-        if self.policy.daemon_owned(name) || (dir && parent == 1 && self.policy.is_trash(name)) {
+        if self.upload_rules.daemon_owned(name) || (dir && parent == 1 && self.upload_rules.is_trash(name)) {
             return Err(Errno::EPERM);
         }
         if self.view.entry(&above, name).is_some() {

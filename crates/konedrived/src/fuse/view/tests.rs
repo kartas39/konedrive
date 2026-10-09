@@ -10,7 +10,7 @@ use super::{Dir, Entry, View};
 use crate::folder::disk::HOLDING;
 use crate::fuse::under::Under;
 
-fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
+pub(in crate::fuse) fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
 }
 
@@ -32,12 +32,9 @@ pub(in crate::fuse) fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to:
     }
 }
 
-/// The view of a drive with a folder `docs` that holds `c.txt`, and two files in its root,
-/// with `detections` waiting in the outbox, over a folder on disk that holds nothing. The
-/// store is filled before the view has it: a view reads what its own connection wrote only
-/// once.
-pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, View) {
-    let mut store = TreeStore::in_memory().unwrap();
+/// A drive with a folder `docs` that holds `c.txt`, and two files in its root, `a.txt` and
+/// `b.txt`, with `detections` waiting in the outbox.
+pub(in crate::fuse) fn drive(store: &mut TreeStore, detections: Vec<Detection>) {
     let changes = [
         Change::Root(row("R", None, "root", Kind::Folder)),
         Change::Upsert(row("D", Some("R"), "docs", Kind::Folder)),
@@ -48,6 +45,14 @@ pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, V
     store.commit_page(&changes, "next").unwrap();
     let ops: Vec<OutboxOp> = detections.into_iter().map(OutboxOp::Record).collect();
     store.outbox_apply(&ops, 0).unwrap();
+}
+
+/// The view of the [`drive`], with `detections` waiting in the outbox, over a folder on disk
+/// that holds nothing. The store is filled before the view has it: a view reads what its own
+/// connection wrote only once.
+pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, View) {
+    let mut store = TreeStore::in_memory().unwrap();
+    drive(&mut store, detections);
     let dir = tempfile::tempdir().unwrap();
     let under = Arc::new(Under::open(dir.path()).unwrap());
     (dir, View::new(store, under))

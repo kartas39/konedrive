@@ -18,7 +18,7 @@ impl Shared {
     pub(super) fn rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<(), Errno> {
         self.may_change()?;
         let (from_dir, to_dir) = (self.resolve.dir(parent).ok_or(Errno::ENOENT)?, self.resolve.dir(new_parent).ok_or(Errno::ENOENT)?);
-        if self.policy.daemon_owned(new_name) {
+        if self.upload_rules.daemon_owned(new_name) {
             return Err(Errno::EPERM);
         }
         let src = self.view.entry(&from_dir, name).ok_or(Errno::ENOENT)?;
@@ -39,7 +39,7 @@ impl Shared {
         }
         // An item cannot be moved to where nothing is sent from: a program that copies it
         // there and removes it here does what that means.
-        let (stays, local_dir) = (self.stays_local(&to_dir, new_name), self.policy.in_local_dir(&to_dir.rel, |at| self.under.carried(at).is_some()));
+        let (stays, local_dir) = (self.stays_local(&to_dir, new_name), self.upload_rules.in_local_dir(&to_dir.rel, |at| self.under.carried(at).is_some()));
         if src.id().is_some() && local_dir {
             return Err(Errno::EXDEV);
         }

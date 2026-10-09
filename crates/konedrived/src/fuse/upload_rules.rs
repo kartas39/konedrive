@@ -1,20 +1,20 @@
-//! What of the folder is sent to OneDrive at all, and under which names.
+//! What of the folder is uploaded to OneDrive at all, and under which names.
 //!
-//! [`Policy`] owns the account's ignore list, as its settings share it, and the machine's
+//! [`UploadRules`] owns the account's ignore list, as its settings share it, and the machine's
 //! name. It touches nothing: not the disk, not the store, not the mount. The one fact of the
 //! disk its answers need — whether a directory carries an item — is the caller's to tell.
 //! The names OneDrive itself refuses are not here: they are a reason on a row
 //! ([`crate::local::names::refused`]), said where the row is decided
-//! ([`super::meaning`]).
+//! ([`super::detections`]).
 //!
 //! What it answers:
 //!
 //! - whether what has no item stays on this computer: by its own name
-//!   ([`Policy::stays_local`]), or by a directory above it ([`Policy::in_local_dir`]);
-//! - which names a program may not make: the daemon's own ([`Policy::daemon_owned`]) and a
-//!   file manager's trash ([`Policy::is_trash`]);
+//!   ([`UploadRules::stays_local`]), or by a directory above it ([`UploadRules::in_local_dir`]);
+//! - which names a program may not make: the daemon's own ([`UploadRules::daemon_owned`]) and a
+//!   file manager's trash ([`UploadRules::is_trash`]);
 //! - the name the user's own is kept under beside an item that comes to its name
-//!   ([`Policy::copy_name`]).
+//!   ([`UploadRules::copy_name`]).
 
 use std::path::Path;
 
@@ -22,16 +22,16 @@ use crate::folder::disk::daemon_owned;
 use crate::local::names::copy_name;
 use crate::local::SharedIgnore;
 
-pub(super) struct Policy {
+pub(super) struct UploadRules {
     /// The account's ignore list: what stays on this computer only.
     ignore: SharedIgnore,
     /// For conflict copies: `name-<machine>.ext`.
     machine: String,
 }
 
-impl Policy {
+impl UploadRules {
     pub(super) fn new(ignore: SharedIgnore, machine: String) -> Self {
-        Policy { ignore, machine }
+        UploadRules { ignore, machine }
     }
 
     /// Whether what stands in the directory `dir` and has no item stays on this computer

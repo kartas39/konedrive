@@ -126,9 +126,9 @@ pub(super) fn rebase(from: &Path, to: &Path) -> OutboxOp {
 
 impl Shared {
     /// Whether what stands as `name` in `dir` and has no item stays on this computer
-    /// ([`super::policy::Policy::stays_local`]).
+    /// ([`super::upload_rules::UploadRules::stays_local`]).
     pub(super) fn stays_local(&self, dir: &Dir, name: &str) -> bool {
-        self.policy.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
+        self.upload_rules.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
     }
 
     /// The detections of everything without an item at and below the directory `rel`, which
