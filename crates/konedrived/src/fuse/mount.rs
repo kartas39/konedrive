@@ -21,6 +21,7 @@ use super::fill::Waiter;
 use super::under::{set_tree, Under};
 use super::view::View;
 use super::nodes::Nodes;
+use super::policy::Policy;
 use super::requests::Requests;
 use super::resolve::Resolve;
 use super::shared::{other, Shared, Writing};
@@ -92,6 +93,7 @@ impl Mount {
                 pending: Mutex::default(),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 writable: std::sync::atomic::AtomicBool::new(false),
+                policy: Arc::new(Policy::new(Arc::clone(&writing.ignore), writing.machine_name.clone())),
                 writing,
                 wake: Mutex::new(None),
                 jobs: Mutex::new(None),

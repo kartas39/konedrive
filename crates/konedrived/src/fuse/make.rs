@@ -15,7 +15,6 @@ use super::changes::{waits, Place};
 use super::view::{Entry, Local};
 use super::read::Handle;
 use super::shared::{errno, Shared};
-use crate::folder::disk::daemon_owned;
 
 /// What was made: what the mount shows of it, and the handle it was opened by.
 pub(super) struct Made {
@@ -31,7 +30,7 @@ impl Shared {
         let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
         // No trash directory of a file manager either: what is removed here goes to
         // OneDrive's recycle bin, and a trash inside the folder would be uploaded.
-        if daemon_owned(name.as_ref()) || (dir && parent == 1 && name.starts_with(".Trash")) {
+        if self.policy.daemon_owned(name) || (dir && parent == 1 && self.policy.is_trash(name)) {
             return Err(Errno::EPERM);
         }
         if self.view.entry(&above, name).is_some() {

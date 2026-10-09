@@ -125,21 +125,10 @@ pub(super) fn rebase(from: &Path, to: &Path) -> OutboxOp {
 }
 
 impl Shared {
-    /// Whether what stands as `name` in `dir` and has no item stays on this computer: its
-    /// name is on the ignore list, or a directory above it that has no item is.
+    /// Whether what stands as `name` in `dir` and has no item stays on this computer
+    /// ([`super::policy::Policy::stays_local`]).
     pub(super) fn stays_local(&self, dir: &Dir, name: &str) -> bool {
-        let ignore = crate::panic::read(&self.writing.ignore);
-        if ignore.matches(name.as_ref()) {
-            return true;
-        }
-        let mut at = dir.rel.as_path();
-        while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
-            if ignore.matches(name) && self.under.carried(at).is_none() {
-                return true;
-            }
-            at = parent;
-        }
-        false
+        self.policy.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
     }
 
     /// The detections of everything without an item at and below the directory `rel`, which

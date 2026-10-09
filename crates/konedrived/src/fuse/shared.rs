@@ -25,6 +25,7 @@ use crate::status::report::Report;
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::nodes::Nodes;
+use super::policy::Policy;
 use super::recorder::Job;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
@@ -88,6 +89,8 @@ pub(super) struct Shared {
     pub(super) stopping: std::sync::atomic::AtomicBool,
     /// Whether programs may change the folder ([`super::mode`]).
     pub(super) writable: std::sync::atomic::AtomicBool,
+    /// What of the folder is sent at all ([`super::policy`]).
+    pub(super) policy: Arc<Policy>,
     /// What a folder that takes changes shares with its sync.
     pub(super) writing: Writing,
     /// Wakes the outbox's worker: set while a sync that uploads runs.

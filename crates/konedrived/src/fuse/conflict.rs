@@ -12,7 +12,6 @@ use konedrive_tree::outbox::{Detection, OutboxOp};
 use super::changes::{rebase, Place};
 use super::view::Dir;
 use super::shared::Shared;
-use crate::local::names::copy_name;
 
 /// What the meetings of one cycle left for the outbox, and what they did in the folder.
 #[derive(Default)]
@@ -36,7 +35,7 @@ impl Shared {
         }
         let dir = Dir { id: above.map(str::to_owned), rel: parent.to_path_buf() };
         for n in 1..=100 {
-            let copy = copy_name(name, &self.writing.machine_name, n);
+            let copy = self.policy.copy_name(name, n);
             let to = parent.join(&copy);
             if self.under.stat(&to).is_some() || self.view.entry(&dir, &copy).is_some() {
                 continue;

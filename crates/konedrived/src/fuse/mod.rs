@@ -39,6 +39,7 @@ mod mount;
 mod nodes;
 mod overlay;
 mod pins;
+mod policy;
 mod read;
 mod recorder;
 mod remove;

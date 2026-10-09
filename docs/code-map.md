@@ -233,6 +233,9 @@ daemon shows OneDrive.
   state of a file: downloaded, being downloaded, or neither.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
+- `policy.rs` — `Policy`: what of the folder is sent at all; it owns the account's ignore list
+  and the machine's name and touches nothing. What stays on this computer, the names no program
+  may make, a kept copy's name. `[tests]`
 - `recorder.rs` — the one thread that makes and records each change a program asks for,
   under the folder's tree lock.
 - `changes.rs` — what a change means for the outbox: the detections.
