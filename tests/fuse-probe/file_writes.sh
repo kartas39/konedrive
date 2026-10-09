@@ -672,6 +672,108 @@ daemon_killed_with_unsent_changes_sends_them_once_started_again() {
     check_folder_holds made/new.txt 'made here'
 }
 
+# -- into the folder, out of it, and all of it in a row
+
+file_that_is_not_downloaded_moved_into_new_directory_is_read_there() {
+    begin_folder
+    seed_file P R p.txt 'not downloaded when it was moved'
+    register_folder
+    user "mkdir fresh && mv p.txt fresh/"
+    check "still not downloaded after the move" "$(state_of fresh/p.txt)" online-only
+    check_folder_holds fresh/p.txt 'not downloaded when it was moved'
+    check_within 30 "OneDrive has the file in the new directory" onedrive_has fresh/p.txt
+    check_sent
+    check "the item is the same" "$(onedrive id fresh/p.txt)" P
+    check "OneDrive holds what the folder holds" "$(onedrive paths)" "$(listing)"
+    check "nothing went to OneDrive's bin" "$(onedrive bin)" ""
+}
+
+# The tree comes from another directory of the same disk: across the mount, so `mv` copies it.
+tree_moved_in_from_outside_is_uploaded() {
+    begin_folder
+    register_folder
+    $U sh -c "mkdir -p '$WORLD/t/a/b' && printf 'TOP' > '$WORLD/t/top.txt' && printf 'LEAF' > '$WORLD/t/a/b/leaf.txt' && mv '$WORLD/t' '$F/t'"
+    check_onedrive_holds t/top.txt 'TOP'
+    check_onedrive_holds t/a/b/leaf.txt 'LEAF'
+    check_sent
+    check "OneDrive holds what the folder holds" "$(onedrive paths)" "$(listing)"
+    check "the tree is not outside any more" "$($U sh -c "test -e '$WORLD/t' && echo there || echo gone")" gone
+}
+
+# The file goes to another directory of the same disk: across the mount, so `mv` copies it,
+# which reads it, and removes it from the folder.
+file_moved_out_of_the_folder_takes_its_content_and_leaves_onedrive() {
+    begin_folder
+    seed_file A R downloaded.txt 'downloaded before it left'
+    seed_file B R online.txt 'not downloaded before it left'
+    seed_file C R stays.txt 'stays'
+    register_folder
+    download downloaded.txt
+    $U sh -c "mkdir '$WORLD/out' && mv '$F/downloaded.txt' '$F/online.txt' '$WORLD/out/'"
+    check "the downloaded file has its content where it went" "$($U cat "$WORLD/out/downloaded.txt")" 'downloaded before it left'
+    check "the file that was not downloaded has its content where it went" "$($U cat "$WORLD/out/online.txt")" 'not downloaded before it left'
+    check_within 30 "OneDrive lacks the downloaded file" onedrive_lacks downloaded.txt
+    check_within 30 "OneDrive lacks the file that was not downloaded" onedrive_lacks online.txt
+    check_sent
+    check "they are in OneDrive's bin" "$(onedrive bin)" "A B"
+    check "the folder" "$(listing)" "stays.txt"
+}
+
+# `mv` copies a file's extended attributes with it, and the mount lists its own among them.
+file_moved_out_of_the_folder_carries_none_of_konedrives_attributes() {
+    begin_folder
+    seed_file A R a.txt 'downloaded before it left'
+    register_folder
+    download a.txt
+    $U sh -c "mkdir '$WORLD/out' && mv '$F/a.txt' '$WORLD/out/'"
+    check "the file has its content where it went" "$($U cat "$WORLD/out/a.txt")" 'downloaded before it left'
+    check "and none of konedrive's attributes" "$($U python3 -c "import os,sys; print(sorted(a for a in os.listxattr(sys.argv[1]) if 'konedrive' in a))" "$WORLD/out/a.txt")" "[]"
+}
+
+# Create, edit, rename, move, a new directory and a removal, one after the other; then
+# OneDrive holds what the folder holds, and a cycle that brings it all back changes nothing.
+round_trip_leaves_onedrive_and_the_folder_alike() {
+    begin_folder
+    seed_folder D R Docs
+    seed_file K D keep.txt 'KEEP'
+    register_folder
+    local id
+    user "printf 'one' > rt.txt"
+    check_onedrive_holds rt.txt 'one'
+    check_sent
+    id=$(onedrive id rt.txt)
+    user "printf 'one two' > rt.txt"
+    check_onedrive_holds rt.txt 'one two'
+    check_sent
+    user "mv rt.txt rt2.txt"
+    check_within 30 "the rename is sent" onedrive_has rt2.txt
+    check_sent
+    user "mv rt2.txt Docs/"
+    check_within 30 "the move is sent" onedrive_has Docs/rt2.txt
+    check_sent
+    check "one item was made, edited, renamed and moved" "$(onedrive id Docs/rt2.txt)" "$id"
+    check_onedrive_holds Docs/rt2.txt 'one two'
+    user "mkdir Docs/sub && printf 'deep' > Docs/sub/deep.txt"
+    check_onedrive_holds Docs/sub/deep.txt 'deep'
+    user "rm Docs/rt2.txt"
+    check_within 30 "the removal is sent" onedrive_lacks Docs/rt2.txt
+    check_sent
+    check "the item is in OneDrive's bin" "$(onedrive bin)" "$id"
+    check "OneDrive holds what the folder holds" "$(onedrive paths)" "$(listing)"
+    # The echo: a cycle brings everything back as it is.
+    local changes deltas snapshot
+    changes=$(onedrive changes)
+    deltas=$(onedrive count GET delta)
+    snapshot=$(user "find . -mindepth 1 -printf '%p %s %T@\n' | sort")
+    daemon refresh > /dev/null
+    a_cycle_ran() { [ "$(onedrive count GET delta)" -gt "$deltas" ]; }
+    check_within 20 "a cycle ran" a_cycle_ran
+    sleep 3
+    check "the cycle sent nothing that changes OneDrive" "$(onedrive changes)" "$changes"
+    check "nothing waits to be uploaded" "$(daemon outbox)" ""
+    check "the cycle changed nothing in the folder" "$(user "find . -mindepth 1 -printf '%p %s %T@\n' | sort")" "$snapshot"
+}
+
 # The group: every scenario of writing at the level of files.
 file_writes() {
     echo "==== writing at the level of files ===="
@@ -708,7 +810,12 @@ file_writes() {
         pinned_file_stays_downloaded \
         pinned_directory_keeps_what_is_in_it_downloaded \
         free_up_keeps_unsent_changes \
-        daemon_killed_with_unsent_changes_sends_them_once_started_again; do
+        daemon_killed_with_unsent_changes_sends_them_once_started_again \
+        file_that_is_not_downloaded_moved_into_new_directory_is_read_there \
+        tree_moved_in_from_outside_is_uploaded \
+        file_moved_out_of_the_folder_takes_its_content_and_leaves_onedrive \
+        file_moved_out_of_the_folder_carries_none_of_konedrives_attributes \
+        round_trip_leaves_onedrive_and_the_folder_alike; do
         folder_scenario $name
     done
 }
