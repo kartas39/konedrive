@@ -22,7 +22,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 async fn main() {
     // `fuse-service --tidy <folder>`: what the unit runs after the daemon's end.
     if std::env::args().nth(1).as_deref() == Some("--tidy") {
-        konedrived::fuse::tidy(Path::new(&std::env::args().nth(2).expect("a folder")));
+        konedrived::fuse::tidy_folder(Path::new(&std::env::args().nth(2).expect("a folder")));
         return;
     }
     let state = PathBuf::from(std::env::args().nth(1).expect("a state directory"));

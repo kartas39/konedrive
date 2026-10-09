@@ -3,7 +3,7 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
-use super::{set_tree, BackingDirectory, LEGACY_STAGING_DIRECTORY};
+use super::{remove_write_bits, BackingDirectory, LEGACY_STAGING_DIRECTORY};
 
 /// A directory on disk with nothing in it, opened as a mount's backing directory is.
 pub(super) fn empty_backing_directory() -> (tempfile::TempDir, BackingDirectory) {
@@ -57,13 +57,13 @@ fn a_directory_that_holds_an_older_konedrives_placeholder_is_not_opened() {
     assert!(BackingDirectory::open(dir.path()).is_err());
 }
 
-/// The directory was locked when the daemon last ended; with the mount over it, it is the daemon's.
+/// The write bits of the directory were removed when the daemon last ended; with the mount over it, it is the daemon's.
 #[test]
-fn a_locked_directory_is_opened_and_unlocked() {
+fn a_directory_without_write_bits_is_opened_and_has_them_restored() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
-    set_tree(dir.path(), true);
+    remove_write_bits(dir.path());
     let backing_directory = BackingDirectory::open(dir.path()).unwrap();
-    backing_directory.unlock();
+    backing_directory.restore_write_bits();
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap();
 }

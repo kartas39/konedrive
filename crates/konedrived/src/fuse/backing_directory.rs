@@ -15,8 +15,8 @@
 //! - [`file_operations`]: the files and directories a change makes, renames and removes;
 //! - [`directory_marks`]: the directories down to a path, each marked with its OneDrive id;
 //! - [`download_landing`]: a finished download marked as a downloaded copy and given its name;
-//! - [`tree_lock`]: the directory locked while no mount lies over it, and a dead mount taken
-//!   off it;
+//! - [`write_bits`]: the write bits of the folder on disk, removed while no mount lies over
+//!   it and restored for the daemon or the user;
 //! - [`legacy_placeholders`]: a directory that holds an older konedrive's placeholders, which
 //!   is never opened.
 //!
@@ -28,18 +28,19 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
+use super::stale_mount::unmount_stale_mount;
+
 mod directory_marks;
 mod download_landing;
 mod downloaded_copies;
 mod file_handles;
 mod file_operations;
 mod legacy_placeholders;
-mod tree_lock;
+mod write_bits;
 
 pub(super) use download_landing::LandingOutcome;
 pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
-pub(super) use tree_lock::set_tree;
-pub use tree_lock::{clear_stale, directories, tidy, tidy_all};
+pub(super) use write_bits::{remove_write_bits, restore_write_bits};
 
 /// Where an earlier build built its downloads, inside the backing directory: removed when the
 /// directory is opened. A download is built in a file without a name now.
@@ -55,12 +56,12 @@ impl BackingDirectory {
     /// this is the one way to what it holds. A mount a daemon that died left on it is taken
     /// off first, and a directory an older konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
-        clear_stale(folder);
+        unmount_stale_mount(folder);
         if legacy_placeholders::holds_legacy_placeholders(folder) {
             return Err(legacy_placeholders::refusal(folder));
         }
-        // `fusermount3` mounts only where its user may write; the directory was locked when
-        // the daemon last ended.
+        // `fusermount3` mounts only where its user may write; its write bits were removed
+        // when the daemon last ended.
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
@@ -80,12 +81,6 @@ impl BackingDirectory {
     /// mount. Good for as long as this lives.
     pub(super) fn resolve_path(&self, rel: &Path) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor).join(rel)
-    }
-
-    /// With the mount over it the backing directory is the daemon's alone, and open to it:
-    /// its owner's write bits are given back, which were taken off when the daemon last ended.
-    pub(super) fn unlock(&self) {
-        set_tree(&self.resolve_path(Path::new("")), false);
     }
 
     /// One more descriptor of the backing directory, for what in the daemon opens the folder

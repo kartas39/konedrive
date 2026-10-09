@@ -270,7 +270,7 @@ impl SyncService {
         }
         // What a daemon that died left mounted goes before the folder is looked at.
         let stale = path.clone();
-        let _ = tokio::task::spawn_blocking(move || crate::fuse::clear_stale(&stale)).await;
+        let _ = tokio::task::spawn_blocking(move || crate::fuse::unmount_stale_mount(&stale)).await;
         // The directory at the path must be the folder that is recorded, before anything
         // is stamped on it or mounted over it: a bring-up never adopts whatever stands
         // there now (an empty directory made where the folder was moved away from would be

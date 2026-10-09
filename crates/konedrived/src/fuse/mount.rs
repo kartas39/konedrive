@@ -42,7 +42,7 @@ use crate::local::held::Rw;
 use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
-use super::backing_directory::{set_tree, BackingDirectory};
+use super::backing_directory::{remove_write_bits, restore_write_bits, BackingDirectory};
 use super::conflict_copies::ConflictCopies;
 use super::directory_contents::DirectoryContents;
 use super::download_states::DownloadStates;
@@ -229,9 +229,8 @@ impl Mount {
             crate::folder::root::mounted_over(&folder, Arc::new(backing_directory.clone_descriptor()?));
             let session = session.spawn()?;
             let connection = fs::metadata(&folder).map_or(0, |m| libc::minor(m.dev()));
-            // With the mount over it the backing directory is the daemon's alone, and open
-            // to it.
-            backing_directory.unlock();
+            // With the mount over it the backing directory is the daemon's alone.
+            backing_directory.restore_write_bits();
             inotify_bridge.start(notifier)?;
             download_pinned_files(&pins, &directory_contents, &file_downloader, &runtime);
             Ok(Arc::new(Mount {
@@ -281,7 +280,7 @@ impl Mount {
             std::thread::spawn(move || {
                 let _ = session.umount_and_join();
                 crate::folder::root::mount_gone(&folder);
-                set_tree(&folder, true);
+                remove_write_bits(&folder);
             });
             return;
         }
@@ -289,15 +288,16 @@ impl Mount {
             tracing::warn!("taking the mount off {}: {e}", self.folder.display());
         }
         crate::folder::root::mount_gone(&self.folder);
-        // A plain directory again: locked, so that nothing is put into it by mistake.
-        set_tree(&self.folder, true);
+        // A plain directory again: without its write bits, so that nothing is put into it by
+        // mistake.
+        remove_write_bits(&self.folder);
     }
 
     /// [`stop`](Self::stop), for a folder that is forgotten: it is the user's again, to keep
-    /// or to remove, and is left unlocked.
+    /// or to remove, and has its write bits.
     pub fn stop_and_restore_write_bits(&self) {
         self.stop();
-        set_tree(&self.folder, false);
+        restore_write_bits(&self.folder);
     }
 
     /// The folder takes changes from now on, and `outbox_waker` is called for each one recorded:
