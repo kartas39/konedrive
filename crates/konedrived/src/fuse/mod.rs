@@ -34,7 +34,7 @@
 //! change from OneDrive that finds the user's own in its way: [`conflict_copies`]. A file
 //! that is not downloaded: [`range_readers`] holds the files being read as ranges, and
 //! fetches the ranges; [`download_states`] holds the state of each file's download and
-//! depends on nothing; [`file_download`] downloads a file whole, over the disk, the directory
+//! does no I/O; [`file_download`] downloads a file whole, over the disk, the directory
 //! contents and the download states; [`pins`] holds the pins, over the directory contents.
 //! `shared` holds them together.
 

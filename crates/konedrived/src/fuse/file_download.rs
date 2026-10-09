@@ -42,7 +42,7 @@ use super::shared::seconds;
 
 /// Tells whoever watches the folder that what is shown of the OneDrive file at a path
 /// changed: the path in the folder, and the file's OneDrive id.
-pub(super) type AnnounceFileChange = Arc<dyn Fn(PathBuf, String) + Send + Sync>;
+pub(super) type FileChangeAnnouncer = Arc<dyn Fn(PathBuf, String) + Send + Sync>;
 
 /// What downloads a OneDrive file whole into the backing directory.
 pub(super) struct FileDownloader {
@@ -56,7 +56,7 @@ pub(super) struct FileDownloader {
     pub(super) report: Report,
     /// The folder's path, which is the mount: a download is shown under its file's path there.
     pub(super) folder: PathBuf,
-    pub(super) announce_file_change: AnnounceFileChange,
+    pub(super) announce_file_change: FileChangeAnnouncer,
     pub(super) runtime: tokio::runtime::Handle,
 }
 

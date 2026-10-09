@@ -17,7 +17,7 @@ use crate::status::report::Report;
 
 use super::announce::{announce, Announce};
 use super::download_states::DownloadStates;
-use super::file_download::{AnnounceFileChange, FileDownloader};
+use super::file_download::{FileChangeAnnouncer, FileDownloader};
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
 use super::conflict_copies::ConflictCopies;
@@ -101,7 +101,7 @@ impl Mount {
             let shared = Arc::new_cyclic(|shared: &std::sync::Weak<Shared>| {
                 // The way to the announcer, which is the mount's.
                 let announcer = shared.clone();
-                let announce_file_change: AnnounceFileChange = Arc::new(move |rel, id| {
+                let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| {
                     if let Some(shared) = announcer.upgrade() {
                         shared.announce(vec![Announce::Changed(rel, id)]);
                     }
