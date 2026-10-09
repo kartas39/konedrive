@@ -3,7 +3,7 @@
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
 //! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`NodeLookup`]), the files
-//! open for writing ([`OpenWriters`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
+//! open for writing ([`OpenWriters`]), the [`OutboxRecorder`] and the [`UploadRules`]. It owns no state
 //! of its own. Each operation is the same short sequence of steps:
 //!
 //! 1. check, through the view and the rules: what stands where, and the errno of a refusal;
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use fuser::Errno;
 
 use super::detections::FolderEvent;
-use super::recorder::Recorder;
+use super::outbox_recorder::OutboxRecorder;
 use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
@@ -49,7 +49,7 @@ pub(super) struct WriteOperations {
     under: Arc<BackingDirectory>,
     resolve: Arc<NodeLookup>,
     writers: Arc<OpenWriters>,
-    recorder: Arc<Recorder>,
+    recorder: Arc<OutboxRecorder>,
     rules: Arc<UploadRules>,
 }
 
@@ -68,7 +68,7 @@ impl WriteOperations {
         under: Arc<BackingDirectory>,
         resolve: Arc<NodeLookup>,
         writers: Arc<OpenWriters>,
-        recorder: Arc<Recorder>,
+        recorder: Arc<OutboxRecorder>,
         rules: Arc<UploadRules>,
     ) -> Self {
         WriteOperations { view, under, resolve, writers, recorder, rules }

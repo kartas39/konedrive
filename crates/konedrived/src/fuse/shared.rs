@@ -3,7 +3,7 @@
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
 //! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`DirectoryContents`]), the kernel's nodes
 //! ([`NodeTable`]) and what resolves them ([`NodeLookup`]), the files open for writing ([`OpenWriters`]),
-//! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
+//! what is uploaded at all ([`UploadRules`]), the thread that records ([`OutboxRecorder`]) and the
 //! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
 //! downloads, the reads, the pins, the announcer, the mode — is still a field here with its
 //! code in `impl Shared` in the module of its topic.
@@ -28,7 +28,7 @@ use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
 use super::node_table::NodeTable;
 use super::upload_rules::UploadRules;
-use super::recorder::Recorder;
+use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
 use super::read::{Handle, Reader};
@@ -94,8 +94,8 @@ pub(super) struct Shared {
     pub(super) writable: Arc<AtomicBool>,
     /// What of the folder is uploaded at all ([`super::upload_rules`]).
     pub(super) upload_rules: Arc<UploadRules>,
-    /// The thread that makes and records each change ([`super::recorder`]).
-    pub(super) recorder: Arc<Recorder>,
+    /// The thread that makes and records each change ([`super::outbox_recorder`]).
+    pub(super) recorder: Arc<OutboxRecorder>,
     /// The files programs hold open for writing, by node ([`super::open_writers`]).
     pub(super) writers: Arc<OpenWriters>,
     /// The operations that change the folder ([`super::write_operations`]).

@@ -26,7 +26,7 @@
 //! is the map of the kernel's node ids, and [`node_lookup`] is over the view and the nodes;
 //! [`attr`] is a function of facts. A change a program makes: [`upload_rules`] (what is
 //! uploaded at all) and [`detections`] (what a change is recorded as, a function of typed
-//! events) depend on nothing but the store's facts; the [`recorder`] records them on its own
+//! events) depend on nothing but the store's facts; the [`outbox_recorder`] records them on its own
 //! thread; [`write_operations`] are the operations themselves, over the view, the disk, the
 //! nodes, the writers, the recorder and the rules. `shared` holds them together.
 
@@ -45,7 +45,7 @@ mod unsent_changes;
 mod pins;
 mod upload_rules;
 mod read;
-mod recorder;
+mod outbox_recorder;
 mod requests;
 mod node_lookup;
 mod shared;

@@ -4,7 +4,7 @@
 //! Everything here is a decision and nothing else: a function of a typed event — an enum that
 //! names what happened — and of a few facts of the store. No disk, no mount, no inode. Whoever
 //! made the change builds the event, owned and complete, from what it saw; the decision then
-//! runs inside the store's transaction that records it ([`super::recorder`]), reading the
+//! runs inside the store's transaction that records it ([`super::outbox_recorder`]), reading the
 //! facts it needs through [`StoreFacts`], so that what it reads and what it writes are one
 //! state.
 //!

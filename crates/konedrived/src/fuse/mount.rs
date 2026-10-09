@@ -24,7 +24,7 @@ use super::node_table::NodeTable;
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::node_lookup::NodeLookup;
-use super::recorder::Recorder;
+use super::outbox_recorder::OutboxRecorder;
 use super::shared::{other, Shared};
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
@@ -80,7 +80,7 @@ impl Mount {
             let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
             let resolve = Arc::new(NodeLookup::new(Arc::clone(&view), Arc::clone(&nodes)));
             let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let recorder = Arc::new(Recorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
+            let recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
             let upload_rules = Arc::new(UploadRules::new(writing.ignore, writing.machine_name));
             let writers = Arc::new(OpenWriters::default());
             let write_operations = WriteOperations::new(

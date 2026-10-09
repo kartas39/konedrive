@@ -5,13 +5,13 @@ use std::time::Duration;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::{Store, TreeStore};
 
-use super::Recorder;
+use super::OutboxRecorder;
 use crate::fuse::detections::tests::{file, in_root};
 use crate::fuse::detections::Made;
 
-fn recorder(writable: bool) -> (Store, Recorder) {
+fn recorder(writable: bool) -> (Store, OutboxRecorder) {
     let store = Store::new(TreeStore::in_memory().unwrap());
-    let recorder = Recorder::start(store.clone(), Arc::default(), Arc::new(AtomicBool::new(writable))).unwrap();
+    let recorder = OutboxRecorder::start(store.clone(), Arc::default(), Arc::new(AtomicBool::new(writable))).unwrap();
     (store, recorder)
 }
 
@@ -61,7 +61,7 @@ fn the_jobs_run_on_the_thread_in_the_order_they_came_until_it_is_stopped() {
 fn a_job_runs_under_the_tree_lock() {
     let store = Store::new(TreeStore::in_memory().unwrap());
     let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
-    let recorder = Recorder::start(store, Arc::clone(&tree_lock), Arc::new(AtomicBool::new(true))).unwrap();
+    let recorder = OutboxRecorder::start(store, Arc::clone(&tree_lock), Arc::new(AtomicBool::new(true))).unwrap();
     let held = tree_lock.try_lock().unwrap();
     let (tell, told) = mpsc::channel();
     recorder.run(move || tell.send(()).unwrap());

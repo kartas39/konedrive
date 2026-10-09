@@ -6,7 +6,7 @@
 //! So a change is in the outbox before the program hears it was made, the mount's own
 //! threads never wait for the store or for a cycle, and no two changes of names interleave.
 //!
-//! [`Recorder`] owns the way to its thread (the thread itself owns the jobs' queue and the
+//! [`OutboxRecorder`] owns the way to its thread (the thread itself owns the jobs' queue and the
 //! tree lock), the store's writer, what wakes the outbox's worker, and the flag that says
 //! whether the folder takes changes, which it is handed and shares with the mount. It knows
 //! nothing of the mount, of the disk or of what a job does: a job is a closure, and what a
@@ -27,7 +27,7 @@ type Job = Box<dyn FnOnce() + Send>;
 /// What wakes the outbox's worker.
 pub(super) type Wake = Arc<dyn Fn() + Send + Sync>;
 
-pub(super) struct Recorder {
+pub(super) struct OutboxRecorder {
     /// The way to the thread; `None` once the recorder is stopped.
     jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The store's one writer.
@@ -38,7 +38,7 @@ pub(super) struct Recorder {
     writable: Arc<AtomicBool>,
 }
 
-impl Recorder {
+impl OutboxRecorder {
     /// Starts the thread, which runs every job it is given in the order it came, each under
     /// `tree_lock`, and records into `store` while `writable` says the folder takes changes.
     pub(super) fn start(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>, writable: Arc<AtomicBool>) -> io::Result<Self> {
@@ -49,7 +49,7 @@ impl Recorder {
                 job();
             }
         })?;
-        Ok(Recorder { jobs: Mutex::new(Some(jobs)), store, wake: Mutex::new(None), writable })
+        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, wake: Mutex::new(None), writable })
     }
 
     /// Has `job` run on the recorder's thread. A recorder that is stopped drops it, and with
