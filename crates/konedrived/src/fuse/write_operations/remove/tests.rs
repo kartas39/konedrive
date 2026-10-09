@@ -89,3 +89,17 @@ fn nothing_is_removed_from_a_read_only_folder() {
     assert_eq!(f.ops.remove(NodeId::ROOT, "a.txt", EntryKind::File).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
 }
+
+/// The mount shows the directory as holding nothing, and the disk holds a name of the
+/// daemon's own in it: it is not removed, and the outbox still holds it.
+#[test]
+fn a_local_only_directory_that_cannot_be_removed_from_disk_keeps_its_row() {
+    let f = folder(Vec::new());
+    f.ops.make(NodeId::ROOT, "mine", EntryToMake::Directory).unwrap();
+    std::fs::write(f.disk.join("mine").join(format!("{}x", crate::folder::disk::NEW_PREFIX)), b"").unwrap();
+    assert_eq!(f.said(), [(OutboxKind::Mkdir, None, at("mine"))]);
+    assert_eq!(f.ops.remove(NodeId::ROOT, "mine", EntryKind::Directory).err(), Some(Errno::ENOTEMPTY));
+    assert!(f.disk.join("mine").is_dir());
+    assert_eq!(f.said(), [(OutboxKind::Mkdir, None, at("mine"))]);
+    assert!(f.node_resolver.find_entry(f.node_id(NodeId::ROOT, "mine")).is_some());
+}
