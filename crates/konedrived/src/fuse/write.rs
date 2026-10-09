@@ -15,7 +15,7 @@ use fuser::Errno;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Row;
 
-use super::changes::{based, waits, Place};
+use super::changes::{based, settles, waits, Place};
 use super::copies::mark_copy;
 use super::local::Entry;
 use super::nodes::Key;
@@ -111,13 +111,14 @@ impl Shared {
         }
         self.writable_file(&entry, &rel, size == 0)?;
         let file: File = OpenOptions::new().write(true).open(self.under(&rel)).map_err(|e| errno(&e))?;
-        file.set_len(size).map_err(|e| errno(&e))?;
+        // Recorded before it is cut: a daemon that dies in between leaves a row for content
+        // that did not change, never a changed file without a row.
         if self.writers.open(ino) {
             self.writers.written(ino);
         } else {
             self.content(ino, false)?;
         }
-        Ok(())
+        file.set_len(size).map_err(|e| errno(&e))
     }
 
     /// Records that the content of node `ino` is the user's own now: still being written
@@ -138,6 +139,8 @@ impl Shared {
                 let mut update = Place { dir: &above, name: &name }.of_item(OutboxKind::Update, &base, Some(&meta));
                 if open {
                     waits(&mut update);
+                } else {
+                    settles(&mut update);
                 }
                 Ok((vec![update], Vec::new()))
             }),

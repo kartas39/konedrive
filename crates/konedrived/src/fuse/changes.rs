@@ -64,6 +64,8 @@ impl Place<'_> {
             d.reason = Some(refused.reason());
         } else if open {
             waits(&mut d);
+        } else if meta.is_file() {
+            settles(&mut d);
         }
         d
     }
@@ -82,6 +84,14 @@ pub(super) fn waits(d: &mut Detection) {
     d.state = OutboxState::Waiting;
     d.reason = Some(Reason::OpenForWriting);
     d.next_try = Some(crate::clock::unix_now() + crate::local::RECHECK.as_secs() as i64);
+}
+
+/// A row of content just closed, which goes a moment later: a program that saves through a
+/// file of another name renames it right after closing it, and that name is never sent.
+pub(super) fn settles(d: &mut Detection) {
+    d.state = OutboxState::Waiting;
+    d.reason = Some(Reason::Changed);
+    d.next_try = Some(crate::clock::unix_now() + crate::local::QUIET.as_secs() as i64);
 }
 
 /// What was at `rel` is removed: the item `row`, or an object without one (`inode`).

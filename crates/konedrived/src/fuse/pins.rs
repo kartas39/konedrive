@@ -30,15 +30,20 @@ impl Shared {
     /// every cycle, so that a new file in a pinned folder and a pinned file whose content
     /// changed are downloaded by it.
     pub(super) fn sweep(self: &Arc<Self>) {
-        let pins: Vec<String> = crate::panic::lock(&self.pins).iter().cloned().collect();
-        for id in pins {
-            let Some(row) = self.row(&id) else { continue };
-            for (file, rel) in self.files_below(&row) {
-                if !self.has_copy(&rel, &file.id) {
-                    self.ensure(file, rel, Class::Download, None);
+        // Off the caller's thread: a cycle calls this while it holds the folder's tree lock,
+        // and a large pinned folder is a long walk.
+        let s = Arc::clone(self);
+        self.runtime.spawn_blocking(move || {
+            let pins: Vec<String> = crate::panic::lock(&s.pins).iter().cloned().collect();
+            for id in pins {
+                let Some(row) = s.row(&id) else { continue };
+                for (file, rel) in s.files_below(&row) {
+                    if !s.has_copy(&rel, &file.id) {
+                        s.ensure(file, rel, Class::Download, None);
+                    }
                 }
             }
-        }
+        });
     }
 }
 

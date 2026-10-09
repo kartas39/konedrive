@@ -133,12 +133,11 @@ impl Shared {
 
     /// The files at and below `row`, each with its place in the folder.
     pub(super) fn files_below(&self, row: &Row) -> Vec<(Row, PathBuf)> {
-        let files: Vec<Row> = {
-            let store = crate::panic::lock(&self.reader);
-            let mut ids = store.descendants(Table::Items, &row.id).unwrap_or_default();
-            ids.push(row.id.clone());
-            ids.iter().filter_map(|id| store.get(Table::Items, id).ok().flatten().filter(|r| r.kind == Kind::File)).collect()
-        };
+        // One question at a time: the mount's requests read through the same connection, and
+        // none waits for a whole walk.
+        let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
+        ids.push(row.id.clone());
+        let files: Vec<Row> = ids.iter().filter_map(|id| self.row(id).filter(|r| r.kind == Kind::File)).collect();
         files.into_iter().filter_map(|file| self.place(&file.id).map(|at| (file, at))).collect()
     }
 

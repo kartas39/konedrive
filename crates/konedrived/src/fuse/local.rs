@@ -109,11 +109,13 @@ impl Shared {
     fn item_at(&self, dir: &Dir, name: &str, waiting: &Waiting) -> Option<Row> {
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         let stays = |row: &Row| row.placement == Placement::Placed && !waiting.gone.contains(&row.id) && !waiting.moved.contains_key(&row.id);
-        if let Some(row) = stored.filter(stays) {
-            return Some(row);
+        // What the user moved to this name is what the name is: an item OneDrive has there
+        // too is shown once the move is sent, or refused.
+        let moved = waiting.moved.iter().find(|(_, (above, as_))| dir.is(above) && as_ == name);
+        match moved {
+            Some((id, _)) => self.shown_as(id, name),
+            None => stored.filter(stays),
         }
-        let (id, _) = waiting.moved.iter().find(|(_, (above, as_))| dir.is(above) && as_ == name)?;
-        self.shown_as(id, name)
     }
 
     /// Everything `dir` holds.
@@ -121,8 +123,9 @@ impl Shared {
         let waiting = self.waiting();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
         let stays = |row: &Row| row.placement == Placement::Placed && !waiting.gone.contains(&row.id) && !waiting.moved.contains_key(&row.id);
-        let mut items: Vec<Row> = stored.into_iter().filter(stays).collect();
-        items.extend(waiting.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)));
+        let mut items: Vec<Row> = waiting.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)).collect();
+        let moved_here: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
+        items.extend(stored.into_iter().filter(|row| stays(row) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
         let mut all: Vec<Entry> = items.into_iter().map(Entry::Item).collect();
         let listed = fs::read_dir(self.under(&dir.rel)).into_iter().flatten().flatten();
