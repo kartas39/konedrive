@@ -66,7 +66,7 @@ impl DirectoryContents {
 
     /// Whether the backing directory holds the downloaded copy of the OneDrive file
     /// `onedrive_id` at `path`. For whoever holds a path that is not an entry of the mount,
-    /// so that no sync state answers: a file handle opened before the file was downloaded,
+    /// so that no sync state answers: an open file (an `fh`) opened before the file was downloaded,
     /// which has the path the file was opened at, and a cycle of the delta listing, which
     /// has the path the store had the file at. An entry's sync state says it for an entry.
     pub(super) fn has_downloaded_copy_at(&self, path: &Path, onedrive_id: &str) -> bool {
