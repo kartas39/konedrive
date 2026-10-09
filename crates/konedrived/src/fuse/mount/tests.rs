@@ -182,3 +182,63 @@ fn the_access_mode_of_a_mount_whose_thread_is_stopped_is_switched_at_once() {
     assert!(!built.mount.access_mode_switch().is_read_write());
     drop(held);
 }
+
+/// The write-operation thread is stopped first, and waited for: the write operation in
+/// flight has ended while the bridge still takes what it announces and a download is still
+/// waited for; then the bridge is stopped, and whoever waits for a download is failed.
+#[test]
+fn a_mount_that_is_stopped_stops_its_write_operation_thread_before_its_other_parts() {
+    let built = build_mount();
+    let (begin, began) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (inotify_bridge, download_states) = (Arc::clone(&built.mount.inotify_bridge), Arc::clone(&built.mount.download_states));
+    let (waiter, mut downloaded) = tokio::sync::oneshot::channel();
+    let in_flight = built.queue_on_write_operation_thread(move || {
+        assert!(matches!(download_states.start_or_join("A", Some(waiter)), crate::fuse::download_states::DownloadStart::Started { .. }));
+        begin.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(5));
+        (inotify_bridge.is_stopped(), downloaded.try_recv().is_ok())
+    });
+    began.recv_timeout(Duration::from_secs(5)).unwrap();
+    std::thread::scope(|scope| {
+        let stop = scope.spawn(|| built.mount.stop());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!stop.is_finished(), "the stop waits for the write operation in flight");
+        release.send(()).unwrap();
+    });
+    assert_eq!(in_flight.blocking_recv(), Ok((false, false)), "neither the bridge nor the downloads were stopped while the operation ran");
+    assert!(built.mount.inotify_bridge.is_stopped());
+    assert!(built.mount.write_operation_thread.run_and_wait(|| ()).blocking_recv().is_err(), "no write operation runs any more");
+    // Stopped again, as its drop does: nothing is left to stop.
+    built.mount.stop();
+}
+
+/// Whoever waits for a download when the mount is stopped is failed, and not kept waiting.
+#[test]
+fn a_mount_that_is_stopped_fails_whoever_waits_for_a_download() {
+    let built = build_mount();
+    let (waiter, downloaded) = tokio::sync::oneshot::channel();
+    assert!(matches!(built.mount.download_states.start_or_join("A", Some(waiter)), crate::fuse::download_states::DownloadStart::Started { .. }));
+    built.mount.stop();
+    assert_eq!(downloaded.blocking_recv(), Ok(Err(libc::EIO)));
+}
+
+/// The switch to read-write sets what wakes the outbox's worker, and the switch to read-only
+/// clears it: a change recorded in a folder that uploads wakes the worker, and nothing is
+/// woken once the folder takes no change.
+#[test]
+fn the_switches_of_a_mount_set_and_clear_what_wakes_the_outbox() {
+    let built = build_mount();
+    let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = || woken.load(std::sync::atomic::Ordering::SeqCst);
+    built.mount.outbox_recorder.wake_outbox();
+    assert_eq!(count(), 0, "nothing wakes a worker before the folder uploads");
+    let waker = Arc::clone(&woken);
+    assert!(built.mount.switch_to_read_write(Arc::new(move || drop(waker.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))));
+    built.mount.outbox_recorder.wake_outbox();
+    assert_eq!(count(), 1);
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    assert!(runtime.block_on(built.mount.switch_to_read_only()));
+    built.mount.outbox_recorder.wake_outbox();
+    assert_eq!(count(), 1, "the waker was cleared");
+}

@@ -155,6 +155,12 @@ impl InotifyBridge {
         }
     }
 
+    /// Whether the bridge was stopped.
+    #[cfg(test)]
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopping.load(Ordering::SeqCst)
+    }
+
     /// The node id of the directory with the OneDrive id `id`, when the kernel was told of
     /// it: the root is always known.
     fn find_directory_node_id(&self, id: Option<&str>) -> Option<NodeId> {

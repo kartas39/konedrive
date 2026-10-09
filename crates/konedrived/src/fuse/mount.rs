@@ -142,14 +142,14 @@ impl Mount {
     /// read that waits for OneDrive is given up; and the connection is aborted before the
     /// mount is detached — a program that still holds a file of the mount open would
     /// otherwise keep the session, and this call, waiting for it.
+    ///
+    /// The parts are stopped whether or not a mount lies over the folder — one that was
+    /// built and never mounted, or is stopped a second time, has no session, and nothing is
+    /// taken off then.
     pub fn stop(&self) {
-        let Some(session) = crate::panic::lock(&self.session).take() else { return };
-        // No write operation runs from here on: the one in flight has ended, those that
-        // waited are dropped, and what comes later is refused.
-        self.write_operation_thread.stop();
-        self.inotify_bridge.stop();
-        self.download_states.fail_waiters();
-        self.interruptible_reads.abort_all();
+        let session = crate::panic::lock(&self.session).take();
+        self.stop_parts();
+        let Some(session) = session else { return };
         let aborted = self.fuse_connection.map_or(Ok(()), |fuse_connection| fuse_connection.abort());
         match aborted {
             Ok(()) => take_off(session, &self.folder),
@@ -160,6 +160,16 @@ impl Mount {
                 std::thread::spawn(move || take_off(session, &folder));
             }
         }
+    }
+
+    /// Stops each part that runs something, in the order [`stop`](Self::stop) says.
+    fn stop_parts(&self) {
+        // No write operation runs from here on: the one in flight has ended, those that
+        // waited are dropped, and what comes later is refused.
+        self.write_operation_thread.stop();
+        self.inotify_bridge.stop();
+        self.download_states.fail_waiters();
+        self.interruptible_reads.abort_all();
     }
 
     /// [`stop`](Self::stop), for a folder that is taken out of sync: it is the user's again, to keep
