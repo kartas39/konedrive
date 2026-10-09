@@ -1,6 +1,5 @@
 //! A mount: made, served, and taken off.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -27,6 +26,7 @@ use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::node_lookup::NodeLookup;
 use super::outbox_recorder::OutboxRecorder;
+use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
 use super::shared::{other, Shared};
 use super::write_operations::WriteOperations;
@@ -75,7 +75,7 @@ impl Mount {
     /// already: after this its path is the mount.
     pub async fn start(parts: Parts) -> io::Result<Arc<Mount>> {
         let Parts { root, store_path, store, source, report, pool, parts, download_after, writing } = parts;
-        let pins: HashSet<String> = store.call(|s| s.pins()).await.map_err(other)?.into_iter().collect();
+        let pinned_ids = Pins::load_pinned_ids(&store).await.map_err(other)?;
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             // Before the mount: afterwards this path is the mount.
@@ -97,6 +97,7 @@ impl Mount {
                 upload_rules,
             );
             let download_states = Arc::new(DownloadStates::new(download_after));
+            let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
             let shared = Arc::new_cyclic(|shared: &std::sync::Weak<Shared>| {
                 // The way to the announcer, which is the mount's.
                 let announcer = shared.clone();
@@ -118,32 +119,31 @@ impl Mount {
                     runtime: runtime.clone(),
                 });
                 Shared {
-                root: root.clone(),
-                backing_directory,
-                directory_contents,
-                store,
-                node_table,
-                node_lookup,
-                report,
-                range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
-                download_states,
-                file_downloader,
-                handles: Mutex::default(),
-                next_handle: AtomicU64::new(1),
-                listings: Mutex::default(),
-                reads: Mutex::default(),
-                pins: Mutex::new(pins),
-                announcer: AtomicI32::new(0),
-                told: Mutex::new(None),
-                tell: Mutex::new(None),
-                pending: Mutex::default(),
-                stopping: std::sync::atomic::AtomicBool::new(false),
-                writable,
-                conflict_copies,
-                outbox_recorder,
-                open_writers,
-                write_operations,
-                runtime,
+                    root: root.clone(),
+                    backing_directory,
+                    directory_contents,
+                    node_table,
+                    node_lookup,
+                    report,
+                    range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
+                    download_states,
+                    file_downloader,
+                    handles: Mutex::default(),
+                    next_handle: AtomicU64::new(1),
+                    listings: Mutex::default(),
+                    reads: Mutex::default(),
+                    pins,
+                    announcer: AtomicI32::new(0),
+                    told: Mutex::new(None),
+                    tell: Mutex::new(None),
+                    pending: Mutex::default(),
+                    stopping: std::sync::atomic::AtomicBool::new(false),
+                    writable,
+                    conflict_copies,
+                    outbox_recorder,
+                    open_writers,
+                    write_operations,
+                    runtime,
                 }
             });
             let mut config = Config::default();
@@ -173,7 +173,7 @@ impl Mount {
             shared.backing_directory.unlock();
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
-            shared.sweep();
+            download_pinned_files(&shared.pins, &shared.directory_contents, &shared.file_downloader, &shared.runtime);
             Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)), announcer: Mutex::new(Some(announcer)), connection }))
         })
         .await

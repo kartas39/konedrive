@@ -9,6 +9,7 @@ use super::announce::Announce;
 use super::conflict_copies::CycleConflicts;
 use super::detections::rebase;
 use super::mount::Mount;
+use super::pins::download_pinned_files;
 use super::backing_directory::BackingDirectory;
 use crate::local::held::Rw;
 
@@ -143,19 +144,11 @@ impl Mount {
     pub fn committed(&self) {
         let (told, unpinned) = std::mem::take(&mut *crate::panic::lock(&self.shared.pending));
         // An item that is gone keeps nothing on this device.
-        let dropped: Vec<String> = {
-            let mut pins = crate::panic::lock(&self.shared.pins);
-            unpinned.into_iter().filter(|id| pins.remove(id)).collect()
-        };
-        if !dropped.is_empty() {
-            let store = self.shared.store.clone();
-            self.shared.runtime.spawn(async move {
-                let _ = store.call(move |s| dropped.iter().try_for_each(|id| s.set_pin(id, false))).await;
-            });
-        }
-        self.shared.announce(told);
-        self.shared.sweep();
+        let s = &self.shared;
+        s.pins.unpin_removed(unpinned);
+        s.announce(told);
+        download_pinned_files(&s.pins, &s.directory_contents, &s.file_downloader, &s.runtime);
         // What the cycle kept of the user's own is the outbox's to send.
-        self.shared.outbox_recorder.wake();
+        s.outbox_recorder.wake();
     }
 }

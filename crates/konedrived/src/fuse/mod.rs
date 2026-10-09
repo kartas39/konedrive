@@ -31,8 +31,12 @@
 //! events) depend on nothing but the store's facts; the [`outbox_recorder`] records them on
 //! its own thread; [`write_operations`] are the operations themselves, over the directory
 //! contents, the disk, the node lookup, the open writers, the recorder and the rules. A
-//! change from OneDrive that finds the user's own in its way: [`conflict_copies`]. `shared`
-//! holds them together.
+//! change from OneDrive that finds the user's own in its way: [`conflict_copies`]. A file
+//! that is not downloaded: [`range_readers`] holds the files being read as ranges, and
+//! fetches the ranges; [`download_states`] holds the state of each file's download and
+//! depends on nothing; [`file_download`] downloads a file whole, over the disk, the directory
+//! contents and the download states; [`pins`] holds the pins, over the directory contents.
+//! `shared` holds them together.
 
 mod access_mode;
 mod announce;

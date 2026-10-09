@@ -4,19 +4,20 @@
 //! ([`BackingDirectory`]), what each directory holds ([`DirectoryContents`]), the node ids
 //! given to the kernel ([`NodeTable`]) and what looks them up ([`NodeLookup`]), the files open
 //! for writing ([`OpenWriters`]), the thread that records ([`OutboxRecorder`]), the operations
-//! that change the folder ([`WriteOperations`]) and what moves the user's own out of the way
-//! of a change from OneDrive ([`ConflictCopies`]). What is not a part yet — the downloads, the
-//! reads, the pins, the announcer, the mode — is still a field here with its code in
+//! that change the folder ([`WriteOperations`]), what moves the user's own out of the way of a
+//! change from OneDrive ([`ConflictCopies`]), the state of each file's download
+//! ([`DownloadStates`]) and what downloads a file whole ([`FileDownloader`]), the files being
+//! read as ranges ([`RangeReaders`]) and the pins ([`Pins`]). What is not a part yet — what
+//! programs hold open, the announcer, the mode — is still a field here with its code in
 //! `impl Shared` in the module of its topic.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
-use konedrive_tree::Store;
 
 use crate::folder::root::SyncRoot;
 use crate::status::report::Report;
@@ -29,6 +30,7 @@ use super::node_table::NodeTable;
 use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
+use super::pins::Pins;
 use super::range_readers::RangeReaders;
 use super::read::OpenFile;
 use super::node_lookup::NodeLookup;
@@ -41,8 +43,6 @@ pub(super) struct Shared {
     pub(super) backing_directory: Arc<BackingDirectory>,
     /// What each directory of the mount holds ([`super::directory_contents`]).
     pub(super) directory_contents: Arc<DirectoryContents>,
-    /// The store's one writer, for the pins.
-    pub(super) store: Store,
     /// The node ids given to the kernel ([`super::node_table`]): shared by what looks them up
     /// and what tells the kernel of changes.
     pub(super) node_table: Arc<Mutex<NodeTable>>,
@@ -65,8 +65,8 @@ pub(super) struct Shared {
     /// The reads waiting for a range from OneDrive, by request: a program that is interrupted
     /// has its read given up.
     pub(super) reads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
-    /// The items that carry a pin of their own, as the store has them.
-    pub(super) pins: Mutex<HashSet<String>>,
+    /// The pins ([`super::pins`]).
+    pub(super) pins: Arc<Pins>,
     /// The announcer: its thread, what it is telling, and the way to it.
     pub(super) announcer: AtomicI32,
     pub(super) told: Mutex<Option<Told>>,

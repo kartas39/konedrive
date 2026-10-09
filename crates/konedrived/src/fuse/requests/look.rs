@@ -152,7 +152,7 @@ impl Requests {
         match (name, &entry.state) {
             (XATTR_ITEM_ID, _) => Some(row.id.clone()),
             (XATTR_STATE, EntryState::File(file)) => Some(to_hydration_state(file, s.download_states.is_downloading(&row.id))?.as_str().to_owned()),
-            (XATTR_PIN, _) if crate::panic::lock(&s.pins).contains(&row.id) => Some("1".to_owned()),
+            (XATTR_PIN, _) if s.pins.is_pinned(&row.id) => Some("1".to_owned()),
             _ => None,
         }
     }

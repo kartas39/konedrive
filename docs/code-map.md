@@ -241,12 +241,22 @@ daemon shows OneDrive.
 - `requests/read.rs` — the requests that open and read a file.
 - `requests/change.rs` — the requests that change the folder, each made on the recorder's
   thread.
-- `read.rs` — `OpenFile`, a file a program holds open; a file that is not downloaded, read as
-  ranges; the file being read ahead of the background downloads.
-- `fill.rs` — the download of a whole file into a file without a name, which then lands; the
-  state of a file: downloaded, being downloaded, or neither.
-- `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
-- `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
+- `read.rs` — `OpenFile`, a file a program holds open.
+- `range_readers.rs` — `RangeReaders`: the files being read as ranges, each holding its slot
+  of the pool until a moment after its last read (`ActiveRangeRead`, one read in flight), so
+  that what is read goes before the background downloads; it fetches the ranges from the
+  source. `[tests]`
+- `download_states.rs` — `DownloadStates`: one `DownloadState` per file — not running,
+  running, failed — with who waits for the download, how far a running one is written, the
+  unfinished file a failed one left, and the bytes read as ranges, which decide when the
+  file is downloaded whole; no I/O. The state shown of a file: being downloaded, downloaded,
+  or neither. `[tests]`
+- `file_download.rs` — `FileDownloader`: the download of a whole file into a file without a
+  name, which then lands; it keeps no state and reports to `DownloadStates`.
+- `pins.rs` — `Pins`: the OneDrive ids that carry a pin, changed with the store, and what
+  keeps a file; the function that downloads every pinned file that is not downloaded.
+  `[tests]`
+- `asked.rs` — what the daemon asks of a mount for a path: download, free up, pin, look.
 - `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the
   account's ignore list and touches nothing. What stays on this computer, the names no
   program may make. `[tests]`

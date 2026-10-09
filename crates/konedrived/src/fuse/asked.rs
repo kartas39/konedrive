@@ -1,4 +1,4 @@
-//! What the daemon asks of a mount for a path: download it, free it up, look at it.
+//! What the daemon asks of a mount for a path: download it, free it up, pin it, look at it.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,7 @@ use super::announce::Announce;
 use super::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::to_hydration_state;
 use super::mount::Mount;
+use super::pins::download_pinned_files;
 
 /// What a free-up did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +119,7 @@ impl Mount {
                 };
                 // What a pin keeps, a download is filling, or a program holds open for
                 // writing, stays.
-                if s.open_for_writing(&file.id) || s.pinned_by(&file).is_some() || s.download_states.is_downloading(&file.id) {
+                if s.open_for_writing(&file.id) || s.pins.pinned_by(&file).is_some() || s.download_states.is_downloading(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -145,8 +146,8 @@ impl Mount {
         let (entry, _) = self.onedrive_entry(path)?;
         let Some(row) = entry.row().cloned() else { return Err(Refused::NoItem) };
         let s = &self.shared;
-        let own_pin = crate::panic::lock(&s.pins).contains(&row.id);
-        let above = s.directory_contents.parent(&row).and_then(|above| s.pinned_by(&above));
+        let own_pin = s.pins.is_pinned(&row.id);
+        let above = s.directory_contents.parent(&row).and_then(|above| s.pins.pinned_by(&above));
         let pinned_above = above.and_then(|by| s.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let (state, modified_here) = match &entry.state {
             EntryState::File(file) => (to_hydration_state(file, s.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
@@ -154,6 +155,26 @@ impl Mount {
         };
         let changed = modified_here || s.open_for_writing(&row.id);
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
+    }
+
+    /// Puts the pin on the item at `path`, or takes it off. A pin put on downloads what it
+    /// keeps.
+    pub async fn set_pin(&self, path: &Path, pinned: bool) -> Result<(), Refused> {
+        let (row, rel) = self.item(path)?;
+        let s = &self.shared;
+        let changed = s.pins.set_pin(&row.id, pinned).await.map_err(|e| Refused::Io(e.to_string()))?;
+        if changed {
+            s.announce(vec![Announce::Changed(rel, row.id)]);
+        }
+        if pinned {
+            download_pinned_files(&s.pins, &s.directory_contents, &s.file_downloader, &s.runtime);
+        }
+        Ok(())
+    }
+
+    /// How many items carry a pin of their own.
+    pub fn pinned_count(&self) -> u64 {
+        self.shared.pins.count()
     }
 
     /// How many downloaded files, and bytes, the items at and below `path` hold.
