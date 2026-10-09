@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use konedrive_graph::pool::{Class, TransferPool};
-use konedrive_tree::Kind;
+use konedrive_tree::{Change, Kind, NewTree, Row};
 use tokio::sync::oneshot;
 
 use super::{FileDownloader, FileToDownload, RunningDownload};
@@ -210,4 +210,29 @@ fn a_running_download_that_finished_is_not_abandoned() {
     download_states.start_or_join("A", Some(waiter));
     drop(RunningDownload { download_states: Arc::clone(&download_states), onedrive_id: "A".into(), finished: true });
     assert!(download_states.is_downloading("A") && told.try_recv().is_err(), "its end is the download states' to be told");
+}
+
+/// The download of `a.txt` starts while the store has the file at one version; a cycle
+/// holds the tree lock, and commits another content of the file while the download's own
+/// is fetched whole. Which version the store has is asked on the thread, in the landing's
+/// own job: the content that was downloaded is of a version the store no longer has, and
+/// does not land as the file's downloaded copy.
+#[test]
+fn a_download_of_a_file_whose_content_changed_in_the_store_meanwhile_lands_nowhere() {
+    let downloads = downloads();
+    let held = downloads.tree_lock.blocking_lock();
+    let told = downloads.start_download_to("a.txt");
+    // The landing waits for the cycle: the download's content is fetched by now.
+    downloads.wait_for_queued_write_operations(1);
+    let another = Change::Upsert(Row { ctag: Some("another".into()), ..row("A", Some("R"), "a.txt", Kind::File) });
+    let committed = downloads.folder.store.call_blocking(move |store| {
+        store.begin_staging(NewTree::Delta)?;
+        store.stage(&[another])?;
+        store.commit_staging("after")
+    });
+    committed.unwrap();
+    drop(held);
+    assert_eq!(told.blocking_recv(), Ok(Err(libc::ESTALE)));
+    assert!(!downloads.folder.disk.join("a.txt").exists(), "content of a version the store no longer has is not the file's copy");
+    assert!(!downloads.file_downloader.is_downloading("A"));
 }

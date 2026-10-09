@@ -451,7 +451,7 @@ impl Attempt<'_> {
     /// Every piece is down: the combined hash is checked, as a single stream's is.
     fn finish(&self) -> Result<Downloaded, End> {
         verify(self.item_id, &self.version, &self.lock().hash)?;
-        Ok(Downloaded { size: self.size })
+        Ok(Downloaded { size: self.size, version: self.version.clone() })
     }
 }
 

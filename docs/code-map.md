@@ -157,7 +157,8 @@ Where a download gets its bytes from, and the download of a whole file. Design:
 
 - `mod.rs` — the list of the modules.
 - `source.rs` — `ContentSource`: where a download gets its bytes from.
-- `source/download.rs` — a download in one stream, into a file that has no name yet.
+- `source/download.rs` — a download in one stream, into a file that has no name yet; what it
+  produced, with the version it was checked as (`Downloaded`).
 - `source/parts.rs` — a large pinned download in parallel parts.
 - `source/guards.rs` — what both downloads check: the source's answer, the breaks, the
   checkpoint a download continues from, the hash, the one start over; `Tuning`.
@@ -338,12 +339,14 @@ daemon shows OneDrive.
   file read as ranges, which decides when the file is downloaded whole; no I/O. `[tests]`
 - `file_downloader.rs` — `FileDownloader`: the download of a whole file into a file without a
   name, which then lands, in one job on the write-operation thread: where the file is now
-  is asked there and the file is given its name there, so no rename runs in between; it
+  and which version the store has of it are asked there and the file is given its name
+  there, so no rename and no cycle runs in between; it
   keeps no state, reports to `DownloadStates` and announces through the inotify bridge.
   `FileToDownload`: a file's row and its path, as whoever asks for a download gives it.
   `[tests]`
 - `file_downloader/landing_attempt.rs` — `to_download_result`: what a download reports, from
-  how its landing went (`LandingAttempt`). `[tests]`
+  how its landing went (`LandingAttempt`); `has_downloaded_version`: whether the store's row
+  is of the version that was downloaded. `[tests]`
 - `file_downloader/watermarked_source.rs` — the download's source, telling how far the file
   is written as its one stream is read. `[tests]`
 - `pins.rs` — `Pins`: the OneDrive ids that carry a pin, changed with the store, which it

@@ -29,9 +29,12 @@ use super::target::Target;
 use super::{ContentSource, Split, Version};
 use super::guards::{drop_checkpoint, usable_checkpoint};
 
-/// What a download produced, before any of it is committed.
+/// What a download produced, before any of it is committed: how many bytes, and the version
+/// they were checked as — the one the first answer of the source gave, `None` when the
+/// source said none.
 pub(crate) struct Downloaded {
     pub size: u64,
+    pub version: Option<Version>,
 }
 
 /// Streams the file's bytes into `target`, from `resume` if there is one, and checks them:
@@ -163,7 +166,7 @@ async fn attempt(
                 if written != fetched.size && version.as_ref().is_some_and(|v| v.quick_xor.is_some()) {
                     return Err(End::Mismatch);
                 }
-                return Ok(Downloaded { size: fetched.size });
+                return Ok(Downloaded { size: fetched.size, version });
             }
             // A break, or a short stream: continue from where the bytes stopped.
             None => breaks.again(item_id, &format!("the stream ended after {written} bytes")).await?,

@@ -17,11 +17,12 @@
 //!    ([`Tracked`]) and tells the download states how far the file is written
 //!    ([`WatermarkedSource`]), for the reads that come meanwhile;
 //! 6. the file lands, in one job on the write-operation thread
-//!    ([`FileDownloader::land_at_asked_path`]): where the file is now is asked there, and
-//!    the directories down to its path are made and the file is given its name
-//!    ([`BackingDirectory::land`]) there, unless it was moved or removed here meanwhile —
-//!    no rename runs between the question and the landing; what the download reports of
-//!    that is decided in [`landing_attempt`];
+//!    ([`FileDownloader::land_at_asked_path`]): where the file is now and which version the
+//!    store has of it are asked there, and the directories down to its path are made and
+//!    the file is given its name ([`BackingDirectory::land`]) there, unless it was moved or
+//!    removed here meanwhile, or the store has another version than the one downloaded —
+//!    no rename and no cycle runs between the questions and the landing; what the download
+//!    reports of that is decided in [`landing_attempt`];
 //! 7. the activity records what happened, the space on disk is counted again, the download
 //!    states are told how it ended, which answers whoever waits, and the change is announced
 //!    through the [`InotifyBridge`].
@@ -34,7 +35,7 @@ use std::sync::Arc;
 use konedrive_graph::pool::{Class, Size, TransferPool};
 use konedrive_tree::Row;
 
-use crate::hydration::source::{download_staged, ContentSource, Share, Split};
+use crate::hydration::source::{download_staged, ContentSource, Share, Split, Version};
 use crate::hydration::tracked::Tracked;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
@@ -49,7 +50,7 @@ use super::write_operation_thread::WriteOperationThread;
 mod landing_attempt;
 mod watermarked_source;
 
-use landing_attempt::{to_download_result, LandingAttempt};
+use landing_attempt::{has_downloaded_version, to_download_result, LandingAttempt};
 use watermarked_source::WatermarkedSource;
 
 /// A OneDrive file that is to be downloaded whole: its row, and its path in the folder.
@@ -191,13 +192,13 @@ impl FileDownloader {
             // A large file that nothing waits to open (a pinned one) goes in parallel parts,
             // the slot held here being its first stream's.
             let split = (class != Class::Open && Size::of(row.size) == Size::Large).then(|| Split::new(Arc::clone(&self.pool), Arc::clone(&self.split_download_share)));
-            download_staged(&file, &row.id, row.size, &watermarked, split.as_ref()).await?;
+            let downloaded = download_staged(&file, &row.id, row.size, &watermarked, split.as_ref()).await?;
             let size = tracked.fetched().unwrap_or(row.size);
             // On the write-operation thread, which is no thread of the runtime: the file's
             // own steps wait for the disk. A thread that is stopped drops the job: the
             // folder is no longer served, and nothing lands.
             let (downloader, row, at, file) = (Arc::clone(self), row.clone(), rel.to_owned(), Arc::clone(&file));
-            let attempt = self.write_operation_thread.run_and_wait(move || downloader.land_at_asked_path(&file, &row, &at)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
+            let attempt = self.write_operation_thread.run_and_wait(move || downloader.land_at_asked_path(&file, &row, &at, downloaded.version.as_ref())).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
             to_download_result(attempt).map(|()| size)
         }
         .await;
@@ -208,20 +209,26 @@ impl FileDownloader {
         landed
     }
 
-    /// Lands `file`, the whole and checked content of the OneDrive file `row`, at `rel`, the
-    /// path its download was asked for — unless the file is no longer there: moved or
-    /// removed here while it was downloaded, the download is of no path now, and nothing
-    /// lands. The directories down to the path are made first, each marked with its
-    /// OneDrive id.
+    /// Lands `file`, the whole and checked content of the OneDrive file `row`, downloaded as
+    /// `downloaded_version`, at `rel`, the path its download was asked for — unless the file
+    /// is no longer there, or no longer that: moved or removed here while it was downloaded,
+    /// the download is of no path now; with another version in the store, it is of no
+    /// content the folder shows ([`has_downloaded_version`]). Nothing lands then. The
+    /// directories down to the path are made first, each marked with its OneDrive id.
     ///
-    /// Called on the write-operation thread. Where the mount shows the file now is read
-    /// here, by its OneDrive id, and the file is given its name here: no write operation —
-    /// a rename, a remove — runs in between, so the copy lands where the file is. What is
-    /// at the path by then is never replaced unless it holds nothing
-    /// ([`BackingDirectory::land`]).
-    fn land_at_asked_path(&self, file: &File, row: &Row, rel: &Path) -> io::Result<LandingAttempt> {
+    /// Called on the write-operation thread, under the folder's tree lock. Where the mount
+    /// shows the file now and which version the store has of it are read here, by its
+    /// OneDrive id, and the file is given its name here: no write operation — a rename, a
+    /// remove — and no cycle of the delta listing runs in between, so the copy lands where
+    /// the file is, and is of the content the store has. What is at the path by then is
+    /// never replaced unless it holds nothing ([`BackingDirectory::land`]).
+    fn land_at_asked_path(&self, file: &File, row: &Row, rel: &Path, downloaded_version: Option<&Version>) -> io::Result<LandingAttempt> {
         if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
             return Ok(LandingAttempt::FileMovedMeanwhile);
+        }
+        let stored = self.directory_contents.find_row(&row.id);
+        if !stored.is_some_and(|stored| has_downloaded_version(&stored, row, downloaded_version)) {
+            return Ok(LandingAttempt::OneDriveVersionChanged);
         }
         self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new("")))?;
         self.backing_directory.land(file, rel, &row.id, crate::clock::to_system_time(row.mtime)).map(LandingAttempt::Attempted)
