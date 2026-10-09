@@ -92,6 +92,12 @@ pub struct ListingContext {
     /// the cycle's part in uploading. A switch of mode stops the sync and starts a new one, so
     /// this never changes under a running sync.
     pub mode: Mode<Writes>,
+    /// The folder's tree lock, which the mount's write-operation thread runs each job under
+    /// (`crate::fuse`): a reconcile holds it while it changes the folder and commits, in
+    /// either mode. A read-write folder's cycle takes it earlier, at its staging
+    /// ([`Writes::tree_lock`], the same lock); a read-only folder's takes it here, for the
+    /// reconcile alone.
+    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The daemon's other parts a cycle asks or tells; `None` in tests.
     pub neighbours: Option<Neighbours>,
     /// What background work runs now (`conditions::running`): the poll stops while the

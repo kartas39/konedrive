@@ -33,15 +33,15 @@ impl ContentSource for EmptyFiles {
 }
 
 /// The parts of a mount, built over a folder that no mount lies over.
-pub(in crate::fuse) struct BuiltMount {
-    pub(in crate::fuse) mount: Mount,
+pub(crate) struct BuiltMount {
+    pub(crate) mount: Arc<Mount>,
     pub(in crate::fuse) kernel_requests: KernelRequests,
     /// The backing directory, by its own path.
-    pub(in crate::fuse) disk: PathBuf,
+    pub(crate) disk: PathBuf,
     /// The store's one writer, which the parts were given.
-    pub(in crate::fuse) store: Store,
+    pub(crate) store: Store,
     /// The folder's tree lock, which the write-operation thread runs each job under.
-    pub(in crate::fuse) tree_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The runtime the parts wait and sweep on.
     _runtime: tokio::runtime::Runtime,
     _tmp: tempfile::TempDir,
@@ -75,17 +75,17 @@ pub(in crate::fuse) fn build_mount_with(more: &[Change], pinned_ids: &[&str]) ->
     };
     let pinned_ids = pinned_ids.iter().map(|id| (*id).to_owned()).collect();
     let (mount, kernel_requests) = Mount::build(setup, pinned_ids, runtime.handle().clone()).unwrap();
-    BuiltMount { mount, kernel_requests, disk, store, tree_lock, _runtime: runtime, _tmp: tmp }
+    BuiltMount { mount: Arc::new(mount), kernel_requests, disk, store, tree_lock, _runtime: runtime, _tmp: tmp }
 }
 
-pub(in crate::fuse) fn build_mount() -> BuiltMount {
+pub(crate) fn build_mount() -> BuiltMount {
     build_mount_with(&[], &[])
 }
 
 impl BuiltMount {
     /// The whole downloaded copy of the OneDrive file `id`, with `content`, at `rel` in the
     /// backing directory, whose directory is there already.
-    pub(in crate::fuse) fn download(&self, rel: &str, id: &str, content: &[u8]) {
+    pub(crate) fn download(&self, rel: &str, id: &str, content: &[u8]) {
         let path = self.disk.join(rel);
         fs::write(&path, content).unwrap();
         xattr::set(&path, XATTR_ITEM_ID, id.as_bytes()).unwrap();
@@ -106,7 +106,7 @@ impl BuiltMount {
 
     /// Puts `job` on the mount's write-operation thread, behind every job it was given
     /// before; what it gives comes once it ran.
-    pub(in crate::fuse) fn queue_on_write_operation_thread<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> tokio::sync::oneshot::Receiver<T> {
+    pub(crate) fn queue_on_write_operation_thread<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> tokio::sync::oneshot::Receiver<T> {
         self.mount.write_operation_thread.run_and_wait(job)
     }
 

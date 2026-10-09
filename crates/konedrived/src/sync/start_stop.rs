@@ -56,8 +56,9 @@ impl SyncService {
             // just built may hold it while it waits for the folder's state, which this change
             // holds.
             Some(outbox) => mount.switch_to_read_write(Arc::new(move || outbox.wake())),
-            // No cycle of a read-only folder takes the tree lock, and the change that leads
-            // here made the switch already.
+            // The change that leads here made the switch already. A cycle of a read-only
+            // folder takes the tree lock only once it has the folder's lease, which this
+            // change holds: none holds the lock the write-operation thread waits for.
             None => mount.switch_to_read_only().await,
         };
         if let Some(running) = stopped.folder_mut().sync_mut() {
@@ -167,7 +168,8 @@ impl SyncService {
         // it wait out its own idle timer.
         let kick = Arc::new(Notify::new());
         // A read-write folder's cycle shares the tree lock with its outbox worker and with
-        // the mount's recorder (`docs/design/writes.md` §9).
+        // the mount's write-operation thread (`docs/design/writes.md` §9); a read-only
+        // folder's cycle shares it with that thread, for its reconcile.
         let writes = outbox.as_ref().map(|outbox| self.cycle_writes(&tree_lock, outbox.handle()));
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),
@@ -183,6 +185,7 @@ impl SyncService {
                 Some(writes) => crate::remote::mode::Mode::ReadWrite(writes),
                 None => crate::remote::mode::Mode::ReadOnly,
             },
+            tree_lock: Arc::clone(&tree_lock),
             // The account hears of a drive that is not the folder's (m2).
             neighbours: Some(self.neighbours()),
             running: Arc::clone(&self.running),

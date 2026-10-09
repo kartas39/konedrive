@@ -1,6 +1,7 @@
 //! The one thread the write operations run on: each change a program asks for is made and
 //! recorded here, one after another, under the folder's tree lock — the lock a cycle of the
-//! delta listing holds while it makes the folder follow OneDrive — and answered only then.
+//! delta listing holds while it makes the folder follow OneDrive, in a read-only folder as
+//! in a read-write one (`remote/listing/reconcile.rs`) — and answered only then.
 //!
 //! So a change is in the outbox before the program hears it was made, the mount's own
 //! threads never wait for the store or for a cycle, and no two changes of names interleave.

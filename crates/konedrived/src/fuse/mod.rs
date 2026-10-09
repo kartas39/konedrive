@@ -133,5 +133,7 @@ pub use file_downloader::UnfinishedDownload;
 pub use files_interface::{DownloadedSpace, FilesInterface, FilesRefusal, FreedSpace, PathStatus};
 pub use free_up_decision::FreeUpDecision;
 pub use mount::{Mount, MountSetup, WriteSetup};
+#[cfg(test)]
+pub(crate) use mount::tests::{build_mount, BuiltMount};
 pub use stale_mount::unmount_stale_mount;
 pub use tidy_step::{list_directories, tidy_folder, tidy_served_folders};

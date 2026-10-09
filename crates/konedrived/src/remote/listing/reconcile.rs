@@ -20,7 +20,14 @@
 //!
 //! The mode is [`Mode`] with a read-write cycle's load ([`RwCycle`]): a
 //! read-only folder's reconcile, or a read-write folder's
-//! (`docs/design/writes.md` §9), which holds the tree lock until the swap.
+//! (`docs/design/writes.md` §9). Either holds the folder's tree lock until the
+//! swap, so that no job of the mount's write-operation thread — a write
+//! operation, the landing of a download, the freeing of a copy — runs between
+//! what the reconcile reads of the folder and what it commits: a read-write
+//! cycle brings the lock from its staging, a read-only one takes it here, once
+//! it has the lease. In that order: a cycle that waits for the lease, which a
+//! change of the folder holds, holds no tree lock then, and the change may wait
+//! for the write-operation thread.
 //!
 //! [`CycleStep::apply_staged_cycle`]: crate::fuse::CycleStep::apply_staged_cycle
 //! [`CycleStep::announce_committed_cycle`]: crate::fuse::CycleStep::announce_committed_cycle
@@ -114,11 +121,11 @@ pub(crate) struct Plan {
 }
 
 /// The locks a reconcile holds until the folder is no longer being changed:
-/// the cycle's turn, the folder's lease, and a read-write folder's tree lock.
+/// the cycle's turn, the folder's lease, and the folder's tree lock.
 pub(crate) struct Held {
     _turn: Turn,
     _lease: super::lease::Held,
-    _tree: Option<OwnedMutexGuard<()>>,
+    _tree: OwnedMutexGuard<()>,
 }
 
 /// A read-write reconcile's part: what it carries to its swap, and whom it
@@ -145,9 +152,10 @@ impl Listing {
     /// Makes the folder follow `staging` and commits it: swaps
     /// `staging` in with its link, or puts a first listing's page into
     /// `items` with the link to the next one. Under the folder's
-    /// lease, on a blocking thread. Everything before this wrote only
-    /// `staging` and `meta`, and needed no lock but, in read-write mode,
-    /// the tree lock `mode` brings.
+    /// lease and its tree lock, on a blocking thread. Everything before this
+    /// wrote only `staging` and `meta`, and needed no lock but, in read-write
+    /// mode, the tree lock `mode` brings; a read-only folder's is taken here,
+    /// after the lease.
     ///
     /// The locks and the turn go into the blocking task: however this future
     /// ends, they are held until the folder is no longer being changed. The
@@ -156,8 +164,8 @@ impl Listing {
     pub(super) async fn reconcile(&self, turn: &Turn, mode: Mode<RwCycle<'_>>, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
         let lease = cancellable(cancel, self.ctx.lease.hold()).await?;
         let (tree, mode) = match mode {
-            Mode::ReadOnly => (None, Mode::ReadOnly),
-            Mode::ReadWrite(RwCycle { writes, tree, waiting }) => (Some(tree), Mode::ReadWrite(Writing { waiting, dropped_removed: Arc::clone(&writes.dropped_removed) })),
+            Mode::ReadOnly => (cancellable(cancel, Arc::clone(&self.ctx.tree_lock).lock_owned()).await?, Mode::ReadOnly),
+            Mode::ReadWrite(RwCycle { writes, tree, waiting }) => (tree, Mode::ReadWrite(Writing { waiting, dropped_removed: Arc::clone(&writes.dropped_removed) })),
         };
         let reconcile = Reconcile {
             root: self.ctx.root.clone(),
@@ -395,3 +403,6 @@ fn record(report: &Report, store: &Store, root: &Path, applied: &Applied, said: 
     report.activity.add_conflicts(conflicts);
     report.activity.record_blocking(events);
 }
+
+#[cfg(test)]
+mod tests;

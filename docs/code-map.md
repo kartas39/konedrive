@@ -392,7 +392,7 @@ daemon shows OneDrive.
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
   the switch to read-only, the scan for unrecorded entries, the freeing of each
   downloaded copy and the landing of a finished download run on, each job under
-  the folder's tree lock. Stopped, it runs nothing any more: the stop waits for the job in
+  the folder's tree lock, which a cycle's reconcile holds in either access mode. Stopped, it runs nothing any more: the stop waits for the job in
   flight, drops the jobs that wait, and never waits for the tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's
   writer and what wakes the outbox's worker (`OutboxWaker`), records an event in one
@@ -492,8 +492,9 @@ reconcile in read-write mode).
   changes since the last one.
 - `listing/lease.rs` — the folder's lease a cycle holds while it changes the folder; `sync/` hands it in.
 - `listing/poller.rs` — when a cycle runs.
-- `listing/reconcile.rs` — the reconcile of one cycle, in either mode: the folder's mount
-  follows the new tree (`follow_mount`), `commit_cycle` (what waits), `after_commit`.
+- `listing/reconcile.rs` — the reconcile of one cycle, in either mode, under the folder's
+  lease and its tree lock: the folder's mount follows the new tree (`follow_mount`),
+  `commit_cycle` (what waits), `after_commit`. `[tests]`
 - `listing/rw.rs` — `Writes`: what a read-write folder's cycle shares with its outbox worker.
 - `listing/stage.rs` — `stage`: what was fetched put into `staging`, and the reconcile it asks
   for (commit, mode); a read-write folder's tree lock, stale-delta guard and what is
