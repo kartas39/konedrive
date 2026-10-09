@@ -176,12 +176,29 @@ service() {
 }
 
 # The daemon on a private bus, `konedrivectl` and plain file calls on a folder served through
-# FUSE: crates/konedrivectl/tests/sync_cli/fuse.rs.
+# FUSE: the tests of crates/konedrivectl/tests/sync_cli that an ordinary run ignores, because
+# they mount a filesystem. One at a time: each has a daemon and a mount of its own. Every test
+# is counted as a scenario, under its own name.
 cli() {
     echo "==== a folder served through FUSE, driven from the command line ===="
     ip link set lo up
     mkdir -p $W/tmp; chown 1000:1000 $W/tmp
-    $U env TMPDIR=$W/tmp "$CLI_TEST" --ignored --exact fuse::a_folder_served_through_fuse_is_driven_from_the_command_line --nocapture 2>&1 | tail -25
+    $U env TMPDIR=$W/tmp RUST_BACKTRACE=1 "$CLI_TEST" --ignored --test-threads=1 > $W/logs/cli.out 2>&1
+    local name outcome why
+    while read -r _ name _ outcome; do
+        is_chosen "$name" || continue
+        why=$(expected_failure_of "$name")
+        case "$outcome,$why" in
+            ok,) echo "  pass  $name"; PASSED_SCENARIOS+=("$name") ;;
+            ok,*) echo "  UNEXPECTED PASS  $name (expected to fail: $why)"; UNEXPECTED_PASSES+=("$name") ;;
+            *,) echo "  FAILED  $name"; FAILED_SCENARIOS+=("$name") ;;
+            *) echo "  expected to fail  $name: $why"; EXPECTED_FAILURES+=("$name") ;;
+        esac
+    done < <(grep -E '^test .* \.\.\. (ok|FAILED)$' $W/logs/cli.out)
+    # What the failed tests said, and the binary's own count.
+    sed -n '/^failures:$/,$p' $W/logs/cli.out | head -150
+    grep -q '^test result:' $W/logs/cli.out || { echo "  FAILED  the tests did not run to their end: $(tail -5 $W/logs/cli.out)"; FAILED_SCENARIOS+=("cli"); }
+    grep '^test result:' $W/logs/cli.out
 }
 
 # run_group <group>: the group, and beside it a watch that ends it when it does not end by

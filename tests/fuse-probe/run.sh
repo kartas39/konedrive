@@ -8,11 +8,19 @@ here=$(cd "$(dirname "$0")" && pwd)
 cargo build --release --manifest-path "$here/Cargo.toml"
 work=$(mktemp -d "$here/target/run.XXXXXX")
 trap 'rm -rf "$work"' EXIT
+# `konedrivectl`'s tests of a mounted folder (crates/konedrivectl/tests/sync_cli), built here
+# when the `cli` group is among those asked for: the binary the guest runs is this tree's.
+cli_test=
+case " ${*:-cli} " in
+    *" cli "*)
+        cli_test=$(cargo test --manifest-path "$here/../../Cargo.toml" -p konedrivectl --test sync_cli --no-run --message-format=json \
+            | sed -n 's/.*"executable":"\([^"]*sync_cli-[^"]*\)".*/\1/p' | tail -1)
+        [ -x "$cli_test" ] || { echo "the tests of crates/konedrivectl/tests/sync_cli were not built"; exit 1; }
+        ;;
+esac
 {
     echo '#!/bin/sh'
-    # The CLI's end-to-end test of a folder served through FUSE, when it is built
-    # (`cargo test -p konedrivectl --test sync_cli --no-run`): the newest binary.
-    echo "export CLI_TEST='$(ls -t "$here"/../../target/debug/deps/sync_cli-* 2> /dev/null | grep -v '\.d$' | head -1)'"
+    echo "export CLI_TEST='$cli_test'"
     echo "export ONLY='${ONLY:-}'"
     echo "bash '$here/guest.sh' '$here/target/release' $*"
 } > "$work/inner.sh"
