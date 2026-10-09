@@ -5,7 +5,8 @@
 //! A file or directory of OneDrive that comes to a name where a local-only entry is does not
 //! hide it: the entry is moved aside, to a conflict copy's name, `name-<machine>.ext`, and is
 //! uploaded from there. A directory OneDrive removed that still holds local-only entries
-//! stays, as a local-only directory, and is made again in OneDrive.
+//! stays, as a local-only directory, and is made again in OneDrive; what became of the
+//! directory on disk is a [`RemovedDirectoryOutcome`].
 //!
 //! [`ConflictCopies`] owns the machine's name, which a conflict copy is named with. What a
 //! cycle's conflicts left is collected in a [`CycleConflicts`], which the cycle step records
@@ -58,6 +59,19 @@ pub(super) enum MoveAsideOutcome {
     MovedAside,
     /// It could not be moved, and is still at the path.
     StillInTheWay,
+}
+
+/// What became of the directory on disk of a OneDrive directory that a cycle removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemovedDirectoryOutcome {
+    /// The directory on disk is marked with another OneDrive id: it backs that other
+    /// directory, and was left alone.
+    LeftForOtherDirectory,
+    /// It held nothing and was removed, or nothing was there.
+    Removed,
+    /// It holds the user's own: it stays, as a local-only directory — recorded to be made
+    /// again in OneDrive in a read-write folder, not recorded in a read-only one.
+    KeptAsLocalOnly,
 }
 
 pub(super) struct ConflictCopies {
@@ -115,29 +129,27 @@ impl ConflictCopies {
     /// The directory with the OneDrive id `id` was removed from OneDrive: the directory at
     /// `rel` in the backing directory is removed when nothing is left in it. One that still
     /// holds local-only entries stays as a local-only directory, and, in a folder that is
-    /// read-write by `access_mode`, is made again in OneDrive with what it holds.
-    pub(super) fn keep_removed_directory(&self, id: &str, rel: &Path, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) {
+    /// read-write by `access_mode`, is made again in OneDrive with what it holds. What
+    /// became of the directory.
+    pub(super) fn remove_directory_if_empty(&self, id: &str, rel: &Path, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) -> RemovedDirectoryOutcome {
         // A directory marked with another id backs that other directory, and is left alone.
         if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) {
-            return;
+            return RemovedDirectoryOutcome::LeftForOtherDirectory;
         }
         // The removal is the test of whether it holds anything: one that holds nothing goes.
-        if self.backing_directory.remove_directory(rel).is_ok() {
-            return;
-        }
-        // It was not removed because nothing is there: the directory was never made here.
-        if self.backing_directory.read_metadata(rel).is_none() {
-            return;
+        // One that was not removed because nothing is there was never made here.
+        if self.backing_directory.remove_directory(rel).is_ok() || self.backing_directory.read_metadata(rel).is_none() {
+            return RemovedDirectoryOutcome::Removed;
         }
         self.backing_directory.clear_onedrive_id(rel);
-        let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
-        if access_mode == AccessMode::ReadWrite {
+        if let (AccessMode::ReadWrite, Some(name), Some(parent)) = (access_mode, rel.file_name().and_then(|n| n.to_str()), rel.parent()) {
             // The directory it is in is found by its path: it may be removed and kept as
             // well.
             let directory = DirectoryReference { onedrive_id: None, path: parent.to_path_buf() };
             conflicts.detections.extend(detect_local_only_entries(&collect_local_only_entries(&self.backing_directory, &self.upload_rules, &directory, name), now));
             conflicts.kept_directories.push(id.to_owned());
         }
+        RemovedDirectoryOutcome::KeptAsLocalOnly
     }
 }
 

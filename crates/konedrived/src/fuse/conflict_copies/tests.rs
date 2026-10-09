@@ -6,7 +6,7 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
 
 use crate::fuse::access_mode_switch::AccessMode;
-use super::{ConflictCopies, ConflictCopy, CycleConflicts, MoveAsideOutcome};
+use super::{ConflictCopies, ConflictCopy, CycleConflicts, MoveAsideOutcome, RemovedDirectoryOutcome};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::DirectoryContents;
@@ -87,7 +87,7 @@ fn a_removed_directory_that_holds_local_only_entries_stays_and_is_made_again() {
     conflict_copies.backing_directory.mark_with_onedrive_id(Path::new("docs"), "D").unwrap();
     fs::write(dir.path().join("docs/own.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts), RemovedDirectoryOutcome::KeptAsLocalOnly);
     assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")), None);
     assert_eq!(conflicts.kept_directories, ["D"]);
     assert_eq!(conflicts.detections.iter().map(|d| (d.kind, d.rel.clone())).collect::<Vec<_>>(), [(OutboxKind::Mkdir, PathBuf::from("docs")), (OutboxKind::Create, PathBuf::from("docs/own.txt"))]);
@@ -98,7 +98,7 @@ fn a_removed_directory_that_holds_nothing_is_removed_from_disk() {
     let (dir, conflict_copies) = conflict_copies();
     fs::create_dir(dir.path().join("docs")).unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts), RemovedDirectoryOutcome::Removed);
     assert!(!dir.path().join("docs").exists() && conflicts.kept_directories.is_empty());
 }
 
@@ -122,7 +122,7 @@ fn a_removed_directory_kept_in_a_read_only_folder_is_not_made_again() {
     conflict_copies.backing_directory.mark_with_onedrive_id(Path::new("docs"), "D").unwrap();
     fs::write(dir.path().join("docs/own.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadOnly, 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadOnly, 1_000, &mut conflicts), RemovedDirectoryOutcome::KeptAsLocalOnly);
     assert!(dir.path().join("docs/own.txt").is_file());
     assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")), None);
     assert!(conflicts.kept_directories.is_empty() && conflicts.detections.is_empty());
@@ -135,7 +135,7 @@ fn a_directory_marked_with_another_id_is_left_alone() {
     fs::create_dir(dir.path().join("docs")).unwrap();
     conflict_copies.backing_directory.mark_with_onedrive_id(Path::new("docs"), "OTHER").unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts), RemovedDirectoryOutcome::LeftForOtherDirectory);
     assert!(dir.path().join("docs").is_dir());
     assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("OTHER"));
 }
@@ -146,7 +146,7 @@ fn a_directory_marked_with_another_id_is_left_alone() {
 fn a_removed_directory_the_backing_directory_never_had_is_nothing_to_keep() {
     let (dir, conflict_copies) = conflict_copies();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts), RemovedDirectoryOutcome::Removed);
     assert!(!dir.path().join("docs").exists());
     assert!(conflicts.kept_directories.is_empty() && conflicts.detections.is_empty());
 }

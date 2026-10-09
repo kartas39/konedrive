@@ -394,7 +394,9 @@ daemon shows OneDrive.
   name, where something of OneDrive comes, and a directory removed from OneDrive kept while
   it holds the user's own, in either access mode; recorded for the outbox in a read-write
   folder alone. It owns the machine's name. `CycleConflicts`, what a cycle's conflicts
-  left, and `ConflictCopy`, one entry moved aside. `[tests]`
+  left, `ConflictCopy`, one entry moved aside, `MoveAsideOutcome`, what became of the
+  user's own at a path, and `RemovedDirectoryOutcome`, what became of a removed directory's
+  directory on disk: left for another directory, removed, or kept as local-only. `[tests]`
 - `write_operations.rs` — `WriteOperations`: the operations that change the folder, each the
   access mode asked, what stands at the places looked up, a decision, a step on disk, a
   record and the node ids; it holds the parts they use and owns nothing. A file it opens for

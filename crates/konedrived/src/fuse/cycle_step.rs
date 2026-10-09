@@ -121,7 +121,8 @@ impl CycleStep {
         }
         let StepProgress { mut conflicts, removed_directories, announcements } = progress;
         for directory in order_deepest_first(removed_directories) {
-            self.conflict_copies.keep_removed_directory(&directory.onedrive_id, &directory.path, access_mode, recorded_at, &mut conflicts);
+            let outcome = self.conflict_copies.remove_directory_if_empty(&directory.onedrive_id, &directory.path, access_mode, recorded_at, &mut conflicts);
+            tracing::debug!("{}, which OneDrive removed: {outcome:?}", directory.path.display());
         }
         // What the cycle kept of the user's own, in the cycle's own transaction.
         let kept = OutboxBatch { detections: conflicts.detections.clone(), ops: conflicts.ops.clone() };
