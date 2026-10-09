@@ -31,7 +31,7 @@ use fuser::{
     Request, TimeOrNow, WriteFlags,
 };
 
-use super::access_mode::AccessMode;
+use super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
 use super::download_states::DownloadStates;
@@ -97,7 +97,7 @@ fn describe_caller(req: &Request) -> String {
 /// What answers the kernel's requests.
 #[derive(Clone)]
 pub(super) struct KernelRequests {
-    pub(super) access_mode: Arc<AccessMode>,
+    pub(super) access_mode_switch: Arc<AccessModeSwitch>,
     pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) directory_contents: Arc<DirectoryContents>,
     pub(super) node_resolver: Arc<NodeResolver>,
@@ -141,10 +141,9 @@ impl KernelRequests {
     /// The errno of a change the mount never takes: `refusal` in a read-write folder, and a
     /// read-only filesystem's in a read-only one.
     fn refuse_unsupported(&self, refusal: Errno) -> Errno {
-        if self.access_mode.is_read_write() {
-            refusal
-        } else {
-            Errno::EROFS
+        match self.access_mode_switch.access_mode() {
+            AccessMode::ReadWrite => refusal,
+            AccessMode::ReadOnly => Errno::EROFS,
         }
     }
 }
@@ -222,7 +221,7 @@ impl Filesystem for KernelRequests {
 
     /// Whether the caller may do what it asks: anything, but write to a read-only folder.
     fn access(&self, _req: &Request, _ino: INodeNo, mask: fuser::AccessFlags, reply: ReplyEmpty) {
-        if mask.contains(fuser::AccessFlags::W_OK) && !self.access_mode.is_read_write() {
+        if mask.contains(fuser::AccessFlags::W_OK) && self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
             return reply.error(Errno::EROFS);
         }
         reply.ok();

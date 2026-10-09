@@ -6,13 +6,12 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::{Store, TreeStore};
 
 use super::OutboxRecorder;
-use crate::fuse::access_mode::AccessMode;
 use crate::fuse::detections::tests::{file, in_root, local_only};
 use crate::fuse::detections::EntryCreated;
 
-fn outbox_recorder(access_mode: AccessMode) -> (Store, OutboxRecorder) {
+fn outbox_recorder() -> (Store, OutboxRecorder) {
     let store = Store::new(TreeStore::in_memory().unwrap());
-    let outbox_recorder = OutboxRecorder::start(store.clone(), Arc::default(), Arc::new(access_mode)).unwrap();
+    let outbox_recorder = OutboxRecorder::start(store.clone(), Arc::default()).unwrap();
     (store, outbox_recorder)
 }
 
@@ -22,7 +21,7 @@ fn file_created() -> EntryCreated {
 
 #[test]
 fn a_recorded_change_is_in_the_outbox_and_wakes_the_worker() {
-    let (store, outbox_recorder) = outbox_recorder(AccessMode::read_write());
+    let (store, outbox_recorder) = outbox_recorder();
     let woken = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&woken);
     outbox_recorder.set_outbox_waker(Some(Arc::new(move || {
@@ -35,17 +34,9 @@ fn a_recorded_change_is_in_the_outbox_and_wakes_the_worker() {
     assert_eq!(woken.load(Ordering::SeqCst), 1);
 }
 
-/// What a program still held open when the folder was switched to read-only is not sent.
-#[test]
-fn a_read_only_folder_records_nothing() {
-    let (store, outbox_recorder) = outbox_recorder(AccessMode::read_only());
-    outbox_recorder.record(file_created()).unwrap();
-    assert!(store.call_blocking(|s| s.outbox_rows()).unwrap().is_empty());
-}
-
 #[test]
 fn the_jobs_run_on_the_thread_in_the_order_they_came_until_it_is_stopped() {
-    let (_store, outbox_recorder) = outbox_recorder(AccessMode::read_write());
+    let (_store, outbox_recorder) = outbox_recorder();
     let (tell, told) = mpsc::channel();
     for n in 0..3 {
         let tell = tell.clone();
@@ -62,7 +53,7 @@ fn the_jobs_run_on_the_thread_in_the_order_they_came_until_it_is_stopped() {
 fn a_job_runs_under_the_tree_lock() {
     let store = Store::new(TreeStore::in_memory().unwrap());
     let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
-    let outbox_recorder = OutboxRecorder::start(store, Arc::clone(&tree_lock), Arc::new(AccessMode::read_write())).unwrap();
+    let outbox_recorder = OutboxRecorder::start(store, Arc::clone(&tree_lock)).unwrap();
     let held = tree_lock.try_lock().unwrap();
     let (tell, told) = mpsc::channel();
     outbox_recorder.run(move || tell.send(()).unwrap());

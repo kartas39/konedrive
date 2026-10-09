@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{FileAttr, FileType, INodeNo};
 
-use super::access_mode::AccessMode;
+use super::access_mode_switch::AccessMode;
 use super::node_table::NodeId;
 use super::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::clock::to_system_time;
@@ -18,12 +18,12 @@ pub(super) const TTL: Duration = Duration::from_secs(1);
 
 /// The modes the mount shows, of a directory or of a file. A read-only folder shows no write
 /// bit anywhere: a file manager reads that from the modes before anything is tried.
-fn permissions(access_mode: &AccessMode, directory: bool) -> u16 {
-    match (access_mode.is_read_write(), directory) {
-        (true, true) => 0o755,
-        (true, false) => 0o644,
-        (false, true) => 0o555,
-        (false, false) => 0o444,
+fn permissions(access_mode: AccessMode, directory: bool) -> u16 {
+    match (access_mode, directory) {
+        (AccessMode::ReadWrite, true) => 0o755,
+        (AccessMode::ReadWrite, false) => 0o644,
+        (AccessMode::ReadOnly, true) => 0o555,
+        (AccessMode::ReadOnly, false) => 0o444,
     }
 }
 
@@ -36,7 +36,7 @@ fn permissions(access_mode: &AccessMode, directory: bool) -> u16 {
 ///   time: a download does not change when the file was last modified.
 /// - A file modified here has its copy's size, blocks and time.
 /// - A local-only entry has what the filesystem says of it; a directory shows no size.
-pub(super) fn attributes(node_id: NodeId, access_mode: &AccessMode, entry: &DirectoryEntry) -> FileAttr {
+pub(super) fn attributes(node_id: NodeId, access_mode: AccessMode, entry: &DirectoryEntry) -> FileAttr {
     let (directory, size, blocks, modified): (bool, u64, u64, SystemTime) = match &entry.state {
         EntryState::Directory(DirectorySyncState::InOneDrive(row)) => (true, 0, 0, to_system_time(row.mtime)),
         EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => (true, 0, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),

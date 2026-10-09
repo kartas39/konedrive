@@ -84,7 +84,7 @@ impl WriteOperations {
     /// What the rename is, or the errno it is refused with. `None`: nothing moves, the name
     /// is its own.
     fn check_rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
-        self.access_mode.check_read_write()?;
+        self.access_mode_switch.check_read_write()?;
         let from_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         let to_directory = self.node_resolver.find_directory(new_parent).ok_or(Errno::ENOENT)?;
         if self.upload_rules.daemon_owned(new_name) {

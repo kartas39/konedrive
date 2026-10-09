@@ -30,8 +30,8 @@
 //!   is not sent yet) depend on nothing; [`directory_contents`] (what each directory of the
 //!   mount holds, each entry with its sync state) is over those two; [`node_table`] holds the
 //!   node ids given to the kernel, and [`node_resolver`] is over the directory contents and
-//!   owns the table; [`access_mode`] holds whether programs may change the folder, and
-//!   [`attributes`] is a function of an entry and the access mode.
+//!   owns the table; [`access_mode_switch`] holds whether programs may change the folder,
+//!   and [`attributes`] is a function of an entry and the access mode.
 //! - A change a program makes: [`upload_rules`] (what is uploaded at all) and [`detections`]
 //!   (what a change is recorded as, a function of typed events) depend on nothing but the
 //!   store's facts; the [`outbox_recorder`] records them on its own thread;
@@ -48,7 +48,7 @@
 //! - Who asks: [`kernel_requests`] answers the kernel; [`open_handles`] holds what programs
 //!   hold open, and alone says what is open for writing; [`files_interface`] answers the daemon's bus interface `Files`.
 
-mod access_mode;
+mod access_mode_switch;
 mod attributes;
 mod conflict_copies;
 mod detections;

@@ -4,8 +4,9 @@
 //! [`WriteOperations`] holds the parts the operations use and nothing else: what each
 //! directory holds ([`DirectoryContents`]), the disk ([`BackingDirectory`]), the node ids
 //! ([`NodeResolver`]), what programs hold open ([`OpenHandles`]), the [`OutboxRecorder`],
-//! the [`UploadRules`] and the [`AccessMode`]. It owns no state of its own. Each operation is the same short
-//! sequence of steps:
+//! the [`UploadRules`] and the [`AccessModeSwitch`]. It owns no state of its own. Each
+//! operation asks the access mode once, at its start — the request that asked for it and the
+//! recorder do not ask again — and is then the same short sequence of steps:
 //!
 //! 1. check, through the directory contents and the rules: what is where, and the errno of a
 //!    refusal;
@@ -31,7 +32,7 @@ use std::sync::Arc;
 
 use fuser::Errno;
 
-use super::access_mode::AccessMode;
+use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
 use super::detections::FolderEvent;
 use super::directory_reference::DirectoryReference;
@@ -54,7 +55,7 @@ pub(super) struct WriteOperations {
     open_handles: Arc<OpenHandles>,
     outbox_recorder: Arc<OutboxRecorder>,
     upload_rules: Arc<UploadRules>,
-    access_mode: Arc<AccessMode>,
+    access_mode_switch: Arc<AccessModeSwitch>,
 }
 
 impl WriteOperations {
@@ -65,9 +66,9 @@ impl WriteOperations {
         open_handles: Arc<OpenHandles>,
         outbox_recorder: Arc<OutboxRecorder>,
         upload_rules: Arc<UploadRules>,
-        access_mode: Arc<AccessMode>,
+        access_mode_switch: Arc<AccessModeSwitch>,
     ) -> Self {
-        WriteOperations { directory_contents, backing_directory, node_resolver, open_handles, outbox_recorder, upload_rules, access_mode }
+        WriteOperations { directory_contents, backing_directory, node_resolver, open_handles, outbox_recorder, upload_rules, access_mode_switch }
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive is ignored.

@@ -71,11 +71,11 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
 fn a_onedrive_file_that_is_not_downloaded_is_downloaded_before_it_is_written() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
-    assert_eq!(f.ops.needs_download(node_id, false).map(|(row, rel)| (row.id, rel)), Some(("A".into(), at("a.txt"))));
-    assert!(f.ops.needs_download(node_id, true).is_none());
+    assert_eq!(f.ops.needs_download(node_id, false).unwrap().map(|(row, rel)| (row.id, rel)), Some(("A".into(), at("a.txt"))));
+    assert!(f.ops.needs_download(node_id, true).unwrap().is_none());
     assert_eq!(f.ops.open_to_write(node_id, false).err(), Some(Errno::EIO));
     f.download("a.txt", "A", b"a");
-    assert!(f.ops.needs_download(node_id, false).is_none());
+    assert!(f.ops.needs_download(node_id, false).unwrap().is_none());
 }
 
 /// Cut to nothing it needs no download: the copy is made empty, and is the file's new
@@ -84,7 +84,7 @@ fn a_onedrive_file_that_is_not_downloaded_is_downloaded_before_it_is_written() {
 fn a_onedrive_file_cut_to_nothing_is_its_empty_copy() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
-    f.ops.truncate(node_id, 0).unwrap();
+    f.ops.truncate(node_id, 0, None).unwrap();
     assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
     assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().len(), 0);
     let row = &f.rows()[0];
@@ -96,8 +96,45 @@ fn a_onedrive_file_cut_to_nothing_is_its_empty_copy() {
 fn a_directory_or_a_read_only_folder_is_not_written() {
     let f = folder(Vec::new());
     assert_eq!(f.ops.open_to_write(f.docs(), false).err(), Some(Errno::EISDIR));
-    assert_eq!(f.ops.truncate(f.docs(), 0).err(), Some(Errno::EISDIR));
-    f.access_mode.switch_to_read_only();
-    assert_eq!(f.ops.open_to_write(f.node_id(NodeId::ROOT, "a.txt"), true).err(), Some(Errno::EROFS));
+    assert_eq!(f.ops.truncate(f.docs(), 0, None).err(), Some(Errno::EISDIR));
+    f.access_mode_switch.switch_to_read_only();
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    assert_eq!(f.ops.open_to_write(node_id, true).err(), Some(Errno::EROFS));
+    assert_eq!(f.ops.truncate(node_id, 0, None).err(), Some(Errno::EROFS));
+    // Nothing is downloaded for a write that is refused, and no time is set.
+    assert_eq!(f.ops.needs_download(node_id, false).err(), Some(Errno::EROFS));
+    assert_eq!(f.ops.set_modified_time(node_id, None).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
+}
+
+/// What a program still held open when the folder was switched to read-only is not sent: the
+/// write operation asks the access mode, the recorder does not.
+#[test]
+fn the_last_writer_of_a_file_closed_in_a_folder_switched_to_read_only_records_nothing() {
+    let f = folder(Vec::new());
+    f.ops.make(NodeId::ROOT, "new.txt", false, false).unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "new.txt");
+    let fh = f.ops.open_to_write(node_id, false).unwrap();
+    assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
+    f.access_mode_switch.switch_to_read_only();
+    f.open_handles.mark_written(node_id);
+    let outcome = f.open_handles.close_file(fh).1;
+    assert_eq!(outcome, CloseOutcome::ContentChanged);
+    f.ops.close_last_writer(node_id, outcome);
+    let rows = f.rows();
+    assert_eq!((rows.len(), rows[0].reason.clone()), (1, Some(Reason::OpenForWriting)));
+}
+
+/// A time set on a file is written on its file in the backing directory.
+#[test]
+fn a_time_set_on_a_file_is_its_copys_own() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"a");
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    let at_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    f.ops.set_modified_time(node_id, Some(fuser::TimeOrNow::SpecificTime(at_time))).unwrap();
+    assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().modified().unwrap(), at_time);
+    // No time given: nothing is written, and nothing is refused.
+    f.ops.set_modified_time(node_id, None).unwrap();
+    assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().modified().unwrap(), at_time);
 }

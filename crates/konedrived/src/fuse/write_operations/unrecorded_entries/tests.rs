@@ -20,3 +20,14 @@ fn the_local_only_entries_without_a_row_are_recorded_anew() {
     paths.sort();
     assert_eq!(paths, [at("docs/mine.txt"), at("keep"), at("keep/f.txt"), at("known.txt"), at("lost.txt")]);
 }
+
+/// The walk is asked for when the folder starts taking changes; in one that is read-only by
+/// the time it runs, nothing is recorded.
+#[test]
+fn nothing_is_recorded_anew_in_a_read_only_folder() {
+    let f = folder(Vec::new());
+    fs::write(f.disk.join("lost.txt"), b"l").unwrap();
+    f.access_mode_switch.switch_to_read_only();
+    f.ops.record_unrecorded_entries();
+    assert!(f.rows().is_empty());
+}

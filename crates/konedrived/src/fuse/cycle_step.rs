@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
+use super::access_mode_switch::AccessMode;
 use super::backing_directory::BackingDirectory;
 use super::conflict_copies::{ConflictCopies, CycleConflicts};
 use super::detections::rebase;
@@ -111,11 +112,14 @@ fn make_staged_directories(backing_directory: &BackingDirectory, store: &TreeSto
 /// [`announce_committed_cycle`], from what is left in `uncommitted_cycle`.
 ///
 /// A read-write folder's cycle brings what the outbox holds (`rw`): a file or directory a
-/// change of the user's waits on is left as it is, and what the user made where something
-/// of OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`]).
+/// change of the user's waits on is left as it is. What the user made where something of
+/// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`]), and
+/// in a folder that is read-write by `access_mode` — the mount asked its switch for this
+/// cycle — a directory that is kept is made again in OneDrive.
 pub(super) fn apply_staged_cycle(
     store: &mut TreeStore,
     rw: Option<&Rw>,
+    access_mode: AccessMode,
     backing_directory: &BackingDirectory,
     range_readers: &RangeReaders,
     conflict_copies: &ConflictCopies,
@@ -177,7 +181,7 @@ pub(super) fn apply_staged_cycle(
     // went.
     removed_directories.sort_by_key(|(_, rel)| std::cmp::Reverse(rel.components().count()));
     for (id, rel) in &removed_directories {
-        conflict_copies.keep_removed_directory(id, rel, rw.is_some(), recorded_at, &mut conflicts);
+        conflict_copies.keep_removed_directory(id, rel, access_mode, recorded_at, &mut conflicts);
     }
     if !conflicts.detections.is_empty() || !conflicts.ops.is_empty() {
         crate::local::record::record(store, conflicts.detections.clone(), conflicts.ops.clone(), crate::clock::unix_now())?;

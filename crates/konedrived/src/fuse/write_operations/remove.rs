@@ -15,7 +15,7 @@ impl WriteOperations {
     /// hold nothing, or a file. What is in OneDrive is removed there by the outbox; a
     /// local-only entry is forgotten there.
     pub(in crate::fuse) fn remove(&self, parent: NodeId, name: &str, directory: bool) -> Result<(), Errno> {
-        self.access_mode.check_read_write()?;
+        self.access_mode_switch.check_read_write()?;
         let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         let entry = self.directory_contents.find_entry(&parent_directory, name).ok_or(Errno::ENOENT)?;
         match (&entry.state, directory) {

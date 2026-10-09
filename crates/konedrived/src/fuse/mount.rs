@@ -10,13 +10,13 @@
 //! 1. [`BackingDirectory`]: opened before the mount lies over it;
 //! 2. [`DirectoryContents`]: over the store's reader and the backing directory;
 //! 3. [`NodeResolver`]: over the directory contents;
-//! 4. [`AccessMode`], read-only at first;
-//! 5. [`OutboxRecorder`]: the store's writer, the tree lock, the access mode;
+//! 4. [`AccessModeSwitch`], read-only at first;
+//! 5. [`OutboxRecorder`]: the store's writer and the tree lock;
 //! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
 //!    contents, the rules;
 //! 7. [`OpenHandles`], which depends on no part, then [`WriteOperations`]: the directory
 //!    contents, the backing directory, the node resolver, the open handles, the recorder, the
-//!    rules, the access mode;
+//!    rules, the access mode switch;
 //! 8. [`DownloadStates`], and [`Pins`] over the directory contents;
 //! 9. [`InotifyBridge`]: the node resolver and the directory contents — its thread is not
 //!    started yet;
@@ -42,7 +42,7 @@ use crate::hydration::source::{ContentSource, Share};
 use crate::local::held::Rw;
 use crate::status::report::Report;
 
-use super::access_mode::AccessMode;
+use super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::backing_directory::{remove_write_bits, restore_write_bits, BackingDirectory};
 use super::conflict_copies::ConflictCopies;
 use super::directory_contents::DirectoryContents;
@@ -64,8 +64,8 @@ use super::write_operations::WriteOperations;
 pub struct Mount {
     /// The folder's path, which is the mount.
     folder: PathBuf,
-    /// Whether programs may change the folder ([`super::access_mode`]).
-    access_mode: Arc<AccessMode>,
+    /// Whether programs may change the folder ([`super::access_mode_switch`]).
+    access_mode_switch: Arc<AccessModeSwitch>,
     /// The directory on disk the mount lies over ([`super::backing_directory`]).
     backing_directory: Arc<BackingDirectory>,
     /// What each directory of the mount holds ([`super::directory_contents`]).
@@ -151,8 +151,8 @@ impl Mount {
             let backing_directory = Arc::new(BackingDirectory::open(&folder)?);
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(to_io_error)?, Arc::clone(&backing_directory)));
             let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
-            let access_mode = Arc::new(AccessMode::read_only());
-            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock, Arc::clone(&access_mode))?);
+            let access_mode_switch = Arc::new(AccessModeSwitch::new(AccessMode::ReadOnly));
+            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock)?);
             let upload_rules = Arc::new(UploadRules::new(write_setup.ignore));
             let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), write_setup.machine_name);
             let open_handles = Arc::new(OpenHandles::default());
@@ -163,7 +163,7 @@ impl Mount {
                 Arc::clone(&open_handles),
                 Arc::clone(&outbox_recorder),
                 upload_rules,
-                Arc::clone(&access_mode),
+                Arc::clone(&access_mode_switch),
             ));
             let download_states = Arc::new(DownloadStates::new(download_after));
             let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
@@ -197,7 +197,7 @@ impl Mount {
                 runtime: runtime.clone(),
             };
             let kernel_requests = KernelRequests {
-                access_mode: Arc::clone(&access_mode),
+                access_mode_switch: Arc::clone(&access_mode_switch),
                 backing_directory: Arc::clone(&backing_directory),
                 directory_contents: Arc::clone(&directory_contents),
                 node_resolver,
@@ -233,7 +233,7 @@ impl Mount {
             download_pinned_files(&pins, &directory_contents, &file_downloader, &runtime);
             Ok(Arc::new(Mount {
                 folder,
-                access_mode,
+                access_mode_switch,
                 backing_directory,
                 directory_contents,
                 outbox_recorder,
@@ -302,7 +302,7 @@ impl Mount {
     /// its sync uploads. Whether the modes shown changed with that.
     pub fn switch_to_read_write(&self, outbox_waker: OutboxWaker) -> bool {
         self.outbox_recorder.set_outbox_waker(Some(outbox_waker));
-        let changed = self.access_mode.switch_to_read_write();
+        let changed = self.access_mode_switch.switch_to_read_write();
         if changed {
             // What a lost row left unsent is found again.
             let write_operations = Arc::clone(&self.write_operations);
@@ -314,19 +314,19 @@ impl Mount {
     /// The folder takes no change from now on. Whether the modes shown changed with that.
     pub fn switch_to_read_only(&self) -> bool {
         self.outbox_recorder.set_outbox_waker(None);
-        self.access_mode.switch_to_read_only()
+        self.access_mode_switch.switch_to_read_only()
     }
 
     /// Whether the folder takes changes now.
     pub fn is_read_write(&self) -> bool {
-        self.access_mode.is_read_write()
+        self.access_mode_switch.access_mode() == AccessMode::ReadWrite
     }
 
     /// Makes the backing directory follow the cycle of the delta listing that `store` has
     /// staged and not yet committed ([`cycle_step::apply_staged_cycle`]); `rw` is what
     /// the outbox holds, in a read-write folder.
     pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
-        cycle_step::apply_staged_cycle(store, rw, &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
+        cycle_step::apply_staged_cycle(store, rw, self.access_mode_switch.access_mode(), &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
     }
 
     /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its

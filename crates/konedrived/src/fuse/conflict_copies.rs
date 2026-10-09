@@ -16,6 +16,7 @@ use std::sync::Arc;
 use konedrive_tree::outbox::{Detection, OutboxOp};
 
 use crate::fuse::entry_place::EntryPlace;
+use super::access_mode_switch::AccessMode;
 use super::backing_directory::BackingDirectory;
 use super::detections::{detect_local_only_entries, is_directory_of, EntryKeptAside};
 use super::directory_reference::DirectoryReference;
@@ -86,15 +87,15 @@ impl ConflictCopies {
 
     /// The directory with the OneDrive id `id` was removed from OneDrive: the directory at
     /// `rel` in the backing directory is removed when nothing is left in it. One that still
-    /// holds local-only entries stays as a local-only directory, and, when the folder
-    /// `uploads`, is made again in OneDrive with what it holds.
-    pub(super) fn keep_removed_directory(&self, id: &str, rel: &Path, uploads: bool, now: i64, conflicts: &mut CycleConflicts) {
+    /// holds local-only entries stays as a local-only directory, and, in a folder that is
+    /// read-write by `access_mode`, is made again in OneDrive with what it holds.
+    pub(super) fn keep_removed_directory(&self, id: &str, rel: &Path, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) {
         if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) || self.backing_directory.remove_dir(rel).is_ok() || self.backing_directory.read_metadata(rel).is_none() {
             return;
         }
         self.backing_directory.clear_onedrive_id(rel);
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
-        if uploads {
+        if access_mode == AccessMode::ReadWrite {
             // The directory it is in is found by its path: it may be removed and kept as
             // well.
             let directory = DirectoryReference { onedrive_id: None, path: parent.to_path_buf() };

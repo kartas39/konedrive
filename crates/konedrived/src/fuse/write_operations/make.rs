@@ -69,7 +69,7 @@ impl WriteOperations {
     /// directory (`directory`) or a file. Neither the daemon's own names nor a file
     /// manager's trash in the folder itself are made.
     fn check_make(&self, parent: NodeId, name: &str, directory: bool) -> Result<DirectoryReference, Errno> {
-        self.access_mode.check_read_write()?;
+        self.access_mode_switch.check_read_write()?;
         let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         if self.upload_rules.daemon_owned(name) || (directory && parent == NodeId::ROOT && self.upload_rules.is_trash(name)) {
             return Err(Errno::EPERM);

@@ -27,7 +27,7 @@ impl KernelRequests {
     /// The attributes of `entry`, which the node `node_id` stands for, in the folder's access
     /// mode.
     pub(super) fn attributes_of(&self, entry: &DirectoryEntry, node_id: NodeId) -> FileAttr {
-        attributes(node_id, &self.access_mode, entry)
+        attributes(node_id, self.access_mode_switch.access_mode(), entry)
     }
 
     /// Answers with the entry `name` of `parent`, as the folder has it now.

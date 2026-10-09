@@ -2,15 +2,19 @@
 //! taking changes ([`UnrecordedEntries`]): one walk of the backing directory, recorded in
 //! one go.
 
+use crate::fuse::access_mode_switch::AccessMode;
 use super::WriteOperations;
 use crate::fuse::detections::UnrecordedEntries;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::local_only_entry::collect_local_only_entries;
 
 impl WriteOperations {
-    /// Records every local-only entry the outbox has no row for. Called on the recorder's
-    /// thread.
+    /// Records every local-only entry the outbox has no row for; nothing in a folder that
+    /// is read-only by now. Called on the recorder's thread.
     pub(in crate::fuse) fn record_unrecorded_entries(&self) {
+        if self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
+            return;
+        }
         let mut found = Vec::new();
         let mut directories = vec![self.directory_contents.find_root_directory()];
         while let Some(directory) = directories.pop() {

@@ -7,10 +7,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use fuser::Errno;
+use fuser::{Errno, TimeOrNow};
 use konedrive_tree::Row;
 
+use crate::fuse::access_mode_switch::AccessMode;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::entry_place::EntryPlace;
 use super::WriteOperations;
@@ -22,19 +24,21 @@ use crate::fuse::errno::to_errno;
 impl WriteOperations {
     /// The row of the file and its path, when writing the node `node_id` needs its content
     /// downloaded first: a OneDrive file that is not downloaded and is not cut to nothing
-    /// (`empty`).
-    pub(in crate::fuse) fn needs_download(&self, node_id: NodeId, empty: bool) -> Option<(Row, PathBuf)> {
-        let (entry, rel) = self.node_resolver.find_entry(node_id)?;
-        match entry.state {
+    /// (`empty`). A read-only folder refuses here, before anything is downloaded for a
+    /// write it will not take.
+    pub(in crate::fuse) fn needs_download(&self, node_id: NodeId, empty: bool) -> Result<Option<(Row, PathBuf)>, Errno> {
+        self.access_mode_switch.check_read_write()?;
+        let Some((entry, rel)) = self.node_resolver.find_entry(node_id) else { return Ok(None) };
+        Ok(match entry.state {
             EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some((row, rel)),
             _ => None,
-        }
+        })
     }
 
     /// Opens the node `node_id` for writing, cut to nothing when `truncate`: the `fh` the
     /// program holds it open by.
     pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId, truncate: bool) -> Result<Fh, Errno> {
-        self.access_mode.check_read_write()?;
+        self.access_mode_switch.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, truncate)?;
@@ -61,6 +65,11 @@ impl WriteOperations {
             CloseOutcome::ContentUntouched => false,
             CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere => return,
         };
+        // What a program still held open when the folder was switched to read-only is not
+        // sent.
+        if self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
+            return;
+        }
         let untouched = self.node_resolver.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
         // A local-only file is sent all the same: it was never sent.
         let Some(untouched) = untouched else {
@@ -79,9 +88,31 @@ impl WriteOperations {
         }
     }
 
-    /// Cuts or extends the node `node_id` to `size`.
-    pub(in crate::fuse) fn truncate(&self, node_id: NodeId, size: u64) -> Result<(), Errno> {
-        self.access_mode.check_read_write()?;
+    /// Sets the time the node `node_id` was last modified, when `modified` gives one: the
+    /// file's own from then on. A read-only folder refuses, also when no time is given.
+    pub(in crate::fuse) fn set_modified_time(&self, node_id: NodeId, modified: Option<TimeOrNow>) -> Result<(), Errno> {
+        self.access_mode_switch.check_read_write()?;
+        self.write_modified_time(node_id, modified);
+        Ok(())
+    }
+
+    /// Writes the time `modified` gives on the file of the node `node_id` in the backing
+    /// directory. Nothing for a node that has no file there.
+    fn write_modified_time(&self, node_id: NodeId, modified: Option<TimeOrNow>) {
+        let (Some(modified), Some((_, rel))) = (modified, self.node_resolver.find_entry(node_id)) else { return };
+        let at = match modified {
+            TimeOrNow::SpecificTime(at) => at,
+            TimeOrNow::Now => SystemTime::now(),
+        };
+        if let Ok(file) = self.backing_directory.read(&rel) {
+            let _ = konedrive_fs::placeholder::set_mtime(&file, at);
+        }
+    }
+
+    /// Cuts or extends the node `node_id` to `size`, and then sets the time it was last
+    /// modified, when `modified` gives one.
+    pub(in crate::fuse) fn truncate(&self, node_id: NodeId, size: u64, modified: Option<TimeOrNow>) -> Result<(), Errno> {
+        self.access_mode_switch.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, size == 0)?;
@@ -93,7 +124,9 @@ impl WriteOperations {
         } else {
             self.record_content(node_id, LocalOnlyFileWrite::Cut)?;
         }
-        backing_file.set_len(size).map_err(|e| to_errno(&e))
+        backing_file.set_len(size).map_err(|e| to_errno(&e))?;
+        self.write_modified_time(node_id, modified);
+        Ok(())
     }
 
     /// The file at `rel` in the backing directory, made ready to be written: the downloaded

@@ -7,8 +7,9 @@
 //! threads never wait for the store or for a cycle, and no two changes of names interleave.
 //!
 //! [`OutboxRecorder`] owns the way to its thread (the thread itself owns the jobs' queue and the
-//! tree lock), the store's writer and what wakes the outbox's worker; it reads the folder's
-//! [`AccessMode`], which it is handed. It knows
+//! tree lock), the store's writer and what wakes the outbox's worker, while one runs. Whether
+//! the folder takes changes is not its to ask: the write operation that records has asked
+//! the access mode switch already. It knows
 //! nothing of the mount, of the disk or of what a job does: a job is a closure, and what a
 //! change is recorded as is decided in [`super::detections`].
 
@@ -17,7 +18,6 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use konedrive_tree::{Store, TreeError};
 
-use super::access_mode::AccessMode;
 use super::detections::FolderEvent;
 use crate::local::record::{record, Recorded};
 
@@ -32,16 +32,15 @@ pub(super) struct OutboxRecorder {
     jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The store's one writer.
     store: Store,
-    /// Wakes the outbox's worker: set while a sync that uploads runs.
+    /// Wakes the outbox's worker: set while a sync that uploads runs, which has one. It is the
+    /// way to that worker and not the folder's access mode: nothing reads it as the mode.
     outbox_waker: Mutex<Option<OutboxWaker>>,
-    /// Whether programs may change the folder.
-    access_mode: Arc<AccessMode>,
 }
 
 impl OutboxRecorder {
     /// Starts the thread, which runs every job it is given in the order it came, each under
-    /// `tree_lock`, and records into `store` while the folder is read-write by `access_mode`.
-    pub(super) fn start(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>, access_mode: Arc<AccessMode>) -> io::Result<Self> {
+    /// `tree_lock`, and records into `store`.
+    pub(super) fn start(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>) -> io::Result<Self> {
         let (jobs, queued) = mpsc::channel::<Job>();
         std::thread::Builder::new().name("konedrive-record".into()).spawn(move || {
             for job in queued {
@@ -49,7 +48,7 @@ impl OutboxRecorder {
                 job();
             }
         })?;
-        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, outbox_waker: Mutex::new(None), access_mode })
+        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, outbox_waker: Mutex::new(None) })
     }
 
     /// Has `job` run on the recorder's thread. A recorder that is stopped drops it, and with
@@ -79,13 +78,10 @@ impl OutboxRecorder {
     }
 
     /// Records `event` in the outbox: what it is recorded as is decided and written in one
-    /// transaction, and the worker is woken. A read-only folder records
-    /// nothing: what a program still held open when it was switched to read-only is not
-    /// sent. Called on the recorder's thread, or wherever no async runtime runs.
+    /// transaction, and the worker is woken. Whether the folder takes
+    /// changes is the caller's to have asked: a read-only folder's write operations record
+    /// nothing. Called on the recorder's thread, or wherever no async runtime runs.
     pub(super) fn record(&self, event: impl FolderEvent) -> Result<Recorded, TreeError> {
-        if !self.access_mode.is_read_write() {
-            return Ok(Recorded::default());
-        }
         let now = crate::clock::unix_now();
         let recorded = self.store.call_blocking(move |s| {
             let batch = event.detect(&*s, now)?;
