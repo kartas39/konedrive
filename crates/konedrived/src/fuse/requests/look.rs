@@ -10,12 +10,12 @@ use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROO
 use konedrive_tree::{Kind, Placement, Row};
 
 use super::Requests;
-use crate::fuse::announce::Told;
 use crate::fuse::attributes::{attributes, TTL};
 use crate::fuse::directory::Directory;
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
 use crate::fuse::download_states::to_hydration_state;
+use crate::fuse::inotify_bridge::NameBeforeChange;
 use crate::fuse::shared::errno;
 
 /// The entry of a name that is gone from the store, for the one request that still has to be
@@ -51,12 +51,12 @@ impl Requests {
 
     pub(super) fn looked_up(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         if self.announcing(req) {
-            match &*crate::panic::lock(&self.0.told) {
-                Some(Told::Came { parent: in_, name: came }) if *in_ == parent.0 && name == came.as_str() => return reply.error(Errno::ENOENT),
-                Some(Told::Gone { parent: in_, name: gone, ino, kind }) if *in_ == parent.0 && name == gone.as_str() => {
-                    return reply.entry(&Duration::ZERO, &self.attributes_of(&vanished_entry(gone, *kind), *ino), Generation(0));
+            match self.0.inotify_bridge.find_name_before_change(parent.0, name) {
+                Some(NameBeforeChange::Absent) => return reply.error(Errno::ENOENT),
+                Some(NameBeforeChange::Present { node_id, kind }) => {
+                    return reply.entry(&Duration::ZERO, &self.attributes_of(&vanished_entry(&name.to_string_lossy(), kind), node_id), Generation(0));
                 }
-                _ => {}
+                None => {}
             }
         }
         self.entry(parent, name, reply)

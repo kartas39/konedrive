@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Detection, OutboxKind};
@@ -9,15 +9,13 @@ use konedrive_tree::Row;
 use super::NodeLookup;
 use crate::fuse::directory_contents::tests::{directory_contents, of};
 use crate::fuse::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::node_table::NodeTable;
 
 /// The node lookup of the drive the directory contents' tests have (`docs` with `c.txt`, and
 /// `a.txt` and `b.txt` in the root), over a backing directory that holds nothing.
 fn node_lookup(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, NodeLookup) {
     let (dir, contents) = directory_contents(detections);
     let contents = Arc::new(contents);
-    let node_table = Arc::new(Mutex::new(NodeTable::new()));
-    (dir, Arc::clone(&contents), NodeLookup::new(contents, node_table))
+    (dir, Arc::clone(&contents), NodeLookup::new(contents))
 }
 
 /// The entry of the OneDrive id `id`, at the path the store has it.

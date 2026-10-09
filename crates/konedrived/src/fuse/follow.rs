@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 
-use super::announce::Announce;
+use super::inotify_bridge::RemoteChange;
 use super::conflict_copies::CycleConflicts;
 use super::detections::rebase;
 use super::mount::Mount;
@@ -94,11 +94,11 @@ impl Mount {
                         Kind::Folder => gone.push((step.id.clone(), was.clone())),
                     }
                     unpinned.push(step.id.clone());
-                    told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
+                    told.push(RemoteChange::NameVanished { rel: was.clone(), kind: old.kind, id: step.id.clone(), parent_id: old.parent_id.clone() });
                 }
                 (None, Some((new, now))) => {
                     s.conflict_copies.move_aside(now, new.parent_id.as_deref(), recorded_at, &mut conflicts);
-                    told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
+                    told.push(RemoteChange::NameAppeared { rel: now.clone(), kind: new.kind, parent_id: new.parent_id.clone() });
                 }
                 (Some((old, was)), Some((new, now))) => {
                     if was != now {
@@ -115,10 +115,10 @@ impl Mount {
                         let _ = s.backing_directory.rename(was, now);
                     }
                     if was != now {
-                        told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
-                        told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
+                        told.push(RemoteChange::NameVanished { rel: was.clone(), kind: old.kind, id: step.id.clone(), parent_id: old.parent_id.clone() });
+                        told.push(RemoteChange::NameAppeared { rel: now.clone(), kind: new.kind, parent_id: new.parent_id.clone() });
                     } else if new.kind == Kind::File {
-                        told.push(Announce::Changed(now.clone(), step.id.clone()));
+                        told.push(RemoteChange::ContentChanged { rel: now.clone(), id: step.id.clone() });
                     }
                 }
                 (None, None) => {}
@@ -146,7 +146,7 @@ impl Mount {
         // An item that is gone keeps nothing on this device.
         let s = &self.shared;
         s.pins.unpin_removed(unpinned);
-        s.announce(told);
+        s.inotify_bridge.announce(told);
         download_pinned_files(&s.pins, &s.directory_contents, &s.file_downloader, &s.runtime);
         // What the cycle kept of the user's own is the outbox's to send.
         s.outbox_recorder.wake();

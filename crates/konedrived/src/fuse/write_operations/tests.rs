@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxRow};
 use konedrive_tree::{Store, TreeStore};
@@ -17,7 +17,6 @@ use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::{DirectoryContents, EntryState, FileSyncState};
 use crate::fuse::node_lookup::NodeLookup;
-use crate::fuse::node_table::NodeTable;
 use crate::fuse::open_writers::OpenWriters;
 use crate::fuse::outbox_recorder::OutboxRecorder;
 use crate::fuse::upload_rules::tests::rules;
@@ -47,7 +46,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let store = Store::new(written);
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
     let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));
-    let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::new(Mutex::new(NodeTable::new()))));
+    let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents)));
     let access_mode = Arc::new(AccessMode::read_write());
     let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&access_mode)).unwrap());
     let open_writers = Arc::new(OpenWriters::default());

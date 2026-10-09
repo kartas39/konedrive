@@ -6,7 +6,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -32,10 +31,10 @@ pub(super) fn caller(req: &Request) -> String {
 pub(super) struct Requests(pub(super) Arc<Shared>);
 
 impl Requests {
-    /// Whether the request is the announcer's own: a change from OneDrive it tells the
-    /// kernel of, which the mount answers from the store and never makes.
+    /// Whether the request is the inotify bridge's own: a change from OneDrive it announces,
+    /// which the mount answers from the store and never makes.
     fn announcing(&self, req: &Request) -> bool {
-        req.pid() as i32 == self.0.announcer.load(Ordering::SeqCst)
+        self.0.inotify_bridge.is_own_thread(req.pid())
     }
 
     /// Whether `name` of `parent` is a name the folder does not hold: what the announcer

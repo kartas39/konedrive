@@ -39,7 +39,6 @@
 //! `shared` holds them together.
 
 mod access_mode;
-mod announce;
 mod asked;
 mod attributes;
 mod conflict_copies;
@@ -48,6 +47,7 @@ mod directory;
 mod download_states;
 mod file_download;
 mod follow;
+mod inotify_bridge;
 mod local_only_entries;
 mod mount;
 mod node_table;

@@ -9,7 +9,7 @@ use konedrive_graph::pool::Class;
 use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
-use super::announce::Announce;
+use super::inotify_bridge::RemoteChange;
 use super::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::to_hydration_state;
 use super::mount::Mount;
@@ -129,12 +129,12 @@ impl Mount {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
-                        told.push(Announce::Changed(at, file.id));
+                        told.push(RemoteChange::ContentChanged { rel: at, id: file.id });
                     }
                     None => freed.kept += 1,
                 }
             }
-            s.announce(told);
+            s.inotify_bridge.announce(told);
             freed
         })
         .await
@@ -166,7 +166,7 @@ impl Mount {
         let s = &self.shared;
         let changed = s.pins.set_pin(&row.id, pinned).await.map_err(|e| Refused::Io(e.to_string()))?;
         if changed {
-            s.announce(vec![Announce::Changed(rel, row.id)]);
+            s.inotify_bridge.announce(vec![RemoteChange::ContentChanged { rel, id: row.id }]);
         }
         if pinned {
             download_pinned_files(&s.pins, &s.directory_contents, &s.file_downloader, &s.runtime);

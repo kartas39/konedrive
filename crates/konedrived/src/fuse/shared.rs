@@ -2,7 +2,7 @@
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the disk
 //! ([`BackingDirectory`]), what each directory holds ([`DirectoryContents`]), the node ids
-//! given to the kernel ([`NodeTable`]) and what looks them up ([`NodeLookup`]), the files open
+//! given to the kernel and what looks them up ([`NodeLookup`]), the files open
 //! for writing ([`OpenWriters`]), the thread that records ([`OutboxRecorder`]), the operations
 //! that change the folder ([`WriteOperations`]), what moves the user's own out of the way of a
 //! change from OneDrive ([`ConflictCopies`]), the state of each file's download
@@ -13,8 +13,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::AtomicI32;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
@@ -23,11 +22,10 @@ use crate::folder::root::SyncRoot;
 use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
-use super::announce::{Announce, Told};
 use super::download_states::DownloadStates;
 use super::file_download::FileDownloader;
 use super::conflict_copies::ConflictCopies;
-use super::node_table::NodeTable;
+use super::inotify_bridge::{InotifyBridge, RemoteChange};
 use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
@@ -44,9 +42,6 @@ pub(super) struct Shared {
     pub(super) backing_directory: Arc<BackingDirectory>,
     /// What each directory of the mount holds ([`super::directory_contents`]).
     pub(super) directory_contents: Arc<DirectoryContents>,
-    /// The node ids given to the kernel ([`super::node_table`]): shared by what looks them up
-    /// and what tells the kernel of changes.
-    pub(super) node_table: Arc<Mutex<NodeTable>>,
     /// The entry a node id stands for, and the node id of an entry ([`super::node_lookup`]).
     pub(super) node_lookup: Arc<NodeLookup>,
     pub(super) report: Report,
@@ -64,15 +59,12 @@ pub(super) struct Shared {
     pub(super) reads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
     /// The pins ([`super::pins`]).
     pub(super) pins: Arc<Pins>,
-    /// The announcer: its thread, what it is telling, and the way to it.
-    pub(super) announcer: AtomicI32,
-    pub(super) told: Mutex<Option<Told>>,
-    pub(super) tell: Mutex<Option<mpsc::Sender<Vec<Announce>>>>,
+    /// What brings a change from OneDrive to whoever watches the folder
+    /// ([`super::inotify_bridge`]).
+    pub(super) inotify_bridge: Arc<InotifyBridge>,
     /// What the cycle now committing changed: announced, and the pins of what went taken off,
     /// once it is committed.
-    pub(super) pending: Mutex<(Vec<Announce>, Vec<String>)>,
-    /// The mount is being taken off: the announcer says nothing more through it.
-    pub(super) stopping: std::sync::atomic::AtomicBool,
+    pub(super) pending: Mutex<(Vec<RemoteChange>, Vec<String>)>,
     /// Whether programs may change the folder ([`super::access_mode`]).
     pub(super) access_mode: Arc<AccessMode>,
     /// What moves the user's own out of the way of a change from OneDrive

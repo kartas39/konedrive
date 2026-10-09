@@ -7,8 +7,8 @@
 //! in the directory contents, a local-only entry by its file handle in the backing directory
 //! — and keeps the node id of a local-only entry once it is in OneDrive.
 //!
-//! The table is shared with what tells the kernel of changes; whoever changes a node's key
-//! or place does it through here.
+//! The node lookup owns the table: whoever needs a node id, or changes a node's key or
+//! place, asks here.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -40,12 +40,13 @@ fn key_of(entry: &DirectoryEntry) -> NodeKey {
 
 pub(super) struct NodeLookup {
     directory_contents: Arc<DirectoryContents>,
-    node_table: Arc<Mutex<NodeTable>>,
+    node_table: Mutex<NodeTable>,
 }
 
 impl NodeLookup {
-    pub(super) fn new(directory_contents: Arc<DirectoryContents>, node_table: Arc<Mutex<NodeTable>>) -> Self {
-        NodeLookup { directory_contents, node_table }
+    /// The node lookup of a folder the kernel was told nothing of yet.
+    pub(super) fn new(directory_contents: Arc<DirectoryContents>) -> Self {
+        NodeLookup { directory_contents, node_table: Mutex::new(NodeTable::new()) }
     }
 
     /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a

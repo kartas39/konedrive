@@ -4,8 +4,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 use fuser::{Config, MountOption};
 use konedrive_graph::pool::TransferPool;
@@ -16,13 +15,12 @@ use crate::hydration::source::{ContentSource, Share};
 use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
-use super::announce::{announce, Announce};
 use super::download_states::DownloadStates;
 use super::file_download::{FileChangeAnnouncer, FileDownloader};
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
 use super::conflict_copies::ConflictCopies;
-use super::node_table::NodeTable;
+use super::inotify_bridge::{InotifyBridge, RemoteChange};
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::node_lookup::NodeLookup;
@@ -37,7 +35,6 @@ use super::open_writers::OpenWriters;
 pub struct Mount {
     pub(super) shared: Arc<Shared>,
     pub(super) session: Mutex<Option<fuser::BackgroundSession>>,
-    pub(super) announcer: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The mount's connection, as the kernel numbers it (`/sys/fs/fuse/connections/<n>`).
     pub(super) connection: u32,
 }
@@ -82,8 +79,7 @@ impl Mount {
             // Before the mount: afterwards this path is the mount.
             let backing_directory = Arc::new(BackingDirectory::open(&root.path)?);
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&backing_directory)));
-            let node_table = Arc::new(Mutex::new(NodeTable::new()));
-            let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::clone(&node_table)));
+            let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents)));
             let access_mode = Arc::new(AccessMode::read_only());
             let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&access_mode))?);
             let upload_rules = Arc::new(UploadRules::new(writing.ignore));
@@ -100,51 +96,41 @@ impl Mount {
             );
             let download_states = Arc::new(DownloadStates::new(download_after));
             let pins = Arc::new(Pins::new(pinned_ids, store, Arc::clone(&directory_contents), runtime.clone()));
-            let shared = Arc::new_cyclic(|shared: &std::sync::Weak<Shared>| {
-                // The way to the announcer, which is the mount's.
-                let announcer = shared.clone();
-                let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| {
-                    if let Some(shared) = announcer.upgrade() {
-                        shared.announce(vec![Announce::Changed(rel, id)]);
-                    }
-                });
-                let file_downloader = Arc::new(FileDownloader {
-                    backing_directory: Arc::clone(&backing_directory),
-                    directory_contents: Arc::clone(&directory_contents),
-                    download_states: Arc::clone(&download_states),
-                    source: Arc::clone(&source),
-                    pool: Arc::clone(&pool),
-                    parts_share: parts,
-                    report: report.clone(),
-                    folder: root.path.clone(),
-                    announce_file_change,
-                    runtime: runtime.clone(),
-                });
-                Shared {
-                    root: root.clone(),
-                    backing_directory,
-                    directory_contents,
-                    node_table,
-                    node_lookup,
-                    report,
-                    range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
-                    download_states,
-                    file_downloader,
-                    open_files: Arc::default(),
-                    reads: Mutex::default(),
-                    pins,
-                    announcer: AtomicI32::new(0),
-                    told: Mutex::new(None),
-                    tell: Mutex::new(None),
-                    pending: Mutex::default(),
-                    stopping: std::sync::atomic::AtomicBool::new(false),
-                    access_mode,
-                    conflict_copies,
-                    outbox_recorder,
-                    open_writers,
-                    write_operations,
-                    runtime,
-                }
+            let inotify_bridge = Arc::new(InotifyBridge::new(root.path.clone(), Arc::clone(&node_lookup), Arc::clone(&directory_contents)));
+            let announcing = Arc::clone(&inotify_bridge);
+            let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| announcing.announce(vec![RemoteChange::ContentChanged { rel, id }]));
+            let file_downloader = Arc::new(FileDownloader {
+                backing_directory: Arc::clone(&backing_directory),
+                directory_contents: Arc::clone(&directory_contents),
+                download_states: Arc::clone(&download_states),
+                source: Arc::clone(&source),
+                pool: Arc::clone(&pool),
+                parts_share: parts,
+                report: report.clone(),
+                folder: root.path.clone(),
+                announce_file_change,
+                runtime: runtime.clone(),
+            });
+            let shared = Arc::new(Shared {
+                root: root.clone(),
+                backing_directory,
+                directory_contents,
+                node_lookup,
+                report,
+                range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
+                download_states,
+                file_downloader,
+                open_files: Arc::default(),
+                reads: Mutex::default(),
+                pins,
+                inotify_bridge,
+                pending: Mutex::default(),
+                access_mode,
+                conflict_copies,
+                outbox_recorder,
+                open_writers,
+                write_operations,
+                runtime,
             });
             let mut config = Config::default();
             config.mount_options = vec![
@@ -159,22 +145,13 @@ impl Mount {
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
             crate::folder::root::mounted_over(&root.path, Arc::new(shared.backing_directory.descriptor()?));
-            let (tell, told) = mpsc::channel::<Vec<Announce>>();
-            *crate::panic::lock(&shared.tell) = Some(tell);
-            let session = match session.spawn() {
-                Ok(session) => session,
-                Err(e) => {
-                    *crate::panic::lock(&shared.tell) = None;
-                    return Err(e);
-                }
-            };
+            let session = session.spawn()?;
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
             // BackingDirectory the mount the folder is the daemon's alone, and open to it.
             shared.backing_directory.unlock();
-            let saying = Arc::clone(&shared);
-            let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
+            shared.inotify_bridge.start(notifier)?;
             download_pinned_files(&shared.pins, &shared.directory_contents, &shared.file_downloader, &shared.runtime);
-            Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)), announcer: Mutex::new(Some(announcer)), connection }))
+            Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)), connection }))
         })
         .await
         .map_err(other)?
@@ -182,21 +159,17 @@ impl Mount {
 
     /// Takes the mount off. The folder on disk then shows the downloaded files alone.
     ///
-    /// In this order: the announcer stops while the mount still answers it (what it says by
-    /// path would otherwise land in the folder itself), every open that waits for a download
+    /// In this order: the inotify bridge stops while the mount still answers it (what it
+    /// does by path would otherwise land in the backing directory), every open that waits for a download
     /// is failed, and the connection is aborted before the mount is detached — a program that
     /// still holds a file of the mount open would otherwise keep the session, and this call,
     /// waiting for it.
     pub fn stop(&self) {
         let Some(session) = crate::panic::lock(&self.session).take() else { return };
         let s = &self.shared;
-        s.stopping.store(true, Ordering::SeqCst);
-        *crate::panic::lock(&s.tell) = None;
         // The recorder ends with the last change it was given; what comes later is refused.
         s.outbox_recorder.stop();
-        if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
-            let _ = announcer.join();
-        }
+        s.inotify_bridge.stop();
         s.download_states.fail_waiters();
         crate::panic::lock(&s.reads).drain().for_each(|(_, read)| read.abort());
         if let Err(e) = fs::write(format!("/sys/fs/fuse/connections/{}/abort", self.connection), "1") {
