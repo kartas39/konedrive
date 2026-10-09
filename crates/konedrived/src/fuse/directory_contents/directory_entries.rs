@@ -21,7 +21,7 @@ use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState};
 use crate::folder::disk::daemon_owned;
-use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::unsent_changes::UnsentChanges;
 
@@ -61,20 +61,28 @@ fn stays(row: &Row, unsent_changes: &UnsentChanges) -> bool {
 }
 
 impl DirectoryContents {
-    /// The local-only entry `name` of `directory`, in the backing directory: the one rule
-    /// of what the mount shows as local-only. A file or directory on disk, not under one of
-    /// the daemon's own names, that is marked with no OneDrive id the store has.
-    pub(in crate::fuse) fn find_local_only(&self, directory: &DirectoryReference, name: &str) -> Option<LocalOnlyEntry> {
-        let rel = directory.path.join(name);
-        let name = rel.file_name()?;
-        if daemon_owned(name) {
+    /// What the backing directory holds at `rel`, when the mount shows it as local-only:
+    /// the one rule of that, which every lookup of a name, every listing and every node
+    /// goes by. A file or directory on disk, not under one of the daemon's own names, that
+    /// is marked with no OneDrive id the store has. An entry that is marked with no id at
+    /// all is the narrower question
+    /// ([`BackingDirectory::find_unmarked_disk_entry`](crate::fuse::backing_directory::BackingDirectory::find_unmarked_disk_entry)).
+    pub(in crate::fuse) fn find_local_only_at(&self, rel: &Path) -> Option<DiskEntry> {
+        if daemon_owned(rel.file_name()?) {
             return None;
         }
-        let on_disk = self.backing_directory.find_disk_entry(&rel)?;
+        let on_disk = self.backing_directory.find_disk_entry(rel)?;
         // One that is marked with an id the store does not have is not in OneDrive yet: its
         // upload is being committed, or the store was made anew.
-        let in_onedrive = self.backing_directory.read_onedrive_id(&rel).is_some_and(|id| self.find_row(&id).is_some());
-        (!in_onedrive).then(|| LocalOnlyEntry { on_disk, place: EntryPlace::new(directory, &name.to_string_lossy()) })
+        let in_onedrive = self.backing_directory.read_onedrive_id(rel).is_some_and(|id| self.find_row(&id).is_some());
+        (!in_onedrive).then_some(on_disk)
+    }
+
+    /// The local-only entry `name` of `directory`, at its place
+    /// ([`find_local_only_at`](Self::find_local_only_at)).
+    pub(in crate::fuse) fn find_local_only(&self, directory: &DirectoryReference, name: &str) -> Option<LocalOnlyEntry> {
+        let on_disk = self.find_local_only_at(&directory.path.join(name))?;
+        Some(LocalOnlyEntry { on_disk, place: EntryPlace::new(directory, name) })
     }
 
     /// The row of the OneDrive id `id` under the name `name` the mount shows it by, unless

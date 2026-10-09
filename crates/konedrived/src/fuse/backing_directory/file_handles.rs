@@ -86,13 +86,21 @@ impl BackingDirectory {
     }
 
     /// The file or directory at `rel`, when it is marked with no OneDrive id: nothing of it
-    /// came from OneDrive, and nothing of it was sent there. What a change from OneDrive
-    /// moves aside, and what a walk collects to be uploaded, is found by this — and not by
-    /// what the mount shows as local-only, which also holds an entry marked with an id the
-    /// store does not have yet: a file just uploaded is such a one, and is neither moved
-    /// aside nor uploaded again.
+    /// came from OneDrive, and nothing of it was sent there. This is the one rule of an
+    /// unmarked entry: what a change from OneDrive moves aside, what it finds in its way,
+    /// and what a walk collects to be uploaded, is found by this — and not by what the
+    /// mount shows as local-only
+    /// ([`DirectoryContents::find_local_only_at`](crate::fuse::directory_contents::DirectoryContents::find_local_only_at)),
+    /// which also holds an entry marked with an id the store does not have yet: a file just
+    /// uploaded is such a one, and is neither moved aside nor uploaded again.
     pub(in crate::fuse) fn find_unmarked_disk_entry(&self, rel: &Path) -> Option<DiskEntry> {
-        self.find_disk_entry(rel).filter(|_| self.read_onedrive_id(rel).is_none())
+        self.find_disk_entry(rel).filter(|_| !self.is_marked_with_onedrive_id(rel))
+    }
+
+    /// Whether the entry at `rel` is marked with a OneDrive id, whichever: it is OneDrive's,
+    /// whatever its name.
+    pub(in crate::fuse) fn is_marked_with_onedrive_id(&self, rel: &Path) -> bool {
+        self.read_onedrive_id(rel).is_some()
     }
 
     /// The OneDrive id the entry at `rel` is marked with.

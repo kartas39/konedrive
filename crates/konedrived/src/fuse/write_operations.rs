@@ -44,6 +44,7 @@ use super::backing_directory::BackingDirectory;
 use super::detections::{FolderEvent, WriteState};
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState};
 use super::directory_reference::DirectoryReference;
+use super::local_only_entry::find_upload_status;
 use super::node_resolver::NodeResolver;
 use super::node_table::NodeId;
 use super::open_handles::OpenHandles;
@@ -86,7 +87,7 @@ impl WriteOperations {
 
     /// Whether what is `name` in `directory` and is not in OneDrive is uploaded from there.
     fn find_upload_status(&self, directory: &DirectoryReference, name: &str) -> UploadStatus {
-        self.upload_rules.find_upload_status(&directory.path, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
+        find_upload_status(&self.backing_directory, &self.upload_rules, &directory.path, name)
     }
 
     /// Whether a program holds the node `node_id` open for writing now.

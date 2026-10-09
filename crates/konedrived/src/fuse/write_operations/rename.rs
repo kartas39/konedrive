@@ -16,7 +16,7 @@ use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry, WriteState};
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
-use crate::fuse::local_only_entry::collect_local_only_entries;
+use crate::fuse::local_only_entry::{collect_local_only_entries, is_in_ignored_directory};
 use crate::fuse::node_table::NodeId;
 use crate::fuse::upload_rules::UploadStatus;
 
@@ -60,8 +60,7 @@ impl WriteOperations {
         let moved_entry = from_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, name));
         let target = to_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, new_name));
         let target_holds_entries = to_directory.as_ref().zip(target.as_ref()).is_some_and(|(directory, target)| self.holds_entries(target, &directory.path.join(new_name)));
-        let in_onedrive = |at: &std::path::Path| self.backing_directory.read_onedrive_id(at).is_some();
-        let to_is_in_ignored_directory = to_directory.as_ref().is_some_and(|directory| self.upload_rules.is_in_ignored_directory(&directory.path, in_onedrive));
+        let to_is_in_ignored_directory = to_directory.as_ref().is_some_and(|directory| is_in_ignored_directory(&self.backing_directory, &self.upload_rules, &directory.path));
         let to_upload_status = to_directory.as_ref().map_or(UploadStatus::Uploaded, |directory| self.find_upload_status(directory, new_name));
         RenamePlaces {
             from_directory,

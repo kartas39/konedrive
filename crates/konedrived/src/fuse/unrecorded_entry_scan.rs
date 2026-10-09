@@ -66,7 +66,7 @@ impl UnrecordedEntryScan {
             for listed in self.backing_directory.list_directory(&directory.path) {
                 let Some(name) = listed.file_name().to_str().map(str::to_owned) else { continue };
                 let rel = directory.path.join(&name);
-                if self.directory_contents.find_local_only(&directory, &name).is_some() {
+                if self.directory_contents.find_local_only_at(&rel).is_some() {
                     found.extend(collect_local_only_entries(&self.backing_directory, &self.upload_rules, &directory, &name));
                 } else if listed.file_type().is_ok_and(|kind| kind.is_dir()) {
                     directories.push(DirectoryReference { onedrive_id: self.backing_directory.read_onedrive_id(&rel), path: rel });

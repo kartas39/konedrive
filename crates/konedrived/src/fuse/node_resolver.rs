@@ -93,20 +93,25 @@ impl NodeResolver {
         };
         match key {
             NodeKey::InOneDrive(id) => {
-                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.read_unsent_changes().removed_ids.contains(&id))?;
+                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.is_removed_here(&id))?;
                 Some(NodeTarget::InOneDrive { entry, rel })
             }
             NodeKey::LocalOnly(handle) => {
-                // Another file or directory at its path is not this node.
-                let on_disk = self.backing_directory.find_disk_entry(&rel).filter(|on_disk| on_disk.handle == handle)?;
-                // It got into OneDrive since: the node stands for what is in OneDrive from
-                // now on.
-                let in_onedrive = self.directory_contents.find_entry_by_mark(&rel, &name);
-                if let Some(entry) = in_onedrive {
-                    crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), key_of(&entry));
-                    return Some(NodeTarget::InOneDrive { entry, rel });
+                // Whether it is local-only still is the directory contents' to say, by the
+                // one rule a lookup of its name goes by.
+                match self.directory_contents.find_local_only_at(&rel) {
+                    Some(on_disk) if on_disk.handle == handle => Some(NodeTarget::LocalOnly { on_disk, rel, name, parent }),
+                    // Another file or directory at its path is not this node.
+                    Some(_) => None,
+                    None => {
+                        self.backing_directory.find_file_handle(&rel).filter(|at_path| *at_path == handle)?;
+                        // It got into OneDrive since: the node stands for what is in
+                        // OneDrive from now on.
+                        let entry = self.directory_contents.find_entry_by_mark(&rel, &name)?;
+                        crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), key_of(&entry));
+                        Some(NodeTarget::InOneDrive { entry, rel })
+                    }
                 }
-                Some(NodeTarget::LocalOnly { on_disk, rel, name, parent })
             }
         }
     }

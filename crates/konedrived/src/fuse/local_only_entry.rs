@@ -1,15 +1,19 @@
 //! A local-only entry: a file or directory that was made here and is not in OneDrive yet
-//! ([`LocalOnlyEntry`]), and the local-only entries at and below a place, walked on disk
-//! ([`collect_local_only_entries`]).
+//! ([`LocalOnlyEntry`]), whether one at a place is uploaded from there
+//! ([`find_upload_status`], [`is_in_ignored_directory`]), and the local-only entries at and
+//! below a place, walked on disk ([`collect_local_only_entries`]).
 //!
-//! The walk is the one step between what [`BackingDirectory`] finds on disk and what
-//! [`super::detections`] decides from: it reads the disk, and asks [`UploadRules`] what is
-//! ignored; it decides nothing else.
+//! These are the one step between what [`BackingDirectory`] finds on disk and what
+//! [`UploadRules`] say: the rules touch no disk, and are told here the one fact of it they
+//! need — which directory is marked with a OneDrive id. Nobody else puts the two together.
+//! The walk reads the disk and asks what is ignored; it decides nothing else.
+
+use std::path::Path;
 
 use super::backing_directory::{BackingDirectory, DiskEntry, EntryKind};
 use super::directory_reference::DirectoryReference;
 use super::entry_place::EntryPlace;
-use super::upload_rules::UploadRules;
+use super::upload_rules::{UploadRules, UploadStatus};
 
 /// A file or directory that was made here and is not in OneDrive yet: what the backing
 /// directory holds of it, and the place it is at.
@@ -17,6 +21,20 @@ use super::upload_rules::UploadRules;
 pub(super) struct LocalOnlyEntry {
     pub(super) on_disk: DiskEntry,
     pub(super) place: EntryPlace,
+}
+
+/// Whether what is `name` in the directory at the path `directory` and is not in OneDrive
+/// is uploaded from there, or ignored: by its name, or by a directory it is in that is not
+/// OneDrive's.
+pub(super) fn find_upload_status(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &Path, name: &str) -> UploadStatus {
+    upload_rules.find_upload_status(directory, name, |at| backing_directory.is_marked_with_onedrive_id(at))
+}
+
+/// Whether what is in the directory at the path `directory` and is not in OneDrive is
+/// ignored whatever its name: a directory it is in, which is not OneDrive's, is on the
+/// ignore list.
+pub(super) fn is_in_ignored_directory(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &Path) -> bool {
+    upload_rules.is_in_ignored_directory(directory, |at| backing_directory.is_marked_with_onedrive_id(at))
 }
 
 /// How many local-only entries one walk collects at most: a tree larger than this is
@@ -35,7 +53,7 @@ pub(super) fn collect_local_only_entries(backing_directory: &BackingDirectory, u
 fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &DirectoryReference, name: &str, into: &mut Vec<LocalOnlyEntry>) {
     let rel = directory.path.join(name);
     let Some(on_disk) = backing_directory.find_unmarked_disk_entry(&rel) else { return };
-    if upload_rules.is_ignored(&directory.path, name, |at| backing_directory.read_onedrive_id(at).is_some()) {
+    if find_upload_status(backing_directory, upload_rules, &directory.path, name) == UploadStatus::Ignored {
         return;
     }
     let is_directory = on_disk.metadata.kind == EntryKind::Directory;

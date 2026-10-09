@@ -114,8 +114,15 @@ impl DirectoryContents {
         DirectoryEntry { name: String::new(), state: EntryState::Directory(DirectorySyncState::InOneDrive(self.find_root_row())) }
     }
 
-    /// The unsent changes now. Read again only when the store changed since.
-    pub(super) fn read_unsent_changes(&self) -> Arc<UnsentChanges> {
+    /// Whether the user removed the OneDrive id `id` here, and its removal is not sent yet:
+    /// the mount shows nothing of it.
+    pub(super) fn is_removed_here(&self, id: &str) -> bool {
+        self.read_unsent_changes().removed_ids.contains(id)
+    }
+
+    /// The unsent changes now, for the named questions of this part alone. Read again only
+    /// when the store changed since.
+    fn read_unsent_changes(&self) -> Arc<UnsentChanges> {
         let store = crate::panic::lock(&self.reader);
         let mut kept = crate::panic::lock(&self.unsent_changes);
         // A version that cannot be read is never the one kept.
