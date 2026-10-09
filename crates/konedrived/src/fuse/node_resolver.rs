@@ -155,16 +155,19 @@ impl NodeResolver {
         crate::panic::lock(&self.node_table).find_node_id(&NodeKey::InOneDrive(id.to_owned()))
     }
 
-    /// The node `node_id` is `name` in the directory node `parent` now. `taken`: it is the
-    /// local-only file, by its handle, that took over the name of this OneDrive id, and
-    /// stands for that file of OneDrive from here on — whoever looks the name up gets the
-    /// node the new content is read and written through.
-    pub(super) fn move_node(&self, node_id: NodeId, parent: NodeId, name: &str, taken: Option<(&FileHandle, &str)>) {
+    /// The node `node_id` is `name` in the directory node `parent` now.
+    pub(super) fn move_node(&self, node_id: NodeId, parent: NodeId, name: &str) {
+        crate::panic::lock(&self.node_table).move_node(node_id, parent, name);
+    }
+
+    /// The node `node_id`, of the local-only file `handle` identifies, is `name` in the
+    /// directory node `parent` now, where it took over the name of the OneDrive file
+    /// `onedrive_id`: it stands for that file from here on — whoever looks the name up gets
+    /// the node the new content is read and written through.
+    pub(super) fn move_node_onto_onedrive_file(&self, node_id: NodeId, parent: NodeId, name: &str, handle: &FileHandle, onedrive_id: &str) {
         let mut node_table = crate::panic::lock(&self.node_table);
         node_table.move_node(node_id, parent, name);
-        if let Some((handle, id)) = taken {
-            node_table.rekey(&NodeKey::LocalOnly(handle.clone()), NodeKey::InOneDrive(id.to_owned()));
-        }
+        node_table.rekey(&NodeKey::LocalOnly(handle.clone()), NodeKey::InOneDrive(onedrive_id.to_owned()));
     }
 
     /// The local-only entry `handle` identifies is gone, and nothing else is ever that entry:

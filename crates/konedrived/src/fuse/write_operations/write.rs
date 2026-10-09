@@ -6,6 +6,7 @@
 //! here — what the mount shows of it is the copy's own.
 
 use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -47,48 +48,54 @@ impl WriteOperations {
         })
     }
 
+    /// The file the node `node_id` stands for, for an operation that writes it: its entry,
+    /// its sync state and its path in the folder. Refused in a read-only folder (`EROFS`),
+    /// for a node whose file is gone (`ENOENT`) and for a directory (`EISDIR`).
+    fn find_file_to_write(&self, node_id: NodeId) -> Result<(DirectoryEntry, FileSyncState, PathBuf), Errno> {
+        self.access_mode_switch.check_read_write()?;
+        let (entry, path) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
+        match entry.state.clone() {
+            EntryState::File(file) => Ok((entry, file, path)),
+            EntryState::Directory(_) => Err(Errno::EISDIR),
+        }
+    }
+
     /// Opens the node `node_id` for writing, with the content it has: the `fh` the program
     /// holds it open by. The copy of a OneDrive file that is not downloaded is the caller's
     /// to download first ([`find_needed_download`](Self::find_needed_download)).
     pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId) -> Result<Fh, Errno> {
-        self.access_mode_switch.check_read_write()?;
-        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
-        let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
-        self.make_writable(file, &rel)?;
-        let backing_file = self.backing_directory.open_to_write(&rel, false).map_err(|e| to_errno(&e))?;
-        let added = self.add_writer(node_id, &entry, backing_file)?;
-        // Its content is the user's own already when it is modified here.
-        if matches!(file, FileSyncState::ModifiedHere(..)) {
-            self.open_handles.mark_written(node_id);
-        }
-        Ok(added)
+        let (entry, file, path) = self.find_file_to_write(node_id)?;
+        self.make_writable(&file, &path)?;
+        self.add_writer(node_id, &entry, self.backing_directory.open_to_write(&path))
     }
 
     /// Opens the node `node_id` for writing, cut to nothing (`O_TRUNC`): the `fh` the
     /// program holds it open by. Nothing of a OneDrive file is downloaded for it.
     pub(in crate::fuse) fn open_to_overwrite(&self, node_id: NodeId) -> Result<Fh, Errno> {
-        self.access_mode_switch.check_read_write()?;
-        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
-        let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
-        self.make_writable_without_content(file, &rel)?;
-        let backing_file = self.backing_directory.open_to_write(&rel, true).map_err(|e| to_errno(&e))?;
-        let added = self.add_writer(node_id, &entry, backing_file)?;
+        let (entry, file, path) = self.find_file_to_write(node_id)?;
+        self.make_writable_without_content(&file, &path)?;
+        let fh = self.add_writer(node_id, &entry, self.backing_directory.open_to_overwrite(&path))?;
         // Cut to nothing: its content is the user's own from here on.
         self.open_handles.mark_written(node_id);
-        Ok(added)
+        Ok(fh)
     }
 
     /// Puts the writer of the node `node_id`, which stands for `entry`, into the open
-    /// handles: the `fh` it holds `backing_file` open by. The node's first writer is
-    /// recorded: from it on the outbox holds the file. An open that cannot be recorded is
-    /// closed again.
-    fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, backing_file: File) -> Result<Fh, Errno> {
+    /// handles: the `fh` it holds `opened`, its file in the backing directory, open by. The
+    /// node's first writer is recorded: from it on the outbox holds the file. An open that
+    /// cannot be recorded is closed again. A file that was modified here before is marked
+    /// written: its content is the user's own already.
+    fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, opened: io::Result<File>) -> Result<Fh, Errno> {
+        let backing_file = opened.map_err(|e| to_errno(&e))?;
         let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
         if added.is_first {
-            if let Err(e) = self.record_content(node_id, LocalOnlyFileWrite::Opened) {
+            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_status| describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Opened)) {
                 self.open_handles.close_file(added.fh);
                 return Err(e);
             }
+        }
+        if matches!(entry.state, EntryState::File(FileSyncState::ModifiedHere(..))) {
+            self.open_handles.mark_written(node_id);
         }
         Ok(added.fh)
     }
@@ -106,15 +113,26 @@ impl WriteOperations {
 
     /// Records the close of a writer of the node `node_id`, with `outcome`: what it is
     /// recorded as is decided by [`describe_last_close`], from what the node stands for now.
-    /// Nothing for a node whose file is gone.
     fn record_close(&self, node_id: NodeId, outcome: CloseOutcome) {
-        let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return };
-        let copy = self.backing_directory.find_disk_entry(&rel);
-        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
-        let node_stands_for_file = entry.onedrive_id().is_some_and(|id| self.node_resolver.find_node_id(id) == Some(node_id));
         let access_mode = self.access_mode_switch.access_mode();
-        if let Some(event) = describe_last_close(outcome, access_mode, &entry, &parent_directory, copy, upload_status, node_stands_for_file) {
-            let _ = self.record_or_undo(event, format_args!("the close of {}", rel.display()), || {});
+        let _ = self.record_file_write(node_id, "close", |entry, parent_directory, copy, upload_status| {
+            let node_stands_for_file = entry.onedrive_id().is_some_and(|id| self.node_resolver.find_node_id(id) == Some(node_id));
+            describe_last_close(outcome, access_mode, entry, parent_directory, copy, upload_status, node_stands_for_file)
+        });
+    }
+
+    /// Records what `describe` makes of a write of the file the node `node_id` stands for
+    /// now, named `what` in the log: it is given the file's entry, the directory it is in,
+    /// what the backing directory holds at its path and what the upload rules say of a
+    /// local-only file there, and gives what is recorded, if anything is. Nothing for a node
+    /// whose file is gone: removed while it was open.
+    fn record_file_write(&self, node_id: NodeId, what: &str, describe: impl FnOnce(&DirectoryEntry, &DirectoryReference, Option<DiskEntry>, UploadStatus) -> Option<FileWritten>) -> Result<(), Errno> {
+        let (Some((entry, path)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
+        let copy = self.backing_directory.find_disk_entry(&path);
+        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
+        match describe(&entry, &parent_directory, copy, upload_status) {
+            Some(event) => self.record_or_undo(event, format_args!("the {what} of {}", path.display()), || {}),
+            None => Ok(()),
         }
     }
 
@@ -144,20 +162,18 @@ impl WriteOperations {
     /// Cuts or extends the node `node_id` to `size`, and then sets the time it was last
     /// modified, when `modified` gives one.
     pub(in crate::fuse) fn truncate(&self, node_id: NodeId, size: u64, modified: Option<TimeOrNow>) -> Result<(), Errno> {
-        self.access_mode_switch.check_read_write()?;
-        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
-        let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
+        let (_, file, path) = self.find_file_to_write(node_id)?;
         match size {
-            0 => self.make_writable_without_content(file, &rel)?,
-            _ => self.make_writable(file, &rel)?,
+            0 => self.make_writable_without_content(&file, &path)?,
+            _ => self.make_writable(&file, &path)?,
         }
-        let backing_file = self.backing_directory.open_to_write(&rel, false).map_err(|e| to_errno(&e))?;
+        let backing_file = self.backing_directory.open_to_write(&path).map_err(|e| to_errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
         if self.open_handles.is_open_for_writing_by_node_id(node_id) {
             self.open_handles.mark_written(node_id);
         } else {
-            self.record_content(node_id, LocalOnlyFileWrite::Cut)?;
+            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_status| describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Cut))?;
         }
         backing_file.set_len(size).map_err(|e| to_errno(&e))?;
         self.write_modified_time(node_id, modified);
@@ -190,19 +206,6 @@ impl WriteOperations {
             FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => {}
         }
         self.backing_directory.grant_write_bit(rel).map_err(|e| to_errno(&e))
-    }
-
-    /// Records that the content of the node `node_id` is the user's own now, by `write`:
-    /// still being written, closed, or cut ([`describe_file_write`]).
-    fn record_content(&self, node_id: NodeId, write: LocalOnlyFileWrite) -> Result<(), Errno> {
-        // Gone since: removed while it was open.
-        let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
-        let copy = self.backing_directory.find_disk_entry(&rel);
-        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
-        match describe_file_write(&entry, &parent_directory, copy, upload_status, write) {
-            Some(event) => self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {}),
-            None => Ok(()),
-        }
     }
 }
 

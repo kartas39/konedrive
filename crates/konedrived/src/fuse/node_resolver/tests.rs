@@ -158,7 +158,7 @@ fn a_local_only_file_renamed_over_a_onedrive_files_name_takes_that_files_node() 
     let saved = entry.local_only().unwrap();
     let node_id = node_resolver.assign_node_id(&entry, NodeId::ROOT);
     fs::rename(dir.path().join("a.tmp"), dir.path().join("a.txt")).unwrap();
-    node_resolver.move_node(node_id, NodeId::ROOT, "a.txt", Some((&saved.on_disk.handle, "A")));
+    node_resolver.move_node_onto_onedrive_file(node_id, NodeId::ROOT, "a.txt", &saved.on_disk.handle, "A");
     assert_eq!(node_resolver.find_node_id("A"), Some(node_id));
     assert_eq!(id(node_resolver.find_entry(node_id)), Some((Some("A".into()), PathBuf::from("a.txt"))));
 }

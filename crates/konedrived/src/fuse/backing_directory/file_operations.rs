@@ -53,9 +53,14 @@ impl BackingDirectory {
         File::open(self.resolve_path(rel))
     }
 
-    /// The file at `rel`, open to read and write, cut to nothing when `truncate`.
-    pub(in crate::fuse) fn open_to_write(&self, rel: &Path, truncate: bool) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).truncate(truncate).open(self.resolve_path(rel))
+    /// The file at `rel`, open to read and write, with the content it has.
+    pub(in crate::fuse) fn open_to_write(&self, rel: &Path) -> io::Result<File> {
+        OpenOptions::new().read(true).write(true).open(self.resolve_path(rel))
+    }
+
+    /// The file at `rel`, open to read and write, cut to nothing.
+    pub(in crate::fuse) fn open_to_overwrite(&self, rel: &Path) -> io::Result<File> {
+        OpenOptions::new().read(true).write(true).truncate(true).open(self.resolve_path(rel))
     }
 
     /// Gives the file at `rel` its owner's write bit: a downloaded copy has none.

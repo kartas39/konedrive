@@ -157,11 +157,13 @@ impl WriteOperations {
     /// new content is read and written through. A local-only entry that was displaced is
     /// gone.
     fn move_node(&self, plan: &RenamePlan, node_id: NodeId, new_parent: NodeId) {
-        let taken = plan.find_saved_over_file().map(|(file, over)| {
-            let _ = self.backing_directory.mark_downloaded_copy(&plan.to.path(), over);
-            (&file.on_disk.handle, over)
-        });
-        self.node_resolver.move_node(node_id, new_parent, &plan.to.name, taken);
+        match plan.find_saved_over_file() {
+            Some((file, over)) => {
+                let _ = self.backing_directory.mark_downloaded_copy(&plan.to.path(), over);
+                self.node_resolver.move_node_onto_onedrive_file(node_id, new_parent, &plan.to.name, &file.on_disk.handle, over);
+            }
+            None => self.node_resolver.move_node(node_id, new_parent, &plan.to.name),
+        }
         if let Some(displaced) = plan.target.as_ref().and_then(DirectoryEntry::local_only) {
             self.node_resolver.drop_node(&displaced.on_disk.handle);
         }

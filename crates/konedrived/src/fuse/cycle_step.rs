@@ -25,7 +25,7 @@ use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 use super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::backing_directory::BackingDirectory;
 use super::conflict_copies::{ConflictCopies, CycleConflicts, MoveAsideOutcome};
-use super::detections::{rebase, OutboxBatch};
+use super::detections::{is_directory_of, rebase, OutboxBatch};
 use super::directory_contents::DirectoryContents;
 use super::inotify_bridge::{Announcement, InotifyBridge};
 use super::outbox_recorder::OutboxRecorder;
@@ -160,7 +160,7 @@ impl CycleStep {
     fn holds_at(&self, path: &Path, id: &str, kind: Kind) -> bool {
         match kind {
             Kind::File => self.directory_contents.has_downloaded_copy_at(path, id),
-            Kind::Folder => self.backing_directory.read_metadata(path).is_some_and(|m| m.is_dir()) && self.backing_directory.read_onedrive_id(path).is_none_or(|carried| carried == id),
+            Kind::Folder => self.backing_directory.read_metadata(path).is_some_and(|m| m.is_dir()) && is_directory_of(self.backing_directory.read_onedrive_id(path).as_deref(), id),
         }
     }
 
