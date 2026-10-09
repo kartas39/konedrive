@@ -5,24 +5,24 @@ use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
 use super::{set_tree, BackingDirectory, LEGACY_STAGING_DIRECTORY};
 
-/// A folder on disk with nothing in it, opened as a mount's would be.
-pub(super) fn folder() -> (tempfile::TempDir, BackingDirectory) {
+/// A directory on disk with nothing in it, opened as a mount's backing directory is.
+pub(super) fn empty_backing_directory() -> (tempfile::TempDir, BackingDirectory) {
     let dir = tempfile::tempdir().unwrap();
     let backing_directory = BackingDirectory::open(dir.path()).unwrap();
     (dir, backing_directory)
 }
 
-/// A place is reached through the descriptor: what is written by such a path is in the folder.
+/// A path is reached through the descriptor: what is written by it is in the backing directory.
 #[test]
-fn a_path_of_the_folder_leads_into_the_folder_itself() {
-    let (dir, backing_directory) = folder();
+fn a_path_of_the_backing_directory_leads_into_the_directory_itself() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::write(backing_directory.path(Path::new("a.txt")), b"a").unwrap();
     assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"a");
     assert_eq!(fs::read_dir(backing_directory.path(Path::new(""))).unwrap().count(), 1);
 }
 
 #[test]
-fn the_staging_directory_of_an_earlier_build_goes_when_the_folder_is_opened() {
+fn the_staging_directory_of_an_earlier_build_is_removed_when_the_backing_directory_is_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join(LEGACY_STAGING_DIRECTORY)).unwrap();
     fs::write(dir.path().join(LEGACY_STAGING_DIRECTORY).join("part"), b"x").unwrap();
@@ -30,10 +30,10 @@ fn the_staging_directory_of_an_earlier_build_goes_when_the_folder_is_opened() {
     assert!(backing_directory.stat(Path::new(LEGACY_STAGING_DIRECTORY)).is_none());
 }
 
-/// The empty path is the folder itself, which carries attributes of its own.
+/// The empty path is the backing directory itself, which has attributes of its own.
 #[test]
-fn an_attribute_is_read_of_the_folder_and_of_what_it_holds() {
-    let (dir, backing_directory) = folder();
+fn an_attribute_is_read_of_the_backing_directory_and_of_what_it_holds() {
+    let (dir, backing_directory) = empty_backing_directory();
     xattr::set(dir.path(), XATTR_ROOT, b"R").unwrap();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     xattr::set(dir.path().join("a.txt"), "user.test", b"v").unwrap();
@@ -43,23 +43,23 @@ fn an_attribute_is_read_of_the_folder_and_of_what_it_holds() {
 }
 
 #[test]
-fn the_folders_filesystem_says_how_much_space_it_has() {
-    let (_dir, backing_directory) = folder();
+fn the_backing_directorys_filesystem_says_how_much_space_it_has() {
+    let (_dir, backing_directory) = empty_backing_directory();
     assert!(backing_directory.space().unwrap().f_bsize > 0);
 }
 
 /// What an older konedrive left would be taken for downloaded copies or the user's own files.
 #[test]
-fn a_folder_that_holds_an_older_konedrives_placeholder_is_not_opened() {
+fn a_directory_that_holds_an_older_konedrives_placeholder_is_not_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), b"").unwrap();
     xattr::set(dir.path().join("a.txt"), XATTR_STATE, State::OnlineOnly.as_str().as_bytes()).unwrap();
     assert!(BackingDirectory::open(dir.path()).is_err());
 }
 
-/// The folder was locked when the daemon last ended; under the mount it is the daemon's.
+/// The directory was locked when the daemon last ended; with the mount over it, it is the daemon's.
 #[test]
-fn a_locked_folder_is_opened_and_unlocked() {
+fn a_locked_directory_is_opened_and_unlocked() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
     set_tree(dir.path(), true);

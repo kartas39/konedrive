@@ -188,22 +188,51 @@ daemon shows OneDrive.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with, and `Writing`,
   what a folder that takes changes shares with its sync.
 - `shared.rs` — `Shared`: the parts of a mount held together, and what is under way.
-- `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
-  mount; it knows the disk and nothing else. Opening the folder, a path of it, its space, an
-  attribute. `[tests]`
-- `under/objects.rs` — `Object`: what stands at a place, its file handle, the item id it
-  carries. `[tests]`
-- `under/copies.rs` — an item's downloaded copy: whether a place holds it whole, marking one,
-  removing one only when it is that item's. `[tests]`
-- `under/files.rs` — the files and directories a change makes, renames and removes. `[tests]`
-- `under/backing.rs` — the directories down to a place, each marked with the id of its item,
-  which the caller tells name by name. `[tests]`
-- `under/landing.rs` — a finished download landed: stamped as its item's copy and given its
-  name, by what stands at its place (`Stands`, `Step`, `Landed`). `[tests]`
-- `under/lock.rs` — the folder on disk locked while no mount lies over it; a dead mount taken
-  off it; `tidy`, what follows the daemon's end. `[tests]`
-- `under/older.rs` — a folder that holds an older konedrive's placeholders: it is not opened,
-  so no mount is put over it. `[tests]`
+- `backing_directory.rs` — `BackingDirectory`: the directory on disk the mount lies over, by
+  the descriptor opened on it before the mount; it knows the disk and nothing else. Opening
+  it, a path of it, its space, an attribute. `[tests]`
+- `backing_directory/file_handles.rs` — `DiskEntry`, `DiskMetadata`, `EntryKind`: the file or
+  directory at a path, with its file handle and what the filesystem says of it; the OneDrive
+  id an entry is marked with. `[tests]`
+- `backing_directory/downloaded_copies.rs` — the downloaded copy of a OneDrive file: whether
+  a path holds it whole, marking one, removing one only by its own OneDrive id. `[tests]`
+- `backing_directory/file_operations.rs` — the files and directories a change makes, renames
+  and removes. `[tests]`
+- `backing_directory/directory_marks.rs` — the directories down to a path, each marked with
+  its OneDrive id, which the caller tells name by name. `[tests]`
+- `backing_directory/download_landing.rs` — a finished download landed: marked as a downloaded
+  copy and given its name, by what is at its path (`TargetContents`, `LandingAction`,
+  `LandingOutcome`). `[tests]`
+- `backing_directory/tree_lock.rs` — the directory on disk locked while no mount lies over
+  it; a dead mount taken off it; `tidy`, what follows the daemon's end. `[tests]`
+- `backing_directory/legacy_placeholders.rs` — a directory that holds an older konedrive's
+  placeholders: it is not opened, so no mount is put over it. `[tests]`
+- `directory.rs` — `Directory`: a reference to a directory of the mount, by its OneDrive id
+  and its path.
+- `unsent_changes.rs` — `UnsentChanges`: what was moved, removed or changed here and is not
+  sent yet, a function of the store's outbox alone. `[tests]`
+- `directory_contents.rs` — `DirectoryContents`: what each directory of the mount holds; it
+  owns the mount's reading connection to the store and the unsent changes as last read, uses
+  `BackingDirectory`, and is the one place that works out a sync state. A row, its parent,
+  the files below it with their states. `[tests]`
+- `directory_contents/sync_states.rs` — `FileSyncState`, `DirectorySyncState`, `EntryState`
+  and `DirectoryEntry`: a name with its state, each state carrying what exists in it.
+  `[tests]`
+- `directory_contents/directory_entries.rs` — the entry a directory holds under a name, and
+  all its entries: the store's rows as the unsent changes leave them, and the local-only
+  entries.
+- `directory_contents/entry_paths.rs` — the path the mount shows a OneDrive id at, the entry
+  at a path, and the directories down to a path marked with the ids the mount shows there.
+- `node_table.rs` — `NodeTable`: the node ids given to the kernel, each under a `NodeKey` —
+  in OneDrive by its id, or local only by its file handle — and its place. `[tests]`
+- `node_lookup.rs` — `NodeLookup`: over the directory contents and the node table, the entry
+  a node id stands for now and the node id of an entry; a local-only entry that got into
+  OneDrive keeps its node id. `[tests]`
+- `attributes.rs` — the attributes the mount gives the kernel for a name, a function of a
+  `DirectoryEntry` and the `AccessMode`: kind, size, times, modes. `[tests]`
+- `access_mode.rs` — `AccessMode`: read-only or read-write.
+- `open_writers.rs` — `OpenWriters`: the files programs hold open for writing, and what a
+  close left (`AfterClose`). `[tests]`
 - `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
   `is_writable`.
 - `requests.rs` — the mount's requests (`Filesystem`), each handed on.
@@ -212,67 +241,53 @@ daemon shows OneDrive.
 - `requests/read.rs` — the requests that open and read a file.
 - `requests/change.rs` — the requests that change the folder, each made on the recorder's
   thread.
-- `nodes.rs` — the node ids the kernel knows, each an item, or an object without one by its
-  file handle, and its place. `[tests]`
-- `attr.rs` — what the mount says of a name, a function of facts (`Shown`): kind, size, times,
-  modes; the facts of an entry gathered from the view and the writers. `[tests]`
-- `view.rs` — `View`: the folder as the mount shows it; it owns the mount's reading connection
-  to the store and the overlay as last read, and uses `Under`. An item's row, its parent, the
-  files below it. `[tests]`
-- `view/entries.rs` — what a directory holds (`Entry`, `Local`, `Dir`): the store's items as
-  the overlay leaves them, and the files and directories OneDrive has no item for yet.
-- `view/places.rs` — where the folder shows an item, what stands at a path, and the
-  directories down to a place marked with the view's items.
-- `resolve.rs` — `Resolve`: over the view and the nodes, which entry of the folder a node is
-  now and which node an entry is; an object that got its item keeps its node. `[tests]`
-- `overlay.rs` — `Overlay`: what the outbox's rows say of the folder, a function of the store
-  alone: the items moved, removed or changed here. `[tests]`
-- `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
-  background downloads.
+- `read.rs` — `OpenFile`, a file a program holds open; a file that is not downloaded, read as
+  ranges; the file being read ahead of the background downloads.
 - `fill.rs` — the download of a whole file into a file without a name, which then lands; the
   state of a file: downloaded, being downloaded, or neither.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.
 - `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the
-  account's ignore list and the machine's name and touches nothing. What stays on this
-  computer, the names no program may make, a kept copy's name. `[tests]`
+  account's ignore list and touches nothing. What stays on this computer, the names no
+  program may make. `[tests]`
 - `detections.rs` — what a change in the folder is recorded as: a decision from a typed event
   (`FolderEvent`) and the store's facts (`StoreFacts`), with no disk or mount in it; the
-  detections of a local object (`LocalObject`, `LocalEntry`) or an item at a `FolderPlace`,
-  in an `OutboxBatch`. `[tests]`
-- `detections/made.rs` — `Made`: a file or directory a program made, also where an item's
-  file was just removed. `[tests]`
-- `detections/removed.rs` — `Removed`: an item or a local object removed. `[tests]`
-- `detections/renamed.rs` — `Renamed`: a move of an item, a local file or a local directory,
-  over what it displaced (`MovedEntry`, `DisplacedEntry`); a local file saved over an item's.
-  `[tests]`
-- `detections/written.rs` — `Written`: a file opened for writing, closed changed or untouched,
-  or cut (`ItemWrite`, `LocalWrite`). `[tests]`
-- `detections/unrecorded_objects.rs` — `UnrecordedObjects`: the local objects a walk found that
-  the outbox has no row for. `[tests]`
-- `detections/kept_copy.rs` — `KeptCopy`: a local object kept beside an item that came to its
-  name. `[tests]`
-- `recorder.rs` — `Recorder`: the one thread that makes and records each change a program asks
-  for, under the folder's tree lock; it owns the store's writer and what wakes the outbox's
-  worker. `[tests]`
-- `local_entries.rs` — the local objects of the backing directory as a row sees them, and the
-  walk that collects those at and below a place.
+  detections of a local-only entry (`LocalOnlyEntry`) or of something of OneDrive at a
+  `FolderPlace`, in an `OutboxBatch`. `[tests]`
+- `detections/entry_created.rs` — `EntryCreated`: a file or directory a program made, also
+  where a OneDrive file was just removed. `[tests]`
+- `detections/entry_removed.rs` — `EntryRemoved`: something of OneDrive or a local-only entry
+  removed. `[tests]`
+- `detections/entry_renamed.rs` — `EntryRenamed`: a move of something of OneDrive, a
+  local-only file or a local-only directory, over what it displaced (`MovedEntry`,
+  `DisplacedEntry`); a local-only file saved over a OneDrive file. `[tests]`
+- `detections/file_written.rs` — `FileWritten`: a file opened for writing, closed changed or
+  untouched, or cut (`OneDriveFileWrite`, `LocalOnlyFileWrite`). `[tests]`
+- `detections/unrecorded_entries.rs` — `UnrecordedEntries`: the local-only entries a walk
+  found that the outbox has no row for. `[tests]`
+- `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
+  came to its name from OneDrive. `[tests]`
+- `outbox_recorder.rs` — `OutboxRecorder`: the one thread that makes and records each change
+  a program asks for, under the folder's tree lock; it owns the store's writer and what wakes
+  the outbox's worker. `[tests]`
+- `local_only_entries.rs` — the place of a name in a directory, and the walk that collects
+  the local-only entries at and below a place.
+- `conflict_copies.rs` — `ConflictCopies`: the user's own moved aside, to a conflict copy's
+  name, where something of OneDrive comes, and a directory removed from OneDrive kept while
+  it holds the user's own; it owns the machine's name. `CycleConflicts`, what a cycle's
+  conflicts left. `[tests]`
 - `write_operations.rs` — `WriteOperations`: the operations that change the folder, each a
-  check, a step on disk, a record and the nodes; it holds the parts they use and owns
-  nothing. A file it opens is handed back (`OpenedFile`). `[tests]`
+  check, a step on disk, a record and the node ids; it holds the parts they use and owns
+  nothing. A file it opens is handed back (`OpenFile`). `[tests]`
 - `write_operations/make.rs` — a file or a directory a program makes. `[tests]`
 - `write_operations/remove.rs` — a file or a directory a program removes. `[tests]`
 - `write_operations/rename.rs` — a file or a directory a program renames or moves inside the
   folder: a `RenamePlan`, the backing directory renamed, the event, the node. `[tests]`
 - `write_operations/write.rs` — a file a program writes, in its downloaded copy: opened,
   closed, cut. `[tests]`
-- `write_operations/unrecorded_objects.rs` — what the folder holds that the outbox has no row
+- `write_operations/unrecorded_entries.rs` — the local-only entries the outbox has no row
   for, recorded once the folder takes changes. `[tests]`
-- `writers.rs` — the files held open for writing: a file is sent once its last writer closed
-  it. `[tests]`
-- `follow.rs` — the folder under the mount made to follow a cycle of the listing (`Step`).
-- `conflict.rs` — where a change from OneDrive meets something the user made here: what is
-  done in the backing directory; what that is recorded as is in `detections/`.
+- `follow.rs` — the backing directory made to follow a cycle of the listing (`Step`).
 - `announce.rs` — changes told to the kernel through the mount, for whoever watches.
 
 ### `crates/konedrived/src/upload/`

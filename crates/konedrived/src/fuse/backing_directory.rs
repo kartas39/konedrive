@@ -82,8 +82,8 @@ impl BackingDirectory {
         konedrive_fs::proc_path(&self.descriptor).join(rel)
     }
 
-    /// Under the mount the backing directory is the daemon's alone, and open to it: its
-    /// owner's write bits are given back, which were taken off when the daemon last ended.
+    /// With the mount over it the backing directory is the daemon's alone, and open to it:
+    /// its owner's write bits are given back, which were taken off when the daemon last ended.
     pub(super) fn unlock(&self) {
         set_tree(&self.path(Path::new("")), false);
     }

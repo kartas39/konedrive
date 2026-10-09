@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::Path;
 
-use crate::fuse::backing_directory::tests::folder;
+use crate::fuse::backing_directory::tests::empty_backing_directory;
 use crate::fuse::backing_directory::EntryKind;
 
 #[test]
-fn an_object_is_what_stands_at_a_place_with_its_handle() {
-    let (dir, backing_directory) = folder();
+fn a_disk_entry_is_the_file_or_directory_at_a_path_with_its_handle() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::create_dir(dir.path().join("docs")).unwrap();
     fs::write(dir.path().join("docs/a.txt"), b"abc").unwrap();
     let (file, docs) = (backing_directory.find_disk_entry(Path::new("docs/a.txt")).unwrap(), backing_directory.find_disk_entry(Path::new("docs")).unwrap());
@@ -16,18 +16,18 @@ fn an_object_is_what_stands_at_a_place_with_its_handle() {
 }
 
 #[test]
-fn two_files_are_two_objects() {
-    let (dir, backing_directory) = folder();
+fn two_files_have_two_file_handles() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     fs::write(dir.path().join("b.txt"), b"a").unwrap();
     assert_ne!(backing_directory.find_disk_entry(Path::new("a.txt")).unwrap().handle, backing_directory.find_disk_entry(Path::new("b.txt")).unwrap().handle);
 }
 
-/// The handle goes with the object: the same one under its new name, and not the one of a
+/// The handle goes with the file: the same one under its new name, and not the one of a
 /// file made where it stood.
 #[test]
-fn a_renamed_file_is_the_object_it_was() {
-    let (dir, backing_directory) = folder();
+fn a_renamed_file_keeps_its_file_handle() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     let was = backing_directory.find_disk_entry(Path::new("a.txt")).unwrap();
     fs::rename(dir.path().join("a.txt"), dir.path().join("b.txt")).unwrap();
@@ -36,10 +36,10 @@ fn a_renamed_file_is_the_object_it_was() {
     assert_ne!(backing_directory.find_disk_entry(Path::new("a.txt")).unwrap().handle, was.handle);
 }
 
-/// A link is the object at its name, never what it points to.
+/// A symbolic link is no disk entry, and its handle is its own, never that of what it points to.
 #[test]
-fn a_link_is_not_followed() {
-    let (dir, backing_directory) = folder();
+fn a_symbolic_link_is_not_followed_and_is_no_disk_entry() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     std::os::unix::fs::symlink("a.txt", dir.path().join("link")).unwrap();
     assert!(backing_directory.find_disk_entry(Path::new("link")).is_none());
@@ -48,8 +48,8 @@ fn a_link_is_not_followed() {
 }
 
 #[test]
-fn an_object_carries_the_item_id_it_was_given_until_it_is_taken_off() {
-    let (dir, backing_directory) = folder();
+fn an_entry_is_marked_with_the_onedrive_id_it_was_given_until_it_is_cleared() {
+    let (dir, backing_directory) = empty_backing_directory();
     fs::create_dir(dir.path().join("docs")).unwrap();
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
     backing_directory.mark_with_onedrive_id(Path::new("docs"), "D").unwrap();

@@ -142,7 +142,7 @@ impl SyncService {
     /// the sign-in nudge, the thumbnail filler.
     ///
     /// Local changes need no looking for: the folder's mount records each one as a program
-    /// makes it (`fuse::recorder`), and the worker sends what is recorded.
+    /// makes it (`fuse::outbox_recorder`), and the worker sends what is recorded.
     fn build(&self, prepared: Prepared, reg: &Record, wanted: Mode) -> RunningSync {
         let Prepared { drive, paths, store, tree_lock, mount } = prepared;
         let stop = CancellationToken::new();
