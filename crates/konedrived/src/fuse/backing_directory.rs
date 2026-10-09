@@ -1,6 +1,6 @@
 //! The folder under the mount: the directory on disk the mount lies over.
 //!
-//! [`Under`] owns the descriptor opened on the folder before the mount, and everything of the
+//! [`BackingDirectory`] owns the descriptor opened on the folder before the mount, and everything of the
 //! folder is reached through it, never through the mount. It knows the disk and nothing else:
 //! not the store, not the kernel's nodes, not the outbox, not the mount. What is an item's is
 //! told by the id a file or directory carries, and whoever asks brings the id.
@@ -22,36 +22,36 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-mod backing;
-mod copies;
-mod files;
-mod landing;
-mod lock;
-mod objects;
-mod older;
+mod directory_marks;
+mod downloaded_copies;
+mod file_operations;
+mod download_landing;
+mod tree_lock;
+mod file_handles;
+mod legacy_placeholders;
 
-pub(super) use landing::Landed;
-pub use lock::{clear_stale, directories, tidy, tidy_all};
-pub(super) use lock::set_tree;
-pub(super) use objects::Object;
+pub(super) use download_landing::LandingOutcome;
+pub use tree_lock::{clear_stale, directories, tidy, tidy_all};
+pub(super) use tree_lock::set_tree;
+pub(super) use file_handles::Object;
 
 /// Where an earlier build built its downloads, inside the folder: taken off when the folder
 /// is opened. A download is built in a file without a name now.
 const OLD_STAGING: &str = ".konedrive-staging";
 
 /// The folder under the mount, by the descriptor opened on it before the mount.
-pub(super) struct Under {
+pub(super) struct BackingDirectory {
     folder: File,
 }
 
-impl Under {
+impl BackingDirectory {
     /// Opens `folder`, which no mount lies over yet: afterwards its path is the mount, and
     /// this is the one way to what it holds. A mount a daemon that died left on it is taken
     /// off first, and a folder an older konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
         clear_stale(folder);
-        if older::left_by_an_older(folder) {
-            return Err(older::refusal(folder));
+        if legacy_placeholders::left_by_an_older(folder) {
+            return Err(legacy_placeholders::refusal(folder));
         }
         // `fusermount3` mounts only where its user may write; the folder was locked when the
         // daemon last ended.
@@ -59,7 +59,7 @@ impl Under {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
         }
-        let under = Under { folder: File::open(folder)? };
+        let under = BackingDirectory { folder: File::open(folder)? };
         let _ = fs::remove_dir_all(under.path(Path::new(OLD_STAGING)));
         Ok(under)
     }
@@ -76,7 +76,7 @@ impl Under {
         konedrive_fs::proc_path(&self.folder).join(rel)
     }
 
-    /// Under the mount the folder is the daemon's alone, and open to it: its owner's write bits
+    /// BackingDirectory the mount the folder is the daemon's alone, and open to it: its owner's write bits
     /// are given back, which were taken off when the daemon last ended.
     pub(super) fn unlock(&self) {
         set_tree(&self.path(Path::new("")), false);

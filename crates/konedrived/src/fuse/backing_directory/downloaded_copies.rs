@@ -12,9 +12,9 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
 
-use super::Under;
+use super::BackingDirectory;
 
-impl Under {
+impl BackingDirectory {
     /// The downloaded copy of item `id` at `rel`, if the folder holds it: what the filesystem
     /// says of it.
     pub(in crate::fuse) fn copy(&self, rel: &Path, id: &str) -> Option<fs::Metadata> {

@@ -4,7 +4,7 @@
 //!
 //! [`View`] owns the mount's reading connection to the store, opened for reading alone — what
 //! it is asked never waits for the cycle that writes the store — and the [`Overlay`] as last
-//! read. It uses [`Under`] for what only the disk knows: the objects without an item. It
+//! read. It uses [`BackingDirectory`] for what only the disk knows: the objects without an item. It
 //! knows nothing of the kernel's nodes, of what is open or of what is being downloaded, and
 //! changes nothing but, on request, the marks of the directories ([`View::backing`]).
 //!
@@ -23,7 +23,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
 use super::overlay::Overlay;
-use super::under::Under;
+use super::backing_directory::BackingDirectory;
 
 mod entries;
 mod places;
@@ -36,18 +36,18 @@ pub(super) struct View {
     /// What the outbox's rows say, and the store's version that was read at; `None` before
     /// the first reading.
     overlay: Mutex<(Option<i64>, Arc<Overlay>)>,
-    under: Arc<Under>,
+    under: Arc<BackingDirectory>,
 }
 
 impl View {
     /// The view of the folder `under` through `reader`, a connection of its own to the
     /// folder's store.
-    pub(super) fn new(reader: TreeStore, under: Arc<Under>) -> Self {
+    pub(super) fn new(reader: TreeStore, under: Arc<BackingDirectory>) -> Self {
         View { reader: Mutex::new(reader), overlay: Mutex::default(), under }
     }
 
     /// The folder under the mount this is a view of.
-    pub(super) fn under(&self) -> &Under {
+    pub(super) fn under(&self) -> &BackingDirectory {
         &self.under
     }
 

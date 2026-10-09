@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::fuse::under::tests::folder;
+use crate::fuse::backing_directory::tests::folder;
 
 #[test]
 fn an_object_is_what_stands_at_a_place_with_its_handle() {

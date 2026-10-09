@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::fuse::under::tests::folder;
+use crate::fuse::backing_directory::tests::folder;
 
 /// A drive whose root `R` holds `docs` (`D`), which holds `deep` (`E`).
 fn item(above: Option<&str>, _dir: &Path, name: &str) -> Option<String> {

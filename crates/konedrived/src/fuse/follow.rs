@@ -9,7 +9,7 @@ use super::announce::Announce;
 use super::conflict::{Meeting, Met};
 use super::detections::rebase;
 use super::mount::Mount;
-use super::under::Under;
+use super::backing_directory::BackingDirectory;
 use crate::local::held::Rw;
 
 /// One item a cycle changed: where the store had it and where the new tree has it.
@@ -43,7 +43,7 @@ pub struct Followed {
 /// The directories of the folder under the mount down to `rel`, each marked as its item's,
 /// inside a cycle of the listing, for a place of the tree it has staged: on the store's own
 /// thread, where the mount's reader would not see it.
-fn backing_staged(under: &Under, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
+fn backing_staged(under: &BackingDirectory, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
     let staged = |above: Option<&str>, _: &Path, name: &str| {
         let row = store.child(Table::Staging, above?, name).ok().flatten()?;
         (row.placement == Placement::Placed).then_some(row.id)

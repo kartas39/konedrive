@@ -3,7 +3,7 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID, XATTR_STATE};
 
-use crate::fuse::under::tests::folder;
+use crate::fuse::backing_directory::tests::folder;
 
 const AT: &str = "a.txt";
 

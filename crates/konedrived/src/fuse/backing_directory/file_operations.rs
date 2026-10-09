@@ -6,9 +6,9 @@ use std::io;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use super::Under;
+use super::BackingDirectory;
 
-impl Under {
+impl BackingDirectory {
     /// What the filesystem says of the name `rel`, a link not followed. `None` when nothing
     /// stands there.
     pub(in crate::fuse) fn stat(&self, rel: &Path) -> Option<fs::Metadata> {

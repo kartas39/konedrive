@@ -14,7 +14,7 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
-use super::Under;
+use super::BackingDirectory;
 
 /// A file or directory of the folder under the mount: its file handle, which is what it is,
 /// and what the filesystem says of it.
@@ -24,7 +24,7 @@ pub(in crate::fuse) struct Object {
     pub(in crate::fuse) meta: fs::Metadata,
 }
 
-impl Under {
+impl BackingDirectory {
     /// What stands at `rel`, looked at once, through the folder's descriptor and without
     /// following a link at its name: the handle and the rest are of one object, whatever
     /// takes the name meanwhile. `None` when nothing stands there.

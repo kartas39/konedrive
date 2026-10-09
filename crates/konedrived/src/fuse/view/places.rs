@@ -63,7 +63,7 @@ impl View {
 
     /// The directories of the folder under the mount down to `rel`, made where they are
     /// missing, each carrying the id of the item this view has there
-    /// ([`Under::backing`](crate::fuse::under::Under::backing)).
+    /// ([`BackingDirectory::backing`](crate::fuse::backing_directory::BackingDirectory::backing)).
     pub(in crate::fuse) fn backing(&self, rel: &Path) -> io::Result<()> {
         let item = |id: Option<&str>, dir: &Path, name: &str| self.item_at(&Dir { id: id.map(str::to_owned), rel: dir.to_owned() }, name).map(|row| row.id);
         self.under.backing(rel, self.root_id(), item)

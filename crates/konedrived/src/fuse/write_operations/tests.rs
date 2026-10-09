@@ -15,7 +15,7 @@ use super::WriteOperations;
 use crate::fuse::nodes::Nodes;
 use crate::fuse::recorder::Recorder;
 use crate::fuse::resolve::Resolve;
-use crate::fuse::under::Under;
+use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::upload_rules::tests::rules;
 use crate::fuse::view::tests::drive;
 use crate::fuse::view::{Dir, Entry, View};
@@ -27,7 +27,7 @@ pub(super) struct Folder {
     pub(super) disk: PathBuf,
     pub(super) store: Store,
     pub(super) view: Arc<View>,
-    pub(super) under: Arc<Under>,
+    pub(super) under: Arc<BackingDirectory>,
     pub(super) resolve: Arc<Resolve>,
     pub(super) writers: Arc<Writers>,
     pub(super) writable: Arc<AtomicBool>,
@@ -44,7 +44,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let mut written = TreeStore::open(&path).unwrap();
     drive(&mut written, detections);
     let store = Store::new(written);
-    let under = Arc::new(Under::open(&disk).unwrap());
+    let under = Arc::new(BackingDirectory::open(&disk).unwrap());
     let view = Arc::new(View::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&under)));
     let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
     let resolve = Arc::new(Resolve::new(Arc::clone(&view), nodes));

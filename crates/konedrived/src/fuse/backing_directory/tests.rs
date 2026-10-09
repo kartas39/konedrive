@@ -3,12 +3,12 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
-use super::{set_tree, Under, OLD_STAGING};
+use super::{set_tree, BackingDirectory, OLD_STAGING};
 
 /// A folder on disk with nothing in it, opened as a mount's would be.
-pub(super) fn folder() -> (tempfile::TempDir, Under) {
+pub(super) fn folder() -> (tempfile::TempDir, BackingDirectory) {
     let dir = tempfile::tempdir().unwrap();
-    let under = Under::open(dir.path()).unwrap();
+    let under = BackingDirectory::open(dir.path()).unwrap();
     (dir, under)
 }
 
@@ -26,7 +26,7 @@ fn the_staging_directory_of_an_earlier_build_goes_when_the_folder_is_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join(OLD_STAGING)).unwrap();
     fs::write(dir.path().join(OLD_STAGING).join("part"), b"x").unwrap();
-    let under = Under::open(dir.path()).unwrap();
+    let under = BackingDirectory::open(dir.path()).unwrap();
     assert!(under.stat(Path::new(OLD_STAGING)).is_none());
 }
 
@@ -54,7 +54,7 @@ fn a_folder_that_holds_an_older_konedrives_placeholder_is_not_opened() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), b"").unwrap();
     xattr::set(dir.path().join("a.txt"), XATTR_STATE, State::OnlineOnly.as_str().as_bytes()).unwrap();
-    assert!(Under::open(dir.path()).is_err());
+    assert!(BackingDirectory::open(dir.path()).is_err());
 }
 
 /// The folder was locked when the daemon last ended; under the mount it is the daemon's.
@@ -63,7 +63,7 @@ fn a_locked_folder_is_opened_and_unlocked() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
     set_tree(dir.path(), true);
-    let under = Under::open(dir.path()).unwrap();
+    let under = BackingDirectory::open(dir.path()).unwrap();
     under.unlock();
     under.make_file(Path::new("docs/a.txt")).unwrap();
 }

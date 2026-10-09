@@ -2,12 +2,12 @@
 //! write, each in a module of its own.
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
-//! the mount shows it ([`View`]) and on disk ([`Under`]), the nodes ([`Resolve`]), the files
+//! the mount shows it ([`View`]) and on disk ([`BackingDirectory`]), the nodes ([`Resolve`]), the files
 //! open for writing ([`Writers`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
 //! of its own. Each operation is the same short sequence of steps:
 //!
 //! 1. check, through the view and the rules: what stands where, and the errno of a refusal;
-//! 2. do it in the backing directory, through `Under`;
+//! 2. do it in the backing directory, through `BackingDirectory`;
 //! 3. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
 //!    failure what was done on disk is undone and the program is answered `EIO`
 //!    ([`WriteOperations::record_or_undo`]);
@@ -33,7 +33,7 @@ use fuser::Errno;
 use super::detections::FolderEvent;
 use super::recorder::Recorder;
 use super::resolve::Resolve;
-use super::under::Under;
+use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
 use super::view::{Dir, View};
 use super::writers::Writers;
@@ -46,7 +46,7 @@ mod write;
 
 pub(super) struct WriteOperations {
     view: Arc<View>,
-    under: Arc<Under>,
+    under: Arc<BackingDirectory>,
     resolve: Arc<Resolve>,
     writers: Arc<Writers>,
     recorder: Arc<Recorder>,
@@ -65,7 +65,7 @@ pub(super) struct OpenedFile {
 impl WriteOperations {
     pub(super) fn new(
         view: Arc<View>,
-        under: Arc<Under>,
+        under: Arc<BackingDirectory>,
         resolve: Arc<Resolve>,
         writers: Arc<Writers>,
         recorder: Arc<Recorder>,

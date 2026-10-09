@@ -2,12 +2,12 @@
 //! ([`local_object`]), its place ([`folder_place`]), and the local entries at and below a
 //! place, walked on disk ([`collect_local_entries`]).
 //!
-//! This is the one step between what [`Under`] finds on disk and what
+//! This is the one step between what [`BackingDirectory`] finds on disk and what
 //! [`super::detections`] decides from: the walk reads the disk, and asks
 //! [`UploadRules`] what stays on this computer; it decides nothing else.
 
 use super::detections::{FolderPlace, LocalEntry, LocalObject, ObjectKind};
-use super::under::{Object, Under};
+use super::backing_directory::{Object, BackingDirectory};
 use super::upload_rules::UploadRules;
 use super::view::Dir;
 
@@ -30,13 +30,13 @@ pub(super) fn folder_place(dir: &Dir, name: &str) -> FolderPlace {
 /// The local objects at `name` of `dir` and below it, each at its place, the top first:
 /// what is uploaded of it from now on. Nothing of what stays on this computer, of a
 /// directory that carries an item's id, or of what is neither a file nor a directory.
-pub(super) fn collect_local_entries(under: &Under, rules: &UploadRules, dir: &Dir, name: &str) -> Vec<LocalEntry> {
+pub(super) fn collect_local_entries(under: &BackingDirectory, rules: &UploadRules, dir: &Dir, name: &str) -> Vec<LocalEntry> {
     let mut entries = Vec::new();
     collect_into(under, rules, dir, name, &mut entries);
     entries
 }
 
-fn collect_into(under: &Under, rules: &UploadRules, dir: &Dir, name: &str, into: &mut Vec<LocalEntry>) {
+fn collect_into(under: &BackingDirectory, rules: &UploadRules, dir: &Dir, name: &str, into: &mut Vec<LocalEntry>) {
     let rel = dir.rel.join(name);
     let Some(object) = under.object(&rel) else { return };
     let stays = rules.stays_local(&dir.rel, name, |at| under.carried(at).is_some());

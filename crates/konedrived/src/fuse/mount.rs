@@ -18,7 +18,7 @@ use crate::status::report::Report;
 
 use super::announce::{announce, Announce};
 use super::fill::Waiter;
-use super::under::{set_tree, Under};
+use super::backing_directory::{set_tree, BackingDirectory};
 use super::view::View;
 use super::nodes::Nodes;
 use super::upload_rules::UploadRules;
@@ -75,7 +75,7 @@ impl Mount {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             // Before the mount: afterwards this path is the mount.
-            let under = Arc::new(Under::open(&root.path)?);
+            let under = Arc::new(BackingDirectory::open(&root.path)?);
             let view = Arc::new(View::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
             let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
             let resolve = Arc::new(Resolve::new(Arc::clone(&view), Arc::clone(&nodes)));
@@ -148,7 +148,7 @@ impl Mount {
                 }
             };
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
-            // Under the mount the folder is the daemon's alone, and open to it.
+            // BackingDirectory the mount the folder is the daemon's alone, and open to it.
             shared.under.unlock();
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;

@@ -13,7 +13,7 @@ use konedrive_tree::outbox::{Detection, OutboxOp};
 
 use super::detections::{create_entries, is_folder_of, KeptCopy};
 use super::local_entries::{collect_local_entries, folder_place, local_object};
-use super::under::Under;
+use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
 use super::view::{Dir, View};
 
@@ -30,7 +30,7 @@ pub(super) struct Met {
 
 /// The parts a meeting uses.
 pub(super) struct Meeting<'a> {
-    pub(super) under: &'a Under,
+    pub(super) under: &'a BackingDirectory,
     pub(super) view: &'a View,
     pub(super) rules: &'a UploadRules,
     /// The time the rows are dated by.

@@ -1,7 +1,7 @@
 //! What holds a mount together: its parts, and what is under way.
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
-//! the mount ([`Under`]), the folder as the mount shows it ([`View`]), the kernel's nodes
+//! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`View`]), the kernel's nodes
 //! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
 //! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
 //! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
@@ -33,13 +33,13 @@ use super::write_operations::WriteOperations;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
 use super::resolve::Resolve;
-use super::under::Under;
+use super::backing_directory::BackingDirectory;
 use super::view::View;
 
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
-    /// The folder under the mount ([`super::under`]).
-    pub(super) under: Arc<Under>,
+    /// The folder under the mount ([`super::backing_directory`]).
+    pub(super) under: Arc<BackingDirectory>,
     /// The folder as the mount shows it ([`super::view`]).
     pub(super) view: Arc<View>,
     /// The store's one writer, for the pins.

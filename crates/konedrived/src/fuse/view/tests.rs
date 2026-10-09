@@ -8,7 +8,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
 use super::{Dir, Entry, View};
 use crate::folder::disk::HOLDING;
-use crate::fuse::under::Under;
+use crate::fuse::backing_directory::BackingDirectory;
 
 pub(in crate::fuse) fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
@@ -54,7 +54,7 @@ pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, V
     let mut store = TreeStore::in_memory().unwrap();
     drive(&mut store, detections);
     let dir = tempfile::tempdir().unwrap();
-    let under = Arc::new(Under::open(dir.path()).unwrap());
+    let under = Arc::new(BackingDirectory::open(dir.path()).unwrap());
     (dir, View::new(store, under))
 }
 

@@ -3,7 +3,7 @@ use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use crate::fuse::under::tests::folder;
+use crate::fuse::backing_directory::tests::folder;
 
 #[test]
 fn a_file_and_a_directory_are_made_renamed_and_removed_in_the_folder() {

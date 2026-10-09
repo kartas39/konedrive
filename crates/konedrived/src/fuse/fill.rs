@@ -18,7 +18,7 @@ use crate::status::activity::{self, Kind as EventKind};
 
 use super::announce::Announce;
 use super::shared::{seconds, Shared};
-use super::under::Landed;
+use super::backing_directory::LandingOutcome;
 
 /// How many downloads that failed keep what they have, to be continued from.
 pub(super) const UNFINISHED: usize = 16;
@@ -122,7 +122,7 @@ impl Shared {
             let (id, modified, at, file, under) = (row.id.clone(), seconds(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.under));
             // The file's own steps wait for the disk: not on the runtime's threads.
             let landed = tokio::task::spawn_blocking(move || under.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
-            if landed == Landed::Refused {
+            if landed == LandingOutcome::Refused {
                 return Err(libc::EEXIST);
             }
             Ok(size)

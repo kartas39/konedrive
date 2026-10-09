@@ -8,9 +8,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::Under;
+use super::BackingDirectory;
 
-impl Under {
+impl BackingDirectory {
     /// The directories down to `rel`, made where they are missing, each carrying the id of
     /// the item it is the directory of. `root` is the item of the folder itself; `item`
     /// tells the item of a name from the directory it is in — that directory's item, when

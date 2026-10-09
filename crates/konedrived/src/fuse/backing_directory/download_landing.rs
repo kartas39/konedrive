@@ -14,26 +14,26 @@ use std::time::SystemTime;
 
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
 
-use super::Under;
+use super::BackingDirectory;
 
 /// What stands at the place a download is to land at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::fuse) enum Stands {
+pub(in crate::fuse) enum TargetContents {
     Nothing,
     /// The whole copy of the item that was downloaded: a program made it or saved over it
     /// meanwhile.
-    ItsCopy,
+    CopyOfSameFile,
     /// The whole copy of another item.
-    AnothersCopy,
+    CopyOfOtherFile,
     /// A file that carries an item's id and is not whole: it holds nothing.
-    NotWhole,
+    PartialFile,
     /// Anything that carries no item's id: a file or directory of the user's own.
-    TheUsers,
+    UsersOwnFile,
 }
 
 /// What is done with a download, for what stands at its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::fuse) enum Step {
+pub(in crate::fuse) enum LandingAction {
     /// The download gets the name.
     Link,
     /// What stands there goes first.
@@ -46,18 +46,18 @@ pub(in crate::fuse) enum Step {
 /// What stands at the item's place by now is never replaced by what was downloaded: a file of
 /// the user's own; the item's copy, which a program made or saved over it meanwhile; the
 /// whole copy of another item. Only what holds nothing — a file that is not whole — goes.
-pub(in crate::fuse) fn step(stands: Stands) -> Step {
+pub(in crate::fuse) fn step(stands: TargetContents) -> LandingAction {
     match stands {
-        Stands::Nothing => Step::Link,
-        Stands::ItsCopy => Step::Keep,
-        Stands::NotWhole => Step::Replace,
-        Stands::AnothersCopy | Stands::TheUsers => Step::Refuse,
+        TargetContents::Nothing => LandingAction::Link,
+        TargetContents::CopyOfSameFile => LandingAction::Keep,
+        TargetContents::PartialFile => LandingAction::Replace,
+        TargetContents::CopyOfOtherFile | TargetContents::UsersOwnFile => LandingAction::Refuse,
     }
 }
 
 /// How a download landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::fuse) enum Landed {
+pub(in crate::fuse) enum LandingOutcome {
     /// It is the file at the item's place.
     Placed,
     /// The item's whole copy stood there already, and stays.
@@ -66,31 +66,31 @@ pub(in crate::fuse) enum Landed {
     Refused,
 }
 
-impl Under {
+impl BackingDirectory {
     /// A file of the folder's filesystem that is in no directory, to build a download in.
     pub(in crate::fuse) fn unnamed(&self) -> io::Result<File> {
         File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.path(Path::new("")))
     }
 
     /// What stands at `rel`, for a download of item `id`.
-    pub(in crate::fuse) fn stands(&self, rel: &Path, id: &str) -> Stands {
+    pub(in crate::fuse) fn stands(&self, rel: &Path, id: &str) -> TargetContents {
         let path = self.path(rel);
         if fs::symlink_metadata(&path).is_err() {
-            return Stands::Nothing;
+            return TargetContents::Nothing;
         }
         let whole = xattr::get(&path, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
         match xattr::get(&path, XATTR_ITEM_ID).ok().flatten() {
-            Some(carried) if carried == id.as_bytes() && whole => Stands::ItsCopy,
-            Some(_) if !whole => Stands::NotWhole,
-            Some(_) => Stands::AnothersCopy,
-            None => Stands::TheUsers,
+            Some(carried) if carried == id.as_bytes() && whole => TargetContents::CopyOfSameFile,
+            Some(_) if !whole => TargetContents::PartialFile,
+            Some(_) => TargetContents::CopyOfOtherFile,
+            None => TargetContents::UsersOwnFile,
         }
     }
 
     /// Lands `file`, the whole and checked content of item `id` built in a file without a
     /// name, at `rel`: stamped as the item's copy, last changed at `modified`, and given the
     /// name unless what stands there says otherwise ([`step`]).
-    pub(in crate::fuse) fn land(&self, file: &File, rel: &Path, id: &str, modified: SystemTime) -> io::Result<Landed> {
+    pub(in crate::fuse) fn land(&self, file: &File, rel: &Path, id: &str, modified: SystemTime) -> io::Result<LandingOutcome> {
         placeholder::write_item_id(file, id)?;
         placeholder::write_state(file, State::Hydrated)?;
         file.set_modified(modified)?;
@@ -99,16 +99,16 @@ impl Under {
         file.sync_all()?;
         let target = self.path(rel);
         match step(self.stands(rel, id)) {
-            Step::Keep => return Ok(Landed::Kept),
-            Step::Refuse => return Ok(Landed::Refused),
-            Step::Replace => fs::remove_file(&target)?,
-            Step::Link => {}
+            LandingAction::Keep => return Ok(LandingOutcome::Kept),
+            LandingAction::Refuse => return Ok(LandingOutcome::Refused),
+            LandingAction::Replace => fs::remove_file(&target)?,
+            LandingAction::Link => {}
         }
         // Whole and checked: now it gets its name.
         let (unnamed, named) = (CString::new(konedrive_fs::proc_path(file).into_os_string().into_encoded_bytes())?, CString::new(target.into_os_string().into_encoded_bytes())?);
         // SAFETY: two paths this function owns.
         match unsafe { libc::linkat(libc::AT_FDCWD, unnamed.as_ptr(), libc::AT_FDCWD, named.as_ptr(), libc::AT_SYMLINK_FOLLOW) } {
-            0 => Ok(Landed::Placed),
+            0 => Ok(LandingOutcome::Placed),
             _ => Err(io::Error::last_os_error()),
         }
     }

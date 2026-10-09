@@ -14,7 +14,7 @@ use konedrive_tree::{Kind, Placement, Row, Table};
 use super::View;
 use crate::folder::disk::daemon_owned;
 use crate::fuse::overlay::{Above, Overlay};
-use crate::fuse::under::Object;
+use crate::fuse::backing_directory::Object;
 
 /// One name in a directory of the folder.
 pub(in crate::fuse) enum Entry {
