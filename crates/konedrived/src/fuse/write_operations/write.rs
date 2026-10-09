@@ -112,7 +112,7 @@ impl WriteOperations {
             self.remove_partial_file(file, path);
             to_errno(&e)
         })?;
-        let (fh, rank) = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
+        let (fh, rank) = self.open_handles.add_writer(node_id, Arc::new(backing_file));
         let recorded = match rank {
             WriterRank::First => self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, FileWrite::Opened)),
             WriterRank::Later => Ok(()),

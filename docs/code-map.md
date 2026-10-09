@@ -283,8 +283,9 @@ daemon shows OneDrive.
   kernel's `fh` (`Fh`); it alone counts the writers of a node, says of one it adds whether it
   is the node's first (`WriterRank`), remembers whether one wrote,
   says what closing a file that was open for writing left (`ClosedFile`: the node it wrote
-  and the `CloseOutcome`) and whether a file is open for writing, by node id and by OneDrive
-  id — a writer is closed on the write-operation thread, and counts until then;
+  and the `CloseOutcome`) and whether a node is open for writing — which OneDrive file a
+  handle writes is the node table's to say, by the node; a writer is closed on the
+  write-operation thread, and counts until then;
   the names an open directory listed when it was first read.
   `[tests]`
 - `state_attribute.rs` — `to_state_attribute`: what is shown of a file — online-only, being
@@ -358,7 +359,8 @@ daemon shows OneDrive.
   (`FreeUpDecision`), from the sync state, the pin, whether it is being downloaded and
   whether a program holds it open for writing; the one decision of a free-up. `[tests]`
 - `files_interface.rs` — `FilesInterface`: what the daemon's bus interface `Files` asks of a
-  mount for a path, over exactly the parts it uses: download, free up (`FreedSpace`), pin,
+  mount for a path, over exactly the parts it uses (the node resolver among them, for the
+  node whose writers are a OneDrive file's): download, free up (`FreedSpace`), pin,
   how the path stands; the space the downloaded copies below a path take (`DownloadedSpace`); why it
   refuses (`FilesRefusal`). A free-up lists the copies off the write-operation thread and
   frees each in a job of its own on it, where it reads how the file stands, decides and

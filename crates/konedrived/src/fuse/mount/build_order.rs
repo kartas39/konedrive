@@ -27,9 +27,9 @@
 //! 12. who asks, each given exactly the parts it uses: [`CycleStep`] — the backing
 //!     directory, the directory contents, the switch, the range fetcher, the conflict
 //!     copies, the recorder, the pins, the bridge, the pinned file downloader, and it uses
-//!     the detections; [`FilesInterface`] — the directory contents, the backing directory,
-//!     the download states, the two downloaders, the open handles, the pins, the bridge and
-//!     the write-operation thread; and the five groups of the kernel's requests, which
+//!     the detections; [`FilesInterface`] — the directory contents, the node resolver, the
+//!     backing directory, the download states, the two downloaders, the open handles, the
+//!     pins, the bridge and the write-operation thread; and the five groups of the kernel's requests, which
 //!     [`KernelRequests`] holds.
 //!
 //! Nothing here mounts: what is built answers a cycle, the `Files` interface and a write
@@ -127,6 +127,7 @@ impl Mount {
         let files_interface = Arc::new(FilesInterface::new(
             folder.clone(),
             Arc::clone(&directory_contents),
+            Arc::clone(&node_resolver),
             Arc::clone(&backing_directory),
             Arc::clone(&download_states),
             Arc::clone(&file_downloader),

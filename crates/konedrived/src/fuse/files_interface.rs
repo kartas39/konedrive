@@ -5,7 +5,8 @@
 //! directory holds ([`DirectoryContents`]), the [`BackingDirectory`], where a copy that is
 //! freed is removed, the state of the downloads ([`DownloadStates`]) and what downloads
 //! ([`FileDownloader`], and the [`PinnedFileDownloader`] for what a pin keeps), what
-//! programs hold open ([`OpenHandles`]), the [`Pins`], the [`InotifyBridge`], which
+//! programs hold open ([`OpenHandles`]) and which node stands for a OneDrive id
+//! ([`NodeResolver`]), the [`Pins`], the [`InotifyBridge`], which
 //! announces what changed of a file to whoever shows it, and the [`WriteOperationThread`],
 //! on which a copy is freed. A path it is asked about is a path of the mount; what is local
 //! only is not OneDrive's to download, free or pin, and is refused
@@ -39,6 +40,7 @@ use super::download_states::DownloadStates;
 use super::file_downloader::{FileDownloader, FileToDownload};
 use super::free_up_decision::{decide_free_up, FreeUpDecision};
 use super::inotify_bridge::{Announcement, InotifyBridge};
+use super::node_resolver::NodeResolver;
 use super::open_handles::OpenHandles;
 use super::pinned_file_downloader::PinnedFileDownloader;
 use super::pins::Pins;
@@ -83,6 +85,9 @@ pub struct FilesInterface {
     /// The folder's path, which is the mount.
     folder: PathBuf,
     directory_contents: Arc<DirectoryContents>,
+    /// Which node stands for a OneDrive id: the open handles say whether that node is open
+    /// for writing.
+    node_resolver: Arc<NodeResolver>,
     /// Where a downloaded copy that is freed is removed.
     backing_directory: Arc<BackingDirectory>,
     download_states: Arc<DownloadStates>,
@@ -101,6 +106,7 @@ impl FilesInterface {
     pub(super) fn new(
         folder: PathBuf,
         directory_contents: Arc<DirectoryContents>,
+        node_resolver: Arc<NodeResolver>,
         backing_directory: Arc<BackingDirectory>,
         download_states: Arc<DownloadStates>,
         file_downloader: Arc<FileDownloader>,
@@ -111,7 +117,13 @@ impl FilesInterface {
         write_operation_thread: Arc<WriteOperationThread>,
         report: Report,
     ) -> Self {
-        FilesInterface { folder, directory_contents, backing_directory, download_states, file_downloader, open_handles, pins, inotify_bridge, pinned_file_downloader, write_operation_thread, report }
+        FilesInterface { folder, directory_contents, node_resolver, backing_directory, download_states, file_downloader, open_handles, pins, inotify_bridge, pinned_file_downloader, write_operation_thread, report }
+    }
+
+    /// Whether a program holds the OneDrive file `onedrive_id` open for writing now: the
+    /// node that stands for it, by the node table, has a writer.
+    fn is_open_for_writing(&self, onedrive_id: &str) -> bool {
+        self.node_resolver.find_node_id(onedrive_id).is_some_and(|node_id| self.open_handles.is_open_for_writing_by_node_id(node_id))
     }
 
     /// The entry at `path`, when it is in OneDrive, and its path in the folder.
@@ -213,7 +225,7 @@ impl FilesInterface {
             return nothing;
         }
         let (is_pinned, is_downloading) = (self.pins.find_pinning_row(row).is_some(), self.download_states.is_downloading(onedrive_id));
-        let is_open_for_writing = self.open_handles.is_open_for_writing_by_onedrive_id(onedrive_id);
+        let is_open_for_writing = self.is_open_for_writing(onedrive_id);
         let freed_bytes = match decide_free_up(&entry.state, is_pinned, is_downloading, is_open_for_writing) {
             FreeUpDecision::Free => self.backing_directory.remove_downloaded_copy(&path, onedrive_id),
             FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => None,
@@ -237,7 +249,7 @@ impl FilesInterface {
         let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.find_pinning_row(&above));
         let pinned_above = above.and_then(|by| self.directory_contents.find_stored_path(&by.id)).map(|at| self.folder.join(at));
         let is_downloading = self.download_states.is_downloading(&row.id);
-        let is_open_for_writing = self.open_handles.is_open_for_writing_by_onedrive_id(&row.id);
+        let is_open_for_writing = self.is_open_for_writing(&row.id);
         Ok(PathStatus { onedrive_id: row.id, own_pin, pinned_above, entry_state: entry.state, is_downloading, is_open_for_writing })
     }
 

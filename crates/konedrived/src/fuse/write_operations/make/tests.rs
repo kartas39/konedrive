@@ -29,7 +29,7 @@ fn a_file_created_open_is_handed_back_and_waits_for_its_writer() {
     let fh = opened.unwrap();
     assert_eq!(node_id, f.node_id(NodeId::ROOT, "new.txt"));
     assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
-    assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, onedrive_id: None, .. }) if written == node_id));
+    assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, .. }) if written == node_id));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
 }
 

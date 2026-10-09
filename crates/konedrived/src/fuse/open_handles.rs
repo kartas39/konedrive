@@ -27,9 +27,13 @@
 //!   record;
 //! - whether a file is open for writing, by node id
 //!   ([`OpenHandles::is_open_for_writing_by_node_id`]): the write operations (a rename, a
-//!   truncate), and by OneDrive id ([`OpenHandles::is_open_for_writing_by_onedrive_id`]): the
-//!   `Files` interface, for a free-up and for how a path stands. The sync state does not
-//!   say this: a file is modified here only while the outbox holds its row, and a forced
+//!   truncate), and, for the node that stands for a OneDrive id, the `Files` interface (a
+//!   free-up, how a path stands) and the cycle step. A handle says which node it writes and
+//!   nothing else: which OneDrive file that is, is the node table's alone to say
+//!   ([`NodeResolver::find_node_id`](super::node_resolver::NodeResolver::find_node_id)) — a
+//!   local-only file saved over a OneDrive file by rename is that file from then on, and so
+//!   is the handle that writes it. The sync state does not say whether a file is open for
+//!   writing: a file is modified here only while the outbox holds its row, and a forced
 //!   switch to read-only drops that row under a program that still writes the file;
 //! - an open directory and the names it listed when it was first read
 //!   ([`OpenHandles::add_directory`], [`OpenHandles::find_listed_names`],
@@ -65,8 +69,8 @@ pub(super) enum OpenFile {
     /// Opened to be read from its file in the backing directory.
     ReadingBackingFile { backing_file: Arc<File> },
     /// Opened for writing, into its file in the backing directory: the node id it was
-    /// opened by, and its OneDrive id when it had one then.
-    Writing { node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File> },
+    /// opened by. What that node stands for is the node table's to say.
+    Writing { node_id: NodeId, backing_file: Arc<File> },
 }
 
 /// What an `fh` holds open.
@@ -144,13 +148,13 @@ impl OpenHandles {
     /// A program opened the node `node_id` for writing, into `backing_file`. The `fh` it
     /// holds it by, and its rank among the node's writers. A file whose content is the
     /// user's own already is said so next ([`mark_written`](Self::mark_written)).
-    pub(super) fn add_writer(&self, node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File>) -> (Fh, WriterRank) {
+    pub(super) fn add_writer(&self, node_id: NodeId, backing_file: Arc<File>) -> (Fh, WriterRank) {
         let mut handles = crate::panic::lock(&self.handles);
         let rank = match handles.has_writer(node_id) {
             true => WriterRank::Later,
             false => WriterRank::First,
         };
-        (handles.add(OpenHandle::File(OpenFile::Writing { node_id, onedrive_id, backing_file })), rank)
+        (handles.add(OpenHandle::File(OpenFile::Writing { node_id, backing_file })), rank)
     }
 
     /// The file held open by `fh`.
@@ -165,7 +169,7 @@ impl OpenHandles {
     /// when it was opened for writing.
     pub(super) fn find_file_to_write(&self, fh: Fh) -> Option<(NodeId, Arc<File>)> {
         match self.find_file(fh)? {
-            OpenFile::Writing { node_id, backing_file, .. } => Some((node_id, backing_file)),
+            OpenFile::Writing { node_id, backing_file } => Some((node_id, backing_file)),
             OpenFile::ReadingRemoteOnly { .. } | OpenFile::ReadingBackingFile { .. } => None,
         }
     }
@@ -215,13 +219,6 @@ impl OpenHandles {
     /// Whether a program holds the node `node_id` open for writing now.
     pub(super) fn is_open_for_writing_by_node_id(&self, node_id: NodeId) -> bool {
         crate::panic::lock(&self.handles).has_writer(node_id)
-    }
-
-    /// Whether a program holds the OneDrive file `onedrive_id` open for writing now: a file
-    /// that had this id when it was opened.
-    pub(super) fn is_open_for_writing_by_onedrive_id(&self, onedrive_id: &str) -> bool {
-        let handles = crate::panic::lock(&self.handles);
-        handles.by_fh.values().any(|handle| matches!(handle, OpenHandle::File(OpenFile::Writing { onedrive_id: Some(written), .. }) if written == onedrive_id))
     }
 
     /// A program opened a directory: the `fh` it holds it by. The names it lists are kept

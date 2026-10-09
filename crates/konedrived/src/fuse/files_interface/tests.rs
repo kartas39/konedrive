@@ -14,6 +14,7 @@ use crate::fuse::directory_contents::tests::row;
 use crate::fuse::inotify_bridge::Announcement;
 use crate::fuse::mount::tests::{build_mount, build_mount_with, BuiltMount};
 use crate::fuse::node_table::NodeId;
+use crate::fuse::write_operations::{EntryToMake, RenameMode};
 
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
@@ -36,9 +37,20 @@ fn bytes_on_disk(built: &BuiltMount, rel: &str) -> u64 {
     std::fs::metadata(built.disk.join(rel)).unwrap().blocks() * 512
 }
 
-/// A program holds the OneDrive file `id` open for writing.
-fn open_for_writing(files_interface: &FilesInterface, id: &str) {
-    files_interface.open_handles.add_writer(NodeId(900), Some(id.to_owned()), Arc::new(tempfile::tempfile().unwrap()));
+/// The node id of the entry the mount shows at `rel`: each name of the path looked up, as
+/// the kernel does.
+fn node_id_at(files_interface: &FilesInterface, rel: &str) -> NodeId {
+    let (mut node_id, mut path) = (NodeId::ROOT, std::path::PathBuf::new());
+    for name in Path::new(rel).components() {
+        path.push(name);
+        node_id = files_interface.node_resolver.assign_node_id(&files_interface.directory_contents.find_entry_at(&path).unwrap(), node_id);
+    }
+    node_id
+}
+
+/// A program holds the file at `rel` open for writing.
+fn open_for_writing(files_interface: &FilesInterface, rel: &str) {
+    files_interface.open_handles.add_writer(node_id_at(files_interface, rel), Arc::new(tempfile::tempfile().unwrap()));
 }
 
 #[test]
@@ -106,7 +118,7 @@ fn a_free_up_removes_the_copies_nothing_keeps_and_counts_the_ones_it_leaves() {
     let built = build_mount_with(&[], &["B"]);
     let files_interface = built.mount.files_interface();
     download_all(&built);
-    open_for_writing(files_interface, "C");
+    open_for_writing(files_interface, "docs/c.txt");
     let bytes_of_a = bytes_on_disk(&built, "a.txt");
     let freed = block_on(files_interface.free_up(&built.path("")));
     let freed = freed.unwrap();
@@ -243,8 +255,8 @@ fn a_file_modified_between_the_listing_and_its_turn_is_kept() {
 fn a_file_opened_for_writing_between_the_listing_and_its_turn_is_kept() {
     let built = build_mount_with_downloaded_file();
     let held = built.tree_lock.blocking_lock();
-    let open_handles = Arc::clone(&built.mount.files_interface().open_handles);
-    let _opened = built.queue_on_write_operation_thread(move || open_handles.add_writer(NodeId(900), Some("A".into()), Arc::new(tempfile::tempfile().unwrap())));
+    let files_interface = Arc::clone(built.mount.files_interface());
+    let _opened = built.queue_on_write_operation_thread(move || open_for_writing(&files_interface, "a.txt"));
     let freed = free_up_behind_queued_jobs(&built, held, 1);
     assert_eq!((freed.files, freed.kept), (0, 1));
     assert!(built.disk.join("a.txt").is_file());
@@ -260,4 +272,20 @@ fn a_free_up_of_a_folder_whose_write_operation_thread_is_stopped_frees_nothing_a
     assert!(matches!(block_on(built.mount.files_interface().free_up(&built.path(""))), Err(FilesRefusal::Io(_))));
     assert!(matches!(block_on(built.mount.files_interface().free_up_all()), Err(FilesRefusal::Io(_))));
     assert!(built.disk.join("a.txt").is_file() && built.disk.join("b.txt").is_file() && built.disk.join("docs/c.txt").is_file());
+}
+
+/// A program makes a file, holds it open for writing, and saves it over a OneDrive file by
+/// rename: its handle writes that file of OneDrive from then on, and the file counts as open
+/// for writing by its OneDrive id.
+#[test]
+fn a_file_saved_over_a_onedrive_file_while_it_is_open_for_writing_counts_as_that_files_writer() {
+    let built = build_mount_with_downloaded_file();
+    let write_operations = Arc::clone(built.kernel_requests.write_operations());
+    built.run_on_write_operation_thread(move || {
+        write_operations.make(NodeId::ROOT, "a.txt.part", EntryToMake::FileOpenedForWriting).unwrap();
+        write_operations.rename(NodeId::ROOT, "a.txt.part", NodeId::ROOT, "a.txt", RenameMode::Replace).unwrap();
+    });
+    let status = built.mount.files_interface().find_path_status(&built.path("a.txt")).unwrap();
+    assert_eq!(status.onedrive_id, "A");
+    assert!(status.is_open_for_writing, "the handle that was opened on the local-only file writes the OneDrive file now");
 }

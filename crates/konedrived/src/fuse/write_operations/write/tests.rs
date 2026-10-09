@@ -117,7 +117,7 @@ fn a_local_only_file_written_waits_for_its_writer_and_is_due_once_closed() {
     f.ops.make(NodeId::ROOT, "new.txt", EntryToMake::File).unwrap();
     let node_id = f.node_id(NodeId::ROOT, "new.txt");
     let fh = f.ops.open_to_write(node_id).unwrap();
-    assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, onedrive_id: None, .. }) if written == node_id));
+    assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, .. }) if written == node_id));
     assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     f.open_handles.mark_written(node_id);
@@ -137,11 +137,11 @@ fn a_onedrive_file_is_modified_here_from_its_first_writer_until_it_is_closed_unt
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
     let fh = f.ops.open_to_write(node_id).unwrap();
-    assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
+    assert!(f.node_resolver.find_node_id("A").is_some_and(|node_id| f.open_handles.is_open_for_writing_by_node_id(node_id)));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
     f.ops.close_writer(fh);
-    assert!(!f.open_handles.is_open_for_writing_by_onedrive_id("A"));
+    assert!(!f.node_resolver.find_node_id("A").is_some_and(|node_id| f.open_handles.is_open_for_writing_by_node_id(node_id)));
     assert!(f.rows().is_empty());
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
 }
@@ -351,7 +351,7 @@ fn the_close_of_what_is_not_open_for_writing_records_nothing() {
     let fh = f.ops.open_to_write(f.node_id(NodeId::ROOT, "a.txt")).unwrap();
     f.ops.close_writer(crate::fuse::open_handles::Fh(fh.0 + 1));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
+    assert!(f.node_resolver.find_node_id("A").is_some_and(|node_id| f.open_handles.is_open_for_writing_by_node_id(node_id)));
 }
 
 /// A truncate by its path of a file a program holds open is that program's write: the node is

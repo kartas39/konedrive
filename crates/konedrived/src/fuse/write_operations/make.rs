@@ -44,7 +44,7 @@ impl WriteOperations {
         let local_only = LocalOnlyEntry { on_disk, place: EntryPlace::new(&parent_directory, name) };
         let made = self.describe_made_entry(&record, &local_only, &path)?;
         let node_id = self.node_resolver.assign_node_id(&made, parent);
-        let opened = file.filter(|_| entry_to_make == EntryToMake::FileOpenedForWriting).map(|file| self.add_writer_of_made_file(node_id, &made, file));
+        let opened = file.filter(|_| entry_to_make == EntryToMake::FileOpenedForWriting).map(|file| self.add_writer_of_made_file(node_id, file));
         let handle = local_only.on_disk.handle.clone();
         let undo = || {
             if let Some(fh) = opened {
@@ -87,12 +87,11 @@ impl WriteOperations {
         }
     }
 
-    /// Puts the writer of the file just made, whose node is `node_id` and whose entry is
-    /// `made`, into the open handles: the `fh` the program holds `file` open by. What is
+    /// Puts the writer of the file just made, whose node is `node_id`, into the open handles: the `fh` the program holds `file` open by. What is
     /// written into a file just made is its content: the node is marked written, and the
     /// outbox waits for its last writer already.
-    fn add_writer_of_made_file(&self, node_id: NodeId, made: &DirectoryEntry, file: File) -> Fh {
-        let fh = self.open_handles.add_writer(node_id, made.onedrive_id().map(str::to_owned), Arc::new(file)).0;
+    fn add_writer_of_made_file(&self, node_id: NodeId, file: File) -> Fh {
+        let fh = self.open_handles.add_writer(node_id, Arc::new(file)).0;
         self.open_handles.mark_written(node_id);
         fh
     }
