@@ -192,7 +192,7 @@ pub(super) fn wait_for_quiet(d: &mut Detection, now: i64) {
 
 /// What was at `rel` is removed: the file or directory of OneDrive that `row` is, or a
 /// local-only entry by its `handle`.
-fn detect_delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
+fn detect_removed_at(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
@@ -211,14 +211,14 @@ fn detect_delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> D
 
 /// The file or directory of OneDrive `id` was removed from `rel` here. Nothing when the base
 /// no longer has it.
-fn detect_removed(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(facts.base_row(id)?.iter().map(|base| detect_delete(Some(base), None, rel)).collect())
+fn detect_removed_by_id(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(facts.base_row(id)?.iter().map(|base| detect_removed_at(Some(base), None, rel)).collect())
 }
 
 /// A local-only entry is gone from `rel`, or is ignored from now on: what the
 /// outbox held of it is removed. Nothing for one the outbox never heard of.
 fn detect_forgotten(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![detect_delete(None, Some(handle.clone()), rel)] })
+    Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![detect_removed_at(None, Some(handle.clone()), rel)] })
 }
 
 /// Whether a directory on disk that is marked with `marked_with` backs the OneDrive

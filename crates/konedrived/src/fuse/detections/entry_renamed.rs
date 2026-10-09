@@ -12,7 +12,7 @@ use konedrive_tree::TreeError;
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{detect_local_only_entries, detect_local_only_entry, detect_removed, detect_forgotten, detect_moved, rebase, detect_modified, wait_for_writer};
+use super::{detect_local_only_entries, detect_local_only_entry, detect_removed_by_id, detect_forgotten, detect_moved, rebase, detect_modified, wait_for_writer};
 use super::{FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
@@ -61,13 +61,13 @@ impl FolderEvent for EntryRenamed {
                 let at = to.path();
                 // What was at the new place first: it frees the name.
                 let mut batch = OutboxBatch::of(match &displaced {
-                    Some(DisplacedEntry::InOneDrive(id)) => detect_removed(facts, id, &at)?,
+                    Some(DisplacedEntry::InOneDrive(id)) => detect_removed_by_id(facts, id, &at)?,
                     Some(DisplacedEntry::LocalOnly(handle)) => detect_forgotten(facts, handle, &at)?,
                     None => Vec::new(),
                 });
                 let directory = match entry {
                     MovedEntry::InOneDrive { id, directory, handle } => {
-                        batch.detections.extend(detect_moved_base_row(facts, &id, handle, &to)?);
+                        batch.detections.extend(detect_moved_by_id(facts, &id, handle, &to)?);
                         directory
                     }
                     MovedEntry::LocalOnlyFile { file, open, uploaded: true } => {
@@ -111,7 +111,7 @@ fn detect_saved_over(facts: &impl StoreFacts, file: &DiskEntry, open: bool, over
 
 /// The file or directory of OneDrive `id` is at `to` now. Its content is the base's unless
 /// the outbox holds new content of it. Nothing when the base no longer has it.
-fn detect_moved_base_row(facts: &impl StoreFacts, id: &str, handle: Option<FileHandle>, to: &EntryPlace) -> Result<Option<Detection>, TreeError> {
+fn detect_moved_by_id(facts: &impl StoreFacts, id: &str, handle: Option<FileHandle>, to: &EntryPlace) -> Result<Option<Detection>, TreeError> {
     let Some(base) = facts.base_row(id)? else { return Ok(None) };
     let mut moved = detect_moved(to, &base, handle);
     moved.same_content = !facts.has_update(id)?;
