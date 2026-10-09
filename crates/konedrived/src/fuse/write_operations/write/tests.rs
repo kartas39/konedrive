@@ -35,15 +35,28 @@ fn a_onedrive_file_is_modified_here_from_its_first_writer_until_it_is_closed_unt
     assert_eq!(opened.id.as_deref(), Some("A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
-    // A second writer records nothing more, and the state stays.
-    f.ops.open_to_write(node_id, false).unwrap();
-    assert_eq!(f.rows().len(), 1);
-    assert_eq!(f.open_writers.remove_writer(node_id), AfterClose::StillOpenElsewhere);
-    assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
     assert_eq!(f.open_writers.remove_writer(node_id), AfterClose::ContentUntouched);
     f.ops.closed(node_id, false);
     assert!(f.rows().is_empty());
     assert!(matches!(f.file_state("a.txt"), FileSyncState::Synced(..)));
+}
+
+/// A second writer finds the file modified here: it records nothing more, and the last close
+/// leaves the content changed, to be sent.
+#[test]
+fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_counts_as_changed() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"a");
+    let node_id = f.node_id(1, "a.txt");
+    f.ops.open_to_write(node_id, false).unwrap();
+    f.ops.open_to_write(node_id, false).unwrap();
+    assert_eq!(f.rows().len(), 1);
+    assert_eq!(f.open_writers.remove_writer(node_id), AfterClose::StillOpenElsewhere);
+    assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
+    assert_eq!(f.open_writers.remove_writer(node_id), AfterClose::ContentChanged);
+    f.ops.closed(node_id, true);
+    let row = &f.rows()[0];
+    assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Update, OutboxState::Waiting, Some(Reason::Changed)));
 }
 
 #[test]

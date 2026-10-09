@@ -23,7 +23,7 @@ use super::local_only_entries::folder_place;
 use super::node_table::{NodeKey, NodeTable};
 
 /// What a node id stands for, found again in the directory contents or on disk.
-enum FoundNode {
+enum NodeTarget {
     InOneDrive { entry: DirectoryEntry, rel: PathBuf },
     /// A local-only entry, with its name in the directory node `parent`: its place is not
     /// worked out yet.
@@ -64,7 +64,7 @@ impl NodeLookup {
     }
 
     /// What the node `node_id`, which is not the root, stands for now.
-    fn find_node(&self, node_id: u64) -> Option<FoundNode> {
+    fn find_node(&self, node_id: u64) -> Option<NodeTarget> {
         let (key, rel, name, parent) = {
             let node_table = crate::panic::lock(&self.node_table);
             let node = node_table.nodes.get(&node_id)?;
@@ -73,7 +73,7 @@ impl NodeLookup {
         match key {
             NodeKey::InOneDrive(id) => {
                 let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.unsent_changes().removed.contains(&id))?;
-                Some(FoundNode::InOneDrive { entry, rel })
+                Some(NodeTarget::InOneDrive { entry, rel })
             }
             NodeKey::LocalOnly(handle) => {
                 // Another file or directory at its path is not this node.
@@ -83,9 +83,9 @@ impl NodeLookup {
                 let in_onedrive = self.directory_contents.backing_directory().read_onedrive_id(&rel).and_then(|id| self.directory_contents.find_entry_by_id(&id, &name, &rel));
                 if let Some(entry) = in_onedrive {
                     crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), key_of(&entry));
-                    return Some(FoundNode::InOneDrive { entry, rel });
+                    return Some(NodeTarget::InOneDrive { entry, rel });
                 }
-                Some(FoundNode::LocalOnly { on_disk, rel, name, parent })
+                Some(NodeTarget::LocalOnly { on_disk, rel, name, parent })
             }
         }
     }
@@ -97,8 +97,8 @@ impl NodeLookup {
             return Some((self.directory_contents.root_entry(), PathBuf::new()));
         }
         match self.find_node(node_id)? {
-            FoundNode::InOneDrive { entry, rel } => Some((entry, rel)),
-            FoundNode::LocalOnly { on_disk, rel, name, parent } => {
+            NodeTarget::InOneDrive { entry, rel } => Some((entry, rel)),
+            NodeTarget::LocalOnly { on_disk, rel, name, parent } => {
                 // Its place is in the directory its node is in. A directory that is not
                 // found any more is referred to by its path alone.
                 let directory = self.find_directory(parent).unwrap_or_else(|| Directory { id: None, rel: rel.parent().map(Path::to_owned).unwrap_or_default() });
@@ -113,8 +113,8 @@ impl NodeLookup {
             return Some(Directory { id: self.directory_contents.root_id().filter(|id| !id.is_empty()), rel: PathBuf::new() });
         }
         match self.find_node(node_id)? {
-            FoundNode::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| Directory { id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), rel }),
-            FoundNode::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(Directory { id: None, rel }),
+            NodeTarget::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| Directory { id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), rel }),
+            NodeTarget::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(Directory { id: None, rel }),
         }
     }
 

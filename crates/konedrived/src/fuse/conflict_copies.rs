@@ -70,7 +70,7 @@ impl ConflictCopies {
                 continue;
             }
             if let Err(e) = self.backing_directory.rename(rel, &to) {
-                tracing::warn!("{} could not be kept beside the item that comes to its name: {e}", rel.display());
+                tracing::warn!("{} could not be kept beside what comes to its name from OneDrive: {e}", rel.display());
                 return;
             }
             let uploaded = !self.upload_rules.stays_local(&directory.rel, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
