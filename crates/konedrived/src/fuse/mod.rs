@@ -33,25 +33,32 @@
 //! - The folder as it is: [`backing_directory`] (the directory on disk the mount lies over,
 //!   by its descriptor) and [`unsent_changes`] (what was moved, removed or changed here and
 //!   is not sent yet) depend on nothing; [`directory_contents`] (what each directory of the
-//!   mount holds, each entry with its sync state) is over those two; [`node_table`] holds the
-//!   node ids given to the kernel, and [`node_resolver`] is over the directory contents and
-//!   owns the table; [`attributes`] is a function of an entry and the access mode; the
-//!   values these pass around are a [`directory_reference`], an [`entry_place`] and a
-//!   [`local_only_entry`].
+//!   mount holds, each entry with its sync state, and the one rule of what the mount shows
+//!   as local-only) is over those two; [`node_table`] holds the node ids given to the
+//!   kernel, which are the kernel's inode numbers, and [`node_resolver`] is over the
+//!   directory contents and the backing directory, and owns the table; [`attributes`] is a
+//!   function of an entry and the access mode, with the modes the backing directory's
+//!   table of write bits gives; the values these pass around are a [`directory_reference`],
+//!   an [`entry_place`] and a [`local_only_entry`].
 //! - A change a program makes: [`write_operation_thread`] is the one thread such a change
 //!   is made on, and depends on nothing; [`access_mode_switch`] holds whether programs may
-//!   change the folder, and is switched to read-only on that thread; [`upload_rules`] (what is uploaded
-//!   at all) and [`detections`] (what a change is recorded as, a function of typed events)
-//!   depend on nothing but the store's facts; the [`outbox_recorder`] writes the detections
-//!   and wakes the outbox's worker; [`open_handles`] holds what programs hold open, and
-//!   alone says what is open for writing; [`write_operations`] are the operations
-//!   themselves — each a lookup, a decision, the disk, a record — over the directory
-//!   contents, the backing directory, the node resolver, the open handles, the recorder, the
-//!   rules and the switch; the [`unrecorded_entry_scan`] finds what the outbox lost, over the
-//!   directory contents, the backing directory, the rules, the recorder and the switch.
+//!   change the folder, and is switched to read-only on that thread; [`upload_rules`] (what
+//!   is uploaded at all) touch no disk, and [`local_only_entry`] puts them together with
+//!   the backing directory: whether what is at a place is uploaded from there, and the walk
+//!   of what is unmarked below a place; [`detections`] (what a change is recorded as, a
+//!   function of typed events) depend on nothing but the store's facts; the
+//!   [`outbox_recorder`] writes the detections and wakes the outbox's worker;
+//!   [`open_handles`] holds what programs hold open, and alone says what is open for
+//!   writing; [`write_operations`] are the operations themselves — each a lookup, a
+//!   decision, the disk, a record — over the directory contents, the backing directory, the
+//!   node resolver, the open handles, the recorder, the rules and the switch; the
+//!   [`unrecorded_entry_scan`] finds what the outbox lost, over the directory contents, the
+//!   backing directory, the rules, the recorder and the switch.
 //! - A change from OneDrive: [`inotify_bridge`] brings it to whoever watches the folder, over
-//!   the node resolver and the directory contents; what finds the user's own in its way is
-//!   moved aside by [`conflict_copies`].
+//!   the node resolver and the directory contents, with the modes of the backing
+//!   directory's table of write bits; what finds the user's own in its way is moved aside
+//!   by [`conflict_copies`], over the backing directory, the directory contents and the
+//!   rules.
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and the [`range_fetcher`] fetches the ranges, over it; [`download_states`] holds the
 //!   state of each file's download and does no I/O; [`file_downloader`] downloads a file
@@ -64,10 +71,14 @@
 //!   directory, over the backing directory, the directory contents, the switch, the range
 //!   fetcher, the conflict copies, the recorder, the pins, the bridge and the pinned file
 //!   downloader; [`kernel_requests`] answers the kernel, in five groups, each over the parts
-//!   it uses; [`files_interface`] answers the daemon's bus interface `Files`, over the
-//!   directory contents, the backing directory, the download states, the two downloaders,
-//!   the open handles, the pins and the bridge.
-//! - The mount itself: [`mount`] holds the session, the [`fuse_connection`] and the parts.
+//!   it uses — the write requests over the write operations and their thread;
+//!   [`files_interface`] answers the daemon's bus interface `Files`, over the directory
+//!   contents, the backing directory, the download states, the two downloaders, the open
+//!   handles, the pins and the bridge.
+//! - The mount itself: [`mount`] holds the session, the [`fuse_connection`] and the parts,
+//!   and hands out the four the daemon asks: the access mode switch, the cycle step, the
+//!   `Files` interface and the backing directory. Its build takes a stale mount off the
+//!   folder first ([`stale_mount`]).
 //! - After the daemon's end: [`stale_mount`] takes off the mount a daemon that died left, and
 //!   [`tidy_step`] leaves each folder a plain directory without its write bits.
 
