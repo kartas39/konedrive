@@ -27,7 +27,7 @@ impl Shared {
     /// open for writing.
     pub(super) fn make(&self, parent: u64, name: &str, dir: bool, open: bool) -> Result<Made, Errno> {
         self.may_change()?;
-        let above = self.dir(parent).ok_or(Errno::ENOENT)?;
+        let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
         // No trash directory of a file manager either: what is removed here goes to
         // OneDrive's recycle bin, and a trash inside the folder would be uploaded.
         if daemon_owned(name.as_ref()) || (dir && parent == 1 && name.starts_with(".Trash")) {
@@ -77,7 +77,7 @@ impl Shared {
             Some(base) => Entry::Item(Row { name: name.to_owned(), ..base.clone() }),
             None => Entry::Local(Local { name: name.to_owned(), object }),
         };
-        let ino = self.ino_of(&entry, parent);
+        let ino = self.resolve.ino_of(&entry, parent);
         let attr = self.attr_of(&entry, ino, &rel);
         let id = again.map(|base| base.id);
         let handle = file.filter(|_| open).map(|file| {

@@ -22,6 +22,7 @@ use super::under::{set_tree, Under};
 use super::view::View;
 use super::nodes::Nodes;
 use super::requests::Requests;
+use super::resolve::Resolve;
 use super::shared::{other, Shared, Writing};
 
 /// A folder served as a mount, for as long as this is held.
@@ -61,12 +62,15 @@ impl Mount {
             // Before the mount: afterwards this path is the mount.
             let under = Arc::new(Under::open(&root.path)?);
             let view = Arc::new(View::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
+            let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
+            let resolve = Arc::new(Resolve::new(Arc::clone(&view), Arc::clone(&nodes)));
             let shared = Arc::new(Shared {
                 root: root.clone(),
                 under,
                 view,
                 store,
-                nodes: Mutex::new(Nodes { next: 1, ..Nodes::default() }),
+                nodes,
+                resolve,
                 source,
                 report,
                 pool,

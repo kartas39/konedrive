@@ -127,12 +127,12 @@ impl Requests {
         if let Err(e) = s.may_change() {
             return reply.error(e);
         }
-        let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.node(ino.0) {
+        let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.resolve.node(ino.0) {
             Some((entry, rel)) => reply.attr(&TTL, &s.attr_of(&entry, ino.0, &rel)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {
-            let (Some(mtime), Some((_, rel))) = (mtime, s.node(ino.0)) else { return };
+            let (Some(mtime), Some((_, rel))) = (mtime, s.resolve.node(ino.0)) else { return };
             let at = match mtime {
                 TimeOrNow::SpecificTime(at) => at,
                 TimeOrNow::Now => SystemTime::now(),

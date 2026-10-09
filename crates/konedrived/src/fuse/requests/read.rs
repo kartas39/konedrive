@@ -37,7 +37,7 @@ impl Requests {
         if flags.0 & libc::O_ACCMODE != libc::O_RDONLY || flags.0 & libc::O_TRUNC != 0 {
             return self.opened_to_write(ino, flags.0 & libc::O_TRUNC != 0, reply);
         }
-        let Some((entry, rel)) = s.node(ino.0) else { return reply.error(Errno::ENOENT) };
+        let Some((entry, rel)) = s.resolve.node(ino.0) else { return reply.error(Errno::ENOENT) };
         let on_disk = match &entry {
             Entry::Item(row) => s.under.has_copy(&rel, &row.id),
             Entry::Local(_) => true,

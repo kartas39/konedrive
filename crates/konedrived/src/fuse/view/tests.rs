@@ -15,7 +15,7 @@ fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
 }
 
 /// A detection of item `id`, which the base has as `name` in the root.
-fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Option<&str>)) -> Detection {
+pub(in crate::fuse) fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Option<&str>)) -> Detection {
     Detection {
         kind,
         item_id: Some(id.into()),
@@ -36,7 +36,7 @@ fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Opti
 /// with `detections` waiting in the outbox, over a folder on disk that holds nothing. The
 /// store is filled before the view has it: a view reads what its own connection wrote only
 /// once.
-fn view(detections: Vec<Detection>) -> (tempfile::TempDir, View) {
+pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, View) {
     let mut store = TreeStore::in_memory().unwrap();
     let changes = [
         Change::Root(row("R", None, "root", Kind::Folder)),

@@ -10,7 +10,6 @@ use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
 use super::changes::{based, forgotten, leaves, rebase, waits, Place};
 use super::view::{Dir, Entry};
-use super::nodes::Key;
 use super::shared::{errno, Shared};
 use crate::folder::disk::daemon_owned;
 
@@ -19,7 +18,7 @@ impl Shared {
     /// stands there unless `keep` says to refuse that.
     pub(super) fn rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<(), Errno> {
         self.may_change()?;
-        let (from_dir, to_dir) = (self.dir(parent).ok_or(Errno::ENOENT)?, self.dir(new_parent).ok_or(Errno::ENOENT)?);
+        let (from_dir, to_dir) = (self.resolve.dir(parent).ok_or(Errno::ENOENT)?, self.resolve.dir(new_parent).ok_or(Errno::ENOENT)?);
         if daemon_owned(new_name.as_ref()) {
             return Err(Errno::EPERM);
         }
@@ -45,7 +44,7 @@ impl Shared {
         if src.id().is_some() && local_dir {
             return Err(Errno::EXDEV);
         }
-        let src_ino = self.ino_of(&src, parent);
+        let src_ino = self.resolve.ino_of(&src, parent);
         let open = self.writers.open(src_ino);
         // The folder under the mount first: whatever the item or object has there moves, and
         // what stood at the new place goes.
@@ -146,13 +145,12 @@ impl Shared {
             // The file is the item's content from here on: read as its downloaded copy.
             let _ = self.under.mark_copy(&to, id);
         }
-        let mut nodes = crate::panic::lock(&self.nodes);
-        nodes.moved(src_ino, new_parent, new_name);
-        if let (Some(id), Entry::Local(local)) = (&taken_over, &src) {
-            // The file's node is the item's from here on: whoever looks the name up gets
-            // the node the new content is read and written through.
-            nodes.rekey(&Key::Local(local.object.handle.clone()), Key::Item(id.clone()));
-        }
+        // The node of a file that took over an item's name is the item's from here on.
+        let taken = match (&taken_over, &src) {
+            (Some(id), Entry::Local(local)) => Some((&local.object.handle, id.as_str())),
+            _ => None,
+        };
+        self.resolve.renamed(src_ino, new_parent, new_name, taken);
         Ok(())
     }
 }

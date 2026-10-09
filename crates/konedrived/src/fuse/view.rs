@@ -100,4 +100,4 @@ impl View {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

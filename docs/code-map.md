@@ -224,7 +224,8 @@ daemon shows OneDrive.
   the overlay leaves them, and the files and directories OneDrive has no item for yet.
 - `view/places.rs` — where the folder shows an item, what stands at a path, and the
   directories down to a place marked with the view's items.
-- `local.rs` — a node resolved: the entry of the folder it is now.
+- `resolve.rs` — `Resolve`: over the view and the nodes, which entry of the folder a node is
+  now and which node an entry is; an object that got its item keeps its node. `[tests]`
 - `overlay.rs` — `Overlay`: what the outbox's rows say of the folder, a function of the store
   alone: the items moved, removed or changed here. `[tests]`
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the

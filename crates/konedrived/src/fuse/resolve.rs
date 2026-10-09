@@ -1,12 +1,33 @@
-//! The nodes of the mount resolved: which entry of the folder a node is now.
+//! The nodes of the mount resolved: which entry of the folder a node is, and which node an
+//! entry is.
+//!
+//! The kernel names what it asks about by node. [`Nodes`] is the map alone: it knows a key
+//! and a place for each node, and nothing of the store or the disk. [`Resolve`] is the part
+//! over it and the [`View`]: it gives an entry its node, says what a node is now — an item is
+//! looked up again in the view, an object without an item by its handle in the folder under
+//! the mount — and keeps the node of an object that got its item.
+//!
+//! The map is shared with what tells the kernel of changes; who changes a node's key or
+//! place does it through here.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use super::nodes::Key;
-use super::shared::Shared;
-use super::view::{Dir, Entry, Local};
+use konedrive_fs::handle::FileHandle;
 
-impl Shared {
+use super::nodes::{Key, Nodes};
+use super::view::{Dir, Entry, Local, View};
+
+pub(super) struct Resolve {
+    view: Arc<View>,
+    nodes: Arc<Mutex<Nodes>>,
+}
+
+impl Resolve {
+    pub(super) fn new(view: Arc<View>, nodes: Arc<Mutex<Nodes>>) -> Self {
+        Resolve { view, nodes }
+    }
+
     /// The node of `entry`, which stands in the directory `parent`. An object that got its
     /// item since the kernel was told of it keeps its node.
     pub(super) fn ino_of(&self, entry: &Entry, parent: u64) -> u64 {
@@ -66,4 +87,29 @@ impl Shared {
         let parent = crate::panic::lock(&self.nodes).items.get(&ino)?.place.0;
         Some((parent, self.dir(parent)?))
     }
+
+    /// The node item `id` is, when the kernel was told of one.
+    pub(super) fn item_node(&self, id: &str) -> Option<u64> {
+        crate::panic::lock(&self.nodes).inos.get(&Key::Item(id.to_owned())).copied()
+    }
+
+    /// The node `ino` stands as `name` in `parent` now. `taken`: it is the object that took
+    /// over the name of this item, and is the item's node from here on — whoever looks the
+    /// name up gets the node the new content is read and written through.
+    pub(super) fn renamed(&self, ino: u64, parent: u64, name: &str, taken: Option<(&FileHandle, &str)>) {
+        let mut nodes = crate::panic::lock(&self.nodes);
+        nodes.moved(ino, parent, name);
+        if let Some((object, id)) = taken {
+            nodes.rekey(&Key::Local(object.clone()), Key::Item(id.to_owned()));
+        }
+    }
+
+    /// The object `object` is gone, and no other is ever this one: nothing is found by it
+    /// again.
+    pub(super) fn forget(&self, object: &FileHandle) {
+        crate::panic::lock(&self.nodes).inos.remove(&Key::Local(object.clone()));
+    }
 }
+
+#[cfg(test)]
+mod tests;

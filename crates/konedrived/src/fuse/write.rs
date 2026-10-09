@@ -15,7 +15,6 @@ use konedrive_tree::Row;
 
 use super::changes::{based, settles, waits, Place};
 use super::view::Entry;
-use super::nodes::Key;
 use super::read::Handle;
 use super::shared::{errno, Shared};
 
@@ -39,7 +38,7 @@ impl Shared {
     /// Whether writing node `ino` needs its content downloaded first: an item's file that
     /// is not downloaded and is not cut to nothing.
     pub(super) fn needs_download(&self, ino: u64, empty: bool) -> Option<(Row, std::path::PathBuf)> {
-        match self.node(ino)? {
+        match self.resolve.node(ino)? {
             (Entry::Item(row), rel) if !empty && row.size > 0 && !self.under.has_copy(&rel, &row.id) => Some((row, rel)),
             _ => None,
         }
@@ -48,7 +47,7 @@ impl Shared {
     /// Opens node `ino` for writing, cut to nothing when `truncate`. The handle.
     pub(super) fn open_to_write(&self, ino: u64, truncate: bool) -> Result<u64, Errno> {
         self.may_change()?;
-        let (entry, rel) = self.node(ino).ok_or(Errno::ENOENT)?;
+        let (entry, rel) = self.resolve.node(ino).ok_or(Errno::ENOENT)?;
         if entry.is_dir() {
             return Err(Errno::EISDIR);
         }
@@ -71,7 +70,7 @@ impl Shared {
     /// The last writer of node `ino` closed it: its content is ready to be sent, or, when
     /// nothing was written, the outbox lets go of it.
     pub(super) fn closed(&self, ino: u64, changed: bool) {
-        let untouched = match self.node(ino) {
+        let untouched = match self.resolve.node(ino) {
             Some((Entry::Item(row), _)) if !changed => Some(row),
             _ => None,
         };
@@ -81,10 +80,10 @@ impl Shared {
         };
         // A node the item no longer is — its name was taken over by a file saved over it —
         // says nothing of the item's content.
-        if crate::panic::lock(&self.nodes).inos.get(&Key::Item(row.id.clone())) != Some(&ino) {
+        if self.resolve.item_node(&row.id) != Some(ino) {
             return;
         }
-        let Some((_, above)) = self.above(ino) else { return };
+        let Some((_, above)) = self.resolve.above(ino) else { return };
         // The item is where it stands, with the content the base has: the row that held it
         // goes, or is the move it was before.
         let recorded = self.record(move |s| {
@@ -101,7 +100,7 @@ impl Shared {
     /// Cuts or extends node `ino` to `size`.
     pub(super) fn truncate(&self, ino: u64, size: u64) -> Result<(), Errno> {
         self.may_change()?;
-        let (entry, rel) = self.node(ino).ok_or(Errno::ENOENT)?;
+        let (entry, rel) = self.resolve.node(ino).ok_or(Errno::ENOENT)?;
         if entry.is_dir() {
             return Err(Errno::EISDIR);
         }
@@ -121,7 +120,7 @@ impl Shared {
     /// (`open`), or ready to be sent.
     pub(super) fn content(&self, ino: u64, open: bool) -> Result<(), Errno> {
         // Gone since: removed while it was open.
-        let (Some((entry, rel)), Some((_, above))) = (self.node(ino), self.above(ino)) else { return Ok(()) };
+        let (Some((entry, rel)), Some((_, above))) = (self.resolve.node(ino), self.resolve.above(ino)) else { return Ok(()) };
         let Some(object) = self.under.object(&rel) else { return Ok(()) };
         let name = entry.name().to_owned();
         let recorded = match entry {

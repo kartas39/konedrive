@@ -22,6 +22,7 @@ use super::nodes::Nodes;
 use super::recorder::Job;
 use super::writers::Writers;
 use super::read::{Handle, Reader};
+use super::resolve::Resolve;
 use super::under::Under;
 use super::view::View;
 
@@ -33,7 +34,11 @@ pub(super) struct Shared {
     pub(super) view: Arc<View>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
-    pub(super) nodes: Mutex<Nodes>,
+    /// The node ids the kernel knows ([`super::nodes`]): shared by what resolves them and what
+    /// tells the kernel of changes.
+    pub(super) nodes: Arc<Mutex<Nodes>>,
+    /// Which entry of the folder a node is ([`super::resolve`]).
+    pub(super) resolve: Arc<Resolve>,
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
     pub(super) pool: Arc<TransferPool>,

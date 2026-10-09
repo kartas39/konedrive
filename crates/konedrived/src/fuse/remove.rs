@@ -4,7 +4,6 @@ use fuser::Errno;
 
 use super::changes::{based, forgotten, leaves};
 use super::view::{Dir, Entry};
-use super::nodes::Key;
 use super::shared::{errno, Shared};
 
 impl Shared {
@@ -13,7 +12,7 @@ impl Shared {
     /// is forgotten there.
     pub(super) fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
         self.may_change()?;
-        let above = self.dir(parent).ok_or(Errno::ENOENT)?;
+        let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
         let entry = self.view.entry(&above, name).ok_or(Errno::ENOENT)?;
         match (entry.is_dir(), dir) {
             (true, false) => return Err(Errno::EISDIR),
@@ -48,7 +47,7 @@ impl Shared {
         }
         if let Entry::Local(local) = &entry {
             // The object is gone, and no other is ever this one: nothing is found by it again.
-            crate::panic::lock(&self.nodes).inos.remove(&Key::Local(local.object.handle.clone()));
+            self.resolve.forget(&local.object.handle);
         }
         Ok(())
     }

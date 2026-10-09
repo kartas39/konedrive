@@ -19,10 +19,10 @@ impl Requests {
     /// The entry `name` of `parent`, as the folder has it now.
     pub(super) fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let s = &self.0;
-        let found = s.dir(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.view.entry(&dir, name)?, dir.rel.join(name))));
+        let found = s.resolve.dir(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.view.entry(&dir, name)?, dir.rel.join(name))));
         match found {
             Some((entry, rel)) => {
-                let ino = s.ino_of(&entry, parent.0);
+                let ino = s.resolve.ino_of(&entry, parent.0);
                 reply.entry(&TTL, &s.attr_of(&entry, ino, &rel), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
@@ -44,7 +44,7 @@ impl Requests {
     }
 
     pub(super) fn attributes(&self, ino: INodeNo, reply: ReplyAttr) {
-        match self.0.node(ino.0) {
+        match self.0.resolve.node(ino.0) {
             Some((entry, rel)) => reply.attr(&TTL, &self.0.attr_of(&entry, ino.0, &rel)),
             None => reply.error(Errno::ENOENT),
         }
@@ -54,7 +54,7 @@ impl Requests {
     /// part of the listing after it.
     fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Dir, Arc<Vec<Entry>>)> {
         let s = &self.0;
-        let dir = s.dir(ino.0)?;
+        let dir = s.resolve.dir(ino.0)?;
         let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
         let entries = kept.unwrap_or_else(|| {
             let entries = Arc::new(s.view.entries(&dir));
@@ -67,7 +67,7 @@ impl Requests {
     pub(super) fn listed(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
         let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = self.0.ino_of(entry, ino.0);
+            let child = self.0.resolve.ino_of(entry, ino.0);
             let kind = if entry.is_dir() { FileType::Directory } else { FileType::RegularFile };
             if reply.add(INodeNo(child), i as u64 + 1, kind, entry.name()) {
                 break;
@@ -80,7 +80,7 @@ impl Requests {
         let s = &self.0;
         let Some((dir, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = s.ino_of(entry, ino.0);
+            let child = s.resolve.ino_of(entry, ino.0);
             let attr = s.attr_of(entry, child, &dir.rel.join(entry.name()));
             if reply.add(INodeNo(child), i as u64 + 1, entry.name(), &TTL, &attr, Generation(0)) {
                 break;
@@ -123,7 +123,7 @@ impl Requests {
             // The folder's own: what its registration and its first cycle wrote on it.
             return s.under.attribute(Path::new(""), name);
         }
-        let (entry, rel) = s.node(ino.0)?;
+        let (entry, rel) = s.resolve.node(ino.0)?;
         if name == XATTR_SYNC {
             return s.under.attribute(&rel, name);
         }
