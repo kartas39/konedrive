@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::write_operations::tests::{at, folder};
 
-/// What has a row keeps the one it has; what stays on this computer gets none.
+/// What has a row keeps the one it has; what is ignored gets none.
 #[test]
 fn the_local_only_entries_without_a_row_are_recorded_anew() {
     let f = folder(Vec::new());

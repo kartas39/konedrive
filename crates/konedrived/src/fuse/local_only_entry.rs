@@ -24,7 +24,7 @@ pub(super) struct LocalOnlyEntry {
 const MOST_ENTRIES: usize = 50_000;
 
 /// The local-only entries at `name` of `directory` and below it, each at its place, the top
-/// first: what is uploaded of it from now on. Nothing of what stays on this computer, of a
+/// first: what is uploaded of it from now on. Nothing of what is ignored, of a
 /// directory that is marked with a OneDrive id, or of what is neither a file nor a directory.
 pub(super) fn collect_local_only_entries(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &DirectoryReference, name: &str) -> Vec<LocalOnlyEntry> {
     let mut entries = Vec::new();
@@ -35,8 +35,8 @@ pub(super) fn collect_local_only_entries(backing_directory: &BackingDirectory, u
 fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &DirectoryReference, name: &str, into: &mut Vec<LocalOnlyEntry>) {
     let rel = directory.path.join(name);
     let Some(on_disk) = backing_directory.find_disk_entry(&rel) else { return };
-    let stays = upload_rules.is_ignored(&directory.path, name, |at| backing_directory.read_onedrive_id(at).is_some());
-    if stays || backing_directory.read_onedrive_id(&rel).is_some() {
+    let is_ignored = upload_rules.is_ignored(&directory.path, name, |at| backing_directory.read_onedrive_id(at).is_some());
+    if is_ignored || backing_directory.read_onedrive_id(&rel).is_some() {
         return;
     }
     let is_directory = on_disk.metadata.kind == EntryKind::Directory;

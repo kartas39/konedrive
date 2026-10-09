@@ -12,7 +12,7 @@ use konedrive_tree::TreeError;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::{detect_local_only_entries, FolderEvent, OutboxBatch, StoreFacts};
 
-/// The local-only entries the folder holds, already without what stays on this computer.
+/// The local-only entries the folder holds, already without what is ignored.
 #[derive(Debug)]
 pub(in crate::fuse) struct UnrecordedEntries(pub(in crate::fuse) Vec<LocalOnlyEntry>);
 

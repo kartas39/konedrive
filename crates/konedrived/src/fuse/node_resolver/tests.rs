@@ -162,7 +162,7 @@ fn a_local_only_file_renamed_over_a_onedrive_files_name_takes_that_files_node() 
 }
 
 #[test]
-fn a_local_only_entry_that_is_forgotten_gets_a_new_node_id_if_it_is_ever_seen_again() {
+fn a_local_only_entry_whose_node_is_dropped_gets_a_new_node_id_if_it_is_ever_seen_again() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("made.txt"), b"mine").unwrap();
     let entry = local_only(&contents, "made.txt");

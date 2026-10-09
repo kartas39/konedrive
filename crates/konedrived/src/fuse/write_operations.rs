@@ -69,7 +69,7 @@ impl WriteOperations {
         WriteOperations { directory_contents, backing_directory, node_resolver, open_writers, outbox_recorder, upload_rules, access_mode }
     }
 
-    /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.
+    /// Whether what is `name` in `directory` and is not in OneDrive is ignored.
     fn is_ignored(&self, directory: &DirectoryReference, name: &str) -> bool {
         self.upload_rules.is_ignored(&directory.path, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
     }

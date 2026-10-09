@@ -1,7 +1,7 @@
 //! A directory opened, read and closed (`opendir`, `readdir`, `readdirplus`, `releasedir`).
 //!
 //! What an open directory holds is listed when it is read from its start, as what its
-//! entries are made from ([`ListedName`]), and kept with its file handle: every part of the
+//! entries are made from ([`ListedName`]), and kept with its `fh`: every part of the
 //! reading after that hands out the same names. `readdir` answers from the listed names alone;
 //! `readdirplus` makes the entry of each name it answers with, for its attributes.
 

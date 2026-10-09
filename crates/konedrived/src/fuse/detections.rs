@@ -215,7 +215,7 @@ fn detect_removed(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<D
     Ok(facts.base_row(id)?.iter().map(|base| detect_delete(Some(base), None, rel)).collect())
 }
 
-/// A local-only entry is gone from `rel`, or stays on this computer from now on: what the
+/// A local-only entry is gone from `rel`, or is ignored from now on: what the
 /// outbox held of it is removed. Nothing for one the outbox never heard of.
 fn detect_forgotten(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
     Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![detect_delete(None, Some(handle.clone()), rel)] })

@@ -5,7 +5,7 @@
 //!
 //! What is in OneDrive is at its new place at once, and is moved in OneDrive by the outbox.
 //! A local-only entry is uploaded from its new place, or no longer uploaded when that place
-//! stays on this computer; what is in OneDrive cannot be moved to such a place (`EXDEV`): a
+//! is ignored; what is in OneDrive cannot be moved to such a place (`EXDEV`): a
 //! program that copies it there and removes it here does what that means. A local-only file
 //! renamed over a OneDrive file is that file's new content, and its node that file's.
 

@@ -9,7 +9,7 @@
 //!
 //! What it answers:
 //!
-//! - whether what is not in OneDrive stays on this computer: by its own name
+//! - whether what is not in OneDrive is ignored, and so never uploaded: by its own name
 //!   ([`UploadRules::is_ignored`]), or by a directory it is in
 //!   ([`UploadRules::is_in_ignored_directory`]);
 //! - which names a program may not make: the daemon's own ([`UploadRules::daemon_owned`])
@@ -21,7 +21,7 @@ use crate::folder::disk::daemon_owned;
 use crate::local::SharedIgnore;
 
 pub(super) struct UploadRules {
-    /// The account's ignore list: what stays on this computer only.
+    /// The account's ignore list: what is never uploaded.
     ignore: SharedIgnore,
 }
 
@@ -30,7 +30,7 @@ impl UploadRules {
         UploadRules { ignore }
     }
 
-    /// Whether what is in the directory `dir` and is not in OneDrive stays on this computer
+    /// Whether what is in the directory `dir` and is not in OneDrive is ignored
     /// whatever its name: a directory it is in, which is not in OneDrive either, is on the
     /// ignore list. `in_onedrive` says whether the directory at a path is marked with a
     /// OneDrive id: one that is, is OneDrive's, whatever its name.
@@ -46,8 +46,8 @@ impl UploadRules {
         false
     }
 
-    /// Whether what is `name` in the directory `dir` and is not in OneDrive stays on this
-    /// computer: its name is on the ignore list, or it is in a directory that stays
+    /// Whether what is `name` in the directory `dir` and is not in OneDrive is ignored:
+    /// its name is on the ignore list, or it is in a directory that is
     /// ([`Self::is_in_ignored_directory`]).
     pub(super) fn is_ignored(&self, dir: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignored = crate::panic::read(&self.ignore).matches(name.as_ref());

@@ -1,7 +1,7 @@
 //! A file or a directory a program renamed or moved inside the folder.
 //!
 //! What is in OneDrive is moved there by the outbox. A local-only entry is uploaded from its
-//! new place, or no longer uploaded when the new place stays on this computer. A local-only
+//! new place, or no longer uploaded when the new place is ignored. A local-only
 //! file renamed over a OneDrive file is that file's new content: programs save that way.
 
 use std::path::{Path, PathBuf};
@@ -36,11 +36,11 @@ pub(in crate::fuse) enum MovedEntry {
     /// copy, or its directory.
     InOneDrive { id: String, directory: bool, handle: Option<FileHandle> },
     /// A local-only file. `uploaded`: the new place is one things are uploaded from — else
-    /// the file stays on this computer from now on. `open`: a program holds it open for
+    /// the file is ignored from now on. `open`: a program holds it open for
     /// writing.
     LocalOnlyFile { file: DiskEntry, open: bool, uploaded: bool },
     /// A local-only directory. `uploaded` is what of it is uploaded from the new place:
-    /// itself first, then all it holds. Nothing, when it stays on this computer from now on.
+    /// itself first, then all it holds. Nothing, when it is ignored from now on.
     LocalOnlyDirectory { handle: FileHandle, uploaded: Vec<LocalOnlyEntry> },
 }
 
@@ -128,7 +128,7 @@ fn detect_uploaded_from(facts: &impl StoreFacts, file: &DiskEntry, open: bool, t
     Ok(d)
 }
 
-/// A local-only entry stays on this computer from now on, with what is below it: what the
+/// A local-only entry is ignored from now on, with what is below it: what the
 /// outbox held of it is removed, and so is every row of a local-only entry at and below the
 /// place it came from that is not being sent.
 fn detect_kept_off_onedrive(facts: &impl StoreFacts, handle: &FileHandle, from: &Path, at: &Path, batch: &mut OutboxBatch) -> Result<(), TreeError> {

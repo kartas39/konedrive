@@ -122,7 +122,7 @@ fn a_local_only_file_moved_while_it_is_uploaded_is_moved() {
     assert_eq!(kinds(renamed, &store), [pair(OutboxKind::Move, "#1")]);
 }
 
-/// Into a place that stays on this computer: its row is removed, and it is no longer sent.
+/// Into a place that is ignored: its row is removed, and it is no longer sent.
 #[test]
 fn a_local_only_file_moved_where_nothing_is_uploaded_is_forgotten() {
     let mine = file(1, 3);

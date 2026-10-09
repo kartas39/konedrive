@@ -109,7 +109,7 @@ pub struct WriteSetup {
     /// The folder's tree lock: a change is recorded under it, as a cycle of the delta listing
     /// holds it from staging to its swap.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The account's ignore list: what stays on this computer only.
+    /// The account's ignore list: what is never uploaded.
     pub ignore: crate::local::SharedIgnore,
     /// For conflict copies: `name-<machine>.ext`.
     pub machine_name: String,
@@ -293,7 +293,7 @@ impl Mount {
         remove_write_bits(&self.folder);
     }
 
-    /// [`stop`](Self::stop), for a folder that is forgotten: it is the user's again, to keep
+    /// [`stop`](Self::stop), for a folder that is taken out of sync: it is the user's again, to keep
     /// or to remove, and has its write bits.
     pub fn stop_and_restore_write_bits(&self) {
         self.stop();
