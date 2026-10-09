@@ -20,9 +20,13 @@ use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::Fh;
 
 impl WriteOperations {
-    /// Makes `name` in the directory node `parent`, as `entry_to_make` says. The entry that
-    /// was made, and the `fh` of the file when the program holds it open.
-    pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, entry_to_make: EntryToMake) -> Result<(DirectoryEntry, Option<Fh>), Errno> {
+    /// Makes `name` in the directory node `parent`, as `entry_to_make` says. The node id of
+    /// what was made, its entry, and the `fh` of the file when the program holds it open.
+    ///
+    /// The node id is given, and the file a program holds open is put into the open
+    /// handles, before the entry is recorded: whether it is open for writing is then asked
+    /// of the open handles, where it is true, and not worked out from what was asked for.
+    pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, entry_to_make: EntryToMake) -> Result<(NodeId, DirectoryEntry, Option<Fh>), Errno> {
         self.access_mode_switch.check_read_write()?;
         let parent_directory = check_make(entry_to_make, self.find_make_place(parent, name))?;
         let rel = parent_directory.path.join(name);
@@ -37,29 +41,47 @@ impl WriteOperations {
         // Asked once the directories down to the place are made and marked: a directory of
         // OneDrive is never ignored, whatever its name.
         let record = choose_made_entry_record(entry_to_make, self.directory_contents.find_file_removed_at(&rel), self.find_upload_status(&parent_directory, name));
-        let (place, write_state) = (EntryPlace::new(&parent_directory, name), entry_to_make.write_state());
-        let (entry, onedrive_id) = match record {
+        let local_only = LocalOnlyEntry { on_disk: on_disk.clone(), place: EntryPlace::new(&parent_directory, name) };
+        // The entry as it stands before it is recorded: its node is what a writer is counted
+        // by.
+        let made = match &record {
             MadeEntryRecord::ReplacingRemovedFile(base) => {
                 self.backing_directory.mark_downloaded_copy(&rel, &base.id).map_err(|e| to_errno(&e))?;
-                let event = EntryCreated::ReplacingRemovedFile { place, file: on_disk, write_state, base: base.clone() };
-                self.record_or_undo(event, format_args!("a new {}", rel.display()), unmake)?;
-                // Read after it is recorded: the file is modified here from now on.
-                (self.directory_contents.describe(Row { name: name.to_owned(), ..base.clone() }, &rel), Some(base.id))
+                self.directory_contents.describe(Row { name: name.to_owned(), ..base.clone() }, &rel)
             }
-            MadeEntryRecord::Fresh => {
-                let local_only = LocalOnlyEntry { on_disk, place };
-                self.record_or_undo(EntryCreated::Fresh { entry: local_only.clone(), write_state }, format_args!("a new {}", rel.display()), unmake)?;
-                (DirectoryEntry::from_local_only(local_only), None)
-            }
-            MadeEntryRecord::NotRecorded => (DirectoryEntry::from_local_only(LocalOnlyEntry { on_disk, place }), None),
+            MadeEntryRecord::Fresh | MadeEntryRecord::NotRecorded => DirectoryEntry::from_local_only(local_only.clone()),
         };
-        let node_id = self.node_resolver.assign_node_id(&entry, parent);
+        let node_id = self.node_resolver.assign_node_id(&made, parent);
         let opened = file.filter(|_| entry_to_make == EntryToMake::FileOpenedForWriting).map(|file| {
+            let fh = self.open_handles.add_writer(node_id, made.onedrive_id().map(str::to_owned), Arc::new(file)).fh;
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
-            self.open_handles.add_writer(node_id, onedrive_id, Arc::new(file), true).fh
+            self.open_handles.mark_written(node_id);
+            fh
         });
-        Ok((entry, opened))
+        let write_state = self.find_write_state(node_id);
+        let undo = || {
+            if let Some(fh) = opened {
+                self.open_handles.close_file(fh);
+            }
+            self.node_resolver.drop_node(&on_disk.handle);
+            unmake();
+        };
+        let entry = match record {
+            MadeEntryRecord::ReplacingRemovedFile(base) => {
+                let event = EntryCreated::ReplacingRemovedFile { place: local_only.place, file: on_disk.clone(), write_state, base: base.clone() };
+                self.record_or_undo(event, format_args!("a new {}", rel.display()), undo)?;
+                // Described again now that it is recorded: the file is modified here from
+                // now on, which its entry says only once the outbox holds its row.
+                self.directory_contents.describe(Row { name: name.to_owned(), ..base }, &rel)
+            }
+            MadeEntryRecord::Fresh => {
+                self.record_or_undo(EntryCreated::Fresh { entry: local_only, write_state }, format_args!("a new {}", rel.display()), undo)?;
+                made
+            }
+            MadeEntryRecord::NotRecorded => made,
+        };
+        Ok((node_id, entry, opened))
     }
 
     /// What stands at `name` of the directory node `parent`, for the check of a make.

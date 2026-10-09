@@ -5,7 +5,6 @@ use konedrive_tree::Kind;
 
 use super::{check_make, choose_made_entry_record, EntryToMake, MadeEntryRecord, MakePlace};
 use crate::fuse::backing_directory::EntryKind;
-use crate::fuse::detections::WriteState;
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::upload_rules::UploadStatus;
@@ -56,10 +55,10 @@ fn a_name_that_is_taken_is_refused() {
 }
 
 #[test]
-fn what_is_made_says_its_kind_and_whether_it_is_held_open() {
-    assert_eq!((EntryToMake::Directory.kind(), EntryToMake::Directory.write_state()), (EntryKind::Directory, WriteState::NotOpen));
-    assert_eq!((EntryToMake::File.kind(), EntryToMake::File.write_state()), (EntryKind::File, WriteState::NotOpen));
-    assert_eq!((EntryToMake::FileOpenedForWriting.kind(), EntryToMake::FileOpenedForWriting.write_state()), (EntryKind::File, WriteState::OpenForWriting));
+fn what_is_made_says_its_kind() {
+    assert_eq!(EntryToMake::Directory.kind(), EntryKind::Directory);
+    assert_eq!(EntryToMake::File.kind(), EntryKind::File);
+    assert_eq!(EntryToMake::FileOpenedForWriting.kind(), EntryKind::File);
 }
 
 #[test]

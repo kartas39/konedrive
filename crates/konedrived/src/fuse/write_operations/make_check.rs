@@ -5,7 +5,6 @@ use fuser::Errno;
 use konedrive_tree::Row;
 
 use crate::fuse::backing_directory::EntryKind;
-use crate::fuse::detections::WriteState;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::upload_rules::UploadStatus;
 
@@ -25,14 +24,6 @@ impl EntryToMake {
         match self {
             EntryToMake::Directory => EntryKind::Directory,
             EntryToMake::File | EntryToMake::FileOpenedForWriting => EntryKind::File,
-        }
-    }
-
-    /// Whether the program holds what is made open for writing.
-    pub(in crate::fuse) fn write_state(self) -> WriteState {
-        match self {
-            EntryToMake::FileOpenedForWriting => WriteState::OpenForWriting,
-            EntryToMake::Directory | EntryToMake::File => WriteState::NotOpen,
         }
     }
 }

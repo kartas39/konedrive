@@ -5,6 +5,7 @@
 //! holds the file, so nothing from OneDrive replaces the copy, and the file is modified
 //! here — what the mount shows of it is the copy's own.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -34,29 +35,55 @@ pub(in crate::fuse) struct NeededDownload {
 
 impl WriteOperations {
     /// The download that writing the node `node_id` needs first: of a OneDrive file that is
-    /// not downloaded and is not cut to nothing (`empty`). A read-only folder refuses here,
-    /// before anything is downloaded for a write it will not take.
-    pub(in crate::fuse) fn find_needed_download(&self, node_id: NodeId, empty: bool) -> Result<Option<NeededDownload>, Errno> {
+    /// not downloaded and holds something. Not asked for a file that is cut to nothing: its
+    /// content is not needed. A read-only folder refuses here, before anything is
+    /// downloaded for a write it will not take.
+    pub(in crate::fuse) fn find_needed_download(&self, node_id: NodeId) -> Result<Option<NeededDownload>, Errno> {
         self.access_mode_switch.check_read_write()?;
         let Some((entry, rel)) = self.node_resolver.find_entry(node_id) else { return Ok(None) };
         Ok(match entry.state {
-            EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some(NeededDownload { row, path: rel }),
+            EntryState::File(FileSyncState::RemoteOnly(row)) if row.size > 0 => Some(NeededDownload { row, path: rel }),
             _ => None,
         })
     }
 
-    /// Opens the node `node_id` for writing, cut to nothing when `truncate`: the `fh` the
-    /// program holds it open by.
-    pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId, truncate: bool) -> Result<Fh, Errno> {
+    /// Opens the node `node_id` for writing, with the content it has: the `fh` the program
+    /// holds it open by. The copy of a OneDrive file that is not downloaded is the caller's
+    /// to download first ([`find_needed_download`](Self::find_needed_download)).
+    pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId) -> Result<Fh, Errno> {
         self.access_mode_switch.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
-        self.make_writable(file, &rel, truncate)?;
-        let backing_file = self.backing_directory.open_to_write(&rel, truncate).map_err(|e| to_errno(&e))?;
-        // Its content is the user's own already when it is modified here; from the first
-        // writer on the outbox holds it in any case.
-        let content_changed = truncate || matches!(file, FileSyncState::ModifiedHere(..));
-        let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file), content_changed);
+        self.make_writable(file, &rel)?;
+        let backing_file = self.backing_directory.open_to_write(&rel, false).map_err(|e| to_errno(&e))?;
+        let added = self.add_writer(node_id, &entry, backing_file)?;
+        // Its content is the user's own already when it is modified here.
+        if matches!(file, FileSyncState::ModifiedHere(..)) {
+            self.open_handles.mark_written(node_id);
+        }
+        Ok(added)
+    }
+
+    /// Opens the node `node_id` for writing, cut to nothing (`O_TRUNC`): the `fh` the
+    /// program holds it open by. Nothing of a OneDrive file is downloaded for it.
+    pub(in crate::fuse) fn open_to_overwrite(&self, node_id: NodeId) -> Result<Fh, Errno> {
+        self.access_mode_switch.check_read_write()?;
+        let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
+        let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
+        self.make_writable_without_content(file, &rel)?;
+        let backing_file = self.backing_directory.open_to_write(&rel, true).map_err(|e| to_errno(&e))?;
+        let added = self.add_writer(node_id, &entry, backing_file)?;
+        // Cut to nothing: its content is the user's own from here on.
+        self.open_handles.mark_written(node_id);
+        Ok(added)
+    }
+
+    /// Puts the writer of the node `node_id`, which stands for `entry`, into the open
+    /// handles: the `fh` it holds `backing_file` open by. The node's first writer is
+    /// recorded: from it on the outbox holds the file. An open that cannot be recorded is
+    /// closed again.
+    fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, backing_file: File) -> Result<Fh, Errno> {
+        let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
         if added.is_first {
             if let Err(e) = self.record_content(node_id, LocalOnlyFileWrite::Opened) {
                 self.open_handles.close_file(added.fh);
@@ -109,7 +136,10 @@ impl WriteOperations {
         self.access_mode_switch.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
-        self.make_writable(file, &rel, size == 0)?;
+        match size {
+            0 => self.make_writable_without_content(file, &rel)?,
+            _ => self.make_writable(file, &rel)?,
+        }
         let backing_file = self.backing_directory.open_to_write(&rel, false).map_err(|e| to_errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
@@ -123,17 +153,25 @@ impl WriteOperations {
         Ok(())
     }
 
-    /// The file at `rel` in the backing directory, made ready to be written: the downloaded
-    /// copy of a OneDrive file made writable, or made empty when the file is not downloaded
-    /// and is to be cut to nothing (`empty`). A copy that is needed and missing is the
-    /// caller's to download first.
-    fn make_writable(&self, file: &FileSyncState, rel: &Path, empty: bool) -> Result<(), Errno> {
+    /// The file at `rel` in the backing directory, made ready to be written with the
+    /// content it has: the downloaded copy of a OneDrive file made writable. A OneDrive file
+    /// that is not downloaded and holds nothing gets its empty copy; one that holds
+    /// something is the caller's to download first, and is an error here.
+    fn make_writable(&self, file: &FileSyncState, rel: &Path) -> Result<(), Errno> {
+        match file {
+            FileSyncState::RemoteOnly(row) if row.size > 0 => Err(Errno::EIO),
+            FileSyncState::RemoteOnly(_) | FileSyncState::LocalOnly(_) | FileSyncState::Synced(..) | FileSyncState::ModifiedHere(..) => self.make_writable_without_content(file, rel),
+        }
+    }
+
+    /// The file at `rel` in the backing directory, made ready to be written by whoever does
+    /// not need its content — it is cut to nothing: the downloaded copy of a OneDrive file
+    /// made writable, and a OneDrive file that is not downloaded given an empty copy,
+    /// whatever it holds in OneDrive.
+    fn make_writable_without_content(&self, file: &FileSyncState, rel: &Path) -> Result<(), Errno> {
         match file {
             FileSyncState::LocalOnly(_) => return Ok(()),
             FileSyncState::RemoteOnly(row) => {
-                if !empty && row.size > 0 {
-                    return Err(Errno::EIO);
-                }
                 self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(|e| to_errno(&e))?;
                 self.backing_directory.make_file(rel).map_err(|e| to_errno(&e))?;
                 self.backing_directory.mark_downloaded_copy(rel, &row.id).map_err(|e| to_errno(&e))?;

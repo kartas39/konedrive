@@ -11,7 +11,8 @@
 //!
 //! The access mode is asked twice, by design. A read-only folder's request is refused at
 //! once, before it is put on the thread ([`WriteRequests::run_named_operation`],
-//! [`WriteRequests::run_with_content`], and the time a `setattr` sets): the thread waits for
+//! [`WriteRequests::run_with_content`], [`WriteRequests::run_without_content`], and the
+//! time a `setattr` sets): the thread waits for
 //! the folder's tree lock, which a cycle of the delta listing holds for as long as it
 //! takes, and a program does not wait for a cycle to be told. The operation then asks the
 //! same [`AccessModeSwitch`] again on the thread, and that answer is the one that counts:
@@ -40,7 +41,7 @@ use crate::fuse::errno::to_errno;
 use crate::fuse::file_downloader::FileDownloader;
 use crate::fuse::node_resolver::NodeResolver;
 use crate::fuse::node_table::NodeId;
-use crate::fuse::open_handles::{CloseOutcome, Fh, OpenFile, OpenHandles};
+use crate::fuse::open_handles::{Fh, OpenHandles};
 use crate::fuse::write_operation_thread::WriteOperationThread;
 use crate::fuse::write_operations::{EntryToMake, RenameMode, WriteOperations};
 
@@ -116,8 +117,8 @@ impl WriteRequests {
     /// Has `job` run on the write-operation thread with `reply` once the content of the node
     /// `node_id` is in the backing directory, when writing it needs that; `reply` is refused
     /// instead when the folder is read-only, or the download fails.
-    fn run_with_content<R: ErrnoReply>(&self, node_id: NodeId, empty: bool, reply: R, job: impl FnOnce(&WriteRequests, R) + Send + 'static) {
-        let needed = match self.write_operations.find_needed_download(node_id, empty) {
+    fn run_with_content<R: ErrnoReply>(&self, node_id: NodeId, reply: R, job: impl FnOnce(&WriteRequests, R) + Send + 'static) {
+        let needed = match self.write_operations.find_needed_download(node_id) {
             Ok(Some(needed)) => needed,
             Ok(None) => return self.run_on_thread(move |requests| job(requests, reply)),
             Err(e) => return reply.refuse(e),
@@ -134,8 +135,28 @@ impl WriteRequests {
         });
     }
 
-    pub(super) fn answer_open_to_write(&self, node_id: NodeId, truncate: bool, reply: ReplyOpen) {
-        self.run_with_content(node_id, truncate, reply, move |requests, reply| match requests.write_operations.open_to_write(node_id, truncate) {
+    /// Has `job` run on the write-operation thread with `reply`, for a write that cuts its
+    /// file to nothing and needs nothing of its content; `reply` is refused instead, at
+    /// once, when the folder is read-only.
+    fn run_without_content<R: ErrnoReply>(&self, reply: R, job: impl FnOnce(&WriteRequests, R) + Send + 'static) {
+        if let Err(read_only) = self.access_mode_switch.check_read_write() {
+            return reply.refuse(read_only);
+        }
+        self.run_on_thread(move |requests| job(requests, reply));
+    }
+
+    /// A file opened for writing, with the content it has.
+    pub(super) fn answer_open_to_write(&self, node_id: NodeId, reply: ReplyOpen) {
+        self.run_with_content(node_id, reply, move |requests, reply| match requests.write_operations.open_to_write(node_id) {
+            Ok(fh) => reply.opened(FileHandle::from(fh), FopenFlags::empty()),
+            Err(e) => reply.error(e),
+        });
+    }
+
+    /// A file opened for writing and cut to nothing (`O_TRUNC`): nothing of it is
+    /// downloaded first.
+    pub(super) fn answer_open_to_overwrite(&self, node_id: NodeId, reply: ReplyOpen) {
+        self.run_without_content(reply, move |requests, reply| match requests.write_operations.open_to_overwrite(node_id) {
             Ok(fh) => reply.opened(FileHandle::from(fh), FopenFlags::empty()),
             Err(e) => reply.error(e),
         });
@@ -144,10 +165,7 @@ impl WriteRequests {
     /// A directory (`mkdir`) or a file that is not opened (`mknod`) made.
     pub(super) fn answer_make(&self, parent: NodeId, name: &OsStr, entry_to_make: EntryToMake, reply: ReplyEntry) {
         self.run_named_operation(name, Errno::EINVAL, reply, move |requests, name, reply| match requests.write_operations.make(parent, name, entry_to_make) {
-            Ok((entry, _)) => {
-                let node_id = requests.node_resolver.assign_node_id(&entry, parent);
-                reply.entry(&TTL, &attributes(node_id, requests.access_mode_switch.access_mode(), &entry), Generation(0))
-            }
+            Ok((node_id, entry, _)) => reply.entry(&TTL, &attributes(node_id, requests.access_mode_switch.access_mode(), &entry), Generation(0)),
             Err(e) => reply.error(e),
         });
     }
@@ -162,8 +180,7 @@ impl WriteRequests {
 
     pub(super) fn answer_create(&self, parent: NodeId, name: &OsStr, reply: ReplyCreate) {
         self.run_named_operation(name, Errno::EINVAL, reply, move |requests, name, reply| match requests.write_operations.make(parent, name, EntryToMake::FileOpenedForWriting) {
-            Ok((entry, opened)) => {
-                let node_id = requests.node_resolver.assign_node_id(&entry, parent);
+            Ok((node_id, entry, opened)) => {
                 let attr = attributes(node_id, requests.access_mode_switch.access_mode(), &entry);
                 reply.created(&TTL, &attr, Generation(0), FileHandle::from(opened.unwrap_or(Fh::NOT_OPENED)), FopenFlags::empty())
             }
@@ -208,10 +225,15 @@ impl WriteRequests {
     /// are the mount's to say and are not kept.
     pub(super) fn answer_setattr(&self, node_id: NodeId, size: Option<u64>, mtime: Option<TimeOrNow>, reply: ReplyAttr) {
         let Some(size) = size else { return self.run_set_modified_time(node_id, mtime, reply, WriteRequests::answer_with_attributes) };
-        self.run_with_content(node_id, size == 0, reply, move |requests, reply| match requests.write_operations.truncate(node_id, size, mtime) {
+        let truncate = move |requests: &WriteRequests, reply: ReplyAttr| match requests.write_operations.truncate(node_id, size, mtime) {
             Ok(()) => requests.answer_with_attributes(node_id, reply),
             Err(e) => reply.error(e),
-        });
+        };
+        // Cut to nothing, its content is not needed.
+        match size {
+            0 => self.run_without_content(reply, truncate),
+            _ => self.run_with_content(node_id, reply, truncate),
+        }
     }
 
     /// Has the time `mtime` gives set on the node `node_id` by the write operation, on the
@@ -243,12 +265,9 @@ impl WriteRequests {
     /// A handle of a file is closed (`release`): the last one that wrote a file leaves its
     /// content ready to send, which a write operation records.
     pub(super) fn answer_release(&self, fh: Fh, reply: ReplyEmpty) {
-        let (closed, outcome) = self.open_handles.close_file(fh);
-        match (closed, outcome) {
-            (Some(OpenFile::Writing { node_id, .. }), CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => {
-                self.run_on_thread(move |requests| requests.write_operations.close_last_writer(node_id, outcome));
-            }
-            (_, CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere | CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => {}
+        let closed = self.open_handles.close_file(fh);
+        if let Some(node_id) = closed.find_last_writer_node_id() {
+            self.run_on_thread(move |requests| requests.write_operations.close_last_writer(node_id, closed.outcome));
         }
         reply.ok();
     }

@@ -108,8 +108,11 @@ impl Filesystem for KernelRequests {
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         // Opening to write is a change of the folder.
-        if flags.0 & libc::O_ACCMODE != libc::O_RDONLY || flags.0 & libc::O_TRUNC != 0 {
-            return self.write_requests.answer_open_to_write(NodeId::from(ino), flags.0 & libc::O_TRUNC != 0, reply);
+        if flags.0 & libc::O_TRUNC != 0 {
+            return self.write_requests.answer_open_to_overwrite(NodeId::from(ino), reply);
+        }
+        if flags.0 & libc::O_ACCMODE != libc::O_RDONLY {
+            return self.write_requests.answer_open_to_write(NodeId::from(ino), reply);
         }
         self.read_requests.answer_open_to_read(req, NodeId::from(ino), flags, reply)
     }

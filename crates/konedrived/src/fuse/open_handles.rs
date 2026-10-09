@@ -19,8 +19,8 @@
 //! - something was written to a node ([`OpenHandles::mark_written`]): the write requests,
 //!   and the write operation that cuts a file a program holds open;
 //! - a file closed, and what that left of its content ([`OpenHandles::close_file`], a
-//!   [`CloseOutcome`]): the release request, and the write operation that takes back an
-//!   open it could not record;
+//!   [`ClosedFile`] with its [`CloseOutcome`]): the release request, and the write
+//!   operation that takes back an open it could not record;
 //! - whether a file is open for writing, by node id
 //!   ([`OpenHandles::is_open_for_writing_by_node_id`]): the write operations (a rename, a
 //!   cut), and by OneDrive id ([`OpenHandles::is_open_for_writing_by_onedrive_id`]): the
@@ -95,6 +95,24 @@ pub(super) enum CloseOutcome {
     ContentUntouched,
 }
 
+/// What closing an `fh` closed: the file it held open, when it held one, and what that left
+/// of the file's content.
+pub(super) struct ClosedFile {
+    pub(super) file: Option<OpenFile>,
+    pub(super) outcome: CloseOutcome,
+}
+
+impl ClosedFile {
+    /// The node whose last writer this close was: its content is ready to be recorded, as
+    /// the outcome says. `None` for every other close.
+    pub(super) fn find_last_writer_node_id(&self) -> Option<NodeId> {
+        match (&self.file, self.outcome) {
+            (Some(OpenFile::Writing { node_id, .. }), CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => Some(*node_id),
+            (_, CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere | CloseOutcome::ContentChanged | CloseOutcome::ContentUntouched) => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Handles {
     by_fh: HashMap<Fh, OpenHandle>,
@@ -130,15 +148,12 @@ impl OpenHandles {
         crate::panic::lock(&self.handles).add(OpenHandle::File(file))
     }
 
-    /// A program opened the node `node_id` for writing, into `backing_file`; its content is
-    /// the user's own already when `written`. The `fh` it holds it by, and whether it is the
-    /// node's first writer.
-    pub(super) fn add_writer(&self, node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File>, written: bool) -> AddedWriter {
+    /// A program opened the node `node_id` for writing, into `backing_file`. The `fh` it
+    /// holds it by, and whether it is the node's first writer. A file whose content is the
+    /// user's own already is said so next ([`mark_written`](Self::mark_written)).
+    pub(super) fn add_writer(&self, node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File>) -> AddedWriter {
         let mut handles = crate::panic::lock(&self.handles);
         let is_first = !handles.has_writer(node_id);
-        if written {
-            handles.written_node_ids.insert(node_id);
-        }
         AddedWriter { fh: handles.add(OpenHandle::File(OpenFile::Writing { node_id, onedrive_id, backing_file })), is_first }
     }
 
@@ -167,7 +182,9 @@ impl OpenHandles {
         }
     }
 
-    /// Something was written to the node `node_id` through a handle that writes it.
+    /// The content of the node `node_id` is the user's own: something was written to it
+    /// through a handle that writes it, or it was so when the handle was added — a file just
+    /// made, one cut to nothing at its open, one that was modified here before.
     pub(super) fn mark_written(&self, node_id: NodeId) {
         let mut handles = crate::panic::lock(&self.handles);
         if handles.has_writer(node_id) {
@@ -177,20 +194,20 @@ impl OpenHandles {
 
     /// The program closed `fh`: the file it held open by it, and what that left of the
     /// file's content.
-    pub(super) fn close_file(&self, fh: Fh) -> (Option<OpenFile>, CloseOutcome) {
+    pub(super) fn close_file(&self, fh: Fh) -> ClosedFile {
         let mut handles = crate::panic::lock(&self.handles);
         // A directory is closed as one ([`close_directory`](Self::close_directory)).
         if !matches!(handles.by_fh.get(&fh), Some(OpenHandle::File(_))) {
-            return (None, CloseOutcome::NotOpen);
+            return ClosedFile { file: None, outcome: CloseOutcome::NotOpen };
         }
-        let Some(OpenHandle::File(closed)) = handles.by_fh.remove(&fh) else { return (None, CloseOutcome::NotOpen) };
+        let Some(OpenHandle::File(closed)) = handles.by_fh.remove(&fh) else { return ClosedFile { file: None, outcome: CloseOutcome::NotOpen } };
         let outcome = match &closed {
             OpenFile::ReadingRemoteOnly { .. } | OpenFile::ReadingBackingFile { .. } => CloseOutcome::NotOpen,
             OpenFile::Writing { node_id, .. } if handles.has_writer(*node_id) => CloseOutcome::StillOpenElsewhere,
             OpenFile::Writing { node_id, .. } if handles.written_node_ids.remove(node_id) => CloseOutcome::ContentChanged,
             OpenFile::Writing { .. } => CloseOutcome::ContentUntouched,
         };
-        (Some(closed), outcome)
+        ClosedFile { file: Some(closed), outcome }
     }
 
     /// Whether a program holds the node `node_id` open for writing now.

@@ -43,7 +43,7 @@ fn a_file_opened_from_the_backing_directory_is_read_from_the_file_it_was_opened_
     let backing_file = Arc::new(tempfile::tempfile().unwrap());
     let reading = read_requests.open_handles.add_file(OpenFile::ReadingBackingFile { backing_file: Arc::clone(&backing_file) });
     assert!(matches!(read_requests.find_read_origin(reading, 0, 10), Ok(ReadOrigin::BackingFile(file)) if Arc::ptr_eq(&file, &backing_file)));
-    let writing = read_requests.open_handles.add_writer(NodeId(9), None, Arc::clone(&backing_file), false).fh;
+    let writing = read_requests.open_handles.add_writer(NodeId(9), None, Arc::clone(&backing_file)).fh;
     assert!(matches!(read_requests.find_read_origin(writing, 500, 10), Ok(ReadOrigin::BackingFile(file)) if Arc::ptr_eq(&file, &backing_file)));
 }
 
