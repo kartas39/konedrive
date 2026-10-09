@@ -199,6 +199,8 @@ daemon shows OneDrive.
 - `under/files.rs` — the files and directories a change makes, renames and removes. `[tests]`
 - `under/backing.rs` — the directories down to a place, each marked with the id of its item,
   which the caller tells name by name. `[tests]`
+- `under/landing.rs` — a finished download landed: stamped as its item's copy and given its
+  name, by what stands at its place (`Stands`, `Step`, `Landed`). `[tests]`
 - `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
   `is_writable`.
 - `requests.rs` — the mount's requests (`Filesystem`), each handed on.
@@ -216,7 +218,7 @@ daemon shows OneDrive.
   `[tests]`
 - `read.rs` — a file that is not downloaded, read as ranges; the file being read ahead of the
   background downloads.
-- `fill.rs` — the download of a whole file into a file without a name, and its naming; the
+- `fill.rs` — the download of a whole file into a file without a name, which then lands; the
   state of a file: downloaded, being downloaded, or neither.
 - `pins.rs` — the pins of the store, and the sweep that downloads what they keep.
 - `asked.rs` — what the daemon asks of a mount for a path: download, free up, look.

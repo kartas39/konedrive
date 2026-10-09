@@ -11,6 +11,7 @@
 //! - [`copies`]: an item's downloaded copy — whether a place holds it, marking one, removing one;
 //! - [`files`]: the files and directories a change makes, renames and removes;
 //! - [`backing`]: the directories down to a place, each marked with its item's id;
+//! - [`landing`]: a finished download stamped as its item's copy and given its name;
 //!
 //! A place is always a path below the folder (`rel`); the folder itself is the empty path.
 
@@ -22,8 +23,10 @@ use std::path::{Path, PathBuf};
 mod backing;
 mod copies;
 mod files;
+mod landing;
 mod objects;
 
+pub(super) use landing::Landed;
 pub(super) use objects::Object;
 
 /// Where an earlier build built its downloads, inside the folder: taken off when the folder

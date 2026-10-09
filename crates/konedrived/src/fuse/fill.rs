@@ -1,14 +1,13 @@
 //! The download of a whole file: into a file without a name, which gets the item's name once
 //! it is whole and checked.
 
-use std::ffi::CString;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
+use konedrive_fs::placeholder::State;
 use konedrive_graph::pool::{Class, Size};
 use konedrive_tree::Row;
 use tokio::sync::oneshot;
@@ -19,6 +18,7 @@ use crate::status::activity::{self, Kind as EventKind};
 
 use super::announce::Announce;
 use super::shared::{seconds, Shared};
+use super::under::Landed;
 
 /// How many downloads that failed keep what they have, to be continued from.
 pub(super) const UNFINISHED: usize = 16;
@@ -95,11 +95,7 @@ impl Shared {
         };
         let file = match earlier {
             Some(file) => file,
-            None => {
-                use std::os::unix::fs::OpenOptionsExt;
-                let opened = File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.under.path(Path::new("")));
-                Arc::new(opened.map_err(io_errno)?)
-            }
+            None => Arc::new(self.under.unnamed().map_err(io_errno)?),
         };
         let shown = self.shown(rel);
         let tracked = match class {
@@ -123,41 +119,12 @@ impl Shared {
             if self.place(&row.id).as_deref() != Some(rel) {
                 return Err(libc::ESTALE);
             }
-            let (id, mtime, target, file) = (row.id.clone(), row.mtime, self.under.path(rel), Arc::clone(&file));
+            let (id, modified, at, file, under) = (row.id.clone(), seconds(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.under));
             // The file's own steps wait for the disk: not on the runtime's threads.
-            tokio::task::spawn_blocking(move || {
-                placeholder::write_item_id(&file, &id)?;
-                placeholder::write_state(&file, State::Hydrated)?;
-                file.set_modified(seconds(mtime))?;
-                // No write bit on a downloaded copy, as the mount shows it.
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    file.set_permissions(fs::Permissions::from_mode(0o444))?;
-                }
-                file.sync_all()?;
-                // What stands at the item's place by now is never replaced by what was
-                // downloaded: a file of the user's own; the item's copy, which a program made
-                // or saved over it meanwhile; the whole copy of another item. Only what holds
-                // nothing — a file that is not whole — goes.
-                if fs::symlink_metadata(&target).is_ok() {
-                    let whole = xattr::get(&target, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
-                    match xattr::get(&target, XATTR_ITEM_ID).ok().flatten() {
-                        Some(carried) if carried == id.as_bytes() && whole => return Ok(()),
-                        Some(_) if !whole => fs::remove_file(&target)?,
-                        _ => return Err(io::Error::from_raw_os_error(libc::EEXIST)),
-                    }
-                }
-                // Whole and checked: now it gets its name.
-                let (unnamed, named) = (CString::new(konedrive_fs::proc_path(&*file).into_os_string().into_encoded_bytes())?, CString::new(target.into_os_string().into_encoded_bytes())?);
-                // SAFETY: two paths this function owns.
-                match unsafe { libc::linkat(libc::AT_FDCWD, unnamed.as_ptr(), libc::AT_FDCWD, named.as_ptr(), libc::AT_SYMLINK_FOLLOW) } {
-                    0 => Ok(()),
-                    _ => Err(io::Error::last_os_error()),
-                }
-            })
-            .await
-            .map_err(|_| libc::EIO)?
-            .map_err(io_errno)?;
+            let landed = tokio::task::spawn_blocking(move || under.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
+            if landed == Landed::Refused {
+                return Err(libc::EEXIST);
+            }
             Ok(size)
         }
         .await;
