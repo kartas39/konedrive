@@ -55,8 +55,8 @@ pub(super) fn file(id: &str, parent: &str, name: &str, content: &[u8]) -> Change
 }
 
 pub(super) struct World {
-    /// The temporary directory the folder is in: what is beside the folder is outside it.
-    pub dir: tempfile::TempDir,
+    /// The temporary directory the folder is in, kept for as long as the folder is used.
+    _dir: tempfile::TempDir,
     pub root: SyncRoot,
     pub store: Store,
     pub locks: InodeLocks,
@@ -85,7 +85,7 @@ impl World {
             .unwrap();
         let locks = InodeLocks::new();
         let h = Harness::new(&root, &store, &locks);
-        let world = World { dir, root, store, locks, h };
+        let world = World { _dir: dir, root, store, locks, h };
         for change in changes {
             if let Change::Upsert(row) = change {
                 if row.kind == Kind::Folder {
@@ -172,10 +172,6 @@ impl World {
     /// The outbox's row at `rel`.
     pub fn row_at(&self, rel: &str) -> Option<OutboxRow> {
         self.rows().into_iter().find(|r| r.rel == Path::new(rel))
-    }
-
-    pub fn reason_of(&self, rel: &str) -> Option<String> {
-        self.row_at(rel).and_then(|r| r.reason_text())
     }
 
     pub fn run(&self) -> Arc<Engine> {

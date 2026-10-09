@@ -167,3 +167,6 @@ pub(in crate::upload) fn without_urls(text: &str) -> String {
     out.push_str(rest);
     out
 }
+
+#[cfg(test)]
+mod tests;

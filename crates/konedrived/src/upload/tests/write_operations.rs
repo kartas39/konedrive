@@ -59,7 +59,8 @@ impl World {
         self.attr(rel.to_str().unwrap(), XATTR_ITEM_ID).and_then(|id| self.base(&id))
     }
 
-    fn detection(&self, kind: OutboxKind, rel: &Path, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
+    /// A detection of `kind` at `rel`, which names the directory of OneDrive it is in.
+    pub fn detection(&self, kind: OutboxKind, rel: &Path, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
         Detection {
             kind,
             item_id: None,
@@ -89,18 +90,23 @@ impl World {
         d
     }
 
-    /// The local-only entry at `rel` and, for a directory, all it holds: itself first.
+    /// The local-only entry at `rel` and, for a directory, the local-only entries it holds:
+    /// itself first. What it holds of OneDrive has rows of its own.
     fn local_only_tree(&self, rel: &Path) -> Vec<Detection> {
         let mut all = vec![self.local_only(rel)];
         if self.root.path.join(rel).is_dir() {
             for name in self.names_in(rel.to_str().unwrap()) {
-                all.extend(self.local_only_tree(&rel.join(name)));
+                let inside = rel.join(name);
+                if self.marked_row(&inside).is_none() {
+                    all.extend(self.local_only_tree(&inside));
+                }
             }
         }
         all
     }
 
-    fn record(&self, detections: Vec<Detection>, ops: Vec<OutboxOp>) {
+    /// Writes `detections` and `ops` into the outbox, as the mount's recorder does.
+    pub fn record(&self, detections: Vec<Detection>, ops: Vec<OutboxOp>) {
         let now = crate::clock::unix_now();
         self.store.call_blocking(move |s| crate::local::record::record(s, detections, ops, now).map(|_| ())).unwrap();
     }

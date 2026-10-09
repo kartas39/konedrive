@@ -12,30 +12,52 @@
 //! - [`conflicts`]: what OneDrive changed under a row;
 //! - [`temporary_names`]: names exchanged, which go through a temporary name;
 //! - [`waits`]: throttling, the pause, the write gate, blocked rows, failures in backoff;
-//! - [`space`]: a full OneDrive, and a file too big for what is left;
-//! - [`sessions`]: upload sessions;
+//! - [`space_left`]: a full OneDrive, and a file too big for what is left;
+//! - [`sessions`]: upload sessions, and the empty placeholder an open one holds its name
+//!   with in OneDrive;
+//! - [`interrupted_sessions`]: a session interrupted by a pause, a stop or a full OneDrive;
 //! - [`stops`]: the worker stopped in the middle of a step;
 //! - [`removed`]: a file or directory removed before its upload finished;
 //! - [`candidates`]: what a start lets go, and a bad upload;
 //! - [`worker`]: the worker's loop;
 //! - [`foreign_parent`]: a directory that carries the id of another.
 
+use std::fs::File;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use konedrive_fs::placeholder::{XATTR_CTAG, XATTR_ITEM_ID, XATTR_STAMP, XATTR_STATE, XATTR_SYNC};
+use konedrive_fs::placeholder::{self, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STAMP, XATTR_STATE, XATTR_SYNC};
+use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
+use konedrive_tree::{ActivityKind, Change, Table};
 use tokio_util::sync::CancellationToken;
+use wiremock::ResponseTemplate;
 
-use super::Engine;
-use crate::fake_onedrive::qx;
-use world::World;
+use super::*;
+use crate::fake_onedrive::{self as fake, qx};
+use world::{file, folder, World};
+
+use OutboxKind::{Create, Mkdir, Move, Update};
 
 pub(crate) mod harness;
 mod world;
 mod write_operations;
 
+mod candidates;
+mod conflicts;
+mod foreign_parent;
+mod interrupted_sessions;
+mod removed;
 mod row_kinds;
+mod sessions;
+mod space_left;
+mod stops;
+mod temporary_names;
+mod waits;
+mod worker;
 
 /// What a commit leaves on a file whose content went up (§5.4): the item id, `hydrated`,
 /// the cTag OneDrive gave, the stamp of the content sent, and no upload mark; on a
@@ -68,9 +90,9 @@ fn assert_placed(w: &World, rel: &str, cloud_path: &str) {
 struct InFlight(tokio::task::JoinHandle<()>);
 
 impl InFlight {
-    fn start(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str) -> Self {
+    fn start(w: &World, method: &str, fragment: &str) -> Self {
         w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
-        let engine = Arc::clone(engine);
+        let engine = w.h.engine();
         let task = w.h.runtime.spawn(async move { engine.drain(&CancellationToken::new()).await });
         let mut waited = 0;
         while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
@@ -84,4 +106,68 @@ impl InFlight {
     fn finish(self, w: &World) {
         w.h.runtime.block_on(self.0).unwrap();
     }
+}
+
+fn reason_of(w: &World, rel: &str) -> Option<String> {
+    w.row_at(rel).and_then(|r| r.reason_text())
+}
+
+/// The user pauses the account, until resumed: the worker's host says so, as the
+/// account's settings do in the daemon, to every worker of the folder.
+/// The user pauses the account, until resumed: the worker's host says so, as the
+/// account's settings do in the daemon, to every worker of the folder.
+fn pause(w: &World) {
+    *w.h.host.paused.lock().unwrap() = Some(0);
+}
+
+fn resume(w: &World) {
+    *w.h.host.paused.lock().unwrap() = None;
+}
+
+/// `Refresh()`'s quota read (`SyncService::refresh_quota`), applied.
+fn refresh(w: &World, engine: &Arc<Engine>) {
+    let quota = w.h.runtime.block_on(w.h.graph.client().quota()).unwrap();
+    w.h.block_on(engine.apply_quota(&quota));
+}
+
+/// The contents of every request that sent `name`'s content.
+fn content_requests(w: &World, name: &str) -> usize {
+    w.cloud(|c| c.log.iter().filter(|(m, p)| p.contains(name) && (m == "PUT" || p.ends_with("createUploadSession"))).count())
+}
+
+/// Drains `engine` in the background, pauses it while the first request of
+/// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
+/// waits for the drain to end.
+fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
+    drain_stopped_mid_request(w, engine, method, fragment, || {
+        pause(w);
+        meanwhile();
+    });
+}
+
+/// Drains `engine` in the background, runs `stop` while the first request
+/// of `method` whose path holds `fragment` is in flight, and waits for the
+/// drain to end.
+fn drain_stopped_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, stop: impl FnOnce()) {
+    w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+    let task = w.h.runtime.spawn({
+        let engine = Arc::clone(engine);
+        async move { engine.drain(&CancellationToken::new()).await }
+    });
+    let mut waited = 0;
+    while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+    assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+    stop();
+    w.h.runtime.block_on(task).unwrap();
+}
+
+/// Whether the store has it on record that the local version of `original` was kept as the
+/// copy `copy` beside it (§7).
+fn kept_as_copy(w: &World, original: &str, copy: &str) -> bool {
+    let (original, copy) = (w.path(original).display().to_string(), w.path(copy).display().to_string());
+    let kept = w.store.call_blocking(|s| s.conflicts()).unwrap();
+    kept.iter().any(|row| row.kind == konedrive_tree::ConflictKind::Copy && row.original == original && row.rescued == copy)
 }

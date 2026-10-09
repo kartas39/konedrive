@@ -181,7 +181,7 @@ fn every_crash_point_is_replayed_to_the_same_end() {
 fn a_folder_removed_while_its_mkdir_goes_up_is_deleted_in_onedrive() {
     let w = World::new(&[folder("D", "R", "d")]);
     w.make_directory("d/new");
-    let mkdir = InFlight::start(&w, &w.h.engine(), "POST", "children");
+    let mkdir = InFlight::start(&w, "POST", "children");
     w.remove_entry("d/new");
     assert_eq!(w.rows().iter().map(|r| (r.kind, r.state)).collect::<Vec<_>>(), vec![(Mkdir, OutboxState::Running), (Delete, OutboxState::Ready)]);
     mkdir.finish(&w);
