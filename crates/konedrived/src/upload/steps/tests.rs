@@ -86,3 +86,54 @@ fn a_guard_is_the_etag_then_the_ctag_and_empty_only_for_an_item_just_read() {
     assert_eq!(guard.clone().renewed(None).as_str(), "e");
     assert_eq!(guard.renewed(Some("e2".into())).as_str(), "e2");
 }
+
+/// A directory marked with a folder's id is that folder where the base places the folder
+/// there, or where a row of the outbox says the folder is that directory: by the
+/// directory's file handle when the row has one, by its place when it has none.
+#[test]
+fn a_marked_directory_is_its_folder_by_the_base_or_by_a_row_of_the_outbox() {
+    use super::shared::is_marked_folder;
+    use konedrive_fs::handle::FileHandle;
+    use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+    use std::path::Path;
+
+    let dir = tempfile::tempdir().unwrap();
+    let handle_of = |name: &str| {
+        std::fs::create_dir(dir.path().join(name)).unwrap();
+        FileHandle::at(&std::fs::File::open(dir.path()).unwrap(), std::ffi::OsStr::new(name)).unwrap()
+    };
+    let (this, other) = (handle_of("this"), handle_of("other"));
+    let row = |kind: OutboxKind, rel: &str, object: Option<&FileHandle>| OutboxRow {
+        seq: 1,
+        kind,
+        item_id: Some("N".into()),
+        object: object.cloned(),
+        rel: rel.into(),
+        base: None,
+        target_parent: Some("R".into()),
+        target_name: Some("d".into()),
+        state: OutboxState::Ready,
+        reason: None,
+        attempts: 0,
+        next_try: None,
+        snapshot: None,
+        session_url: None,
+        session_expires: None,
+        session_next: None,
+        confirmed: false,
+        size: None,
+    };
+    let here = Path::new("d");
+    let is = |base_place: Option<&str>, rows: &[OutboxRow]| is_marked_folder(here, Some(&this), base_place.map(Path::new), rows);
+
+    assert!(is(Some("d"), &[]), "the base places the folder here");
+    assert!(!is(Some("elsewhere"), &[]), "a copy that kept the mark: the folder is elsewhere, and no row says otherwise");
+    assert!(!is(None, &[]), "the base places the folder nowhere");
+    assert!(is(Some("elsewhere"), &[row(OutboxKind::Move, "d", Some(&this))]), "a row takes this very directory here");
+    assert!(is(Some("elsewhere"), &[row(OutboxKind::Move, "d", None)]), "a row with no handle takes the folder to this place");
+    assert!(!is(Some("elsewhere"), &[row(OutboxKind::Move, "d", Some(&other))]), "the row is of another directory");
+    assert!(!is(Some("elsewhere"), &[row(OutboxKind::Move, "e", None)]), "the row takes the folder to another place");
+    assert!(!is(Some("elsewhere"), &[row(OutboxKind::Delete, "d", Some(&this))]), "a row that removes the folder");
+    let no_handle_here = is_marked_folder(here, None, Some(Path::new("elsewhere")), &[row(OutboxKind::Move, "d", Some(&other))]);
+    assert!(no_handle_here, "with no handle read here, the row's place decides");
+}

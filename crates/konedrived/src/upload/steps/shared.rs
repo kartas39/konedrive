@@ -15,6 +15,7 @@ use crate::local::{names, RECHECK};
 use crate::upload::engine::{now, Engine, Fail, Outcome};
 use crate::upload::local::{self, Found};
 use crate::upload::SWAP_PREFIX;
+use konedrive_fs::handle::FileHandle;
 use konedrive_graph::drive::{DriveError, DriveItem, WriteError};
 use konedrive_tree::outbox::{frees, Base, Committed, ConflictCopy, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason, SessionUrl};
 use konedrive_tree::{ActivityRow, Change, Kind, Placement, Row, Table};
@@ -47,13 +48,27 @@ fn swap_name(row: &OutboxRow) -> String {
     format!("{SWAP_PREFIX}{}", row.item_id.clone().unwrap_or_else(|| format!("s{}", row.seq)))
 }
 
+/// Whether the directory `here`, marked with the id of a folder the base has, is that
+/// folder: the base places the folder at `here` (`base_place`), or one of `rows` — the
+/// outbox's rows of that folder — says the folder is this directory, by the directory's
+/// file handle (`handle`) where the row has one, else by its place. The second is a folder
+/// the user moved, or one made under a temporary name, whose move is not sent yet. A row
+/// that removes the folder says nothing of where it is.
+pub(super) fn is_marked_folder(here: &Path, handle: Option<&FileHandle>, base_place: Option<&Path>, rows: &[OutboxRow]) -> bool {
+    base_place == Some(here)
+        || rows.iter().filter(|row| !row.kind.removes()).any(|row| match (&row.object, handle) {
+            (Some(object), Some(handle)) => object == handle,
+            _ => row.rel == here,
+        })
+}
+
 /// The item id of the directory `dir` (relative to the root), read from the
 /// disk: the root's is the drive's root. Only an id that is the directory's
-/// own counts: the base has it as a folder, and places it here. A directory
-/// that carries the id of a folder the base has elsewhere — one the user
-/// moved, whose move is not sent yet, or a copy that kept its attributes —
-/// is not asked for it: nothing is sent into a folder because of an
-/// attribute alone, and a row below a moved directory waits for the move.
+/// own counts: the base has it as a folder, and the base or a row of the
+/// outbox says the folder is this directory ([`is_marked_folder`]). A
+/// directory that carries the id of a folder which is elsewhere — a copy that
+/// kept its attributes — is not asked for it: nothing is sent into a folder
+/// because of an attribute alone.
 /// This is the one place every row passes before it is sent.
 async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
@@ -68,16 +83,19 @@ async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<Strin
             Err(err) => return Err(err),
         };
         let Probe::Managed { id, is_dir: true } = on.probe(&parent, &name)? else { return Ok(None) };
-        Ok(Some(id))
+        Ok(Some((id, FileHandle::at(&parent, &name).ok())))
     })
     .await?;
-    let Some(id) = probed else { return Ok(None) };
+    let Some((id, handle)) = probed else { return Ok(None) };
     let (asked, at) = (id.clone(), dir.to_owned());
     let own = e
         .store()
         .call(move |s| {
-            let folder = s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder);
-            Ok(folder && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at))
+            if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
+                return Ok(false);
+            }
+            let base_place = s.locate(Table::Items, &asked)?.filter(|l| l.placed).map(|l| l.rel);
+            Ok(is_marked_folder(&at, handle.as_ref(), base_place.as_deref(), &s.outbox_for_item(&asked)?))
         })
         .await?;
     if !own {

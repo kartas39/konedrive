@@ -90,7 +90,6 @@ fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
 /// A folder wrapped in a new one of its name (`mkdir t && mv d t/ && mv t d`): the new
 /// folder goes through a temporary name, the old one moves into it, and nothing is deleted.
 #[test]
-#[ignore = "the rows wait for each other for ever: the new folder is in the base under its temporary name, so `steps::shared::dir_id` (which asks where the base places the id, no longer which directory it is) does not give its id to the move of the old folder into it, and the new folder's move to its name waits for that move to free the name"]
 fn a_folder_wrapped_in_a_new_one_of_its_name_goes_through_a_temporary_name() {
     let w = World::new(&[folder("D", "R", "d"), file("X", "D", "x.txt", b"x")]);
     w.make_directory("t");
