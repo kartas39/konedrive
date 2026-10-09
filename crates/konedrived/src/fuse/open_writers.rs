@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 /// The files open for writing, by node.
 #[derive(Default)]
-pub(super) struct Writers(Mutex<HashMap<u64, Written>>);
+pub(super) struct OpenWriters(Mutex<HashMap<u64, Written>>);
 
 /// One file open for writing.
 #[derive(Debug, Default, Clone, Copy)]
@@ -21,16 +21,16 @@ pub(super) struct Written {
 
 /// What closing a handle that could write left of its file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Closed {
+pub(super) enum AfterClose {
     /// Other handles still write it.
-    StillOpen,
+    StillOpenElsewhere,
     /// The last writer closed it, and its content was changed.
-    Changed,
+    ContentChanged,
     /// The last writer closed it, and nothing was written.
-    Untouched,
+    ContentUntouched,
 }
 
-impl Writers {
+impl OpenWriters {
     /// One more handle writes node `ino`, whose content is the user's own already when
     /// `changed`. Whether it is the first: the one the outbox is told of.
     pub(super) fn opened(&self, ino: u64, changed: bool) -> bool {
@@ -49,16 +49,16 @@ impl Writers {
     }
 
     /// A handle that could write node `ino` was closed.
-    pub(super) fn closed(&self, ino: u64) -> Closed {
+    pub(super) fn closed(&self, ino: u64) -> AfterClose {
         let mut writers = crate::panic::lock(&self.0);
-        let Some(written) = writers.get_mut(&ino) else { return Closed::StillOpen };
+        let Some(written) = writers.get_mut(&ino) else { return AfterClose::StillOpenElsewhere };
         written.open = written.open.saturating_sub(1);
         if written.open > 0 {
-            return Closed::StillOpen;
+            return AfterClose::StillOpenElsewhere;
         }
         match writers.remove(&ino) {
-            Some(Written { changed: true, .. }) => Closed::Changed,
-            _ => Closed::Untouched,
+            Some(Written { changed: true, .. }) => AfterClose::ContentChanged,
+            _ => AfterClose::ContentUntouched,
         }
     }
 

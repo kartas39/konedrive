@@ -52,7 +52,7 @@ mod shared;
 mod backing_directory;
 mod directory_contents;
 mod write_operations;
-mod writers;
+mod open_writers;
 
 pub use asked::{Freed, Looked, Refused};
 pub use follow::{Followed, Step};

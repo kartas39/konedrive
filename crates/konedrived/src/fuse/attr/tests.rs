@@ -9,7 +9,7 @@ use konedrive_tree::Kind;
 use super::{attr, OnDisk, Shown};
 use crate::fuse::directory_contents::tests::{of, view};
 use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
-use crate::fuse::writers::Writers;
+use crate::fuse::open_writers::OpenWriters;
 
 fn at(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
@@ -75,7 +75,7 @@ fn item(view: &DirectoryContents, id: &str) -> Entry {
 }
 
 /// The facts of the drive's `a.txt` (item `A`, one byte in the store) as node 7.
-fn facts(view: &DirectoryContents, writers: &Writers) -> Shown {
+fn facts(view: &DirectoryContents, writers: &OpenWriters) -> Shown {
     Shown::of(&item(view, "A"), 7, Path::new("a.txt"), view, writers)
 }
 
@@ -88,7 +88,7 @@ fn downloaded(dir: &Path, view: &DirectoryContents) {
 #[test]
 fn the_facts_of_an_item_are_the_stores_until_the_folder_holds_its_copy() {
     let (dir, view) = view(Vec::new());
-    let writers = Writers::default();
+    let writers = OpenWriters::default();
     assert_eq!(facts(&view, &writers), Shown::NotDownloaded { size: 1, listed: UNIX_EPOCH });
     assert_eq!(Shown::of(&item(&view, "D"), 3, Path::new("docs"), &view, &writers), Shown::Folder { listed: UNIX_EPOCH });
     // A file of the user's own at the item's place is not its copy.
@@ -102,7 +102,7 @@ fn the_facts_of_an_item_are_the_stores_until_the_folder_holds_its_copy() {
 fn a_copy_is_the_users_own_while_it_is_written_or_its_change_waits() {
     let (dir, view) = view(Vec::new());
     downloaded(dir.path(), &view);
-    let writers = Writers::default();
+    let writers = OpenWriters::default();
     writers.opened(7, false);
     assert!(matches!(facts(&view, &writers), Shown::Copy { own: true, .. }));
     writers.closed(7);
@@ -110,7 +110,7 @@ fn a_copy_is_the_users_own_while_it_is_written_or_its_change_waits() {
 
     let (dir, view) = crate::fuse::directory_contents::tests::view(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
     downloaded(dir.path(), &view);
-    assert!(matches!(facts(&view, &Writers::default()), Shown::Copy { own: true, .. }));
+    assert!(matches!(facts(&view, &OpenWriters::default()), Shown::Copy { own: true, .. }));
 }
 
 #[test]
@@ -119,5 +119,5 @@ fn the_facts_of_an_object_without_an_item_are_its_own() {
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
     let object = view.under().object(Path::new("own.txt")).unwrap();
     let entry = Entry::Local(Local { name: "own.txt".into(), object });
-    assert!(matches!(Shown::of(&entry, 9, Path::new("own.txt"), &view, &Writers::default()), Shown::Local { object, dir: false } if object.size == 4));
+    assert!(matches!(Shown::of(&entry, 9, Path::new("own.txt"), &view, &OpenWriters::default()), Shown::Local { object, dir: false } if object.size == 4));
 }

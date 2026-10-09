@@ -3,7 +3,7 @@
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
 //! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`NodeLookup`]), the files
-//! open for writing ([`Writers`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
+//! open for writing ([`OpenWriters`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
 //! of its own. Each operation is the same short sequence of steps:
 //!
 //! 1. check, through the view and the rules: what stands where, and the errno of a refusal;
@@ -36,7 +36,7 @@ use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
 use super::directory_contents::{Directory, DirectoryContents};
-use super::writers::Writers;
+use super::open_writers::OpenWriters;
 
 mod make;
 mod remove;
@@ -48,7 +48,7 @@ pub(super) struct WriteOperations {
     view: Arc<DirectoryContents>,
     under: Arc<BackingDirectory>,
     resolve: Arc<NodeLookup>,
-    writers: Arc<Writers>,
+    writers: Arc<OpenWriters>,
     recorder: Arc<Recorder>,
     rules: Arc<UploadRules>,
 }
@@ -67,7 +67,7 @@ impl WriteOperations {
         view: Arc<DirectoryContents>,
         under: Arc<BackingDirectory>,
         resolve: Arc<NodeLookup>,
-        writers: Arc<Writers>,
+        writers: Arc<OpenWriters>,
         recorder: Arc<Recorder>,
         rules: Arc<UploadRules>,
     ) -> Self {

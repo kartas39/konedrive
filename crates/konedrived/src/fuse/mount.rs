@@ -27,7 +27,7 @@ use super::node_lookup::NodeLookup;
 use super::recorder::Recorder;
 use super::shared::{other, Shared};
 use super::write_operations::WriteOperations;
-use super::writers::Writers;
+use super::open_writers::OpenWriters;
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
@@ -82,7 +82,7 @@ impl Mount {
             let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let recorder = Arc::new(Recorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
             let upload_rules = Arc::new(UploadRules::new(writing.ignore, writing.machine_name));
-            let writers = Arc::new(Writers::default());
+            let writers = Arc::new(OpenWriters::default());
             let write_operations = WriteOperations::new(
                 Arc::clone(&view),
                 Arc::clone(&under),

@@ -19,7 +19,7 @@ use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::upload_rules::tests::rules;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::{Directory, Entry, DirectoryContents};
-use crate::fuse::writers::Writers;
+use crate::fuse::open_writers::OpenWriters;
 
 pub(super) struct Folder {
     _tmp: tempfile::TempDir,
@@ -29,7 +29,7 @@ pub(super) struct Folder {
     pub(super) view: Arc<DirectoryContents>,
     pub(super) under: Arc<BackingDirectory>,
     pub(super) resolve: Arc<NodeLookup>,
-    pub(super) writers: Arc<Writers>,
+    pub(super) writers: Arc<OpenWriters>,
     pub(super) writable: Arc<AtomicBool>,
     pub(super) ops: WriteOperations,
 }
@@ -50,7 +50,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let resolve = Arc::new(NodeLookup::new(Arc::clone(&view), nodes));
     let writable = Arc::new(AtomicBool::new(true));
     let recorder = Arc::new(Recorder::start(store.clone(), Arc::default(), Arc::clone(&writable)).unwrap());
-    let writers = Arc::new(Writers::default());
+    let writers = Arc::new(OpenWriters::default());
     let ops = WriteOperations::new(Arc::clone(&view), Arc::clone(&under), Arc::clone(&resolve), Arc::clone(&writers), recorder, Arc::new(rules()));
     Folder { _tmp: tmp, disk, store, view, under, resolve, writers, writable, ops }
 }

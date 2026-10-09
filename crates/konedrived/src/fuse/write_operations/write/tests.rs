@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 
-use crate::fuse::writers::Closed;
+use crate::fuse::open_writers::AfterClose;
 use crate::fuse::write_operations::tests::{at, folder};
 
 #[test]
@@ -15,7 +15,7 @@ fn a_local_file_written_waits_for_its_writer_and_is_due_once_closed() {
     assert!(opened.ino == node && opened.id.is_none() && f.writers.open(node));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     f.writers.written(node);
-    assert_eq!(f.writers.closed(node), Closed::Changed);
+    assert_eq!(f.writers.closed(node), AfterClose::ContentChanged);
     f.ops.closed(node, true);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Create, OutboxState::Waiting, Some(Reason::Changed)));
@@ -30,7 +30,7 @@ fn an_items_copy_closed_untouched_leaves_nothing_to_send() {
     let opened = f.ops.open_to_write(node, false).unwrap();
     assert_eq!(opened.id.as_deref(), Some("A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    assert_eq!(f.writers.closed(node), Closed::Untouched);
+    assert_eq!(f.writers.closed(node), AfterClose::ContentUntouched);
     f.ops.closed(node, false);
     assert!(f.rows().is_empty());
 }
