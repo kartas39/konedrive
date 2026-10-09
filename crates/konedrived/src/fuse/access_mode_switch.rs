@@ -14,11 +14,13 @@
 //!   and the changes the mount never takes ([`AccessModeSwitch::access_mode`]);
 //! - the step of a cycle of the delta listing, and the mount, for the folder's sync.
 //!
-//! It is switched by the mount alone, when the folder's sync starts or stops uploading, and
-//! on the write-operation thread ([`AccessModeSwitch::switch_on_thread`]): no write
-//! operation runs while the mode changes, so the mode an operation was answered at its
-//! start holds until it has recorded, and nothing is recorded in a folder that was switched
-//! to read-only.
+//! It is switched by the mount alone, when the folder's sync starts or stops uploading. To
+//! read-only it is switched on the write-operation thread
+//! ([`AccessModeSwitch::switch_to_read_only_on_thread`]): no write operation runs while the folder stops
+//! taking changes, so an operation that was let through at its start has recorded before
+//! the switch is made, and nothing is recorded in a folder that was switched to read-only.
+//! To read-write it is switched at once: an operation that began in a read-only folder was
+//! refused at its start, and none is under way.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,30 +66,22 @@ impl AccessModeSwitch {
         }
     }
 
-    /// Has the switch to `access_mode` made on `write_operation_thread`, after every job the
+    /// Has the switch to read-only made on `write_operation_thread`, after every job the
     /// thread was given before; whether it changed the mode comes through what this
     /// returns, once it is made.
-    pub(super) fn queue_switch(self: &Arc<Self>, write_operation_thread: &WriteOperationThread, access_mode: AccessMode) -> oneshot::Receiver<bool> {
+    pub(super) fn queue_switch_to_read_only(self: &Arc<Self>, write_operation_thread: &WriteOperationThread) -> oneshot::Receiver<bool> {
         let switch = Arc::clone(self);
-        write_operation_thread.run_and_wait(move || switch.switch_to(access_mode))
+        write_operation_thread.run_and_wait(move || switch.switch_to_read_only())
     }
 
-    /// Switches to `access_mode` on `write_operation_thread`, and waits for it: every write
+    /// Switches to read-only on `write_operation_thread`, and waits for it: every write
     /// operation that was asked for before the switch has ended when this returns, and each
-    /// one after it finds the new mode. Whether that changed the mode. A thread that is
-    /// stopped runs no write operation any more, and the switch is made here.
-    pub(super) async fn switch_on_thread(self: &Arc<Self>, write_operation_thread: &WriteOperationThread, access_mode: AccessMode) -> bool {
-        match self.queue_switch(write_operation_thread, access_mode).await {
+    /// one after it is refused. Whether that changed the mode. A thread that is stopped runs
+    /// no write operation any more, and the switch is made here.
+    pub(super) async fn switch_to_read_only_on_thread(self: &Arc<Self>, write_operation_thread: &WriteOperationThread) -> bool {
+        match self.queue_switch_to_read_only(write_operation_thread).await {
             Ok(changed) => changed,
-            Err(_) => self.switch_to(access_mode),
-        }
-    }
-
-    /// Switches to `access_mode`. Whether that changed the mode.
-    fn switch_to(&self, access_mode: AccessMode) -> bool {
-        match access_mode {
-            AccessMode::ReadWrite => self.switch_to_read_write(),
-            AccessMode::ReadOnly => self.switch_to_read_only(),
+            Err(_) => self.switch_to_read_only(),
         }
     }
 
@@ -96,7 +90,9 @@ impl AccessModeSwitch {
         !self.is_read_write.swap(true, Ordering::SeqCst)
     }
 
-    /// The folder takes no change from now on. Whether that changed the mode.
+    /// The folder takes no change from now on. Whether that changed the mode. Made where no
+    /// write operation runs: on the write-operation thread
+    /// ([`switch_to_read_only_on_thread`](Self::switch_to_read_only_on_thread)).
     pub(super) fn switch_to_read_only(&self) -> bool {
         self.is_read_write.swap(false, Ordering::SeqCst)
     }

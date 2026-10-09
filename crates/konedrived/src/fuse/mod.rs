@@ -10,8 +10,8 @@
 //! A read-only folder's mount refuses every change. A read-write one's takes them
 //! ([`Mount::switch_to_read_write`]): each change a program asks for is made in the backing
 //! directory and recorded in the outbox on one thread, under the folder's tree lock, before
-//! the program is answered; the outbox worker sends what is recorded. The mode itself is
-//! switched on that thread, so nothing is recorded in a folder that was switched to
+//! the program is answered; the outbox worker sends what is recorded. The switch back to
+//! read-only is made on that thread, so nothing is recorded in a folder that was switched to
 //! read-only.
 //!
 //! - The kernel's requests read the store through a connection of their own, opened for
@@ -40,7 +40,7 @@
 //!   [`local_only_entry`].
 //! - A change a program makes: [`write_operation_thread`] is the one thread such a change
 //!   is made on, and depends on nothing; [`access_mode_switch`] holds whether programs may
-//!   change the folder, and is switched on that thread; [`upload_rules`] (what is uploaded
+//!   change the folder, and is switched to read-only on that thread; [`upload_rules`] (what is uploaded
 //!   at all) and [`detections`] (what a change is recorded as, a function of typed events)
 //!   depend on nothing but the store's facts; the [`outbox_recorder`] writes the detections
 //!   and wakes the outbox's worker; [`open_handles`] holds what programs hold open, and

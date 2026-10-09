@@ -52,7 +52,12 @@ impl SyncService {
         let mount = Arc::clone(&prepared.mount);
         let sync = self.build(prepared, &reg, wanted);
         match sync.handles().outbox().cloned() {
-            Some(outbox) => mount.switch_to_read_write(Arc::new(move || outbox.wake())).await,
+            // At once, and not waited for behind the tree lock: the first cycle of the sync
+            // just built may hold it while it waits for the folder's state, which this change
+            // holds.
+            Some(outbox) => mount.switch_to_read_write(Arc::new(move || outbox.wake())),
+            // No cycle of a read-only folder takes the tree lock, and the change that leads
+            // here made the switch already.
             None => mount.switch_to_read_only().await,
         };
         if let Some(running) = stopped.folder_mut().sync_mut() {

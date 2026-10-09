@@ -187,7 +187,7 @@ daemon shows OneDrive.
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
 - `mount.rs` — `Mount`: made, served, taken off. It holds the fuser session, the
   `FuseConnection` and the parts, and calls the parts in order three times: at the start, at
-  the stop, and at a switch of the access mode, which is made on the write-operation thread
+  the stop, and at a switch of the access mode — to read-only on the write-operation thread,
   and waited for. A cycle is applied and announced by its `CycleStep`; the `Files`
   interface is handed out (`files_interface()`). `[tests]`
 - `mount/build_order.rs` — `Mount::build`: the parts built in the order they depend on each
@@ -263,8 +263,8 @@ daemon shows OneDrive.
 - `access_mode_switch.rs` — `AccessModeSwitch`: the one holder of whether programs may change
   the folder, answered as an `AccessMode` (`ReadOnly`, `ReadWrite`); a write request asks it
   before it queues its operation, the operation asks it again on the write-operation thread,
-  and the mount switches it on that thread, so nothing is recorded after a switch to
-  read-only. `[tests]`
+  and the mount switches it to read-only on that thread, so nothing is recorded after that
+  switch; to read-write it is switched at once. `[tests]`
 - `open_handles.rs` — `OpenHandles`: the files (`OpenFile`: read while not downloaded, read
   from the backing directory, or written) and the directories programs hold open, by the
   kernel's `fh` (`Fh`); it alone counts the writers of a node, remembers whether one wrote,
@@ -352,7 +352,7 @@ daemon shows OneDrive.
 - `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
   came to its name from OneDrive. `[tests]`
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
-  the switch of the access mode and the scan for unrecorded entries run on, each job under
+  the switch to read-only and the scan for unrecorded entries run on, each job under
   the folder's tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's
   writer and what wakes the outbox's worker (`OutboxWaker`), records an event in one

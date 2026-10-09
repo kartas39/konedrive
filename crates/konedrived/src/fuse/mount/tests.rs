@@ -119,28 +119,33 @@ fn the_parts_of_a_mount_are_built_over_a_folder_that_no_mount_lies_over() {
     built.mount.stop();
 }
 
-/// The switch is made on the write-operation thread, and waited for: the mode is the new one
-/// when the call returns.
+/// To read-write the mode is switched at once, also while a cycle holds the tree lock, which
+/// the write-operation thread waits for; back to read-only it is switched on that thread,
+/// and waited for.
 #[test]
-fn the_access_mode_of_a_mount_is_switched_on_the_write_operation_thread() {
+fn a_mount_is_switched_to_read_write_at_once_and_to_read_only_on_the_write_operation_thread() {
     let built = build_mount();
-    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    assert!(runtime.block_on(built.mount.switch_to_read_write(Arc::new(|| {}))));
+    let held = built.tree_lock.try_lock().unwrap();
+    assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
     assert!(built.mount.is_read_write());
     // Switched again, it changes nothing.
-    assert!(!runtime.block_on(built.mount.switch_to_read_write(Arc::new(|| {}))));
+    assert!(!built.mount.switch_to_read_write(Arc::new(|| {})));
+    drop(held);
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     assert!(runtime.block_on(built.mount.switch_to_read_only()));
     assert!(!built.mount.is_read_write());
+    assert!(!runtime.block_on(built.mount.switch_to_read_only()));
 }
 
 /// A mount that is stopped runs no write operation any more: its mode is switched at once.
 #[test]
 fn the_access_mode_of_a_mount_whose_thread_is_stopped_is_switched_at_once() {
     let built = build_mount();
+    assert!(built.mount.access_mode_switch.switch_to_read_write());
     built.mount.write_operation_thread.stop();
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     let held = built.tree_lock.try_lock().unwrap();
-    assert!(runtime.block_on(built.mount.switch_to_read_write(Arc::new(|| {}))));
-    assert!(built.mount.is_read_write());
+    assert!(runtime.block_on(built.mount.switch_to_read_only()));
+    assert!(!built.mount.is_read_write());
     drop(held);
 }

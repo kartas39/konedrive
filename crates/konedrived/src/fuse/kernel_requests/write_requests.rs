@@ -8,7 +8,8 @@
 //! ([`WriteRequests::run_named_operation`], and the check a write that needs a download
 //! makes): the thread waits for the folder's tree lock, which a cycle of the delta listing
 //! holds for as long as it takes. It is the same [`AccessModeSwitch`] the operation asks
-//! again on the thread, where the answer holds until the operation has recorded.
+//! again on the thread, where a folder that was let through stays read-write until the
+//! operation has recorded.
 //!
 //! [`WriteRequests`] is given the [`WriteOperations`] and the [`WriteOperationThread`]; the
 //! [`AccessModeSwitch`]; the [`NodeResolver`], for the node id and the attributes it answers

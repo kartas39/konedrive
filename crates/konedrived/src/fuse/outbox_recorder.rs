@@ -9,7 +9,7 @@
 //! ([`OutboxRecorder::record_in`]).
 //!
 //! Whether the folder takes changes is not its to ask: the write operation that records has
-//! asked the access mode switch already, on the thread the switch itself runs on. It knows
+//! asked the access mode switch already, on the thread the switch to read-only runs on. It knows
 //! nothing of the mount or of the disk.
 
 use std::sync::{Arc, Mutex};

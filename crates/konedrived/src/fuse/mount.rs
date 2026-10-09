@@ -11,9 +11,10 @@
 //!   the inotify bridge's thread, the downloads of what is pinned — is started;
 //! - at the stop ([`Mount::stop`]): each part that runs something is stopped, and the mount
 //!   is taken off;
-//! - at a switch of the access mode ([`Mount::switch_to_read_write`],
-//!   [`Mount::switch_to_read_only`]): the outbox's waker, the switch itself on the
-//!   write-operation thread, and the scan for unrecorded entries.
+//! - at a switch of the access mode: to read-write ([`Mount::switch_to_read_write`]), the
+//!   outbox's waker, the switch, and the scan for unrecorded entries; to read-only
+//!   ([`Mount::switch_to_read_only`]), the waker, and the switch on the write-operation
+//!   thread, waited for.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -169,14 +170,18 @@ impl Mount {
     }
 
     /// The folder takes changes from now on, and `outbox_waker` is called for each one recorded:
-    /// its sync uploads. Whether the modes shown changed with that.
+    /// its sync uploads. Whether the modes shown changed with that. When it changed the
+    /// mode, what a lost row left unsent is found again by the scan, on the write-operation
+    /// thread.
     ///
-    /// The switch is made on the write-operation thread, and waited for; when it changed the
-    /// mode, what a lost row left unsent is found again by the scan, which runs there after
-    /// it.
-    pub async fn switch_to_read_write(&self, outbox_waker: OutboxWaker) -> bool {
+    /// This switch is made at once, and not on the write-operation thread: a write operation
+    /// that began in a read-only folder was refused at its start, so none is under way that
+    /// the switch could overtake. And the folder's sync switches after it started its first
+    /// cycle, which holds the tree lock while it waits for the folder's state: a switch that
+    /// waited for the thread there would wait for that cycle, and the cycle for it.
+    pub fn switch_to_read_write(&self, outbox_waker: OutboxWaker) -> bool {
         self.outbox_recorder.set_outbox_waker(Some(outbox_waker));
-        let changed = self.access_mode_switch.switch_on_thread(&self.write_operation_thread, AccessMode::ReadWrite).await;
+        let changed = self.access_mode_switch.switch_to_read_write();
         if changed {
             let unrecorded_entry_scan = Arc::clone(&self.unrecorded_entry_scan);
             self.write_operation_thread.run(move || unrecorded_entry_scan.record_unrecorded_entries());
@@ -188,10 +193,12 @@ impl Mount {
     ///
     /// The switch is made on the write-operation thread, and waited for: every write
     /// operation that was asked for before it has recorded what it did by the time this
-    /// returns, and none records after it.
+    /// returns, and none records after it. The thread runs under the folder's tree lock, so
+    /// the caller must not hold what a cycle that holds that lock waits for, unless it has
+    /// told the cycle to stop: the folder's sync calls this with its cycle cancelled.
     pub async fn switch_to_read_only(&self) -> bool {
         self.outbox_recorder.set_outbox_waker(None);
-        self.access_mode_switch.switch_on_thread(&self.write_operation_thread, AccessMode::ReadOnly).await
+        self.access_mode_switch.switch_to_read_only_on_thread(&self.write_operation_thread).await
     }
 
     /// Whether the folder takes changes now.

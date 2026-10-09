@@ -7,8 +7,9 @@
 //! the [`UploadRules`] and the [`AccessModeSwitch`]. It owns no state of its own, and runs
 //! on the write-operation thread ([`super::write_operation_thread`]), which whoever asks
 //! for an operation puts it on. Each operation asks the access mode once, at its start, on
-//! that thread — where the switch of the mode runs too, so the mode it was answered holds
-//! until it has recorded — and is then the same short sequence of steps:
+//! that thread — where the switch to read-only runs too, so an operation that was let
+//! through has recorded before the folder stops taking changes — and is then the same short
+//! sequence of steps:
 //!
 //! 1. look up what stands at the places, through the node resolver, the directory contents
 //!    and the rules;

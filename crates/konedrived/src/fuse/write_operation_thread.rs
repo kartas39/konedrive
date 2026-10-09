@@ -5,7 +5,7 @@
 //! So a change is in the outbox before the program hears it was made, the mount's own
 //! threads never wait for the store or for a cycle, and no two changes of names interleave.
 //! What runs here besides the write operations is what must not run beside one: the switch
-//! of the folder's access mode, and the scan for unrecorded entries.
+//! of the folder to read-only, and the scan for unrecorded entries.
 //!
 //! [`WriteOperationThread`] owns the way to its thread; the thread itself owns the jobs'
 //! queue and the tree lock. It knows nothing of the mount, of the disk, of the store or of

@@ -51,7 +51,7 @@ fn an_operation_queued_before_a_switch_to_read_only_is_done_before_it_and_one_af
         write_operation_thread.run(move || tell.send((name, folder.ops.make(NodeId::ROOT, name, EntryToMake::File).err())).unwrap());
     };
     make("before.txt");
-    let switched = folder.access_mode_switch.queue_switch(&write_operation_thread, AccessMode::ReadOnly);
+    let switched = folder.access_mode_switch.queue_switch_to_read_only(&write_operation_thread);
     make("after.txt");
     // While the cycle holds the lock nothing ran: the folder still takes changes.
     assert_eq!(folder.access_mode_switch.access_mode(), AccessMode::ReadWrite);
@@ -74,8 +74,8 @@ fn a_switch_on_a_thread_that_is_stopped_is_made_at_once() {
     let write_operation_thread = WriteOperationThread::start(Arc::default()).unwrap();
     write_operation_thread.stop();
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    assert!(runtime.block_on(access_mode_switch.switch_on_thread(&write_operation_thread, AccessMode::ReadOnly)));
+    assert!(runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)));
     assert_eq!(access_mode_switch.access_mode(), AccessMode::ReadOnly);
     // Switched to the mode it has, it changes nothing.
-    assert!(!runtime.block_on(access_mode_switch.switch_on_thread(&write_operation_thread, AccessMode::ReadOnly)));
+    assert!(!runtime.block_on(access_mode_switch.switch_to_read_only_on_thread(&write_operation_thread)));
 }
