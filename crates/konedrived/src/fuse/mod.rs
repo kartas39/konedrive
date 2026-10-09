@@ -39,13 +39,13 @@
 //! `shared` holds them together.
 
 mod access_mode;
-mod asked;
 mod attributes;
 mod conflict_copies;
 mod detections;
 mod directory;
 mod download_states;
 mod file_downloader;
+mod files_interface;
 mod inotify_bridge;
 mod local_only_entries;
 mod mount;
@@ -65,7 +65,7 @@ mod directory_contents;
 mod write_operations;
 mod open_writers;
 
-pub use asked::{Freed, Looked, Refused};
+pub use files_interface::{FilesRefusal, FreedSpace, PathStatus};
 pub use conflict_copies::CycleConflicts;
 pub use remote_changes::{CycleOutcome, OneDriveChange};
 pub use backing_directory::{clear_stale, directories, tidy, tidy_all};

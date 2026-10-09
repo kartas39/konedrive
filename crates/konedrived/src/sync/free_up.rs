@@ -13,20 +13,20 @@ use crate::sync::{SyncError, SyncService};
 /// Whether `path` carries a pin of its own. Refused when a folder above it pins it, and,
 /// where `own_refuses`, when it carries one itself.
 fn own_pin(mount: &Mount, path: &Path, own_refuses: bool) -> Result<bool, SyncError> {
-    let looked = mount.look(path)?;
-    if let Some(by) = &looked.pinned_above {
+    let status = mount.find_path_status(path)?;
+    if let Some(by) = &status.pinned_above {
         return Err(SyncError::NotAllowed(refusal(path, by)));
     }
-    if looked.own_pin && own_refuses {
+    if status.own_pin && own_refuses {
         return Err(SyncError::NotAllowed(refusal(path, path)));
     }
-    Ok(looked.own_pin)
+    Ok(status.own_pin)
 }
 
 /// Refuses a free-up of the file at `path` while a change of it waits to be uploaded:
 /// freeing it up would lose that change (`NotUploaded`).
 fn refuse_unuploaded(mount: &Mount, path: &Path) -> Result<(), SyncError> {
-    if mount.look(path)?.changed {
+    if mount.find_path_status(path)?.modified_here {
         return Err(SyncError::NotUploaded(path.display().to_string()));
     }
     Ok(())
@@ -44,7 +44,7 @@ impl SyncService {
         let mount = self.require_mount()?;
         own_pin(&mount, path, true)?;
         refuse_unuploaded(&mount, path)?;
-        if mount.look(path)?.state != Some(State::Hydrated) {
+        if mount.find_path_status(path)?.state != Some(State::Hydrated) {
             return Err(SyncError::NotHydrated);
         }
         let freed = mount.free_up(path).await?;

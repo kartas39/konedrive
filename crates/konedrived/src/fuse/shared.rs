@@ -19,7 +19,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fuser::Errno;
 
 use crate::folder::root::SyncRoot;
-use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
 use super::download_states::DownloadStates;
@@ -45,7 +44,6 @@ pub(super) struct Shared {
     pub(super) directory_contents: Arc<DirectoryContents>,
     /// The entry a node id stands for, and the node id of an entry ([`super::node_lookup`]).
     pub(super) node_lookup: Arc<NodeLookup>,
-    pub(super) report: Report,
     /// The state of each file's download ([`super::download_states`]).
     pub(super) download_states: Arc<DownloadStates>,
     /// What downloads a file whole ([`super::file_downloader`]).

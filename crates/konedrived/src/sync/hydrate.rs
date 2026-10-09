@@ -3,15 +3,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::fuse::{Mount, Refused};
+use crate::fuse::{FilesRefusal, Mount};
 use crate::sync::{SyncError, SyncService};
 
-impl From<Refused> for SyncError {
-    fn from(refused: Refused) -> Self {
+impl From<FilesRefusal> for SyncError {
+    fn from(refused: FilesRefusal) -> Self {
         match refused {
-            Refused::NotOurs => SyncError::OutsideRoot,
-            Refused::NoItem => SyncError::NotManaged,
-            Refused::Io(why) => SyncError::Io(why),
+            FilesRefusal::OutsideFolder => SyncError::OutsideRoot,
+            FilesRefusal::NotInOneDrive => SyncError::NotManaged,
+            FilesRefusal::Io(why) => SyncError::Io(why),
         }
     }
 }

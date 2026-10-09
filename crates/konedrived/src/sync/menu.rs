@@ -133,19 +133,19 @@ impl SyncService {
         let Some(mount) = self.mount() else { return Part { taken: vec![None; paths.len()], ..Part::default() } };
         let mut changed = false;
         for path in paths {
-            let Ok(looked) = mount.look(path) else {
+            let Ok(status) = mount.find_path_status(path) else {
                 part.taken.push(None);
                 continue;
             };
             if part.kept_by.is_none() {
-                part.kept_by.clone_from(&looked.pinned_above);
+                part.kept_by.clone_from(&status.pinned_above);
             }
-            changed |= looked.changed;
+            changed |= status.modified_here;
             part.taken.push(Some(Taken {
-                is_dir: looked.folder,
-                own: looked.own_pin,
-                pinned: looked.own_pin || looked.pinned_above.is_some(),
-                hydrated: looked.state == Some(State::Hydrated),
+                is_dir: status.is_directory,
+                own: status.own_pin,
+                pinned: status.own_pin || status.pinned_above.is_some(),
+                hydrated: status.state == Some(State::Hydrated),
                 in_onedrive: true,
             }));
         }

@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fuser::{Config, MountOption};
@@ -18,6 +18,7 @@ use crate::status::report::Report;
 use super::access_mode::AccessMode;
 use super::download_states::DownloadStates;
 use super::file_downloader::{FileChangeAnnouncer, FileDownloader};
+use super::files_interface::{FilesInterface, FilesRefusal, FreedSpace, PathStatus};
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
 use super::conflict_copies::ConflictCopies;
@@ -25,6 +26,7 @@ use super::inotify_bridge::{InotifyBridge, RemoteChange};
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::node_lookup::NodeLookup;
+use super::open_files::OpenFiles;
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
@@ -36,6 +38,8 @@ use super::open_writers::OpenWriters;
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
     pub(super) shared: Arc<Shared>,
+    /// What the daemon's bus interface `Files` asks ([`super::files_interface`]).
+    files_interface: FilesInterface,
     pub(super) session: Mutex<Option<fuser::BackgroundSession>>,
     /// The mount's connection, as the kernel numbers it (`/sys/fs/fuse/connections/<n>`).
     pub(super) connection: u32,
@@ -113,16 +117,27 @@ impl Mount {
                 announce_file_change,
                 runtime: runtime.clone(),
             });
+            let open_files = Arc::new(OpenFiles::default());
+            let files_interface = FilesInterface {
+                folder: root.path.clone(),
+                directory_contents: Arc::clone(&directory_contents),
+                download_states: Arc::clone(&download_states),
+                file_downloader: Arc::clone(&file_downloader),
+                open_files: Arc::clone(&open_files),
+                pins: Arc::clone(&pins),
+                inotify_bridge: Arc::clone(&inotify_bridge),
+                report: report.clone(),
+                runtime: runtime.clone(),
+            };
             let shared = Arc::new(Shared {
                 root: root.clone(),
                 backing_directory,
                 directory_contents,
                 node_lookup,
-                report,
                 range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
                 download_states,
                 file_downloader,
-                open_files: Arc::default(),
+                open_files,
                 reads: Mutex::default(),
                 pins,
                 inotify_bridge,
@@ -153,7 +168,7 @@ impl Mount {
             shared.backing_directory.unlock();
             shared.inotify_bridge.start(notifier)?;
             download_pinned_files(&shared.pins, &shared.directory_contents, &shared.file_downloader, &shared.runtime);
-            Ok(Arc::new(Mount { shared, session: Mutex::new(Some(session)), connection }))
+            Ok(Arc::new(Mount { shared, files_interface, session: Mutex::new(Some(session)), connection }))
         })
         .await
         .map_err(other)?
@@ -238,6 +253,44 @@ impl Mount {
     pub fn announce_committed_cycle(&self) {
         let s = &self.shared;
         remote_changes::announce_committed_cycle(&s.uncommitted_cycle, &s.pins, &s.inotify_bridge, &s.directory_contents, &s.file_downloader, &s.runtime, &s.outbox_recorder);
+    }
+
+    /// Downloads the file at `path` now, and waits for it.
+    pub async fn hydrate(&self, path: &Path) -> Result<(), FilesRefusal> {
+        self.files_interface.hydrate(path).await
+    }
+
+    /// Frees the space of the downloaded copies at and below `path`; what a pin keeps, a
+    /// download is filling, or holds a change that is not uploaded yet, is left and counted.
+    pub async fn free_up(&self, path: &Path) -> Result<FreedSpace, FilesRefusal> {
+        self.files_interface.free_up(path).await
+    }
+
+    /// Frees the space of every downloaded copy that no pin keeps.
+    pub async fn free_up_all(&self) -> FreedSpace {
+        self.files_interface.free_up_all().await
+    }
+
+    /// How the file or directory of OneDrive at `path` stands: its state, its own pin, and
+    /// the directory above that pins it.
+    pub fn find_path_status(&self, path: &Path) -> Result<PathStatus, FilesRefusal> {
+        self.files_interface.find_path_status(path)
+    }
+
+    /// Puts the pin on what is at `path`, or takes it off. A pin put on downloads what it
+    /// keeps.
+    pub async fn set_pin(&self, path: &Path, pinned: bool) -> Result<(), FilesRefusal> {
+        self.files_interface.set_pin(path, pinned).await
+    }
+
+    /// How many files and directories carry a pin of their own.
+    pub fn count_pins(&self) -> u64 {
+        self.files_interface.count_pins()
+    }
+
+    /// How many downloaded copies, and bytes on disk, there are at and below `path`.
+    pub fn count_downloaded_below(&self, path: &Path) -> Result<(u64, u64), FilesRefusal> {
+        self.files_interface.count_downloaded_below(path)
     }
 
     /// The downloads that failed and can be continued: each one's size on disk and its
