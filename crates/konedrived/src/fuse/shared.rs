@@ -23,14 +23,15 @@ use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
 use super::download_states::DownloadStates;
-use super::file_download::FileDownloader;
+use super::file_downloader::FileDownloader;
 use super::conflict_copies::ConflictCopies;
-use super::inotify_bridge::{InotifyBridge, RemoteChange};
+use super::inotify_bridge::InotifyBridge;
 use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
 use super::pins::Pins;
 use super::range_readers::RangeReaders;
+use super::remote_changes::UncommittedCycle;
 use super::open_files::OpenFiles;
 use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
@@ -47,7 +48,7 @@ pub(super) struct Shared {
     pub(super) report: Report,
     /// The state of each file's download ([`super::download_states`]).
     pub(super) download_states: Arc<DownloadStates>,
-    /// What downloads a file whole ([`super::file_download`]).
+    /// What downloads a file whole ([`super::file_downloader`]).
     pub(super) file_downloader: Arc<FileDownloader>,
     /// What programs hold open ([`super::open_files`]).
     pub(super) open_files: Arc<OpenFiles>,
@@ -62,9 +63,9 @@ pub(super) struct Shared {
     /// What brings a change from OneDrive to whoever watches the folder
     /// ([`super::inotify_bridge`]).
     pub(super) inotify_bridge: Arc<InotifyBridge>,
-    /// What the cycle now committing changed: announced, and the pins of what went taken off,
-    /// once it is committed.
-    pub(super) pending: Mutex<(Vec<RemoteChange>, Vec<String>)>,
+    /// What the cycle now being committed leaves to be done once it is
+    /// ([`super::remote_changes`]).
+    pub(super) uncommitted_cycle: UncommittedCycle,
     /// Whether programs may change the folder ([`super::access_mode`]).
     pub(super) access_mode: Arc<AccessMode>,
     /// What moves the user's own out of the way of a change from OneDrive
@@ -89,11 +90,4 @@ pub(super) fn seconds(t: i64) -> SystemTime {
 
 pub(super) fn other(e: impl ToString) -> io::Error {
     io::Error::other(e.to_string())
-}
-
-impl Shared {
-    /// The time the outbox's rows are dated by.
-    pub(super) fn now(&self) -> i64 {
-        crate::clock::unix_now()
-    }
 }

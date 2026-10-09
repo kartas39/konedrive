@@ -8,15 +8,16 @@ use std::sync::{Arc, Mutex};
 
 use fuser::{Config, MountOption};
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{Store, TreeStore};
+use konedrive_tree::{Store, TreeError, TreeStore};
 
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{ContentSource, Share};
+use crate::local::held::Rw;
 use crate::status::report::Report;
 
 use super::access_mode::AccessMode;
 use super::download_states::DownloadStates;
-use super::file_download::{FileChangeAnnouncer, FileDownloader};
+use super::file_downloader::{FileChangeAnnouncer, FileDownloader};
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
 use super::conflict_copies::ConflictCopies;
@@ -27,6 +28,7 @@ use super::node_lookup::NodeLookup;
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
+use super::remote_changes::{self, CycleOutcome, UncommittedCycle};
 use super::shared::{other, Shared};
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
@@ -124,7 +126,7 @@ impl Mount {
                 reads: Mutex::default(),
                 pins,
                 inotify_bridge,
-                pending: Mutex::default(),
+                uncommitted_cycle: UncommittedCycle::default(),
                 access_mode,
                 conflict_copies,
                 outbox_recorder,
@@ -220,6 +222,22 @@ impl Mount {
     /// Whether the folder takes changes now.
     pub fn is_read_write(&self) -> bool {
         self.shared.access_mode.is_read_write()
+    }
+
+    /// Makes the backing directory follow the cycle of the delta listing that `store` has
+    /// staged and not yet committed ([`remote_changes::apply_staged_cycle`]); `rw` is what
+    /// the outbox holds, in a read-write folder.
+    pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
+        let s = &self.shared;
+        remote_changes::apply_staged_cycle(store, rw, &s.backing_directory, &s.range_readers, &s.conflict_copies, &s.uncommitted_cycle)
+    }
+
+    /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its
+    /// changes are announced to whoever watches the folder, and what is pinned and not
+    /// downloaded is downloaded ([`remote_changes::announce_committed_cycle`]).
+    pub fn announce_committed_cycle(&self) {
+        let s = &self.shared;
+        remote_changes::announce_committed_cycle(&s.uncommitted_cycle, &s.pins, &s.inotify_bridge, &s.directory_contents, &s.file_downloader, &s.runtime, &s.outbox_recorder);
     }
 
     /// The downloads that failed and can be continued: each one's size on disk and its

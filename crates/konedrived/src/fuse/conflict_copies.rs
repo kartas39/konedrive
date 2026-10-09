@@ -25,13 +25,14 @@ use crate::local::names::copy_name;
 
 /// What the conflicts of one cycle left for the outbox, and what they did in the folder.
 #[derive(Default)]
-pub(super) struct CycleConflicts {
-    pub(super) detections: Vec<Detection>,
-    pub(super) ops: Vec<OutboxOp>,
+pub struct CycleConflicts {
+    /// What the cycle recorded in the outbox for them.
+    pub detections: Vec<Detection>,
+    pub ops: Vec<OutboxOp>,
     /// The user's own, moved aside: the path each was at, and the path it is at now.
-    pub(super) moved_aside: Vec<(PathBuf, PathBuf)>,
+    pub moved_aside: Vec<(PathBuf, PathBuf)>,
     /// The directories removed from OneDrive that stay here, by OneDrive id.
-    pub(super) kept_directories: Vec<String>,
+    pub kept_directories: Vec<String>,
 }
 
 pub(super) struct ConflictCopies {

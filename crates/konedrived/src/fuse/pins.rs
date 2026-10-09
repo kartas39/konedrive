@@ -16,7 +16,7 @@ use konedrive_graph::pool::Class;
 use konedrive_tree::{Row, Store, TreeError};
 
 use super::directory_contents::{DirectoryContents, FileSyncState};
-use super::file_download::FileDownloader;
+use super::file_downloader::FileDownloader;
 
 /// The pins: the OneDrive ids that carry a pin of their own.
 pub(super) struct Pins {

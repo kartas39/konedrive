@@ -3,7 +3,7 @@
 //! left to continue from.
 //!
 //! [`DownloadStates`] holds one [`DownloadState`] per OneDrive file, by its id, and nothing
-//! else: it does no I/O and starts nothing. [`FileDownloader`](super::file_download) reports
+//! else: it does no I/O and starts nothing. [`FileDownloader`](super::file_downloader::FileDownloader) reports
 //! to it what a download does; the read request counts in it what it fetched as ranges, and
 //! asks it what a running download has written already; free-up and the state shown ask it
 //! whether a file is downloading.

@@ -14,7 +14,7 @@
 //!
 //! - The requests of the mount read the store through a connection of their own, opened for
 //!   reading alone: they never wait for the cycle that writes it.
-//! - What changes in OneDrive is announced through the mount ([`Mount::committed`]): the
+//! - What changes in OneDrive is announced through the mount ([`Mount::announce_committed_cycle`]): the
 //!   announcer's thread creates, touches or removes the name by path, the mount answers it from
 //!   the store, and the kernel tells whoever watches the directory.
 //! - Pins are rows of the store ([`konedrive_tree::TreeStore::pins`]): a file that is not
@@ -34,7 +34,7 @@
 //! change from OneDrive that finds the user's own in its way: [`conflict_copies`]. A file
 //! that is not downloaded: [`range_readers`] holds the files being read as ranges, and
 //! fetches the ranges; [`download_states`] holds the state of each file's download and
-//! does no I/O; [`file_download`] downloads a file whole, over the disk, the directory
+//! does no I/O; [`file_downloader`] downloads a file whole, over the disk, the directory
 //! contents and the download states; [`pins`] holds the pins, over the directory contents.
 //! `shared` holds them together.
 
@@ -45,8 +45,7 @@ mod conflict_copies;
 mod detections;
 mod directory;
 mod download_states;
-mod file_download;
-mod follow;
+mod file_downloader;
 mod inotify_bridge;
 mod local_only_entries;
 mod mount;
@@ -55,6 +54,7 @@ mod open_files;
 mod unsent_changes;
 mod pins;
 mod range_readers;
+mod remote_changes;
 mod upload_rules;
 mod outbox_recorder;
 mod requests;
@@ -66,7 +66,8 @@ mod write_operations;
 mod open_writers;
 
 pub use asked::{Freed, Looked, Refused};
-pub use follow::{Followed, Step};
+pub use conflict_copies::CycleConflicts;
+pub use remote_changes::{CycleOutcome, OneDriveChange};
 pub use backing_directory::{clear_stale, directories, tidy, tidy_all};
 pub use mount::{Mount, Parts};
 pub use mount::Writing;

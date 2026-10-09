@@ -6,11 +6,11 @@
 //!
 //! 1. [`Reconcile::follow_mount`]: nothing is placed, since the folder's mount
 //!    shows the store; the folder under the mount follows what changed
-//!    ([`Mount::follow`]);
+//!    ([`Mount::apply_staged_cycle`]);
 //! 2. [`commit_cycle`]: `staging` swapped in with its link, or a first
 //!    listing's page put into `items`. In read-write mode it decides what
 //!    waits: the changes of what the outbox holds keep their base row;
-//! 3. [`Reconcile::after_commit`]: the mount told ([`Mount::committed`]),
+//! 3. [`Reconcile::after_commit`]: the mount told ([`Mount::announce_committed_cycle`]),
 //!    removals of items already gone dropped from the outbox, the activity
 //!    and the conflicts recorded, and rows let wait for a folder made again.
 //!
@@ -22,8 +22,8 @@
 //! read-only folder's reconcile, or a read-write folder's
 //! (`docs/design/writes.md` §9), which holds the tree lock until the swap.
 //!
-//! [`Mount::follow`]: crate::fuse::Mount::follow
-//! [`Mount::committed`]: crate::fuse::Mount::committed
+//! [`Mount::apply_staged_cycle`]: crate::fuse::Mount::apply_staged_cycle
+//! [`Mount::announce_committed_cycle`]: crate::fuse::Mount::announce_committed_cycle
 //! [`Reconcile::run`]: crate::remote::listing::reconcile::Reconcile::run
 //! [`Reconcile::follow_mount`]: crate::remote::listing::reconcile::Reconcile::follow_mount
 //! [`Reconcile::after_commit`]: crate::remote::listing::reconcile::Reconcile::after_commit
@@ -192,7 +192,7 @@ impl Reconcile {
         let done = self.follow_mount(plan.as_ref().map(|plan| Arc::clone(&plan.rw)))?;
         match commit_cycle(&self.store, plan.as_ref(), commit) {
             Ok(said) => {
-                self.mount.committed();
+                self.mount.announce_committed_cycle();
                 self.after_commit(&done.applied, said);
                 Ok(done)
             }
@@ -221,20 +221,20 @@ impl Reconcile {
     }
 
     /// Step 1: nothing is placed, since the mount shows the store. The folder under the mount
-    /// follows what changed ([`Mount::follow`]), and the changes are counted and named for
+    /// follows what changed ([`Mount::apply_staged_cycle`]), and the changes are counted and named for
     /// the activity log.
     fn follow_mount(&self, rw: Mode<Arc<Rw>>) -> Result<Reconciled, CycleError> {
         let following = Arc::clone(&self.mount);
-        let followed = self.store.call_blocking(move |s| following.follow(s, rw.read_write().map(|rw| &**rw)))?;
+        let outcome = self.store.call_blocking(move |s| following.apply_staged_cycle(s, rw.read_write().map(|rw| &**rw)))?;
         let mut applied = Applied::default();
-        applied.on_disk.copies = followed.copied.into_iter().map(|(original, copy)| Copied { original, copy }).collect();
-        applied.on_disk.recreated = followed.kept;
-        for step in &followed.steps {
+        applied.on_disk.copies = outcome.conflicts.moved_aside.into_iter().map(|(original, copy)| Copied { original, copy }).collect();
+        applied.on_disk.recreated = outcome.conflicts.kept_directories;
+        for step in &outcome.changes {
             let (kind, rel, from) = match (&step.old, &step.new) {
                 (None, Some((_, now))) => (Kind::Added, now, None),
                 (Some((_, was)), None) => (Kind::Removed, was, None),
                 (Some((_, was)), Some((_, now))) if was != now => (Kind::Moved, now, Some(was.clone())),
-                (Some(_), Some((_, now))) if step.content_changed() => (Kind::Updated, now, None),
+                (Some(_), Some((_, now))) if step.has_new_content() => (Kind::Updated, now, None),
                 _ => continue,
             };
             match kind {
