@@ -221,7 +221,7 @@ impl Reconcile {
     }
 
     /// Step 1: nothing is placed, since the mount shows the store. The folder under the mount
-    /// follows what changed ([`CycleStep::apply_staged_cycle`]), and the changes are counted and named for
+    /// follows what changed ([`CycleStep::apply_staged_cycle`](crate::fuse::CycleStep::apply_staged_cycle)), and the changes are counted and named for
     /// the activity log.
     fn follow_mount(&self, rw: Mode<Arc<Rw>>) -> Result<Reconciled, CycleError> {
         let following = Arc::clone(self.mount.cycle_step());
