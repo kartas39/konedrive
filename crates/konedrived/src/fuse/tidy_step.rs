@@ -9,12 +9,18 @@ use std::path::{Path, PathBuf};
 use super::backing_directory::remove_write_bits;
 use super::stale_mount::unmount_stale_mount;
 
-/// Whether a FUSE mount lies over `folder` now.
-fn is_mounted(folder: &Path) -> bool {
-    fs::read_to_string("/proc/self/mounts").unwrap_or_default().lines().any(|line| {
+/// Whether `mounts`, the kernel's table of mounts (`/proc/self/mounts`), has a FUSE mount
+/// over `folder`.
+fn lists_fuse_mount_at(mounts: &str, folder: &Path) -> bool {
+    mounts.lines().any(|line| {
         let mut fields = line.split(' ');
         fields.nth(1).is_some_and(|at| Path::new(at) == folder) && fields.next().is_some_and(|kind| kind.starts_with("fuse"))
     })
+}
+
+/// Whether a FUSE mount lies over `folder` now.
+fn is_mounted(folder: &Path) -> bool {
+    lists_fuse_mount_at(&fs::read_to_string("/proc/self/mounts").unwrap_or_default(), folder)
 }
 
 /// Tidies `folder`: a stale mount is taken off it, and the write bits of the folder on disk

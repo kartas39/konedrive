@@ -103,3 +103,35 @@ fn the_wait_for_a_queued_job_ends_when_the_thread_is_stopped() {
     assert!(answer.blocking_recv().is_err());
     drop(held);
 }
+
+/// A job that panics ends the thread: the jobs that waited behind it are dropped, whatever
+/// is given to it later too, and the tree lock it ran under is free again.
+#[test]
+fn a_job_that_panics_ends_the_thread_and_the_jobs_that_wait_with_it() {
+    let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let write_operation_thread = WriteOperationThread::start(Arc::clone(&tree_lock)).unwrap();
+    let held = tree_lock.try_lock().unwrap();
+    write_operation_thread.run(|| panic!("a job that panics, as the test asks"));
+    let behind = write_operation_thread.run_and_wait(|| 7);
+    drop(held);
+    assert!(behind.blocking_recv().is_err(), "the job behind the one that panicked was dropped");
+    assert!(write_operation_thread.run_and_wait(|| 7).blocking_recv().is_err(), "no job runs on a thread that ended");
+    drop(tree_lock.blocking_lock());
+    // The job in flight has ended: a stop is not kept waiting for it.
+    write_operation_thread.stop();
+}
+
+/// A thread nobody has the way to any more ends, and the jobs that wait go with it: a cycle
+/// holds the tree lock, so the job is still in the queue when the thread is dropped.
+#[test]
+fn a_thread_that_is_dropped_drops_the_jobs_that_wait() {
+    let tree_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let write_operation_thread = WriteOperationThread::start(Arc::clone(&tree_lock)).unwrap();
+    let held = tree_lock.try_lock().unwrap();
+    let (tell, told) = mpsc::channel();
+    let waited = write_operation_thread.run_and_wait(move || tell.send(()).unwrap());
+    drop(write_operation_thread);
+    assert!(waited.blocking_recv().is_err());
+    drop(held);
+    assert_eq!(told.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Disconnected), "the job never ran");
+}

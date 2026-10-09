@@ -197,6 +197,26 @@ fn a_local_only_directory_moved_to_an_ignored_place_takes_its_rows_out_of_the_ou
     assert_eq!(batch.ops, ops);
 }
 
+/// The row that makes the directory in OneDrive is being sent: it is left to finish, and
+/// the removal of what it makes follows it, at the new place; the rows of what the directory
+/// holds, which wait, are removed, and what is left moves along.
+#[test]
+fn a_local_only_directory_moved_to_an_ignored_place_while_it_is_made_keeps_the_running_row() {
+    let (new_directory, inside) = (directory(1), file(2, 4));
+    let store = store(vec![
+        detection_of(OutboxKind::Mkdir, &new_directory, &in_root("new"), OutboxState::Running),
+        detection_of(OutboxKind::Create, &inside, &EntryPlace { directory: DirectoryReference { onedrive_id: None, path: "new".into() }, name: "x.txt".into() }, OutboxState::Ready),
+    ]);
+    let all = rows(&store);
+    let renamed = moved(MovedEntry::IgnoredLocalOnlyDirectory { handle: new_directory.handle.clone() }, "new", in_root("new.tmp"), None);
+    let batch = detect(renamed, &store);
+    let [delete] = &batch.detections[..] else { panic!("one detection: {:?}", batch.detections) };
+    assert_eq!((delete.kind, delete.object.as_ref(), delete.rel.as_path()), (OutboxKind::Delete, Some(&new_directory.handle), Path::new("new.tmp")));
+    let mut ops = removes(&all.iter().filter(|row| row.state != OutboxState::Running).collect::<Vec<_>>());
+    ops.push(OutboxOp::Rebase { from: rel("new"), to: rel("new.tmp") });
+    assert_eq!(batch.ops, ops);
+}
+
 fn kinds_of(batch: &crate::fuse::detections::OutboxBatch) -> Vec<(OutboxKind, String)> {
     batch.detections.iter().map(|d| (d.kind, d.item_id.clone().unwrap_or_else(|| format!("#{}", d.object.as_ref().map_or(0, |o| o.bytes[0]))))).collect()
 }

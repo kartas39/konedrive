@@ -260,3 +260,22 @@ fn the_close_of_what_is_not_open_for_writing_records_nothing() {
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert!(f.open_handles.is_open_for_writing_by_onedrive_id("A"));
 }
+
+/// A cut by its path of a file a program holds open is that program's write: the node is
+/// marked written, and nothing is recorded — the outbox waits for the writer already. Its
+/// close then leaves the content to be sent.
+#[test]
+fn a_cut_of_a_file_a_program_holds_open_marks_it_written_and_records_nothing() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"content");
+    let node_id = f.node_id(NodeId::ROOT, "a.txt");
+    let fh = f.ops.open_to_write(node_id).unwrap();
+    let opened = f.rows();
+    f.ops.truncate(node_id, 3, None).unwrap();
+    assert_eq!(std::fs::read(f.disk.join("a.txt")).unwrap(), b"con");
+    assert_eq!(f.rows(), opened, "the row still waits for the writer");
+    assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
+    f.ops.close_writer(fh);
+    let row = &f.rows()[0];
+    assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Update, OutboxState::Waiting, Some(Reason::Changed)));
+}
