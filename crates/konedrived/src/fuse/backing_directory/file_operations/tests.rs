@@ -31,7 +31,7 @@ fn a_directory_that_holds_something_is_not_removed() {
     let (_dir, backing_directory) = empty_backing_directory();
     backing_directory.make_dir(Path::new("docs")).unwrap();
     backing_directory.make_file(Path::new("docs/a.txt")).unwrap();
-    assert!(backing_directory.remove_dir(Path::new("docs")).is_err());
+    assert_eq!(backing_directory.remove_dir(Path::new("docs")).unwrap_err().kind(), ErrorKind::DirectoryNotEmpty);
     assert_eq!(backing_directory.list_directory(Path::new("docs")).map(|e| e.file_name()).collect::<Vec<_>>(), ["a.txt"]);
 }
 
@@ -50,7 +50,7 @@ fn a_file_opened_to_write_is_cut_to_nothing_only_when_asked() {
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
     assert_eq!(backing_directory.open_to_write(Path::new("a.txt"), false).unwrap().metadata().unwrap().len(), 3);
     assert_eq!(backing_directory.open_to_write(Path::new("a.txt"), true).unwrap().metadata().unwrap().len(), 0);
-    assert!(backing_directory.open_to_read(Path::new("none.txt")).is_err());
+    assert_eq!(backing_directory.open_to_read(Path::new("none.txt")).unwrap_err().kind(), ErrorKind::NotFound);
 }
 
 #[test]

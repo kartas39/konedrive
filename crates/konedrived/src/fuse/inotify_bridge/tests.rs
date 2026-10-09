@@ -1,9 +1,12 @@
 use std::ffi::OsStr;
+use std::sync::mpsc::TryRecvError;
+use std::sync::Arc;
 
 use konedrive_tree::Kind;
 
+use super::{find_name_before_change, Announcement, AnnouncementInProgress, InotifyBridge, NameBeforeChange};
 use crate::fuse::node_table::NodeId;
-use super::{find_name_before_change, AnnouncementInProgress, NameBeforeChange};
+use crate::fuse::write_operations::tests::folder;
 
 fn appearing(parent: u64, name: &str) -> AnnouncementInProgress {
     AnnouncementInProgress::NameAppearing { parent: NodeId(parent), name: name.into() }
@@ -46,4 +49,54 @@ fn another_name_or_the_same_name_in_another_directory_is_as_the_folder_has_it() 
         assert_eq!(before(Some(&in_progress), 4, "other.txt"), None);
         assert_eq!(before(Some(&in_progress), 5, "new.txt"), None);
     }
+}
+
+/// A bridge over the fixture's folder, whose thread is not started: no mount answers it.
+fn bridge() -> InotifyBridge {
+    let folder = folder(Vec::new());
+    InotifyBridge::new(folder.disk.clone(), Arc::clone(&folder.node_resolver), Arc::clone(&folder.directory_contents))
+}
+
+fn shown_changed(rel: &str, id: &str) -> Announcement {
+    Announcement::FileShownChanged { rel: rel.into(), id: id.into() }
+}
+
+/// The mount does not answer yet: what is given to announce waits, in the order it came, for
+/// the thread that is started once it does.
+#[test]
+fn what_is_announced_before_the_thread_is_started_waits_in_its_order() {
+    let bridge = bridge();
+    bridge.announce(vec![shown_changed("a.txt", "A"), shown_changed("b.txt", "B")]);
+    bridge.announce(vec![shown_changed("docs/c.txt", "C")]);
+    let queued = crate::panic::lock(&bridge.queued).take().expect("the queue of a bridge that is not started");
+    assert_eq!(queued.try_recv(), Ok(vec![shown_changed("a.txt", "A"), shown_changed("b.txt", "B")]));
+    assert_eq!(queued.try_recv(), Ok(vec![shown_changed("docs/c.txt", "C")]));
+    assert_eq!(queued.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+fn nothing_is_queued_for_an_announcement_of_nothing() {
+    let bridge = bridge();
+    bridge.announce(Vec::new());
+    let queued = crate::panic::lock(&bridge.queued).take().expect("the queue of a bridge that is not started");
+    assert_eq!(queued.try_recv(), Err(TryRecvError::Empty));
+}
+
+/// What was queued and not announced is abandoned with the queue, and what comes later is
+/// dropped: the way to the thread is gone.
+#[test]
+fn what_is_announced_after_the_bridge_is_stopped_is_dropped() {
+    let bridge = bridge();
+    let queued = crate::panic::lock(&bridge.queued).take().expect("the queue of a bridge that is not started");
+    bridge.stop();
+    bridge.announce(vec![shown_changed("a.txt", "A")]);
+    assert_eq!(queued.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+/// A request is the bridge's own by the id of its thread, which no request has before the
+/// thread runs.
+#[test]
+fn no_request_is_the_bridges_own_before_its_thread_runs() {
+    let bridge = bridge();
+    assert!(!bridge.is_own_thread(1) && !bridge.is_own_thread(std::process::id()));
 }

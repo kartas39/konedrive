@@ -6,7 +6,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 use crate::fuse::node_table::NodeId;
 use crate::fuse::directory_contents::FileSyncState;
 use crate::fuse::open_handles::{CloseOutcome, OpenFile};
-use crate::fuse::write_operations::tests::{at, folder};
+use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing};
 
 #[test]
 fn a_local_only_file_written_waits_for_its_writer_and_is_due_once_closed() {
@@ -54,12 +54,13 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
     let first = f.ops.open_to_write(node_id, false).unwrap();
     let second = f.ops.open_to_write(node_id, false).unwrap();
-    assert_eq!(f.rows().len(), 1);
+    assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     let still_open = f.open_handles.close_file(first).1;
     assert_eq!(still_open, CloseOutcome::StillOpenElsewhere);
     // Nothing is recorded while another handle writes the file.
     f.ops.close_last_writer(node_id, still_open);
-    assert_eq!(f.rows().len(), 1);
+    assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
+    assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
     assert!(matches!(f.file_state("a.txt"), FileSyncState::ModifiedHere(..)));
     let outcome = f.open_handles.close_file(second).1;
     assert_eq!(outcome, CloseOutcome::ContentChanged);
@@ -138,4 +139,26 @@ fn a_time_set_on_a_file_is_its_copys_own() {
     // No time given: nothing is written, and nothing is refused.
     f.ops.set_modified_time(node_id, None).unwrap();
     assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().modified().unwrap(), at_time);
+}
+
+/// The first writer of a file is recorded before the program is told the file is open: an
+/// open that cannot be recorded is taken back, and no handle is left writing the file.
+#[test]
+fn an_open_for_writing_that_cannot_be_recorded_is_closed_and_answered_as_an_io_error() {
+    let f = folder_that_records_nothing();
+    std::fs::write(f.disk.join("mine.txt"), b"mine").unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "mine.txt");
+    assert_eq!(f.ops.open_to_write(node_id, false).err(), Some(Errno::EIO));
+    assert!(!f.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
+}
+
+/// Recorded before it is cut: a cut that cannot be recorded cuts nothing.
+#[test]
+fn a_cut_that_cannot_be_recorded_cuts_nothing_and_is_answered_as_an_io_error() {
+    let f = folder_that_records_nothing();
+    std::fs::write(f.disk.join("mine.txt"), b"mine").unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "mine.txt");
+    assert_eq!(f.ops.truncate(node_id, 1, None).err(), Some(Errno::EIO));
+    assert_eq!(std::fs::read(f.disk.join("mine.txt")).unwrap(), b"mine");
 }

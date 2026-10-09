@@ -142,9 +142,10 @@ fn a_local_only_file_moved_where_nothing_is_uploaded_is_forgotten() {
 fn a_local_only_file_kept_here_while_it_is_uploaded_keeps_the_running_row() {
     let mine = file(1, 3);
     let store = store(vec![detection_of(OutboxKind::Create, &mine, &in_root("mine.txt"), OutboxState::Running)]);
-    let renamed = moved(MovedEntry::IgnoredLocalOnlyFile { file: mine }, "mine.txt", in_root("mine.tmp"), None);
+    let renamed = moved(MovedEntry::IgnoredLocalOnlyFile { file: mine.clone() }, "mine.txt", in_root("mine.tmp"), None);
     let batch = detect(renamed, &store);
-    assert_eq!(batch.detections.len(), 1);
+    let [delete] = &batch.detections[..] else { panic!("one detection: {:?}", batch.detections) };
+    assert_eq!((delete.kind, delete.object.as_ref(), delete.rel.as_path()), (OutboxKind::Delete, Some(&mine.handle), Path::new("mine.tmp")));
     assert!(batch.ops.is_empty());
 }
 

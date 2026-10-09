@@ -40,6 +40,7 @@ use super::write_operations::EntryToMake;
 
 mod directory_requests;
 pub(super) mod interruptible_reads;
+mod kernel_numbers;
 mod lookup_requests;
 mod read_origin;
 mod read_requests;
@@ -54,38 +55,6 @@ pub(super) use lookup_requests::LookupRequests;
 pub(super) use read_requests::ReadRequests;
 pub(super) use write_requests::WriteRequests;
 pub(super) use xattr_requests::XattrRequests;
-
-// The edge of the layer: the kernel's numbers come in fuser's types, and are the layer's own
-// from here on.
-impl From<INodeNo> for NodeId {
-    fn from(ino: INodeNo) -> Self {
-        NodeId(ino.0)
-    }
-}
-
-impl From<NodeId> for INodeNo {
-    fn from(node_id: NodeId) -> Self {
-        INodeNo(node_id.0)
-    }
-}
-
-impl From<FileHandle> for Fh {
-    fn from(fh: FileHandle) -> Self {
-        Fh(fh.0)
-    }
-}
-
-impl From<Fh> for FileHandle {
-    fn from(fh: Fh) -> Self {
-        FileHandle(fh.0)
-    }
-}
-
-impl From<fuser::RequestId> for RequestId {
-    fn from(unique: fuser::RequestId) -> Self {
-        RequestId(unique.0)
-    }
-}
 
 /// The program behind a request, for the log: its id and the name the kernel has for it.
 fn describe_caller(req: &Request) -> String {

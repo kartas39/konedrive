@@ -1,11 +1,11 @@
 use crate::fuse::write_operations::EntryToMake;
 use crate::fuse::write_operations::RenameMode;
 use fuser::Errno;
-use konedrive_tree::outbox::OutboxKind;
+use konedrive_tree::outbox::{OutboxKind, Reason};
 
 use crate::fuse::node_table::NodeId;
 use crate::fuse::directory_contents::FileSyncState;
-use crate::fuse::write_operations::tests::{at, folder};
+use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing};
 
 #[test]
 fn a_onedrive_file_renamed_is_moved_with_its_copy() {
@@ -33,8 +33,8 @@ fn a_onedrive_file_moved_to_another_directory_is_there_at_once() {
 fn a_onedrive_file_renamed_over_another_deletes_that_one() {
     let f = folder(Vec::new());
     f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).unwrap();
-    let said = f.said();
-    assert!(said.contains(&(OutboxKind::Delete, Some("B".into()), at("b.txt"))) && said.contains(&(OutboxKind::Move, Some("A".into()), at("b.txt"))));
+    // What was at the new place first: it frees the name.
+    assert_eq!(f.said(), [(OutboxKind::Delete, Some("B".into()), at("b.txt")), (OutboxKind::Move, Some("A".into()), at("b.txt"))]);
     assert_eq!(f.shown("b.txt"), Some(Some("A".into())));
 }
 
@@ -98,4 +98,92 @@ fn what_cannot_be_at_the_new_place_is_refused() {
     assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, crate::folder::disk::HOLDING, RenameMode::Replace).err(), Some(Errno::EPERM));
     assert_eq!(f.ops.rename(NodeId::ROOT, "none.txt", NodeId::ROOT, "x.txt", RenameMode::Replace).err(), Some(Errno::ENOENT));
     assert_eq!(f.rows(), before);
+}
+
+/// The directory moves in OneDrive, and the rows of what the user changed below it are found
+/// at their new place.
+#[test]
+fn a_onedrive_directory_moved_takes_the_rows_below_it_along() {
+    let f = folder(Vec::new());
+    f.ops.make(f.docs(), "mine.txt", EntryToMake::File).unwrap();
+    f.ops.rename(NodeId::ROOT, "docs", NodeId::ROOT, "papers", RenameMode::Replace).unwrap();
+    assert!(f.disk.join("papers/mine.txt").is_file() && !f.disk.join("docs").exists());
+    assert_eq!(f.said(), [(OutboxKind::Create, None, at("papers/mine.txt")), (OutboxKind::Move, Some("D".into()), at("papers"))]);
+    assert_eq!((f.shown("papers"), f.shown("docs")), (Some(Some("D".into())), None));
+    assert_eq!(f.shown("papers/c.txt"), Some(Some("C".into())));
+}
+
+/// What was at the new place is gone, and nothing is ever that entry again: its node is
+/// dropped, and the node of what moved has the name.
+#[test]
+fn a_local_only_entry_that_is_displaced_loses_its_node() {
+    let f = folder(Vec::new());
+    f.ops.make(NodeId::ROOT, "x.txt", EntryToMake::File).unwrap();
+    f.ops.make(NodeId::ROOT, "y.txt", EntryToMake::File).unwrap();
+    std::fs::write(f.disk.join("x.txt"), b"x").unwrap();
+    let (x, y) = (f.node_id(NodeId::ROOT, "x.txt"), f.node_id(NodeId::ROOT, "y.txt"));
+    f.ops.rename(NodeId::ROOT, "x.txt", NodeId::ROOT, "y.txt", RenameMode::Replace).unwrap();
+    assert_eq!(std::fs::read(f.disk.join("y.txt")).unwrap(), b"x");
+    assert!(f.node_resolver.find_entry(y).is_none());
+    assert_eq!(f.node_resolver.find_entry(x).map(|(entry, rel)| (entry.name, rel)), Some(("y.txt".to_owned(), at("y.txt"))));
+    assert_eq!(f.node_id(NodeId::ROOT, "y.txt"), x);
+}
+
+/// Its row follows it to the new name and still waits for the writer, who goes on writing
+/// the same node.
+#[test]
+fn a_file_renamed_while_it_is_open_for_writing_still_waits_for_its_writer() {
+    let f = folder(Vec::new());
+    f.ops.make(NodeId::ROOT, "new.txt", EntryToMake::FileOpenedForWriting).unwrap();
+    let node_id = f.node_id(NodeId::ROOT, "new.txt");
+    f.ops.rename(NodeId::ROOT, "new.txt", NodeId::ROOT, "other.txt", RenameMode::Replace).unwrap();
+    assert_eq!(f.said(), [(OutboxKind::Create, None, at("other.txt"))]);
+    assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
+    assert!(f.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert_eq!(f.node_id(NodeId::ROOT, "other.txt"), node_id);
+}
+
+/// Nothing of it is uploaded from there: its own row and the rows of what it holds leave the
+/// outbox.
+#[test]
+fn a_local_only_directory_moved_where_nothing_is_uploaded_is_no_longer_uploaded() {
+    let f = folder(Vec::new());
+    f.ops.make(NodeId::ROOT, "cache", EntryToMake::Directory).unwrap();
+    f.ops.make(NodeId::ROOT, "new", EntryToMake::Directory).unwrap();
+    f.ops.make(f.node_id(NodeId::ROOT, "new"), "x.txt", EntryToMake::File).unwrap();
+    let cache = f.node_id(NodeId::ROOT, "cache");
+    f.ops.rename(NodeId::ROOT, "new", cache, "new", RenameMode::Replace).unwrap();
+    assert!(f.disk.join("cache/new/x.txt").is_file());
+    assert!(!f.rows().iter().any(|row| matches!(row.kind, OutboxKind::Mkdir | OutboxKind::Create)));
+}
+
+/// The name is its own: nothing moves and nothing is recorded, also when the rename is told
+/// to keep what is at the new place.
+#[test]
+fn a_rename_onto_itself_does_nothing() {
+    let f = folder(Vec::new());
+    f.download("a.txt", "A", b"a");
+    f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "a.txt", RenameMode::Replace).unwrap();
+    f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "a.txt", RenameMode::NoReplace).unwrap();
+    assert!(f.disk.join("a.txt").is_file() && f.rows().is_empty());
+    assert_eq!(f.shown("a.txt"), Some(Some("A".into())));
+}
+
+/// What moved in the backing directory is moved back, and the program is told the disk
+/// failed.
+#[test]
+fn a_rename_that_cannot_be_recorded_is_undone_and_answered_as_an_io_error() {
+    let f = folder_that_records_nothing();
+    f.download("a.txt", "A", b"a");
+    assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "new.txt", RenameMode::Replace).err(), Some(Errno::EIO));
+    assert!(f.disk.join("a.txt").is_file() && !f.disk.join("new.txt").exists());
+    assert_eq!((f.shown("a.txt"), f.shown("new.txt")), (Some(Some("A".into())), None));
+}
+
+#[test]
+fn nothing_is_renamed_in_a_read_only_folder() {
+    let f = folder(Vec::new());
+    f.access_mode_switch.switch_to_read_only();
+    assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "new.txt", RenameMode::Replace).err(), Some(Errno::EROFS));
+    assert!(f.rows().is_empty());
 }

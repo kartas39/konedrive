@@ -213,6 +213,12 @@ impl Mount {
         self.cycle_step.announce_committed_cycle();
     }
 
+    /// The step of a cycle, for the tests that drive it without a mount.
+    #[cfg(test)]
+    pub(super) fn cycle_step(&self) -> &Arc<CycleStep> {
+        &self.cycle_step
+    }
+
     /// What answers the daemon's bus interface `Files` for this folder.
     pub fn files_interface(&self) -> &FilesInterface {
         &self.files_interface

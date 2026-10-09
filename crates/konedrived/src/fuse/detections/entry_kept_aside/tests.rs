@@ -25,5 +25,6 @@ fn a_conflict_copy_under_a_name_that_stays_here_is_not_uploaded() {
     let file_kept = EntryKeptAside { on_disk: file(1, 3), from: rel("docs/c.tmp"), to: in_docs("c-fedora.tmp"), upload_status: UploadStatus::Ignored }.detect(NOW);
     assert!(file_kept.is_empty());
     let directory_kept = EntryKeptAside { on_disk: directory(2), from: rel("docs/c"), to: in_docs("c-fedora"), upload_status: UploadStatus::Ignored }.detect(NOW);
-    assert!(directory_kept.detections.is_empty() && directory_kept.ops.len() == 1);
+    assert!(directory_kept.detections.is_empty());
+    assert_eq!(directory_kept.ops, [OutboxOp::Rebase { from: rel("docs/c"), to: rel("docs/c-fedora") }]);
 }

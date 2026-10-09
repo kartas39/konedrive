@@ -235,3 +235,6 @@ impl WriteRequests {
         reply.ok();
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,7 +7,7 @@ use crate::fuse::open_handles::OpenFile;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::directory_contents::tests::of;
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::write_operations::tests::{at, folder};
+use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing};
 
 #[test]
 fn a_file_made_is_on_disk_local_only_and_waits_in_the_outbox_to_be_created() {
@@ -72,4 +72,24 @@ fn a_file_made_where_a_onedrive_file_was_removed_is_that_files_new_content() {
     assert!(f.backing_directory.find_downloaded_copy(&at("a.txt"), "A").is_some());
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert_eq!(f.shown("a.txt"), Some(Some("A".into())));
+}
+
+/// The change is in the outbox before the program hears it was made: one that cannot be
+/// recorded is taken back from the disk, and the program is told the disk failed.
+#[test]
+fn a_file_or_directory_that_cannot_be_recorded_is_unmade_and_answered_as_an_io_error() {
+    let f = folder_that_records_nothing();
+    assert_eq!(f.ops.make(NodeId::ROOT, "new.txt", EntryToMake::File).err(), Some(Errno::EIO));
+    assert_eq!(f.ops.make(NodeId::ROOT, "open.txt", EntryToMake::FileOpenedForWriting).err(), Some(Errno::EIO));
+    assert_eq!(f.ops.make(NodeId::ROOT, "new", EntryToMake::Directory).err(), Some(Errno::EIO));
+    assert_eq!(std::fs::read_dir(&f.disk).unwrap().count(), 0);
+    assert_eq!(f.shown("new.txt"), None);
+}
+
+/// What is ignored is not recorded, so it is made also where nothing can be recorded.
+#[test]
+fn an_ignored_name_is_made_without_the_outbox() {
+    let f = folder_that_records_nothing();
+    f.ops.make(NodeId::ROOT, "x.tmp", EntryToMake::File).unwrap();
+    assert!(f.disk.join("x.tmp").is_file());
 }
