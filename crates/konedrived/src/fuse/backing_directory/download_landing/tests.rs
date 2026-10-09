@@ -93,7 +93,7 @@ fn a_download_lands_over_a_file_that_is_not_whole() {
     put_at_target(dir.path(), Some("B"), Some(State::OnlineOnly));
     assert_eq!(land(&backing_directory), LandingOutcome::Placed);
     assert_eq!(fs::read(dir.path().join(AT)).unwrap(), b"downloaded");
-    assert!(backing_directory.has_downloaded_copy(Path::new(AT), "A"));
+    assert!(backing_directory.find_downloaded_copy(Path::new(AT), "A").is_some());
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn a_download_is_refused_where_another_files_copy_or_a_file_of_the_users_is() {
     let (dir, backing_directory) = backing_directory_with_docs();
     put_at_target(dir.path(), Some("B"), Some(State::Hydrated));
     assert_eq!(land(&backing_directory), LandingOutcome::Refused);
-    assert!(backing_directory.has_downloaded_copy(Path::new(AT), "B"));
+    assert!(backing_directory.find_downloaded_copy(Path::new(AT), "B").is_some());
     fs::remove_file(dir.path().join(AT)).unwrap();
     put_at_target(dir.path(), None, None);
     assert_eq!(land(&backing_directory), LandingOutcome::Refused);

@@ -121,6 +121,7 @@ pub(super) fn apply_staged_cycle(
     rw: Option<&Rw>,
     access_mode: AccessMode,
     backing_directory: &BackingDirectory,
+    directory_contents: &DirectoryContents,
     range_readers: &RangeReaders,
     conflict_copies: &ConflictCopies,
     uncommitted_cycle: &UncommittedCycle,
@@ -138,9 +139,11 @@ pub(super) fn apply_staged_cycle(
         .map(|id| OneDriveChange { old: placed(Table::Items, &id), new: placed(Table::Staging, &id), id })
         .collect();
     // Whether `rel` holds the downloaded copy of the OneDrive file `id`, or its directory:
-    // a file that is not that file's download is never moved or removed.
+    // a file that is not that file's download is never moved or removed. `rel` is where the
+    // store had the file, which the mount need not show it at: no entry's sync state says
+    // it, and the directory contents are asked about the path.
     let holds = |rel: &Path, id: &str, kind: Kind| match kind {
-        Kind::File => backing_directory.has_downloaded_copy(rel, id),
+        Kind::File => directory_contents.has_downloaded_copy_at(rel, id),
         Kind::Folder => backing_directory.read_metadata(rel).is_some_and(|m| m.is_dir()) && backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
     };
     let (mut announcements, mut removed_ids, mut conflicts, mut removed_directories) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());

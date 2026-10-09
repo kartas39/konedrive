@@ -85,6 +85,16 @@ impl BackingDirectory {
         Some(DiskEntry { handle, metadata: DiskMetadata::from_filesystem(&found.metadata().ok()?)? })
     }
 
+    /// The file or directory at `rel`, when it is marked with no OneDrive id: nothing of it
+    /// came from OneDrive, and nothing of it was sent there. What a change from OneDrive
+    /// moves aside, and what a walk collects to be uploaded, is found by this — and not by
+    /// what the mount shows as local-only, which also holds an entry marked with an id the
+    /// store does not have yet: a file just uploaded is such a one, and is neither moved
+    /// aside nor uploaded again.
+    pub(in crate::fuse) fn find_unmarked_disk_entry(&self, rel: &Path) -> Option<DiskEntry> {
+        self.find_disk_entry(rel).filter(|_| self.read_onedrive_id(rel).is_none())
+    }
+
     /// The OneDrive id the entry at `rel` is marked with.
     pub(in crate::fuse) fn read_onedrive_id(&self, rel: &Path) -> Option<String> {
         self.read_attribute(rel, XATTR_ITEM_ID)

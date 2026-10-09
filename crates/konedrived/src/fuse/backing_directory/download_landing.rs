@@ -13,8 +13,9 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::SystemTime;
 
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
+use konedrive_fs::placeholder::{self, State};
 
+use super::downloaded_copies::DiskMarks;
 use super::BackingDirectory;
 
 /// What is at the path a download is to land at.
@@ -81,12 +82,15 @@ impl BackingDirectory {
         if fs::symlink_metadata(&path).is_err() {
             return TargetContents::Nothing;
         }
-        let whole = xattr::get(&path, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
-        match xattr::get(&path, XATTR_ITEM_ID).ok().flatten() {
-            Some(marked_with) if marked_with == id.as_bytes() && whole => TargetContents::CopyOfSameFile,
-            Some(_) if !whole => TargetContents::PartialFile,
-            Some(_) => TargetContents::CopyOfOtherFile,
-            None => TargetContents::UsersOwnFile,
+        let marks = DiskMarks::read(&path);
+        if marks.is_downloaded_copy_of(id) {
+            TargetContents::CopyOfSameFile
+        } else if marks.is_partial_file() {
+            TargetContents::PartialFile
+        } else if marks.has_onedrive_id() {
+            TargetContents::CopyOfOtherFile
+        } else {
+            TargetContents::UsersOwnFile
         }
     }
 

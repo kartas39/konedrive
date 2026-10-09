@@ -47,7 +47,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let store = Store::new(written);
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
     let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));
-    let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
+    let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory)));
     let access_mode_switch = Arc::new(AccessModeSwitch::new(AccessMode::ReadWrite));
     let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default()).unwrap());
     let open_handles = Arc::new(OpenHandles::default());

@@ -8,6 +8,7 @@ use konedrive_tree::Row;
 
 use crate::fuse::node_table::NodeId;
 use super::NodeResolver;
+use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::{directory_contents, of};
 use crate::fuse::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 
@@ -16,7 +17,8 @@ use crate::fuse::directory_contents::{DirectoryContents, DirectoryEntry, Directo
 fn node_resolver(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, NodeResolver) {
     let (dir, contents) = directory_contents(detections);
     let contents = Arc::new(contents);
-    (dir, Arc::clone(&contents), NodeResolver::new(contents))
+    let backing_directory = Arc::new(BackingDirectory::open(dir.path()).unwrap());
+    (dir, Arc::clone(&contents), NodeResolver::new(contents, backing_directory))
 }
 
 /// The entry of the OneDrive id `id`, at the path the store has it.

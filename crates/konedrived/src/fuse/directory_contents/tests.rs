@@ -64,7 +64,7 @@ pub(in crate::fuse) fn directory_contents(detections: Vec<Detection>) -> (tempfi
 pub(in crate::fuse) fn download(dir: &Path, contents: &DirectoryContents, rel: &str, id: &str, content: &[u8]) {
     contents.make_marked_directories(Path::new(rel).parent().unwrap()).unwrap();
     fs::write(dir.join(rel), content).unwrap();
-    contents.backing_directory().mark_downloaded_copy(Path::new(rel), id).unwrap();
+    contents.backing_directory.mark_downloaded_copy(Path::new(rel), id).unwrap();
 }
 
 fn docs() -> DirectoryReference {
@@ -348,8 +348,8 @@ fn the_files_below_a_row_come_with_their_paths() {
 fn the_directories_down_to_a_path_are_marked_with_the_ids_the_mount_shows_there() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Move, "D", "docs", "papers", (Some("R"), Some("papers")))]);
     contents.make_marked_directories(Path::new("papers/own")).unwrap();
-    assert_eq!(contents.backing_directory().read_onedrive_id(Path::new("papers")).as_deref(), Some("D"));
-    assert_eq!(contents.backing_directory().read_onedrive_id(Path::new("papers/own")), None);
+    assert_eq!(contents.backing_directory.read_onedrive_id(Path::new("papers")).as_deref(), Some("D"));
+    assert_eq!(contents.backing_directory.read_onedrive_id(Path::new("papers/own")), None);
 }
 
 /// A file made where the user just removed a OneDrive file is that file's new content: the
@@ -360,4 +360,41 @@ fn the_onedrive_file_that_was_just_removed_from_a_path_is_found() {
     assert_eq!(contents.find_file_removed_at(Path::new("b.txt")).map(|row| row.id).as_deref(), Some("B"));
     // A directory is not a file, and a path nothing was removed from has none.
     assert!(contents.find_file_removed_at(Path::new("docs")).is_none() && contents.find_file_removed_at(Path::new("a.txt")).is_none());
+}
+
+/// A path that is not an entry looked up now — the path a file was opened at, the path the
+/// store had it at — is asked about by the file's OneDrive id.
+#[test]
+fn a_path_holds_a_files_downloaded_copy_only_when_the_copy_is_that_files_and_whole() {
+    let (dir, contents) = directory_contents(Vec::new());
+    assert!(!contents.has_downloaded_copy_at(Path::new("a.txt"), "A"));
+    download(dir.path(), &contents, "a.txt", "A", b"a");
+    assert!(contents.has_downloaded_copy_at(Path::new("a.txt"), "A"));
+    assert!(!contents.has_downloaded_copy_at(Path::new("a.txt"), "B") && !contents.has_downloaded_copy_at(Path::new("b.txt"), "A"));
+    // Marked with the id and not whole: it holds nothing of the file.
+    fs::write(dir.path().join("b.txt"), b"b").unwrap();
+    xattr::set(dir.path().join("b.txt"), XATTR_ITEM_ID, b"B").unwrap();
+    assert!(!contents.has_downloaded_copy_at(Path::new("b.txt"), "B"));
+}
+
+/// The store's path is where OneDrive has it; the mount shows it where the user moved it.
+#[test]
+fn the_stored_path_of_a_moved_directory_is_where_onedrive_has_it() {
+    let (_dir, contents) = directory_contents(vec![of(OutboxKind::Move, "D", "docs", "papers", (Some("R"), Some("papers")))]);
+    assert_eq!(contents.find_stored_path("D"), Some(PathBuf::from("docs")));
+    assert_eq!(contents.find_path("D"), Some(PathBuf::from("papers")));
+    assert_eq!(contents.find_stored_path("unknown"), None);
+}
+
+/// A local-only entry that got into OneDrive is found by the id it is marked with; one that
+/// is marked with nothing, or with an id the store does not have, is not.
+#[test]
+fn the_entry_a_disk_entry_is_marked_as_is_found_by_its_mark() {
+    let (dir, contents) = directory_contents(Vec::new());
+    fs::write(dir.path().join("a.txt"), b"a").unwrap();
+    assert!(contents.find_entry_by_mark(Path::new("a.txt"), "a.txt").is_none());
+    xattr::set(dir.path().join("a.txt"), XATTR_ITEM_ID, b"A").unwrap();
+    assert_eq!(in_onedrive(contents.find_entry_by_mark(Path::new("a.txt"), "a.txt")), pair("A", "a.txt"));
+    xattr::set(dir.path().join("a.txt"), XATTR_ITEM_ID, b"unknown").unwrap();
+    assert!(contents.find_entry_by_mark(Path::new("a.txt"), "a.txt").is_none());
 }

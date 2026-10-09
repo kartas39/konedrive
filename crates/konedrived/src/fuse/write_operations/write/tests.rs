@@ -85,7 +85,7 @@ fn a_onedrive_file_cut_to_nothing_is_its_empty_copy() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
     f.ops.truncate(node_id, 0, None).unwrap();
-    assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
+    assert!(f.backing_directory.find_downloaded_copy(&at("a.txt"), "A").is_some());
     assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().len(), 0);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.item_id.as_deref(), row.reason.clone()), (OutboxKind::Update, Some("A"), Some(Reason::Changed)));

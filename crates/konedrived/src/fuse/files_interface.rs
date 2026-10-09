@@ -2,7 +2,8 @@
 //! up, pin it, and say how it stands.
 //!
 //! [`FilesInterface`] holds the parts these need and no state of its own: what each
-//! directory holds ([`DirectoryContents`], and through it the backing directory), the state
+//! directory holds ([`DirectoryContents`]), the [`BackingDirectory`], where a copy that is
+//! freed is removed, the state
 //! of the downloads ([`DownloadStates`]) and what downloads ([`FileDownloader`]), what
 //! programs hold open ([`OpenHandles`]), the [`Pins`], and the [`InotifyBridge`], which
 //! announces what changed of a file to whoever shows it. A path it is asked about is a path
@@ -15,9 +16,10 @@ use std::sync::Arc;
 
 use konedrive_fs::placeholder::State;
 use konedrive_graph::pool::Class;
-use konedrive_tree::{Kind, Row, Table};
+use konedrive_tree::{Kind, Row};
 use tokio::sync::oneshot;
 
+use super::backing_directory::BackingDirectory;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::DownloadStates;
 use super::state_attribute::to_state_attribute;
@@ -69,6 +71,8 @@ pub(super) struct FilesInterface {
     /// The folder's path, which is the mount.
     pub(super) folder: PathBuf,
     pub(super) directory_contents: Arc<DirectoryContents>,
+    /// Where a downloaded copy that is freed is removed.
+    pub(super) backing_directory: Arc<BackingDirectory>,
     pub(super) download_states: Arc<DownloadStates>,
     pub(super) file_downloader: Arc<FileDownloader>,
     pub(super) open_handles: Arc<OpenHandles>,
@@ -128,6 +132,7 @@ impl FilesInterface {
 
     async fn free_up_below(&self, row: Row) -> FreedSpace {
         let (directory_contents, open_handles, pins) = (Arc::clone(&self.directory_contents), Arc::clone(&self.open_handles), Arc::clone(&self.pins));
+        let backing_directory = Arc::clone(&self.backing_directory);
         let (download_states, inotify_bridge) = (Arc::clone(&self.download_states), Arc::clone(&self.inotify_bridge));
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut announcements) = (FreedSpace::default(), Vec::new());
@@ -150,7 +155,7 @@ impl FilesInterface {
                     freed.kept += 1;
                     continue;
                 }
-                match directory_contents.backing_directory().remove_downloaded_copy(&at, &file.id) {
+                match backing_directory.remove_downloaded_copy(&at, &file.id) {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
@@ -175,7 +180,7 @@ impl FilesInterface {
         let Some(row) = entry.row().cloned() else { return Err(FilesRefusal::NotInOneDrive) };
         let own_pin = self.pins.is_pinned(&row.id);
         let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.find_pinning_row(&above));
-        let pinned_above = above.and_then(|by| self.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| self.folder.join(at.rel));
+        let pinned_above = above.and_then(|by| self.directory_contents.find_stored_path(&by.id)).map(|at| self.folder.join(at));
         let (state, modified_here) = match &entry.state {
             EntryState::File(file) => (to_state_attribute(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
             EntryState::Directory(_) => (None, false),

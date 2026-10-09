@@ -9,7 +9,7 @@
 //!
 //! 1. [`BackingDirectory`]: opened before the mount lies over it;
 //! 2. [`DirectoryContents`]: over the store's reader and the backing directory;
-//! 3. [`NodeResolver`]: over the directory contents;
+//! 3. [`NodeResolver`]: over the directory contents and the backing directory;
 //! 4. [`AccessModeSwitch`], read-only at first;
 //! 5. [`OutboxRecorder`]: the store's writer and the tree lock;
 //! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
@@ -150,7 +150,7 @@ impl Mount {
             // Before the mount: afterwards this path is the mount.
             let backing_directory = Arc::new(BackingDirectory::open(&folder)?);
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(to_io_error)?, Arc::clone(&backing_directory)));
-            let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents)));
+            let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory)));
             let access_mode_switch = Arc::new(AccessModeSwitch::new(AccessMode::ReadOnly));
             let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), write_setup.tree_lock)?);
             let upload_rules = Arc::new(UploadRules::new(write_setup.ignore));
@@ -188,6 +188,7 @@ impl Mount {
             let files_interface = FilesInterface {
                 folder: folder.clone(),
                 directory_contents: Arc::clone(&directory_contents),
+                backing_directory: Arc::clone(&backing_directory),
                 download_states: Arc::clone(&download_states),
                 file_downloader: Arc::clone(&file_downloader),
                 open_handles: Arc::clone(&open_handles),
@@ -326,7 +327,7 @@ impl Mount {
     /// staged and not yet committed ([`cycle_step::apply_staged_cycle`]); `rw` is what
     /// the outbox holds, in a read-write folder.
     pub fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
-        cycle_step::apply_staged_cycle(store, rw, self.access_mode_switch.access_mode(), &self.backing_directory, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
+        cycle_step::apply_staged_cycle(store, rw, self.access_mode_switch.access_mode(), &self.backing_directory, &self.directory_contents, &self.range_readers, &self.conflict_copies, &self.uncommitted_cycle)
     }
 
     /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: its

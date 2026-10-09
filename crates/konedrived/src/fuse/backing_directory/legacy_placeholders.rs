@@ -6,8 +6,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use konedrive_fs::placeholder::{State, XATTR_STATE};
-
+use super::downloaded_copies::DiskMarks;
 use crate::folder::disk::HOLDING;
 
 /// Whether `folder`, which is not mounted over yet, holds what an older konedrive left: a
@@ -22,7 +21,7 @@ pub(in crate::fuse) fn holds_legacy_placeholders(folder: &Path) -> bool {
             }
             if kind.is_dir() {
                 dirs.push(path);
-            } else if kind.is_file() && xattr::get(&path, XATTR_STATE).ok().flatten().is_some_and(|state| state != State::Hydrated.as_str().as_bytes()) {
+            } else if kind.is_file() && DiskMarks::read(&path).is_legacy_placeholder() {
                 return true;
             }
         }

@@ -2,7 +2,8 @@
 //!
 //! The kernel names what it asks about by node id. [`NodeTable`] is the table alone: it
 //! knows a key and a place for each node id, and nothing of the store or the disk.
-//! [`NodeResolver`] is the part over it and the [`DirectoryContents`]: it gives an entry its
+//! [`NodeResolver`] is the part over it, the [`DirectoryContents`] and, for the file handle
+//! of what is at a path, the [`BackingDirectory`]: it gives an entry its
 //! node id, finds the entry a node id stands for now — what is in OneDrive is looked up again
 //! in the directory contents, a local-only entry by its file handle in the backing directory
 //! — and keeps the node id of a local-only entry once it is in OneDrive.
@@ -17,7 +18,7 @@ use konedrive_fs::handle::FileHandle;
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::backing_directory::{DiskEntry, EntryKind};
+use super::backing_directory::{BackingDirectory, DiskEntry, EntryKind};
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, ListedName, EntryState, FileSyncState};
 use super::node_table::{NodeId, NodeKey, NodeTable};
@@ -40,13 +41,15 @@ fn key_of(entry: &DirectoryEntry) -> NodeKey {
 
 pub(super) struct NodeResolver {
     directory_contents: Arc<DirectoryContents>,
+    /// For the file handle of what is at a path: a local-only entry is that handle.
+    backing_directory: Arc<BackingDirectory>,
     node_table: Mutex<NodeTable>,
 }
 
 impl NodeResolver {
     /// The node resolver of a folder the kernel was told nothing of yet.
-    pub(super) fn new(directory_contents: Arc<DirectoryContents>) -> Self {
-        NodeResolver { directory_contents, node_table: Mutex::new(NodeTable::new()) }
+    pub(super) fn new(directory_contents: Arc<DirectoryContents>, backing_directory: Arc<BackingDirectory>) -> Self {
+        NodeResolver { directory_contents, backing_directory, node_table: Mutex::new(NodeTable::new()) }
     }
 
     /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a
@@ -73,7 +76,7 @@ impl NodeResolver {
     fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: NodeId) -> NodeId {
         let mut node_table = crate::panic::lock(&self.node_table);
         if matches!(key, NodeKey::InOneDrive(_)) && !node_table.has_key(&key) {
-            let on_disk = node_table.find_path(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
+            let on_disk = node_table.find_path(parent).and_then(|directory| self.backing_directory.find_file_handle(&directory.join(name)));
             if let Some(handle) = on_disk {
                 node_table.rekey(&NodeKey::LocalOnly(handle), key.clone());
             }
@@ -95,10 +98,10 @@ impl NodeResolver {
             }
             NodeKey::LocalOnly(handle) => {
                 // Another file or directory at its path is not this node.
-                let on_disk = self.directory_contents.backing_directory().find_disk_entry(&rel).filter(|on_disk| on_disk.handle == handle)?;
+                let on_disk = self.backing_directory.find_disk_entry(&rel).filter(|on_disk| on_disk.handle == handle)?;
                 // It got into OneDrive since: the node stands for what is in OneDrive from
                 // now on.
-                let in_onedrive = self.directory_contents.backing_directory().read_onedrive_id(&rel).and_then(|id| self.directory_contents.find_entry_by_id(&id, &name, &rel));
+                let in_onedrive = self.directory_contents.find_entry_by_mark(&rel, &name);
                 if let Some(entry) = in_onedrive {
                     crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), key_of(&entry));
                     return Some(NodeTarget::InOneDrive { entry, rel });

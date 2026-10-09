@@ -5,8 +5,9 @@
 //! [`DirectoryContents`] owns the mount's reading connection to the store, opened for reading
 //! alone — what it is asked never waits for the cycle that writes the store — and the
 //! [`UnsentChanges`] as last read. It uses [`BackingDirectory`] for what only the disk knows:
-//! the downloaded copies and the local-only entries. It is the one place that works out a
-//! sync state ([`sync_states`]): from the store, the backing directory and the unsent
+//! the downloaded copies and the local-only entries, and is the one part that says a file is
+//! on disk; nobody reaches the store or the disk through it but by a named question. It is
+//! the one place that works out a sync state ([`sync_states`]): from the store, the backing directory and the unsent
 //! changes, once, as it finds an entry. It knows nothing of the kernel's node ids, of what
 //! is open or of what is being downloaded, and changes nothing but, on request, the marks of
 //! the directories ([`DirectoryContents::make_marked_directories`]).
@@ -16,7 +17,10 @@
 //! - here: a row of the store ([`DirectoryContents::find_row`]), the row of the directory it is
 //!   in ([`DirectoryContents::find_parent_row`]), the folder's own row and entry, the files at and
 //!   below a row with their sync states ([`DirectoryContents::list_files_below`]), the OneDrive
-//!   file the user just removed from a path ([`DirectoryContents::find_file_removed_at`]);
+//!   file the user just removed from a path ([`DirectoryContents::find_file_removed_at`]),
+//!   whether a path holds a file's downloaded copy
+//!   ([`DirectoryContents::has_downloaded_copy_at`]), the path the store has an id at
+//!   ([`DirectoryContents::find_stored_path`]);
 //! - [`sync_states`]: the sync state of a file and of a directory, and a directory entry;
 //! - [`directory_entries`]: the entry a directory holds under a name, and what all its
 //!   entries are made from;
@@ -54,28 +58,38 @@ impl DirectoryContents {
         DirectoryContents { reader: Mutex::new(reader), unsent_changes: Mutex::default(), backing_directory }
     }
 
-    /// The backing directory these are the contents of.
-    pub(super) fn backing_directory(&self) -> &BackingDirectory {
-        &self.backing_directory
+    /// One question to the store, for the named questions of this part alone. `None` when
+    /// it cannot be answered.
+    fn ask_store<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, TreeError>) -> Option<T> {
+        ask(&crate::panic::lock(&self.reader)).ok()
     }
 
-    /// One question to the store, for what has no named question here yet.
-    /// `None` when it cannot be answered.
-    pub(super) fn read<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, TreeError>) -> Option<T> {
-        ask(&crate::panic::lock(&self.reader)).ok()
+    /// Whether the backing directory holds the downloaded copy of the OneDrive file
+    /// `onedrive_id` at `path`. For whoever holds a path that is not an entry of the mount,
+    /// so that no sync state answers: a file handle opened before the file was downloaded,
+    /// which has the path the file was opened at, and a cycle of the delta listing, which
+    /// has the path the store had the file at. An entry's sync state says it for an entry.
+    pub(super) fn has_downloaded_copy_at(&self, path: &Path, onedrive_id: &str) -> bool {
+        self.backing_directory.find_downloaded_copy(path, onedrive_id).is_some()
+    }
+
+    /// The path the store has the OneDrive id `id` at: where OneDrive has it, without the
+    /// unsent changes ([`find_path`](Self::find_path) is where the mount shows it).
+    pub(super) fn find_stored_path(&self, id: &str) -> Option<PathBuf> {
+        self.ask_store(|s| s.locate(Table::Items, id)).flatten().map(|at| at.rel)
     }
 
     /// The row of the OneDrive file the user removed from `rel` and whose removal is not sent
     /// yet, as the store has it: a file made there now is that file's new content.
     pub(super) fn find_file_removed_at(&self, rel: &Path) -> Option<Row> {
-        let rows = self.read(|s| s.outbox_at_or_under(rel))?;
+        let rows = self.ask_store(|s| s.outbox_at_or_under(rel))?;
         let removed = rows.into_iter().find(|row| row.rel == rel && row.kind == OutboxKind::Delete && row.state != OutboxState::Running)?;
         self.find_row(&removed.item_id?).filter(|base| base.kind == Kind::File)
     }
 
     /// The row of the OneDrive id `id`, as the store has it.
     pub(super) fn find_row(&self, id: &str) -> Option<Row> {
-        self.read(|s| s.get(Table::Items, id)).flatten()
+        self.ask_store(|s| s.get(Table::Items, id)).flatten()
     }
 
     /// The row of the directory `row` is in, as the store has it.
@@ -85,7 +99,7 @@ impl DirectoryContents {
 
     /// The OneDrive id of the folder itself: the root of the drive.
     pub(super) fn find_root_id(&self) -> Option<String> {
-        self.read(|s| s.root_item_id()).flatten()
+        self.ask_store(|s| s.root_item_id()).flatten()
     }
 
     /// The folder itself, as a row: without a name, and without an id before the store has
@@ -117,7 +131,7 @@ impl DirectoryContents {
     pub(super) fn list_files_below(&self, row: &Row) -> Vec<(FileSyncState, PathBuf)> {
         // One question at a time: the mount's requests read through the same connection, and
         // none waits for a whole walk.
-        let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
+        let mut ids = self.ask_store(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
         ids.push(row.id.clone());
         let files: Vec<Row> = ids.iter().filter_map(|id| self.find_row(id).filter(|r| r.kind == Kind::File)).collect();
         let placed: Vec<(Row, PathBuf)> = files.into_iter().filter_map(|file| self.find_path(&file.id).map(|at| (file, at))).collect();

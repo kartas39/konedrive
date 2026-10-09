@@ -68,7 +68,7 @@ fn a_file_made_where_a_onedrive_file_was_removed_is_that_files_new_content() {
     let f = folder(vec![of(OutboxKind::Delete, "A", "a.txt", "a.txt", (None, None))]);
     let (entry, _) = f.ops.make(NodeId::ROOT, "a.txt", false, false).unwrap();
     assert!(matches!(entry.state, EntryState::File(FileSyncState::ModifiedHere(row, _)) if row.id == "A"));
-    assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
+    assert!(f.backing_directory.find_downloaded_copy(&at("a.txt"), "A").is_some());
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
     assert_eq!(f.shown("a.txt"), Some(Some("A".into())));
 }

@@ -60,7 +60,9 @@ impl KernelRequests {
             Some(OpenFile::ReadingRemoteOnly { onedrive_id, path }) => (onedrive_id, path),
         };
         // Downloaded since it was opened: the handle reads the downloaded copy from now on.
-        if self.backing_directory.has_downloaded_copy(&rel, &id) {
+        // The handle has the path the file was opened at, which is not an entry looked up
+        // now: the directory contents are asked about that path.
+        if self.directory_contents.has_downloaded_copy_at(&rel, &id) {
             return match self.backing_directory.read(&rel) {
                 Ok(file) => {
                     let file = Arc::new(file);

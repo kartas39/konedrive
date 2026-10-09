@@ -58,3 +58,21 @@ fn an_entry_is_marked_with_the_onedrive_id_it_was_given_until_it_is_cleared() {
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
     assert_eq!(backing_directory.read_onedrive_id(Path::new("none")), None);
 }
+
+/// What a change from OneDrive moves aside and what a walk collects to be uploaded: a file
+/// or directory that is marked with no OneDrive id at all, whatever the store knows.
+#[test]
+fn an_unmarked_disk_entry_is_a_file_or_directory_marked_with_no_onedrive_id() {
+    let (dir, backing_directory) = empty_backing_directory();
+    assert!(backing_directory.find_unmarked_disk_entry(Path::new("own.txt")).is_none(), "nothing is there");
+    fs::write(dir.path().join("own.txt"), b"mine").unwrap();
+    fs::create_dir(dir.path().join("own")).unwrap();
+    assert!(backing_directory.find_unmarked_disk_entry(Path::new("own.txt")).is_some());
+    assert!(backing_directory.find_unmarked_disk_entry(Path::new("own")).is_some());
+    // Marked with any id, also one no store has: a file just uploaded is not the user's own
+    // to upload again.
+    backing_directory.mark_with_onedrive_id(Path::new("own.txt"), "just-uploaded").unwrap();
+    assert!(backing_directory.find_unmarked_disk_entry(Path::new("own.txt")).is_none());
+    std::os::unix::fs::symlink("own", dir.path().join("link")).unwrap();
+    assert!(backing_directory.find_unmarked_disk_entry(Path::new("link")).is_none(), "neither a file nor a directory");
+}

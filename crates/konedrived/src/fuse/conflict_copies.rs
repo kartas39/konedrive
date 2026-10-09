@@ -61,10 +61,7 @@ impl ConflictCopies {
     /// beside it. `now` is the time the rows are dated by.
     pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, now: i64, conflicts: &mut CycleConflicts) {
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
-        let Some(on_disk) = self.backing_directory.find_disk_entry(rel) else { return };
-        if self.backing_directory.read_onedrive_id(rel).is_some() {
-            return;
-        }
+        let Some(on_disk) = self.backing_directory.find_unmarked_disk_entry(rel) else { return };
         let directory = DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_path_buf() };
         for n in 1..=100 {
             let copy = self.copy_name(name, n);
