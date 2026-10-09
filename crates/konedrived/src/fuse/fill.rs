@@ -19,6 +19,7 @@ use crate::status::activity::{self, Kind as EventKind};
 use super::announce::Announce;
 use super::shared::{seconds, Shared};
 use super::backing_directory::LandingOutcome;
+use super::directory_contents::FileSyncState;
 
 /// How many downloads that failed keep what they have, to be continued from.
 pub(super) const UNFINISHED: usize = 16;
@@ -148,15 +149,17 @@ impl Shared {
         done
     }
 
-    /// What the folder has of the file `row` at `rel`: being downloaded, downloaded, or neither.
-    pub(super) fn state_of(&self, row: &Row, rel: &Path) -> State {
-        if crate::panic::lock(&self.fills).contains_key(&row.id) {
+    /// What the folder has of a file of OneDrive: being downloaded, downloaded, or neither.
+    /// `None` for a file that is not in OneDrive yet.
+    pub(super) fn state_of(&self, file: &FileSyncState) -> Option<State> {
+        let row = file.row()?;
+        Some(if crate::panic::lock(&self.fills).contains_key(&row.id) {
             State::Hydrating
-        } else if self.backing_directory.has_downloaded_copy(rel, &row.id) {
+        } else if file.downloaded_copy().is_some() {
             State::Hydrated
         } else {
             State::OnlineOnly
-        }
+        })
     }
 
     /// Downloads `row` to `rel` unless a download of it runs already; `waiter` is answered when

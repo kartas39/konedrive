@@ -6,12 +6,22 @@ use std::sync::Arc;
 
 use fuser::Errno;
 
+use super::access_mode::AccessMode;
 use super::mount::Mount;
 use super::shared::Shared;
 
 impl Shared {
     pub(super) fn writable(&self) -> bool {
         self.writable.load(Ordering::SeqCst)
+    }
+
+    /// The access mode of the folder now.
+    pub(super) fn access_mode(&self) -> AccessMode {
+        if self.writable() {
+            AccessMode::ReadWrite
+        } else {
+            AccessMode::ReadOnly
+        }
     }
 
     /// Refuses a change to a read-only folder as a read-only filesystem does.

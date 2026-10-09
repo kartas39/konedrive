@@ -1,12 +1,14 @@
-//! What the outbox's rows say of the folder: where an item the user moved stands until its
-//! move is sent, which items the user removed, and which hold content of the user's own.
+//! What was moved, removed or changed here and is not sent yet, as the outbox's rows say it:
+//! where a file or directory the user moved is until its move is sent, which the user
+//! removed, and which files hold content of the user's own.
 //!
-//! The store has every item where OneDrive has it; a change made in the folder is a row of
-//! the outbox until it is sent. The mount shows the folder as the user left it: the store,
-//! with what these rows say laid over it.
+//! The store has every file and directory where OneDrive has it; a change made in the folder
+//! is a row of the outbox until it is sent. The mount shows the folder as the user left it:
+//! the store, with these changes applied.
 //!
-//! [`UnsentChanges`] is a function of the store's rows and of nothing else: no disk, no node, no
-//! mount. Who reads it, and when it is read again, is the view's to say ([`super::directory_contents`]).
+//! [`UnsentChanges`] is a function of the store's rows and of nothing else: no disk, no node
+//! id, no mount. Who reads it, and when it is read again, is for
+//! [`DirectoryContents`](super::directory_contents::DirectoryContents) to say.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -14,49 +16,42 @@ use std::path::PathBuf;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
 
-/// The directory a moved item stands in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Above {
-    Item(String),
-    /// A directory OneDrive has no item for yet, by its place.
-    Local(PathBuf),
-}
+use super::directory::Directory;
 
-/// What the rows say, as of one reading of the store.
+/// The unsent changes, as of one reading of the store. Every key is a OneDrive id.
 #[derive(Default)]
 pub(super) struct UnsentChanges {
-    /// Items that stand elsewhere than the store has them: the directory, and the name there.
-    pub(super) moved: HashMap<String, (Above, String)>,
-    /// Items removed here and not yet in OneDrive.
-    pub(super) gone: HashSet<String>,
-    /// Items whose content was changed here and is not sent yet.
+    /// Moved here and not moved in OneDrive yet: the directory each is in now, and its name
+    /// there. The directory is referred to by its OneDrive id, or by its path alone when
+    /// OneDrive does not have it yet.
+    pub(super) moved: HashMap<String, (Directory, String)>,
+    /// Removed here and not removed from OneDrive yet.
+    pub(super) removed: HashSet<String>,
+    /// Files whose content was changed here and is not sent yet.
     pub(super) changed: HashSet<String>,
 }
 
 impl UnsentChanges {
-    /// What the rows of `store` say now.
+    /// What the outbox's rows of `store` say now.
     pub(super) fn of(store: &TreeStore) -> Self {
         let mut now = UnsentChanges::default();
         for row in store.outbox_rows().unwrap_or_default() {
             let Some(id) = row.item_id.clone() else { continue };
             if row.kind.removes() {
-                now.gone.insert(id);
+                now.removed.insert(id);
                 continue;
             }
             if row.kind == OutboxKind::Update {
                 now.changed.insert(id.clone());
             }
-            // Moved: the row takes the item elsewhere than the base has it. It stands where
-            // the row last saw it, under the name it has there.
+            // Moved: the row takes it elsewhere than the base has it. It is where the row
+            // last saw it, under the name it has there.
             let base = row.base.as_ref().map(|b| (b.parent.as_deref(), b.name.as_deref()));
             let name = row.rel.file_name().and_then(|n| n.to_str());
             if let (Some(base), Some(name)) = (base, name) {
                 if base != (row.target_parent.as_deref(), row.target_name.as_deref()) {
-                    let above = match &row.target_parent {
-                        Some(parent) => Above::Item(parent.clone()),
-                        None => Above::Local(row.rel.parent().map(PathBuf::from).unwrap_or_default()),
-                    };
-                    now.moved.insert(id, (above, name.to_owned()));
+                    let directory = Directory { id: row.target_parent.clone(), rel: row.rel.parent().map(PathBuf::from).unwrap_or_default() };
+                    now.moved.insert(id, (directory, name.to_owned()));
                 }
             }
         }

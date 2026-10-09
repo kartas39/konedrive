@@ -5,33 +5,34 @@
 
 use konedrive_tree::TreeError;
 
-use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
+use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch, StoreFacts};
+use crate::fuse::backing_directory::DiskEntry;
 
-/// Whose file was written, where it stands, and what was done to it.
+/// Which file was written, where it is, and what was done to it.
 #[derive(Debug)]
 pub(in crate::fuse) enum FileWritten {
-    /// An item's file, in its downloaded copy.
+    /// A file of OneDrive, by its id, in its downloaded copy.
     InOneDrive { id: String, place: FolderPlace, write: OneDriveFileWrite },
-    /// A file OneDrive has no item for yet.
-    LocalOnly { place: FolderPlace, file: LocalObject, write: LocalOnlyFileWrite },
+    /// A file that is not in OneDrive yet.
+    LocalOnly { file: LocalOnlyEntry, write: LocalOnlyFileWrite },
 }
 
-/// What was done to an item's file; with the copy as it is now, where its content counts.
+/// What was done to a file of OneDrive; with its copy as it is now, where its content counts.
 #[derive(Debug)]
 pub(in crate::fuse) enum OneDriveFileWrite {
     /// Its first writer opened it: its content is the user's own from here on, and waits.
-    Opened(LocalObject),
+    Opened(DiskEntry),
     /// Its last writer closed it, and its content was changed: due a moment later.
-    ClosedChanged(LocalObject),
+    ClosedChanged(DiskEntry),
     /// It was cut or extended by a program that does not hold it open: as closed.
-    Cut(LocalObject),
-    /// Its last writer closed it, and nothing was written: the item is where it stands with
-    /// the content the base has, and the row that held it goes, or is the move it was.
+    Cut(DiskEntry),
+    /// Its last writer closed it, and nothing was written: the file is where it is with the
+    /// content the base has, and the row that held it is removed, or is the move it was.
     ClosedUntouched,
 }
 
-/// What was done to a local file. One closed with nothing written is sent all the same: it
-/// was never sent.
+/// What was done to a local-only file. One closed with nothing written is sent all the same:
+/// it was never sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::fuse) enum LocalOnlyFileWrite {
     /// Its first writer opened it: it waits for the last.
@@ -45,7 +46,7 @@ pub(in crate::fuse) enum LocalOnlyFileWrite {
 impl FolderEvent for FileWritten {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         match self {
-            FileWritten::LocalOnly { place, file, write } => Ok(OutboxBatch::of([create_or_mkdir(&place, &file, write == LocalOnlyFileWrite::Opened, now)])),
+            FileWritten::LocalOnly { file, write } => Ok(OutboxBatch::of([create_or_mkdir(&file.place, &file.on_disk, write == LocalOnlyFileWrite::Opened, now)])),
             FileWritten::InOneDrive { id, place, write } => {
                 let Some(base) = facts.base_row(&id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {

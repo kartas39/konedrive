@@ -5,7 +5,7 @@ use crate::fuse::write_operations::tests::{at, folder};
 
 /// What has a row keeps the one it has; what stays on this computer gets none.
 #[test]
-fn the_local_objects_without_a_row_are_recorded_anew() {
+fn the_local_only_entries_without_a_row_are_recorded_anew() {
     let f = folder(Vec::new());
     f.ops.make(1, "known.txt", false, false).unwrap();
     fs::write(f.disk.join("lost.txt"), b"l").unwrap();
@@ -15,7 +15,7 @@ fn the_local_objects_without_a_row_are_recorded_anew() {
     f.directory_contents.make_marked_directories(&at("docs")).unwrap();
     fs::write(f.disk.join("docs/mine.txt"), b"m").unwrap();
     f.ops.record_unrecorded_entries();
-    let mut places: Vec<PathBuf> = f.rows().into_iter().map(|row| row.rel).collect();
-    places.sort();
-    assert_eq!(places, [at("docs/mine.txt"), at("keep"), at("keep/f.txt"), at("known.txt"), at("lost.txt")]);
+    let mut paths: Vec<PathBuf> = f.rows().into_iter().map(|row| row.rel).collect();
+    paths.sort();
+    assert_eq!(paths, [at("docs/mine.txt"), at("keep"), at("keep/f.txt"), at("known.txt"), at("lost.txt")]);
 }

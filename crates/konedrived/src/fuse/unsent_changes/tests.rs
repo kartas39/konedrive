@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
-use super::{Above, UnsentChanges};
+use super::UnsentChanges;
+use crate::fuse::directory::Directory;
 
 fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
 }
 
-/// A drive with a folder `docs` and two files in its root.
+/// A drive with a directory `docs` and two files in its root.
 fn store() -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     let changes = [
@@ -22,7 +23,7 @@ fn store() -> TreeStore {
     store
 }
 
-/// A detection of item `id`, which the base has as `name` in the root.
+/// A detection of the OneDrive id `id`, which the base has as `name` in the root.
 fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Option<&str>)) -> Detection {
     Detection {
         kind,
@@ -47,38 +48,40 @@ fn recorded(detections: Vec<Detection>) -> UnsentChanges {
     UnsentChanges::of(&store)
 }
 
-/// An item the user moved stands in the folder it was moved to, under its new name, until
-/// the move is sent.
+/// A file the user moved is in the directory it was moved to, under its new name, until the
+/// move is sent.
 #[test]
-fn a_moved_item_stands_where_its_row_takes_it() {
+fn a_moved_file_is_where_its_row_takes_it() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
-    assert_eq!(unsent_changes.moved.get("A"), Some(&(Above::Item("D".into()), "new.txt".to_owned())));
-    assert!(unsent_changes.gone.is_empty() && unsent_changes.changed.is_empty());
+    let to = Directory { id: Some("D".into()), rel: PathBuf::from("docs") };
+    assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "new.txt".to_owned())));
+    assert!(unsent_changes.removed.is_empty() && unsent_changes.changed.is_empty());
 }
 
-/// Moved into a directory OneDrive has no item for yet: found by the directory's place.
+/// Moved into a directory that is not in OneDrive yet: found by the directory's path.
 #[test]
-fn an_item_moved_into_a_new_directory_is_found_by_that_directorys_place() {
+fn a_file_moved_into_a_local_only_directory_is_found_by_that_directorys_path() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt")))]);
-    assert_eq!(unsent_changes.moved.get("A"), Some(&(Above::Local(PathBuf::from("new")), "a.txt".to_owned())));
+    let to = Directory { id: None, rel: PathBuf::from("new") };
+    assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "a.txt".to_owned())));
 }
 
-/// A removed item is gone from the folder though OneDrive still has it.
+/// A file removed here is gone from the folder though OneDrive still has it.
 #[test]
-fn a_removed_item_is_gone() {
+fn a_file_removed_here_is_removed() {
     let unsent_changes = recorded(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    assert!(unsent_changes.gone.contains("B") && unsent_changes.moved.is_empty());
+    assert!(unsent_changes.removed.contains("B") && unsent_changes.moved.is_empty());
 }
 
-/// New content where the item is: the item's content is the user's own, and it has not moved.
+/// New content where the file is: its content is the user's own, and it has not moved.
 #[test]
-fn an_item_with_new_content_is_changed_and_stays_in_place() {
+fn a_file_with_new_content_is_changed_and_stays_in_place() {
     let unsent_changes = recorded(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
-    assert!(unsent_changes.changed.contains("A") && unsent_changes.moved.is_empty() && unsent_changes.gone.is_empty());
+    assert!(unsent_changes.changed.contains("A") && unsent_changes.moved.is_empty() && unsent_changes.removed.is_empty());
 }
 
 #[test]
-fn an_empty_outbox_changes_nothing() {
+fn an_empty_outbox_says_nothing() {
     let unsent_changes = UnsentChanges::of(&store());
-    assert!(unsent_changes.moved.is_empty() && unsent_changes.gone.is_empty() && unsent_changes.changed.is_empty());
+    assert!(unsent_changes.moved.is_empty() && unsent_changes.removed.is_empty() && unsent_changes.changed.is_empty());
 }

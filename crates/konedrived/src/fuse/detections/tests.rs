@@ -1,20 +1,22 @@
-//! What the tests of the events share: the drive of the view's tests in a store in memory,
-//! local objects by made-up file handles, and places in it.
+//! What the tests of the events share: the drive of the directory contents' tests in a store
+//! in memory, disk entries by made-up file handles, and places in the drive.
 
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::TreeStore;
 
-use super::{is_directory_of, FolderEvent, FolderPlace, LocalObject, ObjectKind, OutboxBatch};
+use super::{is_directory_of, FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch};
+use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
 use crate::fuse::directory_contents::tests::drive;
 
 /// The time the tests decide at.
 pub(in crate::fuse) const NOW: i64 = 1_000;
 
-/// The view's drive (`docs` with `c.txt`; `a.txt` and `b.txt` in the root), with
-/// `detections` waiting in the outbox.
+/// The drive of the directory contents' tests (`docs` with `c.txt`; `a.txt` and `b.txt` in
+/// the root), with `detections` waiting in the outbox.
 pub(in crate::fuse) fn store(detections: Vec<Detection>) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     drive(&mut store, detections);
@@ -25,12 +27,19 @@ pub(in crate::fuse) fn handle(n: u8) -> FileHandle {
     FileHandle { kind: 1, bytes: vec![n, 0, 0, 0, 1, 0, 0, 0] }
 }
 
-pub(in crate::fuse) fn file(n: u8, size: u64) -> LocalObject {
-    LocalObject { handle: handle(n), kind: ObjectKind::File { size } }
+/// A file of `size` bytes on disk, with the handle `n`.
+pub(in crate::fuse) fn file(n: u8, size: u64) -> DiskEntry {
+    DiskEntry { handle: handle(n), metadata: DiskMetadata { kind: EntryKind::File, size, blocks: 0, modified: UNIX_EPOCH } }
 }
 
-pub(in crate::fuse) fn dir(n: u8) -> LocalObject {
-    LocalObject { handle: handle(n), kind: ObjectKind::Directory }
+/// A directory on disk, with the handle `n`.
+pub(in crate::fuse) fn directory(n: u8) -> DiskEntry {
+    DiskEntry { handle: handle(n), metadata: DiskMetadata { kind: EntryKind::Directory, size: 4096, blocks: 8, modified: UNIX_EPOCH } }
+}
+
+/// `on_disk` as a local-only entry at `place`.
+pub(in crate::fuse) fn local_only(on_disk: &DiskEntry, place: &FolderPlace) -> LocalOnlyEntry {
+    LocalOnlyEntry { on_disk: on_disk.clone(), place: place.clone() }
 }
 
 /// `name` in the folder itself.
@@ -43,12 +52,12 @@ pub(in crate::fuse) fn in_docs(name: &str) -> FolderPlace {
     FolderPlace::new(Some("D"), Path::new("docs"), name)
 }
 
-/// The detection that the local object `object` stands at `place`, in `state`.
-pub(in crate::fuse) fn local(kind: OutboxKind, object: &LocalObject, place: &FolderPlace, state: OutboxState) -> Detection {
+/// The detection that the local-only entry `on_disk` is at `place`, in `state`.
+pub(in crate::fuse) fn detection_of(kind: OutboxKind, on_disk: &DiskEntry, place: &FolderPlace, state: OutboxState) -> Detection {
     Detection {
         kind,
         item_id: None,
-        object: Some(object.handle.clone()),
+        object: Some(on_disk.handle.clone()),
         rel: place.rel(),
         base: None,
         target_parent: place.above.clone(),
@@ -57,10 +66,7 @@ pub(in crate::fuse) fn local(kind: OutboxKind, object: &LocalObject, place: &Fol
         state,
         reason: None,
         next_try: None,
-        size: match object.kind {
-            ObjectKind::File { size } => Some(size),
-            ObjectKind::Directory => None,
-        },
+        size: on_disk.metadata.file_size(),
     }
 }
 
@@ -95,17 +101,17 @@ pub(in crate::fuse) fn rel(rel: &str) -> PathBuf {
 
 #[test]
 fn the_waiting_detections_are_due_after_the_writer_or_a_quiet_moment() {
-    let d = local(OutboxKind::Create, &file(1, 3), &in_root("new.txt"), OutboxState::Ready);
+    let d = detection_of(OutboxKind::Create, &file(1, 3), &in_root("new.txt"), OutboxState::Ready);
     let w = writing(d.clone());
     assert_eq!((w.state, w.reason, w.next_try), (OutboxState::Waiting, Some(Reason::OpenForWriting), Some(NOW + 30)));
     let q = quiet(d);
     assert_eq!((q.state, q.reason, q.next_try), (OutboxState::Waiting, Some(Reason::Changed), Some(NOW + 2)));
 }
 
-/// The directory of a folder that went from OneDrive is its own unless it carries another
-/// item's id.
+/// The directory on disk of a directory that was removed from OneDrive backs it unless it is
+/// marked with another OneDrive id.
 #[test]
-fn a_directory_is_a_gone_folders_unless_it_carries_another_item() {
+fn a_directory_on_disk_backs_the_removed_directory_unless_it_is_marked_with_another_id() {
     assert!(is_directory_of(None, "D") && is_directory_of(Some("D"), "D"));
     assert!(!is_directory_of(Some("E"), "D"));
 }

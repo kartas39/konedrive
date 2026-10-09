@@ -1,12 +1,13 @@
 //! What holds a mount together: its parts, and what is under way.
 //!
-//! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
-//! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`DirectoryContents`]), the kernel's nodes
-//! ([`NodeTable`]) and what resolves them ([`NodeLookup`]), the files open for writing ([`OpenWriters`]),
-//! what is uploaded at all ([`UploadRules`]), the thread that records ([`OutboxRecorder`]) and the
-//! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
-//! downloads, the reads, the pins, the announcer, the mode — is still a field here with its
-//! code in `impl Shared` in the module of its topic.
+//! The parts own their state and are shared by `Arc` with whoever needs them: the disk
+//! ([`BackingDirectory`]), what each directory holds ([`DirectoryContents`]), the node ids
+//! given to the kernel ([`NodeTable`]) and what looks them up ([`NodeLookup`]), the files open
+//! for writing ([`OpenWriters`]), the thread that records ([`OutboxRecorder`]), the operations
+//! that change the folder ([`WriteOperations`]) and what moves the user's own out of the way
+//! of a change from OneDrive ([`ConflictCopies`]). What is not a part yet — the downloads, the
+//! reads, the pins, the announcer, the mode — is still a field here with its code in
+//! `impl Shared` in the module of its topic.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -26,28 +27,28 @@ use crate::status::report::Report;
 
 use super::announce::{Announce, Told};
 use super::fill::{Running, Waiter};
+use super::conflict_copies::ConflictCopies;
 use super::node_table::NodeTable;
-use super::upload_rules::UploadRules;
 use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
-use super::read::{Handle, Reader};
+use super::read::{OpenFile, Reader};
 use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
 
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
-    /// The folder under the mount ([`super::backing_directory`]).
+    /// The directory on disk the mount lies over ([`super::backing_directory`]).
     pub(super) backing_directory: Arc<BackingDirectory>,
-    /// The folder as the mount shows it ([`super::directory_contents`]).
+    /// What each directory of the mount holds ([`super::directory_contents`]).
     pub(super) directory_contents: Arc<DirectoryContents>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
-    /// The node ids the kernel knows ([`super::node_table`]): shared by what resolves them and what
-    /// tells the kernel of changes.
+    /// The node ids given to the kernel ([`super::node_table`]): shared by what looks them up
+    /// and what tells the kernel of changes.
     pub(super) node_table: Arc<Mutex<NodeTable>>,
-    /// Which entry of the folder a node is ([`super::node_lookup`]).
+    /// The entry a node id stands for, and the node id of an entry ([`super::node_lookup`]).
     pub(super) node_lookup: Arc<NodeLookup>,
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
@@ -62,11 +63,11 @@ pub(super) struct Shared {
     /// and goes with the daemon. The next download of the item continues from its checkpoint.
     pub(super) unfinished: Mutex<Vec<(String, Arc<File>)>>,
     /// What programs hold open, by the handle the kernel was given.
-    pub(super) handles: Mutex<HashMap<u64, Handle>>,
+    pub(super) handles: Mutex<HashMap<u64, OpenFile>>,
     pub(super) next_handle: AtomicU64,
     /// What each open directory held when it was first listed, by handle: a program that
     /// reads a directory in parts reads one listing, whatever changes meanwhile.
-    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::Entry>>>>,
+    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::DirectoryEntry>>>>,
     /// How many bytes of each item that is not downloaded were read as ranges.
     pub(super) asked: Mutex<HashMap<String, u64>>,
     /// Once that many bytes of a file were read as ranges, the file is downloaded whole
@@ -92,11 +93,12 @@ pub(super) struct Shared {
     pub(super) stopping: std::sync::atomic::AtomicBool,
     /// Whether programs may change the folder ([`super::mode`]): shared with the recorder.
     pub(super) writable: Arc<AtomicBool>,
-    /// What of the folder is uploaded at all ([`super::upload_rules`]).
-    pub(super) upload_rules: Arc<UploadRules>,
+    /// What moves the user's own out of the way of a change from OneDrive
+    /// ([`super::conflict_copies`]).
+    pub(super) conflict_copies: ConflictCopies,
     /// The thread that makes and records each change ([`super::outbox_recorder`]).
     pub(super) outbox_recorder: Arc<OutboxRecorder>,
-    /// The files programs hold open for writing, by node ([`super::open_writers`]).
+    /// The files programs hold open for writing, by node id ([`super::open_writers`]).
     pub(super) open_writers: Arc<OpenWriters>,
     /// The operations that change the folder ([`super::write_operations`]).
     pub(super) write_operations: WriteOperations,

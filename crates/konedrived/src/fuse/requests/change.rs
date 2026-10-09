@@ -13,10 +13,9 @@ use konedrive_graph::pool::Class;
 use tokio::sync::oneshot;
 
 use super::Requests;
-use crate::fuse::attributes::{self, TTL};
-use crate::fuse::read::Handle;
+use crate::fuse::attributes::{attributes, TTL};
+use crate::fuse::read::OpenFile;
 use crate::fuse::shared::{errno, Shared};
-use crate::fuse::write_operations::OpenedFile;
 
 /// Has `job` run on the recorder's thread.
 pub(super) fn on_recorder(s: &Arc<Shared>, job: impl FnOnce(&Arc<Shared>) + Send + 'static) {
@@ -24,12 +23,11 @@ pub(super) fn on_recorder(s: &Arc<Shared>, job: impl FnOnce(&Arc<Shared>) + Send
     s.outbox_recorder.run(move || job(&shared));
 }
 
-/// Keeps `opened`, a file opened to be written, in the table of open handles: the handle the
+/// Keeps `opened`, a file opened to be written, in the table of open files: the handle the
 /// program is given.
-fn keep_handle(s: &Shared, opened: OpenedFile) -> u64 {
-    let OpenedFile { node_id: ino, id, rel, file } = opened;
+fn keep_handle(s: &Shared, opened: OpenFile) -> u64 {
     let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
-    crate::panic::lock(&s.handles).insert(fh, Handle { ino, id, rel, copy: Some(Arc::new(file)), writes: true });
+    crate::panic::lock(&s.handles).insert(fh, opened);
     fh
 }
 
@@ -83,7 +81,10 @@ impl Requests {
             return reply.error(e);
         }
         on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, dir, false) {
-            Ok(made) => reply.entry(&TTL, &made.attr, Generation(0)),
+            Ok((entry, _)) => {
+                let ino = s.node_lookup.assign_node_id(&entry, parent.0);
+                reply.entry(&TTL, &attributes(ino, s.access_mode(), &entry), Generation(0))
+            }
             Err(e) => reply.error(e),
         });
     }
@@ -94,9 +95,10 @@ impl Requests {
             return reply.error(e);
         }
         on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, false, true) {
-            Ok(made) => {
-                let fh = made.opened.map_or(0, |opened| keep_handle(s, opened));
-                reply.created(&TTL, &made.attr, Generation(0), FileHandle(fh), FopenFlags::empty())
+            Ok((entry, opened)) => {
+                let ino = s.node_lookup.assign_node_id(&entry, parent.0);
+                let fh = opened.map_or(0, |opened| keep_handle(s, opened));
+                reply.created(&TTL, &attributes(ino, s.access_mode(), &entry), Generation(0), FileHandle(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
         });
@@ -150,7 +152,7 @@ impl Requests {
             return reply.error(e);
         }
         let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.node_lookup.find_entry(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &attributes::of_entry(&entry, ino.0, &rel, s.writable(), &s.directory_contents, &s.open_writers)),
+            Some((entry, _)) => reply.attr(&TTL, &attributes(ino.0, s.access_mode(), &entry)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {

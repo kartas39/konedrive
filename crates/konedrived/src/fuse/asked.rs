@@ -10,7 +10,7 @@ use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
 use super::announce::Announce;
-use super::directory_contents::Entry;
+use super::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
 use super::mount::Mount;
 
 /// What a free-up did.
@@ -55,24 +55,28 @@ impl Mount {
         path.strip_prefix(&self.shared.root.path).map(Path::to_owned).map_err(|_| Refused::NotOurs)
     }
 
-    pub(super) fn item(&self, path: &Path) -> Result<(Row, PathBuf), Refused> {
+    /// The entry at `path`, when it is in OneDrive: what is local only is not OneDrive's to
+    /// download, free or pin.
+    fn onedrive_entry(&self, path: &Path) -> Result<(DirectoryEntry, PathBuf), Refused> {
         let rel = self.rel(path)?;
-        // What has no item yet is not OneDrive's to download, free or pin.
-        match self.shared.directory_contents.find_entry_at(&rel) {
-            Some(Entry::Item(row)) => Ok((row, rel)),
-            _ => Err(Refused::NoItem),
-        }
+        let entry = self.shared.directory_contents.find_entry_at(&rel).filter(|entry| entry.row().is_some());
+        Ok((entry.ok_or(Refused::NoItem)?, rel))
+    }
+
+    pub(super) fn item(&self, path: &Path) -> Result<(Row, PathBuf), Refused> {
+        let (entry, rel) = self.onedrive_entry(path)?;
+        Ok((entry.row().cloned().ok_or(Refused::NoItem)?, rel))
     }
 
     /// Downloads the file at `path` now, and waits for it.
     pub async fn hydrate(&self, path: &Path) -> Result<(), Refused> {
-        let (row, rel) = self.item(path)?;
-        if row.kind != Kind::File {
-            return Err(Refused::NoItem);
-        }
-        if self.shared.backing_directory.has_downloaded_copy(&rel, &row.id) {
-            return Ok(());
-        }
+        let (entry, rel) = self.onedrive_entry(path)?;
+        let row = match entry.state {
+            EntryState::File(FileSyncState::RemoteOnly(row)) => row,
+            // Downloaded already.
+            EntryState::File(_) => return Ok(()),
+            EntryState::Directory(_) => return Err(Refused::NoItem),
+        };
         let (tell, told) = oneshot::channel();
         self.shared.ensure(row, rel, Class::Open, Some(tell));
         match told.await {
@@ -101,12 +105,19 @@ impl Mount {
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
             for (file, at) in s.directory_contents.files_below(&row) {
-                if !s.backing_directory.has_downloaded_copy(&at, &file.id) {
-                    continue;
-                }
-                // What a pin keeps, a download is filling, or holds content of the user's own
-                // that is not in OneDrive yet, stays.
-                if s.own_content(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
+                let file = match file {
+                    // What is not downloaded takes no space.
+                    FileSyncState::RemoteOnly(_) | FileSyncState::LocalOnly(_) => continue,
+                    // Content of the user's own that is not in OneDrive yet stays.
+                    FileSyncState::ModifiedHere(..) => {
+                        freed.kept += 1;
+                        continue;
+                    }
+                    FileSyncState::Synced(file, _) => file,
+                };
+                // What a pin keeps, a download is filling, or a program holds open for
+                // writing, stays.
+                if s.open_for_writing(&file.id) || s.pinned_by(&file).is_some() || crate::panic::lock(&s.fills).contains_key(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -130,13 +141,17 @@ impl Mount {
 
     /// The state of the item at `path`, its own pin, and the folder above that pins it.
     pub fn look(&self, path: &Path) -> Result<Looked, Refused> {
-        let (row, rel) = self.item(path)?;
+        let (entry, _) = self.onedrive_entry(path)?;
+        let Some(row) = entry.row().cloned() else { return Err(Refused::NoItem) };
         let s = &self.shared;
         let own_pin = crate::panic::lock(&s.pins).contains(&row.id);
         let above = s.directory_contents.parent(&row).and_then(|above| s.pinned_by(&above));
         let pinned_above = above.and_then(|by| s.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
-        let state = (row.kind == Kind::File).then(|| s.state_of(&row, &rel));
-        let changed = s.own_content(&row.id);
+        let (state, modified_here) = match &entry.state {
+            EntryState::File(file) => (s.state_of(file), matches!(file, FileSyncState::ModifiedHere(..))),
+            EntryState::Directory(_) => (None, false),
+        };
+        let changed = modified_here || s.open_for_writing(&row.id);
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
     }
 
@@ -144,15 +159,16 @@ impl Mount {
     pub fn downloaded_under(&self, path: &Path) -> Result<(u64, u64), Refused> {
         let (row, _) = self.item(path)?;
         let s = &self.shared;
-        let sizes = s.directory_contents.files_below(&row).into_iter().filter_map(|(file, at)| s.backing_directory.find_downloaded_copy(&at, &file.id));
-        Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks * 512)))
+        let copies = s.directory_contents.files_below(&row).into_iter().filter_map(|(file, _)| file.downloaded_copy().copied());
+        Ok(copies.fold((0, 0), |(files, bytes), copy| (files + 1, bytes + copy.blocks * 512)))
     }
 }
 
 impl super::shared::Shared {
-    /// Whether the copy of item `id` holds content of the user's own that is not in OneDrive
-    /// yet: changed here and not sent, or open for writing now.
-    fn own_content(&self, id: &str) -> bool {
-        self.directory_contents.unsent_changes().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
+    /// Whether a program holds the OneDrive file `id` open for writing now. Its sync state
+    /// says so too while the outbox holds its row; this holds also once that row is dropped
+    /// under a writer, by a forced switch to read-only.
+    fn open_for_writing(&self, id: &str) -> bool {
+        crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
     }
 }

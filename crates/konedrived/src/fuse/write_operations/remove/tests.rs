@@ -4,7 +4,7 @@ use konedrive_tree::outbox::OutboxKind;
 use crate::fuse::write_operations::tests::{at, folder};
 
 #[test]
-fn an_item_removed_is_deleted_in_onedrive_and_its_copy_goes() {
+fn a_onedrive_file_removed_is_deleted_in_onedrive_and_its_copy_is_removed() {
     let f = folder(Vec::new());
     f.download("a.txt", "A", b"a");
     f.ops.remove(1, "a.txt", false).unwrap();
@@ -15,13 +15,13 @@ fn an_item_removed_is_deleted_in_onedrive_and_its_copy_goes() {
 
 /// Never sent: its create is taken back, and its node is gone.
 #[test]
-fn a_local_file_removed_is_forgotten_by_the_outbox() {
+fn a_local_only_file_removed_is_forgotten_by_the_outbox() {
     let f = folder(Vec::new());
     f.ops.make(1, "new.txt", false, false).unwrap();
-    let node = f.node(1, "new.txt");
+    let node_id = f.node_id(1, "new.txt");
     f.ops.remove(1, "new.txt", false).unwrap();
     assert!(!f.disk.join("new.txt").exists() && f.rows().is_empty());
-    assert!(f.node_lookup.find_entry(node).is_none() && f.node_lookup.find_parent(node).is_none());
+    assert!(f.node_lookup.find_entry(node_id).is_none() && f.node_lookup.find_parent(node_id).is_none());
 }
 
 #[test]

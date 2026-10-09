@@ -2,11 +2,11 @@
 //! outbox with them.
 //!
 //! Everything here is a decision and nothing else: a function of a typed event — an enum that
-//! names what happened — and of a few facts of the store. No disk, no mount, no inode. Whoever
-//! made the change builds the event, owned and complete, from what it saw; the decision then
-//! runs inside the store's transaction that records it ([`super::outbox_recorder`]), reading the
-//! facts it needs through [`StoreFacts`], so that what it reads and what it writes are one
-//! state.
+//! names what happened — and of a few facts of the store. No disk, no mount, no node id.
+//! Whoever made the change builds the event, owned and complete, from what it saw; the
+//! decision then runs inside the store's transaction that records it
+//! ([`super::outbox_recorder`]), reading the facts it needs through [`StoreFacts`], so that
+//! what it reads and what it writes are one state.
 //!
 //! The events, each in a module of its own:
 //!
@@ -14,18 +14,22 @@
 //! - [`entry_removed`]: one it removed ([`EntryRemoved`]);
 //! - [`entry_renamed`]: one it renamed or moved, and what that displaced ([`EntryRenamed`]);
 //! - [`file_written`]: a file it opened for writing, closed or cut ([`FileWritten`]);
-//! - [`unrecorded_entries`]: the local objects found in the folder that the outbox has no row for
-//!   ([`UnrecordedEntries`]);
-//! - [`entry_kept_aside`]: a local object that a change from OneDrive met, and is kept
-//!   ([`EntryKeptAside`]).
+//! - [`unrecorded_entries`]: the local-only entries found in the folder that the outbox has
+//!   no row for ([`UnrecordedEntries`]);
+//! - [`entry_kept_aside`]: a local-only entry that was in the way of a change from OneDrive,
+//!   and is kept ([`EntryKeptAside`]).
 //!
-//! Here is what they share: a [`FolderPlace`]; a file or directory OneDrive has no item for yet, as
-//! far as a row goes ([`LocalObject`]), and one at its place ([`LocalEntry`]); the detections
-//! of the plain facts — a local object stands here, an item stands here, something was
-//! deleted — and when a row of content is due ([`wait_for_writer`], [`wait_for_quiet`]).
+//! Here is what they share: a [`FolderPlace`]; a file or directory that is made here and not
+//! in OneDrive yet, on disk and at its place ([`LocalOnlyEntry`]); the detections of the
+//! plain facts — a local-only entry is here, a file or directory of OneDrive is here,
+//! something was deleted — and when a row of content is due ([`wait_for_writer`],
+//! [`wait_for_quiet`]).
 //!
 //! What is uploaded at all is not decided here ([`super::upload_rules`]): an event says it
 //! as a fact. The names OneDrive refuses are: a refused name is a reason on its row.
+//!
+//! The store calls its rows items: `item_id` in a [`Detection`] is the OneDrive id, and
+//! `object` the file handle of the entry on disk.
 
 use std::path::{Path, PathBuf};
 
@@ -33,21 +37,22 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
+use super::backing_directory::{DiskEntry, EntryKind};
 use crate::local::names;
 
-mod entry_kept_aside;
 mod entry_created;
+mod entry_kept_aside;
 mod entry_removed;
 mod entry_renamed;
-mod unrecorded_entries;
 mod file_written;
+mod unrecorded_entries;
 
-pub(super) use entry_kept_aside::EntryKeptAside;
 pub(super) use entry_created::EntryCreated;
+pub(super) use entry_kept_aside::EntryKeptAside;
 pub(super) use entry_removed::EntryRemoved;
-pub(super) use entry_renamed::{DisplacedEntry, MovedEntry, EntryRenamed};
+pub(super) use entry_renamed::{DisplacedEntry, EntryRenamed, MovedEntry};
+pub(super) use file_written::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 pub(super) use unrecorded_entries::UnrecordedEntries;
-pub(super) use file_written::{OneDriveFileWrite, LocalOnlyFileWrite, FileWritten};
 
 /// What one change puts into the outbox: its detections, in the order they are recorded, and
 /// the operations on rows that go with them.
@@ -75,13 +80,14 @@ pub(super) trait FolderEvent: Send + 'static {
 
 /// What a decision reads from the tree store.
 pub(super) trait StoreFacts {
-    /// The item `id` as the base has it: what a change to it is made against.
+    /// The row of the OneDrive id `id` as the base has it: what a change to it is made
+    /// against.
     fn base_row(&self, id: &str) -> Result<Option<Row>, TreeError>;
-    /// The outbox's rows of the local object `object`.
-    fn outbox_rows_of(&self, object: &FileHandle) -> Result<Vec<OutboxRow>, TreeError>;
-    /// The outbox's rows at the place `rel` and below it.
+    /// The outbox's rows of the entry on disk that `handle` identifies.
+    fn outbox_rows_of(&self, handle: &FileHandle) -> Result<Vec<OutboxRow>, TreeError>;
+    /// The outbox's rows at the path `rel` and below it.
     fn rows_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError>;
-    /// Whether the outbox holds new content of item `id`.
+    /// Whether the outbox holds new content of the OneDrive file `id`.
     fn has_update(&self, id: &str) -> Result<bool, TreeError>;
 }
 
@@ -90,8 +96,8 @@ impl StoreFacts for TreeStore {
         self.get(Table::Items, id)
     }
 
-    fn outbox_rows_of(&self, object: &FileHandle) -> Result<Vec<OutboxRow>, TreeError> {
-        self.outbox_for_object(object)
+    fn outbox_rows_of(&self, handle: &FileHandle) -> Result<Vec<OutboxRow>, TreeError> {
+        self.outbox_for_object(handle)
     }
 
     fn rows_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
@@ -103,7 +109,8 @@ impl StoreFacts for TreeStore {
     }
 }
 
-/// A place in the folder: a name in a directory, and that directory's item when it has one.
+/// A place in the folder: a name in a directory, and that directory's OneDrive id when it
+/// has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FolderPlace {
     pub(super) above: Option<String>,
@@ -121,50 +128,24 @@ impl FolderPlace {
     }
 }
 
-/// A file or directory of the backing directory that OneDrive has no item for yet, as far as
-/// a row goes: the file handle that is what it is, and its kind.
+/// A file or directory that was made here and is not in OneDrive yet: what the backing
+/// directory holds of it, and the place it is at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalObject {
-    pub(super) handle: FileHandle,
-    pub(super) kind: ObjectKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ObjectKind {
-    File { size: u64 },
-    Directory,
-}
-
-impl LocalObject {
-    fn size(&self) -> Option<u64> {
-        match self.kind {
-            ObjectKind::File { size } => Some(size),
-            ObjectKind::Directory => None,
-        }
-    }
-
-    fn is_dir(&self) -> bool {
-        self.kind == ObjectKind::Directory
-    }
-}
-
-/// A local object at the place it stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalEntry {
+pub(super) struct LocalOnlyEntry {
+    pub(super) on_disk: DiskEntry,
     pub(super) place: FolderPlace,
-    pub(super) object: LocalObject,
 }
 
-/// The item as the base has it: what a change to it was made against.
+/// The row as the base has it: what a change to it was made against.
 fn base(row: &Row) -> Base {
     Base { etag: row.etag.clone(), ctag: row.ctag.clone(), parent: row.parent_id.clone(), name: Some(row.name.clone()) }
 }
 
-fn detection_at(place: &FolderPlace, kind: OutboxKind, object: Option<FileHandle>, size: Option<u64>) -> Detection {
+fn detection_at(place: &FolderPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
     Detection {
         kind,
         item_id: None,
-        object,
+        object: handle,
         rel: place.rel(),
         base: None,
         target_parent: place.above.clone(),
@@ -177,41 +158,45 @@ fn detection_at(place: &FolderPlace, kind: OutboxKind, object: Option<FileHandle
     }
 }
 
-/// The local object `object` stands at `place`: a file to create, a directory to make. A
-/// name OneDrive refuses, or a file too large for it, is said on the row and waits for the
-/// user; a file a program still writes (`open`) waits for its last writer, and one just
-/// closed is due a moment later.
-fn create_or_mkdir(place: &FolderPlace, object: &LocalObject, open: bool, now: i64) -> Detection {
-    let kind = if object.is_dir() { OutboxKind::Mkdir } else { OutboxKind::Create };
-    let mut d = detection_at(place, kind, Some(object.handle.clone()), object.size());
-    let too_large = object.size().is_some_and(|size| size > names::MAX_FILE_SIZE);
+/// The entry `on_disk`, which is not in OneDrive yet, is at `place`: a file to create, a
+/// directory to make. A name OneDrive refuses, or a file too large for it, is said on the row
+/// and waits for the user; a file a program still writes (`open`) waits for its last writer,
+/// and one just closed is due a moment later.
+fn create_or_mkdir(place: &FolderPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
+    let (kind, size) = match on_disk.metadata.kind {
+        EntryKind::Directory => (OutboxKind::Mkdir, None),
+        EntryKind::File => (OutboxKind::Create, Some(on_disk.metadata.size)),
+    };
+    let mut d = detection_at(place, kind, Some(on_disk.handle.clone()), size);
+    let too_large = size.is_some_and(|size| size > names::MAX_FILE_SIZE);
     let refused = names::refused(place.name.as_ref()).or(too_large.then_some(names::Refused::TooLarge));
     if let Some(refused) = refused {
         d.state = OutboxState::Blocked;
         d.reason = Some(refused.reason());
     } else if open {
         wait_for_writer(&mut d, now);
-    } else if !object.is_dir() {
+    } else if on_disk.metadata.kind == EntryKind::File {
         wait_for_quiet(&mut d, now);
     }
     d
 }
 
-/// The detections of `entries`, each by the rules of a new local object that no program
+/// The detections of `entries`, each by the rules of a new local-only entry that no program
 /// holds open: a directory that is uploaded from now on, and all it holds.
-pub(super) fn create_local_only_entries(entries: &[LocalEntry], now: i64) -> Vec<Detection> {
-    entries.iter().map(|entry| create_or_mkdir(&entry.place, &entry.object, false, now)).collect()
+pub(super) fn create_local_only_entries(entries: &[LocalOnlyEntry], now: i64) -> Vec<Detection> {
+    entries.iter().map(|entry| create_or_mkdir(&entry.place, &entry.on_disk, false, now)).collect()
 }
 
-/// The item `row` stands at `place`, in `object` when the backing directory holds one for
-/// it: a move, and how an item is said to be where it is.
-fn move_in_onedrive(place: &FolderPlace, row: &Row, object: Option<FileHandle>) -> Detection {
-    Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detection_at(place, OutboxKind::Move, object, None) }
+/// The file or directory of OneDrive that `row` is, is at `place`, with the entry `handle`
+/// identifies when the backing directory holds one for it: a move, and how something of
+/// OneDrive is said to be where it is.
+fn move_in_onedrive(place: &FolderPlace, row: &Row, handle: Option<FileHandle>) -> Detection {
+    Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detection_at(place, OutboxKind::Move, handle, None) }
 }
 
-/// The file `file` at `place` is the new content of the item `row`.
-fn update_content(place: &FolderPlace, row: &Row, file: &LocalObject) -> Detection {
-    let update = detection_at(place, OutboxKind::Update, Some(file.handle.clone()), file.size());
+/// The file `copy` at `place` is the new content of the OneDrive file `row`.
+fn update_content(place: &FolderPlace, row: &Row, copy: &DiskEntry) -> Detection {
+    let update = detection_at(place, OutboxKind::Update, Some(copy.handle.clone()), copy.metadata.file_size());
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..update }
 }
 
@@ -231,12 +216,13 @@ pub(super) fn wait_for_quiet(d: &mut Detection, now: i64) {
     d.next_try = Some(now + crate::local::QUIET.as_secs() as i64);
 }
 
-/// What was at `rel` is removed: the item `row`, or a local object.
-fn delete(row: Option<&Row>, object: Option<FileHandle>, rel: &Path) -> Detection {
+/// What was at `rel` is removed: the file or directory of OneDrive that `row` is, or a
+/// local-only entry by its `handle`.
+fn delete(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
-        object,
+        object: handle,
         rel: rel.to_path_buf(),
         base: row.map(base),
         target_parent: None,
@@ -249,22 +235,23 @@ fn delete(row: Option<&Row>, object: Option<FileHandle>, rel: &Path) -> Detectio
     }
 }
 
-/// The item `id` was removed from `rel` here. Nothing for an item the base no longer has.
+/// The file or directory of OneDrive `id` was removed from `rel` here. Nothing when the base
+/// no longer has it.
 fn delete_in_onedrive(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
     Ok(facts.base_row(id)?.iter().map(|base| delete(Some(base), None, rel)).collect())
 }
 
-/// A local object is gone from `rel`, or stays on this computer from now on: what the
-/// outbox held of it goes. Nothing for an object the outbox never heard of.
-fn forget_local_only(facts: &impl StoreFacts, object: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(if facts.outbox_rows_of(object)?.is_empty() { Vec::new() } else { vec![delete(None, Some(object.clone()), rel)] })
+/// A local-only entry is gone from `rel`, or stays on this computer from now on: what the
+/// outbox held of it is removed. Nothing for one the outbox never heard of.
+fn forget_local_only(facts: &impl StoreFacts, handle: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(if facts.outbox_rows_of(handle)?.is_empty() { Vec::new() } else { vec![delete(None, Some(handle.clone()), rel)] })
 }
 
-/// Whether a directory that carries `carried` is the directory of the folder item `id`,
-/// which went from OneDrive: one that carries nothing is, one that carries another item's
-/// id is that item's and is left alone.
-pub(super) fn is_directory_of(carried: Option<&str>, id: &str) -> bool {
-    carried.is_none_or(|carried| carried == id)
+/// Whether a directory on disk that is marked with `marked_with` backs the OneDrive
+/// directory `id`, which was removed from OneDrive: one that is marked with nothing does,
+/// one that is marked with another id backs that other directory and is left alone.
+pub(super) fn is_directory_of(marked_with: Option<&str>, id: &str) -> bool {
+    marked_with.is_none_or(|marked_with| marked_with == id)
 }
 
 /// A directory moved: the rows of what is below it follow.

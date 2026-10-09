@@ -1,28 +1,28 @@
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
 
 use super::EntryKeptAside;
-use crate::fuse::detections::tests::{dir, file, in_docs, local, quiet, rel, NOW};
+use crate::fuse::detections::tests::{detection_of, directory, file, in_docs, quiet, rel, NOW};
 
 #[test]
-fn a_file_kept_beside_an_item_is_created_under_its_copys_name() {
+fn a_file_kept_aside_is_created_under_its_conflict_copys_name() {
     let mine = file(1, 3);
-    let kept = EntryKeptAside { object: mine.clone(), from: rel("docs/c.txt"), to: in_docs("c-fedora.txt"), uploaded: true }.detect(NOW);
-    assert_eq!(kept.detections, [quiet(local(OutboxKind::Create, &mine, &in_docs("c-fedora.txt"), OutboxState::Ready))]);
+    let kept = EntryKeptAside { on_disk: mine.clone(), from: rel("docs/c.txt"), to: in_docs("c-fedora.txt"), uploaded: true }.detect(NOW);
+    assert_eq!(kept.detections, [quiet(detection_of(OutboxKind::Create, &mine, &in_docs("c-fedora.txt"), OutboxState::Ready))]);
     assert!(kept.ops.is_empty());
 }
 
 #[test]
 fn a_directory_kept_aside_takes_the_rows_below_it_along() {
-    let mine = dir(1);
-    let kept = EntryKeptAside { object: mine.clone(), from: rel("docs/c.txt"), to: in_docs("c-fedora.txt"), uploaded: true }.detect(NOW);
-    assert_eq!(kept.detections, [local(OutboxKind::Mkdir, &mine, &in_docs("c-fedora.txt"), OutboxState::Ready)]);
+    let mine = directory(1);
+    let kept = EntryKeptAside { on_disk: mine.clone(), from: rel("docs/c.txt"), to: in_docs("c-fedora.txt"), uploaded: true }.detect(NOW);
+    assert_eq!(kept.detections, [detection_of(OutboxKind::Mkdir, &mine, &in_docs("c-fedora.txt"), OutboxState::Ready)]);
     assert_eq!(kept.ops, [OutboxOp::Rebase { from: rel("docs/c.txt"), to: rel("docs/c-fedora.txt") }]);
 }
 
 #[test]
-fn a_copy_under_a_name_that_stays_here_is_not_uploaded() {
-    let file_kept = EntryKeptAside { object: file(1, 3), from: rel("docs/c.tmp"), to: in_docs("c-fedora.tmp"), uploaded: false }.detect(NOW);
+fn a_conflict_copy_under_a_name_that_stays_here_is_not_uploaded() {
+    let file_kept = EntryKeptAside { on_disk: file(1, 3), from: rel("docs/c.tmp"), to: in_docs("c-fedora.tmp"), uploaded: false }.detect(NOW);
     assert!(file_kept.is_empty());
-    let dir_kept = EntryKeptAside { object: dir(2), from: rel("docs/c"), to: in_docs("c-fedora"), uploaded: false }.detect(NOW);
-    assert!(dir_kept.detections.is_empty() && dir_kept.ops.len() == 1);
+    let directory_kept = EntryKeptAside { on_disk: directory(2), from: rel("docs/c"), to: in_docs("c-fedora"), uploaded: false }.detect(NOW);
+    assert!(directory_kept.detections.is_empty() && directory_kept.ops.len() == 1);
 }

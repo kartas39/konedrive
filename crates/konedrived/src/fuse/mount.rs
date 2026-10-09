@@ -20,6 +20,7 @@ use super::announce::{announce, Announce};
 use super::fill::Waiter;
 use super::backing_directory::{set_tree, BackingDirectory};
 use super::directory_contents::DirectoryContents;
+use super::conflict_copies::ConflictCopies;
 use super::node_table::NodeTable;
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
@@ -77,11 +78,12 @@ impl Mount {
             // Before the mount: afterwards this path is the mount.
             let backing_directory = Arc::new(BackingDirectory::open(&root.path)?);
             let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&backing_directory)));
-            let node_table = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
+            let node_table = Arc::new(Mutex::new(NodeTable::new()));
             let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::clone(&node_table)));
             let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
-            let upload_rules = Arc::new(UploadRules::new(writing.ignore, writing.machine_name));
+            let upload_rules = Arc::new(UploadRules::new(writing.ignore));
+            let conflict_copies = ConflictCopies::new(Arc::clone(&backing_directory), Arc::clone(&directory_contents), Arc::clone(&upload_rules), writing.machine_name);
             let open_writers = Arc::new(OpenWriters::default());
             let write_operations = WriteOperations::new(
                 Arc::clone(&directory_contents),
@@ -89,7 +91,7 @@ impl Mount {
                 Arc::clone(&node_lookup),
                 Arc::clone(&open_writers),
                 Arc::clone(&outbox_recorder),
-                Arc::clone(&upload_rules),
+                upload_rules,
             );
             let shared = Arc::new(Shared {
                 root: root.clone(),
@@ -119,7 +121,7 @@ impl Mount {
                 pending: Mutex::default(),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 writable,
-                upload_rules,
+                conflict_copies,
                 outbox_recorder,
                 open_writers,
                 write_operations,

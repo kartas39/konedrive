@@ -1,42 +1,43 @@
 //! The operations a program asks for that change the folder: make, remove, rename and
 //! write, each in a module of its own.
 //!
-//! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
-//! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`NodeLookup`]), the files
-//! open for writing ([`OpenWriters`]), the [`OutboxRecorder`] and the [`UploadRules`]. It owns no state
-//! of its own. Each operation is the same short sequence of steps:
+//! [`WriteOperations`] holds the parts the operations use and nothing else: what each
+//! directory holds ([`DirectoryContents`]), the disk ([`BackingDirectory`]), the node ids
+//! ([`NodeLookup`]), the files open for writing ([`OpenWriters`]), the [`OutboxRecorder`]
+//! and the [`UploadRules`]. It owns no state of its own. Each operation is the same short
+//! sequence of steps:
 //!
-//! 1. check, through the view and the rules: what stands where, and the errno of a refusal;
-//! 2. do it in the backing directory, through `BackingDirectory`;
+//! 1. check, through the directory contents and the rules: what is where, and the errno of a
+//!    refusal;
+//! 2. do it in the backing directory;
 //! 3. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
 //!    failure what was done on disk is undone and the program is answered `EIO`
 //!    ([`WriteOperations::record_or_undo`]);
-//! 4. the nodes, through `NodeLookup`.
+//! 4. the node ids, through the node lookup.
 //!
-//! An operation never touches the table of open handles: one that opens a file returns it
-//! ([`OpenedFile`]), and the request that asked keeps the handle.
+//! An operation never touches the table of open files: one that opens a file returns it
+//! ([`OpenFile`](super::read::OpenFile)), and the request that asked keeps it.
 //!
 //! - [`make`]: a file or directory made;
 //! - [`remove`]: one removed;
 //! - [`rename`]: one renamed or moved;
 //! - [`write`](mod@write): a file opened for writing, closed, cut;
-//! - [`unrecorded_objects`]: what the folder holds that the outbox has no row for, recorded
-//!   once the folder takes changes.
+//! - [`unrecorded_entries`]: the local-only entries the outbox has no row for, recorded once
+//!   the folder takes changes.
 
 use std::fmt::Display;
-use std::fs::File;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use fuser::Errno;
 
-use super::detections::FolderEvent;
-use super::outbox_recorder::OutboxRecorder;
-use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
-use super::upload_rules::UploadRules;
-use super::directory_contents::{Directory, DirectoryContents};
+use super::detections::FolderEvent;
+use super::directory::Directory;
+use super::directory_contents::DirectoryContents;
+use super::node_lookup::NodeLookup;
 use super::open_writers::OpenWriters;
+use super::outbox_recorder::OutboxRecorder;
+use super::upload_rules::UploadRules;
 
 mod make;
 mod remove;
@@ -50,16 +51,7 @@ pub(super) struct WriteOperations {
     node_lookup: Arc<NodeLookup>,
     open_writers: Arc<OpenWriters>,
     outbox_recorder: Arc<OutboxRecorder>,
-    rules: Arc<UploadRules>,
-}
-
-/// A file an operation opened for writing: the node, its item when it has one, its place,
-/// and the file in the backing directory. Whoever asked keeps the handle.
-pub(super) struct OpenedFile {
-    pub(super) node_id: u64,
-    pub(super) id: Option<String>,
-    pub(super) rel: PathBuf,
-    pub(super) file: File,
+    upload_rules: Arc<UploadRules>,
 }
 
 impl WriteOperations {
@@ -69,9 +61,9 @@ impl WriteOperations {
         node_lookup: Arc<NodeLookup>,
         open_writers: Arc<OpenWriters>,
         outbox_recorder: Arc<OutboxRecorder>,
-        rules: Arc<UploadRules>,
+        upload_rules: Arc<UploadRules>,
     ) -> Self {
-        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, rules }
+        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, upload_rules }
     }
 
     /// Refuses a change to a read-only folder as a read-only filesystem does.
@@ -83,9 +75,9 @@ impl WriteOperations {
         }
     }
 
-    /// Whether what stands as `name` in `dir` and has no item stays on this computer.
-    fn stays_local(&self, dir: &Directory, name: &str) -> bool {
-        self.rules.stays_local(&dir.rel, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
+    /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.
+    fn stays_local(&self, directory: &Directory, name: &str) -> bool {
+        self.upload_rules.stays_local(&directory.rel, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
     }
 
     /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done

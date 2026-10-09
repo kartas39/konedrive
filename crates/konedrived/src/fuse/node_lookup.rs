@@ -1,22 +1,42 @@
-//! The nodes of the mount resolved: which entry of the folder a node is, and which node an
-//! entry is.
+//! The entry a node id stands for, and the node id of an entry.
 //!
-//! The kernel names what it asks about by node. [`NodeTable`] is the map alone: it knows a key
-//! and a place for each node, and nothing of the store or the disk. [`NodeLookup`] is the part
-//! over it and the [`DirectoryContents`]: it gives an entry its node, says what a node is now — an item is
-//! looked up again in the view, an object without an item by its handle in the folder under
-//! the mount — and keeps the node of an object that got its item.
+//! The kernel names what it asks about by node id. [`NodeTable`] is the table alone: it
+//! knows a key and a place for each node id, and nothing of the store or the disk.
+//! [`NodeLookup`] is the part over it and the [`DirectoryContents`]: it gives an entry its
+//! node id, finds the entry a node id stands for now — what is in OneDrive is looked up again
+//! in the directory contents, a local-only entry by its file handle in the backing directory
+//! — and keeps the node id of a local-only entry once it is in OneDrive.
 //!
-//! The map is shared with what tells the kernel of changes; who changes a node's key or
-//! place does it through here.
+//! The table is shared with what tells the kernel of changes; whoever changes a node's key
+//! or place does it through here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use konedrive_fs::handle::FileHandle;
 
+use super::backing_directory::{DiskEntry, EntryKind};
+use super::detections::LocalOnlyEntry;
+use super::directory::Directory;
+use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
+use super::local_only_entries::folder_place;
 use super::node_table::{NodeKey, NodeTable};
-use super::directory_contents::{Directory, Entry, Local, DirectoryContents};
+
+/// What a node id stands for, found again in the directory contents or on disk.
+enum FoundNode {
+    InOneDrive { entry: DirectoryEntry, rel: PathBuf },
+    /// A local-only entry, with its name in the directory node `parent`: its place is not
+    /// worked out yet.
+    LocalOnly { on_disk: DiskEntry, rel: PathBuf, name: String, parent: u64 },
+}
+
+/// The key the node of `entry` has in the table.
+fn key_of(entry: &DirectoryEntry) -> NodeKey {
+    match &entry.state {
+        EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
+        EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => NodeKey::InOneDrive(row.id.clone()),
+    }
+}
 
 pub(super) struct NodeLookup {
     directory_contents: Arc<DirectoryContents>,
@@ -28,88 +48,106 @@ impl NodeLookup {
         NodeLookup { directory_contents, node_table }
     }
 
-    /// The node of `entry`, which stands in the directory `parent`. An object that got its
-    /// item since the kernel was told of it keeps its node.
-    pub(super) fn assign_node_id(&self, entry: &Entry, parent: u64) -> u64 {
+    /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a
+    /// new one. A local-only entry that got into OneDrive since the kernel was told of it
+    /// keeps its node id.
+    pub(super) fn assign_node_id(&self, entry: &DirectoryEntry, parent: u64) -> u64 {
         let mut node_table = crate::panic::lock(&self.node_table);
-        match entry {
-            Entry::Local(local) => node_table.assign(NodeKey::LocalOnly(local.object.handle.clone()), parent, &local.name),
-            Entry::Item(row) => {
-                let key = NodeKey::InOneDrive(row.id.clone());
-                if !node_table.node_ids.contains_key(&key) {
-                    let on_disk = node_table.path_of(parent).and_then(|dir| self.directory_contents.backing_directory().find_disk_entry(&dir.join(&row.name)));
-                    if let Some(object) = on_disk {
-                        node_table.rekey(&NodeKey::LocalOnly(object.handle), key.clone());
-                    }
-                }
-                node_table.assign(key, parent, &row.name)
+        let key = key_of(entry);
+        if matches!(key, NodeKey::InOneDrive(_)) && !node_table.node_ids.contains_key(&key) {
+            let on_disk = node_table.path_of(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(&entry.name)));
+            if let Some(handle) = on_disk {
+                node_table.rekey(&NodeKey::LocalOnly(handle), key.clone());
             }
         }
+        node_table.assign(key, parent, &entry.name)
     }
 
-    /// What the node `ino` is now, and its place. `None` for a node whose item or object is
-    /// gone.
-    pub(super) fn find_entry(&self, node_id: u64) -> Option<(Entry, PathBuf)> {
-        if node_id == 1 {
-            return Some((Entry::Item(self.directory_contents.root()), PathBuf::new()));
-        }
-        let (key, rel, name) = {
+    /// What the node `node_id`, which is not the root, stands for now.
+    fn find_node(&self, node_id: u64) -> Option<FoundNode> {
+        let (key, rel, name, parent) = {
             let node_table = crate::panic::lock(&self.node_table);
-            let node = node_table.node_table.get(&node_id)?;
-            (node.key.clone(), node_table.path_of(node_id)?, node.place.1.clone())
+            let node = node_table.nodes.get(&node_id)?;
+            (node.key.clone(), node_table.path_of(node_id)?, node.place.1.clone(), node.place.0)
         };
         match key {
             NodeKey::InOneDrive(id) => {
-                let row = self.directory_contents.find_placed_row(&id, &name).filter(|_| !self.directory_contents.unsent_changes().gone.contains(&id))?;
-                Some((Entry::Item(row), rel))
+                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.unsent_changes().removed.contains(&id))?;
+                Some(FoundNode::InOneDrive { entry, rel })
             }
             NodeKey::LocalOnly(handle) => {
-                // Another object at its place is not this node.
-                let object = self.directory_contents.backing_directory().find_disk_entry(&rel).filter(|o| o.handle == handle)?;
-                // It got its item since: the node is the item's from now on.
-                if let Some(row) = self.directory_contents.backing_directory().read_onedrive_id(&rel).and_then(|id| self.directory_contents.find_placed_row(&id, &name)) {
-                    crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), NodeKey::InOneDrive(row.id.clone()));
-                    return Some((Entry::Item(row), rel));
+                // Another file or directory at its path is not this node.
+                let on_disk = self.directory_contents.backing_directory().find_disk_entry(&rel).filter(|on_disk| on_disk.handle == handle)?;
+                // It got into OneDrive since: the node stands for what is in OneDrive from
+                // now on.
+                let in_onedrive = self.directory_contents.backing_directory().read_onedrive_id(&rel).and_then(|id| self.directory_contents.find_entry_by_id(&id, &name, &rel));
+                if let Some(entry) = in_onedrive {
+                    crate::panic::lock(&self.node_table).rekey(&NodeKey::LocalOnly(handle), key_of(&entry));
+                    return Some(FoundNode::InOneDrive { entry, rel });
                 }
-                Some((Entry::Local(Local { name, object }), rel))
+                Some(FoundNode::LocalOnly { on_disk, rel, name, parent })
             }
         }
     }
 
-    /// The directory the node `ino` is.
-    pub(super) fn find_directory(&self, node_id: u64) -> Option<Directory> {
-        let (entry, rel) = self.find_entry(node_id)?;
-        entry.is_dir().then(|| Directory { id: entry.id().filter(|id| !id.is_empty()).map(str::to_owned), rel })
+    /// The entry the node `node_id` stands for now, and its path in the folder. `None` for a
+    /// node whose file or directory is gone.
+    pub(super) fn find_entry(&self, node_id: u64) -> Option<(DirectoryEntry, PathBuf)> {
+        if node_id == 1 {
+            return Some((self.directory_contents.root_entry(), PathBuf::new()));
+        }
+        match self.find_node(node_id)? {
+            FoundNode::InOneDrive { entry, rel } => Some((entry, rel)),
+            FoundNode::LocalOnly { on_disk, rel, name, parent } => {
+                // Its place is in the directory its node is in. A directory that is not
+                // found any more is referred to by its path alone.
+                let directory = self.find_directory(parent).unwrap_or_else(|| Directory { id: None, rel: rel.parent().map(Path::to_owned).unwrap_or_default() });
+                Some((DirectoryEntry::from_local_only(LocalOnlyEntry { on_disk, place: folder_place(&directory, &name) }), rel))
+            }
+        }
     }
 
-    /// The directory the node `ino` stands in, and that directory's node.
+    /// The directory the node `node_id` stands for.
+    pub(super) fn find_directory(&self, node_id: u64) -> Option<Directory> {
+        if node_id == 1 {
+            return Some(Directory { id: self.directory_contents.root_id().filter(|id| !id.is_empty()), rel: PathBuf::new() });
+        }
+        match self.find_node(node_id)? {
+            FoundNode::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| Directory { id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), rel }),
+            FoundNode::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(Directory { id: None, rel }),
+        }
+    }
+
+    /// The directory the node `node_id` is in, and that directory's node id.
     pub(super) fn find_parent(&self, node_id: u64) -> Option<(u64, Directory)> {
-        let parent = crate::panic::lock(&self.node_table).node_table.get(&node_id)?.place.0;
+        let parent = crate::panic::lock(&self.node_table).nodes.get(&node_id)?.place.0;
         Some((parent, self.find_directory(parent)?))
     }
 
-    /// The node item `id` is, when the kernel was told of one.
+    /// The node id that stands for the OneDrive id `id`, when the kernel was told of one.
     pub(super) fn find_node_id(&self, id: &str) -> Option<u64> {
         crate::panic::lock(&self.node_table).node_ids.get(&NodeKey::InOneDrive(id.to_owned())).copied()
     }
 
-    /// The node `ino` stands as `name` in `parent` now. `taken`: it is the object that took
-    /// over the name of this item, and is the item's node from here on — whoever looks the
-    /// name up gets the node the new content is read and written through.
+    /// The node `node_id` is `name` in the directory node `parent` now. `taken`: it is the
+    /// local-only file, by its handle, that took over the name of this OneDrive id, and
+    /// stands for that file of OneDrive from here on — whoever looks the name up gets the
+    /// node the new content is read and written through.
     pub(super) fn move_node(&self, node_id: u64, parent: u64, name: &str, taken: Option<(&FileHandle, &str)>) {
         let mut node_table = crate::panic::lock(&self.node_table);
         node_table.move_node(node_id, parent, name);
-        if let Some((object, id)) = taken {
-            node_table.rekey(&NodeKey::LocalOnly(object.clone()), NodeKey::InOneDrive(id.to_owned()));
+        if let Some((handle, id)) = taken {
+            node_table.rekey(&NodeKey::LocalOnly(handle.clone()), NodeKey::InOneDrive(id.to_owned()));
         }
     }
 
-    /// The object `object` is gone, and no other is ever this one: its node is dropped, and
-    /// nothing is found by it again. A program that still holds the file open goes on through
-    /// its own descriptor, which needs no node; the kernel's later questions about the node
-    /// are answered as of something gone, as they were once the object left the disk.
-    pub(super) fn forget(&self, object: &FileHandle) {
-        crate::panic::lock(&self.node_table).forget(&NodeKey::LocalOnly(object.clone()));
+    /// The local-only entry `handle` identifies is gone, and nothing else is ever that entry:
+    /// its node is dropped, and nothing is found by it again. A program that still holds the
+    /// file open goes on through its own descriptor, which needs no node; the kernel's later
+    /// questions about the node id are answered as of something gone, as they were once the
+    /// entry left the disk.
+    pub(super) fn forget(&self, handle: &FileHandle) {
+        crate::panic::lock(&self.node_table).forget(&NodeKey::LocalOnly(handle.clone()));
     }
 }
 

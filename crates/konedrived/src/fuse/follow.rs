@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 
 use super::announce::Announce;
-use super::conflict_copies::{ConflictCopies, CycleConflicts};
+use super::conflict_copies::CycleConflicts;
 use super::detections::rebase;
 use super::mount::Mount;
 use super::backing_directory::BackingDirectory;
@@ -80,8 +80,9 @@ impl Mount {
             Kind::File => s.backing_directory.has_downloaded_copy(rel, id),
             Kind::Folder => s.backing_directory.stat(rel).is_some_and(|m| m.is_dir()) && s.backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
         };
-        let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
-        let meeting = ConflictCopies { backing_directory: &s.backing_directory, directory_contents: &s.directory_contents, rules: &s.upload_rules, now: s.now() };
+        let (mut told, mut unpinned, mut conflicts, mut gone) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
+        // The time the rows of what is kept are dated by.
+        let recorded_at = s.now();
         for step in &steps {
             // Whatever its source remembered of the item is of what it was.
             s.source.forget(&step.id);
@@ -95,16 +96,16 @@ impl Mount {
                     told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
                 }
                 (None, Some((new, now))) => {
-                    meeting.move_aside(now, new.parent_id.as_deref(), &mut met);
+                    s.conflict_copies.move_aside(now, new.parent_id.as_deref(), recorded_at, &mut conflicts);
                     told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
                 }
                 (Some((old, was)), Some((new, now))) => {
                     if was != now {
-                        meeting.move_aside(now, new.parent_id.as_deref(), &mut met);
+                        s.conflict_copies.move_aside(now, new.parent_id.as_deref(), recorded_at, &mut conflicts);
                     }
                     if was != now && new.kind == Kind::Folder {
                         // The rows of what the user changed below it are found by place.
-                        met.ops.push(rebase(was, now));
+                        conflicts.ops.push(rebase(was, now));
                     }
                     if step.content_changed() {
                         s.backing_directory.remove_downloaded_copy(was, &step.id);
@@ -126,9 +127,9 @@ impl Mount {
         // below it went.
         gone.sort_by_key(|(_, rel)| std::cmp::Reverse(rel.components().count()));
         for (id, rel) in &gone {
-            meeting.keep_removed_directory(id, rel, rw.is_some(), &mut met);
+            s.conflict_copies.keep_removed_directory(id, rel, rw.is_some(), recorded_at, &mut conflicts);
         }
-        let CycleConflicts { detections, ops, copied, kept } = met;
+        let CycleConflicts { detections, ops, moved_aside: copied, kept_directories: kept } = conflicts;
         if !detections.is_empty() || !ops.is_empty() {
             crate::local::record::record(store, detections, ops, s.now())?;
         }

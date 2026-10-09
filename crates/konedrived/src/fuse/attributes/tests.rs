@@ -1,124 +1,96 @@
-use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::FileType;
-use konedrive_tree::outbox::OutboxKind;
-use konedrive_tree::Kind;
+use konedrive_fs::handle::FileHandle;
+use konedrive_tree::{Kind, Row};
 
-use super::{attr, Shown};
-use crate::fuse::backing_directory::{DiskMetadata, EntryKind};
-use crate::fuse::directory_contents::tests::{of, directory_contents};
-use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
-use crate::fuse::open_writers::OpenWriters;
+use super::attributes;
+use crate::fuse::access_mode::AccessMode;
+use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
+use crate::fuse::detections::{FolderPlace, LocalOnlyEntry};
+use crate::fuse::directory_contents::tests::row;
+use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 
 fn at(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-/// A file of 10 bytes in 8 blocks, last changed at 500.
-fn copy() -> DiskMetadata {
-    DiskMetadata { kind: EntryKind::File, size: 10, blocks: 8, modified: at(500) }
+/// A file of 10 bytes in 8 blocks on disk, last modified at 500.
+fn on_disk(kind: EntryKind) -> DiskMetadata {
+    DiskMetadata { kind, size: 10, blocks: 8, modified: at(500) }
+}
+
+/// The store's row of a file of 42 bytes, or of a directory, last modified at 100.
+fn stored(kind: Kind) -> Row {
+    Row { size: 42, mtime: 100, ..row("A", Some("R"), "name", kind) }
+}
+
+fn file(state: FileSyncState) -> DirectoryEntry {
+    DirectoryEntry { name: "name".into(), state: EntryState::File(state) }
+}
+
+fn directory(state: DirectorySyncState) -> DirectoryEntry {
+    DirectoryEntry { name: "name".into(), state: EntryState::Directory(state) }
+}
+
+fn local_only(kind: EntryKind) -> LocalOnlyEntry {
+    let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: on_disk(kind) };
+    LocalOnlyEntry { on_disk, place: FolderPlace::new(Some("R"), Path::new(""), "name") }
 }
 
 #[test]
-fn a_folder_is_a_directory_with_the_stores_time_and_no_size() {
-    let shown = attr(7, true, &Shown::Folder { listed: at(100) });
+fn a_onedrive_directory_has_the_stores_time_and_no_size() {
+    let shown = attributes(7, AccessMode::ReadWrite, &directory(DirectorySyncState::Synced(stored(Kind::Folder))));
     assert_eq!((shown.ino.0, shown.kind, shown.size, shown.blocks, shown.nlink), (7, FileType::Directory, 0, 0, 2));
     assert_eq!((shown.atime, shown.mtime, shown.ctime), (at(100), at(100), at(100)));
 }
 
 #[test]
-fn a_file_that_is_not_downloaded_has_the_stores_size_and_time_and_no_blocks() {
-    let shown = attr(7, true, &Shown::NotDownloaded { size: 42, listed: at(100) });
+fn a_remote_only_file_has_the_stores_size_and_time_and_no_blocks() {
+    let shown = attributes(7, AccessMode::ReadWrite, &file(FileSyncState::RemoteOnly(stored(Kind::File))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.nlink, shown.mtime), (FileType::RegularFile, 42, 0, 1, at(100)));
 }
 
-/// A download does not change when the file was last changed: that is OneDrive's to say.
+/// A download does not change when the file was last modified: that is OneDrive's to say.
 #[test]
-fn a_clean_copy_has_its_own_size_and_blocks_and_the_stores_time() {
-    let shown = attr(7, true, &Shown::Copy { copy: copy(), listed: at(100), own: false });
+fn a_synced_file_has_its_copys_size_and_blocks_and_the_stores_time() {
+    let shown = attributes(7, AccessMode::ReadWrite, &file(FileSyncState::Synced(stored(Kind::File), on_disk(EntryKind::File))));
     assert_eq!((shown.kind, shown.size, shown.blocks, shown.mtime), (FileType::RegularFile, 10, 8, at(100)));
 }
 
 #[test]
-fn a_copy_with_the_users_own_content_has_its_own_size_and_time() {
-    let shown = attr(7, true, &Shown::Copy { copy: copy(), listed: at(100), own: true });
+fn a_file_modified_here_has_its_copys_size_and_time() {
+    let shown = attributes(7, AccessMode::ReadWrite, &file(FileSyncState::ModifiedHere(stored(Kind::File), on_disk(EntryKind::File))));
     assert_eq!((shown.size, shown.blocks, shown.atime, shown.mtime, shown.ctime), (10, 8, at(500), at(500), at(500)));
 }
 
 #[test]
-fn an_object_without_an_item_has_what_the_filesystem_says_of_it() {
-    let file = attr(7, true, &Shown::Local { object: copy(), dir: false });
-    assert_eq!((file.kind, file.size, file.blocks, file.mtime), (FileType::RegularFile, 10, 8, at(500)));
-    let dir = attr(7, true, &Shown::Local { object: copy(), dir: true });
-    assert_eq!((dir.kind, dir.size, dir.blocks, dir.nlink, dir.mtime), (FileType::Directory, 0, 8, 2, at(500)));
-}
-
-/// A read-only folder shows no write bit anywhere.
-#[test]
-fn the_modes_say_whether_the_folder_takes_changes() {
-    let (folder, file) = (Shown::Folder { listed: at(0) }, Shown::NotDownloaded { size: 1, listed: at(0) });
-    assert_eq!((attr(2, true, &folder).perm, attr(2, true, &file).perm), (0o755, 0o644));
-    assert_eq!((attr(2, false, &folder).perm, attr(2, false, &file).perm), (0o555, 0o444));
-    let local = Shown::Local { object: copy(), dir: true };
-    assert_eq!((attr(2, true, &local).perm, attr(2, false, &local).perm), (0o755, 0o555));
+fn a_local_only_file_has_what_the_filesystem_says_of_it() {
+    let shown = attributes(7, AccessMode::ReadWrite, &file(FileSyncState::LocalOnly(local_only(EntryKind::File))));
+    assert_eq!((shown.kind, shown.size, shown.blocks, shown.mtime), (FileType::RegularFile, 10, 8, at(500)));
 }
 
 #[test]
-fn an_item_that_is_gone_is_shown_by_its_kind_alone() {
-    assert_eq!(Shown::gone(Kind::Folder), Shown::Folder { listed: UNIX_EPOCH });
-    assert_eq!(Shown::gone(Kind::File), Shown::NotDownloaded { size: 0, listed: UNIX_EPOCH });
+fn a_local_only_directory_has_the_filesystems_blocks_and_time_and_no_size() {
+    let shown = attributes(7, AccessMode::ReadWrite, &directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory))));
+    assert_eq!((shown.kind, shown.size, shown.blocks, shown.nlink, shown.mtime), (FileType::Directory, 0, 8, 2, at(500)));
 }
 
-fn item(directory_contents: &DirectoryContents, id: &str) -> Entry {
-    Entry::Item(directory_contents.row(id).unwrap())
-}
-
-/// The facts of the drive's `a.txt` (item `A`, one byte in the store) as node 7.
-fn facts(directory_contents: &DirectoryContents, open_writers: &OpenWriters) -> Shown {
-    Shown::of(&item(directory_contents, "A"), 7, Path::new("a.txt"), directory_contents, open_writers)
-}
-
-/// The whole copy of item `A`, of five bytes, in the folder under the mount.
-fn downloaded(dir: &Path, directory_contents: &DirectoryContents) {
-    fs::write(dir.join("a.txt"), b"whole").unwrap();
-    directory_contents.backing_directory().mark_downloaded_copy(Path::new("a.txt"), "A").unwrap();
-}
-
+/// A read-only folder shows no write bit anywhere, whatever the state of the entry.
 #[test]
-fn the_facts_of_an_item_are_the_stores_until_the_folder_holds_its_copy() {
-    let (dir, directory_contents) = directory_contents(Vec::new());
-    let open_writers = OpenWriters::default();
-    assert_eq!(facts(&directory_contents, &open_writers), Shown::NotDownloaded { size: 1, listed: UNIX_EPOCH });
-    assert_eq!(Shown::of(&item(&directory_contents, "D"), 3, Path::new("docs"), &directory_contents, &open_writers), Shown::Folder { listed: UNIX_EPOCH });
-    // A file of the user's own at the item's place is not its copy.
-    fs::write(dir.path().join("a.txt"), b"mine").unwrap();
-    assert_eq!(facts(&directory_contents, &open_writers), Shown::NotDownloaded { size: 1, listed: UNIX_EPOCH });
-    downloaded(dir.path(), &directory_contents);
-    assert!(matches!(facts(&directory_contents, &open_writers), Shown::Copy { copy, own: false, .. } if copy.size == 5));
-}
-
-#[test]
-fn a_copy_is_the_users_own_while_it_is_written_or_its_change_waits() {
-    let (dir, directory_contents) = directory_contents(Vec::new());
-    downloaded(dir.path(), &directory_contents);
-    let open_writers = OpenWriters::default();
-    open_writers.add_writer(7, false);
-    assert!(matches!(facts(&directory_contents, &open_writers), Shown::Copy { own: true, .. }));
-    open_writers.remove_writer(7);
-    assert!(matches!(facts(&directory_contents, &open_writers), Shown::Copy { own: false, .. }));
-
-    let (dir, directory_contents) = crate::fuse::directory_contents::tests::directory_contents(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
-    downloaded(dir.path(), &directory_contents);
-    assert!(matches!(facts(&directory_contents, &OpenWriters::default()), Shown::Copy { own: true, .. }));
-}
-
-#[test]
-fn the_facts_of_an_object_without_an_item_are_its_own() {
-    let (dir, directory_contents) = directory_contents(Vec::new());
-    fs::write(dir.path().join("own.txt"), b"mine").unwrap();
-    let object = directory_contents.backing_directory().find_disk_entry(Path::new("own.txt")).unwrap();
-    let entry = Entry::Local(Local { name: "own.txt".into(), object });
-    assert!(matches!(Shown::of(&entry, 9, Path::new("own.txt"), &directory_contents, &OpenWriters::default()), Shown::Local { object, dir: false } if object.size == 4));
+fn the_modes_are_the_access_modes_in_every_state() {
+    let files = [
+        file(FileSyncState::RemoteOnly(stored(Kind::File))),
+        file(FileSyncState::Synced(stored(Kind::File), on_disk(EntryKind::File))),
+        file(FileSyncState::ModifiedHere(stored(Kind::File), on_disk(EntryKind::File))),
+        file(FileSyncState::LocalOnly(local_only(EntryKind::File))),
+    ];
+    for entry in &files {
+        assert_eq!((attributes(2, AccessMode::ReadWrite, entry).perm, attributes(2, AccessMode::ReadOnly, entry).perm), (0o644, 0o444), "{entry:?}");
+    }
+    let directories = [directory(DirectorySyncState::Synced(stored(Kind::Folder))), directory(DirectorySyncState::LocalOnly(local_only(EntryKind::Directory)))];
+    for entry in &directories {
+        assert_eq!((attributes(2, AccessMode::ReadWrite, entry).perm, attributes(2, AccessMode::ReadOnly, entry).perm), (0o755, 0o555), "{entry:?}");
+    }
 }

@@ -5,40 +5,45 @@ use fuser::Errno;
 
 use super::WriteOperations;
 use crate::fuse::detections::EntryRemoved;
+use crate::fuse::directory::Directory;
+use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::shared::errno;
-use crate::fuse::directory_contents::{Directory, Entry};
 
 impl WriteOperations {
-    /// Removes `name` from the directory node `parent`: a directory (`dir`), which must hold
-    /// nothing, or a file. An item is removed from OneDrive by the outbox; a local object is
-    /// forgotten there.
-    pub(in crate::fuse) fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
+    /// Removes `name` from the directory node `parent`: a directory (`directory`), which must
+    /// hold nothing, or a file. What is in OneDrive is removed there by the outbox; a
+    /// local-only entry is forgotten there.
+    pub(in crate::fuse) fn remove(&self, parent: u64, name: &str, directory: bool) -> Result<(), Errno> {
         self.check_writable()?;
-        let above = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
-        let entry = self.directory_contents.find_entry(&above, name).ok_or(Errno::ENOENT)?;
-        match (entry.is_dir(), dir) {
-            (true, false) => return Err(Errno::EISDIR),
-            (false, true) => return Err(Errno::ENOTDIR),
+        let parent_directory = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let entry = self.directory_contents.find_entry(&parent_directory, name).ok_or(Errno::ENOENT)?;
+        match (&entry.state, directory) {
+            (EntryState::Directory(_), false) => return Err(Errno::EISDIR),
+            (EntryState::File(_), true) => return Err(Errno::ENOTDIR),
             _ => {}
         }
-        let rel = above.rel.join(name);
-        if dir && !self.directory_contents.list_entries(&Directory { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        let rel = parent_directory.rel.join(name);
+        if directory && !self.directory_contents.list_entries(&Directory { id: entry.onedrive_id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
-        let event = match &entry {
-            Entry::Item(row) => EntryRemoved::InOneDrive { id: row.id.clone(), rel: rel.clone() },
-            Entry::Local(local) => EntryRemoved::LocalOnly { handle: local.object.handle.clone(), rel: rel.clone() },
+        let event = match &entry.state {
+            EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => {
+                EntryRemoved::LocalOnly { handle: local_only.on_disk.handle.clone(), rel: rel.clone() }
+            }
+            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::Synced(row)) => {
+                EntryRemoved::InOneDrive { id: row.id.clone(), rel: rel.clone() }
+            }
         };
         self.record_or_undo(event, format_args!("the removal of {}", rel.display()), || {})?;
-        match &entry {
-            // The directory under the mount goes when nothing is left in it.
-            Entry::Item(_) if dir => drop(self.backing_directory.remove_dir(&rel)),
-            Entry::Item(row) => drop(self.backing_directory.remove_downloaded_copy(&rel, &row.id)),
-            Entry::Local(_) if dir => self.backing_directory.remove_dir(&rel).map_err(|e| errno(&e))?,
-            Entry::Local(_) => self.backing_directory.remove_file(&rel).map_err(|e| errno(&e))?,
+        match entry.row() {
+            // The directory in the backing directory is removed when nothing is left in it.
+            Some(_) if directory => drop(self.backing_directory.remove_dir(&rel)),
+            Some(row) => drop(self.backing_directory.remove_downloaded_copy(&rel, &row.id)),
+            None if directory => self.backing_directory.remove_dir(&rel).map_err(|e| errno(&e))?,
+            None => self.backing_directory.remove_file(&rel).map_err(|e| errno(&e))?,
         }
-        if let Entry::Local(local) = &entry {
-            self.node_lookup.forget(&local.object.handle);
+        if let Some(local_only) = entry.local_only() {
+            self.node_lookup.forget(&local_only.on_disk.handle);
         }
         Ok(())
     }

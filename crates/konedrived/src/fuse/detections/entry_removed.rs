@@ -10,9 +10,9 @@ use super::{delete_in_onedrive, forget_local_only, FolderEvent, OutboxBatch, Sto
 /// What a program removed, and from where.
 #[derive(Debug)]
 pub(in crate::fuse) enum EntryRemoved {
-    /// An item: removed from OneDrive by the outbox.
+    /// A file or directory of OneDrive, by its id: removed from OneDrive by the outbox.
     InOneDrive { id: String, rel: PathBuf },
-    /// A local object: what the outbox held of it goes.
+    /// A local-only entry: what the outbox held of it is removed.
     LocalOnly { handle: FileHandle, rel: PathBuf },
 }
 

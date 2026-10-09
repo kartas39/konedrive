@@ -7,29 +7,41 @@ use std::time::Duration;
 
 use fuser::{Errno, FileAttr, FileHandle, FileType, Generation, INodeNo, ReplyAttr, ReplyOpen, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyXattr, Request};
 use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE, XATTR_SYNC};
-use konedrive_tree::Kind;
+use konedrive_tree::{Kind, Placement, Row};
 
 use super::Requests;
 use crate::fuse::announce::Told;
-use crate::fuse::attributes::{self, Shown, TTL};
-use crate::fuse::directory_contents::{Directory, Entry};
+use crate::fuse::attributes::{attributes, TTL};
+use crate::fuse::directory::Directory;
+use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::shared::errno;
 
+/// The entry of a name that is gone from the store, for the one request that still has to be
+/// told it is there: its kind, and nothing else.
+fn vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
+    let row = Row { id: String::new(), parent_id: None, name: name.to_owned(), kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
+    let state = match kind {
+        Kind::Folder => EntryState::Directory(DirectorySyncState::Synced(row)),
+        Kind::File => EntryState::File(FileSyncState::RemoteOnly(row)),
+    };
+    DirectoryEntry { name: name.to_owned(), state }
+}
+
 impl Requests {
-    /// What the mount shows of `entry`, which is node `ino` at `rel`.
-    fn shown(&self, entry: &Entry, ino: u64, rel: &Path) -> FileAttr {
-        let s = &self.0;
-        attributes::of_entry(entry, ino, rel, s.writable(), &s.directory_contents, &s.open_writers)
+    /// The attributes of `entry`, which the node `ino` stands for, in the folder's access
+    /// mode.
+    fn attributes_of(&self, entry: &DirectoryEntry, ino: u64) -> FileAttr {
+        attributes(ino, self.0.access_mode(), entry)
     }
 
     /// The entry `name` of `parent`, as the folder has it now.
     pub(super) fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let s = &self.0;
-        let found = s.node_lookup.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.directory_contents.find_entry(&dir, name)?, dir.rel.join(name))));
+        let found = s.node_lookup.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| s.directory_contents.find_entry(&dir, name));
         match found {
-            Some((entry, rel)) => {
+            Some(entry) => {
                 let ino = s.node_lookup.assign_node_id(&entry, parent.0);
-                reply.entry(&TTL, &self.shown(&entry, ino, &rel), Generation(0))
+                reply.entry(&TTL, &self.attributes_of(&entry, ino), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
         }
@@ -40,7 +52,7 @@ impl Requests {
             match &*crate::panic::lock(&self.0.told) {
                 Some(Told::Came { parent: in_, name: came }) if *in_ == parent.0 && name == came.as_str() => return reply.error(Errno::ENOENT),
                 Some(Told::Gone { parent: in_, name: gone, ino, kind }) if *in_ == parent.0 && name == gone.as_str() => {
-                    return reply.entry(&Duration::ZERO, &attributes::attr(*ino, self.0.writable(), &Shown::gone(*kind)), Generation(0));
+                    return reply.entry(&Duration::ZERO, &self.attributes_of(&vanished_entry(gone, *kind), *ino), Generation(0));
                 }
                 _ => {}
             }
@@ -50,14 +62,14 @@ impl Requests {
 
     pub(super) fn attributes(&self, ino: INodeNo, reply: ReplyAttr) {
         match self.0.node_lookup.find_entry(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &self.shown(&entry, ino.0, &rel)),
+            Some((entry, _)) => reply.attr(&TTL, &self.attributes_of(&entry, ino.0)),
             None => reply.error(Errno::ENOENT),
         }
     }
 
     /// What the open directory `fh` holds: listed at its first read, and the same for every
     /// part of the listing after it.
-    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<Entry>>)> {
+    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<DirectoryEntry>>)> {
         let s = &self.0;
         let dir = s.node_lookup.find_directory(ino.0)?;
         let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
@@ -73,8 +85,11 @@ impl Requests {
         let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
             let child = self.0.node_lookup.assign_node_id(entry, ino.0);
-            let kind = if entry.is_dir() { FileType::Directory } else { FileType::RegularFile };
-            if reply.add(INodeNo(child), i as u64 + 1, kind, entry.name()) {
+            let kind = match entry.state {
+                EntryState::Directory(_) => FileType::Directory,
+                EntryState::File(_) => FileType::RegularFile,
+            };
+            if reply.add(INodeNo(child), i as u64 + 1, kind, &entry.name) {
                 break;
             }
         }
@@ -83,11 +98,11 @@ impl Requests {
 
     pub(super) fn listed_plus(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
         let s = &self.0;
-        let Some((dir, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
+        let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
             let child = s.node_lookup.assign_node_id(entry, ino.0);
-            let attr = self.shown(entry, child, &dir.rel.join(entry.name()));
-            if reply.add(INodeNo(child), i as u64 + 1, entry.name(), &TTL, &attr, Generation(0)) {
+            let attr = self.attributes_of(entry, child);
+            if reply.add(INodeNo(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;
             }
         }
@@ -132,11 +147,11 @@ impl Requests {
         if name == XATTR_SYNC {
             return s.backing_directory.attribute(&rel, name);
         }
-        let Entry::Item(row) = entry else { return None };
-        match name {
-            XATTR_ITEM_ID => Some(row.id),
-            XATTR_STATE if row.kind == Kind::File => Some(s.state_of(&row, &rel).as_str().to_owned()),
-            XATTR_PIN if crate::panic::lock(&s.pins).contains(&row.id) => Some("1".to_owned()),
+        let row = entry.row()?;
+        match (name, &entry.state) {
+            (XATTR_ITEM_ID, _) => Some(row.id.clone()),
+            (XATTR_STATE, EntryState::File(file)) => Some(s.state_of(file)?.as_str().to_owned()),
+            (XATTR_PIN, _) if crate::panic::lock(&s.pins).contains(&row.id) => Some("1".to_owned()),
             _ => None,
         }
     }

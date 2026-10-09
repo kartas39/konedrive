@@ -8,6 +8,7 @@ use konedrive_tree::Row;
 
 use super::announce::Announce;
 use super::asked::Refused;
+use super::directory_contents::FileSyncState;
 use super::mount::Mount;
 use super::shared::Shared;
 
@@ -38,7 +39,7 @@ impl Shared {
             for id in pins {
                 let Some(row) = s.directory_contents.row(&id) else { continue };
                 for (file, rel) in s.directory_contents.files_below(&row) {
-                    if !s.backing_directory.has_downloaded_copy(&rel, &file.id) {
+                    if let FileSyncState::RemoteOnly(file) = file {
                         s.ensure(file, rel, Class::Download, None);
                     }
                 }

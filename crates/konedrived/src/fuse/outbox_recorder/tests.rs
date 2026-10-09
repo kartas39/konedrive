@@ -6,7 +6,7 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::{Store, TreeStore};
 
 use super::OutboxRecorder;
-use crate::fuse::detections::tests::{file, in_root};
+use crate::fuse::detections::tests::{file, in_root, local_only};
 use crate::fuse::detections::EntryCreated;
 
 fn outbox_recorder(writable: bool) -> (Store, OutboxRecorder) {
@@ -15,8 +15,8 @@ fn outbox_recorder(writable: bool) -> (Store, OutboxRecorder) {
     (store, outbox_recorder)
 }
 
-fn made() -> EntryCreated {
-    EntryCreated::Fresh { place: in_root("new.txt"), object: file(1, 3), open: false }
+fn file_created() -> EntryCreated {
+    EntryCreated::Fresh { entry: local_only(&file(1, 3), &in_root("new.txt")), open: false }
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn a_recorded_change_is_in_the_outbox_and_wakes_the_worker() {
     outbox_recorder.set_wake(Some(Arc::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
     })));
-    let recorded = outbox_recorder.record(made()).unwrap();
+    let recorded = outbox_recorder.record(file_created()).unwrap();
     assert_eq!(recorded.applied.queued.len(), 1);
     let rows = store.call_blocking(|s| s.outbox_rows()).unwrap();
     assert_eq!(rows.iter().map(|row| (row.kind, row.rel.to_string_lossy().into_owned())).collect::<Vec<_>>(), [(OutboxKind::Create, "new.txt".to_owned())]);
@@ -38,7 +38,7 @@ fn a_recorded_change_is_in_the_outbox_and_wakes_the_worker() {
 #[test]
 fn a_folder_that_takes_no_changes_records_nothing() {
     let (store, outbox_recorder) = outbox_recorder(false);
-    outbox_recorder.record(made()).unwrap();
+    outbox_recorder.record(file_created()).unwrap();
     assert!(store.call_blocking(|s| s.outbox_rows()).unwrap().is_empty());
 }
 

@@ -10,8 +10,8 @@ use konedrive_graph::pool::Class;
 
 use super::{caller, Requests};
 use crate::fuse::fill::{Running, WRITTEN_BEHIND};
-use crate::fuse::directory_contents::Entry;
-use crate::fuse::read::Handle;
+use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
+use crate::fuse::read::OpenFile;
 use crate::fuse::shared::{errno, Shared};
 use crate::fuse::open_writers::AfterClose;
 
@@ -38,10 +38,8 @@ impl Requests {
             return self.opened_to_write(ino, flags.0 & libc::O_TRUNC != 0, reply);
         }
         let Some((entry, rel)) = s.node_lookup.find_entry(ino.0) else { return reply.error(Errno::ENOENT) };
-        let on_disk = match &entry {
-            Entry::Item(row) => s.backing_directory.has_downloaded_copy(&rel, &row.id),
-            Entry::Local(_) => true,
-        };
+        // What is in OneDrive and not downloaded has no file in the backing directory.
+        let on_disk = !matches!(entry.state, EntryState::File(FileSyncState::RemoteOnly(_)) | EntryState::Directory(DirectorySyncState::Synced(_)));
         let copy = if on_disk {
             match s.backing_directory.read(&rel) {
                 Ok(file) => Some(Arc::new(file)),
@@ -52,7 +50,7 @@ impl Requests {
         };
         tracing::debug!("open of {} by {}: flags {:#x}, {}", rel.display(), caller(req), flags.0, if copy.is_some() { "on disk" } else { "not downloaded" });
         let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
-        crate::panic::lock(&s.handles).insert(fh, Handle { ino: ino.0, id: entry.id().map(str::to_owned), rel, copy, writes: false });
+        crate::panic::lock(&s.handles).insert(fh, OpenFile { ino: ino.0, id: entry.onedrive_id().map(str::to_owned), rel, copy, writes: false });
         reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
