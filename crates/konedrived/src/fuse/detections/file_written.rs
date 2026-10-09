@@ -11,7 +11,7 @@ use super::{detect_local_only_entry, detect_moved, detect_modified, wait_for_qui
 use crate::fuse::backing_directory::DiskEntry;
 
 /// Which file was written, where it is, and what was done to it.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum FileWritten {
     /// A file of OneDrive, by its id, in its downloaded copy.
     InOneDrive { id: String, place: EntryPlace, write: OneDriveFileWrite },
@@ -20,7 +20,7 @@ pub(in crate::fuse) enum FileWritten {
 }
 
 /// What was done to a file of OneDrive; with its copy as it is now, where its content counts.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum OneDriveFileWrite {
     /// Its first writer opened it: its content is the user's own from here on, and waits.
     Opened(DiskEntry),

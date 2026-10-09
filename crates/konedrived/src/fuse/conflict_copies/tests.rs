@@ -139,3 +139,14 @@ fn a_directory_marked_with_another_id_is_left_alone() {
     assert!(dir.path().join("docs").is_dir());
     assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("OTHER"));
 }
+
+/// OneDrive removed a directory the backing directory never had: nothing is kept, and
+/// nothing is recorded.
+#[test]
+fn a_removed_directory_the_backing_directory_never_had_is_nothing_to_keep() {
+    let (dir, conflict_copies) = conflict_copies();
+    let mut conflicts = CycleConflicts::default();
+    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert!(!dir.path().join("docs").exists());
+    assert!(conflicts.kept_directories.is_empty() && conflicts.detections.is_empty());
+}

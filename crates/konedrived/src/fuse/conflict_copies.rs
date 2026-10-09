@@ -117,7 +117,16 @@ impl ConflictCopies {
     /// holds local-only entries stays as a local-only directory, and, in a folder that is
     /// read-write by `access_mode`, is made again in OneDrive with what it holds.
     pub(super) fn keep_removed_directory(&self, id: &str, rel: &Path, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) {
-        if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) || self.backing_directory.remove_dir(rel).is_ok() || self.backing_directory.read_metadata(rel).is_none() {
+        // A directory marked with another id backs that other directory, and is left alone.
+        if !is_directory_of(self.backing_directory.read_onedrive_id(rel).as_deref(), id) {
+            return;
+        }
+        // The removal is the test of whether it holds anything: one that holds nothing goes.
+        if self.backing_directory.remove_dir(rel).is_ok() {
+            return;
+        }
+        // It was not removed because nothing is there: the directory was never made here.
+        if self.backing_directory.read_metadata(rel).is_none() {
             return;
         }
         self.backing_directory.clear_onedrive_id(rel);

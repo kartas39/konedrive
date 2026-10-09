@@ -18,7 +18,7 @@ use super::{FolderEvent, OutboxBatch, StoreFacts, WriteState};
 use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 
 /// A rename that was made in the folder.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum EntryRenamed {
     /// A local-only file was renamed over the OneDrive file `over`, to the place `to`: the
     /// file is that file's new content, and what the outbox held of the local-only file
@@ -29,7 +29,7 @@ pub(in crate::fuse) enum EntryRenamed {
 }
 
 /// What moved.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum MovedEntry {
     /// A file or a directory of OneDrive: moved in OneDrive. `handle` is of what the backing
     /// directory holds for it, now at the new place: its downloaded copy, or its directory.
@@ -47,7 +47,7 @@ pub(in crate::fuse) enum MovedEntry {
 }
 
 /// What was at the new place, and was replaced.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(in crate::fuse) enum DisplacedEntry {
     /// A file or directory of OneDrive, by its id: removed from OneDrive.
     InOneDrive(String),

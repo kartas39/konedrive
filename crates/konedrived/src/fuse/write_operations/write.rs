@@ -12,12 +12,14 @@ use std::time::SystemTime;
 use fuser::{Errno, TimeOrNow};
 use konedrive_tree::Row;
 
-use crate::fuse::access_mode_switch::AccessMode;
-use crate::fuse::node_table::NodeId;
-use crate::fuse::entry_place::EntryPlace;
 use super::WriteOperations;
+use crate::fuse::access_mode_switch::AccessMode;
+use crate::fuse::backing_directory::DiskEntry;
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
-use crate::fuse::directory_contents::{EntryState, FileSyncState};
+use crate::fuse::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{CloseOutcome, Fh};
 use crate::fuse::errno::to_errno;
 use crate::fuse::upload_rules::UploadStatus;
@@ -64,35 +66,17 @@ impl WriteOperations {
         Ok(added.fh)
     }
 
-    /// The last writer of the node `node_id` closed it, with `outcome`: its content is ready
-    /// to be sent when it was changed; when nothing was written, the outbox lets go of a
-    /// OneDrive file. Nothing is done for a file that is still open for writing, or was not.
+    /// The last writer of the node `node_id` closed it, with `outcome`: what that is
+    /// recorded as is decided by [`describe_last_close`], from what the node stands for now.
+    /// Nothing for a node whose file is gone.
     pub(in crate::fuse) fn close_last_writer(&self, node_id: NodeId, outcome: CloseOutcome) {
-        let changed = match outcome {
-            CloseOutcome::ContentChanged => true,
-            CloseOutcome::ContentUntouched => false,
-            CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere => return,
-        };
-        // What a program still held open when the folder was switched to read-only is not
-        // sent.
-        if self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
-            return;
-        }
-        let untouched = self.node_resolver.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
-        // A local-only file is sent all the same: it was never sent.
-        let Some(untouched) = untouched else {
-            let _ = self.record_content(node_id, LocalOnlyFileWrite::Closed);
-            return;
-        };
-        // A node that no longer stands for the file — its name was taken over by a file saved
-        // over it — says nothing of the file's content.
-        if self.node_resolver.find_node_id(&untouched.id) != Some(node_id) {
-            return;
-        }
-        let Some((_, parent_directory)) = self.node_resolver.find_parent(node_id) else { return };
-        let event = FileWritten::InOneDrive { id: untouched.id.clone(), place: EntryPlace::new(&parent_directory, &untouched.name), write: OneDriveFileWrite::ClosedUntouched };
-        if let Err(e) = self.outbox_recorder.record(event) {
-            tracing::warn!("a file closed unchanged could not be let go of: {e}");
+        let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return };
+        let copy = self.backing_directory.find_disk_entry(&rel);
+        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
+        let node_stands_for_file = entry.onedrive_id().is_some_and(|id| self.node_resolver.find_node_id(id) == Some(node_id));
+        let access_mode = self.access_mode_switch.access_mode();
+        if let Some(event) = describe_last_close(outcome, access_mode, &entry, &parent_directory, copy, upload_status, node_stands_for_file) {
+            let _ = self.record_or_undo(event, format_args!("the close of {}", rel.display()), || {});
         }
     }
 
@@ -160,25 +144,66 @@ impl WriteOperations {
     }
 
     /// Records that the content of the node `node_id` is the user's own now, by `write`:
-    /// still being written, closed, or cut.
+    /// still being written, closed, or cut ([`describe_file_write`]).
     fn record_content(&self, node_id: NodeId, write: LocalOnlyFileWrite) -> Result<(), Errno> {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
-        if let Some(local_only) = entry.local_only() {
-            if self.find_upload_status(&parent_directory, &entry.name) == UploadStatus::Ignored {
-                return Ok(());
-            }
-            let event = FileWritten::LocalOnly { file: local_only.clone(), write };
-            return self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {});
+        let copy = self.backing_directory.find_disk_entry(&rel);
+        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
+        match describe_file_write(&entry, &parent_directory, copy, upload_status, write) {
+            Some(event) => self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {}),
+            None => Ok(()),
         }
-        let (Some(row), Some(copy)) = (entry.row(), self.backing_directory.find_disk_entry(&rel)) else { return Ok(()) };
-        let write = match write {
-            LocalOnlyFileWrite::Opened => OneDriveFileWrite::Opened(copy),
-            LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
-            LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(copy),
-        };
-        let event = FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(&parent_directory, &entry.name), write };
-        self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {})
+    }
+}
+
+/// What a change of the content of the file `entry`, in `parent_directory`, is recorded as:
+/// `write` says what was done to it. `copy` is what the backing directory holds at its path,
+/// and `upload_status` what the upload rules say of a local-only file there. `None` when
+/// nothing is recorded:
+///
+/// - a local-only file that is ignored at its place;
+/// - a file of OneDrive the backing directory holds no copy of: there is no content of the
+///   user's own to send.
+pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &DirectoryReference, copy: Option<DiskEntry>, upload_status: UploadStatus, write: LocalOnlyFileWrite) -> Option<FileWritten> {
+    if let Some(local_only) = entry.local_only() {
+        return (upload_status == UploadStatus::Uploaded).then(|| FileWritten::LocalOnly { file: local_only.clone(), write });
+    }
+    let (row, copy) = (entry.row()?, copy?);
+    let write = match write {
+        LocalOnlyFileWrite::Opened => OneDriveFileWrite::Opened(copy),
+        LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
+        LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(copy),
+    };
+    Some(FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &entry.name), write })
+}
+
+/// What the close of the last writer of the file `entry` is recorded as, for the `outcome`
+/// of the close and the folder's `access_mode`; `None` when nothing is.
+///
+/// - Still open for writing elsewhere, or not open for writing at all: nothing.
+/// - In a read-only folder: nothing — what a program still held open when the folder was
+///   switched to read-only is not sent.
+/// - A file of OneDrive closed with nothing written: the outbox lets go of it — unless the
+///   node no longer stands for the file (`node_stands_for_file`): its name was taken over by
+///   a file saved over it, and the node says nothing of the file's content.
+/// - A file whose content changed, and a local-only file whatever was written — it was
+///   never sent: its content is due ([`describe_file_write`]).
+pub(super) fn describe_last_close(
+    outcome: CloseOutcome,
+    access_mode: AccessMode,
+    entry: &DirectoryEntry,
+    parent_directory: &DirectoryReference,
+    copy: Option<DiskEntry>,
+    upload_status: UploadStatus,
+    node_stands_for_file: bool,
+) -> Option<FileWritten> {
+    match (outcome, access_mode, entry.row()) {
+        (CloseOutcome::NotOpen | CloseOutcome::StillOpenElsewhere, _, _) | (_, AccessMode::ReadOnly, _) => None,
+        (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, Some(row)) => {
+            node_stands_for_file.then(|| FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
+        }
+        (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Closed),
     }
 }
 

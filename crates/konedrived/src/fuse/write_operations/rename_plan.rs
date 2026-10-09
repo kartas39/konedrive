@@ -1,12 +1,17 @@
-//! What a rename moves where, and over what, or the errno it is refused with: a decision of
-//! what stands at the two places, with no disk in it. [`plan_rename`] is the one writer of a
-//! [`RenamePlan`]; the rename performs it.
+//! The decisions of a rename, with no disk in them: what moves where, and over what, or the
+//! errno it is refused with ([`plan_rename`], the one writer of a [`RenamePlan`]); what is
+//! removed at the new place before the move ([`choose_removed_at_new_place`]); and what the
+//! rename is recorded as ([`describe_rename`]). The rename gathers what each is decided
+//! from, and performs it.
 
 use std::path::PathBuf;
 
 use fuser::Errno;
+use konedrive_fs::handle::FileHandle;
 
-use crate::fuse::directory_contents::{DirectoryEntry, EntryState, FileSyncState};
+use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry, WriteState};
+use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
@@ -68,6 +73,76 @@ impl RenamePlan {
             _ => None,
         }
     }
+}
+
+impl RenamePlan {
+    /// Whether what moves is a local-only directory that is uploaded from its new place:
+    /// what it holds there is walked then, to be recorded with it.
+    pub(super) fn uploads_moved_directory(&self) -> bool {
+        matches!((&self.moved_entry.state, self.to_upload_status), (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadStatus::Uploaded))
+    }
+}
+
+/// What the backing directory held at the old place, which was renamed with the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackingDirectoryMove {
+    /// Something was there, and is at the new place now.
+    Moved,
+    /// Nothing: a OneDrive file that is not downloaded, a directory no download made yet.
+    NothingThere,
+}
+
+/// What is removed from the new place in the backing directory before the move, by its
+/// kind; `None` when nothing is. `held_at_new_place` is the kind of what the backing
+/// directory holds there, and `moved` whether it holds anything at the old place.
+///
+/// - Nothing there: nothing is removed.
+/// - A directory there: removed, which it is only when it is empty — a directory never
+///   replaces one in the rename itself.
+/// - A file there, and a file moves over it: nothing, the rename itself replaces it.
+/// - A file there, and nothing moves in the backing directory: removed, or it would stay
+///   as the content of what moved to its name.
+pub(super) fn choose_removed_at_new_place(held_at_new_place: Option<EntryKind>, moved: BackingDirectoryMove) -> Option<EntryKind> {
+    match (held_at_new_place?, moved) {
+        (EntryKind::Directory, _) => Some(EntryKind::Directory),
+        (EntryKind::File, BackingDirectoryMove::NothingThere) => Some(EntryKind::File),
+        (EntryKind::File, BackingDirectoryMove::Moved) => None,
+    }
+}
+
+/// What the rename of `plan` is recorded as. `write_state` is whether a program holds what
+/// moved open for writing; `handle_at_new_place` the file handle of what the backing
+/// directory moved to the new place, `None` when it held nothing; `uploaded_entries` what a
+/// walk of a local-only directory that is uploaded from its new place found there, itself
+/// first ([`RenamePlan::uploads_moved_directory`]), and nothing for anything else.
+///
+/// - A local-only file saved over a OneDrive file is that file's new content.
+/// - What is in OneDrive moved, with the handle of what the backing directory holds of it.
+/// - A local-only file is uploaded from its new place, or ignored there.
+/// - A local-only directory is ignored at its new place; or uploaded from it with what the
+///   walk found. A walk that found nothing — the directory is marked with a OneDrive id
+///   the store does not have yet, so the mount shows it as local-only and the walk, which
+///   takes only what is unmarked, passes over it — is recorded as a directory that is
+///   ignored from now on.
+/// - What was at the new place is displaced with it: by its OneDrive id, or by its handle.
+pub(super) fn describe_rename(plan: &RenamePlan, write_state: WriteState, handle_at_new_place: Option<FileHandle>, uploaded_entries: Vec<LocalOnlyEntry>) -> EntryRenamed {
+    if let Some((file, over)) = plan.saved_over() {
+        return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), write_state, over: over.to_owned(), to: plan.to.clone() };
+    }
+    let entry = match (&plan.moved_entry.state, plan.to_upload_status) {
+        (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), _) => MovedEntry::InOneDrive { id: row.id.clone(), kind: EntryKind::File, handle: handle_at_new_place },
+        (EntryState::Directory(DirectorySyncState::InOneDrive(row)), _) => MovedEntry::InOneDrive { id: row.id.clone(), kind: EntryKind::Directory, handle: handle_at_new_place },
+        (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), write_state },
+        (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyFile { file: file.on_disk.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Uploaded) if uploaded_entries.is_empty() => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyDirectory { uploaded_entries },
+    };
+    let displaced = plan.target.as_ref().map(|target| match &target.state {
+        EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => DisplacedEntry::InOneDrive(row.id.clone()),
+        EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => DisplacedEntry::LocalOnly(local_only.on_disk.handle.clone()),
+    });
+    EntryRenamed::Moved { entry, from: plan.from.clone(), to: plan.to.clone(), displaced }
 }
 
 /// What a rename that is not refused does.

@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use fuser::Errno;
 use konedrive_tree::Kind;
 
-use super::{plan_rename, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
-use crate::fuse::detections::tests::{directory, file, in_root, local_only};
+use super::{choose_removed_at_new_place, describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
+use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::detections::tests::{directory, file, handle, in_root, local_only};
+use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry, WriteState};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::directory_reference::DirectoryReference;
@@ -164,4 +166,106 @@ fn any_other_rename_saves_over_nothing() {
         let RenameDecision::Rename(plan) = plan_rename(RenameMode::Replace, places).unwrap() else { panic!("a rename") };
         assert_eq!(plan.saved_over().map(|(_, over)| over), None);
     }
+}
+
+/// The plan of `moved_entry`, which is `a.txt` in the root, renamed to `new.txt` in `docs`,
+/// over `target`, with `to_upload_status` at the new place.
+fn plan(moved_entry: DirectoryEntry, target: Option<DirectoryEntry>, to_upload_status: UploadStatus) -> RenamePlan {
+    RenamePlan { moved_entry, target, from: "a.txt".into(), to: EntryPlace::new(&docs(), "new.txt"), to_upload_status }
+}
+
+/// What `plan` is recorded as moving, when nothing is displaced.
+fn moved(plan: &RenamePlan, entry: MovedEntry) -> EntryRenamed {
+    EntryRenamed::Moved { entry, from: plan.from.clone(), to: plan.to.clone(), displaced: None }
+}
+
+#[test]
+fn nothing_at_the_new_place_removes_nothing() {
+    assert_eq!(choose_removed_at_new_place(None, BackingDirectoryMove::Moved), None);
+    assert_eq!(choose_removed_at_new_place(None, BackingDirectoryMove::NothingThere), None);
+}
+
+#[test]
+fn a_directory_at_the_new_place_is_removed_whatever_moves() {
+    assert_eq!(choose_removed_at_new_place(Some(EntryKind::Directory), BackingDirectoryMove::Moved), Some(EntryKind::Directory));
+    assert_eq!(choose_removed_at_new_place(Some(EntryKind::Directory), BackingDirectoryMove::NothingThere), Some(EntryKind::Directory));
+}
+
+/// The rename itself replaces it.
+#[test]
+fn a_file_at_the_new_place_is_left_to_the_rename_when_something_moves_over_it() {
+    assert_eq!(choose_removed_at_new_place(Some(EntryKind::File), BackingDirectoryMove::Moved), None);
+}
+
+/// A file that is not downloaded moves to the name of a downloaded one: its copy would stay
+/// as the content of what moved there.
+#[test]
+fn a_file_at_the_new_place_is_removed_when_nothing_moves_in_the_backing_directory() {
+    assert_eq!(choose_removed_at_new_place(Some(EntryKind::File), BackingDirectoryMove::NothingThere), Some(EntryKind::File));
+}
+
+#[test]
+fn only_a_local_only_directory_that_is_uploaded_from_its_new_place_is_walked() {
+    assert!(plan(local_only_directory("a.txt"), None, UploadStatus::Uploaded).uploads_moved_directory());
+    assert!(!plan(local_only_directory("a.txt"), None, UploadStatus::Ignored).uploads_moved_directory());
+    assert!(!plan(local_only_file("a.txt"), None, UploadStatus::Uploaded).uploads_moved_directory());
+    assert!(!plan(onedrive_directory("D", "a.txt"), None, UploadStatus::Uploaded).uploads_moved_directory());
+}
+
+#[test]
+fn a_local_only_file_renamed_over_a_onedrive_file_is_recorded_as_saved_over_it() {
+    let plan = plan(local_only_file("a.txt"), Some(onedrive_file("B", "new.txt")), UploadStatus::Uploaded);
+    let saved = EntryRenamed::SavedOverOneDriveFile { file: file(1, 3), write_state: WriteState::OpenForWriting, over: "B".into(), to: plan.to.clone() };
+    assert_eq!(describe_rename(&plan, WriteState::OpenForWriting, None, Vec::new()), saved);
+}
+
+/// With the handle of what the backing directory moved for it, or none when it held nothing.
+#[test]
+fn a_onedrive_file_or_directory_is_recorded_as_moved_in_onedrive() {
+    let file_plan = plan(onedrive_file("A", "a.txt"), None, UploadStatus::Uploaded);
+    let moved_file = MovedEntry::InOneDrive { id: "A".into(), kind: EntryKind::File, handle: Some(handle(7)) };
+    assert_eq!(describe_rename(&file_plan, WriteState::NotOpen, Some(handle(7)), Vec::new()), moved(&file_plan, moved_file));
+    // What the rules say of the new place is not asked of what is in OneDrive.
+    let directory_plan = plan(onedrive_directory("D", "a.txt"), None, UploadStatus::Ignored);
+    let moved_directory = MovedEntry::InOneDrive { id: "D".into(), kind: EntryKind::Directory, handle: None };
+    assert_eq!(describe_rename(&directory_plan, WriteState::NotOpen, None, Vec::new()), moved(&directory_plan, moved_directory));
+}
+
+#[test]
+fn a_local_only_file_is_recorded_as_uploaded_from_its_new_place_or_ignored_there() {
+    let uploaded = plan(local_only_file("a.txt"), None, UploadStatus::Uploaded);
+    assert_eq!(describe_rename(&uploaded, WriteState::OpenForWriting, Some(handle(1)), Vec::new()), moved(&uploaded, MovedEntry::LocalOnlyFile { file: file(1, 3), write_state: WriteState::OpenForWriting }));
+    let ignored = plan(local_only_file("a.txt"), None, UploadStatus::Ignored);
+    assert_eq!(describe_rename(&ignored, WriteState::NotOpen, Some(handle(1)), Vec::new()), moved(&ignored, MovedEntry::IgnoredLocalOnlyFile { file: file(1, 3) }));
+}
+
+#[test]
+fn a_local_only_directory_is_recorded_with_what_the_walk_found_at_its_new_place() {
+    let uploaded = plan(local_only_directory("a.txt"), None, UploadStatus::Uploaded);
+    let uploaded_entries = vec![local_only(&directory(2), &uploaded.to), local_only(&file(3, 1), &EntryPlace::new(&DirectoryReference { onedrive_id: None, path: "docs/new.txt".into() }, "x.txt"))];
+    assert_eq!(describe_rename(&uploaded, WriteState::NotOpen, Some(handle(2)), uploaded_entries.clone()), moved(&uploaded, MovedEntry::LocalOnlyDirectory { uploaded_entries }));
+}
+
+#[test]
+fn a_local_only_directory_moved_to_an_ignored_place_is_recorded_as_ignored() {
+    let ignored = plan(local_only_directory("a.txt"), None, UploadStatus::Ignored);
+    assert_eq!(describe_rename(&ignored, WriteState::NotOpen, Some(handle(2)), Vec::new()), moved(&ignored, MovedEntry::IgnoredLocalOnlyDirectory { handle: handle(2) }));
+}
+
+/// The directory is marked with a OneDrive id the store does not have yet: the mount shows
+/// it as local-only, and the walk, which takes only what is unmarked, finds nothing.
+#[test]
+fn a_local_only_directory_whose_walk_finds_nothing_is_recorded_as_ignored() {
+    let uploaded = plan(local_only_directory("a.txt"), None, UploadStatus::Uploaded);
+    assert_eq!(describe_rename(&uploaded, WriteState::NotOpen, Some(handle(2)), Vec::new()), moved(&uploaded, MovedEntry::IgnoredLocalOnlyDirectory { handle: handle(2) }));
+}
+
+#[test]
+fn what_was_at_the_new_place_is_recorded_as_displaced() {
+    let over_onedrive = plan(onedrive_file("A", "a.txt"), Some(onedrive_file("B", "new.txt")), UploadStatus::Uploaded);
+    let EntryRenamed::Moved { displaced, .. } = describe_rename(&over_onedrive, WriteState::NotOpen, None, Vec::new()) else { panic!("a move") };
+    assert_eq!(displaced, Some(DisplacedEntry::InOneDrive("B".into())));
+    let over_local_only = plan(onedrive_file("A", "a.txt"), Some(local_only_file("new.txt")), UploadStatus::Uploaded);
+    let EntryRenamed::Moved { displaced, .. } = describe_rename(&over_local_only, WriteState::NotOpen, None, Vec::new()) else { panic!("a move") };
+    assert_eq!(displaced, Some(DisplacedEntry::LocalOnly(handle(1))));
 }
