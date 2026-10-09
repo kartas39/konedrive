@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Detection, OutboxKind};
-use konedrive_tree::Row;
 
 use crate::fuse::node_table::NodeId;
 use super::NodeResolver;
@@ -37,17 +36,65 @@ fn id(found: Option<(DirectoryEntry, PathBuf)>) -> Option<(Option<String>, PathB
 
 #[test]
 fn an_entry_gets_one_node_id_and_keeps_it_when_it_is_renamed() {
-    let (_dir, contents, node_resolver) = node_resolver(Vec::new());
+    let (_dir, contents, node_resolver) = node_resolver(vec![of(OutboxKind::Move, "A", "a.txt", "docs/b.txt", (Some("D"), Some("b.txt")))]);
     let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
-    let file = node_resolver.assign_node_id(&in_onedrive(&contents, "A"), NodeId::ROOT);
-    assert!(file != docs && file != NodeId::ROOT && node_resolver.assign_node_id(&in_onedrive(&contents, "A"), NodeId::ROOT) == file);
-    assert_eq!(id(node_resolver.find_entry(file)), Some((Some("A".into()), PathBuf::from("a.txt"))));
-    // Shown under another name in another directory: the same node id, at its new place.
-    let renamed = contents.describe(Row { name: "b.txt".into(), ..contents.find_row("A").unwrap() }, Path::new("docs/b.txt"));
-    assert_eq!(node_resolver.assign_node_id(&renamed, docs), file);
+    let renamed = contents.find_entry_at(Path::new("docs/b.txt")).unwrap();
+    let file = node_resolver.assign_node_id(&renamed, docs);
+    assert!(file != docs && file != NodeId::ROOT && node_resolver.assign_node_id(&renamed, docs) == file);
+    assert_eq!(id(node_resolver.find_entry(file)), Some((Some("A".into()), PathBuf::from("docs/b.txt"))));
+    assert_eq!(node_resolver.find_node_id("A"), Some(file));
+}
+
+/// A node that was told another place moves to where a lookup finds it, when the mount
+/// shows it there.
+#[test]
+fn a_node_looked_up_at_the_place_the_mount_shows_it_at_moves_there() {
+    let (_dir, contents, node_resolver) = node_resolver(vec![of(OutboxKind::Move, "A", "a.txt", "docs/b.txt", (Some("D"), Some("b.txt")))]);
+    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
+    let file = node_resolver.assign_node_id(&contents.find_entry_at(Path::new("docs/b.txt")).unwrap(), docs);
+    node_resolver.move_node(file, NodeId::ROOT, "a.txt");
+    assert_eq!(node_resolver.assign_node_id(&contents.find_entry_at(Path::new("docs/b.txt")).unwrap(), docs), file);
+    assert_eq!(id(node_resolver.find_entry(file)), Some((Some("A".into()), PathBuf::from("docs/b.txt"))));
+}
+
+/// A lookup read the name before a rename, and gives the node its id after it: the entry it
+/// read is of a place the mount no longer shows the file at, and the node stays where it is.
+#[test]
+fn a_lookup_that_read_a_name_before_its_rename_leaves_the_node_at_its_new_place() {
+    let (_dir, contents, node_resolver) = node_resolver(vec![of(OutboxKind::Move, "A", "a.txt", "docs/b.txt", (Some("D"), Some("b.txt")))]);
+    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
+    let file = node_resolver.assign_node_id(&contents.find_entry_at(Path::new("docs/b.txt")).unwrap(), docs);
+    let read_before = contents.describe(contents.find_row("A").unwrap(), Path::new("a.txt"));
+    assert_eq!(node_resolver.assign_node_id(&read_before, NodeId::ROOT), file);
     assert_eq!(id(node_resolver.find_entry(file)), Some((Some("A".into()), PathBuf::from("docs/b.txt"))));
     assert!(matches!(node_resolver.find_entry(file), Some((entry, _)) if entry.name == "b.txt"));
-    assert_eq!(node_resolver.find_node_id("A"), Some(file));
+}
+
+/// The same for a local-only entry: it is where its file handle is.
+#[test]
+fn a_lookup_that_read_a_local_only_name_before_its_rename_leaves_the_node_at_its_new_place() {
+    let (dir, contents, node_resolver) = node_resolver(Vec::new());
+    fs::write(dir.path().join("made.txt"), b"mine").unwrap();
+    let read_before = local_only(&contents, "made.txt");
+    let node_id = node_resolver.assign_node_id(&read_before, NodeId::ROOT);
+    fs::rename(dir.path().join("made.txt"), dir.path().join("kept.txt")).unwrap();
+    node_resolver.move_node(node_id, NodeId::ROOT, "kept.txt");
+    assert_eq!(node_resolver.assign_node_id(&read_before, NodeId::ROOT), node_id);
+    assert_eq!(node_resolver.find_entry(node_id).map(|(_, path)| path), Some(PathBuf::from("kept.txt")));
+}
+
+/// A reading of a directory gives a name the node id its entry has, and leaves a node the
+/// table has where it is.
+#[test]
+fn a_listed_name_never_moves_the_node_it_names() {
+    let (_dir, contents, node_resolver) = node_resolver(Vec::new());
+    let root = contents.find_root_directory();
+    let listed = contents.list_names(&root).into_iter().find(|listed_name| listed_name.name() == "a.txt").unwrap();
+    let file = node_resolver.assign_node_id_of_listed_name(&listed, NodeId::ROOT);
+    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
+    node_resolver.move_node(file, docs, "b.txt");
+    assert_eq!(node_resolver.assign_node_id_of_listed_name(&listed, NodeId::ROOT), file);
+    assert_eq!(node_resolver.find_parent(file).map(|(parent, _)| parent), Some(docs));
 }
 
 #[test]

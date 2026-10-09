@@ -22,7 +22,19 @@ fn a_onedrive_file_keeps_its_node_id_when_it_is_renamed_or_moved() {
     let docs = node_table.assign(in_onedrive("D"), NodeId::ROOT, "docs");
     let file = node_table.assign(in_onedrive("F"), docs, "a.txt");
     assert_eq!(node_table.find_path(file).as_deref(), Some(Path::new("docs/a.txt")));
-    assert_eq!(node_table.assign(in_onedrive("F"), NodeId::ROOT, "b.txt"), file);
+    node_table.move_node(file, NodeId::ROOT, "b.txt");
+    assert_eq!(node_table.find_node_id(&in_onedrive("F")), Some(file));
+    assert_eq!(node_table.find_path(file).as_deref(), Some(Path::new("b.txt")));
+}
+
+/// The place of a node is set when the node is made, and by a move: a key the table has is
+/// answered its node id, whatever place it is asked with.
+#[test]
+fn a_key_the_table_has_is_answered_its_node_id_and_its_node_stays_where_it_is() {
+    let mut node_table = NodeTable::new();
+    let file = node_table.assign(in_onedrive("F"), NodeId::ROOT, "a.txt");
+    node_table.move_node(file, NodeId::ROOT, "b.txt");
+    assert_eq!(node_table.assign(in_onedrive("F"), NodeId::ROOT, "a.txt"), file);
     assert_eq!(node_table.find_path(file).as_deref(), Some(Path::new("b.txt")));
 }
 

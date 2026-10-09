@@ -9,7 +9,12 @@
 //! — and keeps the node id of a local-only entry once it is in OneDrive.
 //!
 //! The node resolver owns the table: whoever needs a node id, or changes a node's key or
-//! place, asks here.
+//! place, asks here. A node's place has one kind of writer — whoever found or put the entry
+//! there: a lookup of its name ([`NodeResolver::assign_node_id`], which moves a node only to
+//! where the mount shows it now), a make, and a rename ([`NodeResolver::move_node`]). A
+//! reading of a directory gives a name its node id and never a node its place
+//! ([`NodeResolver::assign_node_id_of_listed_name`]). What a cycle of the delta listing
+//! moved is at its new place once its name is looked up there.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -52,29 +57,44 @@ impl NodeResolver {
         NodeResolver { directory_contents, backing_directory, node_table: Mutex::new(NodeTable::new()) }
     }
 
-    /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a
-    /// new one. A local-only entry that got into OneDrive since the kernel was told of it
-    /// keeps its node id.
+    /// The node id of `entry`, which whoever asks found in the directory node `parent` — a
+    /// lookup of its name, a make, a rename: the one it has, or a new one. A local-only
+    /// entry that got into OneDrive since the kernel was told of it keeps its node id.
+    ///
+    /// A node the table has at another place moves to this one only when the mount shows
+    /// the entry here now: a file or directory of OneDrive where the directory contents have
+    /// its id, a local-only entry where its file handle is. The question and the move are
+    /// one step under the table's lock, and a rename moves its node after it is recorded:
+    /// an entry that was read before a rename, or before a cycle moved it, and is given its
+    /// node id after, does not put the node back.
     pub(super) fn assign_node_id(&self, entry: &DirectoryEntry, parent: NodeId) -> NodeId {
-        self.assign_node_id_of_key(key_of(entry), &entry.name, parent)
+        let key = key_of(entry);
+        let mut node_table = crate::panic::lock(&self.node_table);
+        let node_id = self.assign_node_id_of_key(&mut node_table, key.clone(), &entry.name, parent);
+        if !node_table.is_at(node_id, parent, &entry.name) && self.is_shown_at(&node_table, &key, parent, &entry.name) {
+            node_table.move_node(node_id, parent, &entry.name);
+        }
+        node_id
     }
 
-    /// The node id of what `listed_name` names, which is in the directory node
-    /// `parent`: the node id its entry has ([`assign_node_id`](Self::assign_node_id)), given
-    /// without the entry being made.
+    /// The node id of what `listed_name` names, which a reading of the directory node
+    /// `parent` listed: the node id its entry has, or a new one, given without the entry
+    /// being made. A reading never changes the place of a node the table has: the names of a
+    /// reading in parts are those of its start, and what was renamed or moved since is where
+    /// the rename or the move put it.
     pub(super) fn assign_node_id_of_listed_name(&self, listed_name: &ListedName, parent: NodeId) -> NodeId {
         let key = match listed_name {
             ListedName::InOneDrive(row) => NodeKey::InOneDrive(row.id.clone()),
             ListedName::LocalOnly(local_only) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
         };
-        self.assign_node_id_of_key(key, listed_name.name(), parent)
+        self.assign_node_id_of_key(&mut crate::panic::lock(&self.node_table), key, listed_name.name(), parent)
     }
 
-    /// The node id of `key`, which is `name` in the directory node `parent`. A OneDrive id
-    /// the kernel was not told of yet is looked for on disk once, by its path: a local-only
-    /// entry that got into OneDrive keeps the node id it had.
-    fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: NodeId) -> NodeId {
-        let mut node_table = crate::panic::lock(&self.node_table);
+    /// The node id of `key` in `node_table`: the one it has, or a new one, whose node is
+    /// `name` in the directory node `parent`. A OneDrive id the kernel was not told of yet
+    /// is looked for on disk once, by its path: a local-only entry that got into OneDrive
+    /// keeps the node id it had.
+    fn assign_node_id_of_key(&self, node_table: &mut NodeTable, key: NodeKey, name: &str, parent: NodeId) -> NodeId {
         if matches!(key, NodeKey::InOneDrive(_)) && !node_table.has_key(&key) {
             let on_disk = node_table.find_path(parent).and_then(|directory| self.backing_directory.find_file_handle(&directory.join(name)));
             if let Some(handle) = on_disk {
@@ -82,6 +102,17 @@ impl NodeResolver {
             }
         }
         node_table.assign(key, parent, name)
+    }
+
+    /// Whether the mount shows what `key` stands for as `name` in the directory node
+    /// `parent` now: the directory contents have a OneDrive id at that path, and a
+    /// local-only entry is the file handle the backing directory has there.
+    fn is_shown_at(&self, node_table: &NodeTable, key: &NodeKey, parent: NodeId, name: &str) -> bool {
+        let Some(path) = node_table.find_path(parent).map(|directory| directory.join(name)) else { return false };
+        match key {
+            NodeKey::InOneDrive(onedrive_id) => self.directory_contents.find_path(onedrive_id).as_deref() == Some(path.as_path()),
+            NodeKey::LocalOnly(handle) => self.backing_directory.find_file_handle(&path).as_ref() == Some(handle),
+        }
     }
 
     /// What the node `node_id`, which is not the root, stands for now.

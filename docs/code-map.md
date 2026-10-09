@@ -261,11 +261,13 @@ daemon shows OneDrive.
   at a path, and the directories down to a path marked with the ids the mount shows there.
 - `node_table.rs` — `NodeTable`: the node ids (`NodeId`) given to the kernel, each with a
   `NodeRecord`: its `NodeKey` — in OneDrive by its id, or local only by its file handle —
-  the node id of the directory it is in, and its name. Its maps are its own. A node id is
-  the kernel's inode number: the pair of conversions is here. `[tests]`
+  the node id of the directory it is in, and its name. Its maps are its own; the place of a
+  node it has is changed by a move alone. A node id is the kernel's inode number: the pair
+  of conversions is here. `[tests]`
 - `node_resolver.rs` — `NodeResolver`: over the directory contents and the backing directory,
   and owning the node table: the entry a node id stands for now and the node id of an entry
-  or of a listed name; a local-only entry that got into OneDrive keeps its node id.
+  or of a listed name; a local-only entry that got into OneDrive keeps its node id. A lookup
+  moves a node only to where the mount shows it now, and a listed name never moves one.
   `[tests]`
 - `attributes.rs` — the attributes the mount gives the kernel for a name, a function of a
   `DirectoryEntry` and the `AccessMode`: kind, size, times, modes. `[tests]`
@@ -297,7 +299,7 @@ daemon shows OneDrive.
   answer is found as a value, and the handler replies with it. `[tests]`
 - `kernel_requests/directory_requests.rs` — `DirectoryRequests`: a directory opened, read and
   closed: `readdir` from the listed names alone, `readdirplus` making the entries it answers
-  with. `[tests]`
+  with; neither changes the place of a node. `[tests]`
 - `kernel_requests/xattr_requests.rs` — `XattrRequests`: the extended attributes the mount
   shows, and their names. `[tests]`
 - `kernel_requests/xattr_value.rs` — `to_xattr_value`: the value of an attribute of what is

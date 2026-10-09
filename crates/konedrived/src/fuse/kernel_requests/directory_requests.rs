@@ -3,7 +3,9 @@
 //! What an open directory holds is listed when it is read from its start, as what its
 //! entries are made from ([`ListedName`]), and kept with its `fh`: every part of the
 //! reading after that hands out the same names. `readdir` answers from the listed names alone;
-//! `readdirplus` makes the entry of each name it answers with, for its attributes.
+//! `readdirplus` makes the entry of each name it answers with, for its attributes. Either
+//! gives a name the node id its entry has, and neither changes the place of a node: a name
+//! kept from the start of a reading may be of a file that was renamed since.
 //!
 //! [`DirectoryRequests`] is given the [`NodeResolver`], the [`DirectoryContents`], the
 //! [`OpenHandles`], which keep the listed names, and the [`AccessModeSwitch`], for the modes
@@ -77,7 +79,7 @@ impl DirectoryRequests {
         let access_mode = self.access_mode_switch.access_mode();
         for (i, listed_name) in listed_names.iter().enumerate().skip(offset as usize) {
             let entry = self.directory_contents.describe_listed_name(listed_name, &directory);
-            let child = self.node_resolver.assign_node_id(&entry, node_id);
+            let child = self.node_resolver.assign_node_id_of_listed_name(listed_name, node_id);
             let attr = to_attributes(child, access_mode, &entry);
             if reply.add(INodeNo::from(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;

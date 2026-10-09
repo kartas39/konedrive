@@ -68,18 +68,22 @@ impl NodeTable {
         NodeTable { records: HashMap::new(), node_ids: HashMap::new(), last_node_id: NodeId::ROOT }
     }
 
-    /// The node id of `key`, which is `name` in the directory node `parent_node_id`: the one
-    /// it has, or a new one.
+    /// The node id of `key`: the one it has, whatever place it is asked with, or a new one,
+    /// whose node is `name` in the directory node `parent_node_id`. The place of a node the
+    /// table has is changed by a move alone ([`move_node`](Self::move_node)).
     pub(super) fn assign(&mut self, key: NodeKey, parent_node_id: NodeId, name: &str) -> NodeId {
         if let Some(node_id) = self.node_ids.get(&key) {
-            let record = self.records.get_mut(node_id).expect("a record of every known key");
-            (record.parent_node_id, record.name) = (parent_node_id, name.to_owned());
             return *node_id;
         }
         self.last_node_id = NodeId(self.last_node_id.0 + 1);
         self.node_ids.insert(key.clone(), self.last_node_id);
         self.records.insert(self.last_node_id, NodeRecord { key, parent_node_id, name: name.to_owned() });
         self.last_node_id
+    }
+
+    /// Whether the node `node_id` is `name` in the directory node `parent_node_id`.
+    pub(super) fn is_at(&self, node_id: NodeId, parent_node_id: NodeId, name: &str) -> bool {
+        self.records.get(&node_id).is_some_and(|record| record.parent_node_id == parent_node_id && record.name == name)
     }
 
     /// Whether the kernel was given a node id for `key`.
