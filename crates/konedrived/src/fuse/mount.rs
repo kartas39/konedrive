@@ -137,7 +137,8 @@ impl Mount {
 
     /// Takes the mount off. The folder on disk then shows the downloaded copies alone.
     ///
-    /// In this order: the write-operation thread takes no more jobs; the inotify bridge
+    /// In this order: the write-operation thread is stopped, which waits for the write
+    /// operation that runs and drops those that wait; the inotify bridge
     /// stops while the mount still answers it (what it does by path would otherwise land in
     /// the backing directory); every open that waits for a download is failed, and every
     /// read that waits for OneDrive is given up; and the connection is aborted before the
@@ -145,7 +146,8 @@ impl Mount {
     /// otherwise keep the session, and this call, waiting for it.
     pub fn stop(&self) {
         let Some(session) = crate::panic::lock(&self.session).take() else { return };
-        // The thread ends with the last job it was given; what comes later is refused.
+        // No write operation runs from here on: the one in flight has ended, those that
+        // waited are dropped, and what comes later is refused.
         self.write_operation_thread.stop();
         self.inotify_bridge.stop();
         self.download_states.fail_waiters();

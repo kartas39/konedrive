@@ -77,7 +77,9 @@ impl AccessModeSwitch {
     /// Switches to read-only on `write_operation_thread`, and waits for it: every write
     /// operation that was asked for before the switch has ended when this returns, and each
     /// one after it is refused. Whether that changed the mode. A thread that is stopped runs
-    /// no write operation any more, and the switch is made here.
+    /// no write operation any more — the job that ran when it was stopped has ended, and the
+    /// switch it dropped, or refuses now, is answered only after that — so the switch is
+    /// made here, and is as exact as one made on the thread.
     pub(super) async fn switch_to_read_only_on_thread(self: &Arc<Self>, write_operation_thread: &WriteOperationThread) -> bool {
         match self.queue_switch_to_read_only(write_operation_thread).await {
             Ok(changed) => changed,
