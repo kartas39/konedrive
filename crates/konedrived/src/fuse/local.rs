@@ -259,22 +259,6 @@ impl Shared {
     }
 
     fn backing_by(&self, rel: &Path, root: Option<String>, item: impl Fn(&Dir, &str) -> Option<String>) -> std::io::Result<()> {
-        let mut dir = Dir { id: root, rel: PathBuf::new() };
-        for name in rel.components() {
-            let at = dir.rel.join(name);
-            let id = name.as_os_str().to_str().and_then(|n| item(&dir, n));
-            match self.under.make_dir(&at) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
-            }
-            if let Some(id) = &id {
-                if self.under.carried(&at).as_deref() != Some(id.as_str()) {
-                    self.under.carry(&at, id)?;
-                }
-            }
-            dir = Dir { id, rel: at };
-        }
-        Ok(())
+        self.under.backing(rel, root, |id, dir, name| item(&Dir { id: id.map(str::to_owned), rel: dir.to_owned() }, name))
     }
 }

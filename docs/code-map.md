@@ -197,6 +197,8 @@ daemon shows OneDrive.
 - `under/copies.rs` — an item's downloaded copy: whether a place holds it whole, marking one,
   removing one only when it is that item's. `[tests]`
 - `under/files.rs` — the files and directories a change makes, renames and removes. `[tests]`
+- `under/backing.rs` — the directories down to a place, each marked with the id of its item,
+  which the caller tells name by name. `[tests]`
 - `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
   `is_writable`.
 - `requests.rs` — the mount's requests (`Filesystem`), each handed on.

@@ -10,6 +10,7 @@
 //! - [`objects`]: what stands at a place, its file handle, and the item id it carries;
 //! - [`copies`]: an item's downloaded copy — whether a place holds it, marking one, removing one;
 //! - [`files`]: the files and directories a change makes, renames and removes;
+//! - [`backing`]: the directories down to a place, each marked with its item's id;
 //!
 //! A place is always a path below the folder (`rel`); the folder itself is the empty path.
 
@@ -18,6 +19,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
+mod backing;
 mod copies;
 mod files;
 mod objects;
