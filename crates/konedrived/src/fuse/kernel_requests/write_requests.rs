@@ -1,15 +1,22 @@
 //! Everything that changes the folder (`open` for writing, `create`, `mkdir`, `mknod`,
-//! `unlink`, `rmdir`, `rename`, `write`, `setattr`, `fsync`, and the `release` of a file).
+//! `unlink`, `rmdir`, `rename`, `setattr`, and the `release` of a file's last writer).
 //! Each is made by a write operation ([`crate::fuse::write_operations`]) on the
 //! write-operation thread, which answers it. A file an operation opens is in the open
 //! handles when it answers.
 //!
-//! A read-only folder's request is refused at once, before it is put on the thread
-//! ([`WriteRequests::run_named_operation`], and the check a write that needs a download
-//! makes): the thread waits for the folder's tree lock, which a cycle of the delta listing
-//! holds for as long as it takes. It is the same [`AccessModeSwitch`] the operation asks
-//! again on the thread, where a folder that was let through stays read-write until the
-//! operation has recorded.
+//! Two requests are answered here, on the mount's own thread, and are no write operation:
+//! `write` and `fsync` go into the file a write operation opened, through the handle it put
+//! into the open handles. Nothing is recorded for them — the outbox holds the file since it
+//! was opened — and no name of the folder changes.
+//!
+//! The access mode is asked twice, by design. A read-only folder's request is refused at
+//! once, before it is put on the thread ([`WriteRequests::run_named_operation`],
+//! [`WriteRequests::run_with_content`], and the time a `setattr` sets): the thread waits for
+//! the folder's tree lock, which a cycle of the delta listing holds for as long as it
+//! takes, and a program does not wait for a cycle to be told. The operation then asks the
+//! same [`AccessModeSwitch`] again on the thread, and that answer is the one that counts:
+//! the switch to read-only runs on that thread too, so a folder that was let through there
+//! stays read-write until the operation has recorded.
 //!
 //! [`WriteRequests`] is given the [`WriteOperations`] and the [`WriteOperationThread`]; the
 //! [`AccessModeSwitch`]; the [`NodeResolver`], for the node id and the attributes it answers
@@ -196,18 +203,28 @@ impl WriteRequests {
         }
     }
 
-    /// A size set cuts or extends the file; a time set is the file's own from then on, which
-    /// the write operations write. Modes and owners are the mount's to say and are not kept.
+    /// A size set cuts or extends the file; a time set alone is the file's own from then
+    /// on. Either is a write operation, made on the write-operation thread. Modes and owners
+    /// are the mount's to say and are not kept.
     pub(super) fn answer_setattr(&self, node_id: NodeId, size: Option<u64>, mtime: Option<TimeOrNow>, reply: ReplyAttr) {
-        let Some(size) = size else {
-            return match self.write_operations.set_modified_time(node_id, mtime) {
-                Ok(()) => self.answer_with_attributes(node_id, reply),
-                Err(e) => reply.error(e),
-            };
-        };
+        let Some(size) = size else { return self.run_set_modified_time(node_id, mtime, reply, WriteRequests::answer_with_attributes) };
         self.run_with_content(node_id, size == 0, reply, move |requests, reply| match requests.write_operations.truncate(node_id, size, mtime) {
             Ok(()) => requests.answer_with_attributes(node_id, reply),
             Err(e) => reply.error(e),
+        });
+    }
+
+    /// Has the time `mtime` gives set on the node `node_id` by the write operation, on the
+    /// write-operation thread, and `answer` called with `reply` once it is; `reply` is
+    /// refused instead when the folder is read-only — at once, and again by the operation
+    /// when the folder was switched meanwhile.
+    fn run_set_modified_time<R: ErrnoReply>(&self, node_id: NodeId, mtime: Option<TimeOrNow>, reply: R, answer: impl FnOnce(&WriteRequests, NodeId, R) + Send + 'static) {
+        if let Err(read_only) = self.access_mode_switch.check_read_write() {
+            return reply.refuse(read_only);
+        }
+        self.run_on_thread(move |requests| match requests.write_operations.set_modified_time(node_id, mtime) {
+            Ok(()) => answer(requests, node_id, reply),
+            Err(e) => reply.refuse(e),
         });
     }
 

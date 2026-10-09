@@ -6,9 +6,12 @@
 //! ([`NodeResolver`]), what programs hold open ([`OpenHandles`]), the [`OutboxRecorder`],
 //! the [`UploadRules`] and the [`AccessModeSwitch`]. It owns no state of its own, and runs
 //! on the write-operation thread ([`super::write_operation_thread`]), which whoever asks
-//! for an operation puts it on. Each operation asks the access mode once, at its start, on
-//! that thread — where the switch to read-only runs too, so an operation that was let
-//! through has recorded before the folder stops taking changes — and is then the same short
+//! for an operation puts it on: every operation, the time set on a file among them. Each
+//! operation asks the access mode at its start, on that thread — where the switch to
+//! read-only runs too, so an operation that was let through has recorded, or written, before
+//! the folder stops taking changes. Whoever puts an operation on the thread has asked the
+//! mode before, to refuse a read-only folder's request without waiting for the thread; the
+//! answer on the thread is the one that counts. An operation is then the same short
 //! sequence of steps:
 //!
 //! 1. look up what stands at the places, through the node resolver, the directory contents
@@ -28,7 +31,7 @@
 //! - [`make`]: a file or directory made;
 //! - [`remove`]: one removed;
 //! - [`rename`]: one renamed or moved;
-//! - [`write`](mod@write): a file opened for writing, closed, cut.
+//! - [`write`](mod@write): a file opened for writing, closed, cut, and the time set on it.
 
 use std::fmt::Display;
 use std::path::Path;

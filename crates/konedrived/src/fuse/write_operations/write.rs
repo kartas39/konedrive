@@ -98,6 +98,8 @@ impl WriteOperations {
 
     /// Sets the time the node `node_id` was last modified, when `modified` gives one: the
     /// file's own from then on. A read-only folder refuses, also when no time is given.
+    /// Called on the write-operation thread, as every write operation: the mode it asked
+    /// holds until the time is written.
     pub(in crate::fuse) fn set_modified_time(&self, node_id: NodeId, modified: Option<TimeOrNow>) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
         self.write_modified_time(node_id, modified);

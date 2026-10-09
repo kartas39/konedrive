@@ -7,9 +7,12 @@
 //! Who asks:
 //!
 //! - a write operation, at its start, on the write-operation thread
-//!   ([`AccessModeSwitch::check_read_write`]): the outbox recorder does not ask again;
+//!   ([`AccessModeSwitch::check_read_write`]): this is the answer that counts, and the
+//!   outbox recorder does not ask again;
 //! - the request that asks for a write operation, before it puts it on that thread: a
-//!   read-only folder's is refused at once, and not when the thread gets to it;
+//!   read-only folder's is refused at once, and not when the thread gets to it. So a
+//!   request asks twice, by design: here to answer a program without waiting for a cycle,
+//!   and on the thread to be exact;
 //! - the kernel's requests that no write operation answers: the attributes shown, `access`,
 //!   and the changes the mount never takes ([`AccessModeSwitch::access_mode`]);
 //! - the step of a cycle of the delta listing, and the mount, for the folder's sync.
