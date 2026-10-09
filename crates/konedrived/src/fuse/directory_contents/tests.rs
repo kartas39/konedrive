@@ -89,7 +89,7 @@ fn pair(id: &str, name: &str) -> Option<(String, String)> {
 
 /// The state of the file `name` in the root.
 fn file_state(contents: &DirectoryContents, name: &str) -> FileSyncState {
-    match contents.find_entry(&contents.root_directory(), name).unwrap().state {
+    match contents.find_entry(&contents.find_root_directory(), name).unwrap().state {
         EntryState::File(file) => file,
         EntryState::Directory(directory) => panic!("{name} is a directory: {directory:?}"),
     }
@@ -97,7 +97,7 @@ fn file_state(contents: &DirectoryContents, name: &str) -> FileSyncState {
 
 /// The state of the directory `name` in the root.
 fn directory_state(contents: &DirectoryContents, name: &str) -> DirectorySyncState {
-    match contents.find_entry(&contents.root_directory(), name).unwrap().state {
+    match contents.find_entry(&contents.find_root_directory(), name).unwrap().state {
         EntryState::Directory(directory) => directory,
         EntryState::File(file) => panic!("{name} is a file: {file:?}"),
     }
@@ -169,7 +169,7 @@ fn the_files_below_a_row_come_with_their_sync_states() {
     download(dir.path(), &contents, "docs/c.txt", "C", b"changed");
     download(dir.path(), &contents, "a.txt", "A", b"whole");
     let mut states: Vec<(PathBuf, &str)> = contents
-        .files_below(&contents.root_row())
+        .list_files_below(&contents.find_root_row())
         .into_iter()
         .map(|(file, at)| {
             let state = match file {
@@ -188,13 +188,13 @@ fn the_files_below_a_row_come_with_their_sync_states() {
 #[test]
 fn a_onedrive_file_is_shown_where_the_store_has_it() {
     let (_dir, contents) = directory_contents(Vec::new());
-    assert_eq!(in_onedrive(contents.find_entry(&contents.root_directory(), "a.txt")), pair("A", "a.txt"));
+    assert_eq!(in_onedrive(contents.find_entry(&contents.find_root_directory(), "a.txt")), pair("A", "a.txt"));
     assert_eq!(in_onedrive(contents.find_entry(&docs(), "c.txt")), pair("C", "c.txt"));
-    assert_eq!(names(&contents, &contents.root_directory()), ["a.txt", "b.txt", "docs"]);
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["a.txt", "b.txt", "docs"]);
     assert_eq!(names(&contents, &docs()), ["c.txt"]);
     assert_eq!(contents.find_path("C").as_deref(), Some(Path::new("docs/c.txt")));
     assert_eq!(in_onedrive(contents.find_entry_at(Path::new("docs/c.txt"))), pair("C", "c.txt"));
-    assert!(contents.find_entry(&contents.root_directory(), "none.txt").is_none() && contents.find_entry_at(Path::new("a.txt/below")).is_none());
+    assert!(contents.find_entry(&contents.find_root_directory(), "none.txt").is_none() && contents.find_entry_at(Path::new("a.txt/below")).is_none());
 }
 
 #[test]
@@ -202,10 +202,10 @@ fn the_folder_itself_is_the_drives_root() {
     let (_dir, contents) = directory_contents(Vec::new());
     assert_eq!(contents.find_root_id().as_deref(), Some("R"));
     assert_eq!(in_onedrive(contents.find_entry_at(Path::new(""))), pair("R", ""));
-    assert!(matches!(contents.root_entry().state, EntryState::Directory(DirectorySyncState::Synced(_))));
+    assert!(matches!(contents.find_root_entry().state, EntryState::Directory(DirectorySyncState::Synced(_))));
     assert_eq!(contents.find_path("R").as_deref(), Some(Path::new("")));
     assert_eq!(contents.find_row("A").and_then(|a| contents.find_parent_row(&a)).map(|parent| parent.id).as_deref(), Some("R"));
-    assert!(contents.find_parent_row(&contents.root_row()).is_none());
+    assert!(contents.find_parent_row(&contents.find_root_row()).is_none());
 }
 
 /// Until its move is sent the store has the file where it was; the mount shows it where the
@@ -213,9 +213,9 @@ fn the_folder_itself_is_the_drives_root() {
 #[test]
 fn a_moved_file_is_shown_only_at_its_new_path() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
-    assert!(contents.find_entry(&contents.root_directory(), "a.txt").is_none());
+    assert!(contents.find_entry(&contents.find_root_directory(), "a.txt").is_none());
     assert_eq!(in_onedrive(contents.find_entry(&docs(), "new.txt")), pair("A", "new.txt"));
-    assert_eq!(names(&contents, &contents.root_directory()), ["b.txt", "docs"]);
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["b.txt", "docs"]);
     assert_eq!(names(&contents, &docs()), ["c.txt", "new.txt"]);
     assert_eq!(contents.find_path("A").as_deref(), Some(Path::new("docs/new.txt")));
     assert!(contents.find_entry_at(Path::new("a.txt")).is_none());
@@ -225,15 +225,15 @@ fn a_moved_file_is_shown_only_at_its_new_path() {
 #[test]
 fn a_file_moved_over_another_files_name_is_what_the_name_shows() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Move, "A", "a.txt", "b.txt", (Some("R"), Some("b.txt")))]);
-    assert_eq!(in_onedrive(contents.find_entry(&contents.root_directory(), "b.txt")), pair("A", "b.txt"));
-    assert_eq!(names(&contents, &contents.root_directory()), ["b.txt", "docs"]);
+    assert_eq!(in_onedrive(contents.find_entry(&contents.find_root_directory(), "b.txt")), pair("A", "b.txt"));
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["b.txt", "docs"]);
 }
 
 #[test]
 fn a_file_removed_here_is_shown_nowhere() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    assert!(contents.find_entry(&contents.root_directory(), "b.txt").is_none());
-    assert_eq!(names(&contents, &contents.root_directory()), ["a.txt", "docs"]);
+    assert!(contents.find_entry(&contents.find_root_directory(), "b.txt").is_none());
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["a.txt", "docs"]);
     assert!(contents.find_path("B").is_none() && contents.find_entry_at(Path::new("b.txt")).is_none());
 }
 
@@ -243,8 +243,8 @@ fn a_file_removed_here_is_shown_nowhere() {
 fn a_name_onedrive_and_the_disk_both_have_is_onedrives() {
     let (dir, contents) = directory_contents(Vec::new());
     fs::write(dir.path().join("a.txt"), b"mine").unwrap();
-    assert_eq!(in_onedrive(contents.find_entry(&contents.root_directory(), "a.txt")), pair("A", "a.txt"));
-    assert_eq!(names(&contents, &contents.root_directory()), ["a.txt", "b.txt", "docs"]);
+    assert_eq!(in_onedrive(contents.find_entry(&contents.find_root_directory(), "a.txt")), pair("A", "a.txt"));
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["a.txt", "b.txt", "docs"]);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn a_local_only_entry_is_listed_where_it_lies() {
     let own = contents.find_entry(&docs(), "own.txt").unwrap();
     assert!(own.name == "own.txt" && matches!(&own.state, EntryState::File(FileSyncState::LocalOnly(entry)) if entry.place.above.as_deref() == Some("D")));
     assert_eq!(names(&contents, &docs()), ["c.txt", "own.txt"]);
-    assert_eq!(names(&contents, &contents.root_directory()), ["a.txt", "b.txt", "docs", "new"]);
+    assert_eq!(names(&contents, &contents.find_root_directory()), ["a.txt", "b.txt", "docs", "new"]);
     assert!(matches!(contents.find_entry_at(Path::new("new")).unwrap().state, EntryState::Directory(DirectorySyncState::LocalOnly(_))));
 }
 
@@ -265,7 +265,7 @@ fn a_local_only_entry_is_listed_where_it_lies() {
 #[test]
 fn what_is_the_daemons_or_onedrives_is_not_a_local_only_entry() {
     let (dir, contents) = directory_contents(Vec::new());
-    let root = contents.root_directory();
+    let root = contents.find_root_directory();
     fs::create_dir(dir.path().join(HOLDING)).unwrap();
     std::os::unix::fs::symlink("a.txt", dir.path().join("link")).unwrap();
     fs::write(dir.path().join("copy.txt"), b"a").unwrap();
@@ -284,7 +284,7 @@ fn what_is_the_daemons_or_onedrives_is_not_a_local_only_entry() {
 #[test]
 fn a_directory_of_onedrive_files_is_listed_from_the_stores_rows_whatever_the_disk_holds() {
     let (dir, contents) = directory_contents(Vec::new());
-    let root = contents.root_directory();
+    let root = contents.find_root_directory();
     let listed = |contents: &DirectoryContents| {
         let mut sources = contents.list_entry_sources(&root);
         sources.sort_by(|a, b| a.name().cmp(b.name()));
@@ -305,7 +305,7 @@ fn a_directory_of_onedrive_files_is_listed_from_the_stores_rows_whatever_the_dis
 fn a_listed_local_only_entry_carries_what_the_disk_says_of_it() {
     let (dir, contents) = directory_contents(Vec::new());
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
-    let root = contents.root_directory();
+    let root = contents.find_root_directory();
     let sources = contents.list_entry_sources(&root);
     let own = sources.iter().find(|source| source.name() == "own.txt").unwrap();
     assert!(matches!(own, EntrySource::LocalOnly(entry) if entry.on_disk.metadata.size == 4) && own.kind() == EntryKind::File);
@@ -334,7 +334,7 @@ fn a_file_below_a_directory_moved_into_a_local_only_directory_is_found_below_it(
 fn the_files_below_a_row_come_with_their_paths() {
     let (_dir, contents) = directory_contents(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
     let below = |id: &str| {
-        let mut files: Vec<(String, PathBuf)> = contents.files_below(&contents.find_row(id).unwrap()).into_iter().filter_map(|(file, at)| Some((file.row()?.id.clone(), at))).collect();
+        let mut files: Vec<(String, PathBuf)> = contents.list_files_below(&contents.find_row(id).unwrap()).into_iter().filter_map(|(file, at)| Some((file.row()?.id.clone(), at))).collect();
         files.sort();
         files
     };

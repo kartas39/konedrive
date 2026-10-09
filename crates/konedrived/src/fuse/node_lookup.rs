@@ -73,7 +73,7 @@ impl NodeLookup {
     fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: u64) -> u64 {
         let mut node_table = crate::panic::lock(&self.node_table);
         if matches!(key, NodeKey::InOneDrive(_)) && !node_table.node_ids.contains_key(&key) {
-            let on_disk = node_table.path_of(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
+            let on_disk = node_table.find_path(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
             if let Some(handle) = on_disk {
                 node_table.rekey(&NodeKey::LocalOnly(handle), key.clone());
             }
@@ -86,11 +86,11 @@ impl NodeLookup {
         let (key, rel, name, parent) = {
             let node_table = crate::panic::lock(&self.node_table);
             let node = node_table.nodes.get(&node_id)?;
-            (node.key.clone(), node_table.path_of(node_id)?, node.place.1.clone(), node.place.0)
+            (node.key.clone(), node_table.find_path(node_id)?, node.place.1.clone(), node.place.0)
         };
         match key {
             NodeKey::InOneDrive(id) => {
-                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.unsent_changes().removed.contains(&id))?;
+                let entry = self.directory_contents.find_entry_by_id(&id, &name, &rel).filter(|_| !self.directory_contents.read_unsent_changes().removed.contains(&id))?;
                 Some(NodeTarget::InOneDrive { entry, rel })
             }
             NodeKey::LocalOnly(handle) => {
@@ -112,7 +112,7 @@ impl NodeLookup {
     /// node whose file or directory is gone.
     pub(super) fn find_entry(&self, node_id: u64) -> Option<(DirectoryEntry, PathBuf)> {
         if node_id == 1 {
-            return Some((self.directory_contents.root_entry(), PathBuf::new()));
+            return Some((self.directory_contents.find_root_entry(), PathBuf::new()));
         }
         match self.find_node(node_id)? {
             NodeTarget::InOneDrive { entry, rel } => Some((entry, rel)),

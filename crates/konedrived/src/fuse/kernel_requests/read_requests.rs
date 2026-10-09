@@ -108,7 +108,7 @@ impl KernelRequests {
             };
             if let Some(content_changed) = content_changed {
                 let write_operations = Arc::clone(&self.write_operations);
-                self.outbox_recorder.run(move || write_operations.closed(closed.node_id, content_changed));
+                self.outbox_recorder.run(move || write_operations.close_last_writer(closed.node_id, content_changed));
             }
         }
         reply.ok();

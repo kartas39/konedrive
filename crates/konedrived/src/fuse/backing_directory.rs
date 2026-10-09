@@ -90,7 +90,7 @@ impl BackingDirectory {
 
     /// One more descriptor of the backing directory, for what in the daemon opens the folder
     /// by its path: that path is the mount.
-    pub(super) fn descriptor(&self) -> io::Result<File> {
+    pub(super) fn clone_descriptor(&self) -> io::Result<File> {
         self.descriptor.try_clone()
     }
 

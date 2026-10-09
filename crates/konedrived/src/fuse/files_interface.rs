@@ -130,7 +130,7 @@ impl FilesInterface {
         let (download_states, inotify_bridge) = (Arc::clone(&self.download_states), Arc::clone(&self.inotify_bridge));
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut announcements) = (FreedSpace::default(), Vec::new());
-            for (file, at) in directory_contents.files_below(&row) {
+            for (file, at) in directory_contents.list_files_below(&row) {
                 let file = match file {
                     // What is not downloaded takes no space.
                     FileSyncState::RemoteOnly(_) | FileSyncState::LocalOnly(_) => continue,
@@ -145,7 +145,7 @@ impl FilesInterface {
                 // writing, stays. The sync state says the last too while the outbox holds
                 // the file's row; the open files say it also once that row is dropped under
                 // a writer, by a forced switch to read-only.
-                if open_files.is_open_for_writing(&file.id) || pins.pinned_by(&file).is_some() || download_states.is_downloading(&file.id) {
+                if open_files.is_open_for_writing(&file.id) || pins.find_pinning_row(&file).is_some() || download_states.is_downloading(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -173,7 +173,7 @@ impl FilesInterface {
         let (entry, _) = self.find_onedrive_entry(path)?;
         let Some(row) = entry.row().cloned() else { return Err(FilesRefusal::NotInOneDrive) };
         let own_pin = self.pins.is_pinned(&row.id);
-        let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.pinned_by(&above));
+        let above = self.directory_contents.find_parent_row(&row).and_then(|above| self.pins.find_pinning_row(&above));
         let pinned_above = above.and_then(|by| self.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| self.folder.join(at.rel));
         let (state, modified_here) = match &entry.state {
             EntryState::File(file) => (to_hydration_state(file, self.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
@@ -205,7 +205,7 @@ impl FilesInterface {
     /// How many downloaded copies, and bytes on disk, there are at and below `path`.
     pub(super) fn count_downloaded_below(&self, path: &Path) -> Result<(u64, u64), FilesRefusal> {
         let (row, _) = self.find_onedrive_row(path)?;
-        let copies = self.directory_contents.files_below(&row).into_iter().filter_map(|(file, _)| file.downloaded_copy().copied());
+        let copies = self.directory_contents.list_files_below(&row).into_iter().filter_map(|(file, _)| file.downloaded_copy().copied());
         Ok(copies.fold((0, 0), |(files, bytes), copy| (files + 1, bytes + copy.blocks * 512)))
     }
 }

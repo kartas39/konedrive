@@ -25,7 +25,7 @@ fn in_onedrive(contents: &DirectoryContents, id: &str) -> DirectoryEntry {
 
 /// The local-only entry `name` in the root.
 fn local_only(contents: &DirectoryContents, name: &str) -> DirectoryEntry {
-    DirectoryEntry::from_local_only(contents.find_local_only(&contents.root_directory(), name).unwrap())
+    DirectoryEntry::from_local_only(contents.find_local_only(&contents.find_root_directory(), name).unwrap())
 }
 
 fn id(found: Option<(DirectoryEntry, PathBuf)>) -> Option<(Option<String>, PathBuf)> {
@@ -64,7 +64,7 @@ fn the_root_is_node_one_and_a_directory() {
 fn the_source_of_an_entry_gets_the_node_id_of_the_entry() {
     let (dir, contents, node_lookup) = node_lookup(Vec::new());
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
-    let root = contents.root_directory();
+    let root = contents.find_root_directory();
     for source in contents.list_entry_sources(&root) {
         let node_id = node_lookup.assign_node_id_of_source(&source, 1);
         assert_eq!(node_lookup.assign_node_id(&contents.describe_source(&source, &root), 1), node_id, "{}", source.name());

@@ -15,7 +15,7 @@
 //!
 //! - here: a row of the store ([`DirectoryContents::find_row`]), the row of the directory it is
 //!   in ([`DirectoryContents::find_parent_row`]), the folder's own row and entry, the files at and
-//!   below a row with their sync states ([`DirectoryContents::files_below`]), the OneDrive
+//!   below a row with their sync states ([`DirectoryContents::list_files_below`]), the OneDrive
 //!   file the user just removed from a path ([`DirectoryContents::find_file_removed_at`]);
 //! - [`sync_states`]: the sync state of a file and of a directory, and a directory entry;
 //! - [`directory_entries`]: the entry a directory holds under a name, and what all its
@@ -90,18 +90,18 @@ impl DirectoryContents {
 
     /// The folder itself, as a row: without a name, and without an id before the store has
     /// the drive's root.
-    pub(super) fn root_row(&self) -> Row {
+    pub(super) fn find_root_row(&self) -> Row {
         let id = self.find_root_id().unwrap_or_default();
         Row { id, parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed }
     }
 
     /// The folder itself, as an entry: a directory of OneDrive, without a name.
-    pub(super) fn root_entry(&self) -> DirectoryEntry {
-        DirectoryEntry { name: String::new(), state: EntryState::Directory(DirectorySyncState::Synced(self.root_row())) }
+    pub(super) fn find_root_entry(&self) -> DirectoryEntry {
+        DirectoryEntry { name: String::new(), state: EntryState::Directory(DirectorySyncState::Synced(self.find_root_row())) }
     }
 
     /// The unsent changes now. Read again only when the store changed since.
-    pub(super) fn unsent_changes(&self) -> Arc<UnsentChanges> {
+    pub(super) fn read_unsent_changes(&self) -> Arc<UnsentChanges> {
         let store = crate::panic::lock(&self.reader);
         let mut kept = crate::panic::lock(&self.unsent_changes);
         // A version that cannot be read is never the one kept.
@@ -114,14 +114,14 @@ impl DirectoryContents {
 
     /// The files of OneDrive at and below `row`, each with its sync state and its path in the
     /// folder.
-    pub(super) fn files_below(&self, row: &Row) -> Vec<(FileSyncState, PathBuf)> {
+    pub(super) fn list_files_below(&self, row: &Row) -> Vec<(FileSyncState, PathBuf)> {
         // One question at a time: the mount's requests read through the same connection, and
         // none waits for a whole walk.
         let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
         ids.push(row.id.clone());
         let files: Vec<Row> = ids.iter().filter_map(|id| self.find_row(id).filter(|r| r.kind == Kind::File)).collect();
         let placed: Vec<(Row, PathBuf)> = files.into_iter().filter_map(|file| self.find_path(&file.id).map(|at| (file, at))).collect();
-        let unsent_changes = self.unsent_changes();
+        let unsent_changes = self.read_unsent_changes();
         placed.into_iter().map(|(file, at)| (self.file_sync_state(file, &at, &unsent_changes), at)).collect()
     }
 

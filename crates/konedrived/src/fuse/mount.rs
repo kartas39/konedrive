@@ -226,7 +226,7 @@ impl Mount {
             let session = fuser::Session::new(kernel_requests, &folder, &config)?;
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
-            crate::folder::root::mounted_over(&folder, Arc::new(backing_directory.descriptor()?));
+            crate::folder::root::mounted_over(&folder, Arc::new(backing_directory.clone_descriptor()?));
             let session = session.spawn()?;
             let connection = fs::metadata(&folder).map_or(0, |m| libc::minor(m.dev()));
             // With the mount over it the backing directory is the daemon's alone, and open

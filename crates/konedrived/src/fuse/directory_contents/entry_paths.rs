@@ -10,14 +10,14 @@ use crate::fuse::directory::Directory;
 
 impl DirectoryContents {
     /// The folder itself, as a directory.
-    pub(in crate::fuse) fn root_directory(&self) -> Directory {
+    pub(in crate::fuse) fn find_root_directory(&self) -> Directory {
         Directory { id: self.find_root_id(), rel: PathBuf::new() }
     }
 
     /// The path the mount shows the OneDrive id `id` at: where the store has it, or where
     /// the user moved it or a directory it is in. `None` for what the user removed.
     pub(in crate::fuse) fn find_path(&self, id: &str) -> Option<PathBuf> {
-        let unsent_changes = self.unsent_changes();
+        let unsent_changes = self.read_unsent_changes();
         let (mut names, mut at) = (Vec::new(), id.to_owned());
         for _ in 0..konedrive_fs::MAX_DEPTH {
             if unsent_changes.removed.contains(&at) {
@@ -47,9 +47,9 @@ impl DirectoryContents {
 
     /// The entry at `rel`, found name by name from the root.
     pub(in crate::fuse) fn find_entry_at(&self, rel: &Path) -> Option<DirectoryEntry> {
-        let mut directory = self.root_directory();
+        let mut directory = self.find_root_directory();
         let mut names = rel.components().peekable();
-        let mut found = self.root_entry();
+        let mut found = self.find_root_entry();
         while let Some(name) = names.next() {
             found = self.find_entry(&directory, name.as_os_str().to_str()?)?;
             if names.peek().is_some() {

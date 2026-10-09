@@ -4,7 +4,7 @@
 //! downloaded has nothing on disk to carry one. [`Pins`] holds the OneDrive ids that carry a
 //! pin of their own, as the store has them: read from the store when the mount starts, and
 //! changed only together with the store. A pin on a directory keeps everything below it, so
-//! what keeps a file is found up its chain of parents ([`Pins::pinned_by`]), which
+//! what keeps a file is found up its chain of parents ([`Pins::find_pinning_row`]), which
 //! [`DirectoryContents`] tells.
 //!
 //! What a pin keeps is downloaded by [`download_pinned_files`].
@@ -66,7 +66,7 @@ impl Pins {
 
     /// What keeps `row` on this device: itself or a directory above it, whichever carries a
     /// pin.
-    pub(super) fn pinned_by(&self, row: &Row) -> Option<Row> {
+    pub(super) fn find_pinning_row(&self, row: &Row) -> Option<Row> {
         let pinned_ids = crate::panic::lock(&self.pinned_ids);
         let mut at = Some(row.clone());
         while let Some(row) = at {
@@ -104,7 +104,7 @@ pub(super) fn download_pinned_files(pins: &Arc<Pins>, directory_contents: &Arc<D
     runtime.spawn_blocking(move || {
         for id in pins.list_pinned_ids() {
             let Some(row) = directory_contents.find_row(&id) else { continue };
-            for (file, rel) in directory_contents.files_below(&row) {
+            for (file, rel) in directory_contents.list_files_below(&row) {
                 if let FileSyncState::RemoteOnly(file) = file {
                     file_downloader.download(file, rel, Class::Download, None);
                 }

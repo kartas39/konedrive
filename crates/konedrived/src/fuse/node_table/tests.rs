@@ -20,9 +20,9 @@ fn a_onedrive_file_keeps_its_node_id_when_it_is_renamed_or_moved() {
     let mut node_table = NodeTable::new();
     let docs = node_table.assign(in_onedrive("D"), 1, "docs");
     let file = node_table.assign(in_onedrive("F"), docs, "a.txt");
-    assert_eq!(node_table.path_of(file).as_deref(), Some(Path::new("docs/a.txt")));
+    assert_eq!(node_table.find_path(file).as_deref(), Some(Path::new("docs/a.txt")));
     assert_eq!(node_table.assign(in_onedrive("F"), 1, "b.txt"), file);
-    assert_eq!(node_table.path_of(file).as_deref(), Some(Path::new("b.txt")));
+    assert_eq!(node_table.find_path(file).as_deref(), Some(Path::new("b.txt")));
 }
 
 #[test]
@@ -36,8 +36,8 @@ fn two_keys_never_share_a_node_id_and_none_is_the_root() {
 #[test]
 fn the_roots_path_is_empty_and_an_unknown_node_ids_is_none() {
     let node_table = NodeTable::new();
-    assert_eq!(node_table.path_of(1).as_deref(), Some(Path::new("")));
-    assert_eq!(node_table.path_of(7), None);
+    assert_eq!(node_table.find_path(1).as_deref(), Some(Path::new("")));
+    assert_eq!(node_table.find_path(7), None);
 }
 
 /// A file made here has its node id as a local-only entry; once it is uploaded the same node
@@ -71,6 +71,6 @@ fn a_forgotten_key_leaves_nothing_behind() {
     let gone = node_table.assign(local_only(42, 1), 1, "a.txt");
     node_table.forget(&local_only(42, 1));
     assert!(node_table.nodes.is_empty() && node_table.node_ids.is_empty());
-    assert_eq!(node_table.path_of(gone), None);
+    assert_eq!(node_table.find_path(gone), None);
     assert_ne!(node_table.assign(local_only(42, 1), 1, "a.txt"), gone);
 }

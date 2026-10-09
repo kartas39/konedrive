@@ -12,7 +12,7 @@ impl WriteOperations {
     /// thread.
     pub(in crate::fuse) fn record_unrecorded_entries(&self) {
         let mut found = Vec::new();
-        let mut directories = vec![self.directory_contents.root_directory()];
+        let mut directories = vec![self.directory_contents.find_root_directory()];
         while let Some(directory) = directories.pop() {
             for listed in self.backing_directory.list_directory(&directory.rel) {
                 let Some(name) = listed.file_name().to_str().map(str::to_owned) else { continue };

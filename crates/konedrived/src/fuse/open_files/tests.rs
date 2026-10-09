@@ -43,6 +43,18 @@ fn an_open_file_gets_its_file_on_disk_once_there_is_one() {
     assert!(open_files.find_file(handle).unwrap().file_on_disk.is_some());
 }
 
+/// A write goes only through a handle that may write, into the file it has on disk.
+#[test]
+fn only_a_handle_that_may_write_gives_a_file_to_write() {
+    let open_files = OpenFiles::default();
+    let on_disk = || Some(Arc::new(tempfile::tempfile().unwrap()));
+    let reader = open_files.add_file(OpenFile { file_on_disk: on_disk(), ..open_file(2, Some("A"), false) });
+    let writer = open_files.add_file(OpenFile { file_on_disk: on_disk(), ..open_file(3, Some("A"), true) });
+    assert!(open_files.find_file_to_write(reader).is_none());
+    assert_eq!(open_files.find_file_to_write(writer).map(|(node_id, _)| node_id), Some(3));
+    assert!(open_files.find_file_to_write(writer + 1).is_none());
+}
+
 /// What free-up asks: only a handle that may write counts, only of that OneDrive file, and
 /// only until it is closed.
 #[test]

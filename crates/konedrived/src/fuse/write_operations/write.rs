@@ -51,7 +51,7 @@ impl WriteOperations {
 
     /// The last writer of the node `node_id` closed it: its content is ready to be sent when
     /// it was `changed`; when nothing was written, the outbox lets go of a OneDrive file.
-    pub(in crate::fuse) fn closed(&self, node_id: u64, changed: bool) {
+    pub(in crate::fuse) fn close_last_writer(&self, node_id: u64, changed: bool) {
         let untouched = self.node_lookup.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
         // A local-only file is sent all the same: it was never sent.
         let Some(untouched) = untouched else {

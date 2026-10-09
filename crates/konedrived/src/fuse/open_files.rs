@@ -69,6 +69,14 @@ impl OpenFiles {
         crate::panic::lock(&self.files).get(&handle).cloned()
     }
 
+    /// The node id and the file in the backing directory of the file held open by `handle`,
+    /// when the program may write through it.
+    pub(super) fn find_file_to_write(&self, handle: u64) -> Option<(u64, Arc<File>)> {
+        let files = crate::panic::lock(&self.files);
+        let file = files.get(&handle).filter(|file| file.may_write)?;
+        Some((file.node_id, Arc::clone(file.file_on_disk.as_ref()?)))
+    }
+
     /// The file held open by `handle` has `file_on_disk` in the backing directory from now
     /// on: it was downloaded since it was opened.
     pub(super) fn set_file_on_disk(&self, handle: u64, file_on_disk: Arc<File>) {

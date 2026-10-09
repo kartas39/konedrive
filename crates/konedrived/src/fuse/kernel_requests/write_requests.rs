@@ -126,9 +126,7 @@ impl KernelRequests {
     /// Bytes written through a handle that may write: into the file in the backing
     /// directory. The outbox holds the file since it was opened.
     pub(super) fn answer_write(&self, fh: FileHandle, offset: u64, data: &[u8], reply: ReplyWrite) {
-        let Some((node_id, file)) = self.open_files.find_file(fh.0).filter(|open| open.may_write).and_then(|open| Some((open.node_id, open.file_on_disk?))) else {
-            return reply.error(Errno::EBADF);
-        };
+        let Some((node_id, file)) = self.open_files.find_file_to_write(fh.0) else { return reply.error(Errno::EBADF) };
         self.open_writers.mark_written(node_id);
         match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
@@ -180,8 +178,7 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_fsync(&self, fh: FileHandle, reply: ReplyEmpty) {
-        let file = self.open_files.find_file(fh.0).filter(|open| open.may_write).and_then(|open| open.file_on_disk);
-        match file.map(|file| file.sync_all()) {
+        match self.open_files.find_file_to_write(fh.0).map(|(_, file)| file.sync_all()) {
             Some(Err(e)) => reply.error(to_errno(&e)),
             _ => reply.ok(),
         }

@@ -89,7 +89,7 @@ impl DirectoryContents {
         let name = row.name.clone();
         let state = match row.kind {
             Kind::Folder => EntryState::Directory(DirectorySyncState::Synced(row)),
-            Kind::File => EntryState::File(self.file_sync_state(row, rel, &self.unsent_changes())),
+            Kind::File => EntryState::File(self.file_sync_state(row, rel, &self.read_unsent_changes())),
         };
         DirectoryEntry { name, state }
     }
@@ -111,7 +111,7 @@ impl DirectoryContents {
 
     /// The row of what OneDrive has, or the user moved, under `name` in `directory`.
     pub(super) fn find_row_at(&self, directory: &Directory, name: &str) -> Option<Row> {
-        let unsent_changes = self.unsent_changes();
+        let unsent_changes = self.read_unsent_changes();
         let stored = directory.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         // What the user moved to this name is what the name is: what OneDrive has there too
         // is shown once the move is sent, or refused.
@@ -134,7 +134,7 @@ impl DirectoryContents {
     /// What every entry `directory` holds is made from: the names and the kinds. The backing
     /// directory is read only for what the store does not have, the local-only entries.
     pub(in crate::fuse) fn list_entry_sources(&self, directory: &Directory) -> Vec<EntrySource> {
-        let unsent_changes = self.unsent_changes();
+        let unsent_changes = self.read_unsent_changes();
         let stored = directory.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
         let mut rows: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (to, _))| directory.matches(to)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
         let moved_here: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();

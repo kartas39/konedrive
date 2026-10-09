@@ -79,7 +79,7 @@ impl NodeTable {
     }
 
     /// The path of the node `node_id` in the folder, from the names the kernel was told.
-    pub(super) fn path_of(&self, mut node_id: u64) -> Option<PathBuf> {
+    pub(super) fn find_path(&self, mut node_id: u64) -> Option<PathBuf> {
         let mut names = Vec::new();
         while node_id != 1 {
             let (parent, name) = &self.nodes.get(&node_id)?.place;
