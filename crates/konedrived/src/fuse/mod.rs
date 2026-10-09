@@ -46,10 +46,13 @@
 //!   is uploaded at all) touch no disk, and [`local_only_entry`] puts them together with
 //!   the backing directory: whether what is at a place is uploaded from there, and the walk
 //!   of what is unmarked below a place; [`detections`] (what a change is recorded as, a
-//!   function of typed events) depend on nothing but the store's facts; the
-//!   [`outbox_recorder`] writes the detections and wakes the outbox's worker;
+//!   function of typed events) read the store's facts and touch nothing else, and the
+//!   events are made of the values of the parts below: the backing directory's entry on
+//!   disk and its kind, a [`local_only_entry`], an [`entry_place`] and the upload rules'
+//!   status; the [`outbox_recorder`] writes the detections and wakes the outbox's worker;
 //!   [`open_handles`] holds what programs hold open, and alone says what is open for
-//!   writing; [`write_operations`] are the operations themselves — each a lookup, a
+//!   writing — a directory it holds open keeps the names the directory contents listed;
+//!   [`write_operations`] are the operations themselves — each a lookup, a
 //!   decision, the disk, a record — over the directory contents, the backing directory, the
 //!   node resolver, the open handles, the recorder, the rules and the switch; the
 //!   [`unrecorded_entry_scan`] finds what the outbox lost, over the directory contents, the
@@ -57,8 +60,9 @@
 //! - A change from OneDrive: [`inotify_bridge`] brings it to whoever watches the folder, over
 //!   the node resolver and the directory contents, with the modes of the backing
 //!   directory's table of write bits; what finds the user's own in its way is moved aside
-//!   by [`conflict_copies`], over the backing directory, the directory contents and the
-//!   rules.
+//!   by [`conflict_copies`], over the backing directory, the directory contents, the rules
+//!   and the detections, which say what the entry it kept is recorded as; it is told the
+//!   access mode by whoever calls it, and records in a read-write folder alone.
 //! - A file that is not downloaded: [`range_readers`] holds the files being read as ranges,
 //!   and the [`range_fetcher`] fetches the ranges, over it; [`download_states`] holds the
 //!   state of each file's download and does no I/O; [`file_downloader`] downloads a file
@@ -69,8 +73,8 @@
 //!   whether a downloaded copy is freed.
 //! - Who asks: [`cycle_step`] is the step of a cycle of the delta listing over the backing
 //!   directory, over the backing directory, the directory contents, the switch, the range
-//!   fetcher, the conflict copies, the recorder, the pins, the bridge and the pinned file
-//!   downloader; [`kernel_requests`] answers the kernel, in five groups, each over the parts
+//!   fetcher, the conflict copies, the detections, the recorder, the pins, the bridge and
+//!   the pinned file downloader; [`kernel_requests`] answers the kernel, in five groups, each over the parts
 //!   it uses — the write requests over the write operations and their thread;
 //!   [`files_interface`] answers the daemon's bus interface `Files`, over the directory
 //!   contents, the backing directory, the download states, the two downloaders, the open

@@ -9,11 +9,13 @@
 //! 5. [`WriteOperationThread`], over the tree lock, and [`OutboxRecorder`], over the store's
 //!    writer: neither is given a part;
 //! 6. [`UploadRules`], then [`ConflictCopies`]: the backing directory, the directory
-//!    contents, the rules;
-//! 7. [`OpenHandles`], which depends on no part; [`WriteOperations`]: the directory
-//!    contents, the backing directory, the node resolver, the open handles, the recorder, the
-//!    rules, the access mode switch; [`UnrecordedEntryScan`]: the directory contents, the
-//!    backing directory, the rules, the recorder, the switch;
+//!    contents, the rules — and no switch: the access mode is told it at each call. What it
+//!    records is decided by the detections, which are functions and are not built;
+//! 7. [`OpenHandles`], which is given no part and holds, for an open directory, the names
+//!    the directory contents listed; [`WriteOperations`]: the directory contents, the
+//!    backing directory, the node resolver, the open handles, the recorder, the rules, the
+//!    access mode switch; [`UnrecordedEntryScan`]: the directory contents, the backing
+//!    directory, the rules, the recorder, the switch;
 //! 8. [`DownloadStates`], which depends on no part, and [`Pins`] over the directory contents;
 //! 9. [`InotifyBridge`]: the node resolver and the directory contents — its thread is not
 //!    started yet;
@@ -22,8 +24,13 @@
 //!     the file downloader;
 //! 11. [`RangeReaders`] and [`InterruptibleReads`], which depend on no part, and
 //!     [`RangeFetcher`] over the range readers;
-//! 12. who asks, each given exactly the parts it uses: [`CycleStep`], [`FilesInterface`], and
-//!     the five groups of the kernel's requests, which [`KernelRequests`] holds.
+//! 12. who asks, each given exactly the parts it uses: [`CycleStep`] — the backing
+//!     directory, the directory contents, the switch, the range fetcher, the conflict
+//!     copies, the recorder, the pins, the bridge, the pinned file downloader, and it uses
+//!     the detections; [`FilesInterface`] — the directory contents, the backing directory,
+//!     the download states, the two downloaders, the open handles, the pins, the bridge and
+//!     the write-operation thread; and the five groups of the kernel's requests, which
+//!     [`KernelRequests`] holds.
 //!
 //! Nothing here mounts: what is built answers a cycle, the `Files` interface and a write
 //! operation without a mount over the folder.
