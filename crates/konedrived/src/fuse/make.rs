@@ -47,7 +47,12 @@ impl Shared {
         } else {
             Some(OpenOptions::new().read(true).write(true).create_new(true).mode(0o644).open(&path).map_err(|e| errno(&e))?)
         };
-        let object = self.object(&rel).ok_or(Errno::EIO)?;
+        let unmake = || drop(if dir { fs::remove_dir(&path) } else { fs::remove_file(&path) });
+        // What cannot be looked at is not recorded, and is not left in the folder either.
+        let Some(object) = self.object(&rel) else {
+            unmake();
+            return Err(Errno::EIO);
+        };
         // A file made where the user just removed an item's file is that item's new content:
         // programs replace a file that way, and the item keeps its history and its links.
         let again = if dir { None } else { self.removed_here(&rel) };
@@ -68,7 +73,7 @@ impl Shared {
         };
         if let Err(e) = recorded {
             tracing::warn!("a new {} could not be recorded: {e}", rel.display());
-            let _ = if dir { fs::remove_dir(&path) } else { fs::remove_file(&path) };
+            unmake();
             return Err(Errno::EIO);
         }
         let entry = match &again {
