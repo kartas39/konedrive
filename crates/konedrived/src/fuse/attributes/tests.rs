@@ -6,7 +6,8 @@ use fuser::FileType;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Kind;
 
-use super::{attr, OnDisk, Shown};
+use super::{attr, Shown};
+use crate::fuse::backing_directory::{DiskMetadata, EntryKind};
 use crate::fuse::directory_contents::tests::{of, directory_contents};
 use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 use crate::fuse::open_writers::OpenWriters;
@@ -16,8 +17,8 @@ fn at(seconds: u64) -> SystemTime {
 }
 
 /// A file of 10 bytes in 8 blocks, last changed at 500.
-fn copy() -> OnDisk {
-    OnDisk { size: 10, blocks: 8, changed: at(500) }
+fn copy() -> DiskMetadata {
+    DiskMetadata { kind: EntryKind::File, size: 10, blocks: 8, modified: at(500) }
 }
 
 #[test]

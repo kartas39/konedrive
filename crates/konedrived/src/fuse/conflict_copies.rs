@@ -43,7 +43,7 @@ impl ConflictCopies<'_> {
     pub(super) fn move_aside(&self, rel: &Path, above: Option<&str>, met: &mut CycleConflicts) {
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
         let Some(object) = self.backing_directory.find_disk_entry(rel) else { return };
-        if self.backing_directory.read_onedrive_id(rel).is_some() || !(object.meta.is_file() || object.meta.is_dir()) {
+        if self.backing_directory.read_onedrive_id(rel).is_some() {
             return;
         }
         let dir = Directory { id: above.map(str::to_owned), rel: parent.to_path_buf() };

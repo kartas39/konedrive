@@ -14,7 +14,7 @@ use konedrive_tree::{Kind, Placement, Row, Table};
 use super::DirectoryContents;
 use crate::folder::disk::daemon_owned;
 use crate::fuse::unsent_changes::{Above, UnsentChanges};
-use crate::fuse::backing_directory::Object;
+use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 
 /// One name in a directory of the folder.
 pub(in crate::fuse) enum Entry {
@@ -26,7 +26,7 @@ pub(in crate::fuse) enum Entry {
 
 pub(in crate::fuse) struct Local {
     pub(in crate::fuse) name: String,
-    pub(in crate::fuse) object: Object,
+    pub(in crate::fuse) object: DiskEntry,
 }
 
 impl Entry {
@@ -40,7 +40,7 @@ impl Entry {
     pub(in crate::fuse) fn is_dir(&self) -> bool {
         match self {
             Entry::Item(row) => row.kind == Kind::Folder,
-            Entry::Local(local) => local.object.meta.is_dir(),
+            Entry::Local(local) => local.object.metadata.kind == EntryKind::Directory,
         }
     }
 
@@ -83,7 +83,7 @@ impl DirectoryContents {
         if daemon_owned(name) {
             return None;
         }
-        let object = self.backing_directory.find_disk_entry(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
+        let object = self.backing_directory.find_disk_entry(rel)?;
         // One that carries the id of an item the store does not have is not an item's yet:
         // its upload is being committed, or the store was made anew.
         let of_an_item = self.backing_directory.read_onedrive_id(rel).is_some_and(|id| self.row(&id).is_some());

@@ -1,9 +1,10 @@
-//! A finished download given its place in the folder.
+//! A finished download given its path in the backing directory.
 //!
-//! A download is built in a file that has no name: it is in the folder's filesystem and in no
-//! directory, so nothing ever lists a file that is not whole, and one the daemon leaves behind
-//! goes by itself. Once it is whole and checked it lands: it is stamped as its item's copy and
-//! linked in at the item's place — unless something stands there that must not be replaced.
+//! A download is built in a file that has no name: it is in the backing directory's
+//! filesystem and in no directory, so nothing ever lists a file that is not whole, and one the
+//! daemon leaves behind is removed by the kernel. Once it is whole and checked it lands: it is
+//! marked as the downloaded copy of its OneDrive file and linked in at that file's path —
+//! unless something is there that must not be replaced.
 
 use std::ffi::CString;
 use std::fs::{self, File};
@@ -16,38 +17,39 @@ use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
 
 use super::BackingDirectory;
 
-/// What stands at the place a download is to land at.
+/// What is at the path a download is to land at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::fuse) enum TargetContents {
     Nothing,
-    /// The whole copy of the item that was downloaded: a program made it or saved over it
-    /// meanwhile.
+    /// The whole copy of the OneDrive file that was downloaded: a program made it or saved
+    /// over it meanwhile.
     CopyOfSameFile,
-    /// The whole copy of another item.
+    /// The whole copy of another OneDrive file.
     CopyOfOtherFile,
-    /// A file that carries an item's id and is not whole: it holds nothing.
+    /// A file that is marked with a OneDrive id and is not whole: it holds nothing.
     PartialFile,
-    /// Anything that carries no item's id: a file or directory of the user's own.
+    /// Anything that is marked with no OneDrive id: a file or directory of the user's own.
     UsersOwnFile,
 }
 
-/// What is done with a download, for what stands at its place.
+/// What is done with a download, for what is at its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::fuse) enum LandingAction {
     /// The download gets the name.
     Link,
-    /// What stands there goes first.
+    /// What is there is removed first.
     Replace,
-    /// What stands there is the item's content already: the download is dropped.
+    /// What is there is the file's content already: the download is dropped.
     Keep,
     Refuse,
 }
 
-/// What stands at the item's place by now is never replaced by what was downloaded: a file of
-/// the user's own; the item's copy, which a program made or saved over it meanwhile; the
-/// whole copy of another item. Only what holds nothing — a file that is not whole — goes.
-pub(in crate::fuse) fn choose_landing_action(stands: TargetContents) -> LandingAction {
-    match stands {
+/// What is at the path by now is never replaced by what was downloaded: a file of the user's
+/// own; the copy of the same OneDrive file, which a program made or saved over it meanwhile;
+/// the whole copy of another OneDrive file. Only what holds nothing — a file that is not
+/// whole — is replaced.
+pub(in crate::fuse) fn choose_landing_action(target: TargetContents) -> LandingAction {
+    match target {
         TargetContents::Nothing => LandingAction::Link,
         TargetContents::CopyOfSameFile => LandingAction::Keep,
         TargetContents::PartialFile => LandingAction::Replace,
@@ -58,21 +60,22 @@ pub(in crate::fuse) fn choose_landing_action(stands: TargetContents) -> LandingA
 /// How a download landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::fuse) enum LandingOutcome {
-    /// It is the file at the item's place.
+    /// It is the file at the path.
     Placed,
-    /// The item's whole copy stood there already, and stays.
+    /// The whole copy of the same OneDrive file was there already, and stays.
     Kept,
-    /// Something that is not to be replaced stands there, and stays.
+    /// Something that is not to be replaced is there, and stays.
     Refused,
 }
 
 impl BackingDirectory {
-    /// A file of the folder's filesystem that is in no directory, to build a download in.
+    /// A file of the backing directory's filesystem that is in no directory, to build a
+    /// download in.
     pub(in crate::fuse) fn unnamed(&self) -> io::Result<File> {
         File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.path(Path::new("")))
     }
 
-    /// What stands at `rel`, for a download of item `id`.
+    /// What is at `rel`, for a download of the OneDrive file `id`.
     pub(in crate::fuse) fn inspect_target(&self, rel: &Path, id: &str) -> TargetContents {
         let path = self.path(rel);
         if fs::symlink_metadata(&path).is_err() {
@@ -80,16 +83,17 @@ impl BackingDirectory {
         }
         let whole = xattr::get(&path, XATTR_STATE).ok().flatten().is_some_and(|state| state == State::Hydrated.as_str().as_bytes());
         match xattr::get(&path, XATTR_ITEM_ID).ok().flatten() {
-            Some(carried) if carried == id.as_bytes() && whole => TargetContents::CopyOfSameFile,
+            Some(marked_with) if marked_with == id.as_bytes() && whole => TargetContents::CopyOfSameFile,
             Some(_) if !whole => TargetContents::PartialFile,
             Some(_) => TargetContents::CopyOfOtherFile,
             None => TargetContents::UsersOwnFile,
         }
     }
 
-    /// Lands `file`, the whole and checked content of item `id` built in a file without a
-    /// name, at `rel`: stamped as the item's copy, last changed at `modified`, and given the
-    /// name unless what stands there says otherwise ([`step`]).
+    /// Lands `file`, the whole and checked content of the OneDrive file `id` built in a file
+    /// without a name, at `rel`: marked as that file's downloaded copy, last modified at
+    /// `modified`, and given the name unless what is there says otherwise
+    /// ([`choose_landing_action`]).
     pub(in crate::fuse) fn land(&self, file: &File, rel: &Path, id: &str, modified: SystemTime) -> io::Result<LandingOutcome> {
         placeholder::write_item_id(file, id)?;
         placeholder::write_state(file, State::Hydrated)?;

@@ -5,34 +5,18 @@
 //! by [`Shown::of`], from the view and from the files open for writing; [`of_entry`] is the
 //! two together, for a request's answer.
 
-use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{FileAttr, FileType, INodeNo};
 use konedrive_tree::Kind;
 
+use super::backing_directory::{DiskMetadata, EntryKind};
 use super::shared::seconds;
 use super::directory_contents::{Entry, DirectoryContents};
 use super::open_writers::OpenWriters;
 
 pub(super) const TTL: Duration = Duration::from_secs(1);
-
-/// What the filesystem says of a file or directory of the folder under the mount.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct OnDisk {
-    pub(super) size: u64,
-    pub(super) blocks: u64,
-    pub(super) changed: SystemTime,
-}
-
-impl From<&fs::Metadata> for OnDisk {
-    fn from(meta: &fs::Metadata) -> Self {
-        let changed = UNIX_EPOCH + Duration::new(meta.mtime().max(0) as u64, meta.mtime_nsec() as u32);
-        OnDisk { size: meta.size(), blocks: meta.blocks(), changed }
-    }
-}
 
 /// What a name of the mount is, as far as its attributes go. `listed` is the time the store
 /// has for an item.
@@ -45,9 +29,9 @@ pub(super) enum Shown {
     /// An item's file with its downloaded copy. A clean copy has its own size and blocks and
     /// the store's time; one whose content is the user's `own` — changed here and not sent
     /// yet, or open for writing — has its own time too.
-    Copy { copy: OnDisk, listed: SystemTime, own: bool },
+    Copy { copy: DiskMetadata, listed: SystemTime, own: bool },
     /// A file or directory OneDrive has no item for yet: the object's own.
-    Local { object: OnDisk, dir: bool },
+    Local { object: DiskMetadata, dir: bool },
 }
 
 impl Shown {
@@ -56,12 +40,12 @@ impl Shown {
     /// `writers`.
     pub(super) fn of(entry: &Entry, node_id: u64, rel: &Path, directory_contents: &DirectoryContents, open_writers: &OpenWriters) -> Shown {
         match entry {
-            Entry::Local(local) => Shown::Local { object: OnDisk::from(&local.object.meta), dir: local.object.meta.is_dir() },
+            Entry::Local(local) => Shown::Local { object: local.object.metadata, dir: local.object.metadata.kind == EntryKind::Directory },
             Entry::Item(row) if row.kind == Kind::Folder => Shown::Folder { listed: seconds(row.mtime) },
             Entry::Item(row) => match directory_contents.backing_directory().find_downloaded_copy(rel, &row.id) {
                 Some(meta) => {
                     let own = directory_contents.unsent_changes().changed.contains(&row.id) || open_writers.is_open(node_id);
-                    Shown::Copy { copy: OnDisk::from(&meta), listed: seconds(row.mtime), own }
+                    Shown::Copy { copy: meta, listed: seconds(row.mtime), own }
                 }
                 None => Shown::NotDownloaded { size: row.size, listed: seconds(row.mtime) },
             },
@@ -96,10 +80,10 @@ pub(super) fn attr(node_id: u64, writable: bool, shown: &Shown) -> FileAttr {
     let (size, blocks, changed) = match *shown {
         Shown::Folder { listed } => (0, 0, listed),
         Shown::NotDownloaded { size, listed } => (size, 0, listed),
-        Shown::Copy { copy, own: true, .. } => (copy.size, copy.blocks, copy.changed),
+        Shown::Copy { copy, own: true, .. } => (copy.size, copy.blocks, copy.modified),
         Shown::Copy { copy, listed, own: false } => (copy.size, copy.blocks, listed),
-        Shown::Local { object, dir: true } => (0, object.blocks, object.changed),
-        Shown::Local { object, dir: false } => (object.size, object.blocks, object.changed),
+        Shown::Local { object, dir: true } => (0, object.blocks, object.modified),
+        Shown::Local { object, dir: false } => (object.size, object.blocks, object.modified),
     };
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     FileAttr {

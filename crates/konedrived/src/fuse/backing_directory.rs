@@ -1,21 +1,27 @@
-//! The folder under the mount: the directory on disk the mount lies over.
+//! The backing directory: the directory on disk the mount lies over.
 //!
-//! [`BackingDirectory`] owns the descriptor opened on the folder before the mount, and everything of the
-//! folder is reached through it, never through the mount. It knows the disk and nothing else:
-//! not the store, not the kernel's nodes, not the outbox, not the mount. What is an item's is
-//! told by the id a file or directory carries, and whoever asks brings the id.
+//! [`BackingDirectory`] owns the descriptor opened on the directory before the mount, and
+//! everything in it is reached through that descriptor, never through the mount. It knows the
+//! disk and nothing else: not the store, not the kernel's node ids, not the outbox, not the
+//! mount. Which file or directory of OneDrive an entry on disk belongs to is told by the
+//! OneDrive id the entry is marked with, and whoever asks brings the id.
 //!
 //! What it answers for, each in a module of its own:
 //!
-//! - [`objects`]: what stands at a place, its file handle, and the item id it carries;
-//! - [`copies`]: an item's downloaded copy — whether a place holds it, marking one, removing one;
-//! - [`files`]: the files and directories a change makes, renames and removes;
-//! - [`backing`]: the directories down to a place, each marked with its item's id;
-//! - [`landing`]: a finished download stamped as its item's copy and given its name;
-//! - [`lock`]: the folder locked while no mount lies over it, and a dead mount taken off it;
-//! - [`older`]: a folder that holds an older konedrive's placeholders, which is never opened.
+//! - [`file_handles`]: the entry at a path, with its file handle and metadata, and the
+//!   OneDrive id it is marked with;
+//! - [`downloaded_copies`]: the downloaded copy of a OneDrive file — whether a path holds it,
+//!   marking one, removing one;
+//! - [`file_operations`]: the files and directories a change makes, renames and removes;
+//! - [`directory_marks`]: the directories down to a path, each marked with its OneDrive id;
+//! - [`download_landing`]: a finished download marked as a downloaded copy and given its name;
+//! - [`tree_lock`]: the directory locked while no mount lies over it, and a dead mount taken
+//!   off it;
+//! - [`legacy_placeholders`]: a directory that holds an older konedrive's placeholders, which
+//!   is never opened.
 //!
-//! A place is always a path below the folder (`rel`); the folder itself is the empty path.
+//! A path is always relative to the backing directory (`rel`); the directory itself is the
+//! empty path.
 
 use std::fs::{self, File};
 use std::io;
@@ -23,86 +29,87 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 mod directory_marks;
-mod downloaded_copies;
-mod file_operations;
 mod download_landing;
-mod tree_lock;
+mod downloaded_copies;
 mod file_handles;
+mod file_operations;
 mod legacy_placeholders;
+mod tree_lock;
 
 pub(super) use download_landing::LandingOutcome;
-pub use tree_lock::{clear_stale, directories, tidy, tidy_all};
+pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
 pub(super) use tree_lock::set_tree;
-pub(super) use file_handles::Object;
+pub use tree_lock::{clear_stale, directories, tidy, tidy_all};
 
-/// Where an earlier build built its downloads, inside the folder: taken off when the folder
-/// is opened. A download is built in a file without a name now.
+/// Where an earlier build built its downloads, inside the backing directory: removed when the
+/// directory is opened. A download is built in a file without a name now.
 const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
 
-/// The folder under the mount, by the descriptor opened on it before the mount.
+/// The backing directory, by the descriptor opened on it before the mount.
 pub(super) struct BackingDirectory {
-    folder: File,
+    descriptor: File,
 }
 
 impl BackingDirectory {
     /// Opens `folder`, which no mount lies over yet: afterwards its path is the mount, and
     /// this is the one way to what it holds. A mount a daemon that died left on it is taken
-    /// off first, and a folder an older konedrive kept is refused.
+    /// off first, and a directory an older konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
         clear_stale(folder);
         if legacy_placeholders::holds_legacy_placeholders(folder) {
             return Err(legacy_placeholders::refusal(folder));
         }
-        // `fusermount3` mounts only where its user may write; the folder was locked when the
-        // daemon last ended.
+        // `fusermount3` mounts only where its user may write; the directory was locked when
+        // the daemon last ended.
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
         }
-        let backing_directory = BackingDirectory { folder: File::open(folder)? };
+        let backing_directory = BackingDirectory { descriptor: File::open(folder)? };
         let _ = fs::remove_dir_all(backing_directory.path(Path::new(LEGACY_STAGING_DIRECTORY)));
         Ok(backing_directory)
     }
 
-    /// The path of the folder itself, through the descriptor: for what walks the folder without
-    /// going through the mount.
+    /// The path of the backing directory itself, through the descriptor: for what walks it
+    /// without going through the mount.
     pub(super) fn root(&self) -> PathBuf {
-        konedrive_fs::proc_path(&self.folder)
+        konedrive_fs::proc_path(&self.descriptor)
     }
 
-    /// The path of `rel` in the folder: through the descriptor, never through the mount. Good
-    /// for as long as this lives.
+    /// The path of `rel` in the backing directory: through the descriptor, never through the
+    /// mount. Good for as long as this lives.
     pub(super) fn path(&self, rel: &Path) -> PathBuf {
-        konedrive_fs::proc_path(&self.folder).join(rel)
+        konedrive_fs::proc_path(&self.descriptor).join(rel)
     }
 
-    /// BackingDirectory the mount the folder is the daemon's alone, and open to it: its owner's write bits
-    /// are given back, which were taken off when the daemon last ended.
+    /// Under the mount the backing directory is the daemon's alone, and open to it: its
+    /// owner's write bits are given back, which were taken off when the daemon last ended.
     pub(super) fn unlock(&self) {
         set_tree(&self.path(Path::new("")), false);
     }
 
-    /// One more descriptor of the folder, for what in the daemon opens the folder by its path:
-    /// that path is the mount.
+    /// One more descriptor of the backing directory, for what in the daemon opens the folder
+    /// by its path: that path is the mount.
     pub(super) fn descriptor(&self) -> io::Result<File> {
-        self.folder.try_clone()
+        self.descriptor.try_clone()
     }
 
-    /// The space of the filesystem the folder is on.
+    /// The space of the filesystem the backing directory is on.
     pub(super) fn space(&self) -> io::Result<libc::statvfs> {
         // SAFETY: a plain structure the call fills.
         let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
-        // SAFETY: the folder's own descriptor.
-        match unsafe { libc::fstatvfs(self.folder.as_raw_fd(), &mut v) } {
+        // SAFETY: the backing directory's own descriptor.
+        match unsafe { libc::fstatvfs(self.descriptor.as_raw_fd(), &mut v) } {
             0 => Ok(v),
             _ => Err(io::Error::last_os_error()),
         }
     }
 
-    /// The attribute `name` of the object at `rel`; of the folder itself for the empty path.
+    /// The extended attribute `name` of the entry at `rel`; of the backing directory itself
+    /// for the empty path.
     pub(super) fn attribute(&self, rel: &Path, name: &str) -> Option<String> {
         let value = match rel.as_os_str().is_empty() {
-            true => xattr::FileExt::get_xattr(&self.folder, name),
+            true => xattr::FileExt::get_xattr(&self.descriptor, name),
             false => xattr::get(self.path(rel), name),
         };
         value.ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())

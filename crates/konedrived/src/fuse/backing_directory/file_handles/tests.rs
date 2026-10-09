@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::fuse::backing_directory::tests::folder;
+use crate::fuse::backing_directory::EntryKind;
 
 #[test]
 fn an_object_is_what_stands_at_a_place_with_its_handle() {
@@ -9,7 +10,7 @@ fn an_object_is_what_stands_at_a_place_with_its_handle() {
     fs::create_dir(dir.path().join("docs")).unwrap();
     fs::write(dir.path().join("docs/a.txt"), b"abc").unwrap();
     let (file, docs) = (backing_directory.find_disk_entry(Path::new("docs/a.txt")).unwrap(), backing_directory.find_disk_entry(Path::new("docs")).unwrap());
-    assert!(file.meta.is_file() && file.meta.len() == 3 && docs.meta.is_dir());
+    assert_eq!((file.metadata.kind, file.metadata.size, docs.metadata.kind), (EntryKind::File, 3, EntryKind::Directory));
     assert_eq!(backing_directory.find_disk_entry(Path::new("docs/a.txt")).unwrap().handle, file.handle);
     assert!(backing_directory.find_disk_entry(Path::new("docs/none.txt")).is_none());
 }
@@ -41,9 +42,9 @@ fn a_link_is_not_followed() {
     let (dir, backing_directory) = folder();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     std::os::unix::fs::symlink("a.txt", dir.path().join("link")).unwrap();
-    let link = backing_directory.find_disk_entry(Path::new("link")).unwrap();
-    assert!(link.meta.is_symlink());
-    assert_ne!(link.handle, backing_directory.find_disk_entry(Path::new("a.txt")).unwrap().handle);
+    assert!(backing_directory.find_disk_entry(Path::new("link")).is_none());
+    let link = backing_directory.find_file_handle(Path::new("link")).unwrap();
+    assert_ne!(link, backing_directory.find_disk_entry(Path::new("a.txt")).unwrap().handle);
 }
 
 #[test]

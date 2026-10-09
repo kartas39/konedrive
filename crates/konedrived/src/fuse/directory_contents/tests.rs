@@ -8,7 +8,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
 use super::{Directory, Entry, DirectoryContents};
 use crate::folder::disk::HOLDING;
-use crate::fuse::backing_directory::BackingDirectory;
+use crate::fuse::backing_directory::{BackingDirectory, EntryKind};
 
 pub(in crate::fuse) fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
@@ -146,10 +146,10 @@ fn an_object_without_an_item_is_listed_where_it_lies() {
     fs::create_dir(dir.path().join("docs")).unwrap();
     fs::write(dir.path().join("docs/own.txt"), b"mine").unwrap();
     fs::create_dir(dir.path().join("new")).unwrap();
-    assert!(matches!(directory_contents.find_entry(&docs(), "own.txt"), Some(Entry::Local(local)) if local.name == "own.txt" && local.object.meta.is_file()));
+    assert!(matches!(directory_contents.find_entry(&docs(), "own.txt"), Some(Entry::Local(local)) if local.name == "own.txt" && local.object.metadata.kind == EntryKind::File));
     assert_eq!(names(&directory_contents, &docs()), ["c.txt", "own.txt"]);
     assert_eq!(names(&directory_contents, &directory_contents.root_directory()), ["a.txt", "b.txt", "docs", "new"]);
-    assert!(matches!(directory_contents.find_entry_at(Path::new("new")), Some(Entry::Local(local)) if local.object.meta.is_dir()));
+    assert!(matches!(directory_contents.find_entry_at(Path::new("new")), Some(Entry::Local(local)) if local.object.metadata.kind == EntryKind::Directory));
 }
 
 /// The daemon's own names, a link, and a file that carries the id of an item the store has

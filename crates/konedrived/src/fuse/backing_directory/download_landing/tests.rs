@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -82,8 +82,9 @@ fn a_download_lands_as_its_items_copy() {
     let (dir, backing_directory) = folder_with_docs();
     assert_eq!(land(&backing_directory), LandingOutcome::Placed);
     assert_eq!(fs::read(dir.path().join(AT)).unwrap(), b"downloaded");
-    let meta = backing_directory.find_downloaded_copy(Path::new(AT), "A").expect("the item's whole copy");
-    assert_eq!((meta.mtime(), meta.permissions().mode() & 0o777), (1_000, 0o444));
+    let copy = backing_directory.find_downloaded_copy(Path::new(AT), "A").expect("the downloaded copy");
+    let mode = backing_directory.stat(Path::new(AT)).unwrap().permissions().mode() & 0o777;
+    assert_eq!((copy.modified, mode), (UNIX_EPOCH + Duration::from_secs(1_000), 0o444));
 }
 
 #[test]

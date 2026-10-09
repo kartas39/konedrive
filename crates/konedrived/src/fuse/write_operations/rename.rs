@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use fuser::Errno;
 
 use super::WriteOperations;
+use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::{DisplacedEntry, MovedEntry, EntryRenamed};
 use crate::fuse::local_only_entries::{collect_local_only_entries, folder_place, local_object};
 use crate::fuse::shared::errno;
@@ -42,7 +43,7 @@ impl RenamePlan {
     /// The item whose file a local file is saved over, by rename.
     fn saved_over(&self) -> Option<&str> {
         match (&self.source, &self.target) {
-            (Entry::Local(local), Some(Entry::Item(over))) if !local.object.meta.is_dir() => Some(&over.id),
+            (Entry::Local(local), Some(Entry::Item(over))) if local.object.metadata.kind == EntryKind::File => Some(&over.id),
             _ => None,
         }
     }
@@ -134,10 +135,10 @@ impl WriteOperations {
         }
         let entry = match &plan.source {
             Entry::Item(row) => {
-                let object = (backing == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_disk_entry(&plan.to())).flatten();
-                MovedEntry::InOneDrive { id: row.id.clone(), dir: plan.source.is_dir(), object: object.map(|o| o.handle) }
+                let handle = (backing == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_file_handle(&plan.to())).flatten();
+                MovedEntry::InOneDrive { id: row.id.clone(), dir: plan.source.is_dir(), object: handle }
             }
-            Entry::Local(local) if local.object.meta.is_dir() => {
+            Entry::Local(local) if local.object.metadata.kind == EntryKind::Directory => {
                 let uploaded = if plan.uploaded { collect_local_only_entries(&self.backing_directory, &self.rules, &plan.to_dir, &plan.to_name) } else { Vec::new() };
                 MovedEntry::LocalOnlyDirectory { handle: local.object.handle.clone(), uploaded }
             }

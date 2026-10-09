@@ -7,7 +7,7 @@
 //! [`UploadRules`] what stays on this computer; it decides nothing else.
 
 use super::detections::{FolderPlace, LocalEntry, LocalObject, ObjectKind};
-use super::backing_directory::{Object, BackingDirectory};
+use super::backing_directory::{BackingDirectory, DiskEntry, EntryKind};
 use super::upload_rules::UploadRules;
 use super::directory_contents::Directory;
 
@@ -17,8 +17,8 @@ const MOST_ENTRIES: usize = 50_000;
 
 /// What a row needs of `object`: its file handle, and whether it is a directory or a file of
 /// its size.
-pub(super) fn local_object(object: &Object) -> LocalObject {
-    let kind = if object.meta.is_dir() { ObjectKind::Directory } else { ObjectKind::File { size: object.meta.len() } };
+pub(super) fn local_object(object: &DiskEntry) -> LocalObject {
+    let kind = object.metadata.file_size().map_or(ObjectKind::Directory, |size| ObjectKind::File { size });
     LocalObject { handle: object.handle.clone(), kind }
 }
 
@@ -40,11 +40,11 @@ fn collect_into(backing_directory: &BackingDirectory, rules: &UploadRules, dir: 
     let rel = dir.rel.join(name);
     let Some(object) = backing_directory.find_disk_entry(&rel) else { return };
     let stays = rules.stays_local(&dir.rel, name, |at| backing_directory.read_onedrive_id(at).is_some());
-    if stays || backing_directory.read_onedrive_id(&rel).is_some() || !(object.meta.is_dir() || object.meta.is_file()) {
+    if stays || backing_directory.read_onedrive_id(&rel).is_some() {
         return;
     }
     into.push(LocalEntry { place: folder_place(dir, name), object: local_object(&object) });
-    if object.meta.is_dir() && into.len() < MOST_ENTRIES {
+    if object.metadata.kind == EntryKind::Directory && into.len() < MOST_ENTRIES {
         let inside = Directory { id: None, rel: rel.clone() };
         for entry in backing_directory.list(&rel) {
             if let Some(name) = entry.file_name().to_str() {

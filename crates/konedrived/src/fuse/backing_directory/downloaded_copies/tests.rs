@@ -23,7 +23,7 @@ fn file(dir: &Path, id: Option<&str>, state: Option<State>) {
 fn a_whole_file_that_carries_the_items_id_is_its_copy() {
     let (dir, backing_directory) = folder();
     file(dir.path(), Some("A"), Some(State::Hydrated));
-    assert_eq!(backing_directory.find_downloaded_copy(Path::new(AT), "A").map(|m| m.len()), Some(3));
+    assert_eq!(backing_directory.find_downloaded_copy(Path::new(AT), "A").map(|copy| copy.size), Some(3));
     assert!(backing_directory.has_downloaded_copy(Path::new(AT), "A"));
 }
 

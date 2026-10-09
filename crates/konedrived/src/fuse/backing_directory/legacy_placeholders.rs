@@ -1,5 +1,5 @@
-//! A folder an older konedrive kept: it holds placeholders, files that have an item's name and
-//! none of its content. A mount is never put over one: what it holds would be taken for
+//! A folder an older konedrive kept: it holds placeholders, files that have the name of a OneDrive
+//! file and none of its content. A mount is never put over one: what it holds would be taken for
 //! downloaded copies or for files of the user's own.
 
 use std::fs;

@@ -1,9 +1,9 @@
-//! The directories of the folder down to a place: what a downloaded copy, or anything a
-//! program makes, stands in. Each is marked with the id of the item it is the directory of,
-//! so that it is known as that item's whatever its name becomes.
+//! The directories of the backing directory down to a path: what a downloaded copy, or
+//! anything a program makes, lies in. Each is marked with the OneDrive id of the directory it
+//! backs, so that it is known as that directory whatever its name becomes.
 //!
-//! Which item a name is, the disk does not know: whoever asks for the directories says, name
-//! by name.
+//! Which OneDrive directory a name is, the disk does not know: whoever asks for the
+//! directories says, name by name.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,16 +11,16 @@ use std::path::{Path, PathBuf};
 use super::BackingDirectory;
 
 impl BackingDirectory {
-    /// The directories down to `rel`, made where they are missing, each carrying the id of
-    /// the item it is the directory of. `root` is the item of the folder itself; `item`
-    /// tells the item of a name from the directory it is in — that directory's item, when
-    /// it has one, and its place. A directory `item` knows nothing of is made and left
+    /// Makes the directories down to `rel` where they are missing, and marks each with the
+    /// OneDrive id of the directory it backs. `root_id` is the id of the folder itself;
+    /// `id_of` tells the id of a name from the directory it is in — that directory's id,
+    /// when it has one, and its path. A directory `id_of` knows nothing of is made and left
     /// unmarked.
-    pub(in crate::fuse) fn make_marked_directories(&self, rel: &Path, root: Option<String>, item: impl Fn(Option<&str>, &Path, &str) -> Option<String>) -> io::Result<()> {
-        let (mut above, mut dir) = (root, PathBuf::new());
+    pub(in crate::fuse) fn make_marked_directories(&self, rel: &Path, root_id: Option<String>, id_of: impl Fn(Option<&str>, &Path, &str) -> Option<String>) -> io::Result<()> {
+        let (mut parent_id, mut parent) = (root_id, PathBuf::new());
         for name in rel.components() {
-            let at = dir.join(name);
-            let id = name.as_os_str().to_str().and_then(|n| item(above.as_deref(), &dir, n));
+            let at = parent.join(name);
+            let id = name.as_os_str().to_str().and_then(|n| id_of(parent_id.as_deref(), &parent, n));
             match self.make_dir(&at) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -31,7 +31,7 @@ impl BackingDirectory {
                     self.mark_with_onedrive_id(&at, id)?;
                 }
             }
-            (above, dir) = (id, at);
+            (parent_id, parent) = (id, at);
         }
         Ok(())
     }

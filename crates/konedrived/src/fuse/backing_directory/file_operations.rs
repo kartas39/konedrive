@@ -1,5 +1,5 @@
-//! The files and directories a change makes, renames and removes in the folder: each one call
-//! of the filesystem at a place, with nothing decided here.
+//! The files and directories a change makes, renames and removes in the backing directory: each
+//! one call of the filesystem at a path, with nothing decided here.
 
 use std::fs::{self, DirEntry, File, OpenOptions};
 use std::io;
@@ -10,7 +10,7 @@ use super::BackingDirectory;
 
 impl BackingDirectory {
     /// What the filesystem says of the name `rel`, a link not followed. `None` when nothing
-    /// stands there.
+    /// is there.
     pub(in crate::fuse) fn stat(&self, rel: &Path) -> Option<fs::Metadata> {
         fs::symlink_metadata(self.path(rel)).ok()
     }
@@ -24,7 +24,7 @@ impl BackingDirectory {
         fs::create_dir(self.path(rel))
     }
 
-    /// A new file at `rel`, where nothing stands, open to read and write.
+    /// A new file at `rel`, where nothing is yet, open to read and write.
     pub(in crate::fuse) fn make_file(&self, rel: &Path) -> io::Result<File> {
         OpenOptions::new().read(true).write(true).create_new(true).mode(0o644).open(self.path(rel))
     }

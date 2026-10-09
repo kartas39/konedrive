@@ -1,7 +1,6 @@
 //! What the daemon asks of a mount for a path: download it, free it up, look at it.
 
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -146,7 +145,7 @@ impl Mount {
         let (row, _) = self.item(path)?;
         let s = &self.shared;
         let sizes = s.directory_contents.files_below(&row).into_iter().filter_map(|(file, at)| s.backing_directory.find_downloaded_copy(&at, &file.id));
-        Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks() * 512)))
+        Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks * 512)))
     }
 }
 
