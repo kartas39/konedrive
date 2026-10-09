@@ -67,3 +67,18 @@ fn the_backing_directory_itself_needs_no_directory() {
     backing_directory.make_marked_directories(Path::new(""), Some("R".into()), id_of).unwrap();
     assert_eq!(backing_directory.list_directory(Path::new("")).count(), 0);
 }
+
+/// A file of the user's own that has the name of a directory of OneDrive is not taken for
+/// that directory: nothing is made, and the file is marked with nothing.
+#[test]
+fn a_file_that_stands_where_a_directory_is_to_be_made_is_an_error_and_is_not_marked() {
+    let (dir, backing_directory) = empty_backing_directory();
+    fs::write(dir.path().join("docs"), b"mine").unwrap();
+    let refused = backing_directory.make_marked_directories(Path::new("docs/deep"), Some("R".into()), id_of).unwrap_err();
+    assert_eq!(refused.raw_os_error(), Some(libc::ENOTDIR));
+    assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
+    assert_eq!(fs::read(dir.path().join("docs")).unwrap(), b"mine");
+    // Also as the last name of the path.
+    assert_eq!(backing_directory.make_marked_directories(Path::new("docs"), Some("R".into()), id_of).unwrap_err().raw_os_error(), Some(libc::ENOTDIR));
+    assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
+}
