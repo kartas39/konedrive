@@ -37,8 +37,8 @@ fn swaps_and_folders_replaced_in_place_go_through_a_temporary_name() {
 /// a temporary name; its content is throttled after the PATCH to that name
 /// landed, and the replay meets `412`. The file keeps its name here, and
 /// OneDrive ends with both files swapped and nothing under a temporary name.
-/// Then the same for a move whose PATCH answer was lost and whose row an
-/// examination merged into before the replay: it keeps its temporary name.
+/// Then the same for a move whose PATCH answer was lost and whose row a
+/// later detection merged into before the replay: it keeps its temporary name.
 #[test]
 fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
     for edited in [true, false] {

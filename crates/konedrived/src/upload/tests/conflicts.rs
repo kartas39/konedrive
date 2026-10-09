@@ -192,10 +192,9 @@ fn a_renamed_file_that_is_not_downloaded_does_not_wait_for_ever_for_a_taken_name
     assert_eq!(w.content("b.txt").unwrap(), b"theirs");
 }
 
-/// A delete × edit dropped while a cycle is between staging and swap.
-/// The drop waits for the cycle's swap (the tree lock), so the swap cannot
-/// give the item back the local object it forgot — which would make the
-/// next examination delete OneDrive's newer version.
+/// A delete × edit dropped while a cycle is between staging and swap: the drop waits for
+/// the cycle's swap (the tree lock), as a delete's commit does, so the outbox and the base
+/// change in one order.
 #[test]
 fn delete_commits_wait_for_the_cycles_swap() {
     let w = World::new(&[file("A", "R", "a.txt", b"a"), file("B", "R", "b.txt", b"b")]);

@@ -1,7 +1,6 @@
-//! Defects the review of 2026-10-03 found (`docs/quality/upload.md`), each shown by a test
-//! that says what the worker should do.
+//! What a start of the worker lets go — the rows a `403` blocked — and a new file's upload
+//! that OneDrive holds with other content, which is deleted before the file goes again.
 
-use konedrive_tree::ActivityKind;
 use super::*;
 
 /// A `403` blocks its own row (`forbidden`) and nothing else: the other

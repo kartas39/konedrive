@@ -457,10 +457,12 @@ daemon shows OneDrive.
 The outbox worker: sends the recorded changes to OneDrive; what is kept back. Design:
 `writes.md` §5, §6, §10.
 
-- `mod.rs` — the worker and its host.
+- `mod.rs` — the worker and its host. `[tests]`: the worker end to end against the fake
+  OneDrive, in a folder that stands for the backing directory (`tests/world.rs`,
+  `tests/write_operations.rs`, `tests/harness.rs`), one file for each thing it does.
 - `engine.rs` — the worker: what it works with, whether it may send, its status, its life.
 - `engine/drain.rs` — one drain: which row is taken next, and what the worker waits for.
-- `engine/outcome.rs` — how a row's run can end, and the outcome of an answer no step settled.
+- `engine/outcome.rs` — how a row's run can end, and the outcome of an answer no step settled. `[tests]`
 - `engine/settle.rs` — what each outcome does to its row and to the worker.
 - `engine/state.rs` — the worker's own state in parts: the throttle, its trouble, the cycle it waits for, the rows in flight. `[tests]`
 - `engine/marks.rs` — the `user.konedrive.sync` attribute of the rows' files.
