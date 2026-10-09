@@ -244,7 +244,7 @@ fn a_file_opened_for_writing_between_the_listing_and_its_turn_is_kept() {
     let built = build_mount_with_downloaded_file();
     let held = built.tree_lock.blocking_lock();
     let open_handles = Arc::clone(&built.mount.files_interface().open_handles);
-    let _opened = built.queue_on_write_operation_thread(move || drop(open_handles.add_writer(NodeId(900), Some("A".into()), Arc::new(tempfile::tempfile().unwrap()))));
+    let _opened = built.queue_on_write_operation_thread(move || open_handles.add_writer(NodeId(900), Some("A".into()), Arc::new(tempfile::tempfile().unwrap())));
     let freed = free_up_behind_queued_jobs(&built, held, 1);
     assert_eq!((freed.files, freed.kept), (0, 1));
     assert!(built.disk.join("a.txt").is_file());

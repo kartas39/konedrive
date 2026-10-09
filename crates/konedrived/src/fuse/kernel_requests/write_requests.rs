@@ -130,15 +130,15 @@ impl WriteRequests {
     /// `node_id` is in the backing directory, when writing it needs that; `reply` is refused
     /// instead when the folder is read-only, or the download fails.
     fn run_with_content<R: ErrnoReply>(&self, node_id: NodeId, reply: R, job: impl FnOnce(&WriteRequests, R) + Send + 'static) {
-        let needed = match self.write_operations.find_needed_download(node_id) {
-            Ok(Some(needed)) => needed,
+        let file = match self.write_operations.find_file_to_download(node_id) {
+            Ok(Some(file)) => file,
             Ok(None) => return self.run_on_thread(move |requests| job(requests, reply)),
             Err(e) => return reply.refuse(e),
         };
         let requests = self.clone();
         self.runtime.spawn(async move {
             let (waiter, downloaded) = oneshot::channel();
-            requests.file_downloader.download(needed.row, needed.path, Class::Open, Some(waiter));
+            requests.file_downloader.download(file, Class::Open, Some(waiter));
             match downloaded.await {
                 Ok(Ok(())) => requests.run_on_thread(move |requests| job(requests, reply)),
                 Ok(Err(e)) => reply.refuse(Errno::from_i32(e)),

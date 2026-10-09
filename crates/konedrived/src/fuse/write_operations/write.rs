@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use fuser::{Errno, TimeOrNow};
-use konedrive_tree::Row;
 
 use super::WriteOperations;
 use crate::fuse::access_mode_switch::AccessMode;
@@ -24,26 +23,19 @@ use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{CloseOutcome, Fh, WriterRank};
 use crate::fuse::errno::to_errno;
+use crate::fuse::file_downloader::FileToDownload;
 use crate::fuse::upload_rules::UploadDecision;
 
-/// A OneDrive file whose content has to be downloaded before it can be written: its row,
-/// and its path in the folder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::fuse) struct NeededDownload {
-    pub(in crate::fuse) row: Row,
-    pub(in crate::fuse) path: PathBuf,
-}
-
 impl WriteOperations {
-    /// The download that writing the node `node_id` needs first: of a OneDrive file that is
-    /// not downloaded and holds something. Not asked for a file that is cut to nothing: its
+    /// The file that writing the node `node_id` needs downloaded first: a OneDrive file that
+    /// is not downloaded and holds something. Not asked for a file that is cut to nothing: its
     /// content is not needed. A read-only folder refuses here, before anything is
     /// downloaded for a write it will not take.
-    pub(in crate::fuse) fn find_needed_download(&self, node_id: NodeId) -> Result<Option<NeededDownload>, Errno> {
+    pub(in crate::fuse) fn find_file_to_download(&self, node_id: NodeId) -> Result<Option<FileToDownload>, Errno> {
         self.access_mode_switch.check_read_write()?;
         let Some((entry, rel)) = self.node_resolver.find_entry(node_id) else { return Ok(None) };
         Ok(match entry.state {
-            EntryState::File(FileSyncState::RemoteOnly(row)) if row.size > 0 => Some(NeededDownload { row, path: rel }),
+            EntryState::File(FileSyncState::RemoteOnly(row)) if row.size > 0 => Some(FileToDownload { row, path: rel }),
             _ => None,
         })
     }
@@ -62,7 +54,7 @@ impl WriteOperations {
 
     /// Opens the node `node_id` for writing, with the content it has: the `fh` the program
     /// holds it open by. The copy of a OneDrive file that is not downloaded is the caller's
-    /// to download first ([`find_needed_download`](Self::find_needed_download)).
+    /// to download first ([`find_file_to_download`](Self::find_file_to_download)).
     pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId) -> Result<Fh, Errno> {
         let (entry, file, path) = self.find_file_to_write(node_id)?;
         self.make_writable(&file, &path)?;

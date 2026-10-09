@@ -52,6 +52,13 @@ mod watermarked_source;
 use landing_attempt::{to_download_result, LandingAttempt};
 use watermarked_source::WatermarkedSource;
 
+/// A OneDrive file that is to be downloaded whole: its row, and its path in the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FileToDownload {
+    pub(super) row: Row,
+    pub(super) path: PathBuf,
+}
+
 /// A download that failed and can be continued: the size of its unfinished file on disk, and
 /// the checkpoint it is continued from, when it has one.
 #[cfg(any(test, feature = "fault-injection"))]
@@ -120,9 +127,10 @@ impl FileDownloader {
         self.inotify_bridge.announce(vec![Announcement::FileShownChanged { path, onedrive_id }]);
     }
 
-    /// Downloads the OneDrive file `row` to `rel` unless a download of it runs already;
-    /// `waiter` is answered when the download ends, however it ends.
-    pub(super) fn download(self: &Arc<Self>, row: Row, rel: PathBuf, class: Class, waiter: Option<Waiter>) {
+    /// Downloads `file` to its path unless a download of it runs already; `waiter` is
+    /// answered when the download ends, however it ends.
+    pub(super) fn download(self: &Arc<Self>, file: FileToDownload, class: Class, waiter: Option<Waiter>) {
+        let FileToDownload { row, path: rel } = file;
         let unfinished_file = match self.download_states.start_or_join(&row.id, waiter) {
             DownloadStart::Started { unfinished_file } => unfinished_file,
             DownloadStart::Joined => return,

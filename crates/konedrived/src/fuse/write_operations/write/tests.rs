@@ -162,10 +162,10 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
 fn a_onedrive_file_that_is_not_downloaded_is_downloaded_before_it_is_written() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
-    assert_eq!(f.ops.find_needed_download(node_id).unwrap().map(|needed| (needed.row.id, needed.path)), Some(("A".into(), at("a.txt"))));
+    assert_eq!(f.ops.find_file_to_download(node_id).unwrap().map(|file| (file.row.id, file.path)), Some(("A".into(), at("a.txt"))));
     assert_eq!(f.ops.open_to_write(node_id).err(), Some(Errno::EIO));
     f.download("a.txt", "A", b"a");
-    assert!(f.ops.find_needed_download(node_id).unwrap().is_none());
+    assert!(f.ops.find_file_to_download(node_id).unwrap().is_none());
 }
 
 /// Cut to nothing it needs no download: the copy is made empty, and is the file's new
@@ -192,7 +192,7 @@ fn a_directory_or_a_read_only_folder_is_not_written() {
     assert_eq!(f.ops.open_to_overwrite(node_id).err(), Some(Errno::EROFS));
     assert_eq!(f.ops.truncate(node_id, 0, None).err(), Some(Errno::EROFS));
     // Nothing is downloaded for a write that is refused, and no time is set.
-    assert_eq!(f.ops.find_needed_download(node_id).err(), Some(Errno::EROFS));
+    assert_eq!(f.ops.find_file_to_download(node_id).err(), Some(Errno::EROFS));
     assert_eq!(f.ops.set_modified_time(node_id, None).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
 }

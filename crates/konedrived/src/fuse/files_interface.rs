@@ -36,7 +36,7 @@ use tokio::sync::oneshot;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::DownloadStates;
-use super::file_downloader::FileDownloader;
+use super::file_downloader::{FileDownloader, FileToDownload};
 use super::free_up_decision::{decide_free_up, FreeUpDecision};
 use super::inotify_bridge::{Announcement, InotifyBridge};
 use super::open_handles::OpenHandles;
@@ -138,7 +138,7 @@ impl FilesInterface {
             EntryState::Directory(_) => return Err(FilesRefusal::NotInOneDrive),
         };
         let (waiter, downloaded) = oneshot::channel();
-        self.file_downloader.download(row, rel, Class::Open, Some(waiter));
+        self.file_downloader.download(FileToDownload { row, path: rel }, Class::Open, Some(waiter));
         match downloaded.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(errno)) => Err(FilesRefusal::Io(format!("the download failed: {}", io::Error::from_raw_os_error(errno)))),

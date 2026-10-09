@@ -337,6 +337,7 @@ daemon shows OneDrive.
   name, which then lands, in one job on the write-operation thread: where the file is now
   is asked there and the file is given its name there, so no rename runs in between; it
   keeps no state, reports to `DownloadStates` and announces through the inotify bridge.
+  `FileToDownload`: a file's row and its path, as whoever asks for a download gives it.
   `[tests]`
 - `file_downloader/landing_attempt.rs` — `to_download_result`: what a download reports, from
   how its landing went (`LandingAttempt`). `[tests]`

@@ -11,7 +11,7 @@ use konedrive_graph::pool::{Class, TransferPool};
 use konedrive_tree::Kind;
 use tokio::sync::oneshot;
 
-use super::{FileDownloader, RunningDownload};
+use super::{FileDownloader, FileToDownload, RunningDownload};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::download_states::DownloadStates;
 use crate::fuse::inotify_bridge::{Announcement, InotifyBridge};
@@ -82,7 +82,7 @@ impl Downloads {
     /// did.
     fn start_download_to(&self, rel: &str) -> oneshot::Receiver<Result<(), i32>> {
         let (waiter, told) = oneshot::channel();
-        self.file_downloader.download(row("A", Some("R"), "a.txt", Kind::File), PathBuf::from(rel), Class::Open, Some(waiter));
+        self.file_downloader.download(FileToDownload { row: row("A", Some("R"), "a.txt", Kind::File), path: PathBuf::from(rel) }, Class::Open, Some(waiter));
         told
     }
 
@@ -137,7 +137,7 @@ fn a_download_asked_for_while_one_runs_joins_the_one_that_runs() {
     let downloads = downloads();
     downloads.download_states.start_or_join("A", None);
     let (waiter, mut told) = oneshot::channel();
-    downloads.file_downloader.download(row("A", Some("R"), "a.txt", Kind::File), at("a.txt"), Class::Open, Some(waiter));
+    downloads.file_downloader.download(FileToDownload { row: row("A", Some("R"), "a.txt", Kind::File), path: at("a.txt") }, Class::Open, Some(waiter));
     // Nothing was started, and nothing is announced: the one that runs said so already.
     std::thread::sleep(Duration::from_millis(100));
     assert!(told.try_recv().is_err() && !downloads.folder.disk.join("a.txt").exists());

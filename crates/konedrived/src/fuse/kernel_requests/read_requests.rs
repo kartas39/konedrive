@@ -26,7 +26,7 @@ use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::{DirectoryContents, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::download_states::DownloadStates;
 use crate::fuse::errno::to_errno;
-use crate::fuse::file_downloader::FileDownloader;
+use crate::fuse::file_downloader::{FileDownloader, FileToDownload};
 use crate::fuse::node_resolver::NodeResolver;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{Fh, OpenFile, OpenHandles};
@@ -149,7 +149,7 @@ impl ReadRequests {
                     let read_enough = requests.download_states.count_bytes_read(&row.id, bytes.len() as u64, row.size);
                     reply.data(&bytes);
                     if read_enough {
-                        requests.file_downloader.download(row, path, Class::Open, None);
+                        requests.file_downloader.download(FileToDownload { row, path }, Class::Open, None);
                     }
                 }
                 Err(e) => reply.error(Errno::from_i32(e)),
