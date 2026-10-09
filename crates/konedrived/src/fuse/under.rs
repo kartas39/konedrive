@@ -64,6 +64,12 @@ impl Under {
         Ok(under)
     }
 
+    /// The path of the folder itself, through the descriptor: for what walks the folder without
+    /// going through the mount.
+    pub(super) fn root(&self) -> PathBuf {
+        konedrive_fs::proc_path(&self.folder)
+    }
+
     /// The path of `rel` in the folder: through the descriptor, never through the mount. Good
     /// for as long as this lives.
     pub(super) fn path(&self, rel: &Path) -> PathBuf {

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -195,7 +195,7 @@ impl Mount {
     /// The folder under the mount, for what must not go through the mount: a walk of what is
     /// downloaded.
     pub fn under(&self) -> PathBuf {
-        self.shared.under.path(Path::new(""))
+        self.shared.under.root()
     }
 }
 
