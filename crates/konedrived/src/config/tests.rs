@@ -389,10 +389,8 @@ async fn every_write_starts_from_the_file_and_never_overwrites_what_it_cannot_re
     let root = RootConfig {
         path: "/home/ann/OneDrive".into(),
         id: "R1".into(),
-        intercepted: true,
         source: "onedrive".into(),
         baloo_excluded: false,
-        upgrade_when_helper: Some(false),
     };
     store.set_root(&id, Some(root.clone())).unwrap();
     let on_disk: Config = toml::from_str(&std::fs::read_to_string(&paths.config_file).unwrap()).unwrap();

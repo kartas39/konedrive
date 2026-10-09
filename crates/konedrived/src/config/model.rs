@@ -295,45 +295,24 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootConfig {
     pub path: PathBuf,
-    /// The root id the folder carried when it was registered (`user.konedrive.root`), the
-    /// name the helper holds an intercepted root under. Empty when carried over from a
-    /// configuration older than it; the folder's own attribute stands in for it then.
+    /// The root id the folder carried when it was registered (`user.konedrive.root`). Empty
+    /// when carried over from a configuration older than it; the folder's own attribute
+    /// stands in for it then.
     #[serde(default)]
     pub id: String,
-    /// Whether the root is the ordinary intercepted kind. A missing key reads as `true`,
-    /// the fail-closed mode: a root wrongly restored as intercepted refuses to come up
-    /// without a helper, one wrongly restored as un-intercepted would serve zeros.
-    #[serde(default = "yes")]
-    pub intercepted: bool,
-    /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
-    /// `PopulateFromDirectory`). A missing key reads as `"local"`; any other value is kept
-    /// as it is, and the folder is not brought up (`SyncService`).
+    /// `"onedrive"`: listed from the account's drive. A missing key reads as `"local"`,
+    /// what an older konedrive wrote for a folder filled by hand; any value but
+    /// `"onedrive"` is kept as it is, and the folder is not brought up (`SyncService`).
     #[serde(default = "local_source")]
     pub source: String,
     /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an
     /// exclusion it added.
     #[serde(default)]
     pub baloo_excluded: bool,
-    /// Whether a root registered without interception switches to interception when the
-    /// helper connects; see [`RootConfig::upgrades_when_helper`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upgrade_when_helper: Option<bool>,
-}
-
-fn yes() -> bool {
-    true
 }
 
 fn local_source() -> String {
     "local".into()
-}
-
-impl RootConfig {
-    /// `upgrade_when_helper`, with a missing value read so: a root without
-    /// interception switches, and an intercepted root has nothing to switch.
-    pub fn upgrades_when_helper(&self) -> bool {
-        self.upgrade_when_helper.unwrap_or(!self.intercepted)
-    }
 }
 
 /// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in

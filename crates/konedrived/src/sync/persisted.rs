@@ -65,11 +65,8 @@ impl SyncService {
         let root = root.map(|root| RootConfig {
             path: root.path.clone(),
             id: root.root_id.clone(),
-            // Nothing intercepts opens in a folder, and nothing reads these two any more.
-            intercepted: false,
             source: root.source_as_written.clone().unwrap_or_else(|| ONEDRIVE.into()),
             baloo_excluded: root.baloo_excluded,
-            upgrade_when_helper: None,
         });
         persist.store.set_root(&persist.account, root).map_err(|e| {
             SyncError::Config(format!("cannot record the sync folder in {}: {e}", persist.store.file().display()))
