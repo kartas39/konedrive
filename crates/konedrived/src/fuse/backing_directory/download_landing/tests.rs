@@ -14,7 +14,7 @@ const AT: &str = "docs/a.txt";
 
 /// A download of the OneDrive file `A`, whole, landed at `docs/a.txt`.
 fn land(backing_directory: &BackingDirectory) -> LandingOutcome {
-    let mut file = backing_directory.unnamed().unwrap();
+    let mut file = backing_directory.make_unnamed_file().unwrap();
     file.write_all(b"downloaded").unwrap();
     backing_directory.land(&file, Path::new(AT), "A", UNIX_EPOCH + Duration::from_secs(1_000)).unwrap()
 }
@@ -120,6 +120,6 @@ fn a_download_is_refused_where_another_files_copy_or_a_file_of_the_users_is() {
 #[test]
 fn a_download_does_not_land_in_a_directory_that_is_missing() {
     let (_dir, backing_directory) = empty_backing_directory();
-    let file = backing_directory.unnamed().unwrap();
+    let file = backing_directory.make_unnamed_file().unwrap();
     assert!(backing_directory.land(&file, Path::new(AT), "A", UNIX_EPOCH).is_err());
 }

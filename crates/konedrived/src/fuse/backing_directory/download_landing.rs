@@ -71,7 +71,7 @@ pub(in crate::fuse) enum LandingOutcome {
 impl BackingDirectory {
     /// A file of the backing directory's filesystem that is in no directory, to build a
     /// download in.
-    pub(in crate::fuse) fn unnamed(&self) -> io::Result<File> {
+    pub(in crate::fuse) fn make_unnamed_file(&self) -> io::Result<File> {
         File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.resolve_path(Path::new("")))
     }
 

@@ -282,7 +282,7 @@ fn what_is_the_daemons_or_onedrives_is_not_a_local_only_entry() {
 /// OneDrive file changes nothing of what is listed, and the sync state comes only once the
 /// entry is made from its source.
 #[test]
-fn a_listing_of_onedrive_files_is_the_stores_rows_whatever_the_disk_holds_of_them() {
+fn a_directory_of_onedrive_files_is_listed_from_the_stores_rows_whatever_the_disk_holds() {
     let (dir, contents) = directory_contents(Vec::new());
     let root = contents.root_directory();
     let listed = |contents: &DirectoryContents| {

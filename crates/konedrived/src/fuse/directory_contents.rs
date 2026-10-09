@@ -59,7 +59,7 @@ impl DirectoryContents {
         &self.backing_directory
     }
 
-    /// One question to the store, for what has no named question here yet (`asked.rs`).
+    /// One question to the store, for what has no named question here yet.
     /// `None` when it cannot be answered.
     pub(super) fn read<T>(&self, ask: impl FnOnce(&TreeStore) -> Result<T, TreeError>) -> Option<T> {
         ask(&crate::panic::lock(&self.reader)).ok()

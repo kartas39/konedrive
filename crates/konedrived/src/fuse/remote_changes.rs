@@ -95,7 +95,7 @@ pub(super) fn list_announcements(change: &OneDriveChange) -> Vec<RemoteChange> {
 }
 
 /// The directories of the backing directory down to `rel`, each marked with its OneDrive id,
-/// inside a cycle of the listing, for a place of the tree it has staged: on the store's own
+/// inside a cycle of the delta listing, for a place of the tree it has staged: on the store's own
 /// thread, where the mount's reader would not see it.
 fn make_staged_directories(backing_directory: &BackingDirectory, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
     let staged = |above: Option<&str>, _: &Path, name: &str| {

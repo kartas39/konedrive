@@ -58,6 +58,6 @@ fn a_file_without_a_write_bit_is_given_its_owners() {
     let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
     fs::set_permissions(dir.path().join("a.txt"), fs::Permissions::from_mode(0o444)).unwrap();
-    backing_directory.writable(Path::new("a.txt")).unwrap();
+    backing_directory.make_writable(Path::new("a.txt")).unwrap();
     assert_eq!(backing_directory.read_metadata(Path::new("a.txt")).unwrap().permissions().mode() & 0o777, 0o644);
 }

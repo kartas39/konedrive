@@ -24,11 +24,11 @@ impl KernelRequests {
         self.outbox_recorder.run(move || job(&requests));
     }
 
-    /// Has `job` run on the recorder's thread once the content of the node `ino` is in the
+    /// Has `job` run on the recorder's thread once the content of the node `node_id` is in the
     /// backing directory, when writing it needs that; `refuse` is called instead when the
     /// download fails.
-    fn run_with_content(&self, ino: u64, empty: bool, job: impl FnOnce(&KernelRequests) + Send + 'static, refuse: impl FnOnce(Errno) + Send + 'static) {
-        let Some((row, rel)) = self.write_operations.needs_download(ino, empty) else { return self.run_on_recorder(job) };
+    fn run_with_content(&self, node_id: u64, empty: bool, job: impl FnOnce(&KernelRequests) + Send + 'static, refuse: impl FnOnce(Errno) + Send + 'static) {
+        let Some((row, rel)) = self.write_operations.needs_download(node_id, empty) else { return self.run_on_recorder(job) };
         let requests = self.clone();
         self.runtime.spawn(async move {
             let (waiter, downloaded) = oneshot::channel();
@@ -74,8 +74,8 @@ impl KernelRequests {
         }
         self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, directory, false) {
             Ok((entry, _)) => {
-                let ino = requests.node_lookup.assign_node_id(&entry, parent.0);
-                reply.entry(&TTL, &requests.attributes_of(&entry, ino), Generation(0))
+                let node_id = requests.node_lookup.assign_node_id(&entry, parent.0);
+                reply.entry(&TTL, &requests.attributes_of(&entry, node_id), Generation(0))
             }
             Err(e) => reply.error(e),
         });
@@ -88,9 +88,9 @@ impl KernelRequests {
         }
         self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, false, true) {
             Ok((entry, opened)) => {
-                let ino = requests.node_lookup.assign_node_id(&entry, parent.0);
+                let node_id = requests.node_lookup.assign_node_id(&entry, parent.0);
                 let fh = opened.map_or(0, |opened| requests.open_files.add_file(opened));
-                reply.created(&TTL, &requests.attributes_of(&entry, ino), Generation(0), FileHandle(fh), FopenFlags::empty())
+                reply.created(&TTL, &requests.attributes_of(&entry, node_id), Generation(0), FileHandle(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
         });

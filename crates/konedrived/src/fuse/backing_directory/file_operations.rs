@@ -52,7 +52,7 @@ impl BackingDirectory {
     }
 
     /// Gives the file at `rel` its owner's write bit: a downloaded copy has none.
-    pub(in crate::fuse) fn writable(&self, rel: &Path) -> io::Result<()> {
+    pub(in crate::fuse) fn make_writable(&self, rel: &Path) -> io::Result<()> {
         fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(0o644))
     }
 }

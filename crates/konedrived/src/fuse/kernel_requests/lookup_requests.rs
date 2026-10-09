@@ -23,10 +23,10 @@ fn make_vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
 }
 
 impl KernelRequests {
-    /// The attributes of `entry`, which the node `ino` stands for, in the folder's access
+    /// The attributes of `entry`, which the node `node_id` stands for, in the folder's access
     /// mode.
-    pub(super) fn attributes_of(&self, entry: &DirectoryEntry, ino: u64) -> FileAttr {
-        attributes(ino, &self.access_mode, entry)
+    pub(super) fn attributes_of(&self, entry: &DirectoryEntry, node_id: u64) -> FileAttr {
+        attributes(node_id, &self.access_mode, entry)
     }
 
     /// Answers with the entry `name` of `parent`, as the folder has it now.
@@ -34,8 +34,8 @@ impl KernelRequests {
         let found = self.node_lookup.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| self.directory_contents.find_entry(&dir, name));
         match found {
             Some(entry) => {
-                let ino = self.node_lookup.assign_node_id(&entry, parent.0);
-                reply.entry(&TTL, &self.attributes_of(&entry, ino), Generation(0))
+                let node_id = self.node_lookup.assign_node_id(&entry, parent.0);
+                reply.entry(&TTL, &self.attributes_of(&entry, node_id), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
         }

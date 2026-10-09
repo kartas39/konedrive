@@ -42,7 +42,7 @@ pub enum FilesRefusal {
     #[error("not inside this folder")]
     OutsideFolder,
     /// A file or directory that is not in OneDrive yet, or a name the folder does not have.
-    #[error("not an item of OneDrive")]
+    #[error("not in OneDrive")]
     NotInOneDrive,
     #[error("{0}")]
     Io(String),

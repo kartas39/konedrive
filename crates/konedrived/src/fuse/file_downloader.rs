@@ -119,7 +119,7 @@ impl FileDownloader {
         // left is continued from its checkpoint when it is of the same version.
         let file = match unfinished_file {
             Some(file) => file,
-            None => Arc::new(self.backing_directory.unnamed().map_err(io_errno)?),
+            None => Arc::new(self.backing_directory.make_unnamed_file().map_err(io_errno)?),
         };
         let tracked = match class {
             Class::Open => Tracked::opening(Arc::clone(&self.source), self.report.transfers.clone(), self.shown_path(rel)),
