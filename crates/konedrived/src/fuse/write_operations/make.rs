@@ -92,7 +92,7 @@ impl WriteOperations {
     /// written into a file just made is its content: the node is marked written, and the
     /// outbox waits for its last writer already.
     fn add_writer_of_made_file(&self, node_id: NodeId, made: &DirectoryEntry, file: File) -> Fh {
-        let fh = self.open_handles.add_writer(node_id, made.onedrive_id().map(str::to_owned), Arc::new(file)).fh;
+        let fh = self.open_handles.add_writer(node_id, made.onedrive_id().map(str::to_owned), Arc::new(file)).0;
         self.open_handles.mark_written(node_id);
         fh
     }

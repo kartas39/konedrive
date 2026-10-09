@@ -78,11 +78,13 @@ enum OpenHandle {
     Directory(Option<Arc<Vec<ListedName>>>),
 }
 
-/// A file opened for writing: the `fh` it is held open by, and whether no other handle
-/// writes its node — the first writer is the one the outbox is told of.
-pub(super) struct AddedWriter {
-    pub(super) fh: Fh,
-    pub(super) is_first: bool,
+/// Where a writer stands among the handles that write its node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriterRank {
+    /// No other handle writes the node: the writer the outbox is told of.
+    First,
+    /// Another handle writes the node already.
+    Later,
 }
 
 /// What closing a file that was open for writing left of its content.
@@ -140,12 +142,15 @@ impl OpenHandles {
     }
 
     /// A program opened the node `node_id` for writing, into `backing_file`. The `fh` it
-    /// holds it by, and whether it is the node's first writer. A file whose content is the
+    /// holds it by, and its rank among the node's writers. A file whose content is the
     /// user's own already is said so next ([`mark_written`](Self::mark_written)).
-    pub(super) fn add_writer(&self, node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File>) -> AddedWriter {
+    pub(super) fn add_writer(&self, node_id: NodeId, onedrive_id: Option<String>, backing_file: Arc<File>) -> (Fh, WriterRank) {
         let mut handles = crate::panic::lock(&self.handles);
-        let is_first = !handles.has_writer(node_id);
-        AddedWriter { fh: handles.add(OpenHandle::File(OpenFile::Writing { node_id, onedrive_id, backing_file })), is_first }
+        let rank = match handles.has_writer(node_id) {
+            true => WriterRank::Later,
+            false => WriterRank::First,
+        };
+        (handles.add(OpenHandle::File(OpenFile::Writing { node_id, onedrive_id, backing_file })), rank)
     }
 
     /// The file held open by `fh`.

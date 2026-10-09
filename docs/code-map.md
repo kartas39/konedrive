@@ -276,7 +276,8 @@ daemon shows OneDrive.
   once. The folder's sync asks it whether the folder takes changes. `[tests]`
 - `open_handles.rs` — `OpenHandles`: the files (`OpenFile`: read while not downloaded, read
   from the backing directory, or written) and the directories programs hold open, by the
-  kernel's `fh` (`Fh`); it alone counts the writers of a node, remembers whether one wrote,
+  kernel's `fh` (`Fh`); it alone counts the writers of a node, says of one it adds whether it
+  is the node's first (`WriterRank`), remembers whether one wrote,
   says what closing a file that was open for writing left (`ClosedFile`: the node it wrote
   and the `CloseOutcome`) and whether a file is open for writing, by node id and by OneDrive
   id — a writer is closed on the write-operation thread, and counts until then;

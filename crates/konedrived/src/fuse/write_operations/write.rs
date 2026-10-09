@@ -22,7 +22,7 @@ use crate::fuse::directory_contents::{DirectoryEntry, EntryState, FileSyncState}
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::node_table::NodeId;
-use crate::fuse::open_handles::{CloseOutcome, Fh};
+use crate::fuse::open_handles::{CloseOutcome, Fh, WriterRank};
 use crate::fuse::errno::to_errno;
 use crate::fuse::upload_rules::UploadDecision;
 
@@ -87,17 +87,17 @@ impl WriteOperations {
     /// written: its content is the user's own already.
     fn add_writer(&self, node_id: NodeId, entry: &DirectoryEntry, opened: io::Result<File>) -> Result<Fh, Errno> {
         let backing_file = opened.map_err(|e| to_errno(&e))?;
-        let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
-        if added.is_first {
+        let (fh, rank) = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
+        if rank == WriterRank::First {
             if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Opened)) {
-                self.open_handles.close_file(added.fh);
+                self.open_handles.close_file(fh);
                 return Err(e);
             }
         }
         if matches!(entry.state, EntryState::File(FileSyncState::ModifiedHere(..))) {
             self.open_handles.mark_written(node_id);
         }
-        Ok(added.fh)
+        Ok(fh)
     }
 
     /// The program closed the file it held open for writing by `fh`. The handle is closed

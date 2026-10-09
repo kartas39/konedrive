@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use konedrive_tree::Kind;
 
-use super::{CloseOutcome, ClosedFile, Fh, OpenFile, OpenHandles};
+use super::{CloseOutcome, ClosedFile, Fh, OpenFile, OpenHandles, WriterRank};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::ListedName;
 use crate::fuse::node_table::NodeId;
@@ -24,12 +24,12 @@ fn remote_only(onedrive_id: &str) -> OpenFile {
 }
 
 /// A writer of the node `node_id`, which is the OneDrive file `onedrive_id`.
-fn add_writer(open_handles: &OpenHandles, node_id: u64, onedrive_id: Option<&str>, written: bool) -> (Fh, bool) {
+fn add_writer(open_handles: &OpenHandles, node_id: u64, onedrive_id: Option<&str>, written: bool) -> (Fh, WriterRank) {
     let added = open_handles.add_writer(NodeId(node_id), onedrive_id.map(str::to_owned), backing_file());
     if written {
         open_handles.mark_written(NodeId(node_id));
     }
-    (added.fh, added.is_first)
+    added
 }
 
 #[test]
@@ -75,9 +75,9 @@ fn only_a_file_opened_for_writing_is_written_through_its_fh() {
 #[test]
 fn the_first_writer_of_a_node_is_told_apart_from_another() {
     let open_handles = OpenHandles::default();
-    assert!(add_writer(&open_handles, 7, None, false).1, "the first writer");
-    assert!(!add_writer(&open_handles, 7, None, false).1, "another writer of the same node");
-    assert!(add_writer(&open_handles, 8, None, false).1, "the first writer of another node");
+    assert_eq!(add_writer(&open_handles, 7, None, false).1, WriterRank::First);
+    assert_eq!(add_writer(&open_handles, 7, None, false).1, WriterRank::Later, "another writer of the same node");
+    assert_eq!(add_writer(&open_handles, 8, None, false).1, WriterRank::First, "the first writer of another node");
 }
 
 #[test]
