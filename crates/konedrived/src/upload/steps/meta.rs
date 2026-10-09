@@ -103,23 +103,23 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                 return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
             }
             if remote_parent.as_deref() != base.parent.as_deref() || Some(remote_name.as_str()) != base.name.as_deref() {
-                // Moved there as well: the first to reach OneDrive wins (§7).
-                if let Some(found) = &found {
-                    let tree = tree(e).await;
-                    if let Some(to_rel) = follow_cloud(e, disk, &tree, found, &remote).await? {
-                        let answer = answer_row(&remote, None)?;
-                        let (on, at) = (Arc::clone(disk), to_rel.clone());
-                        blocking_under(Arc::clone(&tree), move || {
-                            local::mark(&on, &at, None);
-                            Ok(())
-                        })
-                        .await?;
-                        let event = e.event(ActivityKind::Moved, &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
-                        let (seq, stored) = (row.seq, event.clone());
-                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item(&answer), Some(&stored))).await?;
-                        e.host().activity(&event);
-                        return Ok(Outcome::Done);
-                    }
+                // Moved there as well: the first to reach OneDrive wins (§7),
+                // whether or not the folder holds anything of it on disk.
+                let tree = tree(e).await;
+                if let Some(to_rel) = follow_cloud(e, disk, &tree, &row, found.as_ref(), &remote).await? {
+                    let answer = answer_row(&remote, None)?;
+                    let (on, at) = (Arc::clone(disk), to_rel.clone());
+                    blocking_under(Arc::clone(&tree), move || {
+                        local::mark(&on, &at, None);
+                        Ok(())
+                    })
+                    .await?;
+                    let was = found.as_ref().map_or(row.rel.as_path(), |found| found.rel.as_path());
+                    let event = e.event(ActivityKind::Moved, &to_rel, format!("renamed in OneDrive first; was {} here", was.display()));
+                    let (seq, stored) = (row.seq, event.clone());
+                    e.store().call(move |s| s.outbox_commit(seq, Committed::Item(&answer), Some(&stored))).await?;
+                    e.host().activity(&event);
+                    return Ok(Outcome::Done);
                 }
             }
             // Changed there, not moved (or its place cannot be followed here,

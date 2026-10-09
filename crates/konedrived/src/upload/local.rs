@@ -24,7 +24,7 @@ use nix::fcntl::{AtFlags, OFlag};
 use nix::sys::stat::Mode;
 use xattr::FileExt as _;
 
-use crate::folder::disk::{open_subdir, Disk};
+use crate::folder::disk::{open_subdir, Disk, Probe};
 use crate::local::names::copy_name;
 
 use konedrive_tree::outbox::Snapshot;
@@ -134,6 +134,17 @@ pub(super) fn find(disk: &Disk, rel: &Path) -> io::Result<Option<Found>> {
         is_dir: kind == libc::S_IFDIR,
         dir: Arc::new(dir),
     }))
+}
+
+/// Whether nothing at all stands at `rel` on disk: a name the folder can show something
+/// else at. A directory above it that is not on disk holds nothing.
+pub(super) fn is_free(disk: &Disk, rel: &Path) -> io::Result<bool> {
+    let (Some(name), dir_rel) = (rel.file_name(), rel.parent().unwrap_or(Path::new(""))) else { return Ok(false) };
+    match disk.dir(dir_rel) {
+        Ok(dir) => Ok(disk.probe(&dir, name)? == Probe::Absent),
+        Err(e) if missing(&e) => Ok(true),
+        Err(e) => Err(e),
+    }
 }
 
 /// The size of the regular file at `rel`, by name.

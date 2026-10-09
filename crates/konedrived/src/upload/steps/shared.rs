@@ -4,6 +4,7 @@
 
 use konedrive_tree::ActivityKind;
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -484,43 +485,49 @@ pub(in crate::upload) fn base_after_a_change(base: &Base, parent: &str, name: &s
     }
 }
 
-/// Rename × rename (§7): the first to reach OneDrive wins, so the local
-/// object goes where OneDrive has it. `None` where it cannot or must not:
-/// OneDrive's folder is not placed here, the name is taken here, or it is a
+/// Rename × rename (§7): the first to reach OneDrive wins, so the row's file or
+/// directory goes where OneDrive has it: `found`, what the folder holds of it on disk, is
+/// renamed there; with nothing on disk — a file that is not downloaded — there is nothing
+/// to rename, and the place is the row's to take. `None` where it cannot or must not:
+/// OneDrive's folder is not placed here, the name is taken on disk here, or it is a
 /// name no listing places — the daemon's own `.konedrive-*` (a temporary
 /// step of this very row, I1), a name OneDrive keeps but Linux cannot, or
 /// one OneDrive refuses. The local place then stands. The caller holds the
 /// tree lock, `tree`.
-pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
+pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, row: &OutboxRow, found: Option<&Found>, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
     let (Some(parent), name) = place(remote) else { return Ok(None) };
-    let placeable = matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed);
-    if !placeable || reserved(OsStr::new(&name)) || names::refused(OsStr::new(&name)).is_some() {
+    let Change::Upsert(Row { kind, placement: Placement::Placed, .. }) = classify(remote) else { return Ok(None) };
+    if reserved(OsStr::new(&name)) || names::refused(OsStr::new(&name)).is_some() {
         return Ok(None);
     }
     let Some(dir_rel) = e.store().call(move |s| s.locate(Table::Items, &parent)).await?.filter(|l| l.placed).map(|l| l.rel) else {
         return Ok(None);
     };
+    let rel = found.map_or(row.rel.clone(), |found| found.rel.clone());
     let to_rel = dir_rel.join(&name);
-    if to_rel == found.rel {
+    if to_rel == rel {
         return Ok(Some(to_rel));
     }
-    let (on, object) = (Arc::clone(disk), found.clone());
+    let (on, object, to) = (Arc::clone(disk), found.cloned(), to_rel.clone());
     let renamed = blocking_under(Arc::clone(tree), move || {
         local::assert_under_lock();
-        Ok(on.dir(&dir_rel).and_then(|to| on.rename(&object.dir, &object.name, &to, OsStr::new(&name))))
+        Ok(match &object {
+            Some(object) => on.dir(&dir_rel).and_then(|to| on.rename(&object.dir, &object.name, &to, OsStr::new(&name))),
+            None => local::is_free(&on, &to).and_then(|free| if free { Ok(()) } else { Err(io::Error::from_raw_os_error(libc::EEXIST)) }),
+        })
     })
     .await?;
     match renamed {
         Ok(()) => {
-            if found.is_dir {
-                let rebase = [OutboxOp::Rebase { from: found.rel.clone(), to: to_rel.clone() }];
+            if found.map_or(kind == Kind::Folder, |found| found.is_dir) {
+                let rebase = [OutboxOp::Rebase { from: rel.clone(), to: to_rel.clone() }];
                 e.store().call(move |s| s.outbox_apply(&rebase, now())).await?;
             }
-            tracing::info!("{} was renamed in OneDrive first: it is {} here too", found.rel.display(), to_rel.display());
+            tracing::info!("{} was renamed in OneDrive first: it is {} here too", rel.display(), to_rel.display());
             Ok(Some(to_rel))
         }
         Err(err) => {
-            tracing::info!("{} keeps its local name ({err}): OneDrive's rename is undone", found.rel.display());
+            tracing::info!("{} keeps its local name ({err}): OneDrive's rename is undone", rel.display());
             Ok(None)
         }
     }

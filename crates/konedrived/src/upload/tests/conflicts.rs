@@ -168,7 +168,6 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
 /// Rename × rename of a file that is not downloaded: the first to reach OneDrive wins
 /// (§7), as for a downloaded one, though nothing is on disk to rename.
 #[test]
-#[ignore = "a move of a file with no downloaded copy that meets an earlier rename in OneDrive is sent again and undoes that rename: `steps::meta::moved` follows OneDrive's place only with an entry on disk"]
 fn a_renamed_file_that_is_not_downloaded_follows_an_earlier_rename_in_onedrive() {
     let w = World::new(&[file("A", "R", "a.txt", b"old")]);
     w.rename_entry("a.txt", "b.txt");
@@ -177,6 +176,22 @@ fn a_renamed_file_that_is_not_downloaded_follows_an_earlier_rename_in_onedrive()
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_eq!(w.cloud(|c| c.paths()), vec!["c.txt"]);
     assert_eq!(w.base("A").unwrap().name, "c.txt");
+}
+
+/// Where a file of the user's own stands on disk at the name OneDrive gave the file, the
+/// rename made here stands and is sent again, as for a downloaded file whose rename to
+/// OneDrive's name finds the name taken.
+#[test]
+fn a_renamed_file_that_is_not_downloaded_keeps_its_name_where_onedrives_name_is_taken_on_disk() {
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.rename_entry("a.txt", "b.txt");
+    w.write("c.txt", b"mine");
+    w.cloud(|c| c.rename("A", "R", "c.txt"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["b.txt"]);
+    assert_eq!(w.base("A").unwrap().name, "b.txt");
+    assert_eq!(std::fs::read(w.path("c.txt")).unwrap(), b"mine");
 }
 
 /// A file that is not downloaded, renamed onto a name another file took in OneDrive

@@ -426,7 +426,7 @@ impl Job<'_> {
                 };
             }
             let tree = tree(self.e).await;
-            let followed = if moved_there { follow_cloud(self.e, self.disk, &tree, self.found, &remote).await? } else { None };
+            let followed = if moved_there { follow_cloud(self.e, self.disk, &tree, row, Some(self.found), &remote).await? } else { None };
             let held = followed.is_some() || holds(self.e, &remote).await?;
             let fresh = super::steps::base_after_a_change(&base, self.parent, self.name, &remote, held);
             let seq = row.seq;
