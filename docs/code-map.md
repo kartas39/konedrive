@@ -187,12 +187,10 @@ daemon shows OneDrive.
 - `mod.rs` — the list of the modules, and what the daemon sees of a mount.
 - `mount.rs` — `Mount`: made, served, taken off; `Parts`, what it is made with.
 - `shared.rs` — `Shared`: the parts of a mount held together, and what is under way;
-  `Writing`, what a folder that takes changes shares
-  with its sync.
+  `Writing`, what a folder that takes changes shares with its sync.
 - `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
   mount; it knows the disk and nothing else. Opening the folder, a path of it, its space, an
-  attribute.
-  `[tests]`
+  attribute. `[tests]`
 - `under/objects.rs` — `Object`: what stands at a place, its file handle, the item id it
   carries. `[tests]`
 - `under/copies.rs` — an item's downloaded copy: whether a place holds it whole, marking one,
@@ -216,7 +214,8 @@ daemon shows OneDrive.
   thread.
 - `nodes.rs` — the node ids the kernel knows, each an item, or an object without one by its
   file handle, and its place. `[tests]`
-- `attr.rs` — what the mount says of an item: kind, size, times, modes.
+- `attr.rs` — what the mount says of a name, a function of facts (`Shown`): kind, size, times,
+  modes; the facts of an entry gathered from the view and the writers. `[tests]`
 - `view.rs` — `View`: the folder as the mount shows it; it owns the mount's reading connection
   to the store and the overlay as last read, and uses `Under`. An item's row, its parent, the
   files below it. `[tests]`

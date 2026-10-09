@@ -14,16 +14,6 @@ impl Shared {
         self.writable.load(Ordering::SeqCst)
     }
 
-    /// The modes the mount shows: of a directory, or of a file.
-    pub(super) fn perm(&self, dir: bool) -> u16 {
-        match (self.writable(), dir) {
-            (true, true) => 0o755,
-            (true, false) => 0o644,
-            (false, true) => 0o555,
-            (false, false) => 0o444,
-        }
-    }
-
     /// Refuses a change to a read-only folder as a read-only filesystem does.
     pub(super) fn may_change(&self) -> Result<(), Errno> {
         if self.writable() {

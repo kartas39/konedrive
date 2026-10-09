@@ -11,7 +11,7 @@ use konedrive_graph::pool::Class;
 use tokio::sync::oneshot;
 
 use super::Requests;
-use crate::fuse::attr::TTL;
+use crate::fuse::attr::{self, TTL};
 use crate::fuse::shared::{errno, Shared};
 
 /// Has `job` run on the recorder's thread once the content of node `ino` is in the folder,
@@ -128,7 +128,7 @@ impl Requests {
             return reply.error(e);
         }
         let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.resolve.node(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &s.attr_of(&entry, ino.0, &rel)),
+            Some((entry, rel)) => reply.attr(&TTL, &attr::of_entry(&entry, ino.0, &rel, s.writable(), &s.view, &s.writers)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {

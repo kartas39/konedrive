@@ -10,6 +10,7 @@ use fuser::{Errno, FileAttr};
 use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Row};
 
+use super::attr;
 use super::changes::{waits, Place};
 use super::view::{Entry, Local};
 use super::read::Handle;
@@ -78,7 +79,7 @@ impl Shared {
             None => Entry::Local(Local { name: name.to_owned(), object }),
         };
         let ino = self.resolve.ino_of(&entry, parent);
-        let attr = self.attr_of(&entry, ino, &rel);
+        let attr = attr::of_entry(&entry, ino, &rel, self.writable(), &self.view, &self.writers);
         let id = again.map(|base| base.id);
         let handle = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for

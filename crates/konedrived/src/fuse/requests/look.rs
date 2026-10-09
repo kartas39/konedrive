@@ -5,17 +5,23 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fuser::{Errno, FileHandle, FileType, Generation, INodeNo, ReplyAttr, ReplyOpen, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyXattr, Request};
+use fuser::{Errno, FileAttr, FileHandle, FileType, Generation, INodeNo, ReplyAttr, ReplyOpen, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyStatfs, ReplyXattr, Request};
 use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE, XATTR_SYNC};
-use konedrive_tree::{Kind, Placement, Row};
+use konedrive_tree::Kind;
 
 use super::Requests;
 use crate::fuse::announce::Told;
-use crate::fuse::attr::TTL;
+use crate::fuse::attr::{self, Shown, TTL};
 use crate::fuse::view::{Dir, Entry};
 use crate::fuse::shared::errno;
 
 impl Requests {
+    /// What the mount shows of `entry`, which is node `ino` at `rel`.
+    fn shown(&self, entry: &Entry, ino: u64, rel: &Path) -> FileAttr {
+        let s = &self.0;
+        attr::of_entry(entry, ino, rel, s.writable(), &s.view, &s.writers)
+    }
+
     /// The entry `name` of `parent`, as the folder has it now.
     pub(super) fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let s = &self.0;
@@ -23,7 +29,7 @@ impl Requests {
         match found {
             Some((entry, rel)) => {
                 let ino = s.resolve.ino_of(&entry, parent.0);
-                reply.entry(&TTL, &s.attr_of(&entry, ino, &rel), Generation(0))
+                reply.entry(&TTL, &self.shown(&entry, ino, &rel), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
         }
@@ -34,8 +40,7 @@ impl Requests {
             match &*crate::panic::lock(&self.0.told) {
                 Some(Told::Came { parent: in_, name: came }) if *in_ == parent.0 && name == came.as_str() => return reply.error(Errno::ENOENT),
                 Some(Told::Gone { parent: in_, name: gone, ino, kind }) if *in_ == parent.0 && name == gone.as_str() => {
-                    let row = Row { id: String::new(), parent_id: None, name: gone.clone(), kind: *kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
-                    return reply.entry(&Duration::ZERO, &self.0.attr(&row, *ino, None), Generation(0));
+                    return reply.entry(&Duration::ZERO, &attr::attr(*ino, self.0.writable(), &Shown::gone(*kind)), Generation(0));
                 }
                 _ => {}
             }
@@ -45,7 +50,7 @@ impl Requests {
 
     pub(super) fn attributes(&self, ino: INodeNo, reply: ReplyAttr) {
         match self.0.resolve.node(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &self.0.attr_of(&entry, ino.0, &rel)),
+            Some((entry, rel)) => reply.attr(&TTL, &self.shown(&entry, ino.0, &rel)),
             None => reply.error(Errno::ENOENT),
         }
     }
@@ -81,7 +86,7 @@ impl Requests {
         let Some((dir, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
             let child = s.resolve.ino_of(entry, ino.0);
-            let attr = s.attr_of(entry, child, &dir.rel.join(entry.name()));
+            let attr = self.shown(entry, child, &dir.rel.join(entry.name()));
             if reply.add(INodeNo(child), i as u64 + 1, entry.name(), &TTL, &attr, Generation(0)) {
                 break;
             }
