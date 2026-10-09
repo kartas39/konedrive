@@ -35,7 +35,7 @@ impl SyncService {
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
         let mount = self.require_mount()?;
         for path in paths {
-            if let Some(by) = mount.find_path_status(path)?.pinned_above {
+            if let Some(by) = mount.files_interface().find_path_status(path)?.pinned_above {
                 return Err(SyncError::NotAllowed(refusal(path, &by)));
             }
         }
@@ -47,7 +47,7 @@ impl SyncService {
     /// [`check_unpinnable`](Self::check_unpinnable).
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
         let mount = self.require_mount()?;
-        paths.iter().try_for_each(|path| mount.find_path_status(path).map(drop)).map_err(Into::into)
+        paths.iter().try_for_each(|path| mount.files_interface().find_path_status(path).map(drop)).map_err(Into::into)
     }
 
     /// `Unpin(paths)`, unchecking "Always keep on this device": each path's own pin comes
@@ -65,9 +65,9 @@ impl SyncService {
         let mount = self.require_mount()?;
         let mut changed = 0;
         for path in paths {
-            let status = mount.find_path_status(path)?;
+            let status = mount.files_interface().find_path_status(path)?;
             if status.pinned_above.is_none() && status.own_pin != pinned {
-                let set = mount.set_pin(path, pinned).await;
+                let set = mount.files_interface().set_pin(path, pinned).await;
                 self.show_pins(&mount);
                 set?;
                 changed += 1;
@@ -78,7 +78,7 @@ impl SyncService {
 
     /// `PinnedCount`, as the mount has it.
     pub(super) fn show_pins(&self, mount: &Mount) {
-        let count = mount.count_pins() as u32;
+        let count = mount.files_interface().count_pins() as u32;
         self.state.update(|s| s.local.pinned_count = count);
     }
 }

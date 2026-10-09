@@ -6,7 +6,7 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
 
 use crate::fuse::access_mode_switch::AccessMode;
-use super::{ConflictCopies, CycleConflicts};
+use super::{ConflictCopies, ConflictCopy, CycleConflicts, MoveAsideOutcome};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
 use crate::fuse::directory_contents::DirectoryContents;
@@ -35,9 +35,9 @@ fn a_local_only_file_in_the_way_is_moved_aside_and_uploaded_from_there() {
     let (dir, conflict_copies) = conflict_copies();
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.move_aside(Path::new("new.txt"), Some("R"), 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert!(!dir.path().join("new.txt").exists() && dir.path().join("new-fedora.txt").is_file());
-    assert_eq!(conflicts.moved_aside, [(PathBuf::from("new.txt"), PathBuf::from("new-fedora.txt"))]);
+    assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora.txt") }]);
     assert_eq!(conflicts.detections.iter().map(|d| (d.kind, d.rel.clone())).collect::<Vec<_>>(), [(OutboxKind::Create, PathBuf::from("new-fedora.txt"))]);
 }
 
@@ -48,7 +48,7 @@ fn what_is_marked_with_a_onedrive_id_is_not_moved_aside() {
     fs::write(dir.path().join("a.txt"), b"copy").unwrap();
     conflict_copies.backing_directory.mark_downloaded_copy(Path::new("a.txt"), "A").unwrap();
     let mut conflicts = CycleConflicts::default();
-    conflict_copies.move_aside(Path::new("a.txt"), Some("R"), 1_000, &mut conflicts);
+    assert_eq!(conflict_copies.move_aside(Path::new("a.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
     assert!(dir.path().join("a.txt").is_file() && conflicts.moved_aside.is_empty() && conflicts.detections.is_empty());
 }
 
@@ -72,4 +72,42 @@ fn a_removed_directory_that_holds_nothing_is_removed_from_disk() {
     let mut conflicts = CycleConflicts::default();
     conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
     assert!(!dir.path().join("docs").exists() && conflicts.kept_directories.is_empty());
+}
+
+/// A conflict copy of the name stands there already: the next name is taken.
+#[test]
+fn a_conflict_copy_gets_the_first_name_that_is_free() {
+    let (dir, conflict_copies) = conflict_copies();
+    fs::write(dir.path().join("new.txt"), b"mine").unwrap();
+    fs::write(dir.path().join("new-fedora.txt"), b"an earlier copy").unwrap();
+    let mut conflicts = CycleConflicts::default();
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora-2.txt") }]);
+    assert_eq!(fs::read(dir.path().join("new-fedora.txt")).unwrap(), b"an earlier copy");
+}
+
+/// In a read-only folder the directory stays, and nothing is recorded for it.
+#[test]
+fn a_removed_directory_kept_in_a_read_only_folder_is_not_made_again() {
+    let (dir, conflict_copies) = conflict_copies();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    conflict_copies.backing_directory.mark_with_onedrive_id(Path::new("docs"), "D").unwrap();
+    fs::write(dir.path().join("docs/own.txt"), b"mine").unwrap();
+    let mut conflicts = CycleConflicts::default();
+    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadOnly, 1_000, &mut conflicts);
+    assert!(dir.path().join("docs/own.txt").is_file());
+    assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")), None);
+    assert!(conflicts.kept_directories.is_empty() && conflicts.detections.is_empty());
+}
+
+/// A directory on disk that is marked with another id backs that other directory of OneDrive.
+#[test]
+fn a_directory_marked_with_another_id_is_left_alone() {
+    let (dir, conflict_copies) = conflict_copies();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    conflict_copies.backing_directory.mark_with_onedrive_id(Path::new("docs"), "OTHER").unwrap();
+    let mut conflicts = CycleConflicts::default();
+    conflict_copies.keep_removed_directory("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts);
+    assert!(dir.path().join("docs").is_dir());
+    assert_eq!(conflict_copies.backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("OTHER"));
 }

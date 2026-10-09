@@ -26,6 +26,7 @@ use std::thread::JoinHandle;
 use fuser::INodeNo;
 use konedrive_tree::Kind;
 
+use super::backing_directory::{mode_bits, EntryKind, WriteBits};
 use super::directory_contents::DirectoryContents;
 use super::node_resolver::NodeResolver;
 use super::node_table::NodeId;
@@ -185,8 +186,8 @@ impl InotifyBridge {
                         let Some(parent) = self.find_directory_node_id(parent_id.as_deref()) else { continue };
                         begin(AnnouncementInProgress::NameAppearing { parent, name: name(&rel) });
                         match kind {
-                            Kind::Folder => libc::mkdir(path(&rel).as_ptr(), 0o755),
-                            Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
+                            Kind::Folder => libc::mkdir(path(&rel).as_ptr(), mode_bits(EntryKind::Directory, WriteBits::Present)),
+                            Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | mode_bits(EntryKind::File, WriteBits::Present), 0),
                         };
                     }
                     Announcement::NameVanished { rel, kind, id, parent_id } => {

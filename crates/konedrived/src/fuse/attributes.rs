@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fuser::{FileAttr, FileType, INodeNo};
 
 use super::access_mode_switch::AccessMode;
+use super::backing_directory::{mode_bits, EntryKind, WriteBits};
 use super::node_table::NodeId;
 use super::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::clock::to_system_time;
@@ -18,13 +19,12 @@ pub(super) const TTL: Duration = Duration::from_secs(1);
 
 /// The modes the mount shows, of a directory or of a file. A read-only folder shows no write
 /// bit anywhere: a file manager reads that from the modes before anything is tried.
-fn permissions(access_mode: AccessMode, directory: bool) -> u16 {
-    match (access_mode, directory) {
-        (AccessMode::ReadWrite, true) => 0o755,
-        (AccessMode::ReadWrite, false) => 0o644,
-        (AccessMode::ReadOnly, true) => 0o555,
-        (AccessMode::ReadOnly, false) => 0o444,
-    }
+fn permissions(access_mode: AccessMode, kind: EntryKind) -> u16 {
+    let write_bits = match access_mode {
+        AccessMode::ReadWrite => WriteBits::Present,
+        AccessMode::ReadOnly => WriteBits::Removed,
+    };
+    mode_bits(kind, write_bits) as u16
 }
 
 /// The attributes of the node `node_id`, which stands for `entry`, in a folder in
@@ -55,7 +55,7 @@ pub(super) fn attributes(node_id: NodeId, access_mode: AccessMode, entry: &Direc
         ctime: modified,
         crtime: UNIX_EPOCH,
         kind: if directory { FileType::Directory } else { FileType::RegularFile },
-        perm: permissions(access_mode, directory),
+        perm: permissions(access_mode, if directory { EntryKind::Directory } else { EntryKind::File }),
         nlink: if directory { 2 } else { 1 },
         uid,
         gid,

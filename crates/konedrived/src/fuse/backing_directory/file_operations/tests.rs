@@ -48,9 +48,9 @@ fn a_link_that_leads_nowhere_is_at_its_name() {
 fn a_file_opened_to_write_is_cut_to_nothing_only_when_asked() {
     let (dir, backing_directory) = empty_backing_directory();
     fs::write(dir.path().join("a.txt"), b"abc").unwrap();
-    assert_eq!(backing_directory.write(Path::new("a.txt"), false).unwrap().metadata().unwrap().len(), 3);
-    assert_eq!(backing_directory.write(Path::new("a.txt"), true).unwrap().metadata().unwrap().len(), 0);
-    assert!(backing_directory.read(Path::new("none.txt")).is_err());
+    assert_eq!(backing_directory.open_to_write(Path::new("a.txt"), false).unwrap().metadata().unwrap().len(), 3);
+    assert_eq!(backing_directory.open_to_write(Path::new("a.txt"), true).unwrap().metadata().unwrap().len(), 0);
+    assert!(backing_directory.open_to_read(Path::new("none.txt")).is_err());
 }
 
 #[test]

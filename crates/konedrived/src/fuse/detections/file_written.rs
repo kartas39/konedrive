@@ -7,7 +7,7 @@ use konedrive_tree::TreeError;
 
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{detect_local_only_entry, detect_moved, detect_modified, wait_for_quiet, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
+use super::{detect_local_only_entry, detect_moved, detect_modified, wait_for_quiet, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts, WriteState};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// Which file was written, where it is, and what was done to it.
@@ -48,7 +48,13 @@ pub(in crate::fuse) enum LocalOnlyFileWrite {
 impl FolderEvent for FileWritten {
     fn detect(self, facts: &impl StoreFacts, now: i64) -> Result<OutboxBatch, TreeError> {
         match self {
-            FileWritten::LocalOnly { file, write } => Ok(OutboxBatch::of([detect_local_only_entry(&file.place, &file.on_disk, write == LocalOnlyFileWrite::Opened, now)])),
+            FileWritten::LocalOnly { file, write } => {
+                let write_state = match write {
+                    LocalOnlyFileWrite::Opened => WriteState::OpenForWriting,
+                    LocalOnlyFileWrite::Closed | LocalOnlyFileWrite::Cut => WriteState::NotOpen,
+                };
+                Ok(OutboxBatch::of([detect_local_only_entry(&file.place, &file.on_disk, write_state, now)]))
+            }
             FileWritten::InOneDrive { id, place, write } => {
                 let Some(base) = facts.base_row(&id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {

@@ -6,7 +6,7 @@ use std::io;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use super::BackingDirectory;
+use super::{mode_bits, BackingDirectory, EntryKind, WriteBits};
 
 impl BackingDirectory {
     /// What the filesystem says of the name `rel`, a link not followed. `None` when nothing
@@ -26,7 +26,7 @@ impl BackingDirectory {
 
     /// A new file at `rel`, where nothing is yet, open to read and write.
     pub(in crate::fuse) fn make_file(&self, rel: &Path) -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).create_new(true).mode(0o644).open(self.resolve_path(rel))
+        OpenOptions::new().read(true).write(true).create_new(true).mode(mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_path(rel))
     }
 
     pub(in crate::fuse) fn remove_dir(&self, rel: &Path) -> io::Result<()> {
@@ -42,18 +42,18 @@ impl BackingDirectory {
     }
 
     /// The file at `rel`, open to read.
-    pub(in crate::fuse) fn read(&self, rel: &Path) -> io::Result<File> {
+    pub(in crate::fuse) fn open_to_read(&self, rel: &Path) -> io::Result<File> {
         File::open(self.resolve_path(rel))
     }
 
     /// The file at `rel`, open to read and write, cut to nothing when `truncate`.
-    pub(in crate::fuse) fn write(&self, rel: &Path, truncate: bool) -> io::Result<File> {
+    pub(in crate::fuse) fn open_to_write(&self, rel: &Path, truncate: bool) -> io::Result<File> {
         OpenOptions::new().read(true).write(true).truncate(truncate).open(self.resolve_path(rel))
     }
 
     /// Gives the file at `rel` its owner's write bit: a downloaded copy has none.
     pub(in crate::fuse) fn grant_write_bit(&self, rel: &Path) -> io::Result<()> {
-        fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(0o644))
+        fs::set_permissions(self.resolve_path(rel), fs::Permissions::from_mode(mode_bits(EntryKind::File, WriteBits::Present)))
     }
 }
 

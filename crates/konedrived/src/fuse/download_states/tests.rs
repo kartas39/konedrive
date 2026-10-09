@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
-use super::{reaches_download_threshold, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
+use super::{reaches_download_threshold, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT};
 
 /// Once 100 bytes of a file were read as ranges, it is downloaded whole.
 fn download_states() -> DownloadStates {
@@ -60,21 +60,20 @@ fn everyone_who_waits_is_told_how_the_download_ended() {
 }
 
 #[test]
-fn a_read_is_answered_from_a_running_download_only_well_below_what_it_has_written() {
+fn a_running_download_hands_out_its_file_and_how_far_it_is_written() {
     let download_states = download_states();
     download_states.start_or_join("A", None);
     // Waiting for its turn in the pool: it has no file yet.
-    assert!(download_states.find_written_file("A", 0).is_none());
+    assert!(download_states.find_running_download("A").is_none());
     let file = unnamed_file();
     let written_up_to = download_states.begin_writing("A", Arc::clone(&file));
-    assert!(download_states.find_written_file("A", 10).is_none());
-    written_up_to.store(WRITTEN_BEHIND + 10, Ordering::SeqCst);
-    assert!(download_states.find_written_file("A", 10).is_some_and(|found| Arc::ptr_eq(&found, &file)));
-    assert!(download_states.find_written_file("A", 11).is_none());
-    // Not from another file's, and not once it ended.
-    assert!(download_states.find_written_file("B", 10).is_none());
+    assert!(download_states.find_running_download("A").is_some_and(|running| Arc::ptr_eq(&running.file, &file) && running.written_up_to == 0));
+    written_up_to.store(4_096, Ordering::SeqCst);
+    assert_eq!(download_states.find_running_download("A").map(|running| running.written_up_to), Some(4_096));
+    // Not another file's, and not once it ended.
+    assert!(download_states.find_running_download("B").is_none());
     download_states.finish("A", Ok(()));
-    assert!(download_states.find_written_file("A", 10).is_none());
+    assert!(download_states.find_running_download("A").is_none());
 }
 
 #[test]

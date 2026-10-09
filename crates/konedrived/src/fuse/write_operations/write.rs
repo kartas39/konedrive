@@ -20,17 +20,25 @@ use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite
 use crate::fuse::directory_contents::{EntryState, FileSyncState};
 use crate::fuse::open_handles::{CloseOutcome, Fh};
 use crate::fuse::errno::to_errno;
+use crate::fuse::upload_rules::UploadStatus;
+
+/// A OneDrive file whose content has to be downloaded before it can be written: its row,
+/// and its path in the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::fuse) struct NeededDownload {
+    pub(in crate::fuse) row: Row,
+    pub(in crate::fuse) path: PathBuf,
+}
 
 impl WriteOperations {
-    /// The row of the file and its path, when writing the node `node_id` needs its content
-    /// downloaded first: a OneDrive file that is not downloaded and is not cut to nothing
-    /// (`empty`). A read-only folder refuses here, before anything is downloaded for a
-    /// write it will not take.
-    pub(in crate::fuse) fn needs_download(&self, node_id: NodeId, empty: bool) -> Result<Option<(Row, PathBuf)>, Errno> {
+    /// The download that writing the node `node_id` needs first: of a OneDrive file that is
+    /// not downloaded and is not cut to nothing (`empty`). A read-only folder refuses here,
+    /// before anything is downloaded for a write it will not take.
+    pub(in crate::fuse) fn find_needed_download(&self, node_id: NodeId, empty: bool) -> Result<Option<NeededDownload>, Errno> {
         self.access_mode_switch.check_read_write()?;
         let Some((entry, rel)) = self.node_resolver.find_entry(node_id) else { return Ok(None) };
         Ok(match entry.state {
-            EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some((row, rel)),
+            EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some(NeededDownload { row, path: rel }),
             _ => None,
         })
     }
@@ -42,7 +50,7 @@ impl WriteOperations {
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, truncate)?;
-        let backing_file = self.backing_directory.write(&rel, truncate).map_err(|e| to_errno(&e))?;
+        let backing_file = self.backing_directory.open_to_write(&rel, truncate).map_err(|e| to_errno(&e))?;
         // Its content is the user's own already when it is modified here; from the first
         // writer on the outbox holds it in any case.
         let content_changed = truncate || matches!(file, FileSyncState::ModifiedHere(..));
@@ -104,7 +112,7 @@ impl WriteOperations {
             TimeOrNow::SpecificTime(at) => at,
             TimeOrNow::Now => SystemTime::now(),
         };
-        if let Ok(file) = self.backing_directory.read(&rel) {
+        if let Ok(file) = self.backing_directory.open_to_read(&rel) {
             let _ = konedrive_fs::placeholder::set_mtime(&file, at);
         }
     }
@@ -116,7 +124,7 @@ impl WriteOperations {
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
         self.make_writable(file, &rel, size == 0)?;
-        let backing_file = self.backing_directory.write(&rel, false).map_err(|e| to_errno(&e))?;
+        let backing_file = self.backing_directory.open_to_write(&rel, false).map_err(|e| to_errno(&e))?;
         // Recorded before it is cut: a daemon that dies in between leaves a row for content
         // that did not change, never a changed file without a row.
         if self.open_handles.is_open_for_writing_by_node_id(node_id) {
@@ -155,7 +163,7 @@ impl WriteOperations {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
         if let Some(local_only) = entry.local_only() {
-            if self.is_ignored(&parent_directory, &entry.name) {
+            if self.find_upload_status(&parent_directory, &entry.name) == UploadStatus::Ignored {
                 return Ok(());
             }
             let event = FileWritten::LocalOnly { file: local_only.clone(), write };

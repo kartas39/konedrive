@@ -55,6 +55,16 @@ pub(super) use entry_renamed::{DisplacedEntry, EntryRenamed, MovedEntry};
 pub(super) use file_written::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 pub(super) use unrecorded_entries::UnrecordedEntries;
 
+/// Whether a program holds a file open for writing at the moment a change of it is recorded:
+/// a file that is, waits in the outbox for its last writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriteState {
+    /// A program holds it open for writing.
+    OpenForWriting,
+    /// No program does.
+    NotOpen,
+}
+
 /// What one change puts into the outbox: its detections, in the order they are recorded, and
 /// the operations on rows that go with them.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -134,9 +144,9 @@ fn detect_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>, s
 
 /// The entry `on_disk`, which is not in OneDrive yet, is at `place`: a file to create, a
 /// directory to make. A name OneDrive refuses, or a file too large for it, is said on the row
-/// and waits for the user; a file a program still writes (`open`) waits for its last writer,
-/// and one just closed is due a moment later.
-fn detect_local_only_entry(place: &EntryPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
+/// and waits for the user; a file a program still writes waits for its last writer, and one
+/// that is not open is due a moment later.
+fn detect_local_only_entry(place: &EntryPlace, on_disk: &DiskEntry, write_state: WriteState, now: i64) -> Detection {
     let (kind, size) = match on_disk.metadata.kind {
         EntryKind::Directory => (OutboxKind::Mkdir, None),
         EntryKind::File => (OutboxKind::Create, Some(on_disk.metadata.size)),
@@ -147,7 +157,7 @@ fn detect_local_only_entry(place: &EntryPlace, on_disk: &DiskEntry, open: bool, 
     if let Some(refused) = refused {
         d.state = OutboxState::Blocked;
         d.reason = Some(refused.reason());
-    } else if open {
+    } else if write_state == WriteState::OpenForWriting {
         wait_for_writer(&mut d, now);
     } else if on_disk.metadata.kind == EntryKind::File {
         wait_for_quiet(&mut d, now);
@@ -158,7 +168,7 @@ fn detect_local_only_entry(place: &EntryPlace, on_disk: &DiskEntry, open: bool, 
 /// The detections of `entries`, each by the rules of a new local-only entry that no program
 /// holds open: a directory that is uploaded from now on, and all it holds.
 pub(super) fn detect_local_only_entries(entries: &[LocalOnlyEntry], now: i64) -> Vec<Detection> {
-    entries.iter().map(|entry| detect_local_only_entry(&entry.place, &entry.on_disk, false, now)).collect()
+    entries.iter().map(|entry| detect_local_only_entry(&entry.place, &entry.on_disk, WriteState::NotOpen, now)).collect()
 }
 
 /// The file or directory of OneDrive that `row` is, is at `place`, with the entry `handle`

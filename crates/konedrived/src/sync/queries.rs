@@ -94,7 +94,7 @@ impl SyncService {
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
         // Never opened: an open through the mount would download the file.
-        let id = match self.require_mount()?.find_path_status(path) {
+        let id = match self.require_mount()?.files_interface().find_path_status(path) {
             Ok(status) => status.id,
             Err(crate::fuse::FilesRefusal::NotInOneDrive) => return Err(SyncError::NotInOneDrive(path.display().to_string())),
             Err(refused) => return Err(refused.into()),

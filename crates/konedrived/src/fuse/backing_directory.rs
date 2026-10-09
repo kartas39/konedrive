@@ -40,7 +40,7 @@ mod write_bits;
 
 pub(super) use download_landing::LandingOutcome;
 pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
-pub(super) use write_bits::{remove_write_bits, restore_write_bits};
+pub(super) use write_bits::{mode_bits, remove_write_bits, restore_write_bits, WriteBits};
 
 /// Where an earlier build built its downloads, inside the backing directory: removed when the
 /// directory is opened. A download is built in a file without a name now.
@@ -64,7 +64,7 @@ impl BackingDirectory {
         // when the daemon last ended.
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
+            let _ = fs::set_permissions(folder, fs::Permissions::from_mode(mode_bits(EntryKind::Directory, WriteBits::Present)));
         }
         let backing_directory = BackingDirectory { descriptor: File::open(folder)? };
         let _ = fs::remove_dir_all(backing_directory.resolve_path(Path::new(LEGACY_STAGING_DIRECTORY)));
@@ -72,9 +72,20 @@ impl BackingDirectory {
     }
 
     /// The path of the backing directory itself, through the descriptor: for what walks it
-    /// without going through the mount.
+    /// without going through the mount. It is the link the kernel keeps for the descriptor,
+    /// which whoever opens or walks it follows; one who looks at the path without following
+    /// links sees the link ([`resolve_root_directory_path`](Self::resolve_root_directory_path)
+    /// names the directory).
     pub(super) fn resolve_root_path(&self) -> PathBuf {
         konedrive_fs::proc_path(&self.descriptor)
+    }
+
+    /// A path that names the backing directory itself, and not the link to it: the link of
+    /// the descriptor with a slash after it, which the kernel resolves to the directory also
+    /// for one who does not follow links. For what looks at the directory before it walks
+    /// it — the write bits are set by such a walk — and for what makes a file in it.
+    pub(super) fn resolve_root_directory_path(&self) -> PathBuf {
+        konedrive_fs::proc_path(&self.descriptor).join("")
     }
 
     /// The path of `rel` in the backing directory: through the descriptor, never through the
@@ -100,14 +111,19 @@ impl BackingDirectory {
         }
     }
 
-    /// The extended attribute `name` of the entry at `rel`; of the backing directory itself
-    /// for the empty path.
+    /// The extended attribute `name` of the folder itself: what its registration and its
+    /// first cycle wrote on the backing directory.
+    pub(super) fn read_folder_attribute(&self, name: &str) -> Option<String> {
+        xattr::FileExt::get_xattr(&self.descriptor, name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
+    }
+
+    /// The extended attribute `name` of the entry at `rel`; of the folder itself for the
+    /// empty path ([`read_folder_attribute`](Self::read_folder_attribute)).
     pub(super) fn read_attribute(&self, rel: &Path, name: &str) -> Option<String> {
-        let value = match rel.as_os_str().is_empty() {
-            true => xattr::FileExt::get_xattr(&self.descriptor, name),
-            false => xattr::get(self.resolve_path(rel), name),
-        };
-        value.ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
+        if rel.as_os_str().is_empty() {
+            return self.read_folder_attribute(name);
+        }
+        xattr::get(self.resolve_path(rel), name).ok().flatten().map(|v| String::from_utf8_lossy(&v).into_owned())
     }
 }
 

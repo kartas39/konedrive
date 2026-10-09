@@ -3,20 +3,19 @@
 //! A pin is a row of the store ([`konedrive_tree::TreeStore::pins`]): a file that is not
 //! downloaded has nothing on disk to carry one. [`Pins`] holds the OneDrive ids that carry a
 //! pin of their own, as the store has them: read from the store when the mount starts, and
-//! changed only together with the store. A pin on a directory keeps everything below it, so
-//! what keeps a file is found up its chain of parents ([`Pins::find_pinning_row`]), which
-//! [`DirectoryContents`] tells.
+//! changed only together with the store, which it writes. A pin on a directory keeps
+//! everything below it, so what keeps a file is found up its chain of parents
+//! ([`Pins::find_pinning_row`]), which [`DirectoryContents`] tells.
 //!
-//! What a pin keeps is downloaded by [`download_pinned_files`].
+//! It starts nothing: what a pin keeps is downloaded by
+//! [`PinnedFileDownloader`](super::pinned_file_downloader::PinnedFileDownloader).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use konedrive_graph::pool::Class;
 use konedrive_tree::{Row, Store, TreeError};
 
-use super::directory_contents::{DirectoryContents, FileSyncState};
-use super::file_downloader::FileDownloader;
+use super::directory_contents::DirectoryContents;
 
 /// The pins: the OneDrive ids that carry a pin of their own.
 pub(super) struct Pins {
@@ -24,8 +23,6 @@ pub(super) struct Pins {
     /// The store's one writer: a pin is put on and taken off there first.
     store: Store,
     directory_contents: Arc<DirectoryContents>,
-    /// Where the pins of what a cycle removed are taken off the store.
-    runtime: tokio::runtime::Handle,
 }
 
 impl Pins {
@@ -36,8 +33,8 @@ impl Pins {
 
     /// The pins of a folder, `pinned_ids` being what its store has
     /// ([`load_pinned_ids`](Self::load_pinned_ids)).
-    pub(super) fn new(pinned_ids: Vec<String>, store: Store, directory_contents: Arc<DirectoryContents>, runtime: tokio::runtime::Handle) -> Self {
-        Pins { pinned_ids: Mutex::new(pinned_ids.into_iter().collect()), store, directory_contents, runtime }
+    pub(super) fn new(pinned_ids: Vec<String>, store: Store, directory_contents: Arc<DirectoryContents>) -> Self {
+        Pins { pinned_ids: Mutex::new(pinned_ids.into_iter().collect()), store, directory_contents }
     }
 
     /// Puts the pin on the OneDrive id `id`, or takes it off: in the store, and then here.
@@ -65,9 +62,10 @@ impl Pins {
     }
 
     /// What keeps `row` on this device: itself or a directory above it, whichever carries a
-    /// pin.
+    /// pin. The pins are those of the moment it is asked: the chain of parents is walked
+    /// through the directory contents with the pins' own lock let go.
     pub(super) fn find_pinning_row(&self, row: &Row) -> Option<Row> {
-        let pinned_ids = crate::panic::lock(&self.pinned_ids);
+        let pinned_ids = crate::panic::lock(&self.pinned_ids).clone();
         let mut at = Some(row.clone());
         while let Some(row) = at {
             if pinned_ids.contains(&row.id) {
@@ -79,38 +77,17 @@ impl Pins {
     }
 
     /// A cycle removed `removed_ids` from the folder: what is gone keeps nothing on this
-    /// device, so the pins among them are taken off, here and then in the store.
+    /// device, so the pins among them are taken off, here and then in the store. Called
+    /// where no async runtime runs: on the thread of the cycle that was committed.
     pub(super) fn unpin_removed(&self, removed_ids: Vec<String>) {
         let unpinned: Vec<String> = {
             let mut pinned_ids = crate::panic::lock(&self.pinned_ids);
             removed_ids.into_iter().filter(|id| pinned_ids.remove(id)).collect()
         };
         if !unpinned.is_empty() {
-            let store = self.store.clone();
-            self.runtime.spawn(async move {
-                let _ = store.call(move |s| unpinned.iter().try_for_each(|id| s.set_pin(id, false))).await;
-            });
+            let _ = self.store.call_blocking(move |s| unpinned.iter().try_for_each(|id| s.set_pin(id, false)));
         }
     }
-}
-
-/// Downloads every pinned file that is not downloaded: run when the mount starts, when a pin
-/// is put on and after every cycle, so that a new file in a pinned directory and a pinned
-/// file whose content changed are downloaded by it.
-pub(super) fn download_pinned_files(pins: &Arc<Pins>, directory_contents: &Arc<DirectoryContents>, file_downloader: &Arc<FileDownloader>, runtime: &tokio::runtime::Handle) {
-    let (pins, directory_contents, file_downloader) = (Arc::clone(pins), Arc::clone(directory_contents), Arc::clone(file_downloader));
-    // Off the caller's thread: a cycle calls this while it holds the folder's tree lock, and
-    // a large pinned directory is a long walk.
-    runtime.spawn_blocking(move || {
-        for id in pins.list_pinned_ids() {
-            let Some(row) = directory_contents.find_row(&id) else { continue };
-            for (file, rel) in directory_contents.list_files_below(&row) {
-                if let FileSyncState::RemoteOnly(file) = file {
-                    file_downloader.download(file, rel, Class::Download, None);
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]

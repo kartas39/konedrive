@@ -8,7 +8,8 @@
 //! stays, as a local-only directory, and is made again in OneDrive.
 //!
 //! [`ConflictCopies`] owns the machine's name, which a conflict copy is named with. What a
-//! cycle's conflicts left is collected in a [`CycleConflicts`], which the cycle records.
+//! cycle's conflicts left is collected in a [`CycleConflicts`], which the cycle step records
+//! through the outbox recorder; it records nothing itself.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,10 +32,29 @@ pub struct CycleConflicts {
     /// What the cycle recorded in the outbox for them.
     pub detections: Vec<Detection>,
     pub ops: Vec<OutboxOp>,
-    /// The user's own, moved aside: the path each was at, and the path it is at now.
-    pub moved_aside: Vec<(PathBuf, PathBuf)>,
+    /// The user's own, moved aside.
+    pub moved_aside: Vec<ConflictCopy>,
     /// The directories removed from OneDrive that stay here, by OneDrive id.
     pub kept_directories: Vec<String>,
+}
+
+/// One file or directory of the user's own that a cycle moved aside: the path it was at,
+/// where something of OneDrive came, and the path its conflict copy is at now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictCopy {
+    pub original: PathBuf,
+    pub copy: PathBuf,
+}
+
+/// What became of the user's own at a path something of OneDrive comes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MoveAsideOutcome {
+    /// Nothing of the user's own was there.
+    NothingInTheWay,
+    /// It is beside the path now, under a conflict copy's name.
+    MovedAside,
+    /// It could not be moved, and is still at the path.
+    StillInTheWay,
 }
 
 pub(super) struct ConflictCopies {
@@ -58,10 +78,10 @@ impl ConflictCopies {
 
     /// Something of OneDrive comes to `rel`, in the directory with the OneDrive id
     /// `parent_id`: the local-only entry that is there is renamed to a conflict copy's name
-    /// beside it. `now` is the time the rows are dated by.
-    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, now: i64, conflicts: &mut CycleConflicts) {
-        let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
-        let Some(on_disk) = self.backing_directory.find_unmarked_disk_entry(rel) else { return };
+    /// beside it. `now` is the time the rows are dated by. What became of the entry.
+    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
+        let Some(on_disk) = self.backing_directory.find_unmarked_disk_entry(rel) else { return MoveAsideOutcome::NothingInTheWay };
+        let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return MoveAsideOutcome::StillInTheWay };
         let directory = DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_path_buf() };
         for n in 1..=100 {
             let copy = self.copy_name(name, n);
@@ -71,15 +91,16 @@ impl ConflictCopies {
             }
             if let Err(e) = self.backing_directory.rename(rel, &to) {
                 tracing::warn!("{} could not be kept beside what comes to its name from OneDrive: {e}", rel.display());
-                return;
+                return MoveAsideOutcome::StillInTheWay;
             }
-            let uploaded = !self.upload_rules.is_ignored(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
-            let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), uploaded }.detect(now);
+            let upload_status = self.upload_rules.find_upload_status(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
+            let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_status }.detect(now);
             conflicts.ops.extend(kept.ops);
             conflicts.detections.extend(kept.detections);
-            conflicts.moved_aside.push((rel.to_path_buf(), to));
-            return;
+            conflicts.moved_aside.push(ConflictCopy { original: rel.to_path_buf(), copy: to });
+            return MoveAsideOutcome::MovedAside;
         }
+        MoveAsideOutcome::StillInTheWay
     }
 
     /// The directory with the OneDrive id `id` was removed from OneDrive: the directory at

@@ -1,3 +1,4 @@
+use crate::fuse::write_operations::EntryToMake;
 
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
@@ -10,7 +11,7 @@ use crate::fuse::write_operations::tests::{at, folder};
 #[test]
 fn a_local_only_file_written_waits_for_its_writer_and_is_due_once_closed() {
     let f = folder(Vec::new());
-    f.ops.make(NodeId::ROOT, "new.txt", false, false).unwrap();
+    f.ops.make(NodeId::ROOT, "new.txt", EntryToMake::File).unwrap();
     let node_id = f.node_id(NodeId::ROOT, "new.txt");
     let fh = f.ops.open_to_write(node_id, false).unwrap();
     assert!(matches!(f.open_handles.find_file(fh), Some(OpenFile::Writing { node_id: written, onedrive_id: None, .. }) if written == node_id));
@@ -71,11 +72,11 @@ fn a_second_writer_of_a_onedrive_file_records_nothing_more_and_its_content_count
 fn a_onedrive_file_that_is_not_downloaded_is_downloaded_before_it_is_written() {
     let f = folder(Vec::new());
     let node_id = f.node_id(NodeId::ROOT, "a.txt");
-    assert_eq!(f.ops.needs_download(node_id, false).unwrap().map(|(row, rel)| (row.id, rel)), Some(("A".into(), at("a.txt"))));
-    assert!(f.ops.needs_download(node_id, true).unwrap().is_none());
+    assert_eq!(f.ops.find_needed_download(node_id, false).unwrap().map(|needed| (needed.row.id, needed.path)), Some(("A".into(), at("a.txt"))));
+    assert!(f.ops.find_needed_download(node_id, true).unwrap().is_none());
     assert_eq!(f.ops.open_to_write(node_id, false).err(), Some(Errno::EIO));
     f.download("a.txt", "A", b"a");
-    assert!(f.ops.needs_download(node_id, false).unwrap().is_none());
+    assert!(f.ops.find_needed_download(node_id, false).unwrap().is_none());
 }
 
 /// Cut to nothing it needs no download: the copy is made empty, and is the file's new
@@ -102,7 +103,7 @@ fn a_directory_or_a_read_only_folder_is_not_written() {
     assert_eq!(f.ops.open_to_write(node_id, true).err(), Some(Errno::EROFS));
     assert_eq!(f.ops.truncate(node_id, 0, None).err(), Some(Errno::EROFS));
     // Nothing is downloaded for a write that is refused, and no time is set.
-    assert_eq!(f.ops.needs_download(node_id, false).err(), Some(Errno::EROFS));
+    assert_eq!(f.ops.find_needed_download(node_id, false).err(), Some(Errno::EROFS));
     assert_eq!(f.ops.set_modified_time(node_id, None).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
 }
@@ -112,7 +113,7 @@ fn a_directory_or_a_read_only_folder_is_not_written() {
 #[test]
 fn the_last_writer_of_a_file_closed_in_a_folder_switched_to_read_only_records_nothing() {
     let f = folder(Vec::new());
-    f.ops.make(NodeId::ROOT, "new.txt", false, false).unwrap();
+    f.ops.make(NodeId::ROOT, "new.txt", EntryToMake::File).unwrap();
     let node_id = f.node_id(NodeId::ROOT, "new.txt");
     let fh = f.ops.open_to_write(node_id, false).unwrap();
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));

@@ -9,8 +9,9 @@
 //! what the user reads goes first. A timer of its own lets each reader go: never while a read
 //! is in flight, and only once it lingered out.
 //!
-//! It fetches the ranges too ([`RangeReaders::fetch_range`]), so the source of the content
-//! is its own. It knows nothing of what is downloaded whole
+//! It holds the readers and nothing else: the ranges are fetched by
+//! [`RangeFetcher`](super::range_fetcher::RangeFetcher), which tells it of each read. It
+//! knows nothing of the source of the content, nor of what is downloaded whole
 //! ([`DownloadStates`](super::download_states::DownloadStates) counts what was read).
 
 use std::collections::HashMap;
@@ -18,10 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use konedrive_graph::pool::{Class, Size, Slot, TransferPool};
-use konedrive_tree::Row;
 use tokio::time::Instant;
-
-use crate::hydration::source::ContentSource;
 
 /// How long after its last read a file still counts as being read: the background downloads
 /// stay held back between the reads of one program.
@@ -39,7 +37,6 @@ struct RangeReader {
 pub(super) struct RangeReaders {
     readers: Mutex<HashMap<String, RangeReader>>,
     pool: Arc<TransferPool>,
-    source: Arc<dyn ContentSource>,
     /// Where the timers run.
     runtime: tokio::runtime::Handle,
 }
@@ -61,8 +58,8 @@ impl Drop for ActiveRangeRead {
 }
 
 impl RangeReaders {
-    pub(super) fn new(pool: Arc<TransferPool>, source: Arc<dyn ContentSource>, runtime: tokio::runtime::Handle) -> Self {
-        RangeReaders { readers: Mutex::default(), pool, source, runtime }
+    pub(super) fn new(pool: Arc<TransferPool>, runtime: tokio::runtime::Handle) -> Self {
+        RangeReaders { readers: Mutex::default(), pool, runtime }
     }
 
     /// One more read of the file `id` is in flight, if the file has a reader already.
@@ -101,34 +98,7 @@ impl RangeReaders {
             tokio::time::sleep_until(if in_flight == 0 { lingers_until } else { now + READ_LINGERS }).await;
         }
     }
-
-    /// The bytes of the OneDrive file `row` from `from` up to `end`, asked of OneDrive as a
-    /// range. The errno, when they did not come.
-    pub(super) async fn fetch_range(self: &Arc<Self>, row: &Row, from: u64, end: u64) -> Result<Vec<u8>, i32> {
-        use tokio::io::AsyncReadExt;
-        let _active_read = self.begin_read(&row.id).await;
-        let asked = std::time::Instant::now();
-        let fetched = self.source.read_range(&row.id, from, end).await.map_err(|e| {
-            tracing::warn!("a range of {} was not fetched: {e}", row.name);
-            libc::EIO
-        })?;
-        if fetched.served_from != from {
-            tracing::error!("{}: asked for byte {from} and got a stream starting at {}", row.name, fetched.served_from);
-            return Err(libc::EIO);
-        }
-        let mut bytes = Vec::with_capacity((end - from) as usize);
-        let answered = asked.elapsed();
-        fetched.stream.take(end - from).read_to_end(&mut bytes).await.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
-        tracing::info!("{} bytes at {from} of {} came from OneDrive in {} ms ({} ms to the answer)", bytes.len(), row.name, asked.elapsed().as_millis(), answered.as_millis());
-        Ok(bytes)
-    }
-
-    /// The OneDrive file `id` changed or is gone: whatever the source remembered of it
-    /// between its range reads is of what it was, and is dropped.
-    pub(super) fn drop_cached_ranges(&self, id: &str) {
-        self.source.forget(id);
-    }
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

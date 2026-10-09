@@ -15,17 +15,19 @@
 use std::path::PathBuf;
 
 use crate::fuse::entry_place::EntryPlace;
-use super::{detect_local_only_entry, rebase, OutboxBatch};
+use super::{detect_local_only_entry, rebase, OutboxBatch, WriteState};
+use crate::fuse::upload_rules::UploadStatus;
 use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 
 /// The local-only entry `on_disk` was at `from`, where something of OneDrive comes, and was
-/// renamed to `to` beside it. `uploaded`: the conflict copy's name is one that is uploaded.
+/// renamed to `to` beside it; `upload_status` says whether the conflict copy's name is one
+/// that is uploaded.
 #[derive(Debug)]
 pub(in crate::fuse) struct EntryKeptAside {
     pub(in crate::fuse) on_disk: DiskEntry,
     pub(in crate::fuse) from: PathBuf,
     pub(in crate::fuse) to: EntryPlace,
-    pub(in crate::fuse) uploaded: bool,
+    pub(in crate::fuse) upload_status: UploadStatus,
 }
 
 impl EntryKeptAside {
@@ -33,7 +35,10 @@ impl EntryKeptAside {
     /// a directory follow it there.
     pub(in crate::fuse) fn detect(self, now: i64) -> OutboxBatch {
         let ops = if self.on_disk.metadata.kind == EntryKind::Directory { vec![rebase(&self.from, &self.to.path())] } else { Vec::new() };
-        let detections = if self.uploaded { vec![detect_local_only_entry(&self.to, &self.on_disk, false, now)] } else { Vec::new() };
+        let detections = match self.upload_status {
+            UploadStatus::Uploaded => vec![detect_local_only_entry(&self.to, &self.on_disk, WriteState::NotOpen, now)],
+            UploadStatus::Ignored => Vec::new(),
+        };
         OutboxBatch { detections, ops }
     }
 }

@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use konedrive_fs::placeholder::{self, State};
 
 use super::downloaded_copies::DiskMarks;
-use super::BackingDirectory;
+use super::{mode_bits, BackingDirectory, EntryKind, WriteBits};
 
 /// What is at the path a download is to land at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl BackingDirectory {
     /// A file of the backing directory's filesystem that is in no directory, to build a
     /// download in.
     pub(in crate::fuse) fn make_unnamed_file(&self) -> io::Result<File> {
-        File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(0o644).open(self.resolve_path(Path::new("")))
+        File::options().read(true).write(true).custom_flags(libc::O_TMPFILE).mode(mode_bits(EntryKind::File, WriteBits::Present)).open(self.resolve_root_directory_path())
     }
 
     /// What is at `rel`, for a download of the OneDrive file `id`.
@@ -111,7 +111,7 @@ impl BackingDirectory {
         placeholder::write_state(file, State::Hydrated)?;
         file.set_modified(modified)?;
         // No write bit on a downloaded copy, as the mount shows it.
-        file.set_permissions(fs::Permissions::from_mode(0o444))?;
+        file.set_permissions(fs::Permissions::from_mode(mode_bits(EntryKind::File, WriteBits::Removed)))?;
         file.sync_all()?;
         let target = self.resolve_path(rel);
         if action == LandingAction::Replace {

@@ -40,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{cancellable, CycleError, DriveRecord, Listing, Turn, Writes};
 use crate::folder::root::SyncRoot;
-use crate::fuse::Mount;
+use crate::fuse::{Mount, OneDriveChange};
 use crate::local::held::Rw;
 use crate::remote::applied::{Applied, Changed, Copied, OnDisk};
 use crate::remote::mode::Mode;
@@ -227,15 +227,15 @@ impl Reconcile {
         let following = Arc::clone(&self.mount);
         let outcome = self.store.call_blocking(move |s| following.apply_staged_cycle(s, rw.read_write().map(|rw| &**rw)))?;
         let mut applied = Applied::default();
-        applied.on_disk.copies = outcome.conflicts.moved_aside.into_iter().map(|(original, copy)| Copied { original, copy }).collect();
+        applied.on_disk.copies = outcome.conflicts.moved_aside.into_iter().map(|moved_aside| Copied { original: moved_aside.original, copy: moved_aside.copy }).collect();
         applied.on_disk.recreated = outcome.conflicts.kept_directories;
         for step in &outcome.changes {
-            let (kind, rel, from) = match (&step.old, &step.new) {
-                (None, Some((_, now))) => (Kind::Added, now, None),
-                (Some((_, was)), None) => (Kind::Removed, was, None),
-                (Some((_, was)), Some((_, now))) if was != now => (Kind::Moved, now, Some(was.clone())),
-                (Some(_), Some((_, now))) if step.has_new_content() => (Kind::Updated, now, None),
-                _ => continue,
+            let (kind, rel, from) = match step {
+                OneDriveChange::Appeared { now, .. } => (Kind::Added, now, None),
+                OneDriveChange::Vanished { was, .. } => (Kind::Removed, was, None),
+                OneDriveChange::Moved { was, now, .. } => (Kind::Moved, now, Some(was.clone())),
+                OneDriveChange::Stayed { at, .. } if step.has_new_content() => (Kind::Updated, at, None),
+                OneDriveChange::Stayed { .. } => continue,
             };
             match kind {
                 Kind::Added => applied.counts.created += 1,

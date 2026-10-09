@@ -3,50 +3,44 @@
 
 use fuser::Errno;
 
-use crate::fuse::node_table::NodeId;
+use super::remove_plan::{plan_remove, RemovePlace, RemovePlan};
 use super::WriteOperations;
+use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::EntryRemoved;
-use crate::fuse::directory_reference::DirectoryReference;
-use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
+use crate::fuse::node_table::NodeId;
 
 impl WriteOperations {
-    /// Removes `name` from the directory node `parent`: a directory (`directory`), which must
+    /// Removes `name` from the directory node `parent`, as a `kind`: a directory, which must
     /// hold nothing, or a file. What is in OneDrive is removed there by the outbox; a
     /// local-only entry is forgotten there.
-    pub(in crate::fuse) fn remove(&self, parent: NodeId, name: &str, directory: bool) -> Result<(), Errno> {
+    pub(in crate::fuse) fn remove(&self, parent: NodeId, name: &str, kind: EntryKind) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
-        let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
-        let entry = self.directory_contents.find_entry(&parent_directory, name).ok_or(Errno::ENOENT)?;
-        match (&entry.state, directory) {
-            (EntryState::Directory(_), false) => return Err(Errno::EISDIR),
-            (EntryState::File(_), true) => return Err(Errno::ENOTDIR),
-            _ => {}
-        }
-        let rel = parent_directory.path.join(name);
-        if directory && !self.directory_contents.list_names(&DirectoryReference { onedrive_id: entry.onedrive_id().map(str::to_owned), path: rel.clone() }).is_empty() {
-            return Err(Errno::ENOTEMPTY);
-        }
-        let event = match &entry.state {
-            EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => {
-                EntryRemoved::LocalOnly { handle: local_only.on_disk.handle.clone(), rel: rel.clone() }
-            }
-            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => {
-                EntryRemoved::InOneDrive { id: row.id.clone(), rel: rel.clone() }
-            }
+        let plan = plan_remove(kind, name, self.find_remove_place(parent, name))?;
+        let (event, rel) = match &plan {
+            RemovePlan::OneDriveFile { id, path } | RemovePlan::OneDriveDirectory { id, path } => (EntryRemoved::InOneDrive { id: id.clone(), rel: path.clone() }, path),
+            RemovePlan::LocalOnlyFile { handle, path } | RemovePlan::LocalOnlyDirectory { handle, path } => (EntryRemoved::LocalOnly { handle: handle.clone(), rel: path.clone() }, path),
         };
         self.record_or_undo(event, format_args!("the removal of {}", rel.display()), || {})?;
-        match entry.row() {
+        match &plan {
             // The directory in the backing directory is removed when nothing is left in it.
-            Some(_) if directory => drop(self.backing_directory.remove_dir(&rel)),
-            Some(row) => drop(self.backing_directory.remove_downloaded_copy(&rel, &row.id)),
-            None if directory => self.backing_directory.remove_dir(&rel).map_err(|e| to_errno(&e))?,
-            None => self.backing_directory.remove_file(&rel).map_err(|e| to_errno(&e))?,
+            RemovePlan::OneDriveDirectory { path, .. } => drop(self.backing_directory.remove_dir(path)),
+            RemovePlan::OneDriveFile { id, path } => drop(self.backing_directory.remove_downloaded_copy(path, id)),
+            RemovePlan::LocalOnlyDirectory { path, .. } => self.backing_directory.remove_dir(path).map_err(|e| to_errno(&e))?,
+            RemovePlan::LocalOnlyFile { path, .. } => self.backing_directory.remove_file(path).map_err(|e| to_errno(&e))?,
         }
-        if let Some(local_only) = entry.local_only() {
-            self.node_resolver.drop_node(&local_only.on_disk.handle);
+        if let RemovePlan::LocalOnlyFile { handle, .. } | RemovePlan::LocalOnlyDirectory { handle, .. } = &plan {
+            self.node_resolver.drop_node(handle);
         }
         Ok(())
+    }
+
+    /// What stands at `name` of the directory node `parent`, for the plan of a remove.
+    fn find_remove_place(&self, parent: NodeId, name: &str) -> RemovePlace {
+        let parent_directory = self.node_resolver.find_directory(parent);
+        let entry = parent_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, name));
+        let holds_entries = parent_directory.as_ref().zip(entry.as_ref()).is_some_and(|(directory, entry)| self.holds_entries(entry, &directory.path.join(name)));
+        RemovePlace { parent_directory, entry, holds_entries }
     }
 }
 

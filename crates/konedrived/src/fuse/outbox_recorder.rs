@@ -1,35 +1,28 @@
-//! The one thread that changes the folder for programs: each change a program asks for is
-//! made and recorded here, one after another, under the folder's tree lock — the lock a cycle
-//! of the delta listing holds while it makes the folder follow OneDrive — and answered only
-//! then.
+//! What writes a change into the outbox, and wakes the worker that sends it.
 //!
-//! So a change is in the outbox before the program hears it was made, the mount's own
-//! threads never wait for the store or for a cycle, and no two changes of names interleave.
+//! [`OutboxRecorder`] owns the store's writer and what wakes the outbox's worker, while one
+//! runs. It is the one place of the layer that writes detections: what a change is recorded
+//! as is decided ([`super::detections`]) and written in one transaction. It runs no thread
+//! of its own — a write operation records on the write-operation thread
+//! ([`super::write_operation_thread`]), under the folder's tree lock, and a cycle of the
+//! delta listing records what it kept of the user's own inside its own transaction
+//! ([`OutboxRecorder::record_in`]).
 //!
-//! [`OutboxRecorder`] owns the way to its thread (the thread itself owns the jobs' queue and the
-//! tree lock), the store's writer and what wakes the outbox's worker, while one runs. Whether
-//! the folder takes changes is not its to ask: the write operation that records has asked
-//! the access mode switch already. It knows
-//! nothing of the mount, of the disk or of what a job does: a job is a closure, and what a
-//! change is recorded as is decided in [`super::detections`].
+//! Whether the folder takes changes is not its to ask: the write operation that records has
+//! asked the access mode switch already, on the thread the switch itself runs on. It knows
+//! nothing of the mount or of the disk.
 
-use std::io;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
-use konedrive_tree::{Store, TreeError};
+use konedrive_tree::{Store, TreeError, TreeStore};
 
-use super::detections::FolderEvent;
+use super::detections::{FolderEvent, OutboxBatch};
 use crate::local::record::{record, Recorded};
-
-/// One change, made on the recorder's thread.
-type Job = Box<dyn FnOnce() + Send>;
 
 /// What wakes the outbox's worker.
 pub(super) type OutboxWaker = Arc<dyn Fn() + Send + Sync>;
 
 pub(super) struct OutboxRecorder {
-    /// The way to the thread; `None` once the recorder is stopped.
-    jobs: Mutex<Option<mpsc::Sender<Job>>>,
     /// The store's one writer.
     store: Store,
     /// Wakes the outbox's worker: set while a sync that uploads runs, which has one. It is the
@@ -38,30 +31,9 @@ pub(super) struct OutboxRecorder {
 }
 
 impl OutboxRecorder {
-    /// Starts the thread, which runs every job it is given in the order it came, each under
-    /// `tree_lock`, and records into `store`.
-    pub(super) fn start(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>) -> io::Result<Self> {
-        let (jobs, queued) = mpsc::channel::<Job>();
-        std::thread::Builder::new().name("konedrive-record".into()).spawn(move || {
-            for job in queued {
-                let _tree = tree_lock.blocking_lock();
-                job();
-            }
-        })?;
-        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, outbox_waker: Mutex::new(None) })
-    }
-
-    /// Has `job` run on the recorder's thread. A recorder that is stopped drops it, and with
-    /// it the reply it holds: the program is told the request failed.
-    pub(super) fn run(&self, job: impl FnOnce() + Send + 'static) {
-        if let Some(jobs) = &*crate::panic::lock(&self.jobs) {
-            let _ = jobs.send(Box::new(job));
-        }
-    }
-
-    /// The thread ends with the last job it was given; what comes later is dropped.
-    pub(super) fn stop(&self) {
-        *crate::panic::lock(&self.jobs) = None;
+    /// The recorder into `store`, which wakes nothing yet.
+    pub(super) fn new(store: Store) -> Self {
+        OutboxRecorder { store, outbox_waker: Mutex::new(None) }
     }
 
     /// From now on each recorded change calls `outbox_waker`; `None`: nothing is woken.
@@ -78,21 +50,31 @@ impl OutboxRecorder {
     }
 
     /// Records `event` in the outbox: what it is recorded as is decided and written in one
-    /// transaction, and the worker is woken. Whether the folder takes
-    /// changes is the caller's to have asked: a read-only folder's write operations record
-    /// nothing. Called on the recorder's thread, or wherever no async runtime runs.
+    /// transaction, and the worker is woken. Whether the folder takes changes is the
+    /// caller's to have asked: a read-only folder's write operations record nothing. Called
+    /// on the write-operation thread, or wherever no async runtime runs.
     pub(super) fn record(&self, event: impl FolderEvent) -> Result<Recorded, TreeError> {
         let now = crate::clock::unix_now();
-        let recorded = self.store.call_blocking(move |s| {
-            let batch = event.detect(&*s, now)?;
-            if batch.is_empty() {
-                return Ok(Recorded::default());
-            }
-            record(s, batch.detections, batch.ops, now)
-        })?;
+        let recorded = self.store.call_blocking(move |s| write_batch(s, event.detect(&*s, now)?, now))?;
         self.wake_outbox();
         Ok(recorded)
     }
+
+    /// Writes `batch` into the outbox of `store`, dated `now`, inside the call of the store
+    /// the caller is in already: the transaction of a cycle of the delta listing, which has
+    /// the store for itself. The worker is not woken here: the cycle wakes it once it is
+    /// committed ([`wake_outbox`](Self::wake_outbox)). Nothing for a batch that holds nothing.
+    pub(super) fn record_in(&self, store: &mut TreeStore, batch: OutboxBatch, now: i64) -> Result<Recorded, TreeError> {
+        write_batch(store, batch, now)
+    }
+}
+
+/// The one place of the layer that writes detections into a store.
+fn write_batch(store: &mut TreeStore, batch: OutboxBatch, now: i64) -> Result<Recorded, TreeError> {
+    if batch.is_empty() {
+        return Ok(Recorded::default());
+    }
+    record(store, batch.detections, batch.ops, now)
 }
 
 #[cfg(test)]

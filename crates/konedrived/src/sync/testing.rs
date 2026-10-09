@@ -58,7 +58,8 @@ impl SyncService {
 /// The downloads that never ended in a folder served through FUSE: each one's size on disk
 /// and its checkpoint.
 pub fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
-    service.mount().map(|mount| mount.list_unfinished_downloads()).unwrap_or_default()
+    let unfinished = service.mount().map(|mount| mount.files_interface().list_unfinished_downloads()).unwrap_or_default();
+    unfinished.into_iter().map(|download| (download.bytes_on_disk, download.checkpoint)).collect()
 }
 
 pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {

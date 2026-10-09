@@ -4,29 +4,46 @@
 //! entries are made from ([`ListedName`]), and kept with its `fh`: every part of the
 //! reading after that hands out the same names. `readdir` answers from the listed names alone;
 //! `readdirplus` makes the entry of each name it answers with, for its attributes.
+//!
+//! [`DirectoryRequests`] is given the [`NodeResolver`], the [`DirectoryContents`], the
+//! [`OpenHandles`], which keep the listed names, and the [`AccessModeSwitch`], for the modes
+//! `readdirplus` shows.
 
 use std::sync::Arc;
 
 use fuser::{FileHandle, FileType, FopenFlags, Generation, INodeNo, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyOpen};
 
-use crate::fuse::open_handles::Fh;
-use crate::fuse::node_table::NodeId;
-use super::KernelRequests;
-use crate::fuse::attributes::TTL;
+use crate::fuse::access_mode_switch::AccessModeSwitch;
+use crate::fuse::attributes::{attributes, TTL};
 use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::directory_contents::{DirectoryContents, ListedName};
 use crate::fuse::directory_reference::DirectoryReference;
-use crate::fuse::directory_contents::ListedName;
+use crate::fuse::node_resolver::NodeResolver;
+use crate::fuse::node_table::NodeId;
+use crate::fuse::open_handles::{Fh, OpenHandles};
 
-impl KernelRequests {
-    /// The directory of the node `ino`, and what the entries of the open directory `fh` are
-    /// made from: listed when it is read from its start, and the same for every part of the
-    /// reading after it.
-    fn find_listed_names(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(DirectoryReference, Arc<Vec<ListedName>>)> {
-        let directory = self.node_resolver.find_directory(NodeId::from(ino))?;
-        let kept = self.open_handles.find_listed_names(Fh::from(fh)).filter(|_| offset > 0);
+#[derive(Clone)]
+pub(in crate::fuse) struct DirectoryRequests {
+    node_resolver: Arc<NodeResolver>,
+    directory_contents: Arc<DirectoryContents>,
+    open_handles: Arc<OpenHandles>,
+    access_mode_switch: Arc<AccessModeSwitch>,
+}
+
+impl DirectoryRequests {
+    pub(in crate::fuse) fn new(node_resolver: Arc<NodeResolver>, directory_contents: Arc<DirectoryContents>, open_handles: Arc<OpenHandles>, access_mode_switch: Arc<AccessModeSwitch>) -> Self {
+        DirectoryRequests { node_resolver, directory_contents, open_handles, access_mode_switch }
+    }
+
+    /// The directory of the node `node_id`, and what the entries of the open directory `fh`
+    /// are made from: listed when it is read from its start, and the same for every part of
+    /// the reading after it.
+    fn find_listed_names(&self, node_id: NodeId, fh: Fh, offset: u64) -> Option<(DirectoryReference, Arc<Vec<ListedName>>)> {
+        let directory = self.node_resolver.find_directory(node_id)?;
+        let kept = self.open_handles.find_listed_names(fh).filter(|_| offset > 0);
         let listed_names = kept.unwrap_or_else(|| {
             let listed_names = Arc::new(self.directory_contents.list_names(&directory));
-            self.open_handles.keep_listed_names(Fh::from(fh), Arc::clone(&listed_names));
+            self.open_handles.keep_listed_names(fh, Arc::clone(&listed_names));
             listed_names
         });
         Some((directory, listed_names))
@@ -38,10 +55,10 @@ impl KernelRequests {
 
     /// The names and the kinds: from the store alone for what is in OneDrive, with no sync
     /// state worked out.
-    pub(super) fn answer_readdir(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
-        let Some((_, listed_names)) = self.find_listed_names(ino, fh, offset) else { return reply.ok() };
+    pub(super) fn answer_readdir(&self, node_id: NodeId, fh: Fh, offset: u64, mut reply: ReplyDirectory) {
+        let Some((_, listed_names)) = self.find_listed_names(node_id, fh, offset) else { return reply.ok() };
         for (i, listed_name) in listed_names.iter().enumerate().skip(offset as usize) {
-            let child = self.node_resolver.assign_node_id_of_listed_name(listed_name, NodeId::from(ino));
+            let child = self.node_resolver.assign_node_id_of_listed_name(listed_name, node_id);
             let kind = match listed_name.kind() {
                 EntryKind::Directory => FileType::Directory,
                 EntryKind::File => FileType::RegularFile,
@@ -55,12 +72,13 @@ impl KernelRequests {
 
     /// The names with their attributes: the entry of each name that goes into this reply is
     /// made from its listed name, and of no other.
-    pub(super) fn answer_readdirplus(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
-        let Some((directory, listed_names)) = self.find_listed_names(ino, fh, offset) else { return reply.ok() };
+    pub(super) fn answer_readdirplus(&self, node_id: NodeId, fh: Fh, offset: u64, mut reply: ReplyDirectoryPlus) {
+        let Some((directory, listed_names)) = self.find_listed_names(node_id, fh, offset) else { return reply.ok() };
+        let access_mode = self.access_mode_switch.access_mode();
         for (i, listed_name) in listed_names.iter().enumerate().skip(offset as usize) {
             let entry = self.directory_contents.describe_listed_name(listed_name, &directory);
-            let child = self.node_resolver.assign_node_id(&entry, NodeId::from(ino));
-            let attr = self.attributes_of(&entry, child);
+            let child = self.node_resolver.assign_node_id(&entry, node_id);
+            let attr = attributes(child, access_mode, &entry);
             if reply.add(INodeNo::from(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;
             }
@@ -68,8 +86,8 @@ impl KernelRequests {
         reply.ok();
     }
 
-    pub(super) fn answer_releasedir(&self, fh: FileHandle, reply: ReplyEmpty) {
-        self.open_handles.close_directory(Fh::from(fh));
+    pub(super) fn answer_releasedir(&self, fh: Fh, reply: ReplyEmpty) {
+        self.open_handles.close_directory(fh);
         reply.ok();
     }
 }

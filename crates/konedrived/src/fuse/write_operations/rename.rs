@@ -1,58 +1,24 @@
-//! A file or a directory a program renames or moves inside the folder, in four steps: the
-//! check gives a [`RenamePlan`]; the backing directory is renamed
-//! ([`BackingDirectoryMove`]); the rename is recorded as an [`EntryRenamed`] event; the node
-//! takes its new place.
+//! A file or a directory a program renames or moves inside the folder, in five steps: what
+//! stands at the two places is looked up; the plan gives a [`RenamePlan`], or the errno of a
+//! refusal ([`plan_rename`]); the backing directory is renamed ([`BackingDirectoryMove`]);
+//! the rename is recorded as an [`EntryRenamed`] event; the node takes its new place.
 //!
 //! What is in OneDrive is at its new place at once, and is moved in OneDrive by the outbox.
 //! A local-only entry is uploaded from its new place, or no longer uploaded when that place
-//! is ignored; what is in OneDrive cannot be moved to such a place (`EXDEV`): a
-//! program that copies it there and removes it here does what that means. A local-only file
-//! renamed over a OneDrive file is that file's new content, and its node that file's.
-
-use std::path::PathBuf;
+//! is ignored; what is in OneDrive cannot be moved to such a place (`EXDEV`). A local-only
+//! file renamed over a OneDrive file is that file's new content, and its node that file's.
 
 use fuser::Errno;
 
-use crate::fuse::node_table::NodeId;
-use crate::fuse::entry_place::EntryPlace;
-use crate::fuse::local_only_entry::LocalOnlyEntry;
+use super::rename_plan::{plan_rename, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
 use super::WriteOperations;
-use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry};
-use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry, WriteState};
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::local_only_entry::collect_local_only_entries;
 use crate::fuse::errno::to_errno;
-
-/// A rename the check let through: what moves where, and over what.
-struct RenamePlan {
-    /// What moves, its node id, and whether a program holds it open for writing.
-    moved_entry: DirectoryEntry,
-    node_id: NodeId,
-    open: bool,
-    /// What is at the new place.
-    target: Option<DirectoryEntry>,
-    from: PathBuf,
-    to_directory: DirectoryReference,
-    to_node: NodeId,
-    to_name: String,
-    /// The new place is one local-only entries are uploaded from.
-    uploaded: bool,
-}
-
-impl RenamePlan {
-    fn to(&self) -> PathBuf {
-        self.to_directory.path.join(&self.to_name)
-    }
-
-    /// The local-only file that is saved, by rename, over a OneDrive file, and that file's
-    /// OneDrive id.
-    fn saved_over(&self) -> Option<(&LocalOnlyEntry, &str)> {
-        match (&self.moved_entry.state, self.target.as_ref().and_then(DirectoryEntry::onedrive_id)) {
-            (EntryState::File(FileSyncState::LocalOnly(file)), Some(over)) => Some((file, over)),
-            _ => None,
-        }
-    }
-}
+use crate::fuse::local_only_entry::collect_local_only_entries;
+use crate::fuse::node_table::NodeId;
+use crate::fuse::upload_rules::UploadStatus;
 
 /// What the backing directory held at the old place, which was renamed with the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,62 +30,58 @@ enum BackingDirectoryMove {
 }
 
 impl WriteOperations {
-    /// Renames `name` of the directory node `parent` to `new_name` of `new_parent`, over what
-    /// is there unless `keep` says to refuse that.
-    pub(in crate::fuse) fn rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, keep: bool) -> Result<(), Errno> {
-        let Some(plan) = self.check_rename(parent, name, new_parent, new_name, keep)? else { return Ok(()) };
+    /// Renames `name` of the directory node `parent` to `new_name` of `new_parent`; `mode`
+    /// says what becomes of what is there.
+    pub(in crate::fuse) fn rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, mode: RenameMode) -> Result<(), Errno> {
+        self.access_mode_switch.check_read_write()?;
+        let plan = match plan_rename(mode, self.find_rename_places(parent, name, new_parent, new_name))? {
+            RenameDecision::Rename(plan) => plan,
+            RenameDecision::NothingToRename => return Ok(()),
+        };
+        let node_id = self.node_resolver.assign_node_id(&plan.moved_entry, parent);
+        let write_state = self.find_write_state(node_id);
         let moved = self.move_in_backing_directory(&plan)?;
-        let event = self.describe_rename(&plan, moved);
-        let to = plan.to();
+        let event = self.describe_rename(&plan, write_state, moved);
+        let to = plan.to.path();
         let undo = || {
             if moved == BackingDirectoryMove::Moved {
                 let _ = self.backing_directory.rename(&to, &plan.from);
             }
         };
         self.record_or_undo(event, format_args!("the move of {} to {}", plan.from.display(), to.display()), undo)?;
-        self.move_node(&plan);
+        self.move_node(&plan, node_id, new_parent);
         Ok(())
     }
 
-    /// What the rename is, or the errno it is refused with. `None`: nothing moves, the name
-    /// is its own.
-    fn check_rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
-        self.access_mode_switch.check_read_write()?;
-        let from_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
-        let to_directory = self.node_resolver.find_directory(new_parent).ok_or(Errno::ENOENT)?;
-        if self.upload_rules.daemon_owned(new_name) {
-            return Err(Errno::EPERM);
+    /// What stands at the two places, for the plan of a rename.
+    fn find_rename_places(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str) -> RenamePlaces {
+        let from_directory = self.node_resolver.find_directory(parent);
+        let to_directory = self.node_resolver.find_directory(new_parent);
+        let moved_entry = from_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, name));
+        let target = to_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, new_name));
+        let target_holds_entries = to_directory.as_ref().zip(target.as_ref()).is_some_and(|(directory, target)| self.holds_entries(target, &directory.path.join(new_name)));
+        let in_onedrive = |at: &std::path::Path| self.backing_directory.read_onedrive_id(at).is_some();
+        let to_is_in_ignored_directory = to_directory.as_ref().is_some_and(|directory| self.upload_rules.is_in_ignored_directory(&directory.path, in_onedrive));
+        let to_upload_status = to_directory.as_ref().map_or(UploadStatus::Uploaded, |directory| self.find_upload_status(directory, new_name));
+        RenamePlaces {
+            from_directory,
+            to_directory,
+            name: name.to_owned(),
+            new_name: new_name.to_owned(),
+            new_name_is_daemon_owned: self.upload_rules.daemon_owned(new_name),
+            moved_entry,
+            target,
+            target_holds_entries,
+            to_is_in_ignored_directory,
+            to_upload_status,
         }
-        let moved_entry = self.directory_contents.find_entry(&from_directory, name).ok_or(Errno::ENOENT)?;
-        let target = self.directory_contents.find_entry(&to_directory, new_name);
-        let (from, to) = (from_directory.path.join(name), to_directory.path.join(new_name));
-        if from == to {
-            return Ok(None);
-        }
-        if let Some(target) = &target {
-            let holds = || !self.directory_contents.list_names(&DirectoryReference { onedrive_id: target.onedrive_id().map(str::to_owned), path: to.clone() }).is_empty();
-            match (&moved_entry.state, &target.state) {
-                _ if keep => return Err(Errno::EEXIST),
-                (EntryState::File(_), EntryState::Directory(_)) => return Err(Errno::EISDIR),
-                (EntryState::Directory(_), EntryState::File(_)) => return Err(Errno::ENOTDIR),
-                (EntryState::Directory(_), EntryState::Directory(_)) if holds() => return Err(Errno::ENOTEMPTY),
-                _ => {}
-            }
-        }
-        if moved_entry.onedrive_id().is_some() && self.upload_rules.is_in_ignored_directory(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
-            return Err(Errno::EXDEV);
-        }
-        let uploaded = !self.is_ignored(&to_directory, new_name);
-        let node_id = self.node_resolver.assign_node_id(&moved_entry, parent);
-        let open = self.open_handles.is_open_for_writing_by_node_id(node_id);
-        Ok(Some(RenamePlan { moved_entry, node_id, open, target, from, to_directory, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
     }
 
     /// The backing directory first: whatever it holds at the old place moves, and what was
     /// at the new place is removed.
     fn move_in_backing_directory(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
-        let to = plan.to();
-        self.directory_contents.make_marked_directories(&plan.to_directory.path).map_err(|e| to_errno(&e))?;
+        let to = plan.to.path();
+        self.directory_contents.make_marked_directories(&plan.to.directory.path).map_err(|e| to_errno(&e))?;
         let displaced = self.backing_directory.read_metadata(&to);
         let moved = if self.backing_directory.read_metadata(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
         // A file that moves over a file replaces it in the rename itself.
@@ -132,40 +94,54 @@ impl WriteOperations {
         Ok(moved)
     }
 
-    /// What the rename is recorded as.
-    fn describe_rename(&self, plan: &RenamePlan, moved: BackingDirectoryMove) -> EntryRenamed {
-        let to = EntryPlace::new(&plan.to_directory, &plan.to_name);
+    /// What the rename is recorded as: the plan, with what the backing directory holds at
+    /// the new place now.
+    fn describe_rename(&self, plan: &RenamePlan, write_state: WriteState, moved: BackingDirectoryMove) -> EntryRenamed {
         if let Some((file, over)) = plan.saved_over() {
-            return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), open: plan.open, over: over.to_owned(), to };
+            return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), write_state, over: over.to_owned(), to: plan.to.clone() };
         }
-        let entry = match &plan.moved_entry.state {
-            EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => {
-                let handle = (moved == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_file_handle(&plan.to())).flatten();
-                MovedEntry::InOneDrive { id: row.id.clone(), directory: matches!(plan.moved_entry.state, EntryState::Directory(_)), handle }
+        let entry = match (&plan.moved_entry.state, plan.to_upload_status) {
+            (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), _) => self.describe_moved_onedrive_entry(&row.id, EntryKind::File, plan, moved),
+            (EntryState::Directory(DirectorySyncState::InOneDrive(row)), _) => self.describe_moved_onedrive_entry(&row.id, EntryKind::Directory, plan, moved),
+            (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), write_state },
+            (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyFile { file: file.on_disk.clone() },
+            (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+            (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Uploaded) => {
+                let uploaded_entries = collect_local_only_entries(&self.backing_directory, &self.upload_rules, &plan.to.directory, &plan.to.name);
+                // A walk that finds nothing to upload — the directory is marked with a
+                // OneDrive id the store does not have yet — is recorded as a directory that
+                // is ignored from now on.
+                match uploaded_entries.is_empty() {
+                    true => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+                    false => MovedEntry::LocalOnlyDirectory { uploaded_entries },
+                }
             }
-            EntryState::Directory(DirectorySyncState::LocalOnly(directory)) => {
-                let uploaded = if plan.uploaded { collect_local_only_entries(&self.backing_directory, &self.upload_rules, &plan.to_directory, &plan.to_name) } else { Vec::new() };
-                MovedEntry::LocalOnlyDirectory { handle: directory.on_disk.handle.clone(), uploaded }
-            }
-            EntryState::File(FileSyncState::LocalOnly(file)) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), open: plan.open, uploaded: plan.uploaded },
         };
         let displaced = plan.target.as_ref().map(|target| match &target.state {
             EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => DisplacedEntry::InOneDrive(row.id.clone()),
             EntryState::File(FileSyncState::LocalOnly(local_only)) | EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => DisplacedEntry::LocalOnly(local_only.on_disk.handle.clone()),
         });
-        EntryRenamed::Moved { entry, from: plan.from.clone(), to, displaced }
+        EntryRenamed::Moved { entry, from: plan.from.clone(), to: plan.to.clone(), displaced }
     }
 
-    /// The node takes its new place. A local-only file saved over a OneDrive file is that
-    /// file's from here on — its downloaded copy, and its node, so that whoever looks the
-    /// name up gets the node the new content is read and written through. A local-only entry
-    /// that was displaced is gone.
-    fn move_node(&self, plan: &RenamePlan) {
+    /// The file or directory of OneDrive `id` that moved, with the handle of what the
+    /// backing directory holds for it at the new place.
+    fn describe_moved_onedrive_entry(&self, id: &str, kind: EntryKind, plan: &RenamePlan, moved: BackingDirectoryMove) -> MovedEntry {
+        let handle = (moved == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_file_handle(&plan.to.path())).flatten();
+        MovedEntry::InOneDrive { id: id.to_owned(), kind, handle }
+    }
+
+    /// The node `node_id` takes its new place, in the directory node `new_parent`. A
+    /// local-only file saved over a OneDrive file is that file's from here on — its
+    /// downloaded copy, and its node, so that whoever looks the name up gets the node the
+    /// new content is read and written through. A local-only entry that was displaced is
+    /// gone.
+    fn move_node(&self, plan: &RenamePlan, node_id: NodeId, new_parent: NodeId) {
         let taken = plan.saved_over().map(|(file, over)| {
-            let _ = self.backing_directory.mark_downloaded_copy(&plan.to(), over);
+            let _ = self.backing_directory.mark_downloaded_copy(&plan.to.path(), over);
             (&file.on_disk.handle, over)
         });
-        self.node_resolver.move_node(plan.node_id, plan.to_node, &plan.to_name, taken);
+        self.node_resolver.move_node(node_id, new_parent, &plan.to.name, taken);
         if let Some(displaced) = plan.target.as_ref().and_then(DirectoryEntry::local_only) {
             self.node_resolver.drop_node(&displaced.on_disk.handle);
         }

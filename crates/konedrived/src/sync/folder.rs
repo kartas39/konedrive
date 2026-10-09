@@ -369,8 +369,11 @@ impl SyncService {
         // Dropped from here on, the change publishes what it leaves.
         let mut stopped = Stopped { service: self, folder, ran: false, was_writable: false, told: false };
         // No sync, no uploads: the mount takes no change until a read-write sync runs again.
+        // The switch is waited for: when it returns, every change a program asked for before
+        // it is recorded, and none is recorded after it, so that what a forced switch drops
+        // from the outbox next (`drop_outbox`) leaves no row behind.
         if let Some(mount) = stopped.folder.mount() {
-            stopped.was_writable = mount.switch_to_read_only();
+            stopped.was_writable = mount.switch_to_read_only().await;
         }
         if let Some(sync) = stopped.folder.sync_mut() {
             match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {

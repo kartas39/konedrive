@@ -1,45 +1,46 @@
 //! The step of a cycle of the delta listing over the backing directory: what changed in
 //! OneDrive, and what of it the backing directory holds.
 //!
-//! [`apply_staged_cycle`] makes the backing directory follow the cycle a store has staged
-//! and not yet committed, and collects what is to be done once it is committed: the changes
-//! to announce ([`list_announcements`], a function of one [`OneDriveChange`]) and the
-//! OneDrive ids whose pins go. That is the cycle's own state, held by [`UncommittedCycle`]
-//! until [`announce_committed_cycle`] takes it. What an earlier cycle left there was never
-//! committed, and is replaced.
+//! [`CycleStep`] owns the parts the step uses and one piece of state, what the cycle now
+//! being committed leaves to be done once it is ([`UncommittedCycle`]). A cycle calls it
+//! twice:
+//!
+//! 1. [`CycleStep::apply_staged_cycle`], inside the transaction the cycle has staged and not
+//!    yet committed: each change is read as an [`OneDriveChange`], what the backing directory
+//!    holds at its paths is read ([`BackingDirectoryFacts`]), [`list_cycle_actions`] decides
+//!    what the change does, and the step performs that in order. The directories gone from
+//!    OneDrive are removed at the end, deepest first. What was kept of the user's own is
+//!    recorded through the [`OutboxRecorder`], in the cycle's own transaction.
+//! 2. [`CycleStep::announce_committed_cycle`], once the cycle is committed: the pins of what
+//!    is gone are taken off, the changes are announced through the mount, what is pinned and
+//!    not downloaded is downloaded, and the outbox's worker is woken.
+//!
+//! What an earlier cycle left uncommitted was never committed, and is replaced.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
-use super::access_mode_switch::AccessMode;
+use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
-use super::conflict_copies::{ConflictCopies, CycleConflicts};
-use super::detections::rebase;
+use super::conflict_copies::{ConflictCopies, CycleConflicts, MoveAsideOutcome};
+use super::detections::{rebase, OutboxBatch};
 use super::directory_contents::DirectoryContents;
-use super::file_downloader::FileDownloader;
-use super::inotify_bridge::{InotifyBridge, Announcement};
+use super::inotify_bridge::{Announcement, InotifyBridge};
 use super::outbox_recorder::OutboxRecorder;
-use super::pins::{download_pinned_files, Pins};
-use super::range_readers::RangeReaders;
+use super::pinned_file_downloader::PinnedFileDownloader;
+use super::pins::Pins;
+use super::range_fetcher::RangeFetcher;
 use crate::local::held::Rw;
 
-/// One file or directory of OneDrive a cycle changed: where the store had it and where the
-/// new tree has it.
-pub struct OneDriveChange {
-    pub id: String,
-    pub old: Option<(Row, PathBuf)>,
-    pub new: Option<(Row, PathBuf)>,
-}
+mod cycle_actions;
+mod onedrive_change;
+mod uncommitted_cycle;
 
-impl OneDriveChange {
-    /// Whether it is a file whose content is another now.
-    pub fn has_new_content(&self) -> bool {
-        matches!((&self.old, &self.new), (Some((o, _)), Some((n, _)))
-            if n.kind == Kind::File && (o.ctag != n.ctag || o.quickxor != n.quickxor || o.size != n.size))
-    }
-}
+use cycle_actions::{list_cycle_actions, order_deepest_first, BackingDirectoryFacts, CycleAction, NewPathContents, RemovedDirectory};
+pub use onedrive_change::OneDriveChange;
+use uncommitted_cycle::{list_removed_ids, UncommittedCycle};
 
 /// What one cycle did in the backing directory.
 #[derive(Default)]
@@ -51,168 +52,178 @@ pub struct CycleOutcome {
     pub conflicts: CycleConflicts,
 }
 
-/// What a cycle that is not committed yet leaves to be done once it is.
+/// What performing the changes of one cycle collects for the end of the step and for the
+/// commit.
 #[derive(Default)]
-struct AfterCommit {
-    /// What is announced to whoever watches the folder.
+struct StepProgress {
+    conflicts: CycleConflicts,
+    removed_directories: Vec<RemovedDirectory>,
     announcements: Vec<Announcement>,
-    /// The OneDrive ids gone from the folder: one that is gone keeps nothing on this device,
-    /// so its pin is taken off.
-    removed_ids: Vec<String>,
 }
 
-/// What the cycle now being committed leaves to be done once it is committed.
-#[derive(Default)]
-pub(super) struct UncommittedCycle(Mutex<AfterCommit>);
+pub(super) struct CycleStep {
+    backing_directory: Arc<BackingDirectory>,
+    directory_contents: Arc<DirectoryContents>,
+    /// Whether a directory that is kept is made again in OneDrive.
+    access_mode_switch: Arc<AccessModeSwitch>,
+    /// What drops the ranges the source remembered of a file that changed.
+    range_fetcher: Arc<RangeFetcher>,
+    /// What moves the user's own out of the way of a change.
+    conflict_copies: ConflictCopies,
+    /// What records what was kept of the user's own, and wakes the outbox's worker.
+    outbox_recorder: Arc<OutboxRecorder>,
+    pins: Arc<Pins>,
+    inotify_bridge: Arc<InotifyBridge>,
+    pinned_file_downloader: Arc<PinnedFileDownloader>,
+    /// What the cycle now being committed leaves to be done once it is.
+    uncommitted_cycle: Mutex<UncommittedCycle>,
+}
 
-impl UncommittedCycle {
-    /// A cycle was applied: `announcements` and `removed_ids` are what it leaves. Only this
-    /// cycle's: what an earlier one left was never committed.
-    pub(super) fn keep(&self, announcements: Vec<Announcement>, removed_ids: Vec<String>) {
-        *crate::panic::lock(&self.0) = AfterCommit { announcements, removed_ids };
+impl CycleStep {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        backing_directory: Arc<BackingDirectory>,
+        directory_contents: Arc<DirectoryContents>,
+        access_mode_switch: Arc<AccessModeSwitch>,
+        range_fetcher: Arc<RangeFetcher>,
+        conflict_copies: ConflictCopies,
+        outbox_recorder: Arc<OutboxRecorder>,
+        pins: Arc<Pins>,
+        inotify_bridge: Arc<InotifyBridge>,
+        pinned_file_downloader: Arc<PinnedFileDownloader>,
+    ) -> Self {
+        CycleStep { backing_directory, directory_contents, access_mode_switch, range_fetcher, conflict_copies, outbox_recorder, pins, inotify_bridge, pinned_file_downloader, uncommitted_cycle: Mutex::default() }
     }
 
-    /// The cycle is committed: what it left to announce, and the OneDrive ids it removed.
-    /// Nothing is left here.
-    pub(super) fn take(&self) -> (Vec<Announcement>, Vec<String>) {
-        let AfterCommit { announcements, removed_ids } = std::mem::take(&mut *crate::panic::lock(&self.0));
-        (announcements, removed_ids)
+    /// Makes the backing directory follow the cycle that `store` has staged and not yet
+    /// committed: a downloaded copy whose content is stale or whose file is gone from
+    /// OneDrive is removed, and one whose file moved moves with it. What changed is announced
+    /// by [`announce_committed_cycle`](Self::announce_committed_cycle).
+    ///
+    /// A read-write folder's cycle brings what the outbox holds (`rw`): a file or directory a
+    /// change of the user's waits on is left as it is. What the user made where something of
+    /// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`]), and
+    /// in a folder that is read-write a directory that is kept is made again in OneDrive.
+    pub(super) fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
+        let changed_ids = list_changed_ids(store, rw)?;
+        // Whatever the source of the content remembered of a file is of what it was.
+        changed_ids.iter().for_each(|id| self.range_fetcher.drop_cached_ranges(id));
+        let changes = list_changes(store, changed_ids);
+        let access_mode = self.access_mode_switch.access_mode();
+        // The time the rows of what is kept are dated by.
+        let recorded_at = crate::clock::unix_now();
+        let mut progress = StepProgress::default();
+        for change in &changes {
+            let facts = self.read_backing_directory_facts(change);
+            self.perform(store, list_cycle_actions(change, &facts), recorded_at, &mut progress);
+        }
+        let StepProgress { mut conflicts, removed_directories, announcements } = progress;
+        for directory in order_deepest_first(removed_directories) {
+            self.conflict_copies.keep_removed_directory(&directory.id, &directory.path, access_mode, recorded_at, &mut conflicts);
+        }
+        // What the cycle kept of the user's own, in the cycle's own transaction.
+        let kept = OutboxBatch { detections: conflicts.detections.clone(), ops: conflicts.ops.clone() };
+        self.outbox_recorder.record_in(store, kept, crate::clock::unix_now())?;
+        *crate::panic::lock(&self.uncommitted_cycle) = UncommittedCycle { announcements, removed_ids: list_removed_ids(&changes) };
+        Ok(CycleOutcome { changes, conflicts })
+    }
+
+    /// The cycle [`apply_staged_cycle`](Self::apply_staged_cycle) applied is committed: the
+    /// pins of what is gone are taken off, its changes are announced through the mount, what
+    /// is pinned and not downloaded is downloaded, and the outbox's worker is woken.
+    pub(super) fn announce_committed_cycle(&self) {
+        let UncommittedCycle { announcements, removed_ids } = std::mem::take(&mut *crate::panic::lock(&self.uncommitted_cycle));
+        // What is gone from OneDrive keeps nothing on this device.
+        self.pins.unpin_removed(removed_ids);
+        self.inotify_bridge.announce(announcements);
+        self.pinned_file_downloader.download_pinned_files();
+        // What the cycle kept of the user's own is the outbox's to send.
+        self.outbox_recorder.wake_outbox();
+    }
+
+    /// What the backing directory holds at the paths of `change`, for the decision of what
+    /// the change does. The old path is the one the store had the file at, which the mount
+    /// need not show it at: no entry's sync state says what it holds, and the directory
+    /// contents are asked about the path.
+    fn read_backing_directory_facts(&self, change: &OneDriveChange) -> BackingDirectoryFacts {
+        match change {
+            OneDriveChange::Appeared { now, .. } => BackingDirectoryFacts { holds_at_old_path: false, new_path: self.read_new_path_contents(now) },
+            OneDriveChange::Moved { id, old, was, now, .. } => BackingDirectoryFacts { holds_at_old_path: self.holds_at(was, id, old.kind), new_path: self.read_new_path_contents(now) },
+            OneDriveChange::Vanished { .. } | OneDriveChange::Stayed { .. } => BackingDirectoryFacts::default(),
+        }
+    }
+
+    /// Whether `path` holds the downloaded copy of the OneDrive file `id`, or its directory:
+    /// a file that is not that file's download is never moved.
+    fn holds_at(&self, path: &Path, id: &str, kind: Kind) -> bool {
+        match kind {
+            Kind::File => self.directory_contents.has_downloaded_copy_at(path, id),
+            Kind::Folder => self.backing_directory.read_metadata(path).is_some_and(|m| m.is_dir()) && self.backing_directory.read_onedrive_id(path).is_none_or(|carried| carried == id),
+        }
+    }
+
+    fn read_new_path_contents(&self, path: &Path) -> NewPathContents {
+        if self.backing_directory.read_metadata(path).is_none() {
+            NewPathContents::Nothing
+        } else if self.backing_directory.find_unmarked_disk_entry(path).is_some() {
+            NewPathContents::UnmarkedEntry
+        } else {
+            NewPathContents::OtherEntry
+        }
+    }
+
+    /// Performs `actions`, the actions of one change, in their order; what is left for the
+    /// end of the step and for the commit goes into `progress`. `store` is the cycle's own,
+    /// with the new tree staged.
+    fn perform(&self, store: &TreeStore, actions: Vec<CycleAction>, recorded_at: i64, progress: &mut StepProgress) {
+        let mut moved_aside = MoveAsideOutcome::NothingInTheWay;
+        for action in actions {
+            match action {
+                CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), recorded_at, &mut progress.conflicts),
+                CycleAction::RebaseOutboxRows { from, to } => progress.conflicts.ops.push(rebase(&from, &to)),
+                CycleAction::RemoveDownloadedCopy { path, id } => drop(self.backing_directory.remove_downloaded_copy(&path, &id)),
+                // The user's own is still at the new path: nothing is moved onto it.
+                CycleAction::MoveInBackingDirectory { .. } if moved_aside == MoveAsideOutcome::StillInTheWay => {}
+                CycleAction::MoveInBackingDirectory { from, to } => {
+                    let _ = to.parent().map(|directory| self.make_staged_directories(store, directory));
+                    let _ = self.backing_directory.rename(&from, &to);
+                }
+                CycleAction::RemoveDirectoryIfEmpty { id, path } => progress.removed_directories.push(RemovedDirectory { id, path }),
+                CycleAction::Announce(announcement) => progress.announcements.push(announcement),
+            }
+        }
+    }
+
+    /// The directories of the backing directory down to `rel`, each marked with its OneDrive
+    /// id, for a place of the tree the cycle has staged: asked of the cycle's own `store`,
+    /// where the mount's reader would not see it.
+    fn make_staged_directories(&self, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
+        let staged = |above: Option<&str>, _: &Path, name: &str| {
+            let row = store.child(Table::Staging, above?, name).ok().flatten()?;
+            (row.placement == Placement::Placed).then_some(row.id)
+        };
+        self.backing_directory.make_marked_directories(rel, store.root_item_id().ok().flatten(), staged)
     }
 }
 
-/// What is announced of `change` to whoever watches the folder: a name that vanished, one
-/// that appeared, both for a file or directory that moved, and for a file that stayed where
-/// it was, that what is shown of it changed.
-pub(super) fn list_announcements(change: &OneDriveChange) -> Vec<Announcement> {
-    let vanished = |old: &Row, was: &Path| Announcement::NameVanished { rel: was.to_owned(), kind: old.kind, id: change.id.clone(), parent_id: old.parent_id.clone() };
-    let appeared = |new: &Row, now: &Path| Announcement::NameAppeared { rel: now.to_owned(), kind: new.kind, parent_id: new.parent_id.clone() };
-    match (&change.old, &change.new) {
-        (Some((old, was)), None) => vec![vanished(old, was)],
-        (None, Some((new, now))) => vec![appeared(new, now)],
-        (Some((old, was)), Some((new, now))) if was != now => vec![vanished(old, was), appeared(new, now)],
-        (Some(_), Some((new, now))) if new.kind == Kind::File => vec![Announcement::FileShownChanged { rel: now.clone(), id: change.id.clone() }],
-        (Some(_), Some(_)) | (None, None) => Vec::new(),
-    }
+/// The OneDrive ids the cycle `store` has staged changes, without what the outbox holds
+/// (`rw`): a file or directory a change of the user's waits on is left as it is.
+fn list_changed_ids(store: &TreeStore, rw: Option<&Rw>) -> Result<Vec<String>, TreeError> {
+    let held = |id: &str| rw.is_some_and(|rw| rw.held.contains(id) || rw.removing.contains(id));
+    Ok(store.changed_ids()?.into_iter().filter(|id| !held(id)).collect())
 }
 
-/// The directories of the backing directory down to `rel`, each marked with its OneDrive id,
-/// inside a cycle of the delta listing, for a place of the tree it has staged: on the store's own
-/// thread, where the mount's reader would not see it.
-fn make_staged_directories(backing_directory: &BackingDirectory, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
-    let staged = |above: Option<&str>, _: &Path, name: &str| {
-        let row = store.child(Table::Staging, above?, name).ok().flatten()?;
-        (row.placement == Placement::Placed).then_some(row.id)
-    };
-    backing_directory.make_marked_directories(rel, store.root_item_id().ok().flatten(), staged)
-}
-
-/// Makes the backing directory follow the cycle that `store` has staged and not yet
-/// committed: a downloaded copy whose content is stale or whose file is gone from OneDrive
-/// is removed, and one whose file moved moves with it. What changed is announced by
-/// [`announce_committed_cycle`], from what is left in `uncommitted_cycle`.
-///
-/// A read-write folder's cycle brings what the outbox holds (`rw`): a file or directory a
-/// change of the user's waits on is left as it is. What the user made where something of
-/// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`]), and
-/// in a folder that is read-write by `access_mode` — the mount asked its switch for this
-/// cycle — a directory that is kept is made again in OneDrive.
-pub(super) fn apply_staged_cycle(
-    store: &mut TreeStore,
-    rw: Option<&Rw>,
-    access_mode: AccessMode,
-    backing_directory: &BackingDirectory,
-    directory_contents: &DirectoryContents,
-    range_readers: &RangeReaders,
-    conflict_copies: &ConflictCopies,
-    uncommitted_cycle: &UncommittedCycle,
-) -> Result<CycleOutcome, TreeError> {
-    let placed = |table: Table, id: &str| {
+/// The change of each of `changed_ids`, from where `store` had it placed and where the new
+/// tree it has staged has it placed. An id that is placed in neither is no change of the
+/// folder.
+fn list_changes(store: &TreeStore, changed_ids: Vec<String>) -> Vec<OneDriveChange> {
+    let placed = |table: Table, id: &str| -> Option<(Row, PathBuf)> {
         let row = store.get(table, id).ok().flatten()?;
         let at = store.locate(table, id).ok().flatten()?;
         at.placed.then_some((row, at.rel))
     };
-    let held = |id: &str| rw.is_some_and(|rw| rw.held.contains(id) || rw.removing.contains(id));
-    let changes: Vec<OneDriveChange> = store
-        .changed_ids()?
-        .into_iter()
-        .filter(|id| !held(id))
-        .map(|id| OneDriveChange { old: placed(Table::Items, &id), new: placed(Table::Staging, &id), id })
-        .collect();
-    // Whether `rel` holds the downloaded copy of the OneDrive file `id`, or its directory:
-    // a file that is not that file's download is never moved or removed. `rel` is where the
-    // store had the file, which the mount need not show it at: no entry's sync state says
-    // it, and the directory contents are asked about the path.
-    let holds = |rel: &Path, id: &str, kind: Kind| match kind {
-        Kind::File => directory_contents.has_downloaded_copy_at(rel, id),
-        Kind::Folder => backing_directory.read_metadata(rel).is_some_and(|m| m.is_dir()) && backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
-    };
-    let (mut announcements, mut removed_ids, mut conflicts, mut removed_directories) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
-    // The time the rows of what is kept are dated by.
-    let recorded_at = crate::clock::unix_now();
-    for change in &changes {
-        // Whatever the source of the content remembered of the file is of what it was.
-        range_readers.drop_cached_ranges(&change.id);
-        match (&change.old, &change.new) {
-            (Some((old, was)), None) => {
-                match old.kind {
-                    Kind::File => drop(backing_directory.remove_downloaded_copy(was, &change.id)),
-                    Kind::Folder => removed_directories.push((change.id.clone(), was.clone())),
-                }
-                removed_ids.push(change.id.clone());
-            }
-            (None, Some((new, now))) => conflict_copies.move_aside(now, new.parent_id.as_deref(), recorded_at, &mut conflicts),
-            (Some((old, was)), Some((new, now))) => {
-                if was != now {
-                    conflict_copies.move_aside(now, new.parent_id.as_deref(), recorded_at, &mut conflicts);
-                }
-                if was != now && new.kind == Kind::Folder {
-                    // The rows of what the user changed below it are found by place.
-                    conflicts.ops.push(rebase(was, now));
-                }
-                if change.has_new_content() {
-                    backing_directory.remove_downloaded_copy(was, &change.id);
-                } else if was != now && holds(was, &change.id, old.kind) && backing_directory.read_metadata(now).is_none() {
-                    let _ = now.parent().map(|dir| make_staged_directories(backing_directory, store, dir));
-                    let _ = backing_directory.rename(was, now);
-                }
-            }
-            (None, None) => {}
-        }
-        announcements.extend(list_announcements(change));
-    }
-    // The directories gone from OneDrive, deepest first: one goes once what was below it
-    // went.
-    removed_directories.sort_by_key(|(_, rel)| std::cmp::Reverse(rel.components().count()));
-    for (id, rel) in &removed_directories {
-        conflict_copies.keep_removed_directory(id, rel, access_mode, recorded_at, &mut conflicts);
-    }
-    if !conflicts.detections.is_empty() || !conflicts.ops.is_empty() {
-        crate::local::record::record(store, conflicts.detections.clone(), conflicts.ops.clone(), crate::clock::unix_now())?;
-    }
-    uncommitted_cycle.keep(announcements, removed_ids);
-    Ok(CycleOutcome { changes, conflicts })
-}
-
-/// The cycle [`apply_staged_cycle`] applied is committed: the pins of what is gone are taken
-/// off, its changes are announced through the mount, what is pinned and not downloaded is
-/// downloaded, and the outbox's worker is woken.
-pub(super) fn announce_committed_cycle(
-    uncommitted_cycle: &UncommittedCycle,
-    pins: &Arc<Pins>,
-    inotify_bridge: &InotifyBridge,
-    directory_contents: &Arc<DirectoryContents>,
-    file_downloader: &Arc<FileDownloader>,
-    runtime: &tokio::runtime::Handle,
-    outbox_recorder: &OutboxRecorder,
-) {
-    let (announcements, removed_ids) = uncommitted_cycle.take();
-    // What is gone from OneDrive keeps nothing on this device.
-    pins.unpin_removed(removed_ids);
-    inotify_bridge.announce(announcements);
-    download_pinned_files(pins, directory_contents, file_downloader, runtime);
-    // What the cycle kept of the user's own is the outbox's to send.
-    outbox_recorder.wake_outbox();
+    changed_ids.into_iter().filter_map(|id| OneDriveChange::of(id.clone(), placed(Table::Items, &id), placed(Table::Staging, &id))).collect()
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

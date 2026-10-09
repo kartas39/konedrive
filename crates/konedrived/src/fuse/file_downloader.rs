@@ -17,46 +17,60 @@
 //!    ([`Tracked`]) and tells the download states how far the file is written
 //!    ([`WatermarkedSource`]), for the reads that come meanwhile;
 //! 6. the directories down to the file's path are made, and the file lands
-//!    ([`BackingDirectory::land`]) unless it was moved or removed here meanwhile;
+//!    ([`BackingDirectory::land`]) unless it was moved or removed here meanwhile; what the
+//!    download reports of that is decided in [`landing_attempt`];
 //! 7. the activity records what happened, the space on disk is counted again, the download
-//!    states are told how it ended, which answers whoever waits, and the change is announced.
+//!    states are told how it ended, which answers whoever waits, and the change is announced
+//!    through the [`InotifyBridge`].
 
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use konedrive_graph::pool::{Class, Size, TransferPool};
 use konedrive_tree::Row;
 
-use crate::hydration::source::{download_staged, ContentSource, Fetched, Share, SourceError, Split};
+use crate::hydration::source::{download_staged, ContentSource, Share, Split};
 use crate::hydration::tracked::Tracked;
 use crate::status::activity::{self, Kind as EventKind};
 use crate::status::report::Report;
 
-use super::backing_directory::{BackingDirectory, LandingOutcome};
+use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
 use super::download_states::{DownloadStart, DownloadStates, Waiter};
+use super::inotify_bridge::{Announcement, InotifyBridge};
 
-/// Tells whoever watches the folder that what is shown of the OneDrive file at a path
-/// changed: the path in the folder, and the file's OneDrive id.
-pub(super) type FileChangeAnnouncer = Arc<dyn Fn(PathBuf, String) + Send + Sync>;
+mod landing_attempt;
+mod watermarked_source;
+
+use landing_attempt::{to_download_result, LandingAttempt};
+use watermarked_source::WatermarkedSource;
+
+/// A download that failed and can be continued: the size of its unfinished file on disk, and
+/// the checkpoint it is continued from, when it has one.
+#[cfg(any(test, feature = "fault-injection"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnfinishedDownload {
+    pub bytes_on_disk: u64,
+    pub checkpoint: Option<u64>,
+}
 
 /// What downloads a OneDrive file whole into the backing directory.
 pub(super) struct FileDownloader {
-    pub(super) backing_directory: Arc<BackingDirectory>,
-    pub(super) directory_contents: Arc<DirectoryContents>,
-    pub(super) download_states: Arc<DownloadStates>,
-    pub(super) source: Arc<dyn ContentSource>,
-    pub(super) pool: Arc<TransferPool>,
+    backing_directory: Arc<BackingDirectory>,
+    directory_contents: Arc<DirectoryContents>,
+    download_states: Arc<DownloadStates>,
+    /// What tells whoever watches the folder that what is shown of a file changed.
+    inotify_bridge: Arc<InotifyBridge>,
+    source: Arc<dyn ContentSource>,
+    pool: Arc<TransferPool>,
     /// What the daemon's large downloads in parallel streams share.
-    pub(super) split_download_share: Arc<Share>,
-    pub(super) report: Report,
+    split_download_share: Arc<Share>,
+    report: Report,
     /// The folder's path, which is the mount: a download is shown under its file's path there.
-    pub(super) folder: PathBuf,
-    pub(super) announce_file_change: FileChangeAnnouncer,
-    pub(super) runtime: tokio::runtime::Handle,
+    folder: PathBuf,
+    runtime: tokio::runtime::Handle,
 }
 
 /// Abandons a download in the download states unless it was finished there: a download that
@@ -76,6 +90,28 @@ impl Drop for RunningDownload {
 }
 
 impl FileDownloader {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        backing_directory: Arc<BackingDirectory>,
+        directory_contents: Arc<DirectoryContents>,
+        download_states: Arc<DownloadStates>,
+        inotify_bridge: Arc<InotifyBridge>,
+        source: Arc<dyn ContentSource>,
+        pool: Arc<TransferPool>,
+        split_download_share: Arc<Share>,
+        report: Report,
+        folder: PathBuf,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        FileDownloader { backing_directory, directory_contents, download_states, inotify_bridge, source, pool, split_download_share, report, folder, runtime }
+    }
+
+    /// Tells whoever watches the folder that what is shown of the OneDrive file `id` at
+    /// `rel` changed.
+    fn announce_file_change(&self, rel: PathBuf, id: String) {
+        self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel, id }]);
+    }
+
     /// Downloads the OneDrive file `row` to `rel` unless a download of it runs already;
     /// `waiter` is answered when the download ends, however it ends.
     pub(super) fn download(self: &Arc<Self>, row: Row, rel: PathBuf, class: Class, waiter: Option<Waiter>) {
@@ -84,7 +120,7 @@ impl FileDownloader {
             DownloadStart::Joined => return,
         };
         // Being downloaded, for whoever shows the state.
-        (self.announce_file_change)(rel.clone(), row.id.clone());
+        self.announce_file_change(rel.clone(), row.id.clone());
         let downloader = Arc::clone(self);
         self.runtime.spawn(async move {
             let mut running = RunningDownload { download_states: Arc::clone(&downloader.download_states), id: row.id.clone(), finished: false };
@@ -98,8 +134,15 @@ impl FileDownloader {
             downloader.report.space.kick();
             downloader.download_states.finish(&row.id, downloaded.map(|_| ()));
             running.finished = true;
-            (downloader.announce_file_change)(rel, row.id);
+            downloader.announce_file_change(rel, row.id);
         });
+    }
+
+    /// The downloads that failed and can be continued, oldest failure first.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub(super) fn list_unfinished_downloads(&self) -> Vec<UnfinishedDownload> {
+        let measure = |file: &Arc<File>| Some(UnfinishedDownload { bytes_on_disk: file.metadata().ok()?.len(), checkpoint: konedrive_fs::placeholder::read_progress(file).ok().flatten().map(|progress| progress.bytes) });
+        self.download_states.list_unfinished_files().iter().filter_map(measure).collect()
     }
 
     /// The path a download is shown under: the file's path in the folder.
@@ -136,18 +179,15 @@ impl FileDownloader {
             let size = tracked.fetched().unwrap_or(row.size);
             // The directories down to its path, each marked with its OneDrive id.
             self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new(""))).map_err(io_errno)?;
-            // Moved or removed here while it was downloaded: the download is of no path now,
-            // and the next read starts one where the file is.
-            if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
-                return Err(libc::ESTALE);
-            }
-            let (id, modified, at, file, backing_directory) = (row.id.clone(), crate::clock::to_system_time(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.backing_directory));
-            // The file's own steps wait for the disk: not on the runtime's threads.
-            let landed = tokio::task::spawn_blocking(move || backing_directory.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?;
-            if landed == LandingOutcome::Refused {
-                return Err(libc::EEXIST);
-            }
-            Ok(size)
+            // Moved or removed here while it was downloaded: the download is of no path now.
+            let attempt = if self.directory_contents.find_path(&row.id).as_deref() != Some(rel) {
+                LandingAttempt::FileMovedMeanwhile
+            } else {
+                let (id, modified, at, file, backing_directory) = (row.id.clone(), crate::clock::to_system_time(row.mtime), rel.to_owned(), Arc::clone(&file), Arc::clone(&self.backing_directory));
+                // The file's own steps wait for the disk: not on the runtime's threads.
+                LandingAttempt::Landed(tokio::task::spawn_blocking(move || backing_directory.land(&file, &at, &id, modified)).await.map_err(|_| libc::EIO)?.map_err(io_errno)?)
+            };
+            to_download_result(attempt).map(|()| size)
         }
         .await;
         drop(tracked);
@@ -155,46 +195,5 @@ impl FileDownloader {
             slot.succeeded();
         }
         landed
-    }
-}
-
-/// The download's source, telling how far the file is written as its one stream is read. A
-/// download in parts (`end` given) writes out of order and tells nothing.
-struct WatermarkedSource<'a> {
-    inner: &'a dyn ContentSource,
-    written_up_to: Arc<AtomicU64>,
-}
-
-/// The one stream of a download, counting what was read from it.
-struct WatermarkedStream {
-    inner: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-    written_up_to: Arc<AtomicU64>,
-}
-
-impl tokio::io::AsyncRead for WatermarkedStream {
-    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<io::Result<()>> {
-        let before = buf.filled().len();
-        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
-        if let std::task::Poll::Ready(Ok(())) = &polled {
-            self.written_up_to.fetch_add((buf.filled().len() - before) as u64, Ordering::SeqCst);
-        }
-        polled
-    }
-}
-
-#[async_trait::async_trait]
-impl ContentSource for WatermarkedSource<'_> {
-    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let mut fetched = self.inner.fetch(item_id, from, end).await?;
-        if end.is_none() {
-            // Also when the download starts over: what is on disk counts from here again.
-            self.written_up_to.store(fetched.served_from, Ordering::SeqCst);
-            fetched.stream = Box::new(WatermarkedStream { inner: fetched.stream, written_up_to: Arc::clone(&self.written_up_to) });
-        }
-        Ok(fetched)
-    }
-
-    fn progress(&self, done: u64, size: u64) {
-        self.inner.progress(done, size);
     }
 }

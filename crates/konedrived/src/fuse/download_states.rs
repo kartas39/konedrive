@@ -5,8 +5,8 @@
 //! [`DownloadStates`] holds one [`DownloadState`] per OneDrive file that has one, by its id,
 //! and the count of the bytes read as ranges, and nothing else: it does no I/O and starts
 //! nothing. [`FileDownloader`](super::file_downloader::FileDownloader) reports to it what a
-//! download does; the read request counts in it what it fetched as ranges, and asks it what
-//! a running download has written already; free-up and the state shown ask it whether a
+//! download does; the read requests count in it what they fetched as ranges, and ask it
+//! for the file of a running download and how far it is written; free-up and the state shown ask it whether a
 //! file is downloading.
 //!
 //! A file's state changes like this; a file without a state has no download and none that
@@ -35,11 +35,6 @@ use tokio::sync::oneshot;
 /// latest ones.
 const UNFINISHED_FILES_KEPT: usize = 16;
 
-/// How far behind `written_up_to` the file of a running download is surely written: the
-/// download writes each piece it has read before it reads the next, and a piece is no larger
-/// than this.
-const WRITTEN_BEHIND: u64 = 1 << 20;
-
 /// A caller in the daemon that waits for a download to end: told that it ended well, or the
 /// errno it failed with.
 pub(super) type Waiter = oneshot::Sender<Result<(), i32>>;
@@ -64,6 +59,12 @@ pub(super) enum DownloadState {
         /// first.
         failure_number: u64,
     },
+}
+
+/// The file a running download writes into, and how far it is written in order.
+pub(super) struct RunningDownloadFile {
+    pub(super) file: Arc<File>,
+    pub(super) written_up_to: u64,
 }
 
 /// What asking for a download did.
@@ -147,11 +148,12 @@ impl DownloadStates {
         }
     }
 
-    /// The file the running download of `id` writes into, when it is surely written up to
-    /// byte `end`: a read that ends there is answered from it.
-    pub(super) fn find_written_file(&self, id: &str, end: u64) -> Option<Arc<File>> {
+    /// The file the running download of `id` writes into, and how far it is written in
+    /// order now. `None` for a download that does not run, or has no file yet. Whether a
+    /// read is answered from it is the reader's to decide.
+    pub(super) fn find_running_download(&self, id: &str) -> Option<RunningDownloadFile> {
         match crate::panic::lock(&self.downloads).states.get(id) {
-            Some(DownloadState::Running { written_up_to, file: Some(file), .. }) if end + WRITTEN_BEHIND <= written_up_to.load(Ordering::SeqCst) => Some(Arc::clone(file)),
+            Some(DownloadState::Running { written_up_to, file: Some(file), .. }) => Some(RunningDownloadFile { file: Arc::clone(file), written_up_to: written_up_to.load(Ordering::SeqCst) }),
             _ => None,
         }
     }
