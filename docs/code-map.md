@@ -211,8 +211,8 @@ daemon shows OneDrive.
 - `backing_directory/downloaded_copies.rs` — `DiskMarks`: what a file's marks say, with the
   one test of a downloaded copy (marked with the file's OneDrive id, and whole), which the
   lookup, the landing and the legacy check read through; a file made marked with an id and
-  not whole (`make_partial_file`), marking a copy, removing one by its OneDrive id alone.
-  `[tests]`
+  not whole (`make_partial_file`), marking a copy, taking its marks off, removing one by its
+  OneDrive id alone. `[tests]`
 - `backing_directory/file_operations.rs` — the files and directories a change makes, renames
   and removes, and a file opened to read or to write. `[tests]`
 - `backing_directory/directory_marks.rs` — the directories down to a path, each marked with
@@ -268,8 +268,8 @@ daemon shows OneDrive.
 - `node_resolver.rs` — `NodeResolver`: over the directory contents and the backing directory,
   and owning the node table: the entry a node id stands for now and the node id of an entry
   or of a listed name; a local-only entry that got into OneDrive keeps its node id. A lookup
-  moves a node only to where the mount shows it now, and a listed name never moves one.
-  `[tests]`
+  moves a node only to where the mount shows it now, and a listed name never moves one; the
+  node of a copy a cycle moved aside under its writer goes with that file. `[tests]`
 - `attributes.rs` — the attributes the mount gives the kernel for a name, a function of a
   `DirectoryEntry` and the `AccessMode`: kind, size, times, modes. `[tests]`
 - `access_mode_switch.rs` — `AccessModeSwitch`: the one holder of whether programs may change
@@ -388,7 +388,7 @@ daemon shows OneDrive.
 - `detections/unrecorded_entries.rs` — `UnrecordedEntries`: the local-only entries a walk
   found that the outbox has no row for. `[tests]`
 - `detections/entry_kept_aside.rs` — `EntryKeptAside`: a local-only entry kept beside what
-  came to its name from OneDrive. `[tests]`
+  came to its name from OneDrive; one a program still writes waits for its writer. `[tests]`
 - `write_operation_thread.rs` — `WriteOperationThread`: the one thread the write operations,
   the switch to read-only, the scan for unrecorded entries, the freeing of each
   downloaded copy and the landing of a finished download run on, each job under
@@ -399,8 +399,9 @@ daemon shows OneDrive.
   transaction, and a cycle's batch inside the cycle's own; it does not ask the access mode.
   `[tests]`
 - `conflict_copies.rs` — `ConflictCopies`: the user's own moved aside, to a conflict copy's
-  name, where something of OneDrive comes, and a directory removed from OneDrive kept while
-  it holds the user's own, in either access mode; recorded for the outbox in a read-write
+  name, where something of OneDrive comes — and the downloaded copy a program writes when a
+  change takes its file's content or the file, unmarked and moved aside the same way — and a
+  directory removed from OneDrive kept while it holds the user's own, in either access mode; recorded for the outbox in a read-write
   folder alone. It owns the machine's name. `CycleConflicts`, what a cycle's conflicts
   left, `ConflictCopy`, one entry moved aside, `MoveAsideOutcome`, what became of the
   user's own at a path, and `RemovedDirectoryOutcome`, what became of a removed directory's
@@ -435,7 +436,8 @@ daemon shows OneDrive.
   no row for, found by one walk and recorded once the folder takes changes. `[tests]`
 - `cycle_step.rs` — `CycleStep`: the step of a cycle of the delta listing over the backing
   directory; it owns its parts and what the cycle now being committed leaves to be done
-  once it is. A cycle's changes are read, decided on and performed (`CycleOutcome`), what it
+  once it is. A cycle's changes are read, decided on and performed (`CycleOutcome`) — a copy
+  a program holds open for writing is never removed, and is moved aside instead — what it
   kept of the user's own is recorded through the outbox recorder, and once committed it is
   announced. `[tests]`
 - `cycle_step/onedrive_change.rs` — `OneDriveChange`: what happened to a name of OneDrive in

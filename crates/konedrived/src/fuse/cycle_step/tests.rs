@@ -15,6 +15,7 @@ use crate::fuse::conflict_copies::ConflictCopy;
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::inotify_bridge::Announcement;
 use crate::fuse::mount::tests::{build_mount, build_mount_with, BuiltMount};
+use crate::fuse::node_table::NodeId;
 use crate::local::held::Rw;
 
 /// Stages `changes` as a cycle of the delta listing in the store of `built`, and has the
@@ -202,4 +203,64 @@ fn a_directory_at_the_old_path_that_backs_another_directory_is_not_moved() {
     built.make_marked_directory("docs", "OTHER");
     apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
     assert!(built.disk.join("docs").is_dir() && !built.disk.join("papers").exists());
+}
+
+/// A read-write mount whose `a.txt` is downloaded, with `content`, and held open for writing
+/// by a program when the folder is switched to read-only — as a forced switch does, which
+/// also drops the outbox's rows: nothing holds the file for a cycle any more. With the node
+/// id the program holds the file by.
+fn build_mount_with_file_open_for_writing(content: &[u8]) -> (BuiltMount, NodeId) {
+    let built = build_mount();
+    assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
+    built.download("a.txt", "A", content);
+    let node_id = built.node_id_in_root("a.txt");
+    let write_operations = Arc::clone(built.kernel_requests.write_operations());
+    built.run_on_write_operation_thread(move || drop(write_operations.open_to_write(node_id).unwrap()));
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    assert!(runtime.block_on(built.mount.switch_to_read_only()));
+    built.store.call_blocking(|store| store.outbox_drop_all()).unwrap();
+    (built, node_id)
+}
+
+/// The file has another content in OneDrive, and a program still writes its copy: the copy
+/// is not unlinked under the writer. It is the user's own, moved aside to a conflict copy's
+/// name, and the file is shown as OneDrive has it. The node the program holds the file by
+/// goes with the file it writes.
+#[test]
+fn a_copy_a_program_writes_is_moved_aside_when_its_file_has_new_content() {
+    let (built, node_id) = build_mount_with_file_open_for_writing(b"mine");
+    let outcome = apply(&built, vec![with_new_content("A", "R", "a.txt")], None);
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Stayed { onedrive_id, .. }] if onedrive_id == "A"));
+    assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "a.txt".into(), copy: "a-fedora.txt".into() }]);
+    assert!(!built.disk.join("a.txt").exists());
+    assert_eq!(std::fs::read(built.disk.join("a-fedora.txt")).unwrap(), b"mine");
+    assert!(xattr::get(built.disk.join("a-fedora.txt"), XATTR_ITEM_ID).unwrap().is_none(), "it is the user's own");
+    let cycle_step = built.mount.cycle_step();
+    let (entry, path) = cycle_step.node_resolver.find_entry(node_id).unwrap();
+    assert!(entry.local_only().is_some() && path == PathBuf::from("a-fedora.txt"));
+    assert!(cycle_step.open_handles.is_open_for_writing_by_node_id(node_id));
+    assert_ne!(built.node_id_in_root("a.txt"), node_id, "the OneDrive file has a node of its own");
+}
+
+/// The same for a file that is gone from OneDrive.
+#[test]
+fn a_copy_a_program_writes_is_moved_aside_when_its_file_is_removed() {
+    let (built, _) = build_mount_with_file_open_for_writing(b"mine");
+    let outcome = apply(&built, vec![Change::Delete("A".into())], None);
+    assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "a.txt".into(), copy: "a-fedora.txt".into() }]);
+    assert_eq!(std::fs::read(built.disk.join("a-fedora.txt")).unwrap(), b"mine");
+}
+
+/// A copy no program writes goes with its content, as before.
+#[test]
+fn a_copy_whose_writer_closed_it_is_removed_when_its_file_has_new_content() {
+    let (built, node_id) = build_mount_with_file_open_for_writing(b"mine");
+    let cycle_step = built.mount.cycle_step();
+    let open = cycle_step.open_handles.add_writer(node_id, Arc::new(tempfile::tempfile().unwrap())).0;
+    for fh in 1..=open.0 {
+        cycle_step.open_handles.close_file(crate::fuse::open_handles::Fh(fh));
+    }
+    let outcome = apply(&built, vec![with_new_content("A", "R", "a.txt")], None);
+    assert!(outcome.conflicts.moved_aside.is_empty());
+    assert!(!built.disk.join("a.txt").exists() && !built.disk.join("a-fedora.txt").exists());
 }

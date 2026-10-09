@@ -11,7 +11,9 @@
 //! The node resolver owns the table: whoever needs a node id, or changes a node's key or
 //! place, asks here. A node's place has one kind of writer — whoever found or put the entry
 //! there: a lookup of its name ([`NodeResolver::assign_node_id`], which moves a node only to
-//! where the mount shows it now), a make, and a rename ([`NodeResolver::move_node`]). A
+//! where the mount shows it now), a make, a rename ([`NodeResolver::move_node`]), and a
+//! cycle that moves a copy a program writes aside
+//! ([`NodeResolver::move_node_onto_local_only_entry`]). A
 //! reading of a directory gives a name its node id and never a node its place
 //! ([`NodeResolver::assign_node_id_of_listed_name`]). What a cycle of the delta listing
 //! moved is at its new place once its name is looked up there.
@@ -199,6 +201,20 @@ impl NodeResolver {
         let mut node_table = crate::panic::lock(&self.node_table);
         node_table.move_node(node_id, parent, name);
         node_table.rekey(&NodeKey::LocalOnly(handle.clone()), NodeKey::InOneDrive(onedrive_id.to_owned()));
+    }
+
+    /// The node that stands for the OneDrive file `onedrive_id` stands, from here on, for
+    /// the local-only entry `handle` identifies, which is `name` in the directory the node is
+    /// in: the file's downloaded copy, which a program writes, was moved aside as the user's
+    /// own, and the node goes with the file the program holds open. Whoever looks the
+    /// OneDrive file's name up gets a node of its own. Nothing when the kernel was told of no
+    /// node for the id.
+    pub(super) fn move_node_onto_local_only_entry(&self, onedrive_id: &str, handle: &FileHandle, name: &str) {
+        let mut node_table = crate::panic::lock(&self.node_table);
+        let key = NodeKey::InOneDrive(onedrive_id.to_owned());
+        let Some((node_id, parent)) = node_table.find_node_id(&key).and_then(|node_id| Some((node_id, node_table.find_record(node_id)?.parent_node_id))) else { return };
+        node_table.move_node(node_id, parent, name);
+        node_table.rekey(&key, NodeKey::LocalOnly(handle.clone()));
     }
 
     /// The local-only entry `handle` identifies is gone, and nothing else is ever that entry:

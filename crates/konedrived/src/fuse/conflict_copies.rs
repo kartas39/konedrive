@@ -4,7 +4,9 @@
 //!
 //! A file or directory of OneDrive that comes to a name where a local-only entry is does not
 //! hide it: the entry is moved aside, to a conflict copy's name, `name-<machine>.ext`, and is
-//! uploaded from there. A directory OneDrive removed that still holds local-only entries
+//! uploaded from there. The downloaded copy of a OneDrive file that a program still writes
+//! when a change takes the file's content, or the file, is the user's own in the same way:
+//! unmarked, and moved aside ([`ConflictCopies::move_written_copy_aside`]). A directory OneDrive removed that still holds local-only entries
 //! stays, as a local-only directory, and is made again in OneDrive; what became of the
 //! directory on disk is a [`RemovedDirectoryOutcome`].
 //!
@@ -23,7 +25,7 @@ use konedrive_tree::outbox::{Detection, OutboxOp};
 use crate::fuse::entry_place::EntryPlace;
 use super::access_mode_switch::AccessMode;
 use super::backing_directory::BackingDirectory;
-use super::detections::{detect_local_only_entries, is_directory_of, EntryKeptAside};
+use super::detections::{detect_local_only_entries, is_directory_of, EntryKeptAside, WriteState};
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
 use super::local_only_entry::{collect_local_only_entries, decide_upload};
@@ -99,8 +101,9 @@ impl ConflictCopies {
     /// hidden or overwritten. In a folder that is read-write by `access_mode` it is recorded
     /// to be uploaded from there, dated `now`; in a read-only one nothing is recorded, and
     /// the scan for unrecorded entries finds it when the folder is switched to read-write.
-    /// What became of the entry.
-    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
+    /// `write_state` is whether a program holds the entry open for writing: its row waits
+    /// for that writer then. What became of the entry.
+    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, write_state: WriteState, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
         let Some(on_disk) = self.backing_directory.find_unmarked_disk_entry(rel) else { return MoveAsideOutcome::NothingInTheWay };
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return MoveAsideOutcome::StillInTheWay };
         let directory = DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_path_buf() };
@@ -116,7 +119,7 @@ impl ConflictCopies {
             }
             if access_mode == AccessMode::ReadWrite {
                 let upload_decision = decide_upload(&self.backing_directory, &self.upload_rules, &directory.path, &copy);
-                let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_decision }.detect(now);
+                let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_decision, write_state }.detect(now);
                 conflicts.ops.extend(kept.ops);
                 conflicts.detections.extend(kept.detections);
             }
@@ -124,6 +127,20 @@ impl ConflictCopies {
             return MoveAsideOutcome::MovedAside;
         }
         MoveAsideOutcome::StillInTheWay
+    }
+
+    /// The downloaded copy of the OneDrive file `onedrive_id` at `path`, in the directory
+    /// with the OneDrive id `parent_id`, is written by a program, and a change from OneDrive
+    /// takes the file's content or the file itself: the copy is never removed under its
+    /// writer. Its marks are taken off — what the program writes is the user's own from here
+    /// on — and it is moved aside as any local-only entry in the way of a change is
+    /// ([`move_aside`](Self::move_aside)), its row waiting for the writer. What became of
+    /// it; nothing was in the way when the path holds no file marked with that id.
+    pub(super) fn move_written_copy_aside(&self, path: &Path, onedrive_id: &str, parent_id: Option<&str>, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
+        if !self.backing_directory.unmark_downloaded_copy(path, onedrive_id) {
+            return MoveAsideOutcome::NothingInTheWay;
+        }
+        self.move_aside(path, parent_id, WriteState::OpenForWriting, access_mode, now, conflicts)
     }
 
     /// The directory with the OneDrive id `id` was removed from OneDrive: the directory at

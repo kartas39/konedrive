@@ -6,6 +6,7 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
 
 use crate::fuse::access_mode_switch::AccessMode;
+use crate::fuse::detections::WriteState;
 use super::{ConflictCopies, ConflictCopy, CycleConflicts, MoveAsideOutcome, RemovedDirectoryOutcome};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
@@ -35,7 +36,7 @@ fn a_local_only_file_in_the_way_in_a_read_write_folder_is_moved_aside_and_upload
     let (dir, conflict_copies) = conflict_copies();
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), WriteState::NotOpen, AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert!(!dir.path().join("new.txt").exists() && dir.path().join("new-fedora.txt").is_file());
     assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora.txt") }]);
     assert_eq!(conflicts.detections.iter().map(|d| (d.kind, d.rel.clone())).collect::<Vec<_>>(), [(OutboxKind::Create, PathBuf::from("new-fedora.txt"))]);
@@ -48,7 +49,7 @@ fn a_local_only_file_in_the_way_in_a_read_only_folder_is_moved_aside_and_not_rec
     let (dir, conflict_copies) = conflict_copies();
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadOnly, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), WriteState::NotOpen, AccessMode::ReadOnly, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert!(!dir.path().join("new.txt").exists());
     assert_eq!(fs::read(dir.path().join("new-fedora.txt")).unwrap(), b"mine");
     assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora.txt") }]);
@@ -64,7 +65,7 @@ fn a_local_only_file_that_no_name_is_free_for_is_still_in_the_way() {
         fs::write(dir.path().join(conflict_copies.copy_name("new.txt", n)), b"an earlier copy").unwrap();
     }
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::StillInTheWay);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), WriteState::NotOpen, AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::StillInTheWay);
     assert_eq!(fs::read(dir.path().join("new.txt")).unwrap(), b"mine");
     assert!(conflicts.moved_aside.is_empty() && conflicts.detections.is_empty());
 }
@@ -76,7 +77,7 @@ fn what_is_marked_with_a_onedrive_id_is_not_moved_aside() {
     fs::write(dir.path().join("a.txt"), b"copy").unwrap();
     conflict_copies.backing_directory.mark_downloaded_copy(Path::new("a.txt"), "A").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("a.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
+    assert_eq!(conflict_copies.move_aside(Path::new("a.txt"), Some("R"), WriteState::NotOpen, AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
     assert!(dir.path().join("a.txt").is_file() && conflicts.moved_aside.is_empty() && conflicts.detections.is_empty());
 }
 
@@ -109,7 +110,7 @@ fn a_conflict_copy_gets_the_first_name_that_is_free() {
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     fs::write(dir.path().join("new-fedora.txt"), b"an earlier copy").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), WriteState::NotOpen, AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora-2.txt") }]);
     assert_eq!(fs::read(dir.path().join("new-fedora.txt")).unwrap(), b"an earlier copy");
 }
@@ -149,4 +150,29 @@ fn a_removed_directory_the_backing_directory_never_had_is_nothing_to_keep() {
     assert_eq!(conflict_copies.remove_directory_if_empty("D", Path::new("docs"), AccessMode::ReadWrite, 1_000, &mut conflicts), RemovedDirectoryOutcome::Removed);
     assert!(!dir.path().join("docs").exists());
     assert!(conflicts.kept_directories.is_empty() && conflicts.detections.is_empty());
+}
+
+/// A copy a program writes is the user's own once a change takes its file's content: its
+/// marks are taken off, it is moved aside, and its row waits for the writer.
+#[test]
+fn a_downloaded_copy_a_program_writes_is_unmarked_and_moved_aside() {
+    let (dir, conflict_copies) = conflict_copies();
+    crate::fuse::directory_contents::tests::download(dir.path(), &conflict_copies.directory_contents, "a.txt", "A", b"mine");
+    let mut conflicts = CycleConflicts::default();
+    assert_eq!(conflict_copies.move_written_copy_aside(Path::new("a.txt"), "A", Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflicts.moved_aside, [ConflictCopy { original: "a.txt".into(), copy: "a-fedora.txt".into() }]);
+    assert_eq!(fs::read(dir.path().join("a-fedora.txt")).unwrap(), b"mine");
+    assert!(conflict_copies.backing_directory.find_unmarked_disk_entry(Path::new("a-fedora.txt")).is_some());
+    let [created] = &conflicts.detections[..] else { panic!("one row for the conflict copy: {:?}", conflicts.detections) };
+    assert_eq!((created.kind, created.rel.clone(), created.reason.clone()), (OutboxKind::Create, PathBuf::from("a-fedora.txt"), Some(konedrive_tree::outbox::Reason::OpenForWriting)));
+}
+
+/// A file at the path that is not that file's copy is not touched.
+#[test]
+fn a_file_that_is_not_the_files_copy_is_not_moved_aside_as_one() {
+    let (dir, conflict_copies) = conflict_copies();
+    crate::fuse::directory_contents::tests::download(dir.path(), &conflict_copies.directory_contents, "a.txt", "B", b"another file's");
+    let mut conflicts = CycleConflicts::default();
+    assert_eq!(conflict_copies.move_written_copy_aside(Path::new("a.txt"), "A", Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
+    assert!(conflict_copies.backing_directory.find_downloaded_copy(Path::new("a.txt"), "B").is_some() && conflicts.moved_aside.is_empty());
 }

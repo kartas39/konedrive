@@ -99,6 +99,18 @@ impl BackingDirectory {
         xattr::set(&path, XATTR_STATE, State::Hydrated.as_str().as_bytes())
     }
 
+    /// Takes the marks off the file at `path` if it is marked with the OneDrive id
+    /// `onedrive_id` and no other: it is no copy of that file any more, and the user's own
+    /// from here on. Whether it was that file's.
+    pub(in crate::fuse) fn unmark_downloaded_copy(&self, path: &Path, onedrive_id: &str) -> bool {
+        if self.read_onedrive_id(path).as_deref() != Some(onedrive_id) {
+            return false;
+        }
+        let resolved = self.resolve_path(path);
+        let _ = xattr::remove(&resolved, XATTR_STATE);
+        xattr::remove(&resolved, XATTR_ITEM_ID).is_ok()
+    }
+
     /// Removes the file at `rel` if it is marked with the OneDrive id `id` and no other. Its
     /// size on disk, when it was removed. By the id alone, and not by the one test of a
     /// downloaded copy: a file that is marked with the id and is not whole — a copy whose

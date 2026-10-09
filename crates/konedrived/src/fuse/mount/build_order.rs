@@ -25,7 +25,7 @@
 //! 11. [`RangeReaders`] and [`InterruptibleReads`], which depend on no part, and
 //!     [`RangeFetcher`] over the range readers;
 //! 12. who asks, each given exactly the parts it uses: [`CycleStep`] — the backing
-//!     directory, the directory contents, the switch, the range fetcher, the conflict
+//!     directory, the directory contents, the node resolver, the open handles, the switch, the range fetcher, the conflict
 //!     copies, the recorder, the pins, the bridge, the pinned file downloader, and it uses
 //!     the detections; [`FilesInterface`] — the directory contents, the node resolver, the
 //!     backing directory, the download states, the two downloaders, the open handles, the
@@ -116,6 +116,8 @@ impl Mount {
         let cycle_step = Arc::new(CycleStep::new(
             Arc::clone(&backing_directory),
             Arc::clone(&directory_contents),
+            Arc::clone(&node_resolver),
+            Arc::clone(&open_handles),
             Arc::clone(&access_mode_switch),
             Arc::clone(&range_fetcher),
             conflict_copies,

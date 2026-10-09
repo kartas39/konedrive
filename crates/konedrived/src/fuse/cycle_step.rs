@@ -8,7 +8,11 @@
 //! 1. [`CycleStep::apply_staged_cycle`], inside the transaction the cycle has staged and not
 //!    yet committed: each change is read as an [`OneDriveChange`], what the backing directory
 //!    holds at its paths is read ([`BackingDirectoryFacts`]), [`list_cycle_actions`] decides
-//!    what the change does, and the step performs that in order. The directories gone from
+//!    what the change does, and the step performs that in order. A downloaded copy that is
+//!    to be removed and that a program holds open for writing is not removed: it is moved
+//!    aside as the user's own, a conflict copy ([`CycleStep::keep_written_copy`]) — in
+//!    either access mode the cycle holds the folder's tree lock, so no file is opened for
+//!    writing or closed while the step runs. The directories gone from
 //!    OneDrive are removed at the end, deepest first. What was kept of the user's own is
 //!    recorded through the [`OutboxRecorder`], in the cycle's own transaction.
 //! 2. [`CycleStep::announce_committed_cycle`], once the cycle is committed: the pins of what
@@ -25,9 +29,11 @@ use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 use super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::backing_directory::BackingDirectory;
 use super::conflict_copies::{ConflictCopies, CycleConflicts, MoveAsideOutcome};
-use super::detections::{is_directory_of, rebase, OutboxBatch};
+use super::detections::{is_directory_of, rebase, OutboxBatch, WriteState};
 use super::directory_contents::DirectoryContents;
 use super::inotify_bridge::{Announcement, InotifyBridge};
+use super::node_resolver::NodeResolver;
+use super::open_handles::OpenHandles;
 use super::outbox_recorder::OutboxRecorder;
 use super::pinned_file_downloader::PinnedFileDownloader;
 use super::pins::Pins;
@@ -64,6 +70,12 @@ struct StepProgress {
 pub struct CycleStep {
     backing_directory: Arc<BackingDirectory>,
     directory_contents: Arc<DirectoryContents>,
+    /// Which node stands for a OneDrive id, and what moves that node with a copy that is
+    /// moved aside.
+    node_resolver: Arc<NodeResolver>,
+    /// Whether a program holds a node open for writing: a copy that has a writer is never
+    /// removed.
+    open_handles: Arc<OpenHandles>,
     /// Whether what is kept of the user's own is recorded, to be sent: in a read-write
     /// folder alone.
     access_mode_switch: Arc<AccessModeSwitch>,
@@ -85,6 +97,8 @@ impl CycleStep {
     pub(super) fn new(
         backing_directory: Arc<BackingDirectory>,
         directory_contents: Arc<DirectoryContents>,
+        node_resolver: Arc<NodeResolver>,
+        open_handles: Arc<OpenHandles>,
         access_mode_switch: Arc<AccessModeSwitch>,
         range_fetcher: Arc<RangeFetcher>,
         conflict_copies: ConflictCopies,
@@ -93,7 +107,7 @@ impl CycleStep {
         inotify_bridge: Arc<InotifyBridge>,
         pinned_file_downloader: Arc<PinnedFileDownloader>,
     ) -> Self {
-        CycleStep { backing_directory, directory_contents, access_mode_switch, range_fetcher, conflict_copies, outbox_recorder, pins, inotify_bridge, pinned_file_downloader, uncommitted_cycle: Mutex::default() }
+        CycleStep { backing_directory, directory_contents, node_resolver, open_handles, access_mode_switch, range_fetcher, conflict_copies, outbox_recorder, pins, inotify_bridge, pinned_file_downloader, uncommitted_cycle: Mutex::default() }
     }
 
     /// Makes the backing directory follow the cycle that `store` has staged and not yet
@@ -182,9 +196,13 @@ impl CycleStep {
         let mut moved_aside = MoveAsideOutcome::NothingInTheWay;
         for action in actions {
             match action {
-                CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), access_mode, recorded_at, &mut progress.conflicts),
+                CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), WriteState::NotOpen, access_mode, recorded_at, &mut progress.conflicts),
                 CycleAction::RebaseOutboxRows { from, to } => progress.conflicts.ops.push(rebase(&from, &to)),
-                CycleAction::RemoveDownloadedCopy { path, onedrive_id } => drop(self.backing_directory.remove_downloaded_copy(&path, &onedrive_id)),
+                CycleAction::RemoveDownloadedCopy { path, onedrive_id } => match self.find_write_state(&onedrive_id) {
+                    WriteState::NotOpen => drop(self.backing_directory.remove_downloaded_copy(&path, &onedrive_id)),
+                    // Nobody removes a copy that has a writer.
+                    WriteState::OpenForWriting => self.keep_written_copy(store, &path, &onedrive_id, access_mode, recorded_at, &mut progress.conflicts),
+                },
                 // The user's own is still at the new path: nothing is moved onto it.
                 CycleAction::MoveInBackingDirectory { .. } if moved_aside == MoveAsideOutcome::StillInTheWay => {}
                 CycleAction::MoveInBackingDirectory { from, to } => {
@@ -194,6 +212,34 @@ impl CycleStep {
                 CycleAction::RemoveDirectoryIfEmpty { onedrive_id, path } => progress.removed_directories.push(RemovedDirectory { onedrive_id, path }),
                 CycleAction::Announce(announcement) => progress.announcements.push(announcement),
             }
+        }
+    }
+
+    /// Whether a program holds the OneDrive file `onedrive_id` open for writing now: the
+    /// node that stands for it, by the node table, has a writer. Read under the folder's
+    /// tree lock, which the cycle holds: no file is opened for writing or closed meanwhile.
+    fn find_write_state(&self, onedrive_id: &str) -> WriteState {
+        match self.node_resolver.find_node_id(onedrive_id).is_some_and(|node_id| self.open_handles.is_open_for_writing_by_node_id(node_id)) {
+            true => WriteState::OpenForWriting,
+            false => WriteState::NotOpen,
+        }
+    }
+
+    /// The downloaded copy of the OneDrive file `onedrive_id` at `path`, which a program
+    /// writes, is not removed with the content, or the file, the cycle takes: it is moved
+    /// aside as the user's own ([`ConflictCopies::move_written_copy_aside`]), in the
+    /// directory `store` has the file in, and the node the program holds it by goes with it.
+    /// A copy that could not be moved stays at its path, unmarked: the user's own, which no
+    /// download replaces.
+    fn keep_written_copy(&self, store: &TreeStore, path: &Path, onedrive_id: &str, access_mode: AccessMode, recorded_at: i64, conflicts: &mut CycleConflicts) {
+        let parent_id = store.get(Table::Items, onedrive_id).ok().flatten().and_then(|row| row.parent_id);
+        let handle = self.backing_directory.find_file_handle(path);
+        let outcome = self.conflict_copies.move_written_copy_aside(path, onedrive_id, parent_id.as_deref(), access_mode, recorded_at, conflicts);
+        let copy_name = conflicts.moved_aside.last().and_then(|moved_aside| moved_aside.copy.file_name()).and_then(|name| name.to_str());
+        match (outcome, handle, copy_name) {
+            (MoveAsideOutcome::MovedAside, Some(handle), Some(copy_name)) => self.node_resolver.move_node_onto_local_only_entry(onedrive_id, &handle, copy_name),
+            (MoveAsideOutcome::StillInTheWay, ..) => tracing::warn!("{}, which a program writes, could not be moved aside: it stays there as the user's own", path.display()),
+            (MoveAsideOutcome::MovedAside | MoveAsideOutcome::NothingInTheWay, ..) => {}
         }
     }
 
