@@ -215,7 +215,9 @@ fn build_mount_with_file_open_for_writing(content: &[u8]) -> (BuiltMount, NodeId
     built.download("a.txt", "A", content);
     let node_id = built.node_id_in_root("a.txt");
     let write_operations = Arc::clone(built.kernel_requests.write_operations());
-    built.run_on_write_operation_thread(move || drop(write_operations.open_to_write(node_id).unwrap()));
+    built.run_on_write_operation_thread(move || {
+        write_operations.open_to_write(node_id).unwrap();
+    });
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     assert!(runtime.block_on(built.mount.switch_to_read_only()));
     built.store.call_blocking(|store| store.outbox_drop_all()).unwrap();
