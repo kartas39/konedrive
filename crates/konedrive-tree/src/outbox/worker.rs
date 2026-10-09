@@ -443,8 +443,7 @@ impl TreeStore {
     /// read-only). The rows, for whatever marks their files carry. A rename
     /// half-done under a temporary name stays — a row sending its item to
     /// one, or one whose item the base has under one: dropped, the item
-    /// would stay under that name in OneDrive, which no listing places, and
-    /// its local object would go with the next reconcile.
+    /// would stay under that name in OneDrive, which no listing places.
     pub fn outbox_drop_all(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;
         let swapping = format!("{SWAP_PREFIX}%");
