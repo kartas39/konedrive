@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 
 use super::announce::Announce;
-use super::conflict::{Meeting, Met};
+use super::conflict_copies::{ConflictCopies, CycleConflicts};
 use super::detections::rebase;
 use super::mount::Mount;
 use super::backing_directory::BackingDirectory;
@@ -59,7 +59,7 @@ impl Mount {
     ///
     /// A read-write folder's cycle brings what the outbox holds (`rw`): an item a change of
     /// the user's waits on is left as it is, and what the user made where an item comes or
-    /// in a folder that goes is kept ([`super::conflict`]).
+    /// in a folder that goes is kept ([`super::conflict_copies`]).
     pub fn follow(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<Followed, konedrive_tree::TreeError> {
         let placed = |table: Table, id: &str| {
             let row = store.get(table, id).ok().flatten()?;
@@ -80,8 +80,8 @@ impl Mount {
             Kind::File => s.under.has_copy(rel, id),
             Kind::Folder => s.under.stat(rel).is_some_and(|m| m.is_dir()) && s.under.carried(rel).is_none_or(|carried| carried == id),
         };
-        let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), Met::default(), Vec::new());
-        let meeting = Meeting { under: &s.under, view: &s.view, rules: &s.upload_rules, now: s.now() };
+        let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
+        let meeting = ConflictCopies { under: &s.under, view: &s.view, rules: &s.upload_rules, now: s.now() };
         for step in &steps {
             // Whatever its source remembered of the item is of what it was.
             s.source.forget(&step.id);
@@ -128,7 +128,7 @@ impl Mount {
         for (id, rel) in &gone {
             meeting.keep_gone_folder(id, rel, rw.is_some(), &mut met);
         }
-        let Met { detections, ops, copied, kept } = met;
+        let CycleConflicts { detections, ops, copied, kept } = met;
         if !detections.is_empty() || !ops.is_empty() {
             crate::local::record::record(store, detections, ops, s.now())?;
         }

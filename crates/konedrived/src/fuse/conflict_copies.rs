@@ -19,7 +19,7 @@ use super::directory_contents::{Directory, DirectoryContents};
 
 /// What the meetings of one cycle left for the outbox, and what they did in the folder.
 #[derive(Default)]
-pub(super) struct Met {
+pub(super) struct CycleConflicts {
     pub(super) detections: Vec<Detection>,
     pub(super) ops: Vec<OutboxOp>,
     /// The user's own, moved out of an item's way: where it stood, and where it is now.
@@ -29,7 +29,7 @@ pub(super) struct Met {
 }
 
 /// The parts a meeting uses.
-pub(super) struct Meeting<'a> {
+pub(super) struct ConflictCopies<'a> {
     pub(super) under: &'a BackingDirectory,
     pub(super) view: &'a DirectoryContents,
     pub(super) rules: &'a UploadRules,
@@ -37,10 +37,10 @@ pub(super) struct Meeting<'a> {
     pub(super) now: i64,
 }
 
-impl Meeting<'_> {
+impl ConflictCopies<'_> {
     /// An item comes to `rel`, in the directory of item `above`: the local object that
     /// stands there is renamed to a copy's name beside it.
-    pub(super) fn keep_beside_item(&self, rel: &Path, above: Option<&str>, met: &mut Met) {
+    pub(super) fn keep_beside_item(&self, rel: &Path, above: Option<&str>, met: &mut CycleConflicts) {
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
         let Some(object) = self.under.object(rel) else { return };
         if self.under.carried(rel).is_some() || !(object.meta.is_file() || object.meta.is_dir()) {
@@ -69,7 +69,7 @@ impl Meeting<'_> {
     /// The folder item `id` is gone from OneDrive: its directory at `rel` goes when nothing
     /// is left in it. One that still holds local objects stays as a local directory, and,
     /// when the folder `uploads`, is made again in OneDrive with what it holds.
-    pub(super) fn keep_gone_folder(&self, id: &str, rel: &Path, uploads: bool, met: &mut Met) {
+    pub(super) fn keep_gone_folder(&self, id: &str, rel: &Path, uploads: bool, met: &mut CycleConflicts) {
         if !is_folder_of(self.under.carried(rel).as_deref(), id) || self.under.remove_dir(rel).is_ok() || self.under.stat(rel).is_none() {
             return;
         }

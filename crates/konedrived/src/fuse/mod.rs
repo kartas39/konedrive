@@ -33,7 +33,7 @@
 mod announce;
 mod asked;
 mod attributes;
-mod conflict;
+mod conflict_copies;
 mod detections;
 mod fill;
 mod follow;
