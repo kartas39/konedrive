@@ -10,7 +10,7 @@ use konedrive_graph::pool::Class;
 
 use super::{caller, Requests};
 use crate::fuse::fill::{Running, WRITTEN_BEHIND};
-use crate::fuse::view::Entry;
+use crate::fuse::directory_contents::Entry;
 use crate::fuse::read::Handle;
 use crate::fuse::shared::{errno, Shared};
 use crate::fuse::writers::Closed;

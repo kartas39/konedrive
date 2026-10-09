@@ -5,7 +5,7 @@
 use super::WriteOperations;
 use crate::fuse::detections::UnrecordedObjects;
 use crate::fuse::local_entries::collect_local_entries;
-use crate::fuse::view::Dir;
+use crate::fuse::directory_contents::Directory;
 
 impl WriteOperations {
     /// Records every local object the outbox has no row for. Called on the recorder's
@@ -21,7 +21,7 @@ impl WriteOperations {
                     // With what it holds, when it is a directory.
                     found.extend(collect_local_entries(&self.under, &self.rules, &dir, &name));
                 } else if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    dirs.push(Dir { id: self.under.carried(&rel), rel });
+                    dirs.push(Directory { id: self.under.carried(&rel), rel });
                 }
             }
         }

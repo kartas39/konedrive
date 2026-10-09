@@ -7,7 +7,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState, Reason};
 use super::{DisplacedEntry, MovedEntry, Renamed};
 use crate::fuse::detections::tests::{detect, dir, file, handle, in_docs, in_root, local, quiet, rel, removes, rows, store, writing};
 use crate::fuse::detections::{FolderPlace, LocalEntry};
-use crate::fuse::view::tests::of;
+use crate::fuse::directory_contents::tests::of;
 
 fn moved(entry: MovedEntry, from: &str, to: FolderPlace, displaced: Option<DisplacedEntry>) -> Renamed {
     Renamed::Moved { entry, from: rel(from), to, displaced }

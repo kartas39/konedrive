@@ -3,7 +3,7 @@
 //!
 //! The kernel names what it asks about by node. [`Nodes`] is the map alone: it knows a key
 //! and a place for each node, and nothing of the store or the disk. [`Resolve`] is the part
-//! over it and the [`View`]: it gives an entry its node, says what a node is now — an item is
+//! over it and the [`DirectoryContents`]: it gives an entry its node, says what a node is now — an item is
 //! looked up again in the view, an object without an item by its handle in the folder under
 //! the mount — and keeps the node of an object that got its item.
 //!
@@ -16,15 +16,15 @@ use std::sync::{Arc, Mutex};
 use konedrive_fs::handle::FileHandle;
 
 use super::nodes::{Key, Nodes};
-use super::view::{Dir, Entry, Local, View};
+use super::directory_contents::{Directory, Entry, Local, DirectoryContents};
 
 pub(super) struct Resolve {
-    view: Arc<View>,
+    view: Arc<DirectoryContents>,
     nodes: Arc<Mutex<Nodes>>,
 }
 
 impl Resolve {
-    pub(super) fn new(view: Arc<View>, nodes: Arc<Mutex<Nodes>>) -> Self {
+    pub(super) fn new(view: Arc<DirectoryContents>, nodes: Arc<Mutex<Nodes>>) -> Self {
         Resolve { view, nodes }
     }
 
@@ -77,13 +77,13 @@ impl Resolve {
     }
 
     /// The directory the node `ino` is.
-    pub(super) fn dir(&self, ino: u64) -> Option<Dir> {
+    pub(super) fn dir(&self, ino: u64) -> Option<Directory> {
         let (entry, rel) = self.node(ino)?;
-        entry.is_dir().then(|| Dir { id: entry.id().filter(|id| !id.is_empty()).map(str::to_owned), rel })
+        entry.is_dir().then(|| Directory { id: entry.id().filter(|id| !id.is_empty()).map(str::to_owned), rel })
     }
 
     /// The directory the node `ino` stands in, and that directory's node.
-    pub(super) fn above(&self, ino: u64) -> Option<(u64, Dir)> {
+    pub(super) fn above(&self, ino: u64) -> Option<(u64, Directory)> {
         let parent = crate::panic::lock(&self.nodes).items.get(&ino)?.place.0;
         Some((parent, self.dir(parent)?))
     }

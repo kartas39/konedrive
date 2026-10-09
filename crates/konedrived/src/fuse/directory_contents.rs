@@ -2,18 +2,18 @@
 //! outbox's rows say laid over that, and the files and directories of the folder under the
 //! mount that OneDrive has no item for yet.
 //!
-//! [`View`] owns the mount's reading connection to the store, opened for reading alone — what
+//! [`DirectoryContents`] owns the mount's reading connection to the store, opened for reading alone — what
 //! it is asked never waits for the cycle that writes the store — and the [`UnsentChanges`] as last
 //! read. It uses [`BackingDirectory`] for what only the disk knows: the objects without an item. It
 //! knows nothing of the kernel's nodes, of what is open or of what is being downloaded, and
-//! changes nothing but, on request, the marks of the directories ([`View::backing`]).
+//! changes nothing but, on request, the marks of the directories ([`DirectoryContents::backing`]).
 //!
 //! What it answers:
 //!
-//! - here: an item's row ([`View::row`]), the row above it ([`View::parent`]), the folder's
-//!   own item ([`View::root`]), the files at and below an item ([`View::files_below`]), the
-//!   item whose file the user just removed from a place ([`View::removed_item_at`]);
-//! - [`entries`]: what a directory holds under a name and in whole ([`Entry`], [`Dir`]);
+//! - here: an item's row ([`DirectoryContents::row`]), the row above it ([`DirectoryContents::parent`]), the folder's
+//!   own item ([`DirectoryContents::root`]), the files at and below an item ([`DirectoryContents::files_below`]), the
+//!   item whose file the user just removed from a place ([`DirectoryContents::removed_item_at`]);
+//! - [`entries`]: what a directory holds under a name and in whole ([`Entry`], [`Directory`]);
 //! - [`places`]: where the folder shows an item, and what stands at a path.
 
 use std::path::{Path, PathBuf};
@@ -28,9 +28,9 @@ use super::backing_directory::BackingDirectory;
 mod entries;
 mod places;
 
-pub(super) use entries::{Dir, Entry, Local};
+pub(super) use entries::{Directory, Entry, Local};
 
-pub(super) struct View {
+pub(super) struct DirectoryContents {
     /// The store, for reading alone.
     reader: Mutex<TreeStore>,
     /// What the outbox's rows say, and the store's version that was read at; `None` before
@@ -39,11 +39,11 @@ pub(super) struct View {
     under: Arc<BackingDirectory>,
 }
 
-impl View {
+impl DirectoryContents {
     /// The view of the folder `under` through `reader`, a connection of its own to the
     /// folder's store.
     pub(super) fn new(reader: TreeStore, under: Arc<BackingDirectory>) -> Self {
-        View { reader: Mutex::new(reader), unsent_changes: Mutex::default(), under }
+        DirectoryContents { reader: Mutex::new(reader), unsent_changes: Mutex::default(), under }
     }
 
     /// The folder under the mount this is a view of.

@@ -19,7 +19,7 @@ use crate::status::report::Report;
 use super::announce::{announce, Announce};
 use super::fill::Waiter;
 use super::backing_directory::{set_tree, BackingDirectory};
-use super::view::View;
+use super::directory_contents::DirectoryContents;
 use super::nodes::Nodes;
 use super::upload_rules::UploadRules;
 use super::requests::Requests;
@@ -76,7 +76,7 @@ impl Mount {
         tokio::task::spawn_blocking(move || {
             // Before the mount: afterwards this path is the mount.
             let under = Arc::new(BackingDirectory::open(&root.path)?);
-            let view = Arc::new(View::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
+            let view = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
             let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
             let resolve = Arc::new(Resolve::new(Arc::clone(&view), Arc::clone(&nodes)));
             let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));

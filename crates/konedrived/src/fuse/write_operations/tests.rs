@@ -17,8 +17,8 @@ use crate::fuse::recorder::Recorder;
 use crate::fuse::resolve::Resolve;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::upload_rules::tests::rules;
-use crate::fuse::view::tests::drive;
-use crate::fuse::view::{Dir, Entry, View};
+use crate::fuse::directory_contents::tests::drive;
+use crate::fuse::directory_contents::{Directory, Entry, DirectoryContents};
 use crate::fuse::writers::Writers;
 
 pub(super) struct Folder {
@@ -26,7 +26,7 @@ pub(super) struct Folder {
     /// The backing directory, by its own path.
     pub(super) disk: PathBuf,
     pub(super) store: Store,
-    pub(super) view: Arc<View>,
+    pub(super) view: Arc<DirectoryContents>,
     pub(super) under: Arc<BackingDirectory>,
     pub(super) resolve: Arc<Resolve>,
     pub(super) writers: Arc<Writers>,
@@ -45,7 +45,7 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     drive(&mut written, detections);
     let store = Store::new(written);
     let under = Arc::new(BackingDirectory::open(&disk).unwrap());
-    let view = Arc::new(View::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&under)));
+    let view = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&under)));
     let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
     let resolve = Arc::new(Resolve::new(Arc::clone(&view), nodes));
     let writable = Arc::new(AtomicBool::new(true));
@@ -96,7 +96,7 @@ impl Folder {
         self.under.mark_copy(rel, id).unwrap();
     }
 
-    pub(super) fn root(&self) -> Dir {
+    pub(super) fn root(&self) -> Directory {
         self.view.root_dir()
     }
 }

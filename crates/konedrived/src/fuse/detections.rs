@@ -132,19 +132,19 @@ pub(super) struct LocalObject {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ObjectKind {
     File { size: u64 },
-    Dir,
+    Directory,
 }
 
 impl LocalObject {
     fn size(&self) -> Option<u64> {
         match self.kind {
             ObjectKind::File { size } => Some(size),
-            ObjectKind::Dir => None,
+            ObjectKind::Directory => None,
         }
     }
 
     fn is_dir(&self) -> bool {
-        self.kind == ObjectKind::Dir
+        self.kind == ObjectKind::Directory
     }
 }
 

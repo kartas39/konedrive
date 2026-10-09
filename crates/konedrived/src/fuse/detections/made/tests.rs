@@ -2,7 +2,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 
 use super::Made;
 use crate::fuse::detections::tests::{detect, dir, file, in_docs, in_root, local, quiet, store, writing};
-use crate::fuse::view::tests::of;
+use crate::fuse::directory_contents::tests::of;
 
 #[test]
 fn a_new_file_is_created_a_moment_after_it_is_closed() {

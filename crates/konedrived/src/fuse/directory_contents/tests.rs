@@ -6,7 +6,7 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
-use super::{Dir, Entry, View};
+use super::{Directory, Entry, DirectoryContents};
 use crate::folder::disk::HOLDING;
 use crate::fuse::backing_directory::BackingDirectory;
 
@@ -50,19 +50,19 @@ pub(in crate::fuse) fn drive(store: &mut TreeStore, detections: Vec<Detection>) 
 /// The view of the [`drive`], with `detections` waiting in the outbox, over a folder on disk
 /// that holds nothing. The store is filled before the view has it: a view reads what its own
 /// connection wrote only once.
-pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, View) {
+pub(in crate::fuse) fn view(detections: Vec<Detection>) -> (tempfile::TempDir, DirectoryContents) {
     let mut store = TreeStore::in_memory().unwrap();
     drive(&mut store, detections);
     let dir = tempfile::tempdir().unwrap();
     let under = Arc::new(BackingDirectory::open(dir.path()).unwrap());
-    (dir, View::new(store, under))
+    (dir, DirectoryContents::new(store, under))
 }
 
-fn docs() -> Dir {
-    Dir { id: Some("D".into()), rel: PathBuf::from("docs") }
+fn docs() -> Directory {
+    Directory { id: Some("D".into()), rel: PathBuf::from("docs") }
 }
 
-fn names(view: &View, dir: &Dir) -> Vec<String> {
+fn names(view: &DirectoryContents, dir: &Directory) -> Vec<String> {
     let mut names: Vec<String> = view.entries(dir).iter().map(|entry| entry.name().to_owned()).collect();
     names.sort();
     names

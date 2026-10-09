@@ -22,7 +22,7 @@
 //!
 //! The mount is built of parts that own their state, each usable and tested without a mount:
 //! [`backing_directory`] (the folder on disk, by its descriptor) and [`unsent_changes`] (what the outbox's rows
-//! say) depend on nothing; [`view`] (the folder as it is shown) is over those two; [`nodes`]
+//! say) depend on nothing; [`directory_contents`] (the folder as it is shown) is over those two; [`nodes`]
 //! is the map of the kernel's node ids, and [`resolve`] is over the view and the nodes;
 //! [`attr`] is a function of facts. A change a program makes: [`upload_rules`] (what is
 //! uploaded at all) and [`detections`] (what a change is recorded as, a function of typed
@@ -50,7 +50,7 @@ mod requests;
 mod resolve;
 mod shared;
 mod backing_directory;
-mod view;
+mod directory_contents;
 mod write_operations;
 mod writers;
 

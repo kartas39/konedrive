@@ -11,7 +11,7 @@ use crate::fuse::attr;
 use crate::fuse::detections::Made;
 use crate::fuse::local_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
-use crate::fuse::view::{Dir, Entry, Local};
+use crate::fuse::directory_contents::{Directory, Entry, Local};
 
 /// What was made: what the mount shows of it, and the file a program made it to write.
 pub(in crate::fuse) struct MadeEntry {
@@ -69,7 +69,7 @@ impl WriteOperations {
     /// The directory node `parent` is, if `name` may be made in it as a directory (`dir`) or
     /// a file. Neither the daemon's own names nor a file manager's trash in the folder
     /// itself are made.
-    fn check_make(&self, parent: u64, name: &str, dir: bool) -> Result<Dir, Errno> {
+    fn check_make(&self, parent: u64, name: &str, dir: bool) -> Result<Directory, Errno> {
         self.check_writable()?;
         let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
         if self.rules.daemon_owned(name) || (dir && parent == 1 && self.rules.is_trash(name)) {

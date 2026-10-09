@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 
 use konedrive_tree::Placement;
 
-use super::{Dir, Entry, View};
+use super::{Directory, Entry, DirectoryContents};
 use crate::fuse::unsent_changes::Above;
 
-impl View {
+impl DirectoryContents {
     /// The folder itself, as a directory.
-    pub(in crate::fuse) fn root_dir(&self) -> Dir {
-        Dir { id: self.root_id(), rel: PathBuf::new() }
+    pub(in crate::fuse) fn root_dir(&self) -> Directory {
+        Directory { id: self.root_id(), rel: PathBuf::new() }
     }
 
     /// Where the folder shows item `id`: where the store has it, or where the user moved it
@@ -52,7 +52,7 @@ impl View {
         while let Some(name) = names.next() {
             found = self.entry(&dir, name.as_os_str().to_str()?)?;
             if names.peek().is_some() {
-                dir = Dir { id: found.id().map(str::to_owned), rel: dir.rel.join(name) };
+                dir = Directory { id: found.id().map(str::to_owned), rel: dir.rel.join(name) };
                 if !found.is_dir() {
                     return None;
                 }
@@ -65,7 +65,7 @@ impl View {
     /// missing, each carrying the id of the item this view has there
     /// ([`BackingDirectory::backing`](crate::fuse::backing_directory::BackingDirectory::backing)).
     pub(in crate::fuse) fn backing(&self, rel: &Path) -> io::Result<()> {
-        let item = |id: Option<&str>, dir: &Path, name: &str| self.item_at(&Dir { id: id.map(str::to_owned), rel: dir.to_owned() }, name).map(|row| row.id);
+        let item = |id: Option<&str>, dir: &Path, name: &str| self.item_at(&Directory { id: id.map(str::to_owned), rel: dir.to_owned() }, name).map(|row| row.id);
         self.under.backing(rel, self.root_id(), item)
     }
 }

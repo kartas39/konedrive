@@ -15,7 +15,7 @@ use super::detections::{create_entries, is_folder_of, KeptCopy};
 use super::local_entries::{collect_local_entries, folder_place, local_object};
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
-use super::view::{Dir, View};
+use super::directory_contents::{Directory, DirectoryContents};
 
 /// What the meetings of one cycle left for the outbox, and what they did in the folder.
 #[derive(Default)]
@@ -31,7 +31,7 @@ pub(super) struct Met {
 /// The parts a meeting uses.
 pub(super) struct Meeting<'a> {
     pub(super) under: &'a BackingDirectory,
-    pub(super) view: &'a View,
+    pub(super) view: &'a DirectoryContents,
     pub(super) rules: &'a UploadRules,
     /// The time the rows are dated by.
     pub(super) now: i64,
@@ -46,7 +46,7 @@ impl Meeting<'_> {
         if self.under.carried(rel).is_some() || !(object.meta.is_file() || object.meta.is_dir()) {
             return;
         }
-        let dir = Dir { id: above.map(str::to_owned), rel: parent.to_path_buf() };
+        let dir = Directory { id: above.map(str::to_owned), rel: parent.to_path_buf() };
         for n in 1..=100 {
             let copy = self.rules.copy_name(name, n);
             let to = parent.join(&copy);
@@ -77,7 +77,7 @@ impl Meeting<'_> {
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return };
         if uploads {
             // Its directory above is found by its place: it may be gone and kept as well.
-            let above = Dir { id: None, rel: parent.to_path_buf() };
+            let above = Directory { id: None, rel: parent.to_path_buf() };
             met.detections.extend(create_entries(&collect_local_entries(self.under, self.rules, &above, name), self.now));
             met.kept.push(id.to_owned());
         }

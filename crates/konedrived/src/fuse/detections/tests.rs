@@ -8,7 +8,7 @@ use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxS
 use konedrive_tree::TreeStore;
 
 use super::{is_folder_of, FolderEvent, FolderPlace, LocalObject, ObjectKind, OutboxBatch};
-use crate::fuse::view::tests::drive;
+use crate::fuse::directory_contents::tests::drive;
 
 /// The time the tests decide at.
 pub(in crate::fuse) const NOW: i64 = 1_000;
@@ -30,7 +30,7 @@ pub(in crate::fuse) fn file(n: u8, size: u64) -> LocalObject {
 }
 
 pub(in crate::fuse) fn dir(n: u8) -> LocalObject {
-    LocalObject { handle: handle(n), kind: ObjectKind::Dir }
+    LocalObject { handle: handle(n), kind: ObjectKind::Directory }
 }
 
 /// `name` in the folder itself.
@@ -59,7 +59,7 @@ pub(in crate::fuse) fn local(kind: OutboxKind, object: &LocalObject, place: &Fol
         next_try: None,
         size: match object.kind {
             ObjectKind::File { size } => Some(size),
-            ObjectKind::Dir => None,
+            ObjectKind::Directory => None,
         },
     }
 }

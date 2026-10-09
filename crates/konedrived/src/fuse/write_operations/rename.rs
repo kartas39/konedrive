@@ -16,7 +16,7 @@ use super::WriteOperations;
 use crate::fuse::detections::{DisplacedEntry, MovedEntry, Renamed};
 use crate::fuse::local_entries::{collect_local_entries, folder_place, local_object};
 use crate::fuse::shared::errno;
-use crate::fuse::view::{Dir, Entry};
+use crate::fuse::directory_contents::{Directory, Entry};
 
 /// A rename the check let through: what moves where, and over what.
 struct RenamePlan {
@@ -27,7 +27,7 @@ struct RenamePlan {
     /// What stands at the new place.
     target: Option<Entry>,
     from: PathBuf,
-    to_dir: Dir,
+    to_dir: Directory,
     to_node: u64,
     to_name: String,
     /// The new place is one local objects are uploaded from.
@@ -91,7 +91,7 @@ impl WriteOperations {
             return Ok(None);
         }
         if let Some(target) = &target {
-            let holds = || !self.view.entries(&Dir { id: target.id().map(str::to_owned), rel: to.clone() }).is_empty();
+            let holds = || !self.view.entries(&Directory { id: target.id().map(str::to_owned), rel: to.clone() }).is_empty();
             match (source.is_dir(), target.is_dir()) {
                 _ if keep => return Err(Errno::EEXIST),
                 (false, true) => return Err(Errno::EISDIR),

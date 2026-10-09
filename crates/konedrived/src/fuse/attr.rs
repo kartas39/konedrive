@@ -14,7 +14,7 @@ use fuser::{FileAttr, FileType, INodeNo};
 use konedrive_tree::Kind;
 
 use super::shared::seconds;
-use super::view::{Entry, View};
+use super::directory_contents::{Entry, DirectoryContents};
 use super::writers::Writers;
 
 pub(super) const TTL: Duration = Duration::from_secs(1);
@@ -54,7 +54,7 @@ impl Shown {
     /// The facts of `entry`, which is node `ino` at `rel`: its copy and whether the outbox
     /// holds a change of its content are asked of `view`, whether it is being written of
     /// `writers`.
-    pub(super) fn of(entry: &Entry, ino: u64, rel: &Path, view: &View, writers: &Writers) -> Shown {
+    pub(super) fn of(entry: &Entry, ino: u64, rel: &Path, view: &DirectoryContents, writers: &Writers) -> Shown {
         match entry {
             Entry::Local(local) => Shown::Local { object: OnDisk::from(&local.object.meta), dir: local.object.meta.is_dir() },
             Entry::Item(row) if row.kind == Kind::Folder => Shown::Folder { listed: seconds(row.mtime) },
@@ -122,7 +122,7 @@ pub(super) fn attr(ino: u64, writable: bool, shown: &Shown) -> FileAttr {
 }
 
 /// What the mount shows of `entry`, which is node `ino` at `rel`.
-pub(super) fn of_entry(entry: &Entry, ino: u64, rel: &Path, writable: bool, view: &View, writers: &Writers) -> FileAttr {
+pub(super) fn of_entry(entry: &Entry, ino: u64, rel: &Path, writable: bool, view: &DirectoryContents, writers: &Writers) -> FileAttr {
     attr(ino, writable, &Shown::of(entry, ino, rel, view, writers))
 }
 

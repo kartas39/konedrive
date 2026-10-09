@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering;
 use fuser::Errno;
 use konedrive_tree::outbox::{OutboxKind, OutboxState, Reason};
 
-use crate::fuse::view::tests::of;
-use crate::fuse::view::Entry;
+use crate::fuse::directory_contents::tests::of;
+use crate::fuse::directory_contents::Entry;
 use crate::fuse::write_operations::tests::{at, folder};
 
 #[test]

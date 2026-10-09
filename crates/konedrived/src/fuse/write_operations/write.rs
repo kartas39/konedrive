@@ -14,7 +14,7 @@ use super::{OpenedFile, WriteOperations};
 use crate::fuse::detections::{ItemWrite, LocalWrite, Written};
 use crate::fuse::local_entries::{folder_place, local_object};
 use crate::fuse::shared::errno;
-use crate::fuse::view::Entry;
+use crate::fuse::directory_contents::Entry;
 
 impl WriteOperations {
     /// The item's file and its place, when writing node `ino` needs its content downloaded

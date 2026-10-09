@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use konedrive_tree::{Kind, Placement, Row, Table};
 
-use super::View;
+use super::DirectoryContents;
 use crate::folder::disk::daemon_owned;
 use crate::fuse::unsent_changes::{Above, UnsentChanges};
 use crate::fuse::backing_directory::Object;
@@ -55,12 +55,12 @@ impl Entry {
 
 /// A directory of the folder: its item, when it has one, and its place.
 #[derive(Debug, Clone)]
-pub(in crate::fuse) struct Dir {
+pub(in crate::fuse) struct Directory {
     pub(in crate::fuse) id: Option<String>,
     pub(in crate::fuse) rel: PathBuf,
 }
 
-impl Dir {
+impl Directory {
     fn is(&self, above: &Above) -> bool {
         match above {
             Above::Item(id) => self.id.as_deref() == Some(id),
@@ -76,7 +76,7 @@ fn stays(row: &Row, unsent_changes: &UnsentChanges) -> bool {
     row.placement == Placement::Placed && !unsent_changes.gone.contains(&row.id) && !unsent_changes.moved.contains_key(&row.id)
 }
 
-impl View {
+impl DirectoryContents {
     /// The object without an item at `rel` in the folder under the mount.
     pub(in crate::fuse) fn local(&self, rel: &Path) -> Option<Local> {
         let name = rel.file_name()?;
@@ -98,12 +98,12 @@ impl View {
     }
 
     /// What `dir` holds under `name`.
-    pub(in crate::fuse) fn entry(&self, dir: &Dir, name: &str) -> Option<Entry> {
+    pub(in crate::fuse) fn entry(&self, dir: &Directory, name: &str) -> Option<Entry> {
         self.item_at(dir, name).map(Entry::Item).or_else(|| self.local(&dir.rel.join(name)).map(Entry::Local))
     }
 
     /// The item `dir` holds under `name`.
-    pub(in crate::fuse) fn item_at(&self, dir: &Dir, name: &str) -> Option<Row> {
+    pub(in crate::fuse) fn item_at(&self, dir: &Directory, name: &str) -> Option<Row> {
         let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         // What the user moved to this name is what the name is: an item OneDrive has there
@@ -116,7 +116,7 @@ impl View {
     }
 
     /// Everything `dir` holds.
-    pub(in crate::fuse) fn entries(&self, dir: &Dir) -> Vec<Entry> {
+    pub(in crate::fuse) fn entries(&self, dir: &Directory) -> Vec<Entry> {
         let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
         let mut items: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)).collect();

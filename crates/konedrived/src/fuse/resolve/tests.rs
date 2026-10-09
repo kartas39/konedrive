@@ -8,23 +8,23 @@ use konedrive_tree::Row;
 
 use super::Resolve;
 use crate::fuse::nodes::Nodes;
-use crate::fuse::view::tests::{of, view};
-use crate::fuse::view::{Entry, Local, View};
+use crate::fuse::directory_contents::tests::{of, view};
+use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 
 /// The nodes of the drive the view's tests have (`docs` with `c.txt`, and `a.txt` and
 /// `b.txt` in the root), over a folder on disk that holds nothing.
-fn resolve(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<View>, Resolve) {
+fn resolve(detections: Vec<Detection>) -> (tempfile::TempDir, Arc<DirectoryContents>, Resolve) {
     let (dir, view) = view(detections);
     let view = Arc::new(view);
     let nodes = Arc::new(Mutex::new(Nodes { next: 1, ..Nodes::default() }));
     (dir, Arc::clone(&view), Resolve::new(view, nodes))
 }
 
-fn item(view: &View, id: &str) -> Entry {
+fn item(view: &DirectoryContents, id: &str) -> Entry {
     Entry::Item(view.row(id).unwrap())
 }
 
-fn local(view: &View, rel: &str) -> Entry {
+fn local(view: &DirectoryContents, rel: &str) -> Entry {
     let object = view.under().object(Path::new(rel)).unwrap();
     Entry::Local(Local { name: Path::new(rel).file_name().unwrap().to_string_lossy().into_owned(), object })
 }

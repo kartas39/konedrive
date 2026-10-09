@@ -7,8 +7,8 @@ use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::Kind;
 
 use super::{attr, OnDisk, Shown};
-use crate::fuse::view::tests::{of, view};
-use crate::fuse::view::{Entry, Local, View};
+use crate::fuse::directory_contents::tests::{of, view};
+use crate::fuse::directory_contents::{Entry, Local, DirectoryContents};
 use crate::fuse::writers::Writers;
 
 fn at(seconds: u64) -> SystemTime {
@@ -70,17 +70,17 @@ fn an_item_that_is_gone_is_shown_by_its_kind_alone() {
     assert_eq!(Shown::gone(Kind::File), Shown::NotDownloaded { size: 0, listed: UNIX_EPOCH });
 }
 
-fn item(view: &View, id: &str) -> Entry {
+fn item(view: &DirectoryContents, id: &str) -> Entry {
     Entry::Item(view.row(id).unwrap())
 }
 
 /// The facts of the drive's `a.txt` (item `A`, one byte in the store) as node 7.
-fn facts(view: &View, writers: &Writers) -> Shown {
+fn facts(view: &DirectoryContents, writers: &Writers) -> Shown {
     Shown::of(&item(view, "A"), 7, Path::new("a.txt"), view, writers)
 }
 
 /// The whole copy of item `A`, of five bytes, in the folder under the mount.
-fn downloaded(dir: &Path, view: &View) {
+fn downloaded(dir: &Path, view: &DirectoryContents) {
     fs::write(dir.join("a.txt"), b"whole").unwrap();
     view.under().mark_copy(Path::new("a.txt"), "A").unwrap();
 }
@@ -108,7 +108,7 @@ fn a_copy_is_the_users_own_while_it_is_written_or_its_change_waits() {
     writers.closed(7);
     assert!(matches!(facts(&view, &writers), Shown::Copy { own: false, .. }));
 
-    let (dir, view) = crate::fuse::view::tests::view(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
+    let (dir, view) = crate::fuse::directory_contents::tests::view(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
     downloaded(dir.path(), &view);
     assert!(matches!(facts(&view, &Writers::default()), Shown::Copy { own: true, .. }));
 }

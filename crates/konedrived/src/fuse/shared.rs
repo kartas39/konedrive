@@ -1,7 +1,7 @@
 //! What holds a mount together: its parts, and what is under way.
 //!
 //! The parts own their state and are shared by `Arc` with whoever needs them: the folder under
-//! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`View`]), the kernel's nodes
+//! the mount ([`BackingDirectory`]), the folder as the mount shows it ([`DirectoryContents`]), the kernel's nodes
 //! ([`Nodes`]) and what resolves them ([`Resolve`]), the files open for writing ([`Writers`]),
 //! what is uploaded at all ([`UploadRules`]), the thread that records ([`Recorder`]) and the
 //! operations that change the folder ([`WriteOperations`]). What is not a part yet — the
@@ -34,14 +34,14 @@ use super::writers::Writers;
 use super::read::{Handle, Reader};
 use super::resolve::Resolve;
 use super::backing_directory::BackingDirectory;
-use super::view::View;
+use super::directory_contents::DirectoryContents;
 
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
     /// The folder under the mount ([`super::backing_directory`]).
     pub(super) under: Arc<BackingDirectory>,
-    /// The folder as the mount shows it ([`super::view`]).
-    pub(super) view: Arc<View>,
+    /// The folder as the mount shows it ([`super::directory_contents`]).
+    pub(super) view: Arc<DirectoryContents>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
     /// The node ids the kernel knows ([`super::nodes`]): shared by what resolves them and what
@@ -66,7 +66,7 @@ pub(super) struct Shared {
     pub(super) next_handle: AtomicU64,
     /// What each open directory held when it was first listed, by handle: a program that
     /// reads a directory in parts reads one listing, whatever changes meanwhile.
-    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::view::Entry>>>>,
+    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::Entry>>>>,
     /// How many bytes of each item that is not downloaded were read as ranges.
     pub(super) asked: Mutex<HashMap<String, u64>>,
     /// Once that many bytes of a file were read as ranges, the file is downloaded whole

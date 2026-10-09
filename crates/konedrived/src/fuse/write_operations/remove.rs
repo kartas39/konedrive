@@ -6,7 +6,7 @@ use fuser::Errno;
 use super::WriteOperations;
 use crate::fuse::detections::Removed;
 use crate::fuse::shared::errno;
-use crate::fuse::view::{Dir, Entry};
+use crate::fuse::directory_contents::{Directory, Entry};
 
 impl WriteOperations {
     /// Removes `name` from the directory node `parent`: a directory (`dir`), which must hold
@@ -22,7 +22,7 @@ impl WriteOperations {
             _ => {}
         }
         let rel = above.rel.join(name);
-        if dir && !self.view.entries(&Dir { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        if dir && !self.view.entries(&Directory { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry {

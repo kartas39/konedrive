@@ -6,7 +6,7 @@
 //! with what these rows say laid over it.
 //!
 //! [`UnsentChanges`] is a function of the store's rows and of nothing else: no disk, no node, no
-//! mount. Who reads it, and when it is read again, is the view's to say ([`super::view`]).
+//! mount. Who reads it, and when it is read again, is the view's to say ([`super::directory_contents`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

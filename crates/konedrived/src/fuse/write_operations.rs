@@ -2,7 +2,7 @@
 //! write, each in a module of its own.
 //!
 //! [`WriteOperations`] holds the parts the operations use and nothing else: the folder as
-//! the mount shows it ([`View`]) and on disk ([`BackingDirectory`]), the nodes ([`Resolve`]), the files
+//! the mount shows it ([`DirectoryContents`]) and on disk ([`BackingDirectory`]), the nodes ([`Resolve`]), the files
 //! open for writing ([`Writers`]), the [`Recorder`] and the [`UploadRules`]. It owns no state
 //! of its own. Each operation is the same short sequence of steps:
 //!
@@ -35,7 +35,7 @@ use super::recorder::Recorder;
 use super::resolve::Resolve;
 use super::backing_directory::BackingDirectory;
 use super::upload_rules::UploadRules;
-use super::view::{Dir, View};
+use super::directory_contents::{Directory, DirectoryContents};
 use super::writers::Writers;
 
 mod make;
@@ -45,7 +45,7 @@ mod unrecorded_objects;
 mod write;
 
 pub(super) struct WriteOperations {
-    view: Arc<View>,
+    view: Arc<DirectoryContents>,
     under: Arc<BackingDirectory>,
     resolve: Arc<Resolve>,
     writers: Arc<Writers>,
@@ -64,7 +64,7 @@ pub(super) struct OpenedFile {
 
 impl WriteOperations {
     pub(super) fn new(
-        view: Arc<View>,
+        view: Arc<DirectoryContents>,
         under: Arc<BackingDirectory>,
         resolve: Arc<Resolve>,
         writers: Arc<Writers>,
@@ -84,7 +84,7 @@ impl WriteOperations {
     }
 
     /// Whether what stands as `name` in `dir` and has no item stays on this computer.
-    fn stays_local(&self, dir: &Dir, name: &str) -> bool {
+    fn stays_local(&self, dir: &Directory, name: &str) -> bool {
         self.rules.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
     }
 

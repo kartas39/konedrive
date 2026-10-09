@@ -11,7 +11,7 @@ use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
 use super::announce::Announce;
-use super::view::Entry;
+use super::directory_contents::Entry;
 use super::mount::Mount;
 
 /// What a free-up did.

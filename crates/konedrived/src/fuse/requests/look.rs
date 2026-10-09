@@ -12,7 +12,7 @@ use konedrive_tree::Kind;
 use super::Requests;
 use crate::fuse::announce::Told;
 use crate::fuse::attr::{self, Shown, TTL};
-use crate::fuse::view::{Dir, Entry};
+use crate::fuse::directory_contents::{Directory, Entry};
 use crate::fuse::shared::errno;
 
 impl Requests {
@@ -57,7 +57,7 @@ impl Requests {
 
     /// What the open directory `fh` holds: listed at its first read, and the same for every
     /// part of the listing after it.
-    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Dir, Arc<Vec<Entry>>)> {
+    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<Entry>>)> {
         let s = &self.0;
         let dir = s.resolve.dir(ino.0)?;
         let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
