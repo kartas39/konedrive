@@ -60,7 +60,7 @@ impl Resolve {
         };
         match key {
             Key::Item(id) => {
-                let row = self.view.shown_as(&id, &name).filter(|_| !self.view.overlay().gone.contains(&id))?;
+                let row = self.view.shown_as(&id, &name).filter(|_| !self.view.unsent_changes().gone.contains(&id))?;
                 Some((Entry::Item(row), rel))
             }
             Key::Local(handle) => {

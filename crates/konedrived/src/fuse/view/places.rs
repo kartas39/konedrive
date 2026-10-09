@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::Placement;
 
 use super::{Dir, Entry, View};
-use crate::fuse::overlay::Above;
+use crate::fuse::unsent_changes::Above;
 
 impl View {
     /// The folder itself, as a directory.
@@ -17,14 +17,14 @@ impl View {
     /// Where the folder shows item `id`: where the store has it, or where the user moved it
     /// or a folder above it.
     pub(in crate::fuse) fn place(&self, id: &str) -> Option<PathBuf> {
-        let overlay = self.overlay();
+        let unsent_changes = self.unsent_changes();
         let (mut names, mut at) = (Vec::new(), id.to_owned());
         for _ in 0..konedrive_fs::MAX_DEPTH {
-            if overlay.gone.contains(&at) {
+            if unsent_changes.gone.contains(&at) {
                 return None;
             }
             let row = self.row(&at).filter(|r| r.placement == Placement::Placed)?;
-            let (above, name) = match overlay.moved.get(&at) {
+            let (above, name) = match unsent_changes.moved.get(&at) {
                 Some((above, name)) => (Some(above.clone()), name.clone()),
                 None => (row.parent_id.clone().map(Above::Item), row.name.clone()),
             };

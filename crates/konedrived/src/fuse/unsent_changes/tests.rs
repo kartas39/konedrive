@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
-use super::{Above, Overlay};
+use super::{Above, UnsentChanges};
 
 fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
@@ -40,45 +40,45 @@ fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Opti
     }
 }
 
-fn recorded(detections: Vec<Detection>) -> Overlay {
+fn recorded(detections: Vec<Detection>) -> UnsentChanges {
     let mut store = store();
     let ops: Vec<OutboxOp> = detections.into_iter().map(OutboxOp::Record).collect();
     store.outbox_apply(&ops, 0).unwrap();
-    Overlay::of(&store)
+    UnsentChanges::of(&store)
 }
 
 /// An item the user moved stands in the folder it was moved to, under its new name, until
 /// the move is sent.
 #[test]
 fn a_moved_item_stands_where_its_row_takes_it() {
-    let overlay = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
-    assert_eq!(overlay.moved.get("A"), Some(&(Above::Item("D".into()), "new.txt".to_owned())));
-    assert!(overlay.gone.is_empty() && overlay.changed.is_empty());
+    let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
+    assert_eq!(unsent_changes.moved.get("A"), Some(&(Above::Item("D".into()), "new.txt".to_owned())));
+    assert!(unsent_changes.gone.is_empty() && unsent_changes.changed.is_empty());
 }
 
 /// Moved into a directory OneDrive has no item for yet: found by the directory's place.
 #[test]
 fn an_item_moved_into_a_new_directory_is_found_by_that_directorys_place() {
-    let overlay = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt")))]);
-    assert_eq!(overlay.moved.get("A"), Some(&(Above::Local(PathBuf::from("new")), "a.txt".to_owned())));
+    let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt")))]);
+    assert_eq!(unsent_changes.moved.get("A"), Some(&(Above::Local(PathBuf::from("new")), "a.txt".to_owned())));
 }
 
 /// A removed item is gone from the folder though OneDrive still has it.
 #[test]
 fn a_removed_item_is_gone() {
-    let overlay = recorded(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    assert!(overlay.gone.contains("B") && overlay.moved.is_empty());
+    let unsent_changes = recorded(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
+    assert!(unsent_changes.gone.contains("B") && unsent_changes.moved.is_empty());
 }
 
 /// New content where the item is: the item's content is the user's own, and it has not moved.
 #[test]
 fn an_item_with_new_content_is_changed_and_stays_in_place() {
-    let overlay = recorded(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
-    assert!(overlay.changed.contains("A") && overlay.moved.is_empty() && overlay.gone.is_empty());
+    let unsent_changes = recorded(vec![of(OutboxKind::Update, "A", "a.txt", "a.txt", (Some("R"), Some("a.txt")))]);
+    assert!(unsent_changes.changed.contains("A") && unsent_changes.moved.is_empty() && unsent_changes.gone.is_empty());
 }
 
 #[test]
 fn an_empty_outbox_changes_nothing() {
-    let overlay = Overlay::of(&store());
-    assert!(overlay.moved.is_empty() && overlay.gone.is_empty() && overlay.changed.is_empty());
+    let unsent_changes = UnsentChanges::of(&store());
+    assert!(unsent_changes.moved.is_empty() && unsent_changes.gone.is_empty() && unsent_changes.changed.is_empty());
 }

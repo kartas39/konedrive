@@ -37,7 +37,7 @@ impl WriteOperations {
         let file = self.under.write(&rel, truncate).map_err(|e| errno(&e))?;
         // Its content is the user's own already when the outbox holds a change of it; from
         // the first writer on the outbox holds it in any case.
-        let own = truncate || entry.id().is_some_and(|id| self.view.overlay().changed.contains(id));
+        let own = truncate || entry.id().is_some_and(|id| self.view.unsent_changes().changed.contains(id));
         if self.writers.opened(ino, own) {
             if let Err(e) = self.record_content(ino, LocalWrite::Opened) {
                 self.writers.closed(ino);

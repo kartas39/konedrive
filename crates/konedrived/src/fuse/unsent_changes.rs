@@ -5,7 +5,7 @@
 //! the outbox until it is sent. The mount shows the folder as the user left it: the store,
 //! with what these rows say laid over it.
 //!
-//! [`Overlay`] is a function of the store's rows and of nothing else: no disk, no node, no
+//! [`UnsentChanges`] is a function of the store's rows and of nothing else: no disk, no node, no
 //! mount. Who reads it, and when it is read again, is the view's to say ([`super::view`]).
 
 use std::collections::{HashMap, HashSet};
@@ -24,7 +24,7 @@ pub(super) enum Above {
 
 /// What the rows say, as of one reading of the store.
 #[derive(Default)]
-pub(super) struct Overlay {
+pub(super) struct UnsentChanges {
     /// Items that stand elsewhere than the store has them: the directory, and the name there.
     pub(super) moved: HashMap<String, (Above, String)>,
     /// Items removed here and not yet in OneDrive.
@@ -33,10 +33,10 @@ pub(super) struct Overlay {
     pub(super) changed: HashSet<String>,
 }
 
-impl Overlay {
+impl UnsentChanges {
     /// What the rows of `store` say now.
     pub(super) fn of(store: &TreeStore) -> Self {
-        let mut now = Overlay::default();
+        let mut now = UnsentChanges::default();
         for row in store.outbox_rows().unwrap_or_default() {
             let Some(id) = row.item_id.clone() else { continue };
             if row.kind.removes() {

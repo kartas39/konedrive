@@ -3,7 +3,7 @@
 //! mount that OneDrive has no item for yet.
 //!
 //! [`View`] owns the mount's reading connection to the store, opened for reading alone — what
-//! it is asked never waits for the cycle that writes the store — and the [`Overlay`] as last
+//! it is asked never waits for the cycle that writes the store — and the [`UnsentChanges`] as last
 //! read. It uses [`BackingDirectory`] for what only the disk knows: the objects without an item. It
 //! knows nothing of the kernel's nodes, of what is open or of what is being downloaded, and
 //! changes nothing but, on request, the marks of the directories ([`View::backing`]).
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
-use super::overlay::Overlay;
+use super::unsent_changes::UnsentChanges;
 use super::backing_directory::BackingDirectory;
 
 mod entries;
@@ -35,7 +35,7 @@ pub(super) struct View {
     reader: Mutex<TreeStore>,
     /// What the outbox's rows say, and the store's version that was read at; `None` before
     /// the first reading.
-    overlay: Mutex<(Option<i64>, Arc<Overlay>)>,
+    unsent_changes: Mutex<(Option<i64>, Arc<UnsentChanges>)>,
     under: Arc<BackingDirectory>,
 }
 
@@ -43,7 +43,7 @@ impl View {
     /// The view of the folder `under` through `reader`, a connection of its own to the
     /// folder's store.
     pub(super) fn new(reader: TreeStore, under: Arc<BackingDirectory>) -> Self {
-        View { reader: Mutex::new(reader), overlay: Mutex::default(), under }
+        View { reader: Mutex::new(reader), unsent_changes: Mutex::default(), under }
     }
 
     /// The folder under the mount this is a view of.
@@ -88,13 +88,13 @@ impl View {
     }
 
     /// What the outbox says now. Read again only when the store changed since.
-    pub(super) fn overlay(&self) -> Arc<Overlay> {
+    pub(super) fn unsent_changes(&self) -> Arc<UnsentChanges> {
         let store = crate::panic::lock(&self.reader);
-        let mut kept = crate::panic::lock(&self.overlay);
+        let mut kept = crate::panic::lock(&self.unsent_changes);
         // A version that cannot be read is never the one kept.
         let version = store.data_version().ok();
         if version.is_none() || version != kept.0 {
-            *kept = (version, Arc::new(Overlay::of(&store)));
+            *kept = (version, Arc::new(UnsentChanges::of(&store)));
         }
         Arc::clone(&kept.1)
     }

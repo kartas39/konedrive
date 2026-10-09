@@ -154,6 +154,6 @@ impl super::shared::Shared {
     /// Whether the copy of item `id` holds content of the user's own that is not in OneDrive
     /// yet: changed here and not sent, or open for writing now.
     fn own_content(&self, id: &str) -> bool {
-        self.view.overlay().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
+        self.view.unsent_changes().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
     }
 }

@@ -60,7 +60,7 @@ impl Shown {
             Entry::Item(row) if row.kind == Kind::Folder => Shown::Folder { listed: seconds(row.mtime) },
             Entry::Item(row) => match view.under().copy(rel, &row.id) {
                 Some(meta) => {
-                    let own = view.overlay().changed.contains(&row.id) || writers.open(ino);
+                    let own = view.unsent_changes().changed.contains(&row.id) || writers.open(ino);
                     Shown::Copy { copy: OnDisk::from(&meta), listed: seconds(row.mtime), own }
                 }
                 None => Shown::NotDownloaded { size: row.size, listed: seconds(row.mtime) },

@@ -13,7 +13,7 @@ use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::View;
 use crate::folder::disk::daemon_owned;
-use crate::fuse::overlay::{Above, Overlay};
+use crate::fuse::unsent_changes::{Above, UnsentChanges};
 use crate::fuse::backing_directory::Object;
 
 /// One name in a directory of the folder.
@@ -71,9 +71,9 @@ impl Dir {
     }
 }
 
-/// Whether an item the store has in a directory still stands there, for what `overlay` says.
-fn stays(row: &Row, overlay: &Overlay) -> bool {
-    row.placement == Placement::Placed && !overlay.gone.contains(&row.id) && !overlay.moved.contains_key(&row.id)
+/// Whether an item the store has in a directory still stands there, for what `unsent_changes` says.
+fn stays(row: &Row, unsent_changes: &UnsentChanges) -> bool {
+    row.placement == Placement::Placed && !unsent_changes.gone.contains(&row.id) && !unsent_changes.moved.contains_key(&row.id)
 }
 
 impl View {
@@ -104,24 +104,24 @@ impl View {
 
     /// The item `dir` holds under `name`.
     pub(in crate::fuse) fn item_at(&self, dir: &Dir, name: &str) -> Option<Row> {
-        let overlay = self.overlay();
+        let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         // What the user moved to this name is what the name is: an item OneDrive has there
         // too is shown once the move is sent, or refused.
-        let moved = overlay.moved.iter().find(|(_, (above, as_))| dir.is(above) && as_ == name);
+        let moved = unsent_changes.moved.iter().find(|(_, (above, as_))| dir.is(above) && as_ == name);
         match moved {
             Some((id, _)) => self.shown_as(id, name),
-            None => stored.filter(|row| stays(row, &overlay)),
+            None => stored.filter(|row| stays(row, &unsent_changes)),
         }
     }
 
     /// Everything `dir` holds.
     pub(in crate::fuse) fn entries(&self, dir: &Dir) -> Vec<Entry> {
-        let overlay = self.overlay();
+        let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
-        let mut items: Vec<Row> = overlay.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)).collect();
+        let mut items: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)).collect();
         let moved_here: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
-        items.extend(stored.into_iter().filter(|row| stays(row, &overlay) && !moved_here.contains(&row.name)));
+        items.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
         let mut all: Vec<Entry> = items.into_iter().map(Entry::Item).collect();
         for name in self.under.list(&dir.rel).map(|e| e.file_name()) {

@@ -21,7 +21,7 @@
 //!   downloaded has no object to carry one.
 //!
 //! The mount is built of parts that own their state, each usable and tested without a mount:
-//! [`backing_directory`] (the folder on disk, by its descriptor) and [`overlay`] (what the outbox's rows
+//! [`backing_directory`] (the folder on disk, by its descriptor) and [`unsent_changes`] (what the outbox's rows
 //! say) depend on nothing; [`view`] (the folder as it is shown) is over those two; [`nodes`]
 //! is the map of the kernel's node ids, and [`resolve`] is over the view and the nodes;
 //! [`attr`] is a function of facts. A change a program makes: [`upload_rules`] (what is
@@ -41,7 +41,7 @@ mod local_entries;
 mod mode;
 mod mount;
 mod nodes;
-mod overlay;
+mod unsent_changes;
 mod pins;
 mod upload_rules;
 mod read;
