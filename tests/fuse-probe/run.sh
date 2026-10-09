@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds the probe and runs its tests in a virtme-ng guest. Nothing is mounted on the host.
-# Usage: tests/fuse-probe/run.sh [t1 t2 t3 t4 t5]
+# Builds the suite's programs and runs its tests in a virtme-ng guest. Nothing is mounted on the
+# host. Usage: tests/fuse-probe/run.sh [service cli]
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 cargo build --release --manifest-path "$here/Cargo.toml"

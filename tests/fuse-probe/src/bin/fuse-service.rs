@@ -28,7 +28,7 @@ async fn main() {
     let state = PathBuf::from(std::env::args().nth(1).expect("a state directory"));
     let graph = FakeGraph::start().await;
     let account = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
-    let paths = SyncPaths { tree_db: state.join("tree.sqlite"), thumbnails: None };
+    let paths = SyncPaths { tree_db: state.join("fuse.sqlite"), thumbnails: None };
     // The folder is recorded in a `config.toml` that stays: a second run finds it there, as a
     // daemon started again does, and brings it up.
     let persist = testing::persist(&state.join("config.toml"));

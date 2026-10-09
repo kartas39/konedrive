@@ -1,5 +1,5 @@
-# Standalone and throwaway: the prototype behind docs/tasks/fuse-research.md. Not a member of the
-# repository workspace and never merged into dev.
+# The VM suite of the mount: the daemon's service with a folder served through FUSE, in a
+# virtme-ng guest (run.sh). Not a member of the repository workspace.
 [workspace]
 
 [package]
@@ -9,9 +9,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
-fuser = { version = "0.18", default-features = false }
 libc = "0.2"
-# The fake OneDrive of the daemon's tests, as a process the stage 1 tests talk to.
+# The daemon's service and the fake OneDrive of its tests, as a process the suite talks to.
 konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std"] }
 # A scripted answer of the fake OneDrive: a download cut short.
