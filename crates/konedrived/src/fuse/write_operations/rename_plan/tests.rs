@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use fuser::Errno;
 use konedrive_tree::Kind;
 
-use super::{choose_removed_at_new_place, describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
+use super::{describe_rename, plan_rename, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::tests::{directory, file, handle, in_root, local_only};
 use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry, WriteState};
@@ -177,31 +177,6 @@ fn plan(moved_entry: DirectoryEntry, target: Option<DirectoryEntry>, to_upload_s
 /// What `plan` is recorded as moving, when nothing is displaced.
 fn moved(plan: &RenamePlan, entry: MovedEntry) -> EntryRenamed {
     EntryRenamed::Moved { entry, from: plan.from.clone(), to: plan.to.clone(), displaced: None }
-}
-
-#[test]
-fn nothing_at_the_new_place_removes_nothing() {
-    assert_eq!(choose_removed_at_new_place(None, BackingDirectoryMove::Moved), None);
-    assert_eq!(choose_removed_at_new_place(None, BackingDirectoryMove::NothingThere), None);
-}
-
-#[test]
-fn a_directory_at_the_new_place_is_removed_whatever_moves() {
-    assert_eq!(choose_removed_at_new_place(Some(EntryKind::Directory), BackingDirectoryMove::Moved), Some(EntryKind::Directory));
-    assert_eq!(choose_removed_at_new_place(Some(EntryKind::Directory), BackingDirectoryMove::NothingThere), Some(EntryKind::Directory));
-}
-
-/// The rename itself replaces it.
-#[test]
-fn a_file_at_the_new_place_is_left_to_the_rename_when_something_moves_over_it() {
-    assert_eq!(choose_removed_at_new_place(Some(EntryKind::File), BackingDirectoryMove::Moved), None);
-}
-
-/// A file that is not downloaded moves to the name of a downloaded one: its copy would stay
-/// as the content of what moved there.
-#[test]
-fn a_file_at_the_new_place_is_removed_when_nothing_moves_in_the_backing_directory() {
-    assert_eq!(choose_removed_at_new_place(Some(EntryKind::File), BackingDirectoryMove::NothingThere), Some(EntryKind::File));
 }
 
 #[test]

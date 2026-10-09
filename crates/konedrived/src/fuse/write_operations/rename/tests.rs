@@ -187,3 +187,51 @@ fn nothing_is_renamed_in_a_read_only_folder() {
     assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "new.txt", RenameMode::Replace).err(), Some(Errno::EROFS));
     assert!(f.rows().is_empty());
 }
+
+/// What the rename replaced at the new place is back there as well: a file a file moved
+/// over, the downloaded copy under a file that is not downloaded, an empty directory under
+/// a directory.
+#[test]
+fn a_rename_that_cannot_be_recorded_puts_back_what_was_at_the_new_place() {
+    let f = folder_that_records_nothing();
+    std::fs::write(f.disk.join("x.txt"), b"x").unwrap();
+    std::fs::write(f.disk.join("y.txt"), b"y").unwrap();
+    assert_eq!(f.ops.rename(NodeId::ROOT, "x.txt", NodeId::ROOT, "y.txt", RenameMode::Replace).err(), Some(Errno::EIO));
+    assert_eq!((std::fs::read(f.disk.join("x.txt")).unwrap(), std::fs::read(f.disk.join("y.txt")).unwrap()), (b"x".to_vec(), b"y".to_vec()));
+
+    // Nothing of `a.txt` is in the backing directory: only what was at the new place moved.
+    f.download("b.txt", "B", b"b");
+    assert_eq!(f.ops.rename(NodeId::ROOT, "a.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).err(), Some(Errno::EIO));
+    assert!(f.backing_directory.find_downloaded_copy(&at("b.txt"), "B").is_some() && !f.disk.join("a.txt").exists());
+
+    std::fs::create_dir(f.disk.join("new")).unwrap();
+    std::fs::create_dir(f.disk.join("empty")).unwrap();
+    let (new, empty) = (f.backing_directory.find_file_handle(&at("new")), f.backing_directory.find_file_handle(&at("empty")));
+    assert_eq!(f.ops.rename(NodeId::ROOT, "new", NodeId::ROOT, "empty", RenameMode::Replace).err(), Some(Errno::EIO));
+    assert_eq!((f.backing_directory.find_file_handle(&at("new")), f.backing_directory.find_file_handle(&at("empty"))), (new, empty));
+}
+
+/// Once the rename is recorded, what it replaced is gone from the backing directory, and
+/// nothing of it is left at the old place.
+#[test]
+fn what_a_rename_replaced_is_removed_once_the_rename_is_recorded() {
+    let f = folder(Vec::new());
+    std::fs::write(f.disk.join("x.txt"), b"x").unwrap();
+    std::fs::write(f.disk.join("y.txt"), b"y").unwrap();
+    f.ops.rename(NodeId::ROOT, "x.txt", NodeId::ROOT, "y.txt", RenameMode::Replace).unwrap();
+    assert!(!f.disk.join("x.txt").exists());
+    assert_eq!(std::fs::read(f.disk.join("y.txt")).unwrap(), b"x");
+
+    // Nothing of `docs/c.txt` is in the backing directory, nor its directory.
+    f.download("b.txt", "B", b"b");
+    f.ops.rename(f.docs(), "c.txt", NodeId::ROOT, "b.txt", RenameMode::Replace).unwrap();
+    assert!(!f.disk.join("b.txt").exists() && !f.disk.join("docs/c.txt").exists());
+    assert_eq!(f.shown("b.txt"), Some(Some("C".into())));
+
+    std::fs::create_dir(f.disk.join("new")).unwrap();
+    std::fs::create_dir(f.disk.join("empty")).unwrap();
+    let new = f.backing_directory.find_file_handle(&at("new"));
+    f.ops.rename(NodeId::ROOT, "new", NodeId::ROOT, "empty", RenameMode::Replace).unwrap();
+    assert!(!f.disk.join("new").exists());
+    assert_eq!(f.backing_directory.find_file_handle(&at("empty")), new);
+}

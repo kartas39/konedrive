@@ -20,8 +20,8 @@
 //!    ([`make_check`], [`remove_plan`], [`rename_plan`]);
 //! 3. do it in the backing directory;
 //! 4. record it: build the event ([`super::detections`]) and hand it to the recorder — on a
-//!    failure what was done on disk is undone and the program is answered `EIO`
-//!    ([`WriteOperations::record_or_undo`]);
+//!    failure what was done on disk is undone, what a rename replaced at its new place
+//!    included, and the program is answered `EIO` ([`WriteOperations::record_or_undo`]);
 //! 5. the node ids, through the node resolver.
 //!
 //! An operation that opens a file for writing puts it into the open handles itself, so that

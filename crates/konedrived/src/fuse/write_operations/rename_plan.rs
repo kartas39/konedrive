@@ -1,7 +1,6 @@
 //! The decisions of a rename, with no disk in them: what moves where, and over what, or the
-//! errno it is refused with ([`plan_rename`], the one writer of a [`RenamePlan`]); what is
-//! removed at the new place before the move ([`choose_removed_at_new_place`]); and what the
-//! rename is recorded as ([`describe_rename`]). The rename gathers what each is decided
+//! errno it is refused with ([`plan_rename`], the one writer of a [`RenamePlan`]); and what
+//! the rename is recorded as ([`describe_rename`]). The rename gathers what each is decided
 //! from, and performs it.
 
 use std::path::PathBuf;
@@ -90,24 +89,6 @@ pub(super) enum BackingDirectoryMove {
     Moved,
     /// Nothing: a OneDrive file that is not downloaded, a directory no download made yet.
     NothingThere,
-}
-
-/// What is removed from the new place in the backing directory before the move, by its
-/// kind; `None` when nothing is. `held_at_new_place` is the kind of what the backing
-/// directory holds there, and `moved` whether it holds anything at the old place.
-///
-/// - Nothing there: nothing is removed.
-/// - A directory there: removed, which it is only when it is empty — a directory never
-///   replaces one in the rename itself.
-/// - A file there, and a file moves over it: nothing, the rename itself replaces it.
-/// - A file there, and nothing moves in the backing directory: removed, or it would stay
-///   as the content of what moved to its name.
-pub(super) fn choose_removed_at_new_place(held_at_new_place: Option<EntryKind>, moved: BackingDirectoryMove) -> Option<EntryKind> {
-    match (held_at_new_place?, moved) {
-        (EntryKind::Directory, _) => Some(EntryKind::Directory),
-        (EntryKind::File, BackingDirectoryMove::NothingThere) => Some(EntryKind::File),
-        (EntryKind::File, BackingDirectoryMove::Moved) => None,
-    }
 }
 
 /// What the rename of `plan` is recorded as. `write_state` is whether a program holds what

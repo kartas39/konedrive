@@ -1,18 +1,28 @@
-//! A file or a directory a program renames or moves inside the folder, in five steps: what
+//! A file or a directory a program renames or moves inside the folder, in six steps: what
 //! stands at the two places is looked up; the plan gives a [`RenamePlan`], or the errno of a
-//! refusal ([`plan_rename`]); the backing directory is renamed ([`BackingDirectoryMove`]);
-//! the rename is recorded as the event [`describe_rename`] gives; the node takes its new
-//! place. Every decision is in [`rename_plan`](super::rename_plan): here are the lookups,
-//! the disk and the record.
+//! refusal ([`plan_rename`]); the backing directory is renamed ([`BackingDirectoryMove`]),
+//! and what it held at the new place is kept at the old one meanwhile; the rename is
+//! recorded as the event [`describe_rename`] gives; what was kept is removed; the node takes
+//! its new place. Every decision is in [`rename_plan`](super::rename_plan): here are the
+//! lookups, the disk and the record.
+//!
+//! What the backing directory holds at the new place is not removed before the rename is
+//! recorded: a rename that cannot be recorded is undone whole, and what it would have
+//! replaced is back at its place. Until then it is kept at the old place, which the move
+//! frees — the two are exchanged in one step when both places hold something — so that no
+//! name of the daemon's own is made for it, and nothing but the two names of the rename is
+//! touched.
 //!
 //! What is in OneDrive is at its new place at once, and is moved in OneDrive by the outbox.
 //! A local-only entry is uploaded from its new place, or no longer uploaded when that place
 //! is ignored; what is in OneDrive cannot be moved to such a place (`EXDEV`). A local-only
 //! file renamed over a OneDrive file is that file's new content, and its node that file's.
 
+use std::path::Path;
+
 use fuser::Errno;
 
-use super::rename_plan::{choose_removed_at_new_place, describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
+use super::rename_plan::{describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
 use super::WriteOperations;
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::directory_contents::DirectoryEntry;
@@ -32,17 +42,15 @@ impl WriteOperations {
         };
         let node_id = self.node_resolver.assign_node_id(&plan.moved_entry, parent);
         let write_state = self.find_write_state(node_id);
-        let moved = self.move_in_backing_directory(&plan)?;
+        let (moved, displaced) = (self.find_backing_directory_move(&plan), self.find_displaced_kind(&plan));
+        self.move_in_backing_directory(&plan, moved, displaced)?;
         let to = plan.to.path();
         // What the record is decided from, gathered now that the backing directory moved.
         let handle_at_new_place = (moved == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_file_handle(&to)).flatten();
         let event = describe_rename(&plan, write_state, handle_at_new_place, self.collect_uploaded_entries(&plan));
-        let undo = || {
-            if moved == BackingDirectoryMove::Moved {
-                let _ = self.backing_directory.rename(&to, &plan.from);
-            }
-        };
+        let undo = || self.move_back_in_backing_directory(&plan, moved, displaced);
         self.record_or_undo(event, format_args!("the move of {} to {}", plan.from.display(), to.display()), undo)?;
+        self.remove_displaced(&plan, displaced);
         self.move_node(&plan, node_id, new_parent);
         Ok(())
     }
@@ -70,22 +78,68 @@ impl WriteOperations {
         }
     }
 
-    /// The backing directory first: whatever it holds at the old place moves, and what was
-    /// at the new place is removed ([`choose_removed_at_new_place`]).
-    fn move_in_backing_directory(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
+    /// Whether the backing directory holds anything at the old place, which moves with the
+    /// rename.
+    fn find_backing_directory_move(&self, plan: &RenamePlan) -> BackingDirectoryMove {
+        match self.backing_directory.read_metadata(&plan.from) {
+            Some(_) => BackingDirectoryMove::Moved,
+            None => BackingDirectoryMove::NothingThere,
+        }
+    }
+
+    /// The kind of what the backing directory holds at the new place, and the rename
+    /// displaces; `None` when it holds nothing there. A directory that holds something is
+    /// not displaced either: no directory replaces it, as the filesystem refuses, and it
+    /// stays where it is.
+    fn find_displaced_kind(&self, plan: &RenamePlan) -> Option<EntryKind> {
+        let to = plan.to.path();
+        match self.backing_directory.read_metadata(&to)?.is_dir() {
+            true => self.backing_directory.list_directory(&to).next().is_none().then_some(EntryKind::Directory),
+            false => Some(EntryKind::File),
+        }
+    }
+
+    /// The backing directory first: whatever it holds at the old place (`moved`) moves to
+    /// the new one, and what it holds there (`displaced`) is kept at the old place until the
+    /// rename is recorded — exchanged with what moves, or moved there alone when nothing
+    /// else moves.
+    fn move_in_backing_directory(&self, plan: &RenamePlan, moved: BackingDirectoryMove, displaced: Option<EntryKind>) -> Result<(), Errno> {
         let to = plan.to.path();
         self.directory_contents.make_marked_directories(&plan.to.directory.path).map_err(|e| to_errno(&e))?;
-        let held_at_new_place = self.backing_directory.read_metadata(&to).map(|metadata| if metadata.is_dir() { EntryKind::Directory } else { EntryKind::File });
-        let moved = if self.backing_directory.read_metadata(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
-        let _ = match choose_removed_at_new_place(held_at_new_place, moved) {
-            Some(EntryKind::Directory) => self.backing_directory.remove_dir(&to),
-            Some(EntryKind::File) => self.backing_directory.remove_file(&to),
+        match (moved, displaced) {
+            (BackingDirectoryMove::Moved, Some(_)) => self.backing_directory.exchange(&plan.from, &to),
+            (BackingDirectoryMove::Moved, None) => self.backing_directory.rename(&plan.from, &to),
+            // The directory of the old place need not be there: nothing of it was.
+            (BackingDirectoryMove::NothingThere, Some(_)) => {
+                let made = self.directory_contents.make_marked_directories(plan.from.parent().unwrap_or(Path::new("")));
+                made.and_then(|()| self.backing_directory.rename(&to, &plan.from))
+            }
+            (BackingDirectoryMove::NothingThere, None) => Ok(()),
+        }
+        .map_err(|e| to_errno(&e))
+    }
+
+    /// Takes back [`move_in_backing_directory`](Self::move_in_backing_directory), for a
+    /// rename that could not be recorded: what moved is at the old place again, and what
+    /// was displaced at the new one.
+    fn move_back_in_backing_directory(&self, plan: &RenamePlan, moved: BackingDirectoryMove, displaced: Option<EntryKind>) {
+        let to = plan.to.path();
+        let _ = match (moved, displaced) {
+            (BackingDirectoryMove::Moved, Some(_)) => self.backing_directory.exchange(&plan.from, &to),
+            (BackingDirectoryMove::Moved, None) => self.backing_directory.rename(&to, &plan.from),
+            (BackingDirectoryMove::NothingThere, Some(_)) => self.backing_directory.rename(&plan.from, &to),
+            (BackingDirectoryMove::NothingThere, None) => Ok(()),
+        };
+    }
+
+    /// The rename is recorded: what it displaced, which was kept at the old place, is
+    /// removed.
+    fn remove_displaced(&self, plan: &RenamePlan, displaced: Option<EntryKind>) {
+        let _ = match displaced {
+            Some(EntryKind::Directory) => self.backing_directory.remove_dir(&plan.from),
+            Some(EntryKind::File) => self.backing_directory.remove_file(&plan.from),
             None => Ok(()),
         };
-        if moved == BackingDirectoryMove::Moved {
-            self.backing_directory.rename(&plan.from, &to).map_err(|e| to_errno(&e))?;
-        }
-        Ok(moved)
     }
 
     /// What a walk of the local-only directory that moved finds at its new place, to be

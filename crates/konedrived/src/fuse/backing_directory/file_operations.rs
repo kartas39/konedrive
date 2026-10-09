@@ -3,6 +3,7 @@
 
 use std::fs::{self, DirEntry, File, OpenOptions};
 use std::io;
+use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -39,6 +40,12 @@ impl BackingDirectory {
 
     pub(in crate::fuse) fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::rename(self.resolve_path(from), self.resolve_path(to))
+    }
+
+    /// Exchanges what is at `from` and what is at `to`, both of which are there, in one
+    /// step: each is at the other's path afterwards (`RENAME_EXCHANGE`).
+    pub(in crate::fuse) fn exchange(&self, from: &Path, to: &Path) -> io::Result<()> {
+        nix::fcntl::renameat2(self.descriptor.as_fd(), from, self.descriptor.as_fd(), to, nix::fcntl::RenameFlags::RENAME_EXCHANGE).map_err(io::Error::from)
     }
 
     /// The file at `rel`, open to read.

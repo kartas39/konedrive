@@ -61,3 +61,18 @@ fn a_file_without_a_write_bit_is_given_its_owners() {
     backing_directory.grant_write_bit(Path::new("a.txt")).unwrap();
     assert_eq!(backing_directory.read_metadata(Path::new("a.txt")).unwrap().permissions().mode() & 0o777, 0o644);
 }
+
+/// Neither replaces the other: each is at the other's path, a file or a directory.
+#[test]
+fn two_entries_are_exchanged_in_one_step() {
+    let (dir, backing_directory) = empty_backing_directory();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    fs::write(dir.path().join("docs/a.txt"), b"a").unwrap();
+    fs::write(dir.path().join("b.txt"), b"b").unwrap();
+    backing_directory.exchange(Path::new("docs/a.txt"), Path::new("b.txt")).unwrap();
+    assert_eq!((fs::read(dir.path().join("docs/a.txt")).unwrap(), fs::read(dir.path().join("b.txt")).unwrap()), (b"b".to_vec(), b"a".to_vec()));
+    fs::create_dir(dir.path().join("empty")).unwrap();
+    backing_directory.exchange(Path::new("docs"), Path::new("empty")).unwrap();
+    assert!(dir.path().join("empty/a.txt").is_file() && fs::read_dir(dir.path().join("docs")).unwrap().next().is_none());
+    assert_eq!(backing_directory.exchange(Path::new("none"), Path::new("b.txt")).unwrap_err().kind(), ErrorKind::NotFound);
+}
