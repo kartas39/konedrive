@@ -15,7 +15,7 @@ use super::WriteOperations;
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 use crate::fuse::directory_contents::{EntryState, FileSyncState};
 use crate::fuse::local_only_entries::folder_place;
-use crate::fuse::read::OpenFile;
+use crate::fuse::open_files::OpenFile;
 use crate::fuse::shared::errno;
 
 impl WriteOperations {
@@ -46,7 +46,7 @@ impl WriteOperations {
                 return Err(e);
             }
         }
-        Ok(OpenFile { ino: node_id, id: entry.onedrive_id().map(str::to_owned), rel, copy: Some(Arc::new(backing_file)), writes: true })
+        Ok(OpenFile { node_id, onedrive_id: entry.onedrive_id().map(str::to_owned), rel, file_on_disk: Some(Arc::new(backing_file)), may_write: true })
     }
 
     /// The last writer of the node `node_id` closed it: its content is ready to be sent when

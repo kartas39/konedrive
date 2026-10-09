@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicI32, AtomicU64};
+use std::sync::atomic::AtomicI32;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,7 +33,7 @@ use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
 use super::pins::Pins;
 use super::range_readers::RangeReaders;
-use super::read::OpenFile;
+use super::open_files::OpenFiles;
 use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
@@ -54,12 +54,8 @@ pub(super) struct Shared {
     pub(super) download_states: Arc<DownloadStates>,
     /// What downloads a file whole ([`super::file_download`]).
     pub(super) file_downloader: Arc<FileDownloader>,
-    /// What programs hold open, by the handle the kernel was given.
-    pub(super) handles: Mutex<HashMap<u64, OpenFile>>,
-    pub(super) next_handle: AtomicU64,
-    /// What each open directory held when it was first listed, by handle: a program that
-    /// reads a directory in parts reads one listing, whatever changes meanwhile.
-    pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::DirectoryEntry>>>>,
+    /// What programs hold open ([`super::open_files`]).
+    pub(super) open_files: Arc<OpenFiles>,
     /// The files being read as ranges, each with its slot of the pool
     /// ([`super::range_readers`]).
     pub(super) range_readers: Arc<RangeReaders>,

@@ -4,7 +4,6 @@
 
 use std::ffi::OsStr;
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -14,21 +13,12 @@ use tokio::sync::oneshot;
 
 use super::Requests;
 use crate::fuse::attributes::{attributes, TTL};
-use crate::fuse::read::OpenFile;
 use crate::fuse::shared::{errno, Shared};
 
 /// Has `job` run on the recorder's thread.
 pub(super) fn on_recorder(s: &Arc<Shared>, job: impl FnOnce(&Arc<Shared>) + Send + 'static) {
     let shared = Arc::clone(s);
     s.outbox_recorder.run(move || job(&shared));
-}
-
-/// Keeps `opened`, a file opened to be written, in the table of open files: the handle the
-/// program is given.
-fn keep_handle(s: &Shared, opened: OpenFile) -> u64 {
-    let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
-    crate::panic::lock(&s.handles).insert(fh, opened);
-    fh
 }
 
 /// Has `job` run on the recorder's thread once the content of node `ino` is in the folder,
@@ -63,7 +53,7 @@ impl Requests {
             move |s| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
                 match s.write_operations.open_to_write(ino.0, truncate) {
-                    Ok(opened) => reply.opened(FileHandle(keep_handle(s, opened)), FopenFlags::empty()),
+                    Ok(opened) => reply.opened(FileHandle(s.open_files.add_file(opened)), FopenFlags::empty()),
                     Err(e) => reply.error(e),
                 }
             },
@@ -97,7 +87,7 @@ impl Requests {
         on_recorder(&self.0, move |s| match s.write_operations.make(parent.0, &name, false, true) {
             Ok((entry, opened)) => {
                 let ino = s.node_lookup.assign_node_id(&entry, parent.0);
-                let fh = opened.map_or(0, |opened| keep_handle(s, opened));
+                let fh = opened.map_or(0, |opened| s.open_files.add_file(opened));
                 reply.created(&TTL, &attributes(ino, &s.access_mode, &entry), Generation(0), FileHandle(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
@@ -134,7 +124,7 @@ impl Requests {
     /// mount. The outbox holds the file since it was opened.
     pub(super) fn written(&self, fh: FileHandle, offset: u64, data: &[u8], reply: ReplyWrite) {
         let s = &self.0;
-        let Some((ino, file)) = crate::panic::lock(&s.handles).get(&fh.0).filter(|h| h.writes).and_then(|h| Some((h.ino, h.copy.clone()?))) else {
+        let Some((ino, file)) = s.open_files.find_file(fh.0).filter(|open| open.may_write).and_then(|open| Some((open.node_id, open.file_on_disk?))) else {
             return reply.error(Errno::EBADF);
         };
         s.open_writers.mark_written(ino);
@@ -194,7 +184,7 @@ impl Requests {
     }
 
     pub(super) fn synced(&self, fh: FileHandle, reply: ReplyEmpty) {
-        let file = crate::panic::lock(&self.0.handles).get(&fh.0).and_then(|h| h.copy.clone().filter(|_| h.writes));
+        let file = self.0.open_files.find_file(fh.0).filter(|open| open.may_write).and_then(|open| open.file_on_disk);
         match file.map(|file| file.sync_all()) {
             Some(Err(e)) => reply.error(errno(&e)),
             _ => reply.ok(),

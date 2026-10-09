@@ -94,7 +94,7 @@ impl WriteOperations {
             return Ok(None);
         }
         if let Some(target) = &target {
-            let holds = || !self.directory_contents.list_entries(&Directory { id: target.onedrive_id().map(str::to_owned), rel: to.clone() }).is_empty();
+            let holds = || !self.directory_contents.list_entry_sources(&Directory { id: target.onedrive_id().map(str::to_owned), rel: to.clone() }).is_empty();
             match (&source.state, &target.state) {
                 _ if keep => return Err(Errno::EEXIST),
                 (EntryState::File(_), EntryState::Directory(_)) => return Err(Errno::EISDIR),

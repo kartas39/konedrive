@@ -22,7 +22,7 @@ fn a_file_made_is_on_disk_local_only_and_waits_in_the_outbox_to_be_created() {
 fn a_file_created_open_is_handed_back_and_waits_for_its_writer() {
     let f = folder(Vec::new());
     let opened = f.ops.make(1, "new.txt", false, true).unwrap().1.unwrap();
-    assert!(f.open_writers.is_open(opened.ino) && opened.id.is_none() && opened.rel == at("new.txt") && opened.writes && opened.copy.is_some());
+    assert!(f.open_writers.is_open(opened.node_id) && opened.onedrive_id.is_none() && opened.rel == at("new.txt") && opened.may_write && opened.file_on_disk.is_some());
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
 }
 

@@ -18,7 +18,8 @@
 //!   below a row with their sync states ([`DirectoryContents::files_below`]), the OneDrive
 //!   file the user just removed from a path ([`DirectoryContents::find_file_removed_at`]);
 //! - [`sync_states`]: the sync state of a file and of a directory, and a directory entry;
-//! - [`directory_entries`]: the entry a directory holds under a name, and all its entries;
+//! - [`directory_entries`]: the entry a directory holds under a name, and what all its
+//!   entries are made from;
 //! - [`entry_paths`]: the path the mount shows a OneDrive id at, and the entry at a path.
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ mod directory_entries;
 mod entry_paths;
 mod sync_states;
 
+pub(super) use directory_entries::EntrySource;
 pub(super) use sync_states::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 
 pub(super) struct DirectoryContents {

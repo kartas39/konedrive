@@ -13,7 +13,8 @@ use super::Requests;
 use crate::fuse::announce::Told;
 use crate::fuse::attributes::{attributes, TTL};
 use crate::fuse::directory::Directory;
-use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
+use crate::fuse::backing_directory::EntryKind;
+use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
 use crate::fuse::download_states::to_hydration_state;
 use crate::fuse::shared::errno;
 
@@ -68,41 +69,47 @@ impl Requests {
         }
     }
 
-    /// What the open directory `fh` holds: listed at its first read, and the same for every
-    /// part of the listing after it.
-    fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<DirectoryEntry>>)> {
+    /// The directory of the node `ino`, and what the entries of the open directory `fh` are
+    /// made from: listed when it is read from its start, and the same for every part of the
+    /// reading after it.
+    fn entry_sources(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<EntrySource>>)> {
         let s = &self.0;
         let dir = s.node_lookup.find_directory(ino.0)?;
-        let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
-        let entries = kept.unwrap_or_else(|| {
-            let entries = Arc::new(s.directory_contents.list_entries(&dir));
-            crate::panic::lock(&s.listings).insert(fh.0, Arc::clone(&entries));
-            entries
+        let kept = s.open_files.find_entry_sources(fh.0).filter(|_| offset > 0);
+        let entry_sources = kept.unwrap_or_else(|| {
+            let entry_sources = Arc::new(s.directory_contents.list_entry_sources(&dir));
+            s.open_files.keep_entry_sources(fh.0, Arc::clone(&entry_sources));
+            entry_sources
         });
-        Some((dir, entries))
+        Some((dir, entry_sources))
     }
 
+    /// The names and the kinds: from the store alone for what is in OneDrive, with no sync
+    /// state worked out.
     pub(super) fn listed(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
-        let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
-        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = self.0.node_lookup.assign_node_id(entry, ino.0);
-            let kind = match entry.state {
-                EntryState::Directory(_) => FileType::Directory,
-                EntryState::File(_) => FileType::RegularFile,
+        let Some((_, entry_sources)) = self.entry_sources(ino, fh, offset) else { return reply.ok() };
+        for (i, source) in entry_sources.iter().enumerate().skip(offset as usize) {
+            let child = self.0.node_lookup.assign_node_id_of_source(source, ino.0);
+            let kind = match source.kind() {
+                EntryKind::Directory => FileType::Directory,
+                EntryKind::File => FileType::RegularFile,
             };
-            if reply.add(INodeNo(child), i as u64 + 1, kind, &entry.name) {
+            if reply.add(INodeNo(child), i as u64 + 1, kind, source.name()) {
                 break;
             }
         }
         reply.ok();
     }
 
+    /// The names with their attributes: the entry of each name that goes into this reply is
+    /// made from its source, and of no other.
     pub(super) fn listed_plus(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
         let s = &self.0;
-        let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
-        for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = s.node_lookup.assign_node_id(entry, ino.0);
-            let attr = self.attributes_of(entry, child);
+        let Some((dir, entry_sources)) = self.entry_sources(ino, fh, offset) else { return reply.ok() };
+        for (i, source) in entry_sources.iter().enumerate().skip(offset as usize) {
+            let entry = s.directory_contents.describe_source(source, &dir);
+            let child = s.node_lookup.assign_node_id(&entry, ino.0);
+            let attr = self.attributes_of(&entry, child);
             if reply.add(INodeNo(child), i as u64 + 1, &entry.name, &TTL, &attr, Generation(0)) {
                 break;
             }
@@ -111,12 +118,11 @@ impl Requests {
     }
 
     pub(super) fn directory_opened(&self, reply: ReplyOpen) {
-        let fh = self.0.next_handle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        reply.opened(FileHandle(fh), fuser::FopenFlags::empty());
+        reply.opened(FileHandle(self.0.open_files.add_directory()), fuser::FopenFlags::empty());
     }
 
     pub(super) fn directory_closed(&self, fh: FileHandle, reply: ReplyEmpty) {
-        crate::panic::lock(&self.0.listings).remove(&fh.0);
+        self.0.open_files.remove_directory(fh.0);
         reply.ok();
     }
 

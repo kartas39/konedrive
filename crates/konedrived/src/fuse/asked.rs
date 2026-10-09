@@ -118,8 +118,10 @@ impl Mount {
                     FileSyncState::Synced(file, _) => file,
                 };
                 // What a pin keeps, a download is filling, or a program holds open for
-                // writing, stays.
-                if s.open_for_writing(&file.id) || s.pins.pinned_by(&file).is_some() || s.download_states.is_downloading(&file.id) {
+                // writing, stays. The sync state says the last too while the outbox holds
+                // the file's row; the open files say it also once that row is dropped under
+                // a writer, by a forced switch to read-only.
+                if s.open_files.is_open_for_writing(&file.id) || s.pins.pinned_by(&file).is_some() || s.download_states.is_downloading(&file.id) {
                     freed.kept += 1;
                     continue;
                 }
@@ -153,7 +155,7 @@ impl Mount {
             EntryState::File(file) => (to_hydration_state(file, s.download_states.is_downloading(&row.id)), matches!(file, FileSyncState::ModifiedHere(..))),
             EntryState::Directory(_) => (None, false),
         };
-        let changed = modified_here || s.open_for_writing(&row.id);
+        let changed = modified_here || s.open_files.is_open_for_writing(&row.id);
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
     }
 
@@ -183,14 +185,5 @@ impl Mount {
         let s = &self.shared;
         let copies = s.directory_contents.files_below(&row).into_iter().filter_map(|(file, _)| file.downloaded_copy().copied());
         Ok(copies.fold((0, 0), |(files, bytes), copy| (files + 1, bytes + copy.blocks * 512)))
-    }
-}
-
-impl super::shared::Shared {
-    /// Whether a program holds the OneDrive file `id` open for writing now. Its sync state
-    /// says so too while the outbox holds its row; this holds also once that row is dropped
-    /// under a writer, by a forced switch to read-only.
-    fn open_for_writing(&self, id: &str) -> bool {
-        crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
     }
 }

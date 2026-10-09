@@ -6,7 +6,7 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
-use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
+use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
 use crate::folder::disk::HOLDING;
 use crate::fuse::backing_directory::{BackingDirectory, EntryKind};
 use crate::fuse::directory::Directory;
@@ -72,7 +72,7 @@ fn docs() -> Directory {
 }
 
 fn names(contents: &DirectoryContents, directory: &Directory) -> Vec<String> {
-    let mut names: Vec<String> = contents.list_entries(directory).into_iter().map(|entry| entry.name).collect();
+    let mut names: Vec<String> = contents.list_entry_sources(directory).iter().map(|source| source.name().to_owned()).collect();
     names.sort();
     names
 }
@@ -276,6 +276,40 @@ fn what_is_the_daemons_or_onedrives_is_not_a_local_only_entry() {
     // An id the store does not have yet: its upload is being committed.
     assert!(contents.find_local_only(&root, "sent.txt").is_some());
     assert_eq!(names(&contents, &root), ["a.txt", "b.txt", "docs", "sent.txt"]);
+}
+
+/// A directory is listed from the store's rows alone: what the backing directory holds of a
+/// OneDrive file changes nothing of what is listed, and the sync state comes only once the
+/// entry is made from its source.
+#[test]
+fn a_listing_of_onedrive_files_is_the_stores_rows_whatever_the_disk_holds_of_them() {
+    let (dir, contents) = directory_contents(Vec::new());
+    let root = contents.root_directory();
+    let listed = |contents: &DirectoryContents| {
+        let mut sources = contents.list_entry_sources(&root);
+        sources.sort_by(|a, b| a.name().cmp(b.name()));
+        sources
+    };
+    let rows = [contents.row("A").unwrap(), contents.row("B").unwrap(), contents.row("D").unwrap()].map(EntrySource::InOneDrive);
+    assert_eq!(listed(&contents), rows);
+    download(dir.path(), &contents, "a.txt", "A", b"whole");
+    assert_eq!(listed(&contents), rows);
+    assert_eq!(listed(&contents).iter().map(EntrySource::kind).collect::<Vec<_>>(), [EntryKind::File, EntryKind::File, EntryKind::Directory]);
+    // The entry made from a source has the state the disk gives it.
+    let described = contents.describe_source(&listed(&contents)[0], &root);
+    assert!(matches!(described.state, EntryState::File(FileSyncState::Synced(row, copy)) if row.id == "A" && copy.size == 5));
+}
+
+/// A local-only entry is listed as the backing directory has it, and its entry is that.
+#[test]
+fn a_listed_local_only_entry_carries_what_the_disk_says_of_it() {
+    let (dir, contents) = directory_contents(Vec::new());
+    fs::write(dir.path().join("own.txt"), b"mine").unwrap();
+    let root = contents.root_directory();
+    let sources = contents.list_entry_sources(&root);
+    let own = sources.iter().find(|source| source.name() == "own.txt").unwrap();
+    assert!(matches!(own, EntrySource::LocalOnly(entry) if entry.on_disk.metadata.size == 4) && own.kind() == EntryKind::File);
+    assert!(matches!(contents.describe_source(own, &root).state, EntryState::File(FileSyncState::LocalOnly(_))));
 }
 
 #[test]

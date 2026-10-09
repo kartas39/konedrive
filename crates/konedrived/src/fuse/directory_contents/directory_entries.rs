@@ -6,6 +6,11 @@
 //! outbox. It is shown where it lies, and is identified by its file handle. A file or
 //! directory of OneDrive is shown where the store has it, or where the user moved it; a name
 //! both have is OneDrive's.
+//!
+//! A directory is listed as [`EntrySource`]s: for what is in OneDrive the store's row alone,
+//! which says the name and the kind without the backing directory being read. The entry with
+//! its sync state is made from a source only when it is asked for
+//! ([`DirectoryContents::describe_source`]).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -14,10 +19,41 @@ use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState};
 use crate::folder::disk::daemon_owned;
+use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::LocalOnlyEntry;
 use crate::fuse::directory::Directory;
 use crate::fuse::local_only_entries::folder_place;
 use crate::fuse::unsent_changes::UnsentChanges;
+
+/// What a directory entry is made from: the store's row of a file or directory of OneDrive,
+/// under the name the mount shows it by, or a local-only entry of the backing directory. It
+/// says the name and the kind; the sync state is worked out from it, when it is asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::fuse) enum EntrySource {
+    /// A file or directory of OneDrive: nothing of it was read from the backing directory.
+    InOneDrive(Row),
+    /// A file or directory made here, as the backing directory has it.
+    LocalOnly(LocalOnlyEntry),
+}
+
+impl EntrySource {
+    /// The name the mount shows it by.
+    pub(in crate::fuse) fn name(&self) -> &str {
+        match self {
+            EntrySource::InOneDrive(row) => &row.name,
+            EntrySource::LocalOnly(entry) => &entry.place.name,
+        }
+    }
+
+    /// Whether it is a file or a directory.
+    pub(in crate::fuse) fn kind(&self) -> EntryKind {
+        match self {
+            EntrySource::InOneDrive(Row { kind: Kind::Folder, .. }) => EntryKind::Directory,
+            EntrySource::InOneDrive(Row { kind: Kind::File, .. }) => EntryKind::File,
+            EntrySource::LocalOnly(entry) => entry.on_disk.metadata.kind,
+        }
+    }
+}
 
 /// Whether a row the store has in a directory is still shown there, for the unsent changes.
 fn stays(row: &Row, unsent_changes: &UnsentChanges) -> bool {
@@ -50,14 +86,10 @@ impl DirectoryContents {
     /// The entry of `row`, a row of the store under the name the mount shows it by, at the
     /// path `rel`: a directory, or a file with its sync state.
     pub(in crate::fuse) fn describe(&self, row: Row, rel: &Path) -> DirectoryEntry {
-        self.describe_for(row, rel, &self.unsent_changes())
-    }
-
-    fn describe_for(&self, row: Row, rel: &Path, unsent_changes: &UnsentChanges) -> DirectoryEntry {
         let name = row.name.clone();
         let state = match row.kind {
             Kind::Folder => EntryState::Directory(DirectorySyncState::Synced(row)),
-            Kind::File => EntryState::File(self.file_sync_state(row, rel, unsent_changes)),
+            Kind::File => EntryState::File(self.file_sync_state(row, rel, &self.unsent_changes())),
         };
         DirectoryEntry { name, state }
     }
@@ -90,21 +122,28 @@ impl DirectoryContents {
         }
     }
 
-    /// Every entry `directory` holds.
-    pub(in crate::fuse) fn list_entries(&self, directory: &Directory) -> Vec<DirectoryEntry> {
+    /// The entry made from `source`, which `directory` holds: of what is in OneDrive, a
+    /// directory, or a file with its sync state as the backing directory has its copy now.
+    pub(in crate::fuse) fn describe_source(&self, source: &EntrySource, directory: &Directory) -> DirectoryEntry {
+        match source {
+            EntrySource::InOneDrive(row) => self.describe(row.clone(), &directory.rel.join(&row.name)),
+            EntrySource::LocalOnly(entry) => DirectoryEntry::from_local_only(entry.clone()),
+        }
+    }
+
+    /// What every entry `directory` holds is made from: the names and the kinds. The backing
+    /// directory is read only for what the store does not have, the local-only entries.
+    pub(in crate::fuse) fn list_entry_sources(&self, directory: &Directory) -> Vec<EntrySource> {
         let unsent_changes = self.unsent_changes();
         let stored = directory.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
         let mut rows: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (to, _))| directory.matches(to)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
         let moved_here: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
         rows.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
-        let mut all: Vec<DirectoryEntry> = rows.into_iter().map(|row| {
-            let rel = directory.rel.join(&row.name);
-            self.describe_for(row, &rel, &unsent_changes)
-        }).collect();
+        let mut all: Vec<EntrySource> = rows.into_iter().map(EntrySource::InOneDrive).collect();
         for name in self.backing_directory.list(&directory.rel).map(|e| e.file_name()) {
             if let Some(name) = name.to_str().filter(|name| !taken.contains(*name)) {
-                all.extend(self.find_local_only(directory, name).map(DirectoryEntry::from_local_only));
+                all.extend(self.find_local_only(directory, name).map(EntrySource::LocalOnly));
             }
         }
         all

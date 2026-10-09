@@ -18,7 +18,7 @@ use konedrive_fs::handle::FileHandle;
 use super::backing_directory::{DiskEntry, EntryKind};
 use super::detections::LocalOnlyEntry;
 use super::directory::Directory;
-use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
+use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
 use super::local_only_entries::folder_place;
 use super::node_table::{NodeKey, NodeTable};
 
@@ -52,15 +52,32 @@ impl NodeLookup {
     /// new one. A local-only entry that got into OneDrive since the kernel was told of it
     /// keeps its node id.
     pub(super) fn assign_node_id(&self, entry: &DirectoryEntry, parent: u64) -> u64 {
+        self.assign_node_id_of_key(key_of(entry), &entry.name, parent)
+    }
+
+    /// The node id of what `source` is the source of, which is in the directory node
+    /// `parent`: the node id its entry has ([`assign_node_id`](Self::assign_node_id)), given
+    /// without the entry being made.
+    pub(super) fn assign_node_id_of_source(&self, source: &EntrySource, parent: u64) -> u64 {
+        let key = match source {
+            EntrySource::InOneDrive(row) => NodeKey::InOneDrive(row.id.clone()),
+            EntrySource::LocalOnly(local_only) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
+        };
+        self.assign_node_id_of_key(key, source.name(), parent)
+    }
+
+    /// The node id of `key`, which is `name` in the directory node `parent`. A OneDrive id
+    /// the kernel was not told of yet is looked for on disk once, by its path: a local-only
+    /// entry that got into OneDrive keeps the node id it had.
+    fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: u64) -> u64 {
         let mut node_table = crate::panic::lock(&self.node_table);
-        let key = key_of(entry);
         if matches!(key, NodeKey::InOneDrive(_)) && !node_table.node_ids.contains_key(&key) {
-            let on_disk = node_table.path_of(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(&entry.name)));
+            let on_disk = node_table.path_of(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
             if let Some(handle) = on_disk {
                 node_table.rekey(&NodeKey::LocalOnly(handle), key.clone());
             }
         }
-        node_table.assign(key, parent, &entry.name)
+        node_table.assign(key, parent, name)
     }
 
     /// What the node `node_id`, which is not the root, stands for now.

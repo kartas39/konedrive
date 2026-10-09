@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use fuser::{Config, MountOption};
@@ -130,9 +130,7 @@ impl Mount {
                     range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
                     download_states,
                     file_downloader,
-                    handles: Mutex::default(),
-                    next_handle: AtomicU64::new(1),
-                    listings: Mutex::default(),
+                    open_files: Arc::default(),
                     reads: Mutex::default(),
                     pins,
                     announcer: AtomicI32::new(0),

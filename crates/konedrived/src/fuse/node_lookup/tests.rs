@@ -61,6 +61,19 @@ fn the_root_is_node_one_and_a_directory() {
     assert!(node_lookup.find_entry(99).is_none() && node_lookup.find_parent(1).is_none());
 }
 
+/// A directory listed by its sources gives each name the node id its entry has.
+#[test]
+fn the_source_of_an_entry_gets_the_node_id_of_the_entry() {
+    let (dir, contents, node_lookup) = node_lookup(Vec::new());
+    fs::write(dir.path().join("own.txt"), b"mine").unwrap();
+    let root = contents.root_directory();
+    for source in contents.list_entry_sources(&root) {
+        let node_id = node_lookup.assign_node_id_of_source(&source, 1);
+        assert_eq!(node_lookup.assign_node_id(&contents.describe_source(&source, &root), 1), node_id, "{}", source.name());
+        assert!(matches!(node_lookup.find_entry(node_id), Some((entry, _)) if entry.name == source.name()));
+    }
+}
+
 /// The entry a node id stands for comes with its sync state, as the directory contents work
 /// it out.
 #[test]

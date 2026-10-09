@@ -16,7 +16,7 @@
 //! 4. the node ids, through the node lookup.
 //!
 //! An operation never touches the table of open files: one that opens a file returns it
-//! ([`OpenFile`](super::read::OpenFile)), and the request that asked keeps it.
+//! ([`OpenFile`](super::open_files::OpenFile)), and the request that asked keeps it.
 //!
 //! - [`make`]: a file or directory made;
 //! - [`remove`]: one removed;

@@ -2,7 +2,6 @@
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use fuser::{Errno, FileHandle, FopenFlags, INodeNo, OpenFlags, ReplyData, ReplyEmpty, ReplyOpen, Request};
@@ -10,7 +9,7 @@ use konedrive_graph::pool::Class;
 
 use super::{caller, Requests};
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::read::OpenFile;
+use crate::fuse::open_files::OpenFile;
 use crate::fuse::shared::{errno, Shared};
 use crate::fuse::open_writers::AfterClose;
 
@@ -48,8 +47,7 @@ impl Requests {
             None
         };
         tracing::debug!("open of {} by {}: flags {:#x}, {}", rel.display(), caller(req), flags.0, if copy.is_some() { "on disk" } else { "not downloaded" });
-        let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
-        crate::panic::lock(&s.handles).insert(fh, OpenFile { ino: ino.0, id: entry.onedrive_id().map(str::to_owned), rel, copy, writes: false });
+        let fh = s.open_files.add_file(OpenFile { node_id: ino.0, onedrive_id: entry.onedrive_id().map(str::to_owned), rel, file_on_disk: copy, may_write: false });
         reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
@@ -58,9 +56,7 @@ impl Requests {
     /// starts the download of the whole file, which no read waits for.
     pub(super) fn read(&self, req: &Request, fh: FileHandle, offset: u64, size: u32, reply: ReplyData) {
         let s = &self.0;
-        let Some((id, rel, copy)) = crate::panic::lock(&s.handles).get(&fh.0).map(|h| (h.id.clone(), h.rel.clone(), h.copy.clone())) else {
-            return reply.error(Errno::EBADF);
-        };
+        let Some(OpenFile { onedrive_id: id, rel, file_on_disk: copy, .. }) = s.open_files.find_file(fh.0) else { return reply.error(Errno::EBADF) };
         if let Some(copy) = copy {
             return from_file(&copy, offset, size, reply);
         }
@@ -70,9 +66,7 @@ impl Requests {
             return match s.backing_directory.read(&rel) {
                 Ok(file) => {
                     let file = Arc::new(file);
-                    if let Some(handle) = crate::panic::lock(&s.handles).get_mut(&fh.0) {
-                        handle.copy = Some(Arc::clone(&file));
-                    }
+                    s.open_files.set_file_on_disk(fh.0, Arc::clone(&file));
                     from_file(&file, offset, size, reply)
                 }
                 Err(e) => reply.error(errno(&e)),
@@ -112,15 +106,15 @@ impl Requests {
     /// A handle is closed: the last one that wrote a file leaves its content ready to send.
     pub(super) fn released(&self, fh: FileHandle, reply: ReplyEmpty) {
         let s = &self.0;
-        let closed = crate::panic::lock(&s.handles).remove(&fh.0);
-        if let Some(handle) = closed.filter(|handle| handle.writes) {
-            let changed = match s.open_writers.remove_writer(handle.ino) {
+        let closed = s.open_files.remove_file(fh.0);
+        if let Some(handle) = closed.filter(|handle| handle.may_write) {
+            let changed = match s.open_writers.remove_writer(handle.node_id) {
                 AfterClose::StillOpenElsewhere => None,
                 AfterClose::ContentChanged => Some(true),
                 AfterClose::ContentUntouched => Some(false),
             };
             if let Some(changed) = changed {
-                super::change::on_recorder(s, move |s| s.write_operations.closed(handle.ino, changed));
+                super::change::on_recorder(s, move |s| s.write_operations.closed(handle.node_id, changed));
             }
         }
         reply.ok();

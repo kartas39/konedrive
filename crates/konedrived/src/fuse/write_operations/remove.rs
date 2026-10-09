@@ -23,7 +23,7 @@ impl WriteOperations {
             _ => {}
         }
         let rel = parent_directory.rel.join(name);
-        if directory && !self.directory_contents.list_entries(&Directory { id: entry.onedrive_id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        if directory && !self.directory_contents.list_entry_sources(&Directory { id: entry.onedrive_id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry.state {

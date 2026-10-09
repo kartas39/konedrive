@@ -12,7 +12,7 @@ use crate::fuse::detections::{EntryCreated, LocalOnlyEntry};
 use crate::fuse::directory::Directory;
 use crate::fuse::directory_contents::DirectoryEntry;
 use crate::fuse::local_only_entries::folder_place;
-use crate::fuse::read::OpenFile;
+use crate::fuse::open_files::OpenFile;
 use crate::fuse::shared::errno;
 
 impl WriteOperations {
@@ -58,7 +58,7 @@ impl WriteOperations {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
             self.open_writers.add_writer(node_id, true);
-            OpenFile { ino: node_id, id: removed.map(|base| base.id), rel, copy: Some(Arc::new(file)), writes: true }
+            OpenFile { node_id, onedrive_id: removed.map(|base| base.id), rel, file_on_disk: Some(Arc::new(file)), may_write: true }
         });
         Ok((entry, opened))
     }
