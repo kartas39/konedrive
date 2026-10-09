@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::TreeError;
 
-use super::{delete_item, forget_object, FolderEvent, OutboxBatch, StoreFacts};
+use super::{delete_in_onedrive, forget_local_only, FolderEvent, OutboxBatch, StoreFacts};
 
 /// What a program removed, and from where.
 #[derive(Debug)]
@@ -19,8 +19,8 @@ pub(in crate::fuse) enum EntryRemoved {
 impl FolderEvent for EntryRemoved {
     fn detect(self, facts: &impl StoreFacts, _now: i64) -> Result<OutboxBatch, TreeError> {
         Ok(OutboxBatch::of(match self {
-            EntryRemoved::InOneDrive { id, rel } => delete_item(facts, &id, &rel)?,
-            EntryRemoved::LocalOnly { handle, rel } => forget_object(facts, &handle, &rel)?,
+            EntryRemoved::InOneDrive { id, rel } => delete_in_onedrive(facts, &id, &rel)?,
+            EntryRemoved::LocalOnly { handle, rel } => forget_local_only(facts, &handle, &rel)?,
         }))
     }
 }

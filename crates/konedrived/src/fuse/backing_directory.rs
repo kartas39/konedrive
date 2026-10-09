@@ -37,7 +37,7 @@ pub(super) use file_handles::Object;
 
 /// Where an earlier build built its downloads, inside the folder: taken off when the folder
 /// is opened. A download is built in a file without a name now.
-const OLD_STAGING: &str = ".konedrive-staging";
+const LEGACY_STAGING_DIRECTORY: &str = ".konedrive-staging";
 
 /// The folder under the mount, by the descriptor opened on it before the mount.
 pub(super) struct BackingDirectory {
@@ -50,7 +50,7 @@ impl BackingDirectory {
     /// off first, and a folder an older konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
         clear_stale(folder);
-        if legacy_placeholders::left_by_an_older(folder) {
+        if legacy_placeholders::holds_legacy_placeholders(folder) {
             return Err(legacy_placeholders::refusal(folder));
         }
         // `fusermount3` mounts only where its user may write; the folder was locked when the
@@ -59,9 +59,9 @@ impl BackingDirectory {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o755));
         }
-        let under = BackingDirectory { folder: File::open(folder)? };
-        let _ = fs::remove_dir_all(under.path(Path::new(OLD_STAGING)));
-        Ok(under)
+        let backing_directory = BackingDirectory { folder: File::open(folder)? };
+        let _ = fs::remove_dir_all(backing_directory.path(Path::new(LEGACY_STAGING_DIRECTORY)));
+        Ok(backing_directory)
     }
 
     /// The path of the folder itself, through the descriptor: for what walks the folder without

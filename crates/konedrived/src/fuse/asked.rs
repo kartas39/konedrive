@@ -59,7 +59,7 @@ impl Mount {
     pub(super) fn item(&self, path: &Path) -> Result<(Row, PathBuf), Refused> {
         let rel = self.rel(path)?;
         // What has no item yet is not OneDrive's to download, free or pin.
-        match self.shared.view.resolve(&rel) {
+        match self.shared.directory_contents.find_entry_at(&rel) {
             Some(Entry::Item(row)) => Ok((row, rel)),
             _ => Err(Refused::NoItem),
         }
@@ -71,7 +71,7 @@ impl Mount {
         if row.kind != Kind::File {
             return Err(Refused::NoItem);
         }
-        if self.shared.under.has_copy(&rel, &row.id) {
+        if self.shared.backing_directory.has_downloaded_copy(&rel, &row.id) {
             return Ok(());
         }
         let (tell, told) = oneshot::channel();
@@ -93,7 +93,7 @@ impl Mount {
 
     /// Frees the space of every downloaded file that no pin keeps.
     pub async fn free_up_all(&self) -> Freed {
-        let Some(root) = self.shared.view.root_id().and_then(|id| self.shared.view.row(&id)) else { return Freed::default() };
+        let Some(root) = self.shared.directory_contents.root_id().and_then(|id| self.shared.directory_contents.row(&id)) else { return Freed::default() };
         self.free_below(root).await
     }
 
@@ -101,8 +101,8 @@ impl Mount {
         let s = Arc::clone(&self.shared);
         let freed = tokio::task::spawn_blocking(move || {
             let (mut freed, mut told) = (Freed::default(), Vec::new());
-            for (file, at) in s.view.files_below(&row) {
-                if !s.under.has_copy(&at, &file.id) {
+            for (file, at) in s.directory_contents.files_below(&row) {
+                if !s.backing_directory.has_downloaded_copy(&at, &file.id) {
                     continue;
                 }
                 // What a pin keeps, a download is filling, or holds content of the user's own
@@ -111,7 +111,7 @@ impl Mount {
                     freed.kept += 1;
                     continue;
                 }
-                match s.under.remove_copy(&at, &file.id) {
+                match s.backing_directory.remove_downloaded_copy(&at, &file.id) {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
@@ -134,8 +134,8 @@ impl Mount {
         let (row, rel) = self.item(path)?;
         let s = &self.shared;
         let own_pin = crate::panic::lock(&s.pins).contains(&row.id);
-        let above = s.view.parent(&row).and_then(|above| s.pinned_by(&above));
-        let pinned_above = above.and_then(|by| s.view.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
+        let above = s.directory_contents.parent(&row).and_then(|above| s.pinned_by(&above));
+        let pinned_above = above.and_then(|by| s.directory_contents.read(|store| store.locate(Table::Items, &by.id)).flatten()).map(|at| s.root.path.join(at.rel));
         let state = (row.kind == Kind::File).then(|| s.state_of(&row, &rel));
         let changed = s.own_content(&row.id);
         Ok(Looked { id: row.id, folder: row.kind == Kind::Folder, state, own_pin, pinned_above, changed })
@@ -145,7 +145,7 @@ impl Mount {
     pub fn downloaded_under(&self, path: &Path) -> Result<(u64, u64), Refused> {
         let (row, _) = self.item(path)?;
         let s = &self.shared;
-        let sizes = s.view.files_below(&row).into_iter().filter_map(|(file, at)| s.under.copy(&at, &file.id));
+        let sizes = s.directory_contents.files_below(&row).into_iter().filter_map(|(file, at)| s.backing_directory.find_downloaded_copy(&at, &file.id));
         Ok(sizes.fold((0, 0), |(files, bytes), m| (files + 1, bytes + m.blocks() * 512)))
     }
 }
@@ -154,6 +154,6 @@ impl super::shared::Shared {
     /// Whether the copy of item `id` holds content of the user's own that is not in OneDrive
     /// yet: changed here and not sent, or open for writing now.
     fn own_content(&self, id: &str) -> bool {
-        self.view.unsent_changes().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
+        self.directory_contents.unsent_changes().changed.contains(id) || crate::panic::lock(&self.handles).values().any(|h| h.writes && h.id.as_deref() == Some(id))
     }
 }

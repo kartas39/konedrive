@@ -49,10 +49,10 @@ pub(super) fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: m
     // The node of an item the kernel was told: the root is always known.
     let node = |id: &Option<String>| -> Option<u64> {
         let id = id.as_deref()?;
-        if shared.view.root_id().as_deref() == Some(id) {
+        if shared.directory_contents.root_id().as_deref() == Some(id) {
             return Some(1);
         }
-        crate::panic::lock(&shared.nodes).inos.get(&NodeKey::InOneDrive(id.to_owned())).copied()
+        crate::panic::lock(&shared.node_table).node_ids.get(&NodeKey::InOneDrive(id.to_owned())).copied()
     };
     for a in told.into_iter().flatten() {
         // The mount is going: nothing more is said through it.
@@ -73,7 +73,7 @@ pub(super) fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: m
                 }
                 Announce::Gone(rel, kind, id, above) => {
                     // A name the kernel was never told has nobody watching it go.
-                    let (Some(parent), Some(ino)) = (node(&above), crate::panic::lock(&shared.nodes).inos.get(&NodeKey::InOneDrive(id.clone())).copied()) else { continue };
+                    let (Some(parent), Some(ino)) = (node(&above), crate::panic::lock(&shared.node_table).node_ids.get(&NodeKey::InOneDrive(id.clone())).copied()) else { continue };
                     tell(Told::Gone { parent, name: name(&rel), ino, kind });
                     match kind {
                         Kind::Folder => libc::rmdir(path(&rel).as_ptr()),
@@ -82,7 +82,7 @@ pub(super) fn announce(shared: &Arc<Shared>, notifier: &fuser::Notifier, told: m
                 }
                 Announce::Changed(rel, id) => {
                     // The kernel's cached pages of the old content go first.
-                    let ino = crate::panic::lock(&shared.nodes).inos.get(&NodeKey::InOneDrive(id.clone())).copied();
+                    let ino = crate::panic::lock(&shared.node_table).node_ids.get(&NodeKey::InOneDrive(id.clone())).copied();
                     if let Some(ino) = ino {
                         let _ = notifier.inval_inode(INodeNo(ino), 0, 0);
                     }

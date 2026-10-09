@@ -26,10 +26,10 @@ pub(super) struct Folder {
     /// The backing directory, by its own path.
     pub(super) disk: PathBuf,
     pub(super) store: Store,
-    pub(super) view: Arc<DirectoryContents>,
-    pub(super) under: Arc<BackingDirectory>,
-    pub(super) resolve: Arc<NodeLookup>,
-    pub(super) writers: Arc<OpenWriters>,
+    pub(super) directory_contents: Arc<DirectoryContents>,
+    pub(super) backing_directory: Arc<BackingDirectory>,
+    pub(super) node_lookup: Arc<NodeLookup>,
+    pub(super) open_writers: Arc<OpenWriters>,
     pub(super) writable: Arc<AtomicBool>,
     pub(super) ops: WriteOperations,
 }
@@ -44,15 +44,15 @@ pub(super) fn folder(detections: Vec<Detection>) -> Folder {
     let mut written = TreeStore::open(&path).unwrap();
     drive(&mut written, detections);
     let store = Store::new(written);
-    let under = Arc::new(BackingDirectory::open(&disk).unwrap());
-    let view = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&under)));
-    let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
-    let resolve = Arc::new(NodeLookup::new(Arc::clone(&view), nodes));
+    let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());
+    let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&path).unwrap(), Arc::clone(&backing_directory)));
+    let node_table = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
+    let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), node_table));
     let writable = Arc::new(AtomicBool::new(true));
-    let recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&writable)).unwrap());
-    let writers = Arc::new(OpenWriters::default());
-    let ops = WriteOperations::new(Arc::clone(&view), Arc::clone(&under), Arc::clone(&resolve), Arc::clone(&writers), recorder, Arc::new(rules()));
-    Folder { _tmp: tmp, disk, store, view, under, resolve, writers, writable, ops }
+    let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), Arc::default(), Arc::clone(&writable)).unwrap());
+    let open_writers = Arc::new(OpenWriters::default());
+    let ops = WriteOperations::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory), Arc::clone(&node_lookup), Arc::clone(&open_writers), outbox_recorder, Arc::new(rules()));
+    Folder { _tmp: tmp, disk, store, directory_contents, backing_directory, node_lookup, open_writers, writable, ops }
 }
 
 impl Folder {
@@ -68,7 +68,7 @@ impl Folder {
 
     /// The node of item `id`, which stands in the directory node `parent`.
     pub(super) fn item(&self, id: &str, parent: u64) -> u64 {
-        self.resolve.ino_of(&Entry::Item(self.view.row(id).unwrap()), parent)
+        self.node_lookup.assign_node_id(&Entry::Item(self.directory_contents.row(id).unwrap()), parent)
     }
 
     /// The node of `docs`.
@@ -78,26 +78,26 @@ impl Folder {
 
     /// The node of what stands as `name` in the directory node `parent`.
     pub(super) fn node(&self, parent: u64, name: &str) -> u64 {
-        let dir = self.resolve.dir(parent).unwrap();
-        self.resolve.ino_of(&self.view.entry(&dir, name).unwrap(), parent)
+        let dir = self.node_lookup.find_directory(parent).unwrap();
+        self.node_lookup.assign_node_id(&self.directory_contents.find_entry(&dir, name).unwrap(), parent)
     }
 
     /// What stands at `rel`: an item's id, or `None` for a local object; nothing at all as
     /// the outer `None`.
     pub(super) fn shown(&self, rel: &str) -> Option<Option<String>> {
-        self.view.resolve(Path::new(rel)).map(|entry| entry.id().map(str::to_owned))
+        self.directory_contents.find_entry_at(Path::new(rel)).map(|entry| entry.id().map(str::to_owned))
     }
 
     /// Item `id` downloaded at `rel`, with `bytes`.
     pub(super) fn download(&self, rel: &str, id: &str, bytes: &[u8]) {
         let rel = Path::new(rel);
-        self.view.backing(rel.parent().unwrap()).unwrap();
+        self.directory_contents.make_marked_directories(rel.parent().unwrap()).unwrap();
         fs::write(self.disk.join(rel), bytes).unwrap();
-        self.under.mark_copy(rel, id).unwrap();
+        self.backing_directory.mark_downloaded_copy(rel, id).unwrap();
     }
 
     pub(super) fn root(&self) -> Directory {
-        self.view.root_dir()
+        self.directory_contents.root_directory()
     }
 }
 

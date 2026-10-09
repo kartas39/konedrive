@@ -45,18 +45,18 @@ mod unrecorded_entries;
 mod write;
 
 pub(super) struct WriteOperations {
-    view: Arc<DirectoryContents>,
-    under: Arc<BackingDirectory>,
-    resolve: Arc<NodeLookup>,
-    writers: Arc<OpenWriters>,
-    recorder: Arc<OutboxRecorder>,
+    directory_contents: Arc<DirectoryContents>,
+    backing_directory: Arc<BackingDirectory>,
+    node_lookup: Arc<NodeLookup>,
+    open_writers: Arc<OpenWriters>,
+    outbox_recorder: Arc<OutboxRecorder>,
     rules: Arc<UploadRules>,
 }
 
 /// A file an operation opened for writing: the node, its item when it has one, its place,
 /// and the file in the backing directory. Whoever asked keeps the handle.
 pub(super) struct OpenedFile {
-    pub(super) ino: u64,
+    pub(super) node_id: u64,
     pub(super) id: Option<String>,
     pub(super) rel: PathBuf,
     pub(super) file: File,
@@ -64,19 +64,19 @@ pub(super) struct OpenedFile {
 
 impl WriteOperations {
     pub(super) fn new(
-        view: Arc<DirectoryContents>,
-        under: Arc<BackingDirectory>,
-        resolve: Arc<NodeLookup>,
-        writers: Arc<OpenWriters>,
-        recorder: Arc<OutboxRecorder>,
+        directory_contents: Arc<DirectoryContents>,
+        backing_directory: Arc<BackingDirectory>,
+        node_lookup: Arc<NodeLookup>,
+        open_writers: Arc<OpenWriters>,
+        outbox_recorder: Arc<OutboxRecorder>,
         rules: Arc<UploadRules>,
     ) -> Self {
-        WriteOperations { view, under, resolve, writers, recorder, rules }
+        WriteOperations { directory_contents, backing_directory, node_lookup, open_writers, outbox_recorder, rules }
     }
 
     /// Refuses a change to a read-only folder as a read-only filesystem does.
     fn check_writable(&self) -> Result<(), Errno> {
-        if self.recorder.is_writable() {
+        if self.outbox_recorder.is_writable() {
             Ok(())
         } else {
             Err(Errno::EROFS)
@@ -85,13 +85,13 @@ impl WriteOperations {
 
     /// Whether what stands as `name` in `dir` and has no item stays on this computer.
     fn stays_local(&self, dir: &Directory, name: &str) -> bool {
-        self.rules.stays_local(&dir.rel, name, |at| self.under.carried(at).is_some())
+        self.rules.stays_local(&dir.rel, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
     }
 
     /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done
     /// on disk, and the program is answered `EIO`.
     fn record_or_undo(&self, event: impl FolderEvent, what: impl Display, undo: impl FnOnce()) -> Result<(), Errno> {
-        self.recorder.record(event).map(drop).map_err(|e| {
+        self.outbox_recorder.record(event).map(drop).map_err(|e| {
             tracing::warn!("{what} could not be recorded: {e}");
             undo();
             Errno::EIO

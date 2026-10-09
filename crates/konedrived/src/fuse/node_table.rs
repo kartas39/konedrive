@@ -19,8 +19,8 @@ pub(super) enum NodeKey {
 /// The node ids the kernel knows. The root is 1.
 #[derive(Default)]
 pub(super) struct NodeTable {
-    pub(super) items: HashMap<u64, Node>,
-    pub(super) inos: HashMap<NodeKey, u64>,
+    pub(super) node_table: HashMap<u64, Node>,
+    pub(super) node_ids: HashMap<NodeKey, u64>,
     pub(super) next: u64,
 }
 
@@ -32,31 +32,31 @@ pub(super) struct Node {
 
 impl NodeTable {
     /// The node of `key`, which stands as `name` in `parent`: the one it has, or a new one.
-    pub(super) fn ino(&mut self, key: NodeKey, parent: u64, name: &str) -> u64 {
+    pub(super) fn assign(&mut self, key: NodeKey, parent: u64, name: &str) -> u64 {
         let place = (parent, name.to_owned());
-        if let Some(i) = self.inos.get(&key) {
-            self.items.get_mut(i).expect("a node of every known key").place = place;
+        if let Some(i) = self.node_ids.get(&key) {
+            self.node_table.get_mut(i).expect("a node of every known key").place = place;
             return *i;
         }
         self.next += 1;
-        self.inos.insert(key.clone(), self.next);
-        self.items.insert(self.next, Node { key, place });
+        self.node_ids.insert(key.clone(), self.next);
+        self.node_table.insert(self.next, Node { key, place });
         self.next
     }
 
     /// The node `was` is `now` from here on: an object that got its item, which keeps the
     /// node programs hold it by.
     pub(super) fn rekey(&mut self, was: &NodeKey, now: NodeKey) {
-        let Some(ino) = self.inos.remove(was) else { return };
-        if let Some(node) = self.items.get_mut(&ino) {
+        let Some(node_id) = self.node_ids.remove(was) else { return };
+        if let Some(node) = self.node_table.get_mut(&node_id) {
             node.key = now.clone();
         }
-        self.inos.insert(now, ino);
+        self.node_ids.insert(now, node_id);
     }
 
     /// The node stands as `name` in `parent` now.
-    pub(super) fn moved(&mut self, ino: u64, parent: u64, name: &str) {
-        if let Some(node) = self.items.get_mut(&ino) {
+    pub(super) fn move_node(&mut self, node_id: u64, parent: u64, name: &str) {
+        if let Some(node) = self.node_table.get_mut(&node_id) {
             node.place = (parent, name.to_owned());
         }
     }
@@ -64,18 +64,18 @@ impl NodeTable {
     /// The node of `key` is gone, and no other is ever that key: its id and its place are
     /// dropped. The kernel may still name the node; it is answered as gone.
     pub(super) fn forget(&mut self, key: &NodeKey) {
-        if let Some(ino) = self.inos.remove(key) {
-            self.items.remove(&ino);
+        if let Some(node_id) = self.node_ids.remove(key) {
+            self.node_table.remove(&node_id);
         }
     }
 
     /// The node's path below the folder, from the names the kernel was told.
-    pub(super) fn rel(&self, mut ino: u64) -> Option<PathBuf> {
+    pub(super) fn path_of(&self, mut node_id: u64) -> Option<PathBuf> {
         let mut names = Vec::new();
-        while ino != 1 {
-            let (parent, name) = &self.items.get(&ino)?.place;
+        while node_id != 1 {
+            let (parent, name) = &self.node_table.get(&node_id)?.place;
             names.push(name.as_str());
-            ino = *parent;
+            node_id = *parent;
         }
         Some(names.iter().rev().collect())
     }

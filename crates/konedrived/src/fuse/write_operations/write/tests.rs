@@ -12,10 +12,10 @@ fn a_local_file_written_waits_for_its_writer_and_is_due_once_closed() {
     f.ops.make(1, "new.txt", false, false).unwrap();
     let node = f.node(1, "new.txt");
     let opened = f.ops.open_to_write(node, false).unwrap();
-    assert!(opened.ino == node && opened.id.is_none() && f.writers.open(node));
+    assert!(opened.node_id == node && opened.id.is_none() && f.open_writers.is_open(node));
     assert_eq!(f.rows()[0].reason, Some(Reason::OpenForWriting));
-    f.writers.written(node);
-    assert_eq!(f.writers.closed(node), AfterClose::ContentChanged);
+    f.open_writers.mark_written(node);
+    assert_eq!(f.open_writers.remove_writer(node), AfterClose::ContentChanged);
     f.ops.closed(node, true);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.state, row.reason.clone()), (OutboxKind::Create, OutboxState::Waiting, Some(Reason::Changed)));
@@ -30,7 +30,7 @@ fn an_items_copy_closed_untouched_leaves_nothing_to_send() {
     let opened = f.ops.open_to_write(node, false).unwrap();
     assert_eq!(opened.id.as_deref(), Some("A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    assert_eq!(f.writers.closed(node), AfterClose::ContentUntouched);
+    assert_eq!(f.open_writers.remove_writer(node), AfterClose::ContentUntouched);
     f.ops.closed(node, false);
     assert!(f.rows().is_empty());
 }
@@ -51,7 +51,7 @@ fn an_item_cut_to_nothing_is_its_empty_copy() {
     let f = folder(Vec::new());
     let node = f.item("A", 1);
     f.ops.truncate(node, 0).unwrap();
-    assert!(f.under.has_copy(&at("a.txt"), "A"));
+    assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
     assert_eq!(std::fs::metadata(f.disk.join("a.txt")).unwrap().len(), 0);
     let row = &f.rows()[0];
     assert_eq!((row.kind, row.item_id.as_deref(), row.reason.clone()), (OutboxKind::Update, Some("A"), Some(Reason::Changed)));

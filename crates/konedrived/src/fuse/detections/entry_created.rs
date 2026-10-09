@@ -2,7 +2,7 @@
 
 use konedrive_tree::{Row, TreeError};
 
-use super::{create_or_mkdir, update_item, wait_for_writer, FolderEvent, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
+use super::{create_or_mkdir, update_content, wait_for_writer, FolderEvent, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
 
 /// What a program made at a place where nothing stood.
 #[derive(Debug)]
@@ -23,7 +23,7 @@ impl FolderEvent for EntryCreated {
             // Not held back a moment when it is not open: it merges into the removal's row,
             // which was ready.
             EntryCreated::ReplacingRemovedFile { place, file, open, base } => {
-                let mut update = update_item(&place, &base, &file);
+                let mut update = update_content(&place, &base, &file);
                 if open {
                     wait_for_writer(&mut update, now);
                 }

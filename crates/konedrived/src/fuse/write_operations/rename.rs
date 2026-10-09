@@ -14,7 +14,7 @@ use fuser::Errno;
 
 use super::WriteOperations;
 use crate::fuse::detections::{DisplacedEntry, MovedEntry, EntryRenamed};
-use crate::fuse::local_only_entries::{collect_local_entries, folder_place, local_object};
+use crate::fuse::local_only_entries::{collect_local_only_entries, folder_place, local_object};
 use crate::fuse::shared::errno;
 use crate::fuse::directory_contents::{Directory, Entry};
 
@@ -22,7 +22,7 @@ use crate::fuse::directory_contents::{Directory, Entry};
 struct RenamePlan {
     /// What moves, its node, and whether a program holds it open for writing.
     source: Entry,
-    ino: u64,
+    node_id: u64,
     open: bool,
     /// What stands at the new place.
     target: Option<Entry>,
@@ -67,7 +67,7 @@ impl WriteOperations {
         let to = plan.to();
         let undo = || {
             if backing == BackingDirectoryMove::Moved {
-                let _ = self.under.rename(&to, &plan.from);
+                let _ = self.backing_directory.rename(&to, &plan.from);
             }
         };
         self.record_or_undo(event, format_args!("the move of {} to {}", plan.from.display(), to.display()), undo)?;
@@ -79,19 +79,19 @@ impl WriteOperations {
     /// is its own.
     fn check_rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
         self.check_writable()?;
-        let from_dir = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
-        let to_dir = self.resolve.dir(new_parent).ok_or(Errno::ENOENT)?;
+        let from_dir = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let to_dir = self.node_lookup.find_directory(new_parent).ok_or(Errno::ENOENT)?;
         if self.rules.daemon_owned(new_name) {
             return Err(Errno::EPERM);
         }
-        let source = self.view.entry(&from_dir, name).ok_or(Errno::ENOENT)?;
-        let target = self.view.entry(&to_dir, new_name);
+        let source = self.directory_contents.find_entry(&from_dir, name).ok_or(Errno::ENOENT)?;
+        let target = self.directory_contents.find_entry(&to_dir, new_name);
         let (from, to) = (from_dir.rel.join(name), to_dir.rel.join(new_name));
         if from == to {
             return Ok(None);
         }
         if let Some(target) = &target {
-            let holds = || !self.view.entries(&Directory { id: target.id().map(str::to_owned), rel: to.clone() }).is_empty();
+            let holds = || !self.directory_contents.list_entries(&Directory { id: target.id().map(str::to_owned), rel: to.clone() }).is_empty();
             match (source.is_dir(), target.is_dir()) {
                 _ if keep => return Err(Errno::EEXIST),
                 (false, true) => return Err(Errno::EISDIR),
@@ -100,28 +100,28 @@ impl WriteOperations {
                 _ => {}
             }
         }
-        if source.id().is_some() && self.rules.in_local_dir(&to_dir.rel, |at| self.under.carried(at).is_some()) {
+        if source.id().is_some() && self.rules.in_local_dir(&to_dir.rel, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
             return Err(Errno::EXDEV);
         }
         let uploaded = !self.stays_local(&to_dir, new_name);
-        let ino = self.resolve.ino_of(&source, parent);
-        let open = self.writers.open(ino);
-        Ok(Some(RenamePlan { source, ino, open, target, from, to_dir, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
+        let node_id = self.node_lookup.assign_node_id(&source, parent);
+        let open = self.open_writers.is_open(node_id);
+        Ok(Some(RenamePlan { source, node_id, open, target, from, to_dir, to_node: new_parent, to_name: new_name.to_owned(), uploaded }))
     }
 
     /// The backing directory first: whatever the item or the local object has there moves,
     /// and what stood at the new place goes.
     fn rename_backing(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
         let to = plan.to();
-        self.view.backing(&plan.to_dir.rel).map_err(|e| errno(&e))?;
-        let displaced = self.under.stat(&to);
-        let backing = if self.under.stat(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
+        self.directory_contents.make_marked_directories(&plan.to_dir.rel).map_err(|e| errno(&e))?;
+        let displaced = self.backing_directory.stat(&to);
+        let backing = if self.backing_directory.stat(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
         // A file that moves over a file replaces it in the rename itself.
         if let Some(meta) = displaced.filter(|m| m.is_dir() || backing == BackingDirectoryMove::NothingThere) {
-            let _ = if meta.is_dir() { self.under.remove_dir(&to) } else { self.under.remove_file(&to) };
+            let _ = if meta.is_dir() { self.backing_directory.remove_dir(&to) } else { self.backing_directory.remove_file(&to) };
         }
         if backing == BackingDirectoryMove::Moved {
-            self.under.rename(&plan.from, &to).map_err(|e| errno(&e))?;
+            self.backing_directory.rename(&plan.from, &to).map_err(|e| errno(&e))?;
         }
         Ok(backing)
     }
@@ -134,11 +134,11 @@ impl WriteOperations {
         }
         let entry = match &plan.source {
             Entry::Item(row) => {
-                let object = (backing == BackingDirectoryMove::Moved).then(|| self.under.object(&plan.to())).flatten();
+                let object = (backing == BackingDirectoryMove::Moved).then(|| self.backing_directory.find_disk_entry(&plan.to())).flatten();
                 MovedEntry::InOneDrive { id: row.id.clone(), dir: plan.source.is_dir(), object: object.map(|o| o.handle) }
             }
             Entry::Local(local) if local.object.meta.is_dir() => {
-                let uploaded = if plan.uploaded { collect_local_entries(&self.under, &self.rules, &plan.to_dir, &plan.to_name) } else { Vec::new() };
+                let uploaded = if plan.uploaded { collect_local_only_entries(&self.backing_directory, &self.rules, &plan.to_dir, &plan.to_name) } else { Vec::new() };
                 MovedEntry::LocalOnlyDirectory { handle: local.object.handle.clone(), uploaded }
             }
             Entry::Local(local) => MovedEntry::LocalOnlyFile { file: local_object(&local.object), open: plan.open, uploaded: plan.uploaded },
@@ -157,14 +157,14 @@ impl WriteOperations {
     fn move_node(&self, plan: &RenamePlan) {
         let taken = match (plan.saved_over(), &plan.source) {
             (Some(id), Entry::Local(local)) => {
-                let _ = self.under.mark_copy(&plan.to(), id);
+                let _ = self.backing_directory.mark_downloaded_copy(&plan.to(), id);
                 Some((&local.object.handle, id))
             }
             _ => None,
         };
-        self.resolve.renamed(plan.ino, plan.to_node, &plan.to_name, taken);
+        self.node_lookup.move_node(plan.node_id, plan.to_node, &plan.to_name, taken);
         if let Some(Entry::Local(displaced)) = &plan.target {
-            self.resolve.forget(&displaced.object.handle);
+            self.node_lookup.forget(&displaced.object.handle);
         }
     }
 }

@@ -3,49 +3,49 @@ use std::path::Path;
 
 use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
-use super::{set_tree, BackingDirectory, OLD_STAGING};
+use super::{set_tree, BackingDirectory, LEGACY_STAGING_DIRECTORY};
 
 /// A folder on disk with nothing in it, opened as a mount's would be.
 pub(super) fn folder() -> (tempfile::TempDir, BackingDirectory) {
     let dir = tempfile::tempdir().unwrap();
-    let under = BackingDirectory::open(dir.path()).unwrap();
-    (dir, under)
+    let backing_directory = BackingDirectory::open(dir.path()).unwrap();
+    (dir, backing_directory)
 }
 
 /// A place is reached through the descriptor: what is written by such a path is in the folder.
 #[test]
 fn a_path_of_the_folder_leads_into_the_folder_itself() {
-    let (dir, under) = folder();
-    fs::write(under.path(Path::new("a.txt")), b"a").unwrap();
+    let (dir, backing_directory) = folder();
+    fs::write(backing_directory.path(Path::new("a.txt")), b"a").unwrap();
     assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"a");
-    assert_eq!(fs::read_dir(under.path(Path::new(""))).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(backing_directory.path(Path::new(""))).unwrap().count(), 1);
 }
 
 #[test]
 fn the_staging_directory_of_an_earlier_build_goes_when_the_folder_is_opened() {
     let dir = tempfile::tempdir().unwrap();
-    fs::create_dir(dir.path().join(OLD_STAGING)).unwrap();
-    fs::write(dir.path().join(OLD_STAGING).join("part"), b"x").unwrap();
-    let under = BackingDirectory::open(dir.path()).unwrap();
-    assert!(under.stat(Path::new(OLD_STAGING)).is_none());
+    fs::create_dir(dir.path().join(LEGACY_STAGING_DIRECTORY)).unwrap();
+    fs::write(dir.path().join(LEGACY_STAGING_DIRECTORY).join("part"), b"x").unwrap();
+    let backing_directory = BackingDirectory::open(dir.path()).unwrap();
+    assert!(backing_directory.stat(Path::new(LEGACY_STAGING_DIRECTORY)).is_none());
 }
 
 /// The empty path is the folder itself, which carries attributes of its own.
 #[test]
 fn an_attribute_is_read_of_the_folder_and_of_what_it_holds() {
-    let (dir, under) = folder();
+    let (dir, backing_directory) = folder();
     xattr::set(dir.path(), XATTR_ROOT, b"R").unwrap();
     fs::write(dir.path().join("a.txt"), b"a").unwrap();
     xattr::set(dir.path().join("a.txt"), "user.test", b"v").unwrap();
-    assert_eq!(under.attribute(Path::new(""), XATTR_ROOT).as_deref(), Some("R"));
-    assert_eq!(under.attribute(Path::new("a.txt"), "user.test").as_deref(), Some("v"));
-    assert_eq!(under.attribute(Path::new("a.txt"), XATTR_ROOT), None);
+    assert_eq!(backing_directory.attribute(Path::new(""), XATTR_ROOT).as_deref(), Some("R"));
+    assert_eq!(backing_directory.attribute(Path::new("a.txt"), "user.test").as_deref(), Some("v"));
+    assert_eq!(backing_directory.attribute(Path::new("a.txt"), XATTR_ROOT), None);
 }
 
 #[test]
 fn the_folders_filesystem_says_how_much_space_it_has() {
-    let (_dir, under) = folder();
-    assert!(under.space().unwrap().f_bsize > 0);
+    let (_dir, backing_directory) = folder();
+    assert!(backing_directory.space().unwrap().f_bsize > 0);
 }
 
 /// What an older konedrive left would be taken for downloaded copies or the user's own files.
@@ -63,7 +63,7 @@ fn a_locked_folder_is_opened_and_unlocked() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("docs")).unwrap();
     set_tree(dir.path(), true);
-    let under = BackingDirectory::open(dir.path()).unwrap();
-    under.unlock();
-    under.make_file(Path::new("docs/a.txt")).unwrap();
+    let backing_directory = BackingDirectory::open(dir.path()).unwrap();
+    backing_directory.unlock();
+    backing_directory.make_file(Path::new("docs/a.txt")).unwrap();
 }

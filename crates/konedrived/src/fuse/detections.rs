@@ -76,7 +76,7 @@ pub(super) trait FolderEvent: Send + 'static {
 /// What a decision reads from the tree store.
 pub(super) trait StoreFacts {
     /// The item `id` as the base has it: what a change to it is made against.
-    fn base_item(&self, id: &str) -> Result<Option<Row>, TreeError>;
+    fn base_row(&self, id: &str) -> Result<Option<Row>, TreeError>;
     /// The outbox's rows of the local object `object`.
     fn outbox_rows_of(&self, object: &FileHandle) -> Result<Vec<OutboxRow>, TreeError>;
     /// The outbox's rows at the place `rel` and below it.
@@ -86,7 +86,7 @@ pub(super) trait StoreFacts {
 }
 
 impl StoreFacts for TreeStore {
-    fn base_item(&self, id: &str) -> Result<Option<Row>, TreeError> {
+    fn base_row(&self, id: &str) -> Result<Option<Row>, TreeError> {
         self.get(Table::Items, id)
     }
 
@@ -199,18 +199,18 @@ fn create_or_mkdir(place: &FolderPlace, object: &LocalObject, open: bool, now: i
 
 /// The detections of `entries`, each by the rules of a new local object that no program
 /// holds open: a directory that is uploaded from now on, and all it holds.
-pub(super) fn create_entries(entries: &[LocalEntry], now: i64) -> Vec<Detection> {
+pub(super) fn create_local_only_entries(entries: &[LocalEntry], now: i64) -> Vec<Detection> {
     entries.iter().map(|entry| create_or_mkdir(&entry.place, &entry.object, false, now)).collect()
 }
 
 /// The item `row` stands at `place`, in `object` when the backing directory holds one for
 /// it: a move, and how an item is said to be where it is.
-fn move_item(place: &FolderPlace, row: &Row, object: Option<FileHandle>) -> Detection {
+fn move_in_onedrive(place: &FolderPlace, row: &Row, object: Option<FileHandle>) -> Detection {
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detection_at(place, OutboxKind::Move, object, None) }
 }
 
 /// The file `file` at `place` is the new content of the item `row`.
-fn update_item(place: &FolderPlace, row: &Row, file: &LocalObject) -> Detection {
+fn update_content(place: &FolderPlace, row: &Row, file: &LocalObject) -> Detection {
     let update = detection_at(place, OutboxKind::Update, Some(file.handle.clone()), file.size());
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..update }
 }
@@ -250,20 +250,20 @@ fn delete(row: Option<&Row>, object: Option<FileHandle>, rel: &Path) -> Detectio
 }
 
 /// The item `id` was removed from `rel` here. Nothing for an item the base no longer has.
-fn delete_item(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
-    Ok(facts.base_item(id)?.iter().map(|base| delete(Some(base), None, rel)).collect())
+fn delete_in_onedrive(facts: &impl StoreFacts, id: &str, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+    Ok(facts.base_row(id)?.iter().map(|base| delete(Some(base), None, rel)).collect())
 }
 
 /// A local object is gone from `rel`, or stays on this computer from now on: what the
 /// outbox held of it goes. Nothing for an object the outbox never heard of.
-fn forget_object(facts: &impl StoreFacts, object: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
+fn forget_local_only(facts: &impl StoreFacts, object: &FileHandle, rel: &Path) -> Result<Vec<Detection>, TreeError> {
     Ok(if facts.outbox_rows_of(object)?.is_empty() { Vec::new() } else { vec![delete(None, Some(object.clone()), rel)] })
 }
 
 /// Whether a directory that carries `carried` is the directory of the folder item `id`,
 /// which went from OneDrive: one that carries nothing is, one that carries another item's
 /// id is that item's and is left alone.
-pub(super) fn is_folder_of(carried: Option<&str>, id: &str) -> bool {
+pub(super) fn is_directory_of(carried: Option<&str>, id: &str) -> bool {
     carried.is_none_or(|carried| carried == id)
 }
 

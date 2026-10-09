@@ -21,13 +21,13 @@ use crate::fuse::write_operations::OpenedFile;
 /// Has `job` run on the recorder's thread.
 pub(super) fn on_recorder(s: &Arc<Shared>, job: impl FnOnce(&Arc<Shared>) + Send + 'static) {
     let shared = Arc::clone(s);
-    s.recorder.run(move || job(&shared));
+    s.outbox_recorder.run(move || job(&shared));
 }
 
 /// Keeps `opened`, a file opened to be written, in the table of open handles: the handle the
 /// program is given.
 fn keep_handle(s: &Shared, opened: OpenedFile) -> u64 {
-    let OpenedFile { ino, id, rel, file } = opened;
+    let OpenedFile { node_id: ino, id, rel, file } = opened;
     let fh = s.next_handle.fetch_add(1, Ordering::SeqCst);
     crate::panic::lock(&s.handles).insert(fh, Handle { ino, id, rel, copy: Some(Arc::new(file)), writes: true });
     fh
@@ -135,7 +135,7 @@ impl Requests {
         let Some((ino, file)) = crate::panic::lock(&s.handles).get(&fh.0).filter(|h| h.writes).and_then(|h| Some((h.ino, h.copy.clone()?))) else {
             return reply.error(Errno::EBADF);
         };
-        s.writers.written(ino);
+        s.open_writers.mark_written(ino);
         match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
             Err(e) => reply.error(errno(&e)),
@@ -149,17 +149,17 @@ impl Requests {
         if let Err(e) = s.may_change() {
             return reply.error(e);
         }
-        let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.resolve.node(ino.0) {
-            Some((entry, rel)) => reply.attr(&TTL, &attributes::of_entry(&entry, ino.0, &rel, s.writable(), &s.view, &s.writers)),
+        let answer = move |s: &Arc<Shared>, reply: ReplyAttr| match s.node_lookup.find_entry(ino.0) {
+            Some((entry, rel)) => reply.attr(&TTL, &attributes::of_entry(&entry, ino.0, &rel, s.writable(), &s.directory_contents, &s.open_writers)),
             None => reply.error(Errno::ENOENT),
         };
         let timed = move |s: &Arc<Shared>| {
-            let (Some(mtime), Some((_, rel))) = (mtime, s.resolve.node(ino.0)) else { return };
+            let (Some(mtime), Some((_, rel))) = (mtime, s.node_lookup.find_entry(ino.0)) else { return };
             let at = match mtime {
                 TimeOrNow::SpecificTime(at) => at,
                 TimeOrNow::Now => SystemTime::now(),
             };
-            if let Ok(file) = s.under.read(&rel) {
+            if let Ok(file) = s.backing_directory.read(&rel) {
                 let _ = konedrive_fs::placeholder::set_mtime(&file, at);
             }
         };

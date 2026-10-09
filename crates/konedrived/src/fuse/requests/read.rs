@@ -37,13 +37,13 @@ impl Requests {
         if flags.0 & libc::O_ACCMODE != libc::O_RDONLY || flags.0 & libc::O_TRUNC != 0 {
             return self.opened_to_write(ino, flags.0 & libc::O_TRUNC != 0, reply);
         }
-        let Some((entry, rel)) = s.resolve.node(ino.0) else { return reply.error(Errno::ENOENT) };
+        let Some((entry, rel)) = s.node_lookup.find_entry(ino.0) else { return reply.error(Errno::ENOENT) };
         let on_disk = match &entry {
-            Entry::Item(row) => s.under.has_copy(&rel, &row.id),
+            Entry::Item(row) => s.backing_directory.has_downloaded_copy(&rel, &row.id),
             Entry::Local(_) => true,
         };
         let copy = if on_disk {
-            match s.under.read(&rel) {
+            match s.backing_directory.read(&rel) {
                 Ok(file) => Some(Arc::new(file)),
                 Err(e) => return reply.error(errno(&e)),
             }
@@ -69,8 +69,8 @@ impl Requests {
         }
         let Some(id) = id else { return reply.error(Errno::EIO) };
         // Downloaded since it was opened: the handle reads the copy from now on.
-        if s.under.has_copy(&rel, &id) {
-            return match s.under.read(&rel) {
+        if s.backing_directory.has_downloaded_copy(&rel, &id) {
+            return match s.backing_directory.read(&rel) {
                 Ok(file) => {
                     let file = Arc::new(file);
                     if let Some(handle) = crate::panic::lock(&s.handles).get_mut(&fh.0) {
@@ -81,7 +81,7 @@ impl Requests {
                 Err(e) => reply.error(errno(&e)),
             };
         }
-        let Some(row) = s.view.row(&id) else { return reply.error(Errno::ENOENT) };
+        let Some(row) = s.directory_contents.row(&id) else { return reply.error(Errno::ENOENT) };
         let end = (offset + u64::from(size)).min(row.size);
         if offset >= end {
             return reply.data(&[]);
@@ -127,7 +127,7 @@ impl Requests {
         let s = &self.0;
         let closed = crate::panic::lock(&s.handles).remove(&fh.0);
         if let Some(handle) = closed.filter(|handle| handle.writes) {
-            let changed = match s.writers.closed(handle.ino) {
+            let changed = match s.open_writers.remove_writer(handle.ino) {
                 AfterClose::StillOpenElsewhere => None,
                 AfterClose::ContentChanged => Some(true),
                 AfterClose::ContentUntouched => Some(false),

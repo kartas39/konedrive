@@ -46,7 +46,7 @@ pub(in crate::fuse) enum LandingAction {
 /// What stands at the item's place by now is never replaced by what was downloaded: a file of
 /// the user's own; the item's copy, which a program made or saved over it meanwhile; the
 /// whole copy of another item. Only what holds nothing — a file that is not whole — goes.
-pub(in crate::fuse) fn step(stands: TargetContents) -> LandingAction {
+pub(in crate::fuse) fn choose_landing_action(stands: TargetContents) -> LandingAction {
     match stands {
         TargetContents::Nothing => LandingAction::Link,
         TargetContents::CopyOfSameFile => LandingAction::Keep,
@@ -73,7 +73,7 @@ impl BackingDirectory {
     }
 
     /// What stands at `rel`, for a download of item `id`.
-    pub(in crate::fuse) fn stands(&self, rel: &Path, id: &str) -> TargetContents {
+    pub(in crate::fuse) fn inspect_target(&self, rel: &Path, id: &str) -> TargetContents {
         let path = self.path(rel);
         if fs::symlink_metadata(&path).is_err() {
             return TargetContents::Nothing;
@@ -98,7 +98,7 @@ impl BackingDirectory {
         file.set_permissions(fs::Permissions::from_mode(0o444))?;
         file.sync_all()?;
         let target = self.path(rel);
-        match step(self.stands(rel, id)) {
+        match choose_landing_action(self.inspect_target(rel, id)) {
             LandingAction::Keep => return Ok(LandingOutcome::Kept),
             LandingAction::Refuse => return Ok(LandingOutcome::Refused),
             LandingAction::Replace => fs::remove_file(&target)?,

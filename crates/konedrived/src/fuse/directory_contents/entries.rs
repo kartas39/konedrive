@@ -83,48 +83,48 @@ impl DirectoryContents {
         if daemon_owned(name) {
             return None;
         }
-        let object = self.under.object(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
+        let object = self.backing_directory.find_disk_entry(rel).filter(|o| o.meta.is_file() || o.meta.is_dir())?;
         // One that carries the id of an item the store does not have is not an item's yet:
         // its upload is being committed, or the store was made anew.
-        let of_an_item = self.under.carried(rel).is_some_and(|id| self.row(&id).is_some());
+        let of_an_item = self.backing_directory.read_onedrive_id(rel).is_some_and(|id| self.row(&id).is_some());
         (!of_an_item).then(|| Local { name: name.to_string_lossy().into_owned(), object })
     }
 
     /// The item `id` as the folder shows it under `name`, unless the store has it out of the
     /// folder. What the outbox's rows say of it is the caller's to ask.
-    pub(in crate::fuse) fn shown_as(&self, id: &str, name: &str) -> Option<Row> {
+    pub(in crate::fuse) fn find_placed_row(&self, id: &str, name: &str) -> Option<Row> {
         let row = self.row(id).filter(|r| r.placement == Placement::Placed)?;
         Some(Row { name: name.to_owned(), ..row })
     }
 
     /// What `dir` holds under `name`.
-    pub(in crate::fuse) fn entry(&self, dir: &Directory, name: &str) -> Option<Entry> {
-        self.item_at(dir, name).map(Entry::Item).or_else(|| self.local(&dir.rel.join(name)).map(Entry::Local))
+    pub(in crate::fuse) fn find_entry(&self, dir: &Directory, name: &str) -> Option<Entry> {
+        self.find_row_at(dir, name).map(Entry::Item).or_else(|| self.local(&dir.rel.join(name)).map(Entry::Local))
     }
 
     /// The item `dir` holds under `name`.
-    pub(in crate::fuse) fn item_at(&self, dir: &Directory, name: &str) -> Option<Row> {
+    pub(in crate::fuse) fn find_row_at(&self, dir: &Directory, name: &str) -> Option<Row> {
         let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.child(Table::Items, id, name)).flatten());
         // What the user moved to this name is what the name is: an item OneDrive has there
         // too is shown once the move is sent, or refused.
         let moved = unsent_changes.moved.iter().find(|(_, (above, as_))| dir.is(above) && as_ == name);
         match moved {
-            Some((id, _)) => self.shown_as(id, name),
+            Some((id, _)) => self.find_placed_row(id, name),
             None => stored.filter(|row| stays(row, &unsent_changes)),
         }
     }
 
     /// Everything `dir` holds.
-    pub(in crate::fuse) fn entries(&self, dir: &Directory) -> Vec<Entry> {
+    pub(in crate::fuse) fn list_entries(&self, dir: &Directory) -> Vec<Entry> {
         let unsent_changes = self.unsent_changes();
         let stored = dir.id.as_deref().and_then(|id| self.read(|s| s.children(Table::Items, id))).unwrap_or_default();
-        let mut items: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.shown_as(id, name)).collect();
+        let mut items: Vec<Row> = unsent_changes.moved.iter().filter(|(_, (above, _))| dir.is(above)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
         let moved_here: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
         items.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));
         let taken: HashSet<String> = items.iter().map(|row| row.name.clone()).collect();
         let mut all: Vec<Entry> = items.into_iter().map(Entry::Item).collect();
-        for name in self.under.list(&dir.rel).map(|e| e.file_name()) {
+        for name in self.backing_directory.list(&dir.rel).map(|e| e.file_name()) {
             if name.to_str().is_some_and(|n| !taken.contains(n)) {
                 all.extend(self.local(&dir.rel.join(&name)).map(Entry::Local));
             }

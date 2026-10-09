@@ -12,7 +12,7 @@ use crate::folder::disk::HOLDING;
 
 /// Whether `folder`, which is not mounted over yet, holds what an older konedrive left: a
 /// file marked as anything but whole, or that konedrive's holding directory.
-pub(in crate::fuse) fn left_by_an_older(folder: &Path) -> bool {
+pub(in crate::fuse) fn holds_legacy_placeholders(folder: &Path) -> bool {
     let mut dirs = vec![folder.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {

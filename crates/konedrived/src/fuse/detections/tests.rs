@@ -7,7 +7,7 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::TreeStore;
 
-use super::{is_folder_of, FolderEvent, FolderPlace, LocalObject, ObjectKind, OutboxBatch};
+use super::{is_directory_of, FolderEvent, FolderPlace, LocalObject, ObjectKind, OutboxBatch};
 use crate::fuse::directory_contents::tests::drive;
 
 /// The time the tests decide at.
@@ -106,6 +106,6 @@ fn the_waiting_detections_are_due_after_the_writer_or_a_quiet_moment() {
 /// item's id.
 #[test]
 fn a_directory_is_a_gone_folders_unless_it_carries_another_item() {
-    assert!(is_folder_of(None, "D") && is_folder_of(Some("D"), "D"));
-    assert!(!is_folder_of(Some("E"), "D"));
+    assert!(is_directory_of(None, "D") && is_directory_of(Some("D"), "D"));
+    assert!(!is_directory_of(Some("E"), "D"));
 }

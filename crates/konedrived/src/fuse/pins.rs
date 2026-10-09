@@ -21,7 +21,7 @@ impl Shared {
             if pins.contains(&row.id) {
                 return Some(row);
             }
-            at = self.view.parent(&row);
+            at = self.directory_contents.parent(&row);
         }
         None
     }
@@ -36,9 +36,9 @@ impl Shared {
         self.runtime.spawn_blocking(move || {
             let pins: Vec<String> = crate::panic::lock(&s.pins).iter().cloned().collect();
             for id in pins {
-                let Some(row) = s.view.row(&id) else { continue };
-                for (file, rel) in s.view.files_below(&row) {
-                    if !s.under.has_copy(&rel, &file.id) {
+                let Some(row) = s.directory_contents.row(&id) else { continue };
+                for (file, rel) in s.directory_contents.files_below(&row) {
+                    if !s.backing_directory.has_downloaded_copy(&rel, &file.id) {
                         s.ensure(file, rel, Class::Download, None);
                     }
                 }

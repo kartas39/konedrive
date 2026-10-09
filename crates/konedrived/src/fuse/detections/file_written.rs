@@ -5,7 +5,7 @@
 
 use konedrive_tree::TreeError;
 
-use super::{create_or_mkdir, move_item, update_item, wait_for_quiet, wait_for_writer, FolderEvent, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
+use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
 
 /// Whose file was written, where it stands, and what was done to it.
 #[derive(Debug)]
@@ -47,20 +47,20 @@ impl FolderEvent for FileWritten {
         match self {
             FileWritten::LocalOnly { place, file, write } => Ok(OutboxBatch::of([create_or_mkdir(&place, &file, write == LocalOnlyFileWrite::Opened, now)])),
             FileWritten::InOneDrive { id, place, write } => {
-                let Some(base) = facts.base_item(&id)? else { return Ok(OutboxBatch::default()) };
+                let Some(base) = facts.base_row(&id)? else { return Ok(OutboxBatch::default()) };
                 Ok(OutboxBatch::of([match write {
                     OneDriveFileWrite::Opened(copy) => {
-                        let mut update = update_item(&place, &base, &copy);
+                        let mut update = update_content(&place, &base, &copy);
                         wait_for_writer(&mut update, now);
                         update
                     }
                     OneDriveFileWrite::ClosedChanged(copy) | OneDriveFileWrite::Cut(copy) => {
-                        let mut update = update_item(&place, &base, &copy);
+                        let mut update = update_content(&place, &base, &copy);
                         wait_for_quiet(&mut update, now);
                         update
                     }
                     OneDriveFileWrite::ClosedUntouched => {
-                        let mut here = move_item(&place, &base, None);
+                        let mut here = move_in_onedrive(&place, &base, None);
                         here.same_content = true;
                         here
                     }

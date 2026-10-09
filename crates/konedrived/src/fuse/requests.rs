@@ -42,7 +42,7 @@ impl Requests {
     /// removes is gone from the store already.
     fn absent(&self, parent: INodeNo, name: &OsStr) -> bool {
         let s = &self.0;
-        s.resolve.dir(parent.0).zip(name.to_str()).is_none_or(|(dir, name)| s.view.entry(&dir, name).is_none())
+        s.node_lookup.find_directory(parent.0).zip(name.to_str()).is_none_or(|(dir, name)| s.directory_contents.find_entry(&dir, name).is_none())
     }
 }
 

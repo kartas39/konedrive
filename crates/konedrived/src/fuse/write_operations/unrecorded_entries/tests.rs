@@ -12,9 +12,9 @@ fn the_local_objects_without_a_row_are_recorded_anew() {
     fs::write(f.disk.join("x.tmp"), b"t").unwrap();
     fs::create_dir(f.disk.join("keep")).unwrap();
     fs::write(f.disk.join("keep/f.txt"), b"f").unwrap();
-    f.view.backing(&at("docs")).unwrap();
+    f.directory_contents.make_marked_directories(&at("docs")).unwrap();
     fs::write(f.disk.join("docs/mine.txt"), b"m").unwrap();
-    f.ops.record_unrecorded_objects();
+    f.ops.record_unrecorded_entries();
     let mut places: Vec<PathBuf> = f.rows().into_iter().map(|row| row.rel).collect();
     places.sort();
     assert_eq!(places, [at("docs/mine.txt"), at("keep"), at("keep/f.txt"), at("known.txt"), at("lost.txt")]);

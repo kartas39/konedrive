@@ -25,24 +25,24 @@ impl WriteOperations {
     pub(in crate::fuse) fn make(&self, parent: u64, name: &str, dir: bool, open: bool) -> Result<MadeEntry, Errno> {
         let above = self.check_make(parent, name, dir)?;
         let rel = above.rel.join(name);
-        self.view.backing(&above.rel).map_err(|e| errno(&e))?;
+        self.directory_contents.make_marked_directories(&above.rel).map_err(|e| errno(&e))?;
         let file: Option<File> = if dir {
-            self.under.make_dir(&rel).map_err(|e| errno(&e))?;
+            self.backing_directory.make_dir(&rel).map_err(|e| errno(&e))?;
             None
         } else {
-            Some(self.under.make_file(&rel).map_err(|e| errno(&e))?)
+            Some(self.backing_directory.make_file(&rel).map_err(|e| errno(&e))?)
         };
-        let unmake = || drop(if dir { self.under.remove_dir(&rel) } else { self.under.remove_file(&rel) });
+        let unmake = || drop(if dir { self.backing_directory.remove_dir(&rel) } else { self.backing_directory.remove_file(&rel) });
         // What cannot be looked at is not recorded, and is not left in the folder either.
-        let Some(object) = self.under.object(&rel) else {
+        let Some(object) = self.backing_directory.find_disk_entry(&rel) else {
             unmake();
             return Err(Errno::EIO);
         };
-        let removed = if dir { None } else { self.view.removed_item_at(&rel) };
+        let removed = if dir { None } else { self.directory_contents.find_file_removed_at(&rel) };
         let (place, local) = (folder_place(&above, name), local_object(&object));
         let event = match &removed {
             Some(base) => {
-                self.under.mark_copy(&rel, &base.id).map_err(|e| errno(&e))?;
+                self.backing_directory.mark_downloaded_copy(&rel, &base.id).map_err(|e| errno(&e))?;
                 Some(EntryCreated::ReplacingRemovedFile { place, file: local, open, base: base.clone() })
             }
             None if self.stays_local(&above, name) => None,
@@ -55,13 +55,13 @@ impl WriteOperations {
             Some(base) => Entry::Item(Row { name: name.to_owned(), ..base.clone() }),
             None => Entry::Local(Local { name: name.to_owned(), object }),
         };
-        let ino = self.resolve.ino_of(&entry, parent);
-        let attr = attributes::of_entry(&entry, ino, &rel, self.recorder.is_writable(), &self.view, &self.writers);
+        let node_id = self.node_lookup.assign_node_id(&entry, parent);
+        let attr = attributes::of_entry(&entry, node_id, &rel, self.outbox_recorder.is_writable(), &self.directory_contents, &self.open_writers);
         let opened = file.filter(|_| open).map(|file| {
             // What is written into a file just made is its content: the outbox waits for
             // its last writer already.
-            self.writers.opened(ino, true);
-            OpenedFile { ino, id: removed.map(|base| base.id), rel, file }
+            self.open_writers.add_writer(node_id, true);
+            OpenedFile { node_id, id: removed.map(|base| base.id), rel, file }
         });
         Ok(MadeEntry { attr, opened })
     }
@@ -71,11 +71,11 @@ impl WriteOperations {
     /// itself are made.
     fn check_make(&self, parent: u64, name: &str, dir: bool) -> Result<Directory, Errno> {
         self.check_writable()?;
-        let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
+        let above = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
         if self.rules.daemon_owned(name) || (dir && parent == 1 && self.rules.is_trash(name)) {
             return Err(Errno::EPERM);
         }
-        if self.view.entry(&above, name).is_some() {
+        if self.directory_contents.find_entry(&above, name).is_some() {
             return Err(Errno::EEXIST);
         }
         Ok(above)

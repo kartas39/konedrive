@@ -75,29 +75,29 @@ impl Mount {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             // Before the mount: afterwards this path is the mount.
-            let under = Arc::new(BackingDirectory::open(&root.path)?);
-            let view = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&under)));
-            let nodes = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
-            let resolve = Arc::new(NodeLookup::new(Arc::clone(&view), Arc::clone(&nodes)));
+            let backing_directory = Arc::new(BackingDirectory::open(&root.path)?);
+            let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(other)?, Arc::clone(&backing_directory)));
+            let node_table = Arc::new(Mutex::new(NodeTable { next: 1, ..NodeTable::default() }));
+            let node_lookup = Arc::new(NodeLookup::new(Arc::clone(&directory_contents), Arc::clone(&node_table)));
             let writable = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
+            let outbox_recorder = Arc::new(OutboxRecorder::start(store.clone(), writing.tree_lock, Arc::clone(&writable))?);
             let upload_rules = Arc::new(UploadRules::new(writing.ignore, writing.machine_name));
-            let writers = Arc::new(OpenWriters::default());
+            let open_writers = Arc::new(OpenWriters::default());
             let write_operations = WriteOperations::new(
-                Arc::clone(&view),
-                Arc::clone(&under),
-                Arc::clone(&resolve),
-                Arc::clone(&writers),
-                Arc::clone(&recorder),
+                Arc::clone(&directory_contents),
+                Arc::clone(&backing_directory),
+                Arc::clone(&node_lookup),
+                Arc::clone(&open_writers),
+                Arc::clone(&outbox_recorder),
                 Arc::clone(&upload_rules),
             );
             let shared = Arc::new(Shared {
                 root: root.clone(),
-                under,
-                view,
+                backing_directory,
+                directory_contents,
                 store,
-                nodes,
-                resolve,
+                node_table,
+                node_lookup,
                 source,
                 report,
                 pool,
@@ -120,8 +120,8 @@ impl Mount {
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 writable,
                 upload_rules,
-                recorder,
-                writers,
+                outbox_recorder,
+                open_writers,
                 write_operations,
                 runtime,
             });
@@ -137,7 +137,7 @@ impl Mount {
             let session = fuser::Session::new(Requests(Arc::clone(&shared)), &root.path, &config)?;
             let notifier = session.notifier();
             // From here on the daemon opens the folder by this descriptor: its path is the mount.
-            crate::folder::root::mounted_over(&root.path, Arc::new(shared.under.descriptor()?));
+            crate::folder::root::mounted_over(&root.path, Arc::new(shared.backing_directory.descriptor()?));
             let (tell, told) = mpsc::channel::<Vec<Announce>>();
             *crate::panic::lock(&shared.tell) = Some(tell);
             let session = match session.spawn() {
@@ -149,7 +149,7 @@ impl Mount {
             };
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
             // BackingDirectory the mount the folder is the daemon's alone, and open to it.
-            shared.under.unlock();
+            shared.backing_directory.unlock();
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
             shared.sweep();
@@ -172,7 +172,7 @@ impl Mount {
         s.stopping.store(true, Ordering::SeqCst);
         *crate::panic::lock(&s.tell) = None;
         // The recorder ends with the last change it was given; what comes later is refused.
-        s.recorder.stop();
+        s.outbox_recorder.stop();
         if let Some(announcer) = crate::panic::lock(&self.announcer).take() {
             let _ = announcer.join();
         }
@@ -218,7 +218,7 @@ impl Mount {
     /// The folder under the mount, for what must not go through the mount: a walk of what is
     /// downloaded.
     pub fn under(&self) -> PathBuf {
-        self.shared.under.root()
+        self.shared.backing_directory.root()
     }
 }
 

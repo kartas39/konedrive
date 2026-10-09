@@ -9,7 +9,7 @@
 
 use konedrive_tree::TreeError;
 
-use super::{create_entries, FolderEvent, LocalEntry, OutboxBatch, StoreFacts};
+use super::{create_local_only_entries, FolderEvent, LocalEntry, OutboxBatch, StoreFacts};
 
 /// The local objects the folder holds, already without what stays on this computer.
 #[derive(Debug)]
@@ -20,7 +20,7 @@ impl FolderEvent for UnrecordedEntries {
         // An object whose rows cannot be read is left for the next walk.
         let unknown = |entry: &LocalEntry| facts.outbox_rows_of(&entry.object.handle).is_ok_and(|rows| rows.is_empty());
         let unknown: Vec<LocalEntry> = self.0.into_iter().filter(unknown).collect();
-        Ok(OutboxBatch::of(create_entries(&unknown, now)))
+        Ok(OutboxBatch::of(create_local_only_entries(&unknown, now)))
     }
 }
 

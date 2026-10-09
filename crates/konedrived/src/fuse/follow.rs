@@ -43,12 +43,12 @@ pub struct Followed {
 /// The directories of the folder under the mount down to `rel`, each marked as its item's,
 /// inside a cycle of the listing, for a place of the tree it has staged: on the store's own
 /// thread, where the mount's reader would not see it.
-fn backing_staged(under: &BackingDirectory, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
+fn backing_staged(backing_directory: &BackingDirectory, store: &TreeStore, rel: &Path) -> std::io::Result<()> {
     let staged = |above: Option<&str>, _: &Path, name: &str| {
         let row = store.child(Table::Staging, above?, name).ok().flatten()?;
         (row.placement == Placement::Placed).then_some(row.id)
     };
-    under.backing(rel, store.root_item_id().ok().flatten(), staged)
+    backing_directory.make_marked_directories(rel, store.root_item_id().ok().flatten(), staged)
 }
 
 impl Mount {
@@ -77,40 +77,40 @@ impl Mount {
         // The copy of item `id` at `rel`, or its directory: a file that is not that item's
         // download is never moved or removed.
         let ours = |rel: &Path, id: &str, kind: Kind| match kind {
-            Kind::File => s.under.has_copy(rel, id),
-            Kind::Folder => s.under.stat(rel).is_some_and(|m| m.is_dir()) && s.under.carried(rel).is_none_or(|carried| carried == id),
+            Kind::File => s.backing_directory.has_downloaded_copy(rel, id),
+            Kind::Folder => s.backing_directory.stat(rel).is_some_and(|m| m.is_dir()) && s.backing_directory.read_onedrive_id(rel).is_none_or(|carried| carried == id),
         };
         let (mut told, mut unpinned, mut met, mut gone) = (Vec::new(), Vec::new(), CycleConflicts::default(), Vec::new());
-        let meeting = ConflictCopies { under: &s.under, view: &s.view, rules: &s.upload_rules, now: s.now() };
+        let meeting = ConflictCopies { backing_directory: &s.backing_directory, directory_contents: &s.directory_contents, rules: &s.upload_rules, now: s.now() };
         for step in &steps {
             // Whatever its source remembered of the item is of what it was.
             s.source.forget(&step.id);
             match (&step.old, &step.new) {
                 (Some((old, was)), None) => {
                     match old.kind {
-                        Kind::File => drop(s.under.remove_copy(was, &step.id)),
+                        Kind::File => drop(s.backing_directory.remove_downloaded_copy(was, &step.id)),
                         Kind::Folder => gone.push((step.id.clone(), was.clone())),
                     }
                     unpinned.push(step.id.clone());
                     told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
                 }
                 (None, Some((new, now))) => {
-                    meeting.keep_beside_item(now, new.parent_id.as_deref(), &mut met);
+                    meeting.move_aside(now, new.parent_id.as_deref(), &mut met);
                     told.push(Announce::Came(now.clone(), new.kind, new.parent_id.clone()));
                 }
                 (Some((old, was)), Some((new, now))) => {
                     if was != now {
-                        meeting.keep_beside_item(now, new.parent_id.as_deref(), &mut met);
+                        meeting.move_aside(now, new.parent_id.as_deref(), &mut met);
                     }
                     if was != now && new.kind == Kind::Folder {
                         // The rows of what the user changed below it are found by place.
                         met.ops.push(rebase(was, now));
                     }
                     if step.content_changed() {
-                        s.under.remove_copy(was, &step.id);
-                    } else if was != now && ours(was, &step.id, old.kind) && s.under.stat(now).is_none() {
-                        let _ = now.parent().map(|dir| backing_staged(&s.under, store, dir));
-                        let _ = s.under.rename(was, now);
+                        s.backing_directory.remove_downloaded_copy(was, &step.id);
+                    } else if was != now && ours(was, &step.id, old.kind) && s.backing_directory.stat(now).is_none() {
+                        let _ = now.parent().map(|dir| backing_staged(&s.backing_directory, store, dir));
+                        let _ = s.backing_directory.rename(was, now);
                     }
                     if was != now {
                         told.push(Announce::Gone(was.clone(), old.kind, step.id.clone(), old.parent_id.clone()));
@@ -126,7 +126,7 @@ impl Mount {
         // below it went.
         gone.sort_by_key(|(_, rel)| std::cmp::Reverse(rel.components().count()));
         for (id, rel) in &gone {
-            meeting.keep_gone_folder(id, rel, rw.is_some(), &mut met);
+            meeting.keep_removed_directory(id, rel, rw.is_some(), &mut met);
         }
         let CycleConflicts { detections, ops, copied, kept } = met;
         if !detections.is_empty() || !ops.is_empty() {
@@ -155,6 +155,6 @@ impl Mount {
         self.shared.announce(told);
         self.shared.sweep();
         // What the cycle kept of the user's own is the outbox's to send.
-        self.shared.recorder.wake();
+        self.shared.outbox_recorder.wake();
     }
 }

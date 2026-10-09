@@ -54,13 +54,13 @@ impl Shown {
     /// The facts of `entry`, which is node `ino` at `rel`: its copy and whether the outbox
     /// holds a change of its content are asked of `view`, whether it is being written of
     /// `writers`.
-    pub(super) fn of(entry: &Entry, ino: u64, rel: &Path, view: &DirectoryContents, writers: &OpenWriters) -> Shown {
+    pub(super) fn of(entry: &Entry, node_id: u64, rel: &Path, directory_contents: &DirectoryContents, open_writers: &OpenWriters) -> Shown {
         match entry {
             Entry::Local(local) => Shown::Local { object: OnDisk::from(&local.object.meta), dir: local.object.meta.is_dir() },
             Entry::Item(row) if row.kind == Kind::Folder => Shown::Folder { listed: seconds(row.mtime) },
-            Entry::Item(row) => match view.under().copy(rel, &row.id) {
+            Entry::Item(row) => match directory_contents.backing_directory().find_downloaded_copy(rel, &row.id) {
                 Some(meta) => {
-                    let own = view.unsent_changes().changed.contains(&row.id) || writers.open(ino);
+                    let own = directory_contents.unsent_changes().changed.contains(&row.id) || open_writers.is_open(node_id);
                     Shown::Copy { copy: OnDisk::from(&meta), listed: seconds(row.mtime), own }
                 }
                 None => Shown::NotDownloaded { size: row.size, listed: seconds(row.mtime) },
@@ -91,7 +91,7 @@ fn perm(writable: bool, dir: bool) -> u16 {
 
 /// The attributes of node `ino`, which is `shown`, in a folder that takes changes
 /// (`writable`) or does not.
-pub(super) fn attr(ino: u64, writable: bool, shown: &Shown) -> FileAttr {
+pub(super) fn attr(node_id: u64, writable: bool, shown: &Shown) -> FileAttr {
     let dir = matches!(shown, Shown::Folder { .. } | Shown::Local { dir: true, .. });
     let (size, blocks, changed) = match *shown {
         Shown::Folder { listed } => (0, 0, listed),
@@ -103,7 +103,7 @@ pub(super) fn attr(ino: u64, writable: bool, shown: &Shown) -> FileAttr {
     };
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     FileAttr {
-        ino: INodeNo(ino),
+        ino: INodeNo(node_id),
         size,
         blocks,
         atime: changed,
@@ -122,8 +122,8 @@ pub(super) fn attr(ino: u64, writable: bool, shown: &Shown) -> FileAttr {
 }
 
 /// What the mount shows of `entry`, which is node `ino` at `rel`.
-pub(super) fn of_entry(entry: &Entry, ino: u64, rel: &Path, writable: bool, view: &DirectoryContents, writers: &OpenWriters) -> FileAttr {
-    attr(ino, writable, &Shown::of(entry, ino, rel, view, writers))
+pub(super) fn of_entry(entry: &Entry, node_id: u64, rel: &Path, writable: bool, directory_contents: &DirectoryContents, open_writers: &OpenWriters) -> FileAttr {
+    attr(node_id, writable, &Shown::of(entry, node_id, rel, directory_contents, open_writers))
 }
 
 #[cfg(test)]

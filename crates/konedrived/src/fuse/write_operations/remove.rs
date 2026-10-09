@@ -14,15 +14,15 @@ impl WriteOperations {
     /// forgotten there.
     pub(in crate::fuse) fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
         self.check_writable()?;
-        let above = self.resolve.dir(parent).ok_or(Errno::ENOENT)?;
-        let entry = self.view.entry(&above, name).ok_or(Errno::ENOENT)?;
+        let above = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
+        let entry = self.directory_contents.find_entry(&above, name).ok_or(Errno::ENOENT)?;
         match (entry.is_dir(), dir) {
             (true, false) => return Err(Errno::EISDIR),
             (false, true) => return Err(Errno::ENOTDIR),
             _ => {}
         }
         let rel = above.rel.join(name);
-        if dir && !self.view.entries(&Directory { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        if dir && !self.directory_contents.list_entries(&Directory { id: entry.id().map(str::to_owned), rel: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry {
@@ -32,13 +32,13 @@ impl WriteOperations {
         self.record_or_undo(event, format_args!("the removal of {}", rel.display()), || {})?;
         match &entry {
             // The directory under the mount goes when nothing is left in it.
-            Entry::Item(_) if dir => drop(self.under.remove_dir(&rel)),
-            Entry::Item(row) => drop(self.under.remove_copy(&rel, &row.id)),
-            Entry::Local(_) if dir => self.under.remove_dir(&rel).map_err(|e| errno(&e))?,
-            Entry::Local(_) => self.under.remove_file(&rel).map_err(|e| errno(&e))?,
+            Entry::Item(_) if dir => drop(self.backing_directory.remove_dir(&rel)),
+            Entry::Item(row) => drop(self.backing_directory.remove_downloaded_copy(&rel, &row.id)),
+            Entry::Local(_) if dir => self.backing_directory.remove_dir(&rel).map_err(|e| errno(&e))?,
+            Entry::Local(_) => self.backing_directory.remove_file(&rel).map_err(|e| errno(&e))?,
         }
         if let Entry::Local(local) = &entry {
-            self.resolve.forget(&local.object.handle);
+            self.node_lookup.forget(&local.object.handle);
         }
         Ok(())
     }

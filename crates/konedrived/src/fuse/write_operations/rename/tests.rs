@@ -40,9 +40,9 @@ fn a_local_file_saved_over_an_items_file_is_that_items_new_content() {
     f.ops.make(1, "a.new", false, false).unwrap();
     let node = f.node(1, "a.new");
     f.ops.rename(1, "a.new", 1, "a.txt", false).unwrap();
-    assert!(f.under.has_copy(&at("a.txt"), "A"));
+    assert!(f.backing_directory.has_downloaded_copy(&at("a.txt"), "A"));
     assert_eq!(f.said(), [(OutboxKind::Update, Some("A".into()), at("a.txt"))]);
-    assert_eq!(f.resolve.item_node("A"), Some(node));
+    assert_eq!(f.node_lookup.find_node_id("A"), Some(node));
     assert_eq!(f.shown("a.txt"), Some(Some("A".into())));
 }
 

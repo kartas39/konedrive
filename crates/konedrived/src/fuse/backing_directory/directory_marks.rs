@@ -16,7 +16,7 @@ impl BackingDirectory {
     /// tells the item of a name from the directory it is in — that directory's item, when
     /// it has one, and its place. A directory `item` knows nothing of is made and left
     /// unmarked.
-    pub(in crate::fuse) fn backing(&self, rel: &Path, root: Option<String>, item: impl Fn(Option<&str>, &Path, &str) -> Option<String>) -> io::Result<()> {
+    pub(in crate::fuse) fn make_marked_directories(&self, rel: &Path, root: Option<String>, item: impl Fn(Option<&str>, &Path, &str) -> Option<String>) -> io::Result<()> {
         let (mut above, mut dir) = (root, PathBuf::new());
         for name in rel.components() {
             let at = dir.join(name);
@@ -27,8 +27,8 @@ impl BackingDirectory {
                 Err(e) => return Err(e),
             }
             if let Some(id) = &id {
-                if self.carried(&at).as_deref() != Some(id.as_str()) {
-                    self.carry(&at, id)?;
+                if self.read_onedrive_id(&at).as_deref() != Some(id.as_str()) {
+                    self.mark_with_onedrive_id(&at, id)?;
                 }
             }
             (above, dir) = (id, at);

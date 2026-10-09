@@ -12,7 +12,7 @@
 //!
 //! - here: an item's row ([`DirectoryContents::row`]), the row above it ([`DirectoryContents::parent`]), the folder's
 //!   own item ([`DirectoryContents::root`]), the files at and below an item ([`DirectoryContents::files_below`]), the
-//!   item whose file the user just removed from a place ([`DirectoryContents::removed_item_at`]);
+//!   item whose file the user just removed from a place ([`DirectoryContents::find_file_removed_at`]);
 //! - [`entries`]: what a directory holds under a name and in whole ([`Entry`], [`Directory`]);
 //! - [`places`]: where the folder shows an item, and what stands at a path.
 
@@ -36,19 +36,19 @@ pub(super) struct DirectoryContents {
     /// What the outbox's rows say, and the store's version that was read at; `None` before
     /// the first reading.
     unsent_changes: Mutex<(Option<i64>, Arc<UnsentChanges>)>,
-    under: Arc<BackingDirectory>,
+    backing_directory: Arc<BackingDirectory>,
 }
 
 impl DirectoryContents {
     /// The view of the folder `under` through `reader`, a connection of its own to the
     /// folder's store.
-    pub(super) fn new(reader: TreeStore, under: Arc<BackingDirectory>) -> Self {
-        DirectoryContents { reader: Mutex::new(reader), unsent_changes: Mutex::default(), under }
+    pub(super) fn new(reader: TreeStore, backing_directory: Arc<BackingDirectory>) -> Self {
+        DirectoryContents { reader: Mutex::new(reader), unsent_changes: Mutex::default(), backing_directory }
     }
 
     /// The folder under the mount this is a view of.
-    pub(super) fn under(&self) -> &BackingDirectory {
-        &self.under
+    pub(super) fn backing_directory(&self) -> &BackingDirectory {
+        &self.backing_directory
     }
 
     /// One question to the store, for what has no named question here yet (`asked.rs`).
@@ -59,7 +59,7 @@ impl DirectoryContents {
 
     /// The item whose file the user removed from `rel` and whose removal is not sent yet, as
     /// the store has it: a file made there now is that item's new content.
-    pub(super) fn removed_item_at(&self, rel: &Path) -> Option<Row> {
+    pub(super) fn find_file_removed_at(&self, rel: &Path) -> Option<Row> {
         let rows = self.read(|s| s.outbox_at_or_under(rel))?;
         let removed = rows.into_iter().find(|row| row.rel == rel && row.kind == OutboxKind::Delete && row.state != OutboxState::Running)?;
         self.row(&removed.item_id?).filter(|base| base.kind == Kind::File)
@@ -106,7 +106,7 @@ impl DirectoryContents {
         let mut ids = self.read(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
         ids.push(row.id.clone());
         let files: Vec<Row> = ids.iter().filter_map(|id| self.row(id).filter(|r| r.kind == Kind::File)).collect();
-        files.into_iter().filter_map(|file| self.place(&file.id).map(|at| (file, at))).collect()
+        files.into_iter().filter_map(|file| self.find_path(&file.id).map(|at| (file, at))).collect()
     }
 }
 

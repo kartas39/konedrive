@@ -10,7 +10,7 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::TreeError;
 
-use super::{create_entries, create_or_mkdir, delete_item, forget_object, move_item, rebase, update_item, wait_for_writer};
+use super::{create_local_only_entries, create_or_mkdir, delete_in_onedrive, forget_local_only, move_in_onedrive, rebase, update_content, wait_for_writer};
 use super::{FolderEvent, LocalEntry, LocalObject, OutboxBatch, FolderPlace, StoreFacts};
 
 /// A rename that was made in the folder.
@@ -55,13 +55,13 @@ impl FolderEvent for EntryRenamed {
                 let at = to.rel();
                 // What stood at the new place first: it frees the name.
                 let mut batch = OutboxBatch::of(match &displaced {
-                    Some(DisplacedEntry::InOneDrive(id)) => delete_item(facts, id, &at)?,
-                    Some(DisplacedEntry::LocalOnly(handle)) => forget_object(facts, handle, &at)?,
+                    Some(DisplacedEntry::InOneDrive(id)) => delete_in_onedrive(facts, id, &at)?,
+                    Some(DisplacedEntry::LocalOnly(handle)) => forget_local_only(facts, handle, &at)?,
                     None => Vec::new(),
                 });
                 let dir = match entry {
                     MovedEntry::InOneDrive { id, dir, object } => {
-                        batch.detections.extend(move_base_item(facts, &id, object, &to)?);
+                        batch.detections.extend(move_base_row(facts, &id, object, &to)?);
                         dir
                     }
                     MovedEntry::LocalOnlyFile { file, open, uploaded: true } => {
@@ -77,7 +77,7 @@ impl FolderEvent for EntryRenamed {
                         true
                     }
                     MovedEntry::LocalOnlyDirectory { uploaded, .. } => {
-                        batch.detections.extend(create_entries(&uploaded, now));
+                        batch.detections.extend(create_local_only_entries(&uploaded, now));
                         true
                     }
                 };
@@ -93,10 +93,10 @@ impl FolderEvent for EntryRenamed {
 
 /// Save by rename. Nothing when the base no longer has the item.
 fn save_over(facts: &impl StoreFacts, file: &LocalObject, open: bool, over: &str, to: &FolderPlace, now: i64) -> Result<OutboxBatch, TreeError> {
-    let Some(base) = facts.base_item(over)? else { return Ok(OutboxBatch::default()) };
+    let Some(base) = facts.base_row(over)? else { return Ok(OutboxBatch::default()) };
     let pending = facts.outbox_rows_of(&file.handle)?;
     let ops = pending.iter().filter(|row| row.state != OutboxState::Running).map(|row| OutboxOp::Remove(row.seq)).collect();
-    let mut update = update_item(to, &base, file);
+    let mut update = update_content(to, &base, file);
     if open {
         wait_for_writer(&mut update, now);
     }
@@ -105,9 +105,9 @@ fn save_over(facts: &impl StoreFacts, file: &LocalObject, open: bool, over: &str
 
 /// The item `id` stands at `to` now. Its content is the base's unless the outbox holds new
 /// content of it. Nothing when the base no longer has the item.
-fn move_base_item(facts: &impl StoreFacts, id: &str, object: Option<FileHandle>, to: &FolderPlace) -> Result<Option<Detection>, TreeError> {
-    let Some(base) = facts.base_item(id)? else { return Ok(None) };
-    let mut moved = move_item(to, &base, object);
+fn move_base_row(facts: &impl StoreFacts, id: &str, object: Option<FileHandle>, to: &FolderPlace) -> Result<Option<Detection>, TreeError> {
+    let Some(base) = facts.base_row(id)? else { return Ok(None) };
+    let mut moved = move_in_onedrive(to, &base, object);
     moved.same_content = !facts.has_update(id)?;
     Ok(Some(moved))
 }
@@ -126,7 +126,7 @@ fn upload_from(facts: &impl StoreFacts, file: &LocalObject, open: bool, to: &Fol
 /// outbox held of it goes, and so does every row of a local object at and below the place it
 /// came from that is not being sent.
 fn keep_local(facts: &impl StoreFacts, handle: &FileHandle, from: &Path, at: &Path, batch: &mut OutboxBatch) -> Result<(), TreeError> {
-    batch.detections.extend(forget_object(facts, handle, at)?);
+    batch.detections.extend(forget_local_only(facts, handle, at)?);
     let below = facts.rows_at_or_under(from)?;
     let unsent = below.iter().filter(|row| row.item_id.is_none() && row.state != OutboxState::Running);
     batch.ops.extend(unsent.map(|row| OutboxOp::Remove(row.seq)));

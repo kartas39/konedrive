@@ -19,16 +19,16 @@ impl Requests {
     /// What the mount shows of `entry`, which is node `ino` at `rel`.
     fn shown(&self, entry: &Entry, ino: u64, rel: &Path) -> FileAttr {
         let s = &self.0;
-        attributes::of_entry(entry, ino, rel, s.writable(), &s.view, &s.writers)
+        attributes::of_entry(entry, ino, rel, s.writable(), &s.directory_contents, &s.open_writers)
     }
 
     /// The entry `name` of `parent`, as the folder has it now.
     pub(super) fn entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let s = &self.0;
-        let found = s.resolve.dir(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.view.entry(&dir, name)?, dir.rel.join(name))));
+        let found = s.node_lookup.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| Some((s.directory_contents.find_entry(&dir, name)?, dir.rel.join(name))));
         match found {
             Some((entry, rel)) => {
-                let ino = s.resolve.ino_of(&entry, parent.0);
+                let ino = s.node_lookup.assign_node_id(&entry, parent.0);
                 reply.entry(&TTL, &self.shown(&entry, ino, &rel), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
@@ -49,7 +49,7 @@ impl Requests {
     }
 
     pub(super) fn attributes(&self, ino: INodeNo, reply: ReplyAttr) {
-        match self.0.resolve.node(ino.0) {
+        match self.0.node_lookup.find_entry(ino.0) {
             Some((entry, rel)) => reply.attr(&TTL, &self.shown(&entry, ino.0, &rel)),
             None => reply.error(Errno::ENOENT),
         }
@@ -59,10 +59,10 @@ impl Requests {
     /// part of the listing after it.
     fn listing(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<Entry>>)> {
         let s = &self.0;
-        let dir = s.resolve.dir(ino.0)?;
+        let dir = s.node_lookup.find_directory(ino.0)?;
         let kept = crate::panic::lock(&s.listings).get(&fh.0).cloned().filter(|_| offset > 0);
         let entries = kept.unwrap_or_else(|| {
-            let entries = Arc::new(s.view.entries(&dir));
+            let entries = Arc::new(s.directory_contents.list_entries(&dir));
             crate::panic::lock(&s.listings).insert(fh.0, Arc::clone(&entries));
             entries
         });
@@ -72,7 +72,7 @@ impl Requests {
     pub(super) fn listed(&self, ino: INodeNo, fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
         let Some((_, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = self.0.resolve.ino_of(entry, ino.0);
+            let child = self.0.node_lookup.assign_node_id(entry, ino.0);
             let kind = if entry.is_dir() { FileType::Directory } else { FileType::RegularFile };
             if reply.add(INodeNo(child), i as u64 + 1, kind, entry.name()) {
                 break;
@@ -85,7 +85,7 @@ impl Requests {
         let s = &self.0;
         let Some((dir, entries)) = self.listing(ino, fh, offset) else { return reply.ok() };
         for (i, entry) in entries.iter().enumerate().skip(offset as usize) {
-            let child = s.resolve.ino_of(entry, ino.0);
+            let child = s.node_lookup.assign_node_id(entry, ino.0);
             let attr = self.shown(entry, child, &dir.rel.join(entry.name()));
             if reply.add(INodeNo(child), i as u64 + 1, entry.name(), &TTL, &attr, Generation(0)) {
                 break;
@@ -105,7 +105,7 @@ impl Requests {
     }
 
     pub(super) fn space(&self, reply: ReplyStatfs) {
-        let v = match self.0.under.space() {
+        let v = match self.0.backing_directory.space() {
             Ok(v) => v,
             Err(e) => return reply.error(errno(&e)),
         };
@@ -126,11 +126,11 @@ impl Requests {
         let s = &self.0;
         if ino.0 == 1 && (name == XATTR_ROOT || name == XATTR_DRIVE) {
             // The folder's own: what its registration and its first cycle wrote on it.
-            return s.under.attribute(Path::new(""), name);
+            return s.backing_directory.attribute(Path::new(""), name);
         }
-        let (entry, rel) = s.resolve.node(ino.0)?;
+        let (entry, rel) = s.node_lookup.find_entry(ino.0)?;
         if name == XATTR_SYNC {
-            return s.under.attribute(&rel, name);
+            return s.backing_directory.attribute(&rel, name);
         }
         let Entry::Item(row) = entry else { return None };
         match name {

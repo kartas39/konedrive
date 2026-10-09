@@ -28,24 +28,24 @@ impl BackingDirectory {
     /// What stands at `rel`, looked at once, through the folder's descriptor and without
     /// following a link at its name: the handle and the rest are of one object, whatever
     /// takes the name meanwhile. `None` when nothing stands there.
-    pub(in crate::fuse) fn object(&self, rel: &Path) -> Option<Object> {
+    pub(in crate::fuse) fn find_disk_entry(&self, rel: &Path) -> Option<Object> {
         let found = nix::fcntl::openat(self.folder.as_fd(), rel, OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC, Mode::empty()).ok()?;
         let found = File::from(found);
         Some(Object { handle: FileHandle::of(&found).ok()?, meta: found.metadata().ok()? })
     }
 
     /// The item id the object at `rel` carries.
-    pub(in crate::fuse) fn carried(&self, rel: &Path) -> Option<String> {
+    pub(in crate::fuse) fn read_onedrive_id(&self, rel: &Path) -> Option<String> {
         self.attribute(rel, XATTR_ITEM_ID)
     }
 
     /// The object at `rel` is item `id`'s from here on.
-    pub(in crate::fuse) fn carry(&self, rel: &Path, id: &str) -> io::Result<()> {
+    pub(in crate::fuse) fn mark_with_onedrive_id(&self, rel: &Path, id: &str) -> io::Result<()> {
         xattr::set(self.path(rel), XATTR_ITEM_ID, id.as_bytes())
     }
 
     /// The object at `rel` is no item's from here on.
-    pub(in crate::fuse) fn carry_nothing(&self, rel: &Path) {
+    pub(in crate::fuse) fn clear_onedrive_id(&self, rel: &Path) {
         let _ = xattr::remove(self.path(rel), XATTR_ITEM_ID);
     }
 }

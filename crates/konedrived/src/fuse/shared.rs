@@ -39,16 +39,16 @@ use super::directory_contents::DirectoryContents;
 pub(super) struct Shared {
     pub(super) root: SyncRoot,
     /// The folder under the mount ([`super::backing_directory`]).
-    pub(super) under: Arc<BackingDirectory>,
+    pub(super) backing_directory: Arc<BackingDirectory>,
     /// The folder as the mount shows it ([`super::directory_contents`]).
-    pub(super) view: Arc<DirectoryContents>,
+    pub(super) directory_contents: Arc<DirectoryContents>,
     /// The store's one writer, for the pins.
     pub(super) store: Store,
     /// The node ids the kernel knows ([`super::node_table`]): shared by what resolves them and what
     /// tells the kernel of changes.
-    pub(super) nodes: Arc<Mutex<NodeTable>>,
+    pub(super) node_table: Arc<Mutex<NodeTable>>,
     /// Which entry of the folder a node is ([`super::node_lookup`]).
-    pub(super) resolve: Arc<NodeLookup>,
+    pub(super) node_lookup: Arc<NodeLookup>,
     pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
     pub(super) pool: Arc<TransferPool>,
@@ -95,9 +95,9 @@ pub(super) struct Shared {
     /// What of the folder is uploaded at all ([`super::upload_rules`]).
     pub(super) upload_rules: Arc<UploadRules>,
     /// The thread that makes and records each change ([`super::outbox_recorder`]).
-    pub(super) recorder: Arc<OutboxRecorder>,
+    pub(super) outbox_recorder: Arc<OutboxRecorder>,
     /// The files programs hold open for writing, by node ([`super::open_writers`]).
-    pub(super) writers: Arc<OpenWriters>,
+    pub(super) open_writers: Arc<OpenWriters>,
     /// The operations that change the folder ([`super::write_operations`]).
     pub(super) write_operations: WriteOperations,
     pub(super) runtime: tokio::runtime::Handle,

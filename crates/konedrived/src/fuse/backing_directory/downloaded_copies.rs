@@ -17,7 +17,7 @@ use super::BackingDirectory;
 impl BackingDirectory {
     /// The downloaded copy of item `id` at `rel`, if the folder holds it: what the filesystem
     /// says of it.
-    pub(in crate::fuse) fn copy(&self, rel: &Path, id: &str) -> Option<fs::Metadata> {
+    pub(in crate::fuse) fn find_downloaded_copy(&self, rel: &Path, id: &str) -> Option<fs::Metadata> {
         let path = self.path(rel);
         let meta = fs::symlink_metadata(&path).ok().filter(fs::Metadata::is_file)?;
         let carried = xattr::get(&path, XATTR_ITEM_ID).ok().flatten()?;
@@ -27,12 +27,12 @@ impl BackingDirectory {
         (carried == id.as_bytes() && whole).then_some(meta)
     }
 
-    pub(in crate::fuse) fn has_copy(&self, rel: &Path, id: &str) -> bool {
-        self.copy(rel, id).is_some()
+    pub(in crate::fuse) fn has_downloaded_copy(&self, rel: &Path, id: &str) -> bool {
+        self.find_downloaded_copy(rel, id).is_some()
     }
 
     /// Marks the file at `rel` as the whole content of item `id`: the item's copy from here on.
-    pub(in crate::fuse) fn mark_copy(&self, rel: &Path, id: &str) -> io::Result<()> {
+    pub(in crate::fuse) fn mark_downloaded_copy(&self, rel: &Path, id: &str) -> io::Result<()> {
         let path = self.path(rel);
         xattr::set(&path, XATTR_ITEM_ID, id.as_bytes())?;
         xattr::set(&path, XATTR_STATE, State::Hydrated.as_str().as_bytes())
@@ -40,7 +40,7 @@ impl BackingDirectory {
 
     /// Removes the file at `rel` if it carries the id of item `id` and no other. Its size on
     /// disk, when it went.
-    pub(in crate::fuse) fn remove_copy(&self, rel: &Path, id: &str) -> Option<u64> {
+    pub(in crate::fuse) fn remove_downloaded_copy(&self, rel: &Path, id: &str) -> Option<u64> {
         let path = self.path(rel);
         let file = File::open(&path).ok()?;
         if placeholder::read_item_id(&file).ok().flatten().as_deref() != Some(id) {
