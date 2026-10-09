@@ -41,6 +41,7 @@ mod attributes;
 mod conflict_copies;
 mod detections;
 mod directory;
+mod download_states;
 mod fill;
 mod follow;
 mod local_only_entries;
