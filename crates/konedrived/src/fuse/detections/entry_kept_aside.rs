@@ -14,7 +14,8 @@
 
 use std::path::PathBuf;
 
-use super::{create_or_mkdir, rebase, FolderPlace, OutboxBatch};
+use crate::fuse::entry_place::EntryPlace;
+use super::{create_or_mkdir, rebase, OutboxBatch};
 use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 
 /// The local-only entry `on_disk` was at `from`, where something of OneDrive comes, and was
@@ -23,7 +24,7 @@ use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 pub(in crate::fuse) struct EntryKeptAside {
     pub(in crate::fuse) on_disk: DiskEntry,
     pub(in crate::fuse) from: PathBuf,
-    pub(in crate::fuse) to: FolderPlace,
+    pub(in crate::fuse) to: EntryPlace,
     pub(in crate::fuse) uploaded: bool,
 }
 
@@ -31,7 +32,7 @@ impl EntryKeptAside {
     /// The conflict copy is created, or made, from its new place; the rows of what is below
     /// a directory follow it there.
     pub(in crate::fuse) fn detect(self, now: i64) -> OutboxBatch {
-        let ops = if self.on_disk.metadata.kind == EntryKind::Directory { vec![rebase(&self.from, &self.to.rel())] } else { Vec::new() };
+        let ops = if self.on_disk.metadata.kind == EntryKind::Directory { vec![rebase(&self.from, &self.to.path())] } else { Vec::new() };
         let detections = if self.uploaded { vec![create_or_mkdir(&self.to, &self.on_disk, false, now)] } else { Vec::new() };
         OutboxBatch { detections, ops }
     }

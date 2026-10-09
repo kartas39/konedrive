@@ -1,14 +1,17 @@
 //! What the tests of the events share: the drive of the directory contents' tests in a store
 //! in memory, disk entries by made-up file handles, and places in the drive.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::TreeStore;
 
-use super::{is_directory_of, FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch};
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
+use super::{is_directory_of, FolderEvent, OutboxBatch};
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
 use crate::fuse::directory_contents::tests::drive;
 
@@ -38,29 +41,29 @@ pub(in crate::fuse) fn directory(n: u8) -> DiskEntry {
 }
 
 /// `on_disk` as a local-only entry at `place`.
-pub(in crate::fuse) fn local_only(on_disk: &DiskEntry, place: &FolderPlace) -> LocalOnlyEntry {
+pub(in crate::fuse) fn local_only(on_disk: &DiskEntry, place: &EntryPlace) -> LocalOnlyEntry {
     LocalOnlyEntry { on_disk: on_disk.clone(), place: place.clone() }
 }
 
 /// `name` in the folder itself.
-pub(in crate::fuse) fn in_root(name: &str) -> FolderPlace {
-    FolderPlace::new(Some("R"), Path::new(""), name)
+pub(in crate::fuse) fn in_root(name: &str) -> EntryPlace {
+    EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: name.into() }
 }
 
 /// `name` in `docs`.
-pub(in crate::fuse) fn in_docs(name: &str) -> FolderPlace {
-    FolderPlace::new(Some("D"), Path::new("docs"), name)
+pub(in crate::fuse) fn in_docs(name: &str) -> EntryPlace {
+    EntryPlace { directory: DirectoryReference { onedrive_id: Some("D".into()), path: "docs".into() }, name: name.into() }
 }
 
 /// The detection that the local-only entry `on_disk` is at `place`, in `state`.
-pub(in crate::fuse) fn detection_of(kind: OutboxKind, on_disk: &DiskEntry, place: &FolderPlace, state: OutboxState) -> Detection {
+pub(in crate::fuse) fn detection_of(kind: OutboxKind, on_disk: &DiskEntry, place: &EntryPlace, state: OutboxState) -> Detection {
     Detection {
         kind,
         item_id: None,
         object: Some(on_disk.handle.clone()),
-        rel: place.rel(),
+        rel: place.path(),
         base: None,
-        target_parent: place.above.clone(),
+        target_parent: place.directory.onedrive_id.clone(),
         target_name: Some(place.name.clone()),
         same_content: false,
         state,

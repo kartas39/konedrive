@@ -9,7 +9,8 @@
 
 use konedrive_tree::TreeError;
 
-use super::{create_local_only_entries, FolderEvent, LocalOnlyEntry, OutboxBatch, StoreFacts};
+use crate::fuse::local_only_entry::LocalOnlyEntry;
+use super::{create_local_only_entries, FolderEvent, OutboxBatch, StoreFacts};
 
 /// The local-only entries the folder holds, already without what stays on this computer.
 #[derive(Debug)]

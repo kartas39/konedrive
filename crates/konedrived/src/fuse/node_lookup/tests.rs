@@ -51,11 +51,11 @@ fn an_entry_gets_one_node_id_and_keeps_it_when_it_is_renamed() {
 fn the_root_is_node_one_and_a_directory() {
     let (_dir, contents, node_lookup) = node_lookup(Vec::new());
     assert_eq!(id(node_lookup.find_entry(1)), Some((Some("R".into()), PathBuf::new())));
-    assert_eq!(node_lookup.find_directory(1).map(|directory| (directory.id, directory.rel)), Some((Some("R".into()), PathBuf::new())));
+    assert_eq!(node_lookup.find_directory(1).map(|directory| (directory.onedrive_id, directory.path)), Some((Some("R".into()), PathBuf::new())));
     let docs = node_lookup.assign_node_id(&in_onedrive(&contents, "D"), 1);
     let file = node_lookup.assign_node_id(&in_onedrive(&contents, "C"), docs);
     assert!(node_lookup.find_directory(file).is_none());
-    assert_eq!(node_lookup.find_parent(file).map(|(node_id, directory)| (node_id, directory.id, directory.rel)), Some((docs, Some("D".into()), PathBuf::from("docs"))));
+    assert_eq!(node_lookup.find_parent(file).map(|(node_id, directory)| (node_id, directory.onedrive_id, directory.path)), Some((docs, Some("D".into()), PathBuf::from("docs"))));
     assert!(node_lookup.find_entry(99).is_none() && node_lookup.find_parent(1).is_none());
 }
 
@@ -91,13 +91,13 @@ fn a_local_only_entry_found_by_its_node_id_has_its_place() {
     fs::write(dir.path().join("new/made.txt"), b"mine").unwrap();
     let new = node_lookup.assign_node_id(&local_only(&contents, "new"), 1);
     let new_directory = node_lookup.find_directory(new).unwrap();
-    assert_eq!((new_directory.id.clone(), new_directory.rel.clone()), (None, PathBuf::from("new")));
+    assert_eq!((new_directory.onedrive_id.clone(), new_directory.path.clone()), (None, PathBuf::from("new")));
     let made = node_lookup.assign_node_id(&DirectoryEntry::from_local_only(contents.find_local_only(&new_directory, "made.txt").unwrap()), new);
     let (entry, rel) = node_lookup.find_entry(made).unwrap();
     let place = &entry.local_only().unwrap().place;
-    assert_eq!((rel, place.above.clone(), place.rel()), (PathBuf::from("new/made.txt"), None, PathBuf::from("new/made.txt")));
+    assert_eq!((rel, place.directory.onedrive_id.clone(), place.path()), (PathBuf::from("new/made.txt"), None, PathBuf::from("new/made.txt")));
     let (top, _) = node_lookup.find_entry(new).unwrap();
-    assert!(matches!(&top.state, EntryState::Directory(DirectorySyncState::LocalOnly(entry)) if entry.place.above.as_deref() == Some("R")));
+    assert!(matches!(&top.state, EntryState::Directory(DirectorySyncState::LocalOnly(entry)) if entry.place.directory.onedrive_id.as_deref() == Some("R")));
 }
 
 /// A file made here has its node id as a local-only entry. Once it is uploaded it is marked

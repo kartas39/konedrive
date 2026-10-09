@@ -12,14 +12,14 @@ use fuser::{FileHandle, FileType, FopenFlags, Generation, INodeNo, ReplyDirector
 use super::KernelRequests;
 use crate::fuse::attributes::TTL;
 use crate::fuse::backing_directory::EntryKind;
-use crate::fuse::directory::Directory;
+use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::directory_contents::EntrySource;
 
 impl KernelRequests {
     /// The directory of the node `ino`, and what the entries of the open directory `fh` are
     /// made from: listed when it is read from its start, and the same for every part of the
     /// reading after it.
-    fn find_entry_sources(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(Directory, Arc<Vec<EntrySource>>)> {
+    fn find_entry_sources(&self, ino: INodeNo, fh: FileHandle, offset: u64) -> Option<(DirectoryReference, Arc<Vec<EntrySource>>)> {
         let directory = self.node_lookup.find_directory(ino.0)?;
         let kept = self.open_files.find_entry_sources(fh.0).filter(|_| offset > 0);
         let entry_sources = kept.unwrap_or_else(|| {

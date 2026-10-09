@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::TreeStore;
 
-use super::directory::Directory;
+use super::directory_reference::DirectoryReference;
 
 /// The unsent changes, as of one reading of the store. Every key is a OneDrive id.
 #[derive(Default)]
@@ -24,7 +24,7 @@ pub(super) struct UnsentChanges {
     /// Moved here and not moved in OneDrive yet: the directory each is in now, and its name
     /// there. The directory is referred to by its OneDrive id, or by its path alone when
     /// OneDrive does not have it yet.
-    pub(super) moved: HashMap<String, (Directory, String)>,
+    pub(super) moved: HashMap<String, (DirectoryReference, String)>,
     /// Removed here and not removed from OneDrive yet.
     pub(super) removed: HashSet<String>,
     /// Files whose content was changed here and is not sent yet.
@@ -50,7 +50,7 @@ impl UnsentChanges {
             let name = row.rel.file_name().and_then(|n| n.to_str());
             if let (Some(base), Some(name)) = (base, name) {
                 if base != (row.target_parent.as_deref(), row.target_name.as_deref()) {
-                    let directory = Directory { id: row.target_parent.clone(), rel: row.rel.parent().map(PathBuf::from).unwrap_or_default() };
+                    let directory = DirectoryReference { onedrive_id: row.target_parent.clone(), path: row.rel.parent().map(PathBuf::from).unwrap_or_default() };
                     now.moved.insert(id, (directory, name.to_owned()));
                 }
             }

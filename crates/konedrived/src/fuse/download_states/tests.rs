@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -9,9 +8,11 @@ use konedrive_fs::placeholder::State;
 use konedrive_tree::Kind;
 use tokio::sync::oneshot;
 
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::{reaches_download_threshold, to_hydration_state, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
-use crate::fuse::detections::{FolderPlace, LocalOnlyEntry};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::FileSyncState;
 
@@ -257,7 +258,7 @@ fn a_file_with_its_downloaded_copy_is_shown_as_hydrated_also_when_modified_here(
 #[test]
 fn a_local_only_file_has_no_state_to_show() {
     let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: copy() };
-    let local_only = FileSyncState::LocalOnly(LocalOnlyEntry { on_disk, place: FolderPlace::new(Some("R"), Path::new(""), "own") });
+    let local_only = FileSyncState::LocalOnly(LocalOnlyEntry { on_disk, place: EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: "own".into() } });
     assert_eq!(to_hydration_state(&local_only, false), None);
     assert_eq!(to_hydration_state(&local_only, true), None);
 }

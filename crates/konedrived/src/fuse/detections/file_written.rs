@@ -5,14 +5,16 @@
 
 use konedrive_tree::TreeError;
 
-use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch, StoreFacts};
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
+use super::{create_or_mkdir, move_in_onedrive, update_content, wait_for_quiet, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// Which file was written, where it is, and what was done to it.
 #[derive(Debug)]
 pub(in crate::fuse) enum FileWritten {
     /// A file of OneDrive, by its id, in its downloaded copy.
-    InOneDrive { id: String, place: FolderPlace, write: OneDriveFileWrite },
+    InOneDrive { id: String, place: EntryPlace, write: OneDriveFileWrite },
     /// A file that is not in OneDrive yet.
     LocalOnly { file: LocalOnlyEntry, write: LocalOnlyFileWrite },
 }

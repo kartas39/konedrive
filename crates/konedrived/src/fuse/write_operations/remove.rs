@@ -5,7 +5,7 @@ use fuser::Errno;
 
 use super::WriteOperations;
 use crate::fuse::detections::EntryRemoved;
-use crate::fuse::directory::Directory;
+use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
 
@@ -22,8 +22,8 @@ impl WriteOperations {
             (EntryState::File(_), true) => return Err(Errno::ENOTDIR),
             _ => {}
         }
-        let rel = parent_directory.rel.join(name);
-        if directory && !self.directory_contents.list_entry_sources(&Directory { id: entry.onedrive_id().map(str::to_owned), rel: rel.clone() }).is_empty() {
+        let rel = parent_directory.path.join(name);
+        if directory && !self.directory_contents.list_entry_sources(&DirectoryReference { onedrive_id: entry.onedrive_id().map(str::to_owned), path: rel.clone() }).is_empty() {
             return Err(Errno::ENOTEMPTY);
         }
         let event = match &entry.state {

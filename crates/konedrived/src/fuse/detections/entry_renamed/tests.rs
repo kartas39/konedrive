@@ -4,12 +4,13 @@ use std::path::Path;
 
 use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState, Reason};
 
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
 use super::{DisplacedEntry, EntryRenamed, MovedEntry};
 use crate::fuse::detections::tests::{detect, detection_of, directory, file, handle, in_docs, in_root, local_only, quiet, rel, removes, rows, store, writing};
-use crate::fuse::detections::FolderPlace;
 use crate::fuse::directory_contents::tests::of;
 
-fn moved(entry: MovedEntry, from: &str, to: FolderPlace, displaced: Option<DisplacedEntry>) -> EntryRenamed {
+fn moved(entry: MovedEntry, from: &str, to: EntryPlace, displaced: Option<DisplacedEntry>) -> EntryRenamed {
     EntryRenamed::Moved { entry, from: rel(from), to, displaced }
 }
 
@@ -148,7 +149,7 @@ fn a_local_only_file_kept_here_while_it_is_uploaded_keeps_the_running_row() {
 #[test]
 fn a_local_only_directory_moved_is_made_from_its_new_place_with_all_it_holds() {
     let (new_directory, inside) = (directory(1), file(2, 4));
-    let child = FolderPlace::new(None, Path::new("docs/new"), "x.txt");
+    let child = EntryPlace { directory: DirectoryReference { onedrive_id: None, path: "docs/new".into() }, name: "x.txt".into() };
     let uploaded = vec![local_only(&new_directory, &in_docs("new")), local_only(&inside, &child)];
     let batch = detect(moved(MovedEntry::LocalOnlyDirectory { handle: new_directory.handle.clone(), uploaded }, "new", in_docs("new"), None), &store(Vec::new()));
     let made = detection_of(OutboxKind::Mkdir, &new_directory, &in_docs("new"), OutboxState::Ready);
@@ -164,7 +165,7 @@ fn a_local_only_directory_moved_where_nothing_is_uploaded_takes_its_rows_out_of_
     let (new_directory, inside) = (directory(1), file(2, 4));
     let store = store(vec![
         detection_of(OutboxKind::Mkdir, &new_directory, &in_root("new"), OutboxState::Ready),
-        detection_of(OutboxKind::Create, &inside, &FolderPlace::new(None, Path::new("new"), "x.txt"), OutboxState::Ready),
+        detection_of(OutboxKind::Create, &inside, &EntryPlace { directory: DirectoryReference { onedrive_id: None, path: "new".into() }, name: "x.txt".into() }, OutboxState::Ready),
         of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt"))),
     ]);
     let all = rows(&store);

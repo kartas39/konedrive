@@ -1,14 +1,15 @@
-use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::FileType;
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::{Kind, Row};
 
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::attributes;
 use crate::fuse::access_mode::AccessMode;
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
-use crate::fuse::detections::{FolderPlace, LocalOnlyEntry};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 
@@ -36,7 +37,7 @@ fn directory(state: DirectorySyncState) -> DirectoryEntry {
 
 fn local_only(kind: EntryKind) -> LocalOnlyEntry {
     let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: on_disk(kind) };
-    LocalOnlyEntry { on_disk, place: FolderPlace::new(Some("R"), Path::new(""), "name") }
+    LocalOnlyEntry { on_disk, place: EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: "name".into() } }
 }
 
 #[test]

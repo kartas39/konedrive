@@ -11,10 +11,10 @@ use std::sync::Arc;
 use fuser::Errno;
 use konedrive_tree::Row;
 
+use crate::fuse::entry_place::EntryPlace;
 use super::WriteOperations;
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
 use crate::fuse::directory_contents::{EntryState, FileSyncState};
-use crate::fuse::local_only_entries::folder_place;
 use crate::fuse::open_files::OpenFile;
 use crate::fuse::errno::to_errno;
 
@@ -64,7 +64,7 @@ impl WriteOperations {
             return;
         }
         let Some((_, parent_directory)) = self.node_lookup.find_parent(node_id) else { return };
-        let event = FileWritten::InOneDrive { id: untouched.id.clone(), place: folder_place(&parent_directory, &untouched.name), write: OneDriveFileWrite::ClosedUntouched };
+        let event = FileWritten::InOneDrive { id: untouched.id.clone(), place: EntryPlace::new(&parent_directory, &untouched.name), write: OneDriveFileWrite::ClosedUntouched };
         if let Err(e) = self.outbox_recorder.record(event) {
             tracing::warn!("a file closed unchanged could not be let go of: {e}");
         }
@@ -125,7 +125,7 @@ impl WriteOperations {
             LocalOnlyFileWrite::Closed => OneDriveFileWrite::ClosedChanged(copy),
             LocalOnlyFileWrite::Cut => OneDriveFileWrite::Cut(copy),
         };
-        let event = FileWritten::InOneDrive { id: row.id.clone(), place: folder_place(&parent_directory, &entry.name), write };
+        let event = FileWritten::InOneDrive { id: row.id.clone(), place: EntryPlace::new(&parent_directory, &entry.name), write };
         self.record_or_undo(event, format_args!("the change of {}", rel.display()), || {})
     }
 }

@@ -12,8 +12,8 @@
 
 use konedrive_tree::Row;
 
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use crate::fuse::backing_directory::{DiskMetadata, EntryKind};
-use crate::fuse::detections::LocalOnlyEntry;
 
 /// How a file of the mount stands between OneDrive and this computer.
 #[derive(Debug, Clone, PartialEq, Eq)]

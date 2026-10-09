@@ -13,11 +13,13 @@ use std::path::PathBuf;
 
 use fuser::Errno;
 
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::WriteOperations;
-use crate::fuse::detections::{DisplacedEntry, EntryRenamed, LocalOnlyEntry, MovedEntry};
-use crate::fuse::directory::Directory;
+use crate::fuse::detections::{DisplacedEntry, EntryRenamed, MovedEntry};
+use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
-use crate::fuse::local_only_entries::{collect_local_only_entries, folder_place};
+use crate::fuse::local_only_entry::collect_local_only_entries;
 use crate::fuse::errno::to_errno;
 
 /// A rename the check let through: what moves where, and over what.
@@ -29,7 +31,7 @@ struct RenamePlan {
     /// What is at the new place.
     target: Option<DirectoryEntry>,
     from: PathBuf,
-    to_directory: Directory,
+    to_directory: DirectoryReference,
     to_node: u64,
     to_name: String,
     /// The new place is one local-only entries are uploaded from.
@@ -38,7 +40,7 @@ struct RenamePlan {
 
 impl RenamePlan {
     fn to(&self) -> PathBuf {
-        self.to_directory.rel.join(&self.to_name)
+        self.to_directory.path.join(&self.to_name)
     }
 
     /// The local-only file that is saved, by rename, over a OneDrive file, and that file's
@@ -89,12 +91,12 @@ impl WriteOperations {
         }
         let source = self.directory_contents.find_entry(&from_directory, name).ok_or(Errno::ENOENT)?;
         let target = self.directory_contents.find_entry(&to_directory, new_name);
-        let (from, to) = (from_directory.rel.join(name), to_directory.rel.join(new_name));
+        let (from, to) = (from_directory.path.join(name), to_directory.path.join(new_name));
         if from == to {
             return Ok(None);
         }
         if let Some(target) = &target {
-            let holds = || !self.directory_contents.list_entry_sources(&Directory { id: target.onedrive_id().map(str::to_owned), rel: to.clone() }).is_empty();
+            let holds = || !self.directory_contents.list_entry_sources(&DirectoryReference { onedrive_id: target.onedrive_id().map(str::to_owned), path: to.clone() }).is_empty();
             match (&source.state, &target.state) {
                 _ if keep => return Err(Errno::EEXIST),
                 (EntryState::File(_), EntryState::Directory(_)) => return Err(Errno::EISDIR),
@@ -103,7 +105,7 @@ impl WriteOperations {
                 _ => {}
             }
         }
-        if source.onedrive_id().is_some() && self.upload_rules.in_local_dir(&to_directory.rel, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
+        if source.onedrive_id().is_some() && self.upload_rules.in_local_dir(&to_directory.path, |at| self.backing_directory.read_onedrive_id(at).is_some()) {
             return Err(Errno::EXDEV);
         }
         let uploaded = !self.stays_local(&to_directory, new_name);
@@ -116,7 +118,7 @@ impl WriteOperations {
     /// at the new place is removed.
     fn move_in_backing_directory(&self, plan: &RenamePlan) -> Result<BackingDirectoryMove, Errno> {
         let to = plan.to();
-        self.directory_contents.make_marked_directories(&plan.to_directory.rel).map_err(|e| to_errno(&e))?;
+        self.directory_contents.make_marked_directories(&plan.to_directory.path).map_err(|e| to_errno(&e))?;
         let displaced = self.backing_directory.read_metadata(&to);
         let moved = if self.backing_directory.read_metadata(&plan.from).is_some() { BackingDirectoryMove::Moved } else { BackingDirectoryMove::NothingThere };
         // A file that moves over a file replaces it in the rename itself.
@@ -131,7 +133,7 @@ impl WriteOperations {
 
     /// What the rename is recorded as.
     fn describe_rename(&self, plan: &RenamePlan, moved: BackingDirectoryMove) -> EntryRenamed {
-        let to = folder_place(&plan.to_directory, &plan.to_name);
+        let to = EntryPlace::new(&plan.to_directory, &plan.to_name);
         if let Some((file, over)) = plan.saved_over() {
             return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), open: plan.open, over: over.to_owned(), to };
         }

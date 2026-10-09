@@ -10,8 +10,10 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::TreeError;
 
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::{create_local_only_entries, create_or_mkdir, delete_in_onedrive, forget_local_only, move_in_onedrive, rebase, update_content, wait_for_writer};
-use super::{FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch, StoreFacts};
+use super::{FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// A rename that was made in the folder.
@@ -21,9 +23,9 @@ pub(in crate::fuse) enum EntryRenamed {
     /// file is that file's new content, and what the outbox held of the local-only file
     /// itself is removed — it is never sent under its own name. `open`: a program still
     /// writes it.
-    SavedOverOneDriveFile { file: DiskEntry, open: bool, over: String, to: FolderPlace },
+    SavedOverOneDriveFile { file: DiskEntry, open: bool, over: String, to: EntryPlace },
     /// Anything else: `entry` moved from `from` to `to`, where `displaced` was.
-    Moved { entry: MovedEntry, from: PathBuf, to: FolderPlace, displaced: Option<DisplacedEntry> },
+    Moved { entry: MovedEntry, from: PathBuf, to: EntryPlace, displaced: Option<DisplacedEntry> },
 }
 
 /// What moved.
@@ -56,7 +58,7 @@ impl FolderEvent for EntryRenamed {
         match self {
             EntryRenamed::SavedOverOneDriveFile { file, open, over, to } => save_over(facts, &file, open, &over, &to, now),
             EntryRenamed::Moved { entry, from, to, displaced } => {
-                let at = to.rel();
+                let at = to.path();
                 // What was at the new place first: it frees the name.
                 let mut batch = OutboxBatch::of(match &displaced {
                     Some(DisplacedEntry::InOneDrive(id)) => delete_in_onedrive(facts, id, &at)?,
@@ -96,7 +98,7 @@ impl FolderEvent for EntryRenamed {
 }
 
 /// Save by rename. Nothing when the base no longer has the file.
-fn save_over(facts: &impl StoreFacts, file: &DiskEntry, open: bool, over: &str, to: &FolderPlace, now: i64) -> Result<OutboxBatch, TreeError> {
+fn save_over(facts: &impl StoreFacts, file: &DiskEntry, open: bool, over: &str, to: &EntryPlace, now: i64) -> Result<OutboxBatch, TreeError> {
     let Some(base) = facts.base_row(over)? else { return Ok(OutboxBatch::default()) };
     let pending = facts.outbox_rows_of(&file.handle)?;
     let ops = pending.iter().filter(|row| row.state != OutboxState::Running).map(|row| OutboxOp::Remove(row.seq)).collect();
@@ -109,7 +111,7 @@ fn save_over(facts: &impl StoreFacts, file: &DiskEntry, open: bool, over: &str, 
 
 /// The file or directory of OneDrive `id` is at `to` now. Its content is the base's unless
 /// the outbox holds new content of it. Nothing when the base no longer has it.
-fn move_base_row(facts: &impl StoreFacts, id: &str, handle: Option<FileHandle>, to: &FolderPlace) -> Result<Option<Detection>, TreeError> {
+fn move_base_row(facts: &impl StoreFacts, id: &str, handle: Option<FileHandle>, to: &EntryPlace) -> Result<Option<Detection>, TreeError> {
     let Some(base) = facts.base_row(id)? else { return Ok(None) };
     let mut moved = move_in_onedrive(to, &base, handle);
     moved.same_content = !facts.has_update(id)?;
@@ -118,7 +120,7 @@ fn move_base_row(facts: &impl StoreFacts, id: &str, handle: Option<FileHandle>, 
 
 /// A local-only file is uploaded from `to`. One that is going up right now goes up as it is:
 /// only where it is changed.
-fn upload_from(facts: &impl StoreFacts, file: &DiskEntry, open: bool, to: &FolderPlace, now: i64) -> Result<Detection, TreeError> {
+fn upload_from(facts: &impl StoreFacts, file: &DiskEntry, open: bool, to: &EntryPlace, now: i64) -> Result<Detection, TreeError> {
     let mut d = create_or_mkdir(to, file, open, now);
     if facts.outbox_rows_of(&file.handle)?.iter().any(|row| row.state == OutboxState::Running) {
         d.kind = OutboxKind::Move;

@@ -2,7 +2,9 @@
 
 use konedrive_tree::{Row, TreeError};
 
-use super::{create_or_mkdir, update_content, wait_for_writer, FolderEvent, FolderPlace, LocalOnlyEntry, OutboxBatch, StoreFacts};
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
+use super::{create_or_mkdir, update_content, wait_for_writer, FolderEvent, OutboxBatch, StoreFacts};
 use crate::fuse::backing_directory::DiskEntry;
 
 /// What a program made at a place where nothing was.
@@ -14,7 +16,7 @@ pub(in crate::fuse) enum EntryCreated {
     /// A file made where the user just removed the OneDrive file `base`, whose removal is
     /// not sent yet: `file` is that file's new content. Programs replace a file that way,
     /// and it keeps its history and its links in OneDrive.
-    ReplacingRemovedFile { place: FolderPlace, file: DiskEntry, open: bool, base: Row },
+    ReplacingRemovedFile { place: EntryPlace, file: DiskEntry, open: bool, base: Row },
 }
 
 impl FolderEvent for EntryCreated {

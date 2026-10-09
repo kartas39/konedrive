@@ -9,7 +9,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 use super::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
 use crate::folder::disk::HOLDING;
 use crate::fuse::backing_directory::{BackingDirectory, EntryKind};
-use crate::fuse::directory::Directory;
+use crate::fuse::directory_reference::DirectoryReference;
 
 pub(in crate::fuse) fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
@@ -67,11 +67,11 @@ pub(in crate::fuse) fn download(dir: &Path, contents: &DirectoryContents, rel: &
     contents.backing_directory().mark_downloaded_copy(Path::new(rel), id).unwrap();
 }
 
-fn docs() -> Directory {
-    Directory { id: Some("D".into()), rel: PathBuf::from("docs") }
+fn docs() -> DirectoryReference {
+    DirectoryReference { onedrive_id: Some("D".into()), path: PathBuf::from("docs") }
 }
 
-fn names(contents: &DirectoryContents, directory: &Directory) -> Vec<String> {
+fn names(contents: &DirectoryContents, directory: &DirectoryReference) -> Vec<String> {
     let mut names: Vec<String> = contents.list_entry_sources(directory).iter().map(|source| source.name().to_owned()).collect();
     names.sort();
     names
@@ -142,7 +142,7 @@ fn a_file_made_here_is_local_only() {
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
     let FileSyncState::LocalOnly(entry) = file_state(&contents, "own.txt") else { panic!("own.txt is in OneDrive") };
     assert_eq!((entry.on_disk.metadata.kind, entry.on_disk.metadata.size), (EntryKind::File, 4));
-    assert_eq!((entry.place.above.as_deref(), entry.place.rel()), (Some("R"), PathBuf::from("own.txt")));
+    assert_eq!((entry.place.directory.onedrive_id.as_deref(), entry.place.path()), (Some("R"), PathBuf::from("own.txt")));
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn a_local_only_entry_is_listed_where_it_lies() {
     fs::write(dir.path().join("docs/own.txt"), b"mine").unwrap();
     fs::create_dir(dir.path().join("new")).unwrap();
     let own = contents.find_entry(&docs(), "own.txt").unwrap();
-    assert!(own.name == "own.txt" && matches!(&own.state, EntryState::File(FileSyncState::LocalOnly(entry)) if entry.place.above.as_deref() == Some("D")));
+    assert!(own.name == "own.txt" && matches!(&own.state, EntryState::File(FileSyncState::LocalOnly(entry)) if entry.place.directory.onedrive_id.as_deref() == Some("D")));
     assert_eq!(names(&contents, &docs()), ["c.txt", "own.txt"]);
     assert_eq!(names(&contents, &contents.find_root_directory()), ["a.txt", "b.txt", "docs", "new"]);
     assert!(matches!(contents.find_entry_at(Path::new("new")).unwrap().state, EntryState::Directory(DirectorySyncState::LocalOnly(_))));

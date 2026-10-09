@@ -19,8 +19,7 @@
 //! - [`entry_kept_aside`]: a local-only entry that was in the way of a change from OneDrive,
 //!   and is kept ([`EntryKeptAside`]).
 //!
-//! Here is what they share: a [`FolderPlace`]; a file or directory that is made here and not
-//! in OneDrive yet, on disk and at its place ([`LocalOnlyEntry`]); the detections of the
+//! Here is what they share: the detections of the
 //! plain facts — a local-only entry is here, a file or directory of OneDrive is here,
 //! something was deleted — and when a row of content is due ([`wait_for_writer`],
 //! [`wait_for_quiet`]).
@@ -31,13 +30,15 @@
 //! The store calls its rows items: `item_id` in a [`Detection`] is the OneDrive id, and
 //! `object` the file handle of the entry on disk.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Row, Table, TreeError, TreeStore};
 
 use super::backing_directory::{DiskEntry, EntryKind};
+use super::entry_place::EntryPlace;
+use super::local_only_entry::LocalOnlyEntry;
 use crate::local::names;
 
 mod entry_created;
@@ -109,46 +110,19 @@ impl StoreFacts for TreeStore {
     }
 }
 
-/// A place in the folder: a name in a directory, and that directory's OneDrive id when it
-/// has one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FolderPlace {
-    pub(super) above: Option<String>,
-    pub(super) dir: PathBuf,
-    pub(super) name: String,
-}
-
-impl FolderPlace {
-    pub(super) fn new(above: Option<&str>, dir: &Path, name: &str) -> Self {
-        FolderPlace { above: above.map(str::to_owned), dir: dir.to_path_buf(), name: name.to_owned() }
-    }
-
-    pub(super) fn rel(&self) -> PathBuf {
-        self.dir.join(&self.name)
-    }
-}
-
-/// A file or directory that was made here and is not in OneDrive yet: what the backing
-/// directory holds of it, and the place it is at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalOnlyEntry {
-    pub(super) on_disk: DiskEntry,
-    pub(super) place: FolderPlace,
-}
-
 /// The row as the base has it: what a change to it was made against.
 fn base(row: &Row) -> Base {
     Base { etag: row.etag.clone(), ctag: row.ctag.clone(), parent: row.parent_id.clone(), name: Some(row.name.clone()) }
 }
 
-fn detection_at(place: &FolderPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
+fn detection_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
     Detection {
         kind,
         item_id: None,
         object: handle,
-        rel: place.rel(),
+        rel: place.path(),
         base: None,
-        target_parent: place.above.clone(),
+        target_parent: place.directory.onedrive_id.clone(),
         target_name: Some(place.name.clone()),
         same_content: false,
         state: OutboxState::Ready,
@@ -162,7 +136,7 @@ fn detection_at(place: &FolderPlace, kind: OutboxKind, handle: Option<FileHandle
 /// directory to make. A name OneDrive refuses, or a file too large for it, is said on the row
 /// and waits for the user; a file a program still writes (`open`) waits for its last writer,
 /// and one just closed is due a moment later.
-fn create_or_mkdir(place: &FolderPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
+fn create_or_mkdir(place: &EntryPlace, on_disk: &DiskEntry, open: bool, now: i64) -> Detection {
     let (kind, size) = match on_disk.metadata.kind {
         EntryKind::Directory => (OutboxKind::Mkdir, None),
         EntryKind::File => (OutboxKind::Create, Some(on_disk.metadata.size)),
@@ -190,12 +164,12 @@ pub(super) fn create_local_only_entries(entries: &[LocalOnlyEntry], now: i64) ->
 /// The file or directory of OneDrive that `row` is, is at `place`, with the entry `handle`
 /// identifies when the backing directory holds one for it: a move, and how something of
 /// OneDrive is said to be where it is.
-fn move_in_onedrive(place: &FolderPlace, row: &Row, handle: Option<FileHandle>) -> Detection {
+fn move_in_onedrive(place: &EntryPlace, row: &Row, handle: Option<FileHandle>) -> Detection {
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..detection_at(place, OutboxKind::Move, handle, None) }
 }
 
 /// The file `copy` at `place` is the new content of the OneDrive file `row`.
-fn update_content(place: &FolderPlace, row: &Row, copy: &DiskEntry) -> Detection {
+fn update_content(place: &EntryPlace, row: &Row, copy: &DiskEntry) -> Detection {
     let update = detection_at(place, OutboxKind::Update, Some(copy.handle.clone()), copy.metadata.file_size());
     Detection { item_id: Some(row.id.clone()), base: Some(base(row)), ..update }
 }

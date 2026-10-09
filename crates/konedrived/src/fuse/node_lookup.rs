@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 
 use konedrive_fs::handle::FileHandle;
 
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::backing_directory::{DiskEntry, EntryKind};
-use super::detections::LocalOnlyEntry;
-use super::directory::Directory;
+use super::directory_reference::DirectoryReference;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntrySource, EntryState, FileSyncState};
-use super::local_only_entries::folder_place;
 use super::node_table::{NodeKey, NodeTable};
 
 /// What a node id stands for, found again in the directory contents or on disk.
@@ -119,25 +119,25 @@ impl NodeLookup {
             NodeTarget::LocalOnly { on_disk, rel, name, parent } => {
                 // Its place is in the directory its node is in. A directory that is not
                 // found any more is referred to by its path alone.
-                let directory = self.find_directory(parent).unwrap_or_else(|| Directory { id: None, rel: rel.parent().map(Path::to_owned).unwrap_or_default() });
-                Some((DirectoryEntry::from_local_only(LocalOnlyEntry { on_disk, place: folder_place(&directory, &name) }), rel))
+                let directory = self.find_directory(parent).unwrap_or_else(|| DirectoryReference { onedrive_id: None, path: rel.parent().map(Path::to_owned).unwrap_or_default() });
+                Some((DirectoryEntry::from_local_only(LocalOnlyEntry { on_disk, place: EntryPlace::new(&directory, &name) }), rel))
             }
         }
     }
 
     /// The directory the node `node_id` stands for.
-    pub(super) fn find_directory(&self, node_id: u64) -> Option<Directory> {
+    pub(super) fn find_directory(&self, node_id: u64) -> Option<DirectoryReference> {
         if node_id == 1 {
-            return Some(Directory { id: self.directory_contents.find_root_id().filter(|id| !id.is_empty()), rel: PathBuf::new() });
+            return Some(DirectoryReference { onedrive_id: self.directory_contents.find_root_id().filter(|id| !id.is_empty()), path: PathBuf::new() });
         }
         match self.find_node(node_id)? {
-            NodeTarget::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| Directory { id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), rel }),
-            NodeTarget::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(Directory { id: None, rel }),
+            NodeTarget::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| DirectoryReference { onedrive_id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), path: rel }),
+            NodeTarget::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(DirectoryReference { onedrive_id: None, path: rel }),
         }
     }
 
     /// The directory the node `node_id` is in, and that directory's node id.
-    pub(super) fn find_parent(&self, node_id: u64) -> Option<(u64, Directory)> {
+    pub(super) fn find_parent(&self, node_id: u64) -> Option<(u64, DirectoryReference)> {
         let parent = crate::panic::lock(&self.node_table).nodes.get(&node_id)?.place.0;
         Some((parent, self.find_directory(parent)?))
     }

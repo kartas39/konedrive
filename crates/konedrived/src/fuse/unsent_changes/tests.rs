@@ -4,7 +4,7 @@ use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState}
 use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
 use super::UnsentChanges;
-use crate::fuse::directory::Directory;
+use crate::fuse::directory_reference::DirectoryReference;
 
 fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row { id: id.into(), parent_id: parent.map(str::to_owned), name: name.into(), kind, size: 1, mtime: 0, etag: Some("e".into()), ctag: Some("c".into()), quickxor: None, mime: None, placement: Placement::Placed }
@@ -53,7 +53,7 @@ fn recorded(detections: Vec<Detection>) -> UnsentChanges {
 #[test]
 fn a_moved_file_is_where_its_row_takes_it() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "docs/new.txt", (Some("D"), Some("new.txt")))]);
-    let to = Directory { id: Some("D".into()), rel: PathBuf::from("docs") };
+    let to = DirectoryReference { onedrive_id: Some("D".into()), path: PathBuf::from("docs") };
     assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "new.txt".to_owned())));
     assert!(unsent_changes.removed.is_empty() && unsent_changes.changed.is_empty());
 }
@@ -62,7 +62,7 @@ fn a_moved_file_is_where_its_row_takes_it() {
 #[test]
 fn a_file_moved_into_a_local_only_directory_is_found_by_that_directorys_path() {
     let unsent_changes = recorded(vec![of(OutboxKind::Move, "A", "a.txt", "new/a.txt", (None, Some("a.txt")))]);
-    let to = Directory { id: None, rel: PathBuf::from("new") };
+    let to = DirectoryReference { onedrive_id: None, path: PathBuf::from("new") };
     assert_eq!(unsent_changes.moved.get("A"), Some(&(to, "a.txt".to_owned())));
 }
 

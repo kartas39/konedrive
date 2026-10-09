@@ -7,11 +7,12 @@ use std::sync::Arc;
 use fuser::Errno;
 use konedrive_tree::Row;
 
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::WriteOperations;
-use crate::fuse::detections::{EntryCreated, LocalOnlyEntry};
-use crate::fuse::directory::Directory;
+use crate::fuse::detections::EntryCreated;
+use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::directory_contents::DirectoryEntry;
-use crate::fuse::local_only_entries::folder_place;
 use crate::fuse::open_files::OpenFile;
 use crate::fuse::errno::to_errno;
 
@@ -20,8 +21,8 @@ impl WriteOperations {
     /// leaves open for writing. The entry that was made, and the file when it is open.
     pub(in crate::fuse) fn make(&self, parent: u64, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<OpenFile>), Errno> {
         let parent_directory = self.check_make(parent, name, directory)?;
-        let rel = parent_directory.rel.join(name);
-        self.directory_contents.make_marked_directories(&parent_directory.rel).map_err(|e| to_errno(&e))?;
+        let rel = parent_directory.path.join(name);
+        self.directory_contents.make_marked_directories(&parent_directory.path).map_err(|e| to_errno(&e))?;
         let file: Option<File> = if directory {
             self.backing_directory.make_dir(&rel).map_err(|e| to_errno(&e))?;
             None
@@ -35,7 +36,7 @@ impl WriteOperations {
             return Err(Errno::EIO);
         };
         let removed = if directory { None } else { self.directory_contents.find_file_removed_at(&rel) };
-        let place = folder_place(&parent_directory, name);
+        let place = EntryPlace::new(&parent_directory, name);
         let entry = match &removed {
             Some(base) => {
                 self.backing_directory.mark_downloaded_copy(&rel, &base.id).map_err(|e| to_errno(&e))?;
@@ -66,7 +67,7 @@ impl WriteOperations {
     /// The directory the node `parent` stands for, if `name` may be made in it as a
     /// directory (`directory`) or a file. Neither the daemon's own names nor a file
     /// manager's trash in the folder itself are made.
-    fn check_make(&self, parent: u64, name: &str, directory: bool) -> Result<Directory, Errno> {
+    fn check_make(&self, parent: u64, name: &str, directory: bool) -> Result<DirectoryReference, Errno> {
         self.access_mode.check_read_write()?;
         let parent_directory = self.node_lookup.find_directory(parent).ok_or(Errno::ENOENT)?;
         if self.upload_rules.daemon_owned(name) || (directory && parent == 1 && self.upload_rules.is_trash(name)) {

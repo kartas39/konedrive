@@ -15,11 +15,12 @@ use std::sync::Arc;
 
 use konedrive_tree::outbox::{Detection, OutboxOp};
 
+use crate::fuse::entry_place::EntryPlace;
 use super::backing_directory::BackingDirectory;
 use super::detections::{create_local_only_entries, is_directory_of, EntryKeptAside};
-use super::directory::Directory;
+use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
-use super::local_only_entries::{collect_local_only_entries, folder_place};
+use super::local_only_entry::collect_local_only_entries;
 use super::upload_rules::UploadRules;
 use crate::local::names::copy_name;
 
@@ -63,7 +64,7 @@ impl ConflictCopies {
         if self.backing_directory.read_onedrive_id(rel).is_some() {
             return;
         }
-        let directory = Directory { id: parent_id.map(str::to_owned), rel: parent.to_path_buf() };
+        let directory = DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_path_buf() };
         for n in 1..=100 {
             let copy = self.copy_name(name, n);
             let to = parent.join(&copy);
@@ -74,8 +75,8 @@ impl ConflictCopies {
                 tracing::warn!("{} could not be kept beside what comes to its name from OneDrive: {e}", rel.display());
                 return;
             }
-            let uploaded = !self.upload_rules.stays_local(&directory.rel, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
-            let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: folder_place(&directory, &copy), uploaded }.detect(now);
+            let uploaded = !self.upload_rules.stays_local(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
+            let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), uploaded }.detect(now);
             conflicts.ops.extend(kept.ops);
             conflicts.detections.extend(kept.detections);
             conflicts.moved_aside.push((rel.to_path_buf(), to));
@@ -96,7 +97,7 @@ impl ConflictCopies {
         if uploads {
             // The directory it is in is found by its path: it may be removed and kept as
             // well.
-            let directory = Directory { id: None, rel: parent.to_path_buf() };
+            let directory = DirectoryReference { onedrive_id: None, path: parent.to_path_buf() };
             conflicts.detections.extend(create_local_only_entries(&collect_local_only_entries(&self.backing_directory, &self.upload_rules, &directory, name), now));
             conflicts.kept_directories.push(id.to_owned());
         }

@@ -33,7 +33,7 @@ use fuser::Errno;
 use super::access_mode::AccessMode;
 use super::backing_directory::BackingDirectory;
 use super::detections::FolderEvent;
-use super::directory::Directory;
+use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
 use super::node_lookup::NodeLookup;
 use super::open_writers::OpenWriters;
@@ -70,8 +70,8 @@ impl WriteOperations {
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive stays on this computer.
-    fn stays_local(&self, directory: &Directory, name: &str) -> bool {
-        self.upload_rules.stays_local(&directory.rel, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
+    fn stays_local(&self, directory: &DirectoryReference, name: &str) -> bool {
+        self.upload_rules.stays_local(&directory.path, name, |at| self.backing_directory.read_onedrive_id(at).is_some())
     }
 
     /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done

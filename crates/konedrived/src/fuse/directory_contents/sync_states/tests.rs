@@ -1,12 +1,13 @@
-use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::Kind;
 
+use crate::fuse::directory_reference::DirectoryReference;
+use crate::fuse::entry_place::EntryPlace;
+use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
-use crate::fuse::detections::{FolderPlace, LocalOnlyEntry};
 use crate::fuse::directory_contents::tests::row;
 
 fn copy() -> DiskMetadata {
@@ -15,7 +16,7 @@ fn copy() -> DiskMetadata {
 
 fn local_only(kind: EntryKind) -> LocalOnlyEntry {
     let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: DiskMetadata { kind, ..copy() } };
-    LocalOnlyEntry { on_disk, place: FolderPlace::new(Some("R"), Path::new(""), "own") }
+    LocalOnlyEntry { on_disk, place: EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: "own".into() } }
 }
 
 #[test]

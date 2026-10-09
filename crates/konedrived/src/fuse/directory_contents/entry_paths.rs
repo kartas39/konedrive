@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use konedrive_tree::Placement;
 
 use super::{DirectoryContents, DirectoryEntry, EntryState};
-use crate::fuse::directory::Directory;
+use crate::fuse::directory_reference::DirectoryReference;
 
 impl DirectoryContents {
     /// The folder itself, as a directory.
-    pub(in crate::fuse) fn find_root_directory(&self) -> Directory {
-        Directory { id: self.find_root_id(), rel: PathBuf::new() }
+    pub(in crate::fuse) fn find_root_directory(&self) -> DirectoryReference {
+        DirectoryReference { onedrive_id: self.find_root_id(), path: PathBuf::new() }
     }
 
     /// The path the mount shows the OneDrive id `id` at: where the store has it, or where
@@ -26,11 +26,11 @@ impl DirectoryContents {
             let row = self.find_row(&at).filter(|r| r.placement == Placement::Placed)?;
             let (parent_id, name) = match unsent_changes.moved.get(&at) {
                 // Moved into a directory that is not in OneDrive yet: found by its path.
-                Some((Directory { id: None, rel }, name)) => {
+                Some((DirectoryReference { onedrive_id: None, path }, name)) => {
                     names.push(name.clone());
-                    return Some(rel.join(names.iter().rev().collect::<PathBuf>()));
+                    return Some(path.join(names.iter().rev().collect::<PathBuf>()));
                 }
-                Some((Directory { id: Some(parent_id), .. }, name)) => (Some(parent_id.clone()), name.clone()),
+                Some((DirectoryReference { onedrive_id: Some(parent_id), .. }, name)) => (Some(parent_id.clone()), name.clone()),
                 None => (row.parent_id.clone(), row.name.clone()),
             };
             match parent_id {
@@ -56,7 +56,7 @@ impl DirectoryContents {
                 if !matches!(found.state, EntryState::Directory(_)) {
                     return None;
                 }
-                directory = Directory { id: found.onedrive_id().map(str::to_owned), rel: directory.rel.join(name) };
+                directory = DirectoryReference { onedrive_id: found.onedrive_id().map(str::to_owned), path: directory.path.join(name) };
             }
         }
         Some(found)
@@ -66,7 +66,7 @@ impl DirectoryContents {
     /// each marked with the OneDrive id of the directory the mount shows there
     /// ([`BackingDirectory::make_marked_directories`](crate::fuse::backing_directory::BackingDirectory::make_marked_directories)).
     pub(in crate::fuse) fn make_marked_directories(&self, rel: &Path) -> io::Result<()> {
-        let id_of = |parent_id: Option<&str>, parent: &Path, name: &str| self.find_row_at(&Directory { id: parent_id.map(str::to_owned), rel: parent.to_owned() }, name).map(|row| row.id);
+        let id_of = |parent_id: Option<&str>, parent: &Path, name: &str| self.find_row_at(&DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_owned() }, name).map(|row| row.id);
         self.backing_directory.make_marked_directories(rel, self.find_root_id(), id_of)
     }
 }
