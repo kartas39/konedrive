@@ -236,7 +236,7 @@ daemon shows OneDrive.
   which the attributes, the kernel's requests, the write operations and the outbox recorder
   ask, and the mount switches. `[tests]`
 - `open_writers.rs` — `OpenWriters`: the files programs hold open for writing, and what a
-  close left (`AfterClose`). `[tests]`
+  close left (`CloseOutcome`). `[tests]`
 - `open_files.rs` — `OpenFiles`: the files (`OpenFile`) and the directories programs hold
   open, by the file handle the kernel was given; what an open directory's entries were made
   from when it was first read; whether a OneDrive file is open for writing. `[tests]`
@@ -314,7 +314,7 @@ daemon shows OneDrive.
 - `remote_changes.rs` — the step of a cycle of the delta listing over the backing directory:
   a cycle's `OneDriveChange`s applied (`CycleOutcome`), what each is announced as, and what
   the cycle leaves to be done once it is committed (`UncommittedCycle`). `[tests]`
-- `inotify_bridge.rs` — `InotifyBridge`: a change from OneDrive (`RemoteChange`) brought to
+- `inotify_bridge.rs` — `InotifyBridge`: a change from OneDrive (`Announcement`) brought to
   whoever watches the folder, made by path through the mount on the bridge's own thread; the
   announcement in progress, and what its name was before the change
   (`AnnouncementInProgress`, `NameBeforeChange`). `[tests]`

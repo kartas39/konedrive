@@ -11,7 +11,7 @@ use super::{describe_caller, KernelRequests};
 use crate::fuse::directory_contents::{DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
 use crate::fuse::open_files::OpenFile;
-use crate::fuse::open_writers::AfterClose;
+use crate::fuse::open_writers::CloseOutcome;
 
 /// Answers with `size` bytes of `file` at `offset`, or as many as it has.
 fn answer_from_file(file: &File, offset: u64, size: u32, reply: ReplyData) {
@@ -102,9 +102,9 @@ impl KernelRequests {
         let closed = self.open_files.remove_file(fh.0);
         if let Some(closed) = closed.filter(|closed| closed.may_write) {
             let content_changed = match self.open_writers.remove_writer(closed.node_id) {
-                AfterClose::StillOpenElsewhere => None,
-                AfterClose::ContentChanged => Some(true),
-                AfterClose::ContentUntouched => Some(false),
+                CloseOutcome::StillOpenElsewhere => None,
+                CloseOutcome::ContentChanged => Some(true),
+                CloseOutcome::ContentUntouched => Some(false),
             };
             if let Some(content_changed) = content_changed {
                 let write_operations = Arc::clone(&self.write_operations);

@@ -21,7 +21,7 @@ struct FileWriters {
 
 /// What closing a handle that could write left of its file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AfterClose {
+pub(super) enum CloseOutcome {
     /// Other handles still write it.
     StillOpenElsewhere,
     /// The last writer closed it, and its content was changed.
@@ -49,16 +49,16 @@ impl OpenWriters {
     }
 
     /// A handle that could write the node `node_id` was closed.
-    pub(super) fn remove_writer(&self, node_id: u64) -> AfterClose {
+    pub(super) fn remove_writer(&self, node_id: u64) -> CloseOutcome {
         let mut open_writers = crate::panic::lock(&self.0);
-        let Some(writers) = open_writers.get_mut(&node_id) else { return AfterClose::StillOpenElsewhere };
+        let Some(writers) = open_writers.get_mut(&node_id) else { return CloseOutcome::StillOpenElsewhere };
         writers.handles = writers.handles.saturating_sub(1);
         if writers.handles > 0 {
-            return AfterClose::StillOpenElsewhere;
+            return CloseOutcome::StillOpenElsewhere;
         }
         match open_writers.remove(&node_id) {
-            Some(FileWriters { content_changed: true, .. }) => AfterClose::ContentChanged,
-            _ => AfterClose::ContentUntouched,
+            Some(FileWriters { content_changed: true, .. }) => CloseOutcome::ContentChanged,
+            _ => CloseOutcome::ContentUntouched,
         }
     }
 

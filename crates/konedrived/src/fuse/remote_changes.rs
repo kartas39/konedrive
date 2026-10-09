@@ -18,7 +18,7 @@ use super::conflict_copies::{ConflictCopies, CycleConflicts};
 use super::detections::rebase;
 use super::directory_contents::DirectoryContents;
 use super::file_downloader::FileDownloader;
-use super::inotify_bridge::{InotifyBridge, RemoteChange};
+use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
@@ -54,7 +54,7 @@ pub struct CycleOutcome {
 #[derive(Default)]
 struct AfterCommit {
     /// What is announced to whoever watches the folder.
-    announcements: Vec<RemoteChange>,
+    announcements: Vec<Announcement>,
     /// The OneDrive ids gone from the folder: one that is gone keeps nothing on this device,
     /// so its pin is taken off.
     removed_ids: Vec<String>,
@@ -67,13 +67,13 @@ pub(super) struct UncommittedCycle(Mutex<AfterCommit>);
 impl UncommittedCycle {
     /// A cycle was applied: `announcements` and `removed_ids` are what it leaves. Only this
     /// cycle's: what an earlier one left was never committed.
-    pub(super) fn keep(&self, announcements: Vec<RemoteChange>, removed_ids: Vec<String>) {
+    pub(super) fn keep(&self, announcements: Vec<Announcement>, removed_ids: Vec<String>) {
         *crate::panic::lock(&self.0) = AfterCommit { announcements, removed_ids };
     }
 
     /// The cycle is committed: what it left to announce, and the OneDrive ids it removed.
     /// Nothing is left here.
-    pub(super) fn take(&self) -> (Vec<RemoteChange>, Vec<String>) {
+    pub(super) fn take(&self) -> (Vec<Announcement>, Vec<String>) {
         let AfterCommit { announcements, removed_ids } = std::mem::take(&mut *crate::panic::lock(&self.0));
         (announcements, removed_ids)
     }
@@ -82,14 +82,14 @@ impl UncommittedCycle {
 /// What is announced of `change` to whoever watches the folder: a name that vanished, one
 /// that appeared, both for a file or directory that moved, and for a file that stayed where
 /// it was, that what is shown of it changed.
-pub(super) fn list_announcements(change: &OneDriveChange) -> Vec<RemoteChange> {
-    let vanished = |old: &Row, was: &Path| RemoteChange::NameVanished { rel: was.to_owned(), kind: old.kind, id: change.id.clone(), parent_id: old.parent_id.clone() };
-    let appeared = |new: &Row, now: &Path| RemoteChange::NameAppeared { rel: now.to_owned(), kind: new.kind, parent_id: new.parent_id.clone() };
+pub(super) fn list_announcements(change: &OneDriveChange) -> Vec<Announcement> {
+    let vanished = |old: &Row, was: &Path| Announcement::NameVanished { rel: was.to_owned(), kind: old.kind, id: change.id.clone(), parent_id: old.parent_id.clone() };
+    let appeared = |new: &Row, now: &Path| Announcement::NameAppeared { rel: now.to_owned(), kind: new.kind, parent_id: new.parent_id.clone() };
     match (&change.old, &change.new) {
         (Some((old, was)), None) => vec![vanished(old, was)],
         (None, Some((new, now))) => vec![appeared(new, now)],
         (Some((old, was)), Some((new, now))) if was != now => vec![vanished(old, was), appeared(new, now)],
-        (Some(_), Some((new, now))) if new.kind == Kind::File => vec![RemoteChange::ContentChanged { rel: now.clone(), id: change.id.clone() }],
+        (Some(_), Some((new, now))) if new.kind == Kind::File => vec![Announcement::FileShownChanged { rel: now.clone(), id: change.id.clone() }],
         (Some(_), Some(_)) | (None, None) => Vec::new(),
     }
 }
@@ -204,7 +204,7 @@ pub(super) fn announce_committed_cycle(
     inotify_bridge.announce(announcements);
     download_pinned_files(pins, directory_contents, file_downloader, runtime);
     // What the cycle kept of the user's own is the outbox's to send.
-    outbox_recorder.wake();
+    outbox_recorder.wake_outbox();
 }
 
 #[cfg(test)]

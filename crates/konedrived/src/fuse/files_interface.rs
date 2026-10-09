@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
 use super::download_states::{to_hydration_state, DownloadStates};
 use super::file_downloader::FileDownloader;
-use super::inotify_bridge::{InotifyBridge, RemoteChange};
+use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::open_files::OpenFiles;
 use super::pins::{download_pinned_files, Pins};
 use crate::status::report::Report;
@@ -153,7 +153,7 @@ impl FilesInterface {
                     Some(bytes) => {
                         freed.files += 1;
                         freed.bytes += bytes;
-                        announcements.push(RemoteChange::ContentChanged { rel: at, id: file.id });
+                        announcements.push(Announcement::FileShownChanged { rel: at, id: file.id });
                     }
                     None => freed.kept += 1,
                 }
@@ -189,7 +189,7 @@ impl FilesInterface {
         let (row, rel) = self.find_onedrive_row(path)?;
         let changed = self.pins.set_pin(&row.id, pinned).await.map_err(|e| FilesRefusal::Io(e.to_string()))?;
         if changed {
-            self.inotify_bridge.announce(vec![RemoteChange::ContentChanged { rel, id: row.id }]);
+            self.inotify_bridge.announce(vec![Announcement::FileShownChanged { rel, id: row.id }]);
         }
         if pinned {
             download_pinned_files(&self.pins, &self.directory_contents, &self.file_downloader, &self.runtime);

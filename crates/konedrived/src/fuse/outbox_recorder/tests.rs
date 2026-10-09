@@ -25,7 +25,7 @@ fn a_recorded_change_is_in_the_outbox_and_wakes_the_worker() {
     let (store, outbox_recorder) = outbox_recorder(AccessMode::read_write());
     let woken = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&woken);
-    outbox_recorder.set_wake(Some(Arc::new(move || {
+    outbox_recorder.set_outbox_waker(Some(Arc::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
     })));
     let recorded = outbox_recorder.record(file_created()).unwrap();

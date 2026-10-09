@@ -4,7 +4,7 @@ use konedrive_tree::{Kind, Row};
 
 use super::{list_announcements, OneDriveChange, UncommittedCycle};
 use crate::fuse::directory_contents::tests::row;
-use crate::fuse::inotify_bridge::RemoteChange;
+use crate::fuse::inotify_bridge::Announcement;
 
 /// The OneDrive id `A` in the directory `D`, at `rel`.
 fn placed(kind: Kind, rel: &str) -> Option<(Row, PathBuf)> {
@@ -17,12 +17,12 @@ fn change(old: Option<(Row, PathBuf)>, new: Option<(Row, PathBuf)>) -> OneDriveC
     OneDriveChange { id: "A".into(), old, new }
 }
 
-fn vanished(kind: Kind, rel: &str) -> RemoteChange {
-    RemoteChange::NameVanished { rel: rel.into(), kind, id: "A".into(), parent_id: Some("D".into()) }
+fn vanished(kind: Kind, rel: &str) -> Announcement {
+    Announcement::NameVanished { rel: rel.into(), kind, id: "A".into(), parent_id: Some("D".into()) }
 }
 
-fn appeared(kind: Kind, rel: &str) -> RemoteChange {
-    RemoteChange::NameAppeared { rel: rel.into(), kind, parent_id: Some("D".into()) }
+fn appeared(kind: Kind, rel: &str) -> Announcement {
+    Announcement::NameAppeared { rel: rel.into(), kind, parent_id: Some("D".into()) }
 }
 
 #[test]
@@ -45,7 +45,7 @@ fn what_moved_is_announced_as_a_name_that_vanished_and_one_that_appeared() {
 #[test]
 fn a_file_that_stayed_where_it_was_is_announced_as_changed_and_a_directory_is_not() {
     let file = change(placed(Kind::File, "docs/a.txt"), placed(Kind::File, "docs/a.txt"));
-    assert_eq!(list_announcements(&file), [RemoteChange::ContentChanged { rel: "docs/a.txt".into(), id: "A".into() }]);
+    assert_eq!(list_announcements(&file), [Announcement::FileShownChanged { rel: "docs/a.txt".into(), id: "A".into() }]);
     let directory = change(placed(Kind::Folder, "docs/sub"), placed(Kind::Folder, "docs/sub"));
     assert!(list_announcements(&directory).is_empty());
     // What the store never had placed and the new tree has not placed either.

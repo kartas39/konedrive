@@ -48,12 +48,12 @@ use super::directory_contents::DirectoryContents;
 use super::download_states::DownloadStates;
 use super::file_downloader::{FileChangeAnnouncer, FileDownloader};
 use super::files_interface::{FilesInterface, FilesRefusal, FreedSpace, PathStatus};
-use super::inotify_bridge::{InotifyBridge, RemoteChange};
+use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::kernel_requests::{InterruptibleReads, KernelRequests};
 use super::node_resolver::NodeResolver;
 use super::open_files::OpenFiles;
 use super::open_writers::OpenWriters;
-use super::outbox_recorder::OutboxRecorder;
+use super::outbox_recorder::{OutboxRecorder, OutboxWaker};
 use super::pins::{download_pinned_files, Pins};
 use super::range_readers::RangeReaders;
 use super::remote_changes::{self, CycleOutcome, UncommittedCycle};
@@ -170,7 +170,7 @@ impl Mount {
             let inotify_bridge = Arc::new(InotifyBridge::new(folder.clone(), Arc::clone(&node_resolver), Arc::clone(&directory_contents)));
             // All the downloader knows of the bridge: the way to announce a file's change.
             let announcing = Arc::clone(&inotify_bridge);
-            let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| announcing.announce(vec![RemoteChange::ContentChanged { rel, id }]));
+            let announce_file_change: FileChangeAnnouncer = Arc::new(move |rel, id| announcing.announce(vec![Announcement::FileShownChanged { rel, id }]));
             let file_downloader = Arc::new(FileDownloader {
                 backing_directory: Arc::clone(&backing_directory),
                 directory_contents: Arc::clone(&directory_contents),
@@ -300,10 +300,10 @@ impl Mount {
         set_tree(&self.folder, false);
     }
 
-    /// The folder takes changes from now on, and `wake` is called for each one recorded:
+    /// The folder takes changes from now on, and `outbox_waker` is called for each one recorded:
     /// its sync uploads. Whether the modes shown changed with that.
-    pub fn switch_to_read_write(&self, wake: Arc<dyn Fn() + Send + Sync>) -> bool {
-        self.outbox_recorder.set_wake(Some(wake));
+    pub fn switch_to_read_write(&self, outbox_waker: OutboxWaker) -> bool {
+        self.outbox_recorder.set_outbox_waker(Some(outbox_waker));
         let changed = self.access_mode.switch_to_read_write();
         if changed {
             // What a lost row left unsent is found again.
@@ -315,7 +315,7 @@ impl Mount {
 
     /// The folder takes no change from now on. Whether the modes shown changed with that.
     pub fn switch_to_read_only(&self) -> bool {
-        self.outbox_recorder.set_wake(None);
+        self.outbox_recorder.set_outbox_waker(None);
         self.access_mode.switch_to_read_only()
     }
 

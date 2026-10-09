@@ -25,7 +25,7 @@ use crate::local::record::{record, Recorded};
 type Job = Box<dyn FnOnce() + Send>;
 
 /// What wakes the outbox's worker.
-pub(super) type Wake = Arc<dyn Fn() + Send + Sync>;
+pub(super) type OutboxWaker = Arc<dyn Fn() + Send + Sync>;
 
 pub(super) struct OutboxRecorder {
     /// The way to the thread; `None` once the recorder is stopped.
@@ -33,7 +33,7 @@ pub(super) struct OutboxRecorder {
     /// The store's one writer.
     store: Store,
     /// Wakes the outbox's worker: set while a sync that uploads runs.
-    wake: Mutex<Option<Wake>>,
+    outbox_waker: Mutex<Option<OutboxWaker>>,
     /// Whether programs may change the folder.
     access_mode: Arc<AccessMode>,
 }
@@ -49,7 +49,7 @@ impl OutboxRecorder {
                 job();
             }
         })?;
-        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, wake: Mutex::new(None), access_mode })
+        Ok(OutboxRecorder { jobs: Mutex::new(Some(jobs)), store, outbox_waker: Mutex::new(None), access_mode })
     }
 
     /// Has `job` run on the recorder's thread. A recorder that is stopped drops it, and with
@@ -65,16 +65,16 @@ impl OutboxRecorder {
         *crate::panic::lock(&self.jobs) = None;
     }
 
-    /// From now on each recorded change calls `wake`; `None`: nothing is woken.
-    pub(super) fn set_wake(&self, wake: Option<Wake>) {
-        *crate::panic::lock(&self.wake) = wake;
+    /// From now on each recorded change calls `outbox_waker`; `None`: nothing is woken.
+    pub(super) fn set_outbox_waker(&self, outbox_waker: Option<OutboxWaker>) {
+        *crate::panic::lock(&self.outbox_waker) = outbox_waker;
     }
 
     /// Wakes the outbox's worker, when a sync that uploads runs: a row was written.
-    pub(super) fn wake(&self) {
-        let wake = crate::panic::lock(&self.wake).clone();
-        if let Some(wake) = wake {
-            wake();
+    pub(super) fn wake_outbox(&self) {
+        let outbox_waker = crate::panic::lock(&self.outbox_waker).clone();
+        if let Some(outbox_waker) = outbox_waker {
+            outbox_waker();
         }
     }
 
@@ -94,7 +94,7 @@ impl OutboxRecorder {
             }
             record(s, batch.detections, batch.ops, now)
         })?;
-        self.wake();
+        self.wake_outbox();
         Ok(recorded)
     }
 }

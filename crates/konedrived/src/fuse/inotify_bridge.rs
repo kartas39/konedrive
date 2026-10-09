@@ -2,7 +2,7 @@
 //! done through the mount, and of nothing the daemon changes in the store behind it.
 //!
 //! [`InotifyBridge`] owns a thread that makes each change by path through the mount — a name
-//! that appeared is made, one that vanished is removed, a file whose content changed is
+//! that appeared is made, one that vanished is removed, a file of which what is shown changed is
 //! touched — so that the kernel tells whoever watches the directory. The mount recognises
 //! the thread's requests ([`InotifyBridge::is_own_thread`]) and answers them without making
 //! anything: the store has the change already. The bridge owns the thread, the way to it,
@@ -31,7 +31,7 @@ use super::node_resolver::NodeResolver;
 
 /// A change from OneDrive, or of what the mount shows of a OneDrive file, to announce.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RemoteChange {
+pub(super) enum Announcement {
     /// A name appeared at `rel`, in the directory with the OneDrive id `parent_id`.
     NameAppeared { rel: PathBuf, kind: Kind, parent_id: Option<String> },
     /// The name of the OneDrive id `id` vanished from `rel`, in the directory with the
@@ -39,7 +39,7 @@ pub(super) enum RemoteChange {
     NameVanished { rel: PathBuf, kind: Kind, id: String, parent_id: Option<String> },
     /// What the mount shows of the OneDrive file `id` at `rel` changed: its content, or how
     /// much of it is on this computer.
-    ContentChanged { rel: PathBuf, id: String },
+    FileShownChanged { rel: PathBuf, id: String },
 }
 
 /// The announcement the bridge's thread is making right now: the name, in the directory node
@@ -79,9 +79,9 @@ pub(super) struct InotifyBridge {
     node_resolver: Arc<NodeResolver>,
     directory_contents: Arc<DirectoryContents>,
     /// The way to the thread; `None` once the bridge is stopped.
-    changes: Mutex<Option<mpsc::Sender<Vec<RemoteChange>>>>,
+    announcements: Mutex<Option<mpsc::Sender<Vec<Announcement>>>>,
     /// What the thread reads from, until it is started.
-    queued: Mutex<Option<mpsc::Receiver<Vec<RemoteChange>>>>,
+    queued: Mutex<Option<mpsc::Receiver<Vec<Announcement>>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
     /// The thread's id, as the kernel names it in a request; 0 before the thread runs.
     thread_id: AtomicI32,
@@ -94,12 +94,12 @@ impl InotifyBridge {
     /// The bridge of the folder mounted at `folder`. What it is given to announce waits
     /// until its thread is started ([`start`](Self::start)), once the mount answers.
     pub(super) fn new(folder: PathBuf, node_resolver: Arc<NodeResolver>, directory_contents: Arc<DirectoryContents>) -> Self {
-        let (changes, queued) = mpsc::channel();
+        let (announcements, queued) = mpsc::channel();
         InotifyBridge {
             folder,
             node_resolver,
             directory_contents,
-            changes: Mutex::new(Some(changes)),
+            announcements: Mutex::new(Some(announcements)),
             queued: Mutex::new(Some(queued)),
             thread: Mutex::new(None),
             thread_id: AtomicI32::new(0),
@@ -118,14 +118,14 @@ impl InotifyBridge {
         Ok(())
     }
 
-    /// Has `changes` announced, in their order, after what was given before. A bridge that
+    /// Has `announcements` announced, in their order, after what was given before. A bridge that
     /// is stopped drops them.
-    pub(super) fn announce(&self, changes: Vec<RemoteChange>) {
-        if changes.is_empty() {
+    pub(super) fn announce(&self, announcements: Vec<Announcement>) {
+        if announcements.is_empty() {
             return;
         }
-        if let Some(way) = &*crate::panic::lock(&self.changes) {
-            let _ = way.send(changes);
+        if let Some(way) = &*crate::panic::lock(&self.announcements) {
+            let _ = way.send(announcements);
         }
     }
 
@@ -147,7 +147,7 @@ impl InotifyBridge {
     /// directory.
     pub(super) fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
-        *crate::panic::lock(&self.changes) = None;
+        *crate::panic::lock(&self.announcements) = None;
         if let Some(thread) = crate::panic::lock(&self.thread).take() {
             let _ = thread.join();
         }
@@ -165,21 +165,21 @@ impl InotifyBridge {
 
     /// The thread: makes each change by path through the mount, which answers it from the
     /// store, so that the kernel tells whoever watches the directory.
-    fn announce_queued(&self, notifier: &fuser::Notifier, queued: mpsc::Receiver<Vec<RemoteChange>>) {
+    fn announce_queued(&self, notifier: &fuser::Notifier, queued: mpsc::Receiver<Vec<Announcement>>) {
         // SAFETY: a system call that takes nothing and cannot fail.
         self.thread_id.store(unsafe { libc::gettid() }, Ordering::SeqCst);
         let path = |rel: &Path| CString::new(self.folder.join(rel).into_os_string().into_encoded_bytes()).unwrap_or_default();
         let name = |rel: &Path| rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let begin = |announcement: AnnouncementInProgress| *crate::panic::lock(&self.in_progress) = Some(announcement);
-        for change in queued.into_iter().flatten() {
+        for announcement in queued.into_iter().flatten() {
             // The mount is going: nothing more is announced through it.
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
             // SAFETY: plain system calls on a path this function owns.
             unsafe {
-                match change {
-                    RemoteChange::NameAppeared { rel, kind, parent_id } => {
+                match announcement {
+                    Announcement::NameAppeared { rel, kind, parent_id } => {
                         // A directory the kernel was never told of has nobody watching it.
                         let Some(parent) = self.find_directory_node_id(parent_id.as_deref()) else { continue };
                         begin(AnnouncementInProgress::NameAppearing { parent, name: name(&rel) });
@@ -188,7 +188,7 @@ impl InotifyBridge {
                             Kind::File => libc::mknod(path(&rel).as_ptr(), libc::S_IFREG | 0o644, 0),
                         };
                     }
-                    RemoteChange::NameVanished { rel, kind, id, parent_id } => {
+                    Announcement::NameVanished { rel, kind, id, parent_id } => {
                         // A name the kernel was never told of has nobody watching it go.
                         let (Some(parent), Some(node_id)) = (self.find_directory_node_id(parent_id.as_deref()), self.node_resolver.find_node_id(&id)) else { continue };
                         begin(AnnouncementInProgress::NameVanishing { parent, name: name(&rel), node_id, kind });
@@ -197,7 +197,7 @@ impl InotifyBridge {
                             Kind::File => libc::unlink(path(&rel).as_ptr()),
                         };
                     }
-                    RemoteChange::ContentChanged { rel, id } => {
+                    Announcement::FileShownChanged { rel, id } => {
                         // The kernel's cached pages of the old content go first.
                         if let Some(node_id) = self.node_resolver.find_node_id(&id) {
                             let _ = notifier.inval_inode(INodeNo(node_id), 0, 0);
