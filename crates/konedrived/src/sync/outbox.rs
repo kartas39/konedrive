@@ -245,8 +245,10 @@ impl SyncService {
     /// their forgotten local objects back.
     pub async fn restore_deletes(&self) -> Result<u32, SyncError> {
         // The store and the tree lock as last published, and no state lock: a cycle holds
-        // the tree lock while it waits for the state, so nothing that holds the state may
-        // wait for the tree lock.
+        // the tree lock while it waits for the state, and gives that wait up only once its
+        // sync is told to stop. So nothing that holds the state waits for the tree lock,
+        // but a change that has taken the sync out and told it to stop: it switches the
+        // mount to read-only on the write-operation thread, which runs under that lock.
         let store = self.outbox_store()?;
         let view = self.view();
         let dropped = {

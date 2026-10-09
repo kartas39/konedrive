@@ -1,7 +1,8 @@
 //! The order the parts of a mount are built in. Each is given only what stands before it:
 //! no part is handed one that is built after it, and none is handed the mount.
 //!
-//! 1. [`BackingDirectory`]: opened before the mount lies over it;
+//! 1. [`BackingDirectory`]: opened before the mount lies over it, once a stale mount is
+//!    taken off the folder;
 //! 2. [`DirectoryContents`]: over the store's reader and the backing directory;
 //! 3. [`NodeResolver`]: over the directory contents and the backing directory;
 //! 4. [`AccessModeSwitch`], read-only at first;
@@ -51,6 +52,7 @@ use crate::fuse::pinned_file_downloader::PinnedFileDownloader;
 use crate::fuse::pins::Pins;
 use crate::fuse::range_fetcher::RangeFetcher;
 use crate::fuse::range_readers::RangeReaders;
+use crate::fuse::stale_mount::unmount_stale_mount;
 use crate::fuse::unrecorded_entry_scan::UnrecordedEntryScan;
 use crate::fuse::upload_rules::UploadRules;
 use crate::fuse::write_operation_thread::WriteOperationThread;
@@ -63,6 +65,8 @@ impl Mount {
     pub(in crate::fuse) fn build(setup: MountSetup, pinned_ids: Vec<String>, runtime: tokio::runtime::Handle) -> io::Result<(Mount, KernelRequests)> {
         let MountSetup { root, store_path, store, source, report, pool, split_download_share, download_after, write_setup } = setup;
         let folder = root.path;
+        // A mount a daemon that died left on the folder goes first: nothing opens under it.
+        unmount_stale_mount(&folder);
         let backing_directory = Arc::new(BackingDirectory::open(&folder)?);
         let directory_contents = Arc::new(DirectoryContents::new(TreeStore::open_read_only(&store_path).map_err(to_io_error)?, Arc::clone(&backing_directory)));
         let node_resolver = Arc::new(NodeResolver::new(Arc::clone(&directory_contents), Arc::clone(&backing_directory)));

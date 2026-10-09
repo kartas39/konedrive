@@ -1,23 +1,13 @@
-//! The kernel's numbers at the edge of the layer: they come in fuser's types, and are the
-//! layer's own — a [`NodeId`], an [`Fh`], a [`RequestId`] — from here on.
+//! The kernel's numbers of a request at the edge of the layer: they come in fuser's types,
+//! and are the layer's own — an [`Fh`], a [`RequestId`] — from here on. A node id is the
+//! kernel's inode number wherever the layer hands one to the kernel, also outside the
+//! requests (the attributes, the inotify bridge's invalidation): that pair is with
+//! [`NodeId`](crate::fuse::node_table::NodeId) itself.
 
-use fuser::{FileHandle, INodeNo};
+use fuser::FileHandle;
 
 use super::interruptible_reads::RequestId;
-use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::Fh;
-
-impl From<INodeNo> for NodeId {
-    fn from(ino: INodeNo) -> Self {
-        NodeId(ino.0)
-    }
-}
-
-impl From<NodeId> for INodeNo {
-    fn from(node_id: NodeId) -> Self {
-        INodeNo(node_id.0)
-    }
-}
 
 impl From<FileHandle> for Fh {
     fn from(fh: FileHandle) -> Self {

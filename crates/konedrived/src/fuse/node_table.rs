@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use fuser::INodeNo;
 use konedrive_fs::handle::FileHandle;
 
 /// A node id: the number the mount gives the kernel for a name, which the kernel calls an
@@ -17,6 +18,19 @@ pub(super) struct NodeId(pub(super) u64);
 impl NodeId {
     /// The root of the mount: the folder itself.
     pub(super) const ROOT: NodeId = NodeId(1);
+}
+
+/// The kernel names a node by the number it was given: its inode number is the node id.
+impl From<INodeNo> for NodeId {
+    fn from(ino: INodeNo) -> Self {
+        NodeId(ino.0)
+    }
+}
+
+impl From<NodeId> for INodeNo {
+    fn from(node_id: NodeId) -> Self {
+        INodeNo(node_id.0)
+    }
 }
 
 /// What a node id stands for.

@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fuser::{AccessFlags, Errno, FileAttr, Generation, ReplyAttr, ReplyEmpty, ReplyEntry, ReplyStatfs};
-use konedrive_tree::{Kind, Placement, Row};
+use konedrive_tree::Kind;
 
 use crate::fuse::access_mode_switch::{AccessMode, AccessModeSwitch};
 use crate::fuse::attributes::{attributes, TTL};
 use crate::fuse::backing_directory::BackingDirectory;
-use crate::fuse::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
+use crate::fuse::directory_contents::{make_bare_row, DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::errno::to_errno;
 use crate::fuse::inotify_bridge::{InotifyBridge, NameBeforeChange};
 use crate::fuse::node_resolver::NodeResolver;
@@ -25,7 +25,7 @@ use crate::fuse::node_table::NodeId;
 /// The entry of a name that is gone from the store, for the one request that still has to be
 /// told it is there: its kind, and nothing else.
 fn make_vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
-    let row = Row { id: String::new(), parent_id: None, name: name.to_owned(), kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed };
+    let row = make_bare_row(String::new(), name.to_owned(), kind);
     let state = match kind {
         Kind::Folder => EntryState::Directory(DirectorySyncState::InOneDrive(row)),
         Kind::File => EntryState::File(FileSyncState::RemoteOnly(row)),

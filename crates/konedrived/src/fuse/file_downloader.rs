@@ -39,6 +39,7 @@ use crate::status::report::Report;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
 use super::download_states::{DownloadStart, DownloadStates, Waiter};
+use super::errno::to_raw_errno;
 use super::inotify_bridge::{Announcement, InotifyBridge};
 
 mod landing_attempt;
@@ -154,7 +155,7 @@ impl FileDownloader {
     /// earlier download left it, and lands it at `rel`. Its size, or the errno it failed
     /// with.
     async fn download_and_land(&self, row: &Row, rel: &Path, class: Class, unfinished_file: Option<Arc<File>>) -> Result<u64, i32> {
-        let io_errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+        let io_errno = |e: io::Error| to_raw_errno(&e);
         let mut slot = self.pool.acquire_sized(class, Size::of(row.size)).await;
         // The file a download is built in has no name: it is in the backing directory's
         // filesystem and in no directory, so nothing ever lists a file that is not whole, and

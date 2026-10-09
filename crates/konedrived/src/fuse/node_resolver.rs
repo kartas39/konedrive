@@ -136,10 +136,10 @@ impl NodeResolver {
     /// The directory the node `node_id` stands for.
     pub(super) fn find_directory(&self, node_id: NodeId) -> Option<DirectoryReference> {
         if node_id == NodeId::ROOT {
-            return Some(DirectoryReference { onedrive_id: self.directory_contents.find_root_id().filter(|id| !id.is_empty()), path: PathBuf::new() });
+            return Some(self.directory_contents.find_root_directory());
         }
         match self.find_node(node_id)? {
-            NodeTarget::InOneDrive { entry, rel } => matches!(entry.state, EntryState::Directory(_)).then(|| DirectoryReference { onedrive_id: entry.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), path: rel }),
+            NodeTarget::InOneDrive { entry, rel } => entry.to_directory_reference(rel),
             NodeTarget::LocalOnly { on_disk, rel, .. } => (on_disk.metadata.kind == EntryKind::Directory).then_some(DirectoryReference { onedrive_id: None, path: rel }),
         }
     }

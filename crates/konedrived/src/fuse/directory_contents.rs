@@ -51,6 +51,13 @@ pub(super) struct DirectoryContents {
     backing_directory: Arc<BackingDirectory>,
 }
 
+/// A row that says an id, a name and a kind, and nothing else: of what the store has no row
+/// of its own for — the folder itself, and a name that is gone from the store and is shown
+/// once more.
+pub(super) fn make_bare_row(id: String, name: String, kind: Kind) -> Row {
+    Row { id, parent_id: None, name, kind, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed }
+}
+
 impl DirectoryContents {
     /// The contents of the folder whose disk is `backing_directory`, read through `reader`, a
     /// connection of its own to the folder's store.
@@ -105,8 +112,7 @@ impl DirectoryContents {
     /// The folder itself, as a row: without a name, and without an id before the store has
     /// the drive's root.
     pub(super) fn find_root_row(&self) -> Row {
-        let id = self.find_root_id().unwrap_or_default();
-        Row { id, parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed }
+        make_bare_row(self.find_root_id().unwrap_or_default(), String::new(), Kind::Folder)
     }
 
     /// The folder itself, as an entry: a directory of OneDrive, without a name.

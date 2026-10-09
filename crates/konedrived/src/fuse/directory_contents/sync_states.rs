@@ -10,8 +10,11 @@
 //! writer on: the write operations record it in the outbox at that moment
 //! ([`crate::fuse::write_operations`]), so the unsent changes already say so.
 
+use std::path::PathBuf;
+
 use konedrive_tree::Row;
 
+use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use crate::fuse::backing_directory::{DiskMetadata, EntryKind};
 
@@ -110,6 +113,13 @@ impl DirectoryEntry {
     /// The OneDrive id; `None` for an entry that is not in OneDrive yet.
     pub(in crate::fuse) fn onedrive_id(&self) -> Option<&str> {
         self.row().map(|row| row.id.as_str())
+    }
+
+    /// The reference to the directory this entry is, which the mount shows at `path`: with
+    /// its OneDrive id when OneDrive has it. `None` for a file.
+    pub(in crate::fuse) fn to_directory_reference(&self, path: PathBuf) -> Option<DirectoryReference> {
+        let EntryState::Directory(_) = self.state else { return None };
+        Some(DirectoryReference { onedrive_id: self.onedrive_id().filter(|id| !id.is_empty()).map(str::to_owned), path })
     }
 
     /// The local-only entry; `None` for an entry that is in OneDrive.

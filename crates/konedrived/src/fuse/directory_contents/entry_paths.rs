@@ -5,13 +5,14 @@ use std::path::{Path, PathBuf};
 
 use konedrive_tree::Placement;
 
-use super::{DirectoryContents, DirectoryEntry, EntryState};
+use super::{DirectoryContents, DirectoryEntry};
 use crate::fuse::directory_reference::DirectoryReference;
 
 impl DirectoryContents {
-    /// The folder itself, as a directory.
+    /// The folder itself, as a directory: without an id before the store has the drive's
+    /// root.
     pub(in crate::fuse) fn find_root_directory(&self) -> DirectoryReference {
-        DirectoryReference { onedrive_id: self.find_root_id(), path: PathBuf::new() }
+        DirectoryReference { onedrive_id: self.find_root_id().filter(|id| !id.is_empty()), path: PathBuf::new() }
     }
 
     /// The path the mount shows the OneDrive id `id` at: where the store has it, or where
@@ -53,10 +54,7 @@ impl DirectoryContents {
         while let Some(name) = names.next() {
             found = self.find_entry(&directory, name.as_os_str().to_str()?)?;
             if names.peek().is_some() {
-                if !matches!(found.state, EntryState::Directory(_)) {
-                    return None;
-                }
-                directory = DirectoryReference { onedrive_id: found.onedrive_id().map(str::to_owned), path: directory.path.join(name) };
+                directory = found.to_directory_reference(directory.path.join(name))?;
             }
         }
         Some(found)

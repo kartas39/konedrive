@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use konedrive_tree::Row;
 
+use super::errno::to_raw_errno;
 use super::range_readers::RangeReaders;
 use crate::hydration::source::ContentSource;
 
@@ -39,7 +40,7 @@ impl RangeFetcher {
         }
         let mut bytes = Vec::with_capacity((end - from) as usize);
         let answered = asked.elapsed();
-        fetched.stream.take(end - from).read_to_end(&mut bytes).await.map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        fetched.stream.take(end - from).read_to_end(&mut bytes).await.map_err(|e| to_raw_errno(&e))?;
         tracing::info!("{} bytes at {from} of {} came from OneDrive in {} ms ({} ms to the answer)", bytes.len(), row.name, asked.elapsed().as_millis(), answered.as_millis());
         Ok(bytes)
     }

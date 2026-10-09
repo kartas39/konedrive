@@ -42,7 +42,7 @@ use fuser::Errno;
 use super::access_mode_switch::AccessModeSwitch;
 use super::backing_directory::BackingDirectory;
 use super::detections::{FolderEvent, WriteState};
-use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState};
+use super::directory_contents::{DirectoryContents, DirectoryEntry};
 use super::directory_reference::DirectoryReference;
 use super::local_only_entry::find_upload_status;
 use super::node_resolver::NodeResolver;
@@ -101,9 +101,7 @@ impl WriteOperations {
     /// Whether `entry`, which the mount shows at `path`, is a directory that holds
     /// something.
     fn holds_entries(&self, entry: &DirectoryEntry, path: &Path) -> bool {
-        let EntryState::Directory(_) = entry.state else { return false };
-        let directory = DirectoryReference { onedrive_id: entry.onedrive_id().map(str::to_owned), path: path.to_owned() };
-        !self.directory_contents.list_names(&directory).is_empty()
+        entry.to_directory_reference(path.to_owned()).is_some_and(|directory| !self.directory_contents.list_names(&directory).is_empty())
     }
 
     /// Records `event`. On a failure it is logged as `what`, `undo` takes back what was done

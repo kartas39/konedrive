@@ -28,8 +28,6 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use super::stale_mount::unmount_stale_mount;
-
 mod directory_marks;
 mod download_landing;
 mod downloaded_copies;
@@ -52,11 +50,11 @@ pub struct BackingDirectory {
 }
 
 impl BackingDirectory {
-    /// Opens `folder`, which no mount lies over yet: afterwards its path is the mount, and
-    /// this is the one way to what it holds. A mount a daemon that died left on it is taken
-    /// off first, and a directory an older konedrive kept is refused.
+    /// Opens `folder`, which no mount lies over: afterwards its path is the mount, and this
+    /// is the one way to what it holds. A mount a daemon that died left on it is the
+    /// caller's to take off first ([`crate::fuse::stale_mount`]). A directory an older
+    /// konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
-        unmount_stale_mount(folder);
         if legacy_placeholders::holds_legacy_placeholders(folder) {
             return Err(legacy_placeholders::refusal(folder));
         }
