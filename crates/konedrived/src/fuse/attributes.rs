@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use fuser::{FileAttr, FileType, INodeNo};
 
 use super::access_mode::AccessMode;
+use super::node_table::NodeId;
 use super::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
 use crate::clock::to_system_time;
 
@@ -35,7 +36,7 @@ fn permissions(access_mode: &AccessMode, directory: bool) -> u16 {
 ///   time: a download does not change when the file was last modified.
 /// - A file modified here has its copy's size, blocks and time.
 /// - A local-only entry has what the filesystem says of it; a directory shows no size.
-pub(super) fn attributes(node_id: u64, access_mode: &AccessMode, entry: &DirectoryEntry) -> FileAttr {
+pub(super) fn attributes(node_id: NodeId, access_mode: &AccessMode, entry: &DirectoryEntry) -> FileAttr {
     let (directory, size, blocks, modified): (bool, u64, u64, SystemTime) = match &entry.state {
         EntryState::Directory(DirectorySyncState::InOneDrive(row)) => (true, 0, 0, to_system_time(row.mtime)),
         EntryState::Directory(DirectorySyncState::LocalOnly(local_only)) => (true, 0, local_only.on_disk.metadata.blocks, local_only.on_disk.metadata.modified),
@@ -46,7 +47,7 @@ pub(super) fn attributes(node_id: u64, access_mode: &AccessMode, entry: &Directo
     };
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     FileAttr {
-        ino: INodeNo(node_id),
+        ino: INodeNo::from(node_id),
         size,
         blocks,
         atime: modified,

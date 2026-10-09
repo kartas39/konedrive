@@ -28,6 +28,7 @@ use konedrive_tree::Kind;
 
 use super::directory_contents::DirectoryContents;
 use super::node_resolver::NodeResolver;
+use super::node_table::NodeId;
 
 /// A change from OneDrive, or of what the mount shows of a OneDrive file, to announce.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,9 +47,9 @@ pub(super) enum Announcement {
 /// `parent`, that the kernel looks up before it passes the change on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AnnouncementInProgress {
-    NameAppearing { parent: u64, name: String },
+    NameAppearing { parent: NodeId, name: String },
     /// The name of the node `node_id` is being removed.
-    NameVanishing { parent: u64, name: String, node_id: u64, kind: Kind },
+    NameVanishing { parent: NodeId, name: String, node_id: NodeId, kind: Kind },
 }
 
 /// What a name was before the change that is being announced.
@@ -57,13 +58,13 @@ pub(super) enum NameBeforeChange {
     /// It appeared: there was no such name.
     Absent,
     /// It vanished: the node `node_id` had it.
-    Present { node_id: u64, kind: Kind },
+    Present { node_id: NodeId, kind: Kind },
 }
 
 /// What `name` in the directory node `parent` was before the change, when it is the name
 /// `in_progress` announces: the answer the bridge's thread gets to its lookup. `None` for
 /// every other name, which is answered as the folder has it now.
-pub(super) fn find_name_before_change(in_progress: Option<&AnnouncementInProgress>, parent: u64, name: &OsStr) -> Option<NameBeforeChange> {
+pub(super) fn find_name_before_change(in_progress: Option<&AnnouncementInProgress>, parent: NodeId, name: &OsStr) -> Option<NameBeforeChange> {
     match in_progress? {
         AnnouncementInProgress::NameAppearing { parent: in_, name: appearing } if *in_ == parent && name == appearing.as_str() => Some(NameBeforeChange::Absent),
         AnnouncementInProgress::NameVanishing { parent: in_, name: vanishing, node_id, kind } if *in_ == parent && name == vanishing.as_str() => {
@@ -137,7 +138,7 @@ impl InotifyBridge {
 
     /// What `name` in the directory node `parent` was before the change being announced
     /// right now ([`find_name_before_change`]).
-    pub(super) fn find_name_before_change(&self, parent: u64, name: &OsStr) -> Option<NameBeforeChange> {
+    pub(super) fn find_name_before_change(&self, parent: NodeId, name: &OsStr) -> Option<NameBeforeChange> {
         find_name_before_change(crate::panic::lock(&self.in_progress).as_ref(), parent, name)
     }
 
@@ -155,10 +156,10 @@ impl InotifyBridge {
 
     /// The node id of the directory with the OneDrive id `id`, when the kernel was told of
     /// it: the root is always known.
-    fn find_directory_node_id(&self, id: Option<&str>) -> Option<u64> {
+    fn find_directory_node_id(&self, id: Option<&str>) -> Option<NodeId> {
         let id = id?;
         if self.directory_contents.find_root_id().as_deref() == Some(id) {
-            return Some(1);
+            return Some(NodeId::ROOT);
         }
         self.node_resolver.find_node_id(id)
     }
@@ -200,7 +201,7 @@ impl InotifyBridge {
                     Announcement::FileShownChanged { rel, id } => {
                         // The kernel's cached pages of the old content go first.
                         if let Some(node_id) = self.node_resolver.find_node_id(&id) {
-                            let _ = notifier.inval_inode(INodeNo(node_id), 0, 0);
+                            let _ = notifier.inval_inode(INodeNo::from(node_id), 0, 0);
                         }
                         libc::utimensat(libc::AT_FDCWD, path(&rel).as_ptr(), std::ptr::null(), 0);
                     }

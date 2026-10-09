@@ -7,6 +7,7 @@ use std::sync::Arc;
 use fuser::Errno;
 use konedrive_tree::Row;
 
+use crate::fuse::node_table::NodeId;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::WriteOperations;
@@ -19,7 +20,7 @@ use crate::fuse::errno::to_errno;
 impl WriteOperations {
     /// Makes `name` in the directory node `parent`: a directory, or a file, which `open`
     /// leaves open for writing. The entry that was made, and the file when it is open.
-    pub(in crate::fuse) fn make(&self, parent: u64, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<OpenFile>), Errno> {
+    pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, directory: bool, open: bool) -> Result<(DirectoryEntry, Option<OpenFile>), Errno> {
         let parent_directory = self.check_make(parent, name, directory)?;
         let rel = parent_directory.path.join(name);
         self.directory_contents.make_marked_directories(&parent_directory.path).map_err(|e| to_errno(&e))?;
@@ -67,10 +68,10 @@ impl WriteOperations {
     /// The directory the node `parent` stands for, if `name` may be made in it as a
     /// directory (`directory`) or a file. Neither the daemon's own names nor a file
     /// manager's trash in the folder itself are made.
-    fn check_make(&self, parent: u64, name: &str, directory: bool) -> Result<DirectoryReference, Errno> {
+    fn check_make(&self, parent: NodeId, name: &str, directory: bool) -> Result<DirectoryReference, Errno> {
         self.access_mode.check_read_write()?;
         let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
-        if self.upload_rules.daemon_owned(name) || (directory && parent == 1 && self.upload_rules.is_trash(name)) {
+        if self.upload_rules.daemon_owned(name) || (directory && parent == NodeId::ROOT && self.upload_rules.is_trash(name)) {
             return Err(Errno::EPERM);
         }
         if self.directory_contents.find_entry(&parent_directory, name).is_some() {

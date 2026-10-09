@@ -11,6 +11,7 @@ use std::sync::Arc;
 use fuser::Errno;
 use konedrive_tree::Row;
 
+use crate::fuse::node_table::NodeId;
 use crate::fuse::entry_place::EntryPlace;
 use super::WriteOperations;
 use crate::fuse::detections::{FileWritten, LocalOnlyFileWrite, OneDriveFileWrite};
@@ -22,7 +23,7 @@ impl WriteOperations {
     /// The row of the file and its path, when writing the node `node_id` needs its content
     /// downloaded first: a OneDrive file that is not downloaded and is not cut to nothing
     /// (`empty`).
-    pub(in crate::fuse) fn needs_download(&self, node_id: u64, empty: bool) -> Option<(Row, PathBuf)> {
+    pub(in crate::fuse) fn needs_download(&self, node_id: NodeId, empty: bool) -> Option<(Row, PathBuf)> {
         let (entry, rel) = self.node_resolver.find_entry(node_id)?;
         match entry.state {
             EntryState::File(FileSyncState::RemoteOnly(row)) if !empty && row.size > 0 => Some((row, rel)),
@@ -31,7 +32,7 @@ impl WriteOperations {
     }
 
     /// Opens the node `node_id` for writing, cut to nothing when `truncate`.
-    pub(in crate::fuse) fn open_to_write(&self, node_id: u64, truncate: bool) -> Result<OpenFile, Errno> {
+    pub(in crate::fuse) fn open_to_write(&self, node_id: NodeId, truncate: bool) -> Result<OpenFile, Errno> {
         self.access_mode.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
@@ -51,7 +52,7 @@ impl WriteOperations {
 
     /// The last writer of the node `node_id` closed it: its content is ready to be sent when
     /// it was `changed`; when nothing was written, the outbox lets go of a OneDrive file.
-    pub(in crate::fuse) fn close_last_writer(&self, node_id: u64, changed: bool) {
+    pub(in crate::fuse) fn close_last_writer(&self, node_id: NodeId, changed: bool) {
         let untouched = self.node_resolver.find_entry(node_id).and_then(|(entry, _)| entry.row().cloned()).filter(|_| !changed);
         // A local-only file is sent all the same: it was never sent.
         let Some(untouched) = untouched else {
@@ -71,7 +72,7 @@ impl WriteOperations {
     }
 
     /// Cuts or extends the node `node_id` to `size`.
-    pub(in crate::fuse) fn truncate(&self, node_id: u64, size: u64) -> Result<(), Errno> {
+    pub(in crate::fuse) fn truncate(&self, node_id: NodeId, size: u64) -> Result<(), Errno> {
         self.access_mode.check_read_write()?;
         let (entry, rel) = self.node_resolver.find_entry(node_id).ok_or(Errno::ENOENT)?;
         let EntryState::File(file) = &entry.state else { return Err(Errno::EISDIR) };
@@ -109,7 +110,7 @@ impl WriteOperations {
 
     /// Records that the content of the node `node_id` is the user's own now, by `write`:
     /// still being written, closed, or cut.
-    fn record_content(&self, node_id: u64, write: LocalOnlyFileWrite) -> Result<(), Errno> {
+    fn record_content(&self, node_id: NodeId, write: LocalOnlyFileWrite) -> Result<(), Errno> {
         // Gone since: removed while it was open.
         let (Some((entry, rel)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
         if let Some(local_only) = entry.local_only() {

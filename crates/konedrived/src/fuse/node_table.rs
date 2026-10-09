@@ -2,12 +2,22 @@
 //! OneDrive, or a local-only entry — and where it is.
 //!
 //! A node id is the number the mount gives the kernel for a name; the kernel calls it an
-//! inode number (`ino`). The root of the mount is node 1.
+//! inode number (`ino`). The root of the mount is [`NodeId::ROOT`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use konedrive_fs::handle::FileHandle;
+
+/// A node id: the number the mount gives the kernel for a name, which the kernel calls an
+/// inode number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct NodeId(pub(super) u64);
+
+impl NodeId {
+    /// The root of the mount: the folder itself.
+    pub(super) const ROOT: NodeId = NodeId(1);
+}
 
 /// What a node id stands for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -22,10 +32,10 @@ pub(super) enum NodeKey {
 /// The node ids given to the kernel. Only the table itself reads or changes its maps: whoever
 /// needs a node id, a record or a key asks one of its functions.
 pub(super) struct NodeTable {
-    records: HashMap<u64, NodeRecord>,
-    node_ids: HashMap<NodeKey, u64>,
-    /// The node id given last. The root is 1 and is never in the table.
-    last_node_id: u64,
+    records: HashMap<NodeId, NodeRecord>,
+    node_ids: HashMap<NodeKey, NodeId>,
+    /// The node id given last. The root's is never in the table.
+    last_node_id: NodeId,
 }
 
 /// What the table knows of one node id: what it stands for, and where the kernel was told
@@ -33,7 +43,7 @@ pub(super) struct NodeTable {
 pub(super) struct NodeRecord {
     pub(super) key: NodeKey,
     /// The node id of the directory this one is in.
-    pub(super) parent_node_id: u64,
+    pub(super) parent_node_id: NodeId,
     /// Its name in that directory.
     pub(super) name: String,
 }
@@ -41,18 +51,18 @@ pub(super) struct NodeRecord {
 impl NodeTable {
     /// A table that holds no node yet: the root alone is known.
     pub(super) fn new() -> Self {
-        NodeTable { records: HashMap::new(), node_ids: HashMap::new(), last_node_id: 1 }
+        NodeTable { records: HashMap::new(), node_ids: HashMap::new(), last_node_id: NodeId::ROOT }
     }
 
     /// The node id of `key`, which is `name` in the directory node `parent_node_id`: the one
     /// it has, or a new one.
-    pub(super) fn assign(&mut self, key: NodeKey, parent_node_id: u64, name: &str) -> u64 {
+    pub(super) fn assign(&mut self, key: NodeKey, parent_node_id: NodeId, name: &str) -> NodeId {
         if let Some(node_id) = self.node_ids.get(&key) {
             let record = self.records.get_mut(node_id).expect("a record of every known key");
             (record.parent_node_id, record.name) = (parent_node_id, name.to_owned());
             return *node_id;
         }
-        self.last_node_id += 1;
+        self.last_node_id = NodeId(self.last_node_id.0 + 1);
         self.node_ids.insert(key.clone(), self.last_node_id);
         self.records.insert(self.last_node_id, NodeRecord { key, parent_node_id, name: name.to_owned() });
         self.last_node_id
@@ -64,12 +74,12 @@ impl NodeTable {
     }
 
     /// The node id that stands for `key`, when the kernel was given one.
-    pub(super) fn find_node_id(&self, key: &NodeKey) -> Option<u64> {
+    pub(super) fn find_node_id(&self, key: &NodeKey) -> Option<NodeId> {
         self.node_ids.get(key).copied()
     }
 
     /// What the table knows of the node `node_id`.
-    pub(super) fn find_record(&self, node_id: u64) -> Option<&NodeRecord> {
+    pub(super) fn find_record(&self, node_id: NodeId) -> Option<&NodeRecord> {
         self.records.get(&node_id)
     }
 
@@ -84,7 +94,7 @@ impl NodeTable {
     }
 
     /// The node `node_id` is `name` in the directory node `parent_node_id` now.
-    pub(super) fn move_node(&mut self, node_id: u64, parent_node_id: u64, name: &str) {
+    pub(super) fn move_node(&mut self, node_id: NodeId, parent_node_id: NodeId, name: &str) {
         if let Some(record) = self.records.get_mut(&node_id) {
             (record.parent_node_id, record.name) = (parent_node_id, name.to_owned());
         }
@@ -99,9 +109,9 @@ impl NodeTable {
     }
 
     /// The path of the node `node_id` in the folder, from the names the kernel was told.
-    pub(super) fn find_path(&self, mut node_id: u64) -> Option<PathBuf> {
+    pub(super) fn find_path(&self, mut node_id: NodeId) -> Option<PathBuf> {
         let mut names = Vec::new();
-        while node_id != 1 {
+        while node_id != NodeId::ROOT {
             let record = self.records.get(&node_id)?;
             names.push(record.name.as_str());
             node_id = record.parent_node_id;

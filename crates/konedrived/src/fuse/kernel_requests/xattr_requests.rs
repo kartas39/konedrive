@@ -8,6 +8,7 @@ use std::path::Path;
 use fuser::{Errno, INodeNo, ReplyXattr};
 use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROOT, XATTR_STATE, XATTR_SYNC};
 
+use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::directory_contents::EntryState;
 use crate::fuse::download_states::to_state_attribute;
@@ -17,11 +18,11 @@ impl KernelRequests {
     /// store, the pins and the download states, and what the outbox's worker marked on a
     /// file it sends from the backing directory.
     fn find_xattr(&self, ino: INodeNo, name: &str) -> Option<String> {
-        if ino.0 == 1 && (name == XATTR_ROOT || name == XATTR_DRIVE) {
+        if NodeId::from(ino) == NodeId::ROOT && (name == XATTR_ROOT || name == XATTR_DRIVE) {
             // The folder's own: what its registration and its first cycle wrote on it.
             return self.backing_directory.read_attribute(Path::new(""), name);
         }
-        let (entry, rel) = self.node_resolver.find_entry(ino.0)?;
+        let (entry, rel) = self.node_resolver.find_entry(NodeId::from(ino))?;
         if name == XATTR_SYNC {
             return self.backing_directory.read_attribute(&rel, name);
         }

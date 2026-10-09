@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use konedrive_tree::Kind;
 
+use crate::fuse::open_files::Fh;
+use crate::fuse::node_table::NodeId;
 use super::{OpenFile, OpenFiles};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::directory_contents::ListedName;
 
 /// A file held open by the node `node_id`, with nothing on disk.
 fn open_file(node_id: u64, onedrive_id: Option<&str>, may_write: bool) -> OpenFile {
-    OpenFile { node_id, onedrive_id: onedrive_id.map(str::to_owned), rel: PathBuf::from("a.txt"), file_on_disk: None, may_write }
+    OpenFile { node_id: NodeId(node_id), onedrive_id: onedrive_id.map(str::to_owned), rel: PathBuf::from("a.txt"), file_on_disk: None, may_write }
 }
 
 #[test]
@@ -18,7 +20,7 @@ fn each_open_file_has_a_file_handle_of_its_own_and_none_is_zero() {
     let first = open_files.add_file(open_file(2, Some("A"), false));
     let second = open_files.add_file(open_file(2, Some("A"), false));
     let directory = open_files.add_directory();
-    assert!(first != 0 && second != 0 && directory != 0);
+    assert!(first != Fh::NOT_OPENED && second != Fh::NOT_OPENED && directory != Fh::NOT_OPENED);
     assert!(first != second && second != directory && first != directory);
 }
 
@@ -27,9 +29,9 @@ fn a_file_is_found_by_its_file_handle_until_it_is_closed() {
     let open_files = OpenFiles::default();
     let handle = open_files.add_file(open_file(7, Some("A"), true));
     let found = open_files.find_file(handle).unwrap();
-    assert!(found.node_id == 7 && found.onedrive_id.as_deref() == Some("A") && found.may_write && found.file_on_disk.is_none());
-    assert!(open_files.find_file(handle + 1).is_none());
-    assert_eq!(open_files.remove_file(handle).map(|closed| closed.node_id), Some(7));
+    assert!(found.node_id == NodeId(7) && found.onedrive_id.as_deref() == Some("A") && found.may_write && found.file_on_disk.is_none());
+    assert!(open_files.find_file(Fh(handle.0 + 1)).is_none());
+    assert_eq!(open_files.remove_file(handle).map(|closed| closed.node_id), Some(NodeId(7)));
     assert!(open_files.find_file(handle).is_none() && open_files.remove_file(handle).is_none());
 }
 
@@ -51,8 +53,8 @@ fn only_a_handle_that_may_write_gives_a_file_to_write() {
     let reader = open_files.add_file(OpenFile { file_on_disk: on_disk(), ..open_file(2, Some("A"), false) });
     let writer = open_files.add_file(OpenFile { file_on_disk: on_disk(), ..open_file(3, Some("A"), true) });
     assert!(open_files.find_file_to_write(reader).is_none());
-    assert_eq!(open_files.find_file_to_write(writer).map(|(node_id, _)| node_id), Some(3));
-    assert!(open_files.find_file_to_write(writer + 1).is_none());
+    assert_eq!(open_files.find_file_to_write(writer).map(|(node_id, _)| node_id), Some(NodeId(3)));
+    assert!(open_files.find_file_to_write(Fh(writer.0 + 1)).is_none());
 }
 
 /// What free-up asks: only a handle that may write counts, only of that OneDrive file, and

@@ -20,14 +20,14 @@ use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::backing_directory::{DiskEntry, EntryKind};
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, ListedName, EntryState, FileSyncState};
-use super::node_table::{NodeKey, NodeTable};
+use super::node_table::{NodeId, NodeKey, NodeTable};
 
 /// What a node id stands for, found again in the directory contents or on disk.
 enum NodeTarget {
     InOneDrive { entry: DirectoryEntry, rel: PathBuf },
     /// A local-only entry, with its name in the directory node `parent`: its place is not
     /// worked out yet.
-    LocalOnly { on_disk: DiskEntry, rel: PathBuf, name: String, parent: u64 },
+    LocalOnly { on_disk: DiskEntry, rel: PathBuf, name: String, parent: NodeId },
 }
 
 /// The key the node of `entry` has in the table.
@@ -52,14 +52,14 @@ impl NodeResolver {
     /// The node id of `entry`, which is in the directory node `parent`: the one it has, or a
     /// new one. A local-only entry that got into OneDrive since the kernel was told of it
     /// keeps its node id.
-    pub(super) fn assign_node_id(&self, entry: &DirectoryEntry, parent: u64) -> u64 {
+    pub(super) fn assign_node_id(&self, entry: &DirectoryEntry, parent: NodeId) -> NodeId {
         self.assign_node_id_of_key(key_of(entry), &entry.name, parent)
     }
 
     /// The node id of what `listed_name` names, which is in the directory node
     /// `parent`: the node id its entry has ([`assign_node_id`](Self::assign_node_id)), given
     /// without the entry being made.
-    pub(super) fn assign_node_id_of_listed_name(&self, listed_name: &ListedName, parent: u64) -> u64 {
+    pub(super) fn assign_node_id_of_listed_name(&self, listed_name: &ListedName, parent: NodeId) -> NodeId {
         let key = match listed_name {
             ListedName::InOneDrive(row) => NodeKey::InOneDrive(row.id.clone()),
             ListedName::LocalOnly(local_only) => NodeKey::LocalOnly(local_only.on_disk.handle.clone()),
@@ -70,7 +70,7 @@ impl NodeResolver {
     /// The node id of `key`, which is `name` in the directory node `parent`. A OneDrive id
     /// the kernel was not told of yet is looked for on disk once, by its path: a local-only
     /// entry that got into OneDrive keeps the node id it had.
-    fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: u64) -> u64 {
+    fn assign_node_id_of_key(&self, key: NodeKey, name: &str, parent: NodeId) -> NodeId {
         let mut node_table = crate::panic::lock(&self.node_table);
         if matches!(key, NodeKey::InOneDrive(_)) && !node_table.has_key(&key) {
             let on_disk = node_table.find_path(parent).and_then(|directory| self.directory_contents.backing_directory().find_file_handle(&directory.join(name)));
@@ -82,7 +82,7 @@ impl NodeResolver {
     }
 
     /// What the node `node_id`, which is not the root, stands for now.
-    fn find_node(&self, node_id: u64) -> Option<NodeTarget> {
+    fn find_node(&self, node_id: NodeId) -> Option<NodeTarget> {
         let (key, rel, name, parent) = {
             let node_table = crate::panic::lock(&self.node_table);
             let record = node_table.find_record(node_id)?;
@@ -110,8 +110,8 @@ impl NodeResolver {
 
     /// The entry the node `node_id` stands for now, and its path in the folder. `None` for a
     /// node whose file or directory is gone.
-    pub(super) fn find_entry(&self, node_id: u64) -> Option<(DirectoryEntry, PathBuf)> {
-        if node_id == 1 {
+    pub(super) fn find_entry(&self, node_id: NodeId) -> Option<(DirectoryEntry, PathBuf)> {
+        if node_id == NodeId::ROOT {
             return Some((self.directory_contents.find_root_entry(), PathBuf::new()));
         }
         match self.find_node(node_id)? {
@@ -126,8 +126,8 @@ impl NodeResolver {
     }
 
     /// The directory the node `node_id` stands for.
-    pub(super) fn find_directory(&self, node_id: u64) -> Option<DirectoryReference> {
-        if node_id == 1 {
+    pub(super) fn find_directory(&self, node_id: NodeId) -> Option<DirectoryReference> {
+        if node_id == NodeId::ROOT {
             return Some(DirectoryReference { onedrive_id: self.directory_contents.find_root_id().filter(|id| !id.is_empty()), path: PathBuf::new() });
         }
         match self.find_node(node_id)? {
@@ -137,13 +137,13 @@ impl NodeResolver {
     }
 
     /// The directory the node `node_id` is in, and that directory's node id.
-    pub(super) fn find_parent(&self, node_id: u64) -> Option<(u64, DirectoryReference)> {
+    pub(super) fn find_parent(&self, node_id: NodeId) -> Option<(NodeId, DirectoryReference)> {
         let parent = crate::panic::lock(&self.node_table).find_record(node_id)?.parent_node_id;
         Some((parent, self.find_directory(parent)?))
     }
 
     /// The node id that stands for the OneDrive id `id`, when the kernel was told of one.
-    pub(super) fn find_node_id(&self, id: &str) -> Option<u64> {
+    pub(super) fn find_node_id(&self, id: &str) -> Option<NodeId> {
         crate::panic::lock(&self.node_table).find_node_id(&NodeKey::InOneDrive(id.to_owned()))
     }
 
@@ -151,7 +151,7 @@ impl NodeResolver {
     /// local-only file, by its handle, that took over the name of this OneDrive id, and
     /// stands for that file of OneDrive from here on — whoever looks the name up gets the
     /// node the new content is read and written through.
-    pub(super) fn move_node(&self, node_id: u64, parent: u64, name: &str, taken: Option<(&FileHandle, &str)>) {
+    pub(super) fn move_node(&self, node_id: NodeId, parent: NodeId, name: &str, taken: Option<(&FileHandle, &str)>) {
         let mut node_table = crate::panic::lock(&self.node_table);
         node_table.move_node(node_id, parent, name);
         if let Some((handle, id)) = taken {

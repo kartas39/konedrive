@@ -3,6 +3,7 @@
 
 use fuser::Errno;
 
+use crate::fuse::node_table::NodeId;
 use super::WriteOperations;
 use crate::fuse::detections::EntryRemoved;
 use crate::fuse::directory_reference::DirectoryReference;
@@ -13,7 +14,7 @@ impl WriteOperations {
     /// Removes `name` from the directory node `parent`: a directory (`directory`), which must
     /// hold nothing, or a file. What is in OneDrive is removed there by the outbox; a
     /// local-only entry is forgotten there.
-    pub(in crate::fuse) fn remove(&self, parent: u64, name: &str, directory: bool) -> Result<(), Errno> {
+    pub(in crate::fuse) fn remove(&self, parent: NodeId, name: &str, directory: bool) -> Result<(), Errno> {
         self.access_mode.check_read_write()?;
         let parent_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         let entry = self.directory_contents.find_entry(&parent_directory, name).ok_or(Errno::ENOENT)?;

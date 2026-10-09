@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use fuser::Errno;
 
+use crate::fuse::node_table::NodeId;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
 use super::WriteOperations;
@@ -26,13 +27,13 @@ use crate::fuse::errno::to_errno;
 struct RenamePlan {
     /// What moves, its node id, and whether a program holds it open for writing.
     moved_entry: DirectoryEntry,
-    node_id: u64,
+    node_id: NodeId,
     open: bool,
     /// What is at the new place.
     target: Option<DirectoryEntry>,
     from: PathBuf,
     to_directory: DirectoryReference,
-    to_node: u64,
+    to_node: NodeId,
     to_name: String,
     /// The new place is one local-only entries are uploaded from.
     uploaded: bool,
@@ -65,7 +66,7 @@ enum BackingDirectoryMove {
 impl WriteOperations {
     /// Renames `name` of the directory node `parent` to `new_name` of `new_parent`, over what
     /// is there unless `keep` says to refuse that.
-    pub(in crate::fuse) fn rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<(), Errno> {
+    pub(in crate::fuse) fn rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, keep: bool) -> Result<(), Errno> {
         let Some(plan) = self.check_rename(parent, name, new_parent, new_name, keep)? else { return Ok(()) };
         let moved = self.move_in_backing_directory(&plan)?;
         let event = self.describe_rename(&plan, moved);
@@ -82,7 +83,7 @@ impl WriteOperations {
 
     /// What the rename is, or the errno it is refused with. `None`: nothing moves, the name
     /// is its own.
-    fn check_rename(&self, parent: u64, name: &str, new_parent: u64, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
+    fn check_rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, keep: bool) -> Result<Option<RenamePlan>, Errno> {
         self.access_mode.check_read_write()?;
         let from_directory = self.node_resolver.find_directory(parent).ok_or(Errno::ENOENT)?;
         let to_directory = self.node_resolver.find_directory(new_parent).ok_or(Errno::ENOENT)?;

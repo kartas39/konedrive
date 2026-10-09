@@ -16,13 +16,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::directory_contents::ListedName;
+use super::node_table::NodeId;
+
+/// The number the kernel is given for a file or directory a program opened, and names it by
+/// in every later request: the kernel's `fh`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Fh(pub(super) u64);
+
+impl Fh {
+    /// The `fh` of a file that was made without being opened: no open file or directory
+    /// ever has it.
+    pub(super) const NOT_OPENED: Fh = Fh(0);
+}
 
 /// A file a program holds open. A write operation that opens a file returns one, and the
 /// request that asked puts it into [`OpenFiles`].
 #[derive(Clone)]
 pub(super) struct OpenFile {
     /// The node id it was opened by.
-    pub(super) node_id: u64,
+    pub(super) node_id: NodeId,
     /// Its OneDrive id; `None` for a local-only file.
     pub(super) onedrive_id: Option<String>,
     /// Its path in the folder when it was opened.
@@ -36,58 +48,58 @@ pub(super) struct OpenFile {
 
 /// The files and directories programs hold open, by file handle.
 pub(super) struct OpenFiles {
-    files: Mutex<HashMap<u64, OpenFile>>,
+    files: Mutex<HashMap<Fh, OpenFile>>,
     /// What the entries of each open directory were made from when it was first read, in
     /// the order they are handed out: a program that reads a directory in parts reads the
     /// same names, whatever changes meanwhile.
-    directories: Mutex<HashMap<u64, Arc<Vec<ListedName>>>>,
+    directories: Mutex<HashMap<Fh, Arc<Vec<ListedName>>>>,
     /// The file handle given next. None is ever 0: that is the handle of a file made
     /// without being opened.
-    next_handle: AtomicU64,
+    next_fh: AtomicU64,
 }
 
 impl Default for OpenFiles {
     fn default() -> Self {
-        OpenFiles { files: Mutex::default(), directories: Mutex::default(), next_handle: AtomicU64::new(1) }
+        OpenFiles { files: Mutex::default(), directories: Mutex::default(), next_fh: AtomicU64::new(1) }
     }
 }
 
 impl OpenFiles {
-    fn take_next_handle(&self) -> u64 {
-        self.next_handle.fetch_add(1, Ordering::SeqCst)
+    fn take_next_fh(&self) -> Fh {
+        Fh(self.next_fh.fetch_add(1, Ordering::SeqCst))
     }
 
     /// A program opened `file`: the file handle it holds it by from now on.
-    pub(super) fn add_file(&self, file: OpenFile) -> u64 {
-        let handle = self.take_next_handle();
-        crate::panic::lock(&self.files).insert(handle, file);
-        handle
+    pub(super) fn add_file(&self, file: OpenFile) -> Fh {
+        let fh = self.take_next_fh();
+        crate::panic::lock(&self.files).insert(fh, file);
+        fh
     }
 
-    /// The file held open by `handle`.
-    pub(super) fn find_file(&self, handle: u64) -> Option<OpenFile> {
-        crate::panic::lock(&self.files).get(&handle).cloned()
+    /// The file held open by `fh`.
+    pub(super) fn find_file(&self, fh: Fh) -> Option<OpenFile> {
+        crate::panic::lock(&self.files).get(&fh).cloned()
     }
 
-    /// The node id and the file in the backing directory of the file held open by `handle`,
+    /// The node id and the file in the backing directory of the file held open by `fh`,
     /// when the program may write through it.
-    pub(super) fn find_file_to_write(&self, handle: u64) -> Option<(u64, Arc<File>)> {
+    pub(super) fn find_file_to_write(&self, fh: Fh) -> Option<(NodeId, Arc<File>)> {
         let files = crate::panic::lock(&self.files);
-        let file = files.get(&handle).filter(|file| file.may_write)?;
+        let file = files.get(&fh).filter(|file| file.may_write)?;
         Some((file.node_id, Arc::clone(file.file_on_disk.as_ref()?)))
     }
 
-    /// The file held open by `handle` has `file_on_disk` in the backing directory from now
+    /// The file held open by `fh` has `file_on_disk` in the backing directory from now
     /// on: it was downloaded since it was opened.
-    pub(super) fn set_file_on_disk(&self, handle: u64, file_on_disk: Arc<File>) {
-        if let Some(file) = crate::panic::lock(&self.files).get_mut(&handle) {
+    pub(super) fn set_file_on_disk(&self, fh: Fh, file_on_disk: Arc<File>) {
+        if let Some(file) = crate::panic::lock(&self.files).get_mut(&fh) {
             file.file_on_disk = Some(file_on_disk);
         }
     }
 
-    /// The program closed `handle`: the file it held open by it.
-    pub(super) fn remove_file(&self, handle: u64) -> Option<OpenFile> {
-        crate::panic::lock(&self.files).remove(&handle)
+    /// The program closed `fh`: the file it held open by it.
+    pub(super) fn remove_file(&self, fh: Fh) -> Option<OpenFile> {
+        crate::panic::lock(&self.files).remove(&fh)
     }
 
     /// Whether a program holds the OneDrive file `onedrive_id` open for writing now.
@@ -97,25 +109,25 @@ impl OpenFiles {
 
     /// A program opened a directory: the file handle it holds it by. What the directory
     /// holds is kept once it is first read ([`keep_listed_names`](Self::keep_listed_names)).
-    pub(super) fn add_directory(&self) -> u64 {
-        self.take_next_handle()
+    pub(super) fn add_directory(&self) -> Fh {
+        self.take_next_fh()
     }
 
-    /// What the entries of the directory held open by `handle` were made from when it was
+    /// What the entries of the directory held open by `fh` were made from when it was
     /// first read.
-    pub(super) fn find_listed_names(&self, handle: u64) -> Option<Arc<Vec<ListedName>>> {
-        crate::panic::lock(&self.directories).get(&handle).cloned()
+    pub(super) fn find_listed_names(&self, fh: Fh) -> Option<Arc<Vec<ListedName>>> {
+        crate::panic::lock(&self.directories).get(&fh).cloned()
     }
 
-    /// The directory held open by `handle` is read from its start: `listed_names` is what
+    /// The directory held open by `fh` is read from its start: `listed_names` is what
     /// it holds, for every part of the reading after this one.
-    pub(super) fn keep_listed_names(&self, handle: u64, listed_names: Arc<Vec<ListedName>>) {
-        crate::panic::lock(&self.directories).insert(handle, listed_names);
+    pub(super) fn keep_listed_names(&self, fh: Fh, listed_names: Arc<Vec<ListedName>>) {
+        crate::panic::lock(&self.directories).insert(fh, listed_names);
     }
 
-    /// The program closed the directory it held open by `handle`.
-    pub(super) fn remove_directory(&self, handle: u64) {
-        crate::panic::lock(&self.directories).remove(&handle);
+    /// The program closed the directory it held open by `fh`.
+    pub(super) fn remove_directory(&self, fh: Fh) {
+        crate::panic::lock(&self.directories).remove(&fh);
     }
 }
 

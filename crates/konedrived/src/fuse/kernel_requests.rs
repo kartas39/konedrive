@@ -39,7 +39,8 @@ use super::errno::to_errno;
 use super::file_downloader::FileDownloader;
 use super::inotify_bridge::InotifyBridge;
 use super::node_resolver::NodeResolver;
-use super::open_files::OpenFiles;
+use super::node_table::NodeId;
+use super::open_files::{Fh, OpenFiles};
 use super::open_writers::OpenWriters;
 use super::outbox_recorder::OutboxRecorder;
 use super::pins::Pins;
@@ -47,13 +48,46 @@ use super::range_readers::RangeReaders;
 use super::write_operations::WriteOperations;
 
 mod directory_requests;
-mod interruptible_reads;
+pub(super) mod interruptible_reads;
 mod lookup_requests;
 mod read_requests;
 mod write_requests;
 mod xattr_requests;
 
 pub(super) use interruptible_reads::InterruptibleReads;
+use interruptible_reads::RequestId;
+
+// The edge of the layer: the kernel's numbers come in fuser's types, and are the layer's own
+// from here on.
+impl From<INodeNo> for NodeId {
+    fn from(ino: INodeNo) -> Self {
+        NodeId(ino.0)
+    }
+}
+
+impl From<NodeId> for INodeNo {
+    fn from(node_id: NodeId) -> Self {
+        INodeNo(node_id.0)
+    }
+}
+
+impl From<FileHandle> for Fh {
+    fn from(fh: FileHandle) -> Self {
+        Fh(fh.0)
+    }
+}
+
+impl From<Fh> for FileHandle {
+    fn from(fh: Fh) -> Self {
+        FileHandle(fh.0)
+    }
+}
+
+impl From<fuser::RequestId> for RequestId {
+    fn from(unique: fuser::RequestId) -> Self {
+        RequestId(unique.0)
+    }
+}
 
 /// The program behind a request, for the log: its id and the name the kernel has for it.
 fn describe_caller(req: &Request) -> String {
@@ -94,7 +128,7 @@ impl KernelRequests {
     /// Whether the folder holds no `name` in the directory node `parent`: what the inotify
     /// bridge removes is gone from the store already.
     fn is_absent(&self, parent: INodeNo, name: &OsStr) -> bool {
-        self.node_resolver.find_directory(parent.0).zip(name.to_str()).is_none_or(|(dir, name)| self.directory_contents.find_entry(&dir, name).is_none())
+        self.node_resolver.find_directory(NodeId::from(parent)).zip(name.to_str()).is_none_or(|(dir, name)| self.directory_contents.find_entry(&dir, name).is_none())
     }
 
     /// Answers a remove the inotify bridge announces: done, as the name is gone already.
@@ -137,7 +171,7 @@ impl Filesystem for KernelRequests {
     /// The program behind a read that waits for OneDrive was interrupted or killed: the read is
     /// given up, and answered with an error as its reply is dropped.
     fn interrupt(&self, _req: &Request, unique: fuser::RequestId) {
-        self.interruptible_reads.interrupt(unique.0);
+        self.interruptible_reads.interrupt(unique.into());
     }
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {

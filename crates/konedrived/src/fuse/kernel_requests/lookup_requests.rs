@@ -6,6 +6,7 @@ use std::time::Duration;
 use fuser::{Errno, FileAttr, Generation, INodeNo, ReplyAttr, ReplyEntry, Request};
 use konedrive_tree::{Kind, Placement, Row};
 
+use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::attributes::{attributes, TTL};
 use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
@@ -25,16 +26,16 @@ fn make_vanished_entry(name: &str, kind: Kind) -> DirectoryEntry {
 impl KernelRequests {
     /// The attributes of `entry`, which the node `node_id` stands for, in the folder's access
     /// mode.
-    pub(super) fn attributes_of(&self, entry: &DirectoryEntry, node_id: u64) -> FileAttr {
+    pub(super) fn attributes_of(&self, entry: &DirectoryEntry, node_id: NodeId) -> FileAttr {
         attributes(node_id, &self.access_mode, entry)
     }
 
     /// Answers with the entry `name` of `parent`, as the folder has it now.
     pub(super) fn answer_with_entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let found = self.node_resolver.find_directory(parent.0).zip(name.to_str()).and_then(|(dir, name)| self.directory_contents.find_entry(&dir, name));
+        let found = self.node_resolver.find_directory(NodeId::from(parent)).zip(name.to_str()).and_then(|(dir, name)| self.directory_contents.find_entry(&dir, name));
         match found {
             Some(entry) => {
-                let node_id = self.node_resolver.assign_node_id(&entry, parent.0);
+                let node_id = self.node_resolver.assign_node_id(&entry, NodeId::from(parent));
                 reply.entry(&TTL, &self.attributes_of(&entry, node_id), Generation(0))
             }
             None => reply.error(Errno::ENOENT),
@@ -45,7 +46,7 @@ impl KernelRequests {
     /// change; everyone else, and the bridge for every other name, what the folder has now.
     pub(super) fn answer_lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         if self.is_from_inotify_bridge(req) {
-            match self.inotify_bridge.find_name_before_change(parent.0, name) {
+            match self.inotify_bridge.find_name_before_change(NodeId::from(parent), name) {
                 Some(NameBeforeChange::Absent) => return reply.error(Errno::ENOENT),
                 Some(NameBeforeChange::Present { node_id, kind }) => {
                     return reply.entry(&Duration::ZERO, &self.attributes_of(&make_vanished_entry(&name.to_string_lossy(), kind), node_id), Generation(0));
@@ -57,8 +58,8 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_getattr(&self, ino: INodeNo, reply: ReplyAttr) {
-        match self.node_resolver.find_entry(ino.0) {
-            Some((entry, _)) => reply.attr(&TTL, &self.attributes_of(&entry, ino.0)),
+        match self.node_resolver.find_entry(NodeId::from(ino)) {
+            Some((entry, _)) => reply.attr(&TTL, &self.attributes_of(&entry, NodeId::from(ino))),
             None => reply.error(Errno::ENOENT),
         }
     }

@@ -6,9 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use super::node_table::NodeId;
+
 /// The files open for writing, by node id.
 #[derive(Default)]
-pub(super) struct OpenWriters(Mutex<HashMap<u64, FileWriters>>);
+pub(super) struct OpenWriters(Mutex<HashMap<NodeId, FileWriters>>);
 
 /// The writers of one file.
 #[derive(Debug, Default, Clone, Copy)]
@@ -33,7 +35,7 @@ pub(super) enum CloseOutcome {
 impl OpenWriters {
     /// One more handle writes the node `node_id`, whose content is the user's own already
     /// when `content_changed`. Whether it is the first: the one the outbox is told of.
-    pub(super) fn add_writer(&self, node_id: u64, content_changed: bool) -> bool {
+    pub(super) fn add_writer(&self, node_id: NodeId, content_changed: bool) -> bool {
         let mut open_writers = crate::panic::lock(&self.0);
         let writers = open_writers.entry(node_id).or_default();
         writers.handles += 1;
@@ -42,14 +44,14 @@ impl OpenWriters {
     }
 
     /// Something was written through a handle of the node `node_id`.
-    pub(super) fn mark_written(&self, node_id: u64) {
+    pub(super) fn mark_written(&self, node_id: NodeId) {
         if let Some(writers) = crate::panic::lock(&self.0).get_mut(&node_id) {
             writers.content_changed = true;
         }
     }
 
     /// A handle that could write the node `node_id` was closed.
-    pub(super) fn remove_writer(&self, node_id: u64) -> CloseOutcome {
+    pub(super) fn remove_writer(&self, node_id: NodeId) -> CloseOutcome {
         let mut open_writers = crate::panic::lock(&self.0);
         let Some(writers) = open_writers.get_mut(&node_id) else { return CloseOutcome::StillOpenElsewhere };
         writers.handles = writers.handles.saturating_sub(1);
@@ -63,7 +65,7 @@ impl OpenWriters {
     }
 
     /// Whether a program holds the node `node_id` open for writing.
-    pub(super) fn is_open(&self, node_id: u64) -> bool {
+    pub(super) fn is_open(&self, node_id: NodeId) -> bool {
         crate::panic::lock(&self.0).get(&node_id).is_some_and(|writers| writers.handles > 0)
     }
 }

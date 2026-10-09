@@ -13,6 +13,8 @@ use fuser::{Errno, FileHandle, FopenFlags, Generation, INodeNo, RenameFlags, Rep
 use konedrive_graph::pool::Class;
 use tokio::sync::oneshot;
 
+use crate::fuse::open_files::Fh;
+use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::attributes::TTL;
 use crate::fuse::errno::to_errno;
@@ -27,7 +29,7 @@ impl KernelRequests {
     /// Has `job` run on the recorder's thread once the content of the node `node_id` is in the
     /// backing directory, when writing it needs that; `refuse` is called instead when the
     /// download fails.
-    fn run_with_content(&self, node_id: u64, empty: bool, job: impl FnOnce(&KernelRequests) + Send + 'static, refuse: impl FnOnce(Errno) + Send + 'static) {
+    fn run_with_content(&self, node_id: NodeId, empty: bool, job: impl FnOnce(&KernelRequests) + Send + 'static, refuse: impl FnOnce(Errno) + Send + 'static) {
         let Some((row, rel)) = self.write_operations.needs_download(node_id, empty) else { return self.run_on_recorder(job) };
         let requests = self.clone();
         self.runtime.spawn(async move {
@@ -49,12 +51,12 @@ impl KernelRequests {
         let reply = Arc::new(Mutex::new(Some(reply)));
         let failed = Arc::clone(&reply);
         self.run_with_content(
-            ino.0,
+            NodeId::from(ino),
             truncate,
             move |requests| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
-                match requests.write_operations.open_to_write(ino.0, truncate) {
-                    Ok(opened) => reply.opened(FileHandle(requests.open_files.add_file(opened)), FopenFlags::empty()),
+                match requests.write_operations.open_to_write(NodeId::from(ino), truncate) {
+                    Ok(opened) => reply.opened(FileHandle::from(requests.open_files.add_file(opened)), FopenFlags::empty()),
                     Err(e) => reply.error(e),
                 }
             },
@@ -72,9 +74,9 @@ impl KernelRequests {
         if let Err(e) = self.access_mode.check_read_write() {
             return reply.error(e);
         }
-        self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, directory, false) {
+        self.run_on_recorder(move |requests| match requests.write_operations.make(NodeId::from(parent), &name, directory, false) {
             Ok((entry, _)) => {
-                let node_id = requests.node_resolver.assign_node_id(&entry, parent.0);
+                let node_id = requests.node_resolver.assign_node_id(&entry, NodeId::from(parent));
                 reply.entry(&TTL, &requests.attributes_of(&entry, node_id), Generation(0))
             }
             Err(e) => reply.error(e),
@@ -86,11 +88,11 @@ impl KernelRequests {
         if let Err(e) = self.access_mode.check_read_write() {
             return reply.error(e);
         }
-        self.run_on_recorder(move |requests| match requests.write_operations.make(parent.0, &name, false, true) {
+        self.run_on_recorder(move |requests| match requests.write_operations.make(NodeId::from(parent), &name, false, true) {
             Ok((entry, opened)) => {
-                let node_id = requests.node_resolver.assign_node_id(&entry, parent.0);
-                let fh = opened.map_or(0, |opened| requests.open_files.add_file(opened));
-                reply.created(&TTL, &requests.attributes_of(&entry, node_id), Generation(0), FileHandle(fh), FopenFlags::empty())
+                let node_id = requests.node_resolver.assign_node_id(&entry, NodeId::from(parent));
+                let fh = opened.map_or(Fh::NOT_OPENED, |opened| requests.open_files.add_file(opened));
+                reply.created(&TTL, &requests.attributes_of(&entry, node_id), Generation(0), FileHandle::from(fh), FopenFlags::empty())
             }
             Err(e) => reply.error(e),
         });
@@ -102,7 +104,7 @@ impl KernelRequests {
         if let Err(e) = self.access_mode.check_read_write() {
             return reply.error(e);
         }
-        self.run_on_recorder(move |requests| match requests.write_operations.remove(parent.0, &name, directory) {
+        self.run_on_recorder(move |requests| match requests.write_operations.remove(NodeId::from(parent), &name, directory) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         });
@@ -117,7 +119,7 @@ impl KernelRequests {
             return reply.error(Errno::EINVAL);
         }
         let keep = flags.contains(RenameFlags::RENAME_NOREPLACE);
-        self.run_on_recorder(move |requests| match requests.write_operations.rename(parent.0, &name, new_parent.0, &new_name, keep) {
+        self.run_on_recorder(move |requests| match requests.write_operations.rename(NodeId::from(parent), &name, NodeId::from(new_parent), &new_name, keep) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         });
@@ -126,7 +128,7 @@ impl KernelRequests {
     /// Bytes written through a handle that may write: into the file in the backing
     /// directory. The outbox holds the file since it was opened.
     pub(super) fn answer_write(&self, fh: FileHandle, offset: u64, data: &[u8], reply: ReplyWrite) {
-        let Some((node_id, file)) = self.open_files.find_file_to_write(fh.0) else { return reply.error(Errno::EBADF) };
+        let Some((node_id, file)) = self.open_files.find_file_to_write(Fh::from(fh)) else { return reply.error(Errno::EBADF) };
         self.open_writers.mark_written(node_id);
         match file.write_all_at(data, offset) {
             Ok(()) => reply.written(data.len() as u32),
@@ -141,7 +143,7 @@ impl KernelRequests {
             return reply.error(e);
         }
         let set_mtime = move |requests: &KernelRequests| {
-            let (Some(mtime), Some((_, rel))) = (mtime, requests.node_resolver.find_entry(ino.0)) else { return };
+            let (Some(mtime), Some((_, rel))) = (mtime, requests.node_resolver.find_entry(NodeId::from(ino))) else { return };
             let at = match mtime {
                 TimeOrNow::SpecificTime(at) => at,
                 TimeOrNow::Now => SystemTime::now(),
@@ -157,11 +159,11 @@ impl KernelRequests {
         let reply = Arc::new(Mutex::new(Some(reply)));
         let failed = Arc::clone(&reply);
         self.run_with_content(
-            ino.0,
+            NodeId::from(ino),
             size == 0,
             move |requests| {
                 let Some(reply) = crate::panic::lock(&reply).take() else { return };
-                match requests.write_operations.truncate(ino.0, size) {
+                match requests.write_operations.truncate(NodeId::from(ino), size) {
                     Ok(()) => {
                         set_mtime(requests);
                         requests.answer_getattr(ino, reply)
@@ -178,7 +180,7 @@ impl KernelRequests {
     }
 
     pub(super) fn answer_fsync(&self, fh: FileHandle, reply: ReplyEmpty) {
-        match self.open_files.find_file_to_write(fh.0).map(|(_, file)| file.sync_all()) {
+        match self.open_files.find_file_to_write(Fh::from(fh)).map(|(_, file)| file.sync_all()) {
             Some(Err(e)) => reply.error(to_errno(&e)),
             _ => reply.ok(),
         }

@@ -6,6 +6,7 @@ use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::{Detection, OutboxKind};
 use konedrive_tree::Row;
 
+use crate::fuse::node_table::NodeId;
 use super::NodeResolver;
 use crate::fuse::directory_contents::tests::{directory_contents, of};
 use crate::fuse::directory_contents::{DirectoryContents, DirectoryEntry, DirectorySyncState, EntryState, FileSyncState};
@@ -35,9 +36,9 @@ fn id(found: Option<(DirectoryEntry, PathBuf)>) -> Option<(Option<String>, PathB
 #[test]
 fn an_entry_gets_one_node_id_and_keeps_it_when_it_is_renamed() {
     let (_dir, contents, node_resolver) = node_resolver(Vec::new());
-    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), 1);
-    let file = node_resolver.assign_node_id(&in_onedrive(&contents, "A"), 1);
-    assert!(file != docs && file != 1 && node_resolver.assign_node_id(&in_onedrive(&contents, "A"), 1) == file);
+    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
+    let file = node_resolver.assign_node_id(&in_onedrive(&contents, "A"), NodeId::ROOT);
+    assert!(file != docs && file != NodeId::ROOT && node_resolver.assign_node_id(&in_onedrive(&contents, "A"), NodeId::ROOT) == file);
     assert_eq!(id(node_resolver.find_entry(file)), Some((Some("A".into()), PathBuf::from("a.txt"))));
     // Shown under another name in another directory: the same node id, at its new place.
     let renamed = contents.describe(Row { name: "b.txt".into(), ..contents.find_row("A").unwrap() }, Path::new("docs/b.txt"));
@@ -50,13 +51,13 @@ fn an_entry_gets_one_node_id_and_keeps_it_when_it_is_renamed() {
 #[test]
 fn the_root_is_node_one_and_a_directory() {
     let (_dir, contents, node_resolver) = node_resolver(Vec::new());
-    assert_eq!(id(node_resolver.find_entry(1)), Some((Some("R".into()), PathBuf::new())));
-    assert_eq!(node_resolver.find_directory(1).map(|directory| (directory.onedrive_id, directory.path)), Some((Some("R".into()), PathBuf::new())));
-    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), 1);
+    assert_eq!(id(node_resolver.find_entry(NodeId(1))), Some((Some("R".into()), PathBuf::new())));
+    assert_eq!(node_resolver.find_directory(NodeId(1)).map(|directory| (directory.onedrive_id, directory.path)), Some((Some("R".into()), PathBuf::new())));
+    let docs = node_resolver.assign_node_id(&in_onedrive(&contents, "D"), NodeId::ROOT);
     let file = node_resolver.assign_node_id(&in_onedrive(&contents, "C"), docs);
     assert!(node_resolver.find_directory(file).is_none());
     assert_eq!(node_resolver.find_parent(file).map(|(node_id, directory)| (node_id, directory.onedrive_id, directory.path)), Some((docs, Some("D".into()), PathBuf::from("docs"))));
-    assert!(node_resolver.find_entry(99).is_none() && node_resolver.find_parent(1).is_none());
+    assert!(node_resolver.find_entry(NodeId(99)).is_none() && node_resolver.find_parent(NodeId(1)).is_none());
 }
 
 /// A directory listed as its listed names gives each name the node id its entry has.
@@ -66,8 +67,8 @@ fn the_source_of_an_entry_gets_the_node_id_of_the_entry() {
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
     let root = contents.find_root_directory();
     for listed_name in contents.list_names(&root) {
-        let node_id = node_resolver.assign_node_id_of_listed_name(&listed_name, 1);
-        assert_eq!(node_resolver.assign_node_id(&contents.describe_listed_name(&listed_name, &root), 1), node_id, "{}", listed_name.name());
+        let node_id = node_resolver.assign_node_id_of_listed_name(&listed_name, NodeId::ROOT);
+        assert_eq!(node_resolver.assign_node_id(&contents.describe_listed_name(&listed_name, &root), NodeId::ROOT), node_id, "{}", listed_name.name());
         assert!(matches!(node_resolver.find_entry(node_id), Some((entry, _)) if entry.name == listed_name.name()));
     }
 }
@@ -77,7 +78,7 @@ fn the_source_of_an_entry_gets_the_node_id_of_the_entry() {
 #[test]
 fn the_entry_of_a_node_id_has_its_sync_state() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
-    let file = node_resolver.assign_node_id(&in_onedrive(&contents, "A"), 1);
+    let file = node_resolver.assign_node_id(&in_onedrive(&contents, "A"), NodeId::ROOT);
     assert!(matches!(node_resolver.find_entry(file), Some((DirectoryEntry { state: EntryState::File(FileSyncState::RemoteOnly(_)), .. }, _))));
     crate::fuse::directory_contents::tests::download(dir.path(), &contents, "a.txt", "A", b"whole");
     assert!(matches!(node_resolver.find_entry(file), Some((DirectoryEntry { state: EntryState::File(FileSyncState::Synced(..)), .. }, _))));
@@ -89,7 +90,7 @@ fn a_local_only_entry_found_by_its_node_id_has_its_place() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::create_dir(dir.path().join("new")).unwrap();
     fs::write(dir.path().join("new/made.txt"), b"mine").unwrap();
-    let new = node_resolver.assign_node_id(&local_only(&contents, "new"), 1);
+    let new = node_resolver.assign_node_id(&local_only(&contents, "new"), NodeId::ROOT);
     let new_directory = node_resolver.find_directory(new).unwrap();
     assert_eq!((new_directory.onedrive_id.clone(), new_directory.path.clone()), (None, PathBuf::from("new")));
     let made = node_resolver.assign_node_id(&DirectoryEntry::from_local_only(contents.find_local_only(&new_directory, "made.txt").unwrap()), new);
@@ -107,7 +108,7 @@ fn a_local_only_entry_found_by_its_node_id_has_its_place() {
 fn a_local_only_entry_that_got_into_onedrive_keeps_its_node_id() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("made.txt"), b"mine").unwrap();
-    let node_id = node_resolver.assign_node_id(&local_only(&contents, "made.txt"), 1);
+    let node_id = node_resolver.assign_node_id(&local_only(&contents, "made.txt"), NodeId::ROOT);
     assert!(matches!(node_resolver.find_entry(node_id), Some((entry, _)) if entry.local_only().is_some()));
     xattr::set(dir.path().join("made.txt"), XATTR_ITEM_ID, b"A").unwrap();
     assert_eq!(id(node_resolver.find_entry(node_id)), Some((Some("A".into()), PathBuf::from("made.txt"))));
@@ -120,8 +121,8 @@ fn a_local_only_entry_that_got_into_onedrive_keeps_its_node_id() {
 fn a_onedrive_file_looked_up_where_its_local_only_entry_was_known_gets_that_node_id() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("b.txt"), b"mine").unwrap();
-    let node_id = node_resolver.assign_node_id(&local_only(&contents, "b.txt"), 1);
-    assert_eq!(node_resolver.assign_node_id(&in_onedrive(&contents, "B"), 1), node_id);
+    let node_id = node_resolver.assign_node_id(&local_only(&contents, "b.txt"), NodeId::ROOT);
+    assert_eq!(node_resolver.assign_node_id(&in_onedrive(&contents, "B"), NodeId::ROOT), node_id);
     assert_eq!(id(node_resolver.find_entry(node_id)), Some((Some("B".into()), PathBuf::from("b.txt"))));
 }
 
@@ -129,7 +130,7 @@ fn a_onedrive_file_looked_up_where_its_local_only_entry_was_known_gets_that_node
 fn a_node_id_whose_local_only_entry_is_gone_stands_for_nothing() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("made.txt"), b"mine").unwrap();
-    let node_id = node_resolver.assign_node_id(&local_only(&contents, "made.txt"), 1);
+    let node_id = node_resolver.assign_node_id(&local_only(&contents, "made.txt"), NodeId::ROOT);
     // Another file under its name is another entry.
     fs::rename(dir.path().join("made.txt"), dir.path().join("kept.txt")).unwrap();
     fs::write(dir.path().join("made.txt"), b"other").unwrap();
@@ -141,7 +142,7 @@ fn a_node_id_whose_local_only_entry_is_gone_stands_for_nothing() {
 #[test]
 fn a_node_id_whose_onedrive_file_was_removed_here_stands_for_nothing() {
     let (_dir, contents, node_resolver) = node_resolver(vec![of(OutboxKind::Delete, "B", "b.txt", "b.txt", (None, None))]);
-    let node_id = node_resolver.assign_node_id(&contents.describe(contents.find_row("B").unwrap(), Path::new("b.txt")), 1);
+    let node_id = node_resolver.assign_node_id(&contents.describe(contents.find_row("B").unwrap(), Path::new("b.txt")), NodeId::ROOT);
     assert!(node_resolver.find_entry(node_id).is_none());
 }
 
@@ -153,9 +154,9 @@ fn a_local_only_file_renamed_over_a_onedrive_files_name_takes_that_files_node() 
     fs::write(dir.path().join("a.tmp"), b"new").unwrap();
     let entry = local_only(&contents, "a.tmp");
     let saved = entry.local_only().unwrap();
-    let node_id = node_resolver.assign_node_id(&entry, 1);
+    let node_id = node_resolver.assign_node_id(&entry, NodeId::ROOT);
     fs::rename(dir.path().join("a.tmp"), dir.path().join("a.txt")).unwrap();
-    node_resolver.move_node(node_id, 1, "a.txt", Some((&saved.on_disk.handle, "A")));
+    node_resolver.move_node(node_id, NodeId::ROOT, "a.txt", Some((&saved.on_disk.handle, "A")));
     assert_eq!(node_resolver.find_node_id("A"), Some(node_id));
     assert_eq!(id(node_resolver.find_entry(node_id)), Some((Some("A".into()), PathBuf::from("a.txt"))));
 }
@@ -165,8 +166,8 @@ fn a_local_only_entry_that_is_forgotten_gets_a_new_node_id_if_it_is_ever_seen_ag
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("made.txt"), b"mine").unwrap();
     let entry = local_only(&contents, "made.txt");
-    let node_id = node_resolver.assign_node_id(&entry, 1);
+    let node_id = node_resolver.assign_node_id(&entry, NodeId::ROOT);
     node_resolver.drop_node(&entry.local_only().unwrap().on_disk.handle);
     assert!(node_resolver.find_entry(node_id).is_none() && node_resolver.find_parent(node_id).is_none());
-    assert_ne!(node_resolver.assign_node_id(&entry, 1), node_id);
+    assert_ne!(node_resolver.assign_node_id(&entry, NodeId::ROOT), node_id);
 }

@@ -12,6 +12,7 @@ use konedrive_tree::outbox::{Detection, OutboxKind, OutboxRow};
 use konedrive_tree::{Store, TreeStore};
 
 use super::WriteOperations;
+use crate::fuse::node_table::NodeId;
 use crate::fuse::access_mode::AccessMode;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::tests::drive;
@@ -66,14 +67,14 @@ impl Folder {
     }
 
     /// The node id of what is `name` in the directory node `parent`.
-    pub(super) fn node_id(&self, parent: u64, name: &str) -> u64 {
+    pub(super) fn node_id(&self, parent: NodeId, name: &str) -> NodeId {
         let directory = self.node_resolver.find_directory(parent).unwrap();
         self.node_resolver.assign_node_id(&self.directory_contents.find_entry(&directory, name).unwrap(), parent)
     }
 
     /// The node id of `docs`.
-    pub(super) fn docs(&self) -> u64 {
-        self.node_id(1, "docs")
+    pub(super) fn docs(&self) -> NodeId {
+        self.node_id(NodeId::ROOT, "docs")
     }
 
     /// What is at `rel`: a OneDrive id, or `None` for a local-only entry; nothing at all as
