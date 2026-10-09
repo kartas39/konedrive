@@ -27,6 +27,7 @@ use super::upload_rules::UploadRules;
 use super::requests::Requests;
 use super::node_lookup::NodeLookup;
 use super::outbox_recorder::OutboxRecorder;
+use super::range_readers::RangeReaders;
 use super::shared::{other, Shared};
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
@@ -123,15 +124,13 @@ impl Mount {
                 store,
                 node_table,
                 node_lookup,
-                source,
                 report,
-                pool,
+                range_readers: Arc::new(RangeReaders::new(pool, source, runtime.clone())),
                 download_states,
                 file_downloader,
                 handles: Mutex::default(),
                 next_handle: AtomicU64::new(1),
                 listings: Mutex::default(),
-                readers: Mutex::default(),
                 reads: Mutex::default(),
                 pins: Mutex::new(pins),
                 announcer: AtomicI32::new(0),

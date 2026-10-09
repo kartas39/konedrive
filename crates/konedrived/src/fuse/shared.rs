@@ -16,11 +16,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::Errno;
-use konedrive_graph::pool::TransferPool;
 use konedrive_tree::Store;
 
 use crate::folder::root::SyncRoot;
-use crate::hydration::source::ContentSource;
 use crate::status::report::Report;
 
 use super::announce::{Announce, Told};
@@ -31,7 +29,8 @@ use super::node_table::NodeTable;
 use super::outbox_recorder::OutboxRecorder;
 use super::write_operations::WriteOperations;
 use super::open_writers::OpenWriters;
-use super::read::{OpenFile, Reader};
+use super::range_readers::RangeReaders;
+use super::read::OpenFile;
 use super::node_lookup::NodeLookup;
 use super::backing_directory::BackingDirectory;
 use super::directory_contents::DirectoryContents;
@@ -49,9 +48,7 @@ pub(super) struct Shared {
     pub(super) node_table: Arc<Mutex<NodeTable>>,
     /// The entry a node id stands for, and the node id of an entry ([`super::node_lookup`]).
     pub(super) node_lookup: Arc<NodeLookup>,
-    pub(super) source: Arc<dyn ContentSource>,
     pub(super) report: Report,
-    pub(super) pool: Arc<TransferPool>,
     /// The state of each file's download ([`super::download_states`]).
     pub(super) download_states: Arc<DownloadStates>,
     /// What downloads a file whole ([`super::file_download`]).
@@ -62,10 +59,9 @@ pub(super) struct Shared {
     /// What each open directory held when it was first listed, by handle: a program that
     /// reads a directory in parts reads one listing, whatever changes meanwhile.
     pub(super) listings: Mutex<HashMap<u64, Arc<Vec<super::directory_contents::DirectoryEntry>>>>,
-    /// The files being read as ranges, by item: each holds the account's pool as a file being
-    /// opened does, until `READ_LINGERS` after its last read. While one is held no pinned
-    /// or other background download starts, so what the user reads goes first.
-    pub(super) readers: Mutex<HashMap<String, Reader>>,
+    /// The files being read as ranges, each with its slot of the pool
+    /// ([`super::range_readers`]).
+    pub(super) range_readers: Arc<RangeReaders>,
     /// The reads waiting for a range from OneDrive, by request: a program that is interrupted
     /// has its read given up.
     pub(super) reads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,

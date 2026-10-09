@@ -50,6 +50,7 @@ mod mount;
 mod node_table;
 mod unsent_changes;
 mod pins;
+mod range_readers;
 mod upload_rules;
 mod read;
 mod outbox_recorder;

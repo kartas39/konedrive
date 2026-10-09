@@ -90,7 +90,7 @@ impl Requests {
         tracing::debug!("read of {} by {}: {} bytes at {offset}, from OneDrive", rel.display(), caller(req), end - offset);
         let (shared, unique): (Arc<Shared>, u64) = (Arc::clone(s), req.unique().0);
         let task = s.runtime.spawn(async move {
-            let fetched = shared.range(&row, offset, end).await;
+            let fetched = shared.range_readers.fetch_range(&row, offset, end).await;
             crate::panic::lock(&shared.reads).remove(&unique);
             match fetched {
                 Ok(bytes) => {

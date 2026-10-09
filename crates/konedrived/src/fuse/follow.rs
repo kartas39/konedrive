@@ -85,7 +85,7 @@ impl Mount {
         let recorded_at = s.now();
         for step in &steps {
             // Whatever its source remembered of the item is of what it was.
-            s.source.forget(&step.id);
+            s.range_readers.forget_file(&step.id);
             match (&step.old, &step.new) {
                 (Some((old, was)), None) => {
                     match old.kind {
