@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use konedrive_fs::placeholder::XATTR_ROOT;
+use konedrive_fs::placeholder::{State, XATTR_ROOT, XATTR_STATE};
 
-use super::{Under, OLD_STAGING};
+use super::{set_tree, Under, OLD_STAGING};
 
 /// A folder on disk with nothing in it, opened as a mount's would be.
 pub(super) fn folder() -> (tempfile::TempDir, Under) {
@@ -46,4 +46,24 @@ fn an_attribute_is_read_of_the_folder_and_of_what_it_holds() {
 fn the_folders_filesystem_says_how_much_space_it_has() {
     let (_dir, under) = folder();
     assert!(under.space().unwrap().f_bsize > 0);
+}
+
+/// What an older konedrive left would be taken for downloaded copies or the user's own files.
+#[test]
+fn a_folder_that_holds_an_older_konedrives_placeholder_is_not_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), b"").unwrap();
+    xattr::set(dir.path().join("a.txt"), XATTR_STATE, State::OnlineOnly.as_str().as_bytes()).unwrap();
+    assert!(Under::open(dir.path()).is_err());
+}
+
+/// The folder was locked when the daemon last ended; under the mount it is the daemon's.
+#[test]
+fn a_locked_folder_is_opened_and_unlocked() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    set_tree(dir.path(), true);
+    let under = Under::open(dir.path()).unwrap();
+    under.unlock();
+    under.make_file(Path::new("docs/a.txt")).unwrap();
 }

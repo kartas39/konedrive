@@ -12,7 +12,7 @@ use crate::folder::disk::HOLDING;
 
 /// Whether `folder`, which is not mounted over yet, holds what an older konedrive left: a
 /// file marked as anything but whole, or that konedrive's holding directory.
-pub(super) fn left_by_an_older(folder: &Path) -> bool {
+pub(in crate::fuse) fn left_by_an_older(folder: &Path) -> bool {
     let mut dirs = vec![folder.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -31,7 +31,7 @@ pub(super) fn left_by_an_older(folder: &Path) -> bool {
 }
 
 /// Why no mount is put over such a folder.
-pub(super) fn refusal(folder: &Path) -> io::Error {
+pub(in crate::fuse) fn refusal(folder: &Path) -> io::Error {
     io::Error::other(format!("{} holds the files of an older konedrive; forget the folder and add it again", folder.display()))
 }
 

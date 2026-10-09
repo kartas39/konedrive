@@ -12,6 +12,8 @@
 //! - [`files`]: the files and directories a change makes, renames and removes;
 //! - [`backing`]: the directories down to a place, each marked with its item's id;
 //! - [`landing`]: a finished download stamped as its item's copy and given its name;
+//! - [`lock`]: the folder locked while no mount lies over it, and a dead mount taken off it;
+//! - [`older`]: a folder that holds an older konedrive's placeholders, which is never opened.
 //!
 //! A place is always a path below the folder (`rel`); the folder itself is the empty path.
 
@@ -24,9 +26,13 @@ mod backing;
 mod copies;
 mod files;
 mod landing;
+mod lock;
 mod objects;
+mod older;
 
 pub(super) use landing::Landed;
+pub use lock::{clear_stale, directories, tidy, tidy_all};
+pub(super) use lock::set_tree;
 pub(super) use objects::Object;
 
 /// Where an earlier build built its downloads, inside the folder: taken off when the folder
@@ -40,8 +46,13 @@ pub(super) struct Under {
 
 impl Under {
     /// Opens `folder`, which no mount lies over yet: afterwards its path is the mount, and
-    /// this is the one way to what it holds.
+    /// this is the one way to what it holds. A mount a daemon that died left on it is taken
+    /// off first, and a folder an older konedrive kept is refused.
     pub(super) fn open(folder: &Path) -> io::Result<Self> {
+        clear_stale(folder);
+        if older::left_by_an_older(folder) {
+            return Err(older::refusal(folder));
+        }
         // `fusermount3` mounts only where its user may write; the folder was locked when the
         // daemon last ended.
         {
@@ -57,6 +68,12 @@ impl Under {
     /// for as long as this lives.
     pub(super) fn path(&self, rel: &Path) -> PathBuf {
         konedrive_fs::proc_path(&self.folder).join(rel)
+    }
+
+    /// Under the mount the folder is the daemon's alone, and open to it: its owner's write bits
+    /// are given back, which were taken off when the daemon last ended.
+    pub(super) fn unlock(&self) {
+        set_tree(&self.path(Path::new("")), false);
     }
 
     /// One more descriptor of the folder, for what in the daemon opens the folder by its path:

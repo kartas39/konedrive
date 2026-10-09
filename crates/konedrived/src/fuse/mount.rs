@@ -18,11 +18,10 @@ use crate::status::report::Report;
 
 use super::announce::{announce, Announce};
 use super::fill::Waiter;
-use super::lock::{clear_stale, set_tree};
+use super::under::{set_tree, Under};
 use super::nodes::Nodes;
 use super::requests::Requests;
 use super::shared::{other, Shared, Writing};
-use super::under::Under;
 
 /// A folder served as a mount, for as long as this is held.
 pub struct Mount {
@@ -58,10 +57,6 @@ impl Mount {
         let pins: HashSet<String> = store.call(|s| s.pins()).await.map_err(other)?.into_iter().collect();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            clear_stale(&root.path);
-            if super::older::left_by_an_older(&root.path) {
-                return Err(super::older::refusal(&root.path));
-            }
             // Before the mount: afterwards this path is the mount.
             let under = Arc::new(Under::open(&root.path)?);
             let reader = TreeStore::open_read_only(&store_path).map_err(other)?;
@@ -127,7 +122,7 @@ impl Mount {
             };
             let connection = fs::metadata(&root.path).map_or(0, |m| libc::minor(m.dev()));
             // Under the mount the folder is the daemon's alone, and open to it.
-            set_tree(&shared.under.path(Path::new("")), false);
+            shared.under.unlock();
             let saying = Arc::clone(&shared);
             let announcer = std::thread::Builder::new().name("konedrive-announce".into()).spawn(move || announce(&saying, &notifier, told))?;
             shared.sweep();

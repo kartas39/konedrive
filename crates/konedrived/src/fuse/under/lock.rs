@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// write bits off, so that nothing is put into it while no mount lies over it; not locked
 /// gives its owner the directories and the files back. A mode is written only where it differs. `folder`
 /// must be the folder itself, not a mount over it.
-pub(super) fn set_tree(folder: &Path, locked: bool) {
+pub(in crate::fuse) fn set_tree(folder: &Path, locked: bool) {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = fs::symlink_metadata(folder) else { return };
     let wanted = match (meta.is_dir(), locked) {

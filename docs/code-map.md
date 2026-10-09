@@ -190,7 +190,8 @@ daemon shows OneDrive.
   and what is under way; a path's row; `Writing`, what a folder that takes changes shares
   with its sync.
 - `under.rs` — `Under`: the folder under the mount, by the descriptor opened on it before the
-  mount; it knows the disk and nothing else. A path of the folder, its space, an attribute.
+  mount; it knows the disk and nothing else. Opening the folder, a path of it, its space, an
+  attribute.
   `[tests]`
 - `under/objects.rs` — `Object`: what stands at a place, its file handle, the item id it
   carries. `[tests]`
@@ -201,6 +202,10 @@ daemon shows OneDrive.
   which the caller tells name by name. `[tests]`
 - `under/landing.rs` — a finished download landed: stamped as its item's copy and given its
   name, by what stands at its place (`Stands`, `Step`, `Landed`). `[tests]`
+- `under/lock.rs` — the folder on disk locked while no mount lies over it; a dead mount taken
+  off it; `tidy`, what follows the daemon's end. `[tests]`
+- `under/older.rs` — a folder that holds an older konedrive's placeholders: it is not opened,
+  so no mount is put over it. `[tests]`
 - `mode.rs` — whether programs may change the folder: `Mount::read_write`, `read_only`,
   `is_writable`.
 - `requests.rs` — the mount's requests (`Filesystem`), each handed on.
@@ -235,10 +240,6 @@ daemon shows OneDrive.
 - `conflict.rs` — where a change from OneDrive meets something the user made here: what is
   kept, and under which name.
 - `announce.rs` — changes told to the kernel through the mount, for whoever watches.
-- `older.rs` — a folder that holds an older konedrive's placeholders: no mount is put over
-  it. `[tests]`
-- `lock.rs` — the folder on disk locked while no mount lies over it; `tidy`, what follows the
-  daemon's end. `[tests]`
 
 ### `crates/konedrived/src/upload/`
 
