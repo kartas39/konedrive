@@ -11,7 +11,7 @@ use konedrive_fs::placeholder::{XATTR_DRIVE, XATTR_ITEM_ID, XATTR_PIN, XATTR_ROO
 use crate::fuse::node_table::NodeId;
 use super::KernelRequests;
 use crate::fuse::directory_contents::EntryState;
-use crate::fuse::download_states::to_state_attribute;
+use crate::fuse::state_attribute::to_state_attribute;
 
 impl KernelRequests {
     /// The value of the attribute `name` of the node `ino`: of what is in OneDrive from the

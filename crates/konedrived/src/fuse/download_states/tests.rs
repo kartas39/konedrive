@@ -1,20 +1,10 @@
 use std::fs::File;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
-use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::State;
-use konedrive_tree::Kind;
 use tokio::sync::oneshot;
 
-use crate::fuse::directory_reference::DirectoryReference;
-use crate::fuse::entry_place::EntryPlace;
-use crate::fuse::local_only_entry::LocalOnlyEntry;
-use super::{reaches_download_threshold, to_state_attribute, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
-use crate::fuse::backing_directory::{DiskEntry, DiskMetadata, EntryKind};
-use crate::fuse::directory_contents::tests::row;
-use crate::fuse::directory_contents::FileSyncState;
+use super::{reaches_download_threshold, DownloadStart, DownloadStates, UNFINISHED_FILES_KEPT, WRITTEN_BEHIND};
 
 /// Once 100 bytes of a file were read as ranges, it is downloaded whole.
 fn download_states() -> DownloadStates {
@@ -40,10 +30,6 @@ fn fail_download(download_states: &DownloadStates, id: &str) -> Arc<File> {
     download_states.begin_writing(id, Arc::clone(&file));
     download_states.finish(id, Err(libc::EIO));
     file
-}
-
-fn copy() -> DiskMetadata {
-    DiskMetadata { kind: EntryKind::File, size: 10, blocks: 8, modified: UNIX_EPOCH }
 }
 
 #[test]
@@ -234,31 +220,25 @@ fn the_mounts_stop_fails_whoever_waits_and_the_download_still_ends() {
     assert_eq!(download_states.list_unfinished_files().len(), 1);
 }
 
+/// The bytes read as ranges are a count beside the states: counted whatever the file's
+/// download does, and dropped only when a download of the file ends well.
 #[test]
-fn a_file_being_downloaded_is_shown_as_downloading_whatever_is_on_disk() {
-    let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_state_attribute(&FileSyncState::RemoteOnly(file.clone()), true), Some(State::Hydrating));
-    assert_eq!(to_state_attribute(&FileSyncState::Synced(file.clone(), copy()), true), Some(State::Hydrating));
-    assert_eq!(to_state_attribute(&FileSyncState::ModifiedHere(file, copy()), true), Some(State::Hydrating));
-}
-
-#[test]
-fn a_file_with_nothing_on_disk_is_shown_as_online_only() {
-    let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_state_attribute(&FileSyncState::RemoteOnly(file), false), Some(State::OnlineOnly));
-}
-
-#[test]
-fn a_file_with_its_downloaded_copy_is_shown_as_downloaded_also_when_modified_here() {
-    let file = row("A", Some("R"), "a.txt", Kind::File);
-    assert_eq!(to_state_attribute(&FileSyncState::Synced(file.clone(), copy()), false), Some(State::Hydrated));
-    assert_eq!(to_state_attribute(&FileSyncState::ModifiedHere(file, copy()), false), Some(State::Hydrated));
-}
-
-#[test]
-fn a_local_only_file_has_no_state_to_show() {
-    let on_disk = DiskEntry { handle: FileHandle { kind: 1, bytes: vec![1, 0, 0, 0, 1, 0, 0, 0] }, metadata: copy() };
-    let local_only = FileSyncState::LocalOnly(LocalOnlyEntry { on_disk, place: EntryPlace { directory: DirectoryReference { onedrive_id: Some("R".into()), path: "".into() }, name: "own".into() } });
-    assert_eq!(to_state_attribute(&local_only, false), None);
-    assert_eq!(to_state_attribute(&local_only, true), None);
+fn the_bytes_read_as_ranges_are_counted_apart_from_the_state_of_the_download() {
+    let download_states = download_states();
+    // No download was ever asked for: counting gives the file no state.
+    assert!(!download_states.count_bytes_read("A", 60, 1_000));
+    assert!(!download_states.is_downloading("A"));
+    // While a download runs, and after it failed, the count goes on from where it was.
+    download_states.start_or_join("A", None);
+    assert!(!download_states.count_bytes_read("A", 30, 1_000));
+    download_states.begin_writing("A", unnamed_file());
+    download_states.finish("A", Err(libc::EIO));
+    assert_eq!(download_states.list_unfinished_files().len(), 1);
+    assert!(download_states.count_bytes_read("A", 10, 1_000), "60, 30 and 10 bytes reach the 100");
+    // A download that ends well drops the count: the file is read from its copy now.
+    download_states.start_or_join("A", None);
+    download_states.finish("A", Ok(()));
+    assert!(!download_states.count_bytes_read("A", 99, 1_000));
+    // Another file's count is its own.
+    assert!(!download_states.count_bytes_read("B", 99, 1_000));
 }

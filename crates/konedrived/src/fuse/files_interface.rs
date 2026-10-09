@@ -19,7 +19,8 @@ use konedrive_tree::{Kind, Row, Table};
 use tokio::sync::oneshot;
 
 use super::directory_contents::{DirectoryContents, DirectoryEntry, EntryState, FileSyncState};
-use super::download_states::{to_state_attribute, DownloadStates};
+use super::download_states::DownloadStates;
+use super::state_attribute::to_state_attribute;
 use super::file_downloader::FileDownloader;
 use super::inotify_bridge::{InotifyBridge, Announcement};
 use super::open_handles::OpenHandles;

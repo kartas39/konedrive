@@ -67,6 +67,7 @@ mod open_handles;
 mod unsent_changes;
 mod pins;
 mod stale_mount;
+mod state_attribute;
 mod tidy_step;
 mod range_readers;
 mod cycle_step;
