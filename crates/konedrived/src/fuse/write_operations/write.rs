@@ -24,7 +24,7 @@ use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{CloseOutcome, Fh};
 use crate::fuse::errno::to_errno;
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 
 /// A OneDrive file whose content has to be downloaded before it can be written: its row,
 /// and its path in the folder.
@@ -89,7 +89,7 @@ impl WriteOperations {
         let backing_file = opened.map_err(|e| to_errno(&e))?;
         let added = self.open_handles.add_writer(node_id, entry.onedrive_id().map(str::to_owned), Arc::new(backing_file));
         if added.is_first {
-            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_status| describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Opened)) {
+            if let Err(e) = self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Opened)) {
                 self.open_handles.close_file(added.fh);
                 return Err(e);
             }
@@ -115,9 +115,9 @@ impl WriteOperations {
     /// recorded as is decided by [`describe_last_close`], from what the node stands for now.
     fn record_close(&self, node_id: NodeId, outcome: CloseOutcome) {
         let access_mode = self.access_mode_switch.access_mode();
-        let _ = self.record_file_write(node_id, "close", |entry, parent_directory, copy, upload_status| {
+        let _ = self.record_file_write(node_id, "close", |entry, parent_directory, copy, upload_decision| {
             let node_stands_for_file = entry.onedrive_id().is_some_and(|id| self.node_resolver.find_node_id(id) == Some(node_id));
-            describe_last_close(outcome, access_mode, entry, parent_directory, copy, upload_status, node_stands_for_file)
+            describe_last_close(outcome, access_mode, entry, parent_directory, copy, upload_decision, node_stands_for_file)
         });
     }
 
@@ -126,11 +126,11 @@ impl WriteOperations {
     /// what the backing directory holds at its path and what the upload rules say of a
     /// local-only file there, and gives what is recorded, if anything is. Nothing for a node
     /// whose file is gone: removed while it was open.
-    fn record_file_write(&self, node_id: NodeId, what: &str, describe: impl FnOnce(&DirectoryEntry, &DirectoryReference, Option<DiskEntry>, UploadStatus) -> Option<FileWritten>) -> Result<(), Errno> {
+    fn record_file_write(&self, node_id: NodeId, what: &str, describe: impl FnOnce(&DirectoryEntry, &DirectoryReference, Option<DiskEntry>, UploadDecision) -> Option<FileWritten>) -> Result<(), Errno> {
         let (Some((entry, path)), Some((_, parent_directory))) = (self.node_resolver.find_entry(node_id), self.node_resolver.find_parent(node_id)) else { return Ok(()) };
         let copy = self.backing_directory.find_disk_entry(&path);
-        let upload_status = self.find_upload_status(&parent_directory, &entry.name);
-        match describe(&entry, &parent_directory, copy, upload_status) {
+        let upload_decision = self.decide_upload(&parent_directory, &entry.name);
+        match describe(&entry, &parent_directory, copy, upload_decision) {
             Some(event) => self.record_or_undo(event, format_args!("the {what} of {}", path.display()), || {}),
             None => Ok(()),
         }
@@ -173,7 +173,7 @@ impl WriteOperations {
         if self.open_handles.is_open_for_writing_by_node_id(node_id) {
             self.open_handles.mark_written(node_id);
         } else {
-            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_status| describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Cut))?;
+            self.record_file_write(node_id, "change", |entry, parent_directory, copy, upload_decision| describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Cut))?;
         }
         backing_file.set_len(size).map_err(|e| to_errno(&e))?;
         self.write_modified_time(node_id, modified);
@@ -211,15 +211,15 @@ impl WriteOperations {
 
 /// What a change of the content of the file `entry`, in `parent_directory`, is recorded as:
 /// `write` says what was done to it. `copy` is what the backing directory holds at its path,
-/// and `upload_status` what the upload rules say of a local-only file there. `None` when
+/// and `upload_decision` what the upload rules say of a local-only file there. `None` when
 /// nothing is recorded:
 ///
 /// - a local-only file that is ignored at its place;
 /// - a file of OneDrive the backing directory holds no copy of: there is no content of the
 ///   user's own to send.
-pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &DirectoryReference, copy: Option<DiskEntry>, upload_status: UploadStatus, write: LocalOnlyFileWrite) -> Option<FileWritten> {
+pub(super) fn describe_file_write(entry: &DirectoryEntry, parent_directory: &DirectoryReference, copy: Option<DiskEntry>, upload_decision: UploadDecision, write: LocalOnlyFileWrite) -> Option<FileWritten> {
     if let Some(local_only) = entry.local_only() {
-        return (upload_status == UploadStatus::Uploaded).then(|| FileWritten::LocalOnly { file: local_only.clone(), write });
+        return (upload_decision == UploadDecision::Upload).then(|| FileWritten::LocalOnly { file: local_only.clone(), write });
     }
     let (row, copy) = (entry.row()?, copy?);
     let write = match write {
@@ -247,7 +247,7 @@ pub(super) fn describe_last_close(
     entry: &DirectoryEntry,
     parent_directory: &DirectoryReference,
     copy: Option<DiskEntry>,
-    upload_status: UploadStatus,
+    upload_decision: UploadDecision,
     node_stands_for_file: bool,
 ) -> Option<FileWritten> {
     match (outcome, access_mode, entry.row()) {
@@ -255,7 +255,7 @@ pub(super) fn describe_last_close(
         (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, Some(row)) => {
             node_stands_for_file.then(|| FileWritten::InOneDrive { onedrive_id: row.id.clone(), place: EntryPlace::new(parent_directory, &row.name), write: OneDriveFileWrite::ClosedUntouched })
         }
-        (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_status, LocalOnlyFileWrite::Closed),
+        (CloseOutcome::ContentChanged, AccessMode::ReadWrite, _) | (CloseOutcome::ContentUntouched, AccessMode::ReadWrite, None) => describe_file_write(entry, parent_directory, copy, upload_decision, LocalOnlyFileWrite::Closed),
     }
 }
 

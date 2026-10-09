@@ -3,7 +3,7 @@
 
 use fuser::Errno;
 
-use super::remove_plan::{plan_remove, RemovePlace, RemovePlan};
+use super::remove_plan::{plan_remove, RemovePlaceContents, RemovePlan};
 use super::WriteOperations;
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::detections::EntryRemoved;
@@ -16,7 +16,7 @@ impl WriteOperations {
     /// local-only entry is forgotten there.
     pub(in crate::fuse) fn remove(&self, parent: NodeId, name: &str, kind: EntryKind) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
-        let plan = plan_remove(kind, name, self.find_remove_place(parent, name))?;
+        let plan = plan_remove(kind, name, self.find_remove_place_contents(parent, name))?;
         let (event, rel) = match &plan {
             RemovePlan::OneDriveFile { onedrive_id, path } | RemovePlan::OneDriveDirectory { onedrive_id, path } => (EntryRemoved::InOneDrive { onedrive_id: onedrive_id.clone(), path: path.clone() }, path),
             RemovePlan::LocalOnlyFile { handle, path } | RemovePlan::LocalOnlyDirectory { handle, path } => (EntryRemoved::LocalOnly { handle: handle.clone(), path: path.clone() }, path),
@@ -36,11 +36,11 @@ impl WriteOperations {
     }
 
     /// What stands at `name` of the directory node `parent`, for the plan of a remove.
-    fn find_remove_place(&self, parent: NodeId, name: &str) -> RemovePlace {
+    fn find_remove_place_contents(&self, parent: NodeId, name: &str) -> RemovePlaceContents {
         let parent_directory = self.node_resolver.find_directory(parent);
         let entry = parent_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, name));
         let holds_entries = parent_directory.as_ref().zip(entry.as_ref()).is_some_and(|(directory, entry)| self.holds_entries(entry, &directory.path.join(name)));
-        RemovePlace { parent_directory, entry, holds_entries }
+        RemovePlaceContents { parent_directory, entry, holds_entries }
     }
 }
 

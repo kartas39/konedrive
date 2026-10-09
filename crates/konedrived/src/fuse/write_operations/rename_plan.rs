@@ -14,7 +14,7 @@ use crate::fuse::directory_contents::{DirectoryEntry, DirectorySyncState, EntryS
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::local_only_entry::LocalOnlyEntry;
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 
 /// What a rename does to what is at the new place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub(in crate::fuse) enum RenameMode {
 
 /// What stands at the two places of a rename, looked up before the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RenamePlaces {
+pub(super) struct RenamePlaceContents {
     /// The directories the two nodes the program named stand for; `None` for a node that
     /// stands for none.
     pub(super) from_directory: Option<DirectoryReference>,
@@ -45,7 +45,7 @@ pub(super) struct RenamePlaces {
     /// The new place is in a directory that is ignored: nothing there is uploaded.
     pub(super) to_is_in_ignored_directory: bool,
     /// What the upload rules say of a local-only entry at the new place.
-    pub(super) to_upload_status: UploadStatus,
+    pub(super) to_upload_decision: UploadDecision,
 }
 
 /// A rename the check let through: what moves where, and over what.
@@ -60,7 +60,7 @@ pub(super) struct RenamePlan {
     /// The place it moves to.
     pub(super) to: EntryPlace,
     /// Whether a local-only entry is uploaded from the new place.
-    pub(super) to_upload_status: UploadStatus,
+    pub(super) to_upload_decision: UploadDecision,
 }
 
 impl RenamePlan {
@@ -78,7 +78,7 @@ impl RenamePlan {
     /// Whether what moves is a local-only directory that is uploaded from its new place:
     /// what it holds there is walked then, to be recorded with it.
     pub(super) fn uploads_moved_directory(&self) -> bool {
-        matches!((&self.moved_entry.state, self.to_upload_status), (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadStatus::Uploaded))
+        matches!((&self.moved_entry.state, self.to_upload_decision), (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadDecision::Upload))
     }
 }
 
@@ -110,14 +110,14 @@ pub(super) fn describe_rename(plan: &RenamePlan, write_state: WriteState, handle
     if let Some((file, over)) = plan.find_saved_over_file() {
         return EntryRenamed::SavedOverOneDriveFile { file: file.on_disk.clone(), write_state, over: over.to_owned(), to: plan.to.clone() };
     }
-    let entry = match (&plan.moved_entry.state, plan.to_upload_status) {
+    let entry = match (&plan.moved_entry.state, plan.to_upload_decision) {
         (EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)), _) => MovedEntry::InOneDrive { onedrive_id: row.id.clone(), kind: EntryKind::File, handle: handle_at_new_place },
         (EntryState::Directory(DirectorySyncState::InOneDrive(row)), _) => MovedEntry::InOneDrive { onedrive_id: row.id.clone(), kind: EntryKind::Directory, handle: handle_at_new_place },
-        (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), write_state },
-        (EntryState::File(FileSyncState::LocalOnly(file)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyFile { file: file.on_disk.clone() },
-        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Ignored) => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
-        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadStatus::Uploaded) if uploaded_entries.is_empty() => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
-        (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadStatus::Uploaded) => MovedEntry::LocalOnlyDirectory { uploaded_entries },
+        (EntryState::File(FileSyncState::LocalOnly(file)), UploadDecision::Upload) => MovedEntry::LocalOnlyFile { file: file.on_disk.clone(), write_state },
+        (EntryState::File(FileSyncState::LocalOnly(file)), UploadDecision::Ignore) => MovedEntry::IgnoredLocalOnlyFile { file: file.on_disk.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadDecision::Ignore) => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(directory)), UploadDecision::Upload) if uploaded_entries.is_empty() => MovedEntry::IgnoredLocalOnlyDirectory { handle: directory.on_disk.handle.clone() },
+        (EntryState::Directory(DirectorySyncState::LocalOnly(_)), UploadDecision::Upload) => MovedEntry::LocalOnlyDirectory { uploaded_entries },
     };
     let displaced = plan.target.as_ref().map(|target| match &target.state {
         EntryState::File(FileSyncState::RemoteOnly(row) | FileSyncState::Synced(row, _) | FileSyncState::ModifiedHere(row, _)) | EntryState::Directory(DirectorySyncState::InOneDrive(row)) => DisplacedEntry::InOneDrive(row.id.clone()),
@@ -145,7 +145,7 @@ pub(super) enum RenameDecision {
 ///    something under a directory (`ENOTEMPTY`);
 /// 6. what is in OneDrive moved to where nothing is uploaded (`EXDEV`): a program that
 ///    copies it there and removes it here does what that means.
-pub(super) fn plan_rename(mode: RenameMode, places: RenamePlaces) -> Result<RenameDecision, Errno> {
+pub(super) fn plan_rename(mode: RenameMode, places: RenamePlaceContents) -> Result<RenameDecision, Errno> {
     let from_directory = places.from_directory.ok_or(Errno::ENOENT)?;
     let to_directory = places.to_directory.ok_or(Errno::ENOENT)?;
     if places.new_name_is_daemon_owned {
@@ -168,7 +168,7 @@ pub(super) fn plan_rename(mode: RenameMode, places: RenamePlaces) -> Result<Rena
     if moved_entry.onedrive_id().is_some() && places.to_is_in_ignored_directory {
         return Err(Errno::EXDEV);
     }
-    Ok(RenameDecision::Rename(RenamePlan { moved_entry, target: places.target, from, to, to_upload_status: places.to_upload_status }))
+    Ok(RenameDecision::Rename(RenamePlan { moved_entry, target: places.target, from, to, to_upload_decision: places.to_upload_decision }))
 }
 
 #[cfg(test)]

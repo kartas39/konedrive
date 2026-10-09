@@ -22,21 +22,21 @@ use std::path::Path;
 
 use fuser::Errno;
 
-use super::rename_plan::{describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaces, RenamePlan};
+use super::rename_plan::{describe_rename, plan_rename, BackingDirectoryMove, RenameDecision, RenameMode, RenamePlaceContents, RenamePlan};
 use super::WriteOperations;
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::directory_contents::DirectoryEntry;
 use crate::fuse::errno::to_errno;
 use crate::fuse::local_only_entry::{collect_local_only_entries, is_in_ignored_directory, LocalOnlyEntry};
 use crate::fuse::node_table::NodeId;
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 
 impl WriteOperations {
     /// Renames `name` of the directory node `parent` to `new_name` of `new_parent`; `mode`
     /// says what becomes of what is there.
     pub(in crate::fuse) fn rename(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str, mode: RenameMode) -> Result<(), Errno> {
         self.access_mode_switch.check_read_write()?;
-        let plan = match plan_rename(mode, self.find_rename_places(parent, name, new_parent, new_name))? {
+        let plan = match plan_rename(mode, self.find_rename_place_contents(parent, name, new_parent, new_name))? {
             RenameDecision::Rename(plan) => plan,
             RenameDecision::NothingToRename => return Ok(()),
         };
@@ -56,15 +56,15 @@ impl WriteOperations {
     }
 
     /// What stands at the two places, for the plan of a rename.
-    fn find_rename_places(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str) -> RenamePlaces {
+    fn find_rename_place_contents(&self, parent: NodeId, name: &str, new_parent: NodeId, new_name: &str) -> RenamePlaceContents {
         let from_directory = self.node_resolver.find_directory(parent);
         let to_directory = self.node_resolver.find_directory(new_parent);
         let moved_entry = from_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, name));
         let target = to_directory.as_ref().and_then(|directory| self.directory_contents.find_entry(directory, new_name));
         let target_holds_entries = to_directory.as_ref().zip(target.as_ref()).is_some_and(|(directory, target)| self.holds_entries(target, &directory.path.join(new_name)));
         let to_is_in_ignored_directory = to_directory.as_ref().is_some_and(|directory| is_in_ignored_directory(&self.backing_directory, &self.upload_rules, &directory.path));
-        let to_upload_status = to_directory.as_ref().map_or(UploadStatus::Uploaded, |directory| self.find_upload_status(directory, new_name));
-        RenamePlaces {
+        let to_upload_decision = to_directory.as_ref().map_or(UploadDecision::Upload, |directory| self.decide_upload(directory, new_name));
+        RenamePlaceContents {
             from_directory,
             to_directory,
             name: name.to_owned(),
@@ -74,7 +74,7 @@ impl WriteOperations {
             target,
             target_holds_entries,
             to_is_in_ignored_directory,
-            to_upload_status,
+            to_upload_decision,
         }
     }
 

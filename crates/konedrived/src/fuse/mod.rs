@@ -130,7 +130,7 @@ pub use conflict_copies::{ConflictCopy, CycleConflicts};
 pub use cycle_step::{CycleOutcome, CycleStep, OneDriveChange};
 #[cfg(any(test, feature = "fault-injection"))]
 pub use file_downloader::UnfinishedDownload;
-pub use files_interface::{DownloadedCopies, FilesInterface, FilesRefusal, FreedSpace, PathStatus};
+pub use files_interface::{DownloadedSpace, FilesInterface, FilesRefusal, FreedSpace, PathStatus};
 pub use free_up_decision::FreeUpDecision;
 pub use mount::{Mount, MountSetup, WriteSetup};
 pub use stale_mount::unmount_stale_mount;

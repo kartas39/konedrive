@@ -22,7 +22,7 @@ fn refuse_free_up(path: &Path, status: &PathStatus) -> Result<(), SyncError> {
     match status.decide_free_up_once_unpinned() {
         FreeUpDecision::LeavePinned => Err(pinned(path, status)),
         FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => Err(SyncError::NotUploaded(path.display().to_string())),
-        FreeUpDecision::Free | FreeUpDecision::LeaveDownloading | FreeUpDecision::NotDownloaded => Ok(()),
+        FreeUpDecision::Free | FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => Ok(()),
     }
 }
 
@@ -42,7 +42,7 @@ impl SyncService {
             FreeUpDecision::Free => {}
             FreeUpDecision::LeavePinned => return Err(pinned(path, &status)),
             FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting => return Err(SyncError::NotUploaded(path.display().to_string())),
-            FreeUpDecision::LeaveDownloading | FreeUpDecision::NotDownloaded => return Err(SyncError::NotHydrated),
+            FreeUpDecision::LeaveDownloading | FreeUpDecision::NothingToFree => return Err(SyncError::NotHydrated),
         }
         let freed = mount.files_interface().free_up(path).await?;
         if freed.files == 0 {

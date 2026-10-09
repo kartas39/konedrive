@@ -11,7 +11,7 @@ pub(super) enum LandingAttempt {
     FileMovedMeanwhile,
     /// The file was still where the download was asked for, and the backing directory was
     /// given the content to land there.
-    Landed(LandingOutcome),
+    Attempted(LandingOutcome),
 }
 
 /// What the download reports to whoever waits for it: that the file is downloaded, or the
@@ -25,8 +25,8 @@ pub(super) enum LandingAttempt {
 ///   is.
 pub(super) fn to_download_result(attempt: LandingAttempt) -> Result<(), i32> {
     match attempt {
-        LandingAttempt::Landed(LandingOutcome::Placed | LandingOutcome::Kept) => Ok(()),
-        LandingAttempt::Landed(LandingOutcome::Refused) => Err(libc::EEXIST),
+        LandingAttempt::Attempted(LandingOutcome::Placed | LandingOutcome::Kept) => Ok(()),
+        LandingAttempt::Attempted(LandingOutcome::Refused) => Err(libc::EEXIST),
         LandingAttempt::FileMovedMeanwhile => Err(libc::ESTALE),
     }
 }

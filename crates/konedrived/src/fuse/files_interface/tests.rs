@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use konedrive_tree::{Change, Kind, Row};
 
-use super::{DownloadedCopies, FilesInterface, FilesRefusal};
+use super::{DownloadedSpace, FilesInterface, FilesRefusal};
 use crate::fuse::directory_contents::tests::row;
 use crate::fuse::inotify_bridge::Announcement;
 use crate::fuse::mount::tests::{build_mount, build_mount_with, BuiltMount};
@@ -144,18 +144,18 @@ fn a_free_up_of_a_directory_frees_what_is_below_it_alone() {
 fn the_downloaded_copies_below_a_path_are_counted_with_their_bytes_on_disk() {
     let built = build_mount();
     let files_interface = built.mount.files_interface();
-    assert_eq!(files_interface.count_downloaded_below(&built.path("")).unwrap(), DownloadedCopies::default());
+    assert_eq!(files_interface.count_downloaded_below(&built.path("")).unwrap(), DownloadedSpace::default());
     built.make_marked_directory("docs", "D");
     built.download("a.txt", "A", b"aaaa");
     built.download("docs/c.txt", "C", b"cccc");
     let (a, c) = (bytes_on_disk(&built, "a.txt"), bytes_on_disk(&built, "docs/c.txt"));
-    assert_eq!(files_interface.count_downloaded_below(&built.path("")).unwrap(), DownloadedCopies { files: 2, bytes: a + c });
-    assert_eq!(files_interface.count_downloaded_below(&built.path("docs")).unwrap(), DownloadedCopies { files: 1, bytes: c });
-    assert_eq!(files_interface.count_downloaded_below(&built.path("a.txt")).unwrap(), DownloadedCopies { files: 1, bytes: a });
-    assert_eq!(files_interface.count_downloaded_below(&built.path("b.txt")).unwrap(), DownloadedCopies::default());
+    assert_eq!(files_interface.count_downloaded_below(&built.path("")).unwrap(), DownloadedSpace { files: 2, bytes: a + c });
+    assert_eq!(files_interface.count_downloaded_below(&built.path("docs")).unwrap(), DownloadedSpace { files: 1, bytes: c });
+    assert_eq!(files_interface.count_downloaded_below(&built.path("a.txt")).unwrap(), DownloadedSpace { files: 1, bytes: a });
+    assert_eq!(files_interface.count_downloaded_below(&built.path("b.txt")).unwrap(), DownloadedSpace::default());
     // A file at the path of a OneDrive file that is not its downloaded copy is not counted.
     std::fs::write(built.disk.join("b.txt"), b"the user's own").unwrap();
-    assert_eq!(files_interface.count_downloaded_below(&built.path("b.txt")).unwrap(), DownloadedCopies::default());
+    assert_eq!(files_interface.count_downloaded_below(&built.path("b.txt")).unwrap(), DownloadedSpace::default());
 }
 
 /// What is shown of the file changed with its pin, and what the pin keeps is downloaded:

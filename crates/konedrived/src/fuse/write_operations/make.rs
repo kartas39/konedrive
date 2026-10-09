@@ -8,7 +8,7 @@ use std::sync::Arc;
 use fuser::Errno;
 use konedrive_tree::Row;
 
-use super::make_check::{check_make, choose_made_entry_record, EntryToMake, MadeEntryRecord, MakePlace};
+use super::make_check::{check_make, choose_made_entry_record, EntryToMake, MadeEntryRecord, MakePlaceContents};
 use super::WriteOperations;
 use crate::fuse::backing_directory::{DiskEntry, EntryKind};
 use crate::fuse::detections::{EntryCreated, WriteState};
@@ -35,12 +35,12 @@ impl WriteOperations {
     /// open handles, where it is true, and not worked out from what was asked for.
     pub(in crate::fuse) fn make(&self, parent: NodeId, name: &str, entry_to_make: EntryToMake) -> Result<(NodeId, DirectoryEntry, Option<Fh>), Errno> {
         self.access_mode_switch.check_read_write()?;
-        let parent_directory = check_make(entry_to_make, self.find_make_place(parent, name))?;
+        let parent_directory = check_make(entry_to_make, self.find_make_place_contents(parent, name))?;
         let path = parent_directory.path.join(name);
         let (on_disk, file) = self.make_on_disk(&parent_directory, &path, entry_to_make.kind())?;
         // Asked once the directories down to the place are made and marked: a directory of
         // OneDrive is never ignored, whatever its name.
-        let record = choose_made_entry_record(entry_to_make, self.directory_contents.find_file_removed_at(&path), self.find_upload_status(&parent_directory, name));
+        let record = choose_made_entry_record(entry_to_make, self.directory_contents.find_file_removed_at(&path), self.decide_upload(&parent_directory, name));
         let local_only = LocalOnlyEntry { on_disk, place: EntryPlace::new(&parent_directory, name) };
         let made = self.describe_made_entry(&record, &local_only, &path)?;
         let node_id = self.node_resolver.assign_node_id(&made, parent);
@@ -119,10 +119,10 @@ impl WriteOperations {
     }
 
     /// What stands at `name` of the directory node `parent`, for the check of a make.
-    fn find_make_place(&self, parent: NodeId, name: &str) -> MakePlace {
+    fn find_make_place_contents(&self, parent: NodeId, name: &str) -> MakePlaceContents {
         let parent_directory = self.node_resolver.find_directory(parent);
         let name_is_taken = parent_directory.as_ref().is_some_and(|directory| self.directory_contents.find_entry(directory, name).is_some());
-        MakePlace {
+        MakePlaceContents {
             parent_directory,
             is_in_root: parent == NodeId::ROOT,
             name_is_daemon_owned: self.upload_rules.is_daemon_owned(name),

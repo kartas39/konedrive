@@ -25,7 +25,7 @@ use super::backing_directory::BackingDirectory;
 use super::detections::{detect_local_only_entries, is_directory_of, EntryKeptAside};
 use super::directory_reference::DirectoryReference;
 use super::directory_contents::DirectoryContents;
-use super::local_only_entry::{collect_local_only_entries, find_upload_status};
+use super::local_only_entry::{collect_local_only_entries, decide_upload};
 use super::upload_rules::UploadRules;
 use crate::local::names::copy_name;
 
@@ -101,8 +101,8 @@ impl ConflictCopies {
                 return MoveAsideOutcome::StillInTheWay;
             }
             if access_mode == AccessMode::ReadWrite {
-                let upload_status = find_upload_status(&self.backing_directory, &self.upload_rules, &directory.path, &copy);
-                let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_status }.detect(now);
+                let upload_decision = decide_upload(&self.backing_directory, &self.upload_rules, &directory.path, &copy);
+                let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_decision }.detect(now);
                 conflicts.ops.extend(kept.ops);
                 conflicts.detections.extend(kept.detections);
             }

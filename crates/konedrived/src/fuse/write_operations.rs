@@ -44,12 +44,12 @@ use super::backing_directory::BackingDirectory;
 use super::detections::{FolderEvent, WriteState};
 use super::directory_contents::{DirectoryContents, DirectoryEntry};
 use super::directory_reference::DirectoryReference;
-use super::local_only_entry::find_upload_status;
+use super::local_only_entry::decide_upload;
 use super::node_resolver::NodeResolver;
 use super::node_table::NodeId;
 use super::open_handles::OpenHandles;
 use super::outbox_recorder::OutboxRecorder;
-use super::upload_rules::{UploadRules, UploadStatus};
+use super::upload_rules::{UploadRules, UploadDecision};
 
 mod make;
 mod make_check;
@@ -86,8 +86,8 @@ impl WriteOperations {
     }
 
     /// Whether what is `name` in `directory` and is not in OneDrive is uploaded from there.
-    fn find_upload_status(&self, directory: &DirectoryReference, name: &str) -> UploadStatus {
-        find_upload_status(&self.backing_directory, &self.upload_rules, &directory.path, name)
+    fn decide_upload(&self, directory: &DirectoryReference, name: &str) -> UploadDecision {
+        decide_upload(&self.backing_directory, &self.upload_rules, &directory.path, name)
     }
 
     /// Whether a program holds the node `node_id` open for writing now.

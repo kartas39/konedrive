@@ -6,7 +6,7 @@ use konedrive_tree::Row;
 
 use crate::fuse::backing_directory::EntryKind;
 use crate::fuse::directory_reference::DirectoryReference;
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 
 /// What a program asks to have made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,7 @@ impl EntryToMake {
 
 /// What stands at the place an entry is to be made at, looked up before the check.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MakePlace {
+pub(super) struct MakePlaceContents {
     /// The directory the node the program named stands for; `None` when it stands for none.
     pub(super) parent_directory: Option<DirectoryReference>,
     /// That directory is the folder itself.
@@ -46,7 +46,7 @@ pub(super) struct MakePlace {
 /// The directory `entry_to_make` is made in, or the errno it is refused with, in this
 /// order: no such directory (`ENOENT`); one of the daemon's own names, or a file manager's
 /// trash directory in the folder itself (`EPERM`); a name that is taken (`EEXIST`).
-pub(super) fn check_make(entry_to_make: EntryToMake, place: MakePlace) -> Result<DirectoryReference, Errno> {
+pub(super) fn check_make(entry_to_make: EntryToMake, place: MakePlaceContents) -> Result<DirectoryReference, Errno> {
     let parent_directory = place.parent_directory.ok_or(Errno::ENOENT)?;
     let is_trash_in_root = entry_to_make == EntryToMake::Directory && place.is_in_root && place.name_is_trash;
     if place.name_is_daemon_owned || is_trash_in_root {
@@ -71,14 +71,14 @@ pub(super) enum MadeEntryRecord {
 }
 
 /// What `entry_to_make`, made at a place, is recorded as: `removed_file` is the OneDrive file
-/// the user removed from the place and whose removal is not sent yet, and `upload_status`
+/// the user removed from the place and whose removal is not sent yet, and `upload_decision`
 /// what the upload rules say of the place. A file made where one was removed is that file's
 /// new content, whatever the rules say; a directory never is.
-pub(super) fn choose_made_entry_record(entry_to_make: EntryToMake, removed_file: Option<Row>, upload_status: UploadStatus) -> MadeEntryRecord {
-    match (entry_to_make.kind(), removed_file, upload_status) {
+pub(super) fn choose_made_entry_record(entry_to_make: EntryToMake, removed_file: Option<Row>, upload_decision: UploadDecision) -> MadeEntryRecord {
+    match (entry_to_make.kind(), removed_file, upload_decision) {
         (EntryKind::File, Some(base), _) => MadeEntryRecord::ReplacingRemovedFile(base),
-        (_, _, UploadStatus::Uploaded) => MadeEntryRecord::Fresh,
-        (_, _, UploadStatus::Ignored) => MadeEntryRecord::NotRecorded,
+        (_, _, UploadDecision::Upload) => MadeEntryRecord::Fresh,
+        (_, _, UploadDecision::Ignore) => MadeEntryRecord::NotRecorded,
     }
 }
 

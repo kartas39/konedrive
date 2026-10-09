@@ -237,7 +237,7 @@ daemon shows OneDrive.
 - `local_only_entry.rs` — `LocalOnlyEntry`: a file or directory made here that is not in
   OneDrive yet, on disk and at its place; the one place that puts the upload rules together
   with the backing directory's marks: whether what is at a place is uploaded from there
-  (`find_upload_status`, `is_in_ignored_directory`), and the walk that collects the unmarked
+  (`decide_upload`, `is_in_ignored_directory`), and the walk that collects the unmarked
   entries at and below a place. `[tests]`
 - `unsent_changes.rs` — `UnsentChanges`: what was moved, removed or changed here and is not
   sent yet, a function of the store's outbox alone. `[tests]`
@@ -351,7 +351,7 @@ daemon shows OneDrive.
   whether a program holds it open for writing; the one decision of a free-up. `[tests]`
 - `files_interface.rs` — `FilesInterface`: what the daemon's bus interface `Files` asks of a
   mount for a path, over exactly the parts it uses: download, free up (`FreedSpace`), pin,
-  how the path stands; the downloaded copies below a path (`DownloadedCopies`); why it
+  how the path stands; the space the downloaded copies below a path take (`DownloadedSpace`); why it
   refuses (`FilesRefusal`). A free-up lists the copies off the write-operation thread and
   frees each in a job of its own on it, where it reads how the file stands, decides and
   removes the copy. `[tests]`
@@ -359,7 +359,7 @@ daemon shows OneDrive.
   whether it is being downloaded and whether it is open for writing, which what is shown of
   it and what a free-up does with it are asked of. `[tests]`
 - `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the
-  account's ignore list and touches nothing. What is ignored (`UploadStatus`), the names no
+  account's ignore list and touches nothing. What is uploaded and what is ignored (`UploadDecision`), the names no
   program may make. `[tests]`
 - `detections.rs` — what a change in the folder is recorded as: a decision from a typed event
   (`FolderEvent`) and the store's facts (`StoreFacts`), with no disk or mount in it; the

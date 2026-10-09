@@ -14,7 +14,7 @@ use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::entry_place::EntryPlace;
 use crate::fuse::node_table::NodeId;
 use crate::fuse::open_handles::{CloseOutcome, OpenFile};
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 use crate::fuse::write_operations::tests::{at, folder, folder_that_records_nothing};
 use crate::fuse::write_operations::EntryToMake;
 
@@ -35,7 +35,7 @@ fn local_only_file() -> DirectoryEntry {
 /// What the close of the last writer of `entry` is recorded as, in a read-write folder
 /// whose backing directory holds the copy `file(9, 1)` and uploads from the place.
 fn last_close(outcome: CloseOutcome, entry: &DirectoryEntry, node_stands_for_file: bool) -> Option<FileWritten> {
-    describe_last_close(outcome, AccessMode::ReadWrite, entry, &root(), Some(file(9, 1)), UploadStatus::Uploaded, node_stands_for_file)
+    describe_last_close(outcome, AccessMode::ReadWrite, entry, &root(), Some(file(9, 1)), UploadDecision::Upload, node_stands_for_file)
 }
 
 fn onedrive_write(write: OneDriveFileWrite) -> Option<FileWritten> {
@@ -51,8 +51,8 @@ fn a_close_that_is_not_the_last_writers_records_nothing() {
 #[test]
 fn the_last_close_in_a_read_only_folder_records_nothing() {
     for outcome in [CloseOutcome::ContentChanged, CloseOutcome::ContentUntouched] {
-        assert_eq!(describe_last_close(outcome, AccessMode::ReadOnly, &onedrive_file(), &root(), Some(file(9, 1)), UploadStatus::Uploaded, true), None);
-        assert_eq!(describe_last_close(outcome, AccessMode::ReadOnly, &local_only_file(), &root(), Some(file(1, 3)), UploadStatus::Uploaded, false), None);
+        assert_eq!(describe_last_close(outcome, AccessMode::ReadOnly, &onedrive_file(), &root(), Some(file(9, 1)), UploadDecision::Upload, true), None);
+        assert_eq!(describe_last_close(outcome, AccessMode::ReadOnly, &local_only_file(), &root(), Some(file(1, 3)), UploadDecision::Upload, false), None);
     }
 }
 
@@ -84,13 +84,13 @@ fn a_local_only_file_closed_is_due_whatever_was_written() {
 #[test]
 fn a_write_of_an_ignored_local_only_file_records_nothing() {
     for write in [LocalOnlyFileWrite::Opened, LocalOnlyFileWrite::Closed, LocalOnlyFileWrite::Cut] {
-        assert_eq!(describe_file_write(&local_only_file(), &root(), Some(file(1, 3)), UploadStatus::Ignored, write), None);
+        assert_eq!(describe_file_write(&local_only_file(), &root(), Some(file(1, 3)), UploadDecision::Ignore, write), None);
     }
 }
 
 #[test]
 fn a_write_of_a_onedrive_file_is_recorded_with_its_copy_as_it_is() {
-    let described = |write| describe_file_write(&onedrive_file(), &root(), Some(file(9, 1)), UploadStatus::Uploaded, write);
+    let described = |write| describe_file_write(&onedrive_file(), &root(), Some(file(9, 1)), UploadDecision::Upload, write);
     assert_eq!(described(LocalOnlyFileWrite::Opened), onedrive_write(OneDriveFileWrite::Opened(file(9, 1))));
     assert_eq!(described(LocalOnlyFileWrite::Closed), onedrive_write(OneDriveFileWrite::ClosedChanged(file(9, 1))));
     assert_eq!(described(LocalOnlyFileWrite::Cut), onedrive_write(OneDriveFileWrite::Cut(file(9, 1))));
@@ -99,7 +99,7 @@ fn a_write_of_a_onedrive_file_is_recorded_with_its_copy_as_it_is() {
 /// There is no content of the user's own to send.
 #[test]
 fn a_write_of_a_onedrive_file_the_backing_directory_holds_no_copy_of_records_nothing() {
-    assert_eq!(describe_file_write(&onedrive_file(), &root(), None, UploadStatus::Uploaded, LocalOnlyFileWrite::Closed), None);
+    assert_eq!(describe_file_write(&onedrive_file(), &root(), None, UploadDecision::Upload, LocalOnlyFileWrite::Closed), None);
 }
 
 #[test]

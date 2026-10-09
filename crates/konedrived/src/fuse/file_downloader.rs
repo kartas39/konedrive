@@ -216,7 +216,7 @@ impl FileDownloader {
             return Ok(LandingAttempt::FileMovedMeanwhile);
         }
         self.directory_contents.make_marked_directories(rel.parent().unwrap_or(Path::new("")))?;
-        self.backing_directory.land(file, rel, &row.id, crate::clock::to_system_time(row.mtime)).map(LandingAttempt::Landed)
+        self.backing_directory.land(file, rel, &row.id, crate::clock::to_system_time(row.mtime)).map(LandingAttempt::Attempted)
     }
 }
 

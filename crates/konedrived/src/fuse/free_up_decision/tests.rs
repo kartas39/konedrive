@@ -64,8 +64,8 @@ fn a_file_being_downloaded_is_left() {
 
 #[test]
 fn what_has_no_downloaded_copy_has_nothing_to_free() {
-    assert_eq!(decide_free_up(&remote_only(), false, false, false), FreeUpDecision::NotDownloaded);
-    assert_eq!(decide_free_up(&directory(), false, false, false), FreeUpDecision::NotDownloaded);
+    assert_eq!(decide_free_up(&remote_only(), false, false, false), FreeUpDecision::NothingToFree);
+    assert_eq!(decide_free_up(&directory(), false, false, false), FreeUpDecision::NothingToFree);
     let local_only = EntryState::File(FileSyncState::LocalOnly(local_only(&file(1, 3), &in_root("new.txt"))));
-    assert_eq!(decide_free_up(&local_only, false, false, false), FreeUpDecision::NotDownloaded);
+    assert_eq!(decide_free_up(&local_only, false, false, false), FreeUpDecision::NothingToFree);
 }

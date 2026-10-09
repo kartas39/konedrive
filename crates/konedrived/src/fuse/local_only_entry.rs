@@ -1,6 +1,6 @@
 //! A local-only entry: a file or directory that was made here and is not in OneDrive yet
 //! ([`LocalOnlyEntry`]), whether one at a place is uploaded from there
-//! ([`find_upload_status`], [`is_in_ignored_directory`]), and the local-only entries at and
+//! ([`decide_upload`], [`is_in_ignored_directory`]), and the local-only entries at and
 //! below a place, walked on disk ([`collect_local_only_entries`]).
 //!
 //! These are the one step between what [`BackingDirectory`] finds on disk and what
@@ -13,7 +13,7 @@ use std::path::Path;
 use super::backing_directory::{BackingDirectory, DiskEntry, EntryKind};
 use super::directory_reference::DirectoryReference;
 use super::entry_place::EntryPlace;
-use super::upload_rules::{UploadRules, UploadStatus};
+use super::upload_rules::{UploadRules, UploadDecision};
 
 /// A file or directory that was made here and is not in OneDrive yet: what the backing
 /// directory holds of it, and the place it is at.
@@ -26,8 +26,8 @@ pub(super) struct LocalOnlyEntry {
 /// Whether what is `name` in the directory at the path `directory` and is not in OneDrive
 /// is uploaded from there, or ignored: by its name, or by a directory it is in that is not
 /// OneDrive's.
-pub(super) fn find_upload_status(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &Path, name: &str) -> UploadStatus {
-    upload_rules.find_upload_status(directory, name, |at| backing_directory.is_marked_with_onedrive_id(at))
+pub(super) fn decide_upload(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &Path, name: &str) -> UploadDecision {
+    upload_rules.decide_upload(directory, name, |at| backing_directory.is_marked_with_onedrive_id(at))
 }
 
 /// Whether what is in the directory at the path `directory` and is not in OneDrive is
@@ -53,7 +53,7 @@ pub(super) fn collect_local_only_entries(backing_directory: &BackingDirectory, u
 fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules, directory: &DirectoryReference, name: &str, into: &mut Vec<LocalOnlyEntry>) {
     let rel = directory.path.join(name);
     let Some(on_disk) = backing_directory.find_unmarked_disk_entry(&rel) else { return };
-    if find_upload_status(backing_directory, upload_rules, &directory.path, name) == UploadStatus::Ignored {
+    if decide_upload(backing_directory, upload_rules, &directory.path, name) == UploadDecision::Ignore {
         return;
     }
     let is_directory = on_disk.metadata.kind == EntryKind::Directory;

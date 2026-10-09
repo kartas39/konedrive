@@ -4,7 +4,7 @@ use std::time::UNIX_EPOCH;
 use fuser::Errno;
 use konedrive_tree::Kind;
 
-use super::{plan_remove, RemovePlace, RemovePlan};
+use super::{plan_remove, RemovePlaceContents, RemovePlan};
 use crate::fuse::backing_directory::{DiskMetadata, EntryKind};
 use crate::fuse::detections::tests::{directory, file, handle, in_root, local_only};
 use crate::fuse::directory_contents::tests::row;
@@ -35,8 +35,8 @@ fn local_only_directory() -> DirectoryEntry {
     DirectoryEntry::from_local_only(local_only(&directory(2), &in_root("new")))
 }
 
-fn holding(entry: DirectoryEntry) -> RemovePlace {
-    RemovePlace { parent_directory: Some(root()), entry: Some(entry), holds_entries: false }
+fn holding(entry: DirectoryEntry) -> RemovePlaceContents {
+    RemovePlaceContents { parent_directory: Some(root()), entry: Some(entry), holds_entries: false }
 }
 
 #[test]
@@ -69,15 +69,15 @@ fn a_local_only_directory_is_removed_by_its_file_handle() {
 #[test]
 fn the_path_is_the_name_in_the_directory_the_node_stands_for() {
     let docs = DirectoryReference { onedrive_id: Some("D".into()), path: PathBuf::from("docs") };
-    let place = RemovePlace { parent_directory: Some(docs), entry: Some(local_only_file()), holds_entries: false };
+    let place = RemovePlaceContents { parent_directory: Some(docs), entry: Some(local_only_file()), holds_entries: false };
     assert_eq!(plan_remove(EntryKind::File, "new.txt", place), Ok(RemovePlan::LocalOnlyFile { handle: handle(1), path: "docs/new.txt".into() }));
 }
 
 #[test]
 fn a_node_that_stands_for_no_directory_and_a_name_the_directory_does_not_hold_are_no_entry() {
-    let no_directory = RemovePlace { parent_directory: None, entry: Some(local_only_file()), holds_entries: false };
+    let no_directory = RemovePlaceContents { parent_directory: None, entry: Some(local_only_file()), holds_entries: false };
     assert_eq!(plan_remove(EntryKind::File, "new.txt", no_directory), Err(Errno::ENOENT));
-    let no_entry = RemovePlace { parent_directory: Some(root()), entry: None, holds_entries: false };
+    let no_entry = RemovePlaceContents { parent_directory: Some(root()), entry: None, holds_entries: false };
     assert_eq!(plan_remove(EntryKind::File, "none.txt", no_entry), Err(Errno::ENOENT));
 }
 
@@ -96,7 +96,7 @@ fn a_file_is_not_removed_as_a_directory() {
 #[test]
 fn a_directory_that_holds_something_is_not_removed() {
     for entry in [onedrive_directory(), local_only_directory()] {
-        let place = RemovePlace { holds_entries: true, ..holding(entry) };
+        let place = RemovePlaceContents { holds_entries: true, ..holding(entry) };
         assert_eq!(plan_remove(EntryKind::Directory, "docs", place), Err(Errno::ENOTEMPTY));
     }
 }
@@ -104,6 +104,6 @@ fn a_directory_that_holds_something_is_not_removed() {
 /// The kind is told before the directory is looked into.
 #[test]
 fn a_directory_that_holds_something_and_is_removed_as_a_file_is_a_directory() {
-    let place = RemovePlace { holds_entries: true, ..holding(onedrive_directory()) };
+    let place = RemovePlaceContents { holds_entries: true, ..holding(onedrive_directory()) };
     assert_eq!(plan_remove(EntryKind::File, "docs", place), Err(Errno::EISDIR));
 }

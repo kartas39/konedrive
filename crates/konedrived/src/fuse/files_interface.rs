@@ -59,9 +59,10 @@ pub struct FreedSpace {
     pub kept: u64,
 }
 
-/// The downloaded copies at and below a path: how many, and their bytes on disk.
+/// The space the downloaded copies at and below a path take: how many files, and their
+/// bytes on disk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DownloadedCopies {
+pub struct DownloadedSpace {
     pub files: u64,
     pub bytes: u64,
 }
@@ -216,7 +217,7 @@ impl FilesInterface {
         let freed_bytes = match decide_free_up(&entry.state, is_pinned, is_downloading, is_open_for_writing) {
             FreeUpDecision::Free => self.backing_directory.remove_downloaded_copy(&path, onedrive_id),
             FreeUpDecision::LeavePinned | FreeUpDecision::LeaveModifiedHere | FreeUpDecision::LeaveOpenForWriting | FreeUpDecision::LeaveDownloading => None,
-            FreeUpDecision::NotDownloaded => return nothing,
+            FreeUpDecision::NothingToFree => return nothing,
         };
         match freed_bytes {
             Some(bytes) => {
@@ -265,11 +266,11 @@ impl FilesInterface {
         self.pins.count()
     }
 
-    /// The downloaded copies at and below `path`.
-    pub fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedCopies, FilesRefusal> {
+    /// The space the downloaded copies at and below `path` take.
+    pub fn count_downloaded_below(&self, path: &Path) -> Result<DownloadedSpace, FilesRefusal> {
         let (row, _) = self.find_onedrive_row(path)?;
         let copies = self.directory_contents.list_files_below(&row).into_iter().filter_map(|(file, _)| file.downloaded_copy().copied());
-        Ok(copies.fold(DownloadedCopies::default(), |counted, copy| DownloadedCopies { files: counted.files + 1, bytes: counted.bytes + copy.blocks * 512 }))
+        Ok(copies.fold(DownloadedSpace::default(), |counted, copy| DownloadedSpace { files: counted.files + 1, bytes: counted.bytes + copy.blocks * 512 }))
     }
 }
 

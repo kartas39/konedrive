@@ -4,11 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{collect_local_only_entries, find_upload_status, is_in_ignored_directory};
+use super::{collect_local_only_entries, decide_upload, is_in_ignored_directory};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_reference::DirectoryReference;
 use crate::fuse::upload_rules::tests::rules;
-use crate::fuse::upload_rules::UploadStatus;
+use crate::fuse::upload_rules::UploadDecision;
 
 fn backing_directory() -> (tempfile::TempDir, BackingDirectory) {
     let dir = tempfile::tempdir().unwrap();
@@ -84,11 +84,11 @@ fn a_walk_passes_over_what_is_neither_a_file_nor_a_directory() {
 fn what_is_in_a_directory_marked_with_a_onedrive_id_is_uploaded_whatever_the_directorys_name() {
     let (dir, backing_directory) = backing_directory();
     fs::create_dir(dir.path().join("cache")).unwrap();
-    assert_eq!(find_upload_status(&backing_directory, &rules(), Path::new("cache"), "a.txt"), UploadStatus::Ignored);
+    assert_eq!(decide_upload(&backing_directory, &rules(), Path::new("cache"), "a.txt"), UploadDecision::Ignore);
     assert!(is_in_ignored_directory(&backing_directory, &rules(), Path::new("cache")));
     backing_directory.mark_with_onedrive_id(Path::new("cache"), "C").unwrap();
-    assert_eq!(find_upload_status(&backing_directory, &rules(), Path::new("cache"), "a.txt"), UploadStatus::Uploaded);
+    assert_eq!(decide_upload(&backing_directory, &rules(), Path::new("cache"), "a.txt"), UploadDecision::Upload);
     assert!(!is_in_ignored_directory(&backing_directory, &rules(), Path::new("cache")));
     // Its own name is on the list all the same.
-    assert_eq!(find_upload_status(&backing_directory, &rules(), Path::new("cache"), "a.tmp"), UploadStatus::Ignored);
+    assert_eq!(decide_upload(&backing_directory, &rules(), Path::new("cache"), "a.tmp"), UploadDecision::Ignore);
 }

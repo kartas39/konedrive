@@ -12,7 +12,7 @@ use crate::fuse::directory_reference::DirectoryReference;
 
 /// What stands at the place an entry is to be removed from, looked up before the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RemovePlace {
+pub(super) struct RemovePlaceContents {
     /// The directory the node the program named stands for; `None` when it stands for none.
     pub(super) parent_directory: Option<DirectoryReference>,
     /// The entry that directory holds under the name; `None` when it holds none.
@@ -38,7 +38,7 @@ pub(super) enum RemovePlan {
 /// of the folder, or the errno it is refused with, in this order: no such directory, or no
 /// such entry (`ENOENT`); a directory where a file was asked for (`EISDIR`), a file where a
 /// directory was (`ENOTDIR`); a directory that holds something (`ENOTEMPTY`).
-pub(super) fn plan_remove(kind: EntryKind, name: &str, place: RemovePlace) -> Result<RemovePlan, Errno> {
+pub(super) fn plan_remove(kind: EntryKind, name: &str, place: RemovePlaceContents) -> Result<RemovePlan, Errno> {
     let parent_directory = place.parent_directory.ok_or(Errno::ENOENT)?;
     let entry = place.entry.ok_or(Errno::ENOENT)?;
     let path = parent_directory.path.join(name);

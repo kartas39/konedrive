@@ -20,7 +20,7 @@ pub enum FreeUpDecision {
     LeaveDownloading,
     /// Nothing of it is downloaded, and nothing is to free: a file that is not downloaded,
     /// and a directory, which has no copy of its own.
-    NotDownloaded,
+    NothingToFree,
 }
 
 /// What a free-up does with what is in `state`, for whether a pin keeps it (`is_pinned`),
@@ -38,7 +38,7 @@ pub(super) fn decide_free_up(state: &EntryState, is_pinned: bool, is_downloading
         _ if is_open_for_writing => FreeUpDecision::LeaveOpenForWriting,
         _ if is_downloading => FreeUpDecision::LeaveDownloading,
         EntryState::File(FileSyncState::Synced(..)) => FreeUpDecision::Free,
-        EntryState::File(FileSyncState::RemoteOnly(_) | FileSyncState::LocalOnly(_)) | EntryState::Directory(_) => FreeUpDecision::NotDownloaded,
+        EntryState::File(FileSyncState::RemoteOnly(_) | FileSyncState::LocalOnly(_)) | EntryState::Directory(_) => FreeUpDecision::NothingToFree,
     }
 }
 
