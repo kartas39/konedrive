@@ -62,6 +62,7 @@ pub(super) enum DownloadState {
 }
 
 /// The file a running download writes into, and how far it is written in order.
+#[derive(Debug, Clone)]
 pub(super) struct RunningDownloadFile {
     pub(super) file: Arc<File>,
     pub(super) written_up_to: u64,

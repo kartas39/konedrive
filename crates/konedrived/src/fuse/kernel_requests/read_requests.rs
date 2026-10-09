@@ -5,12 +5,14 @@
 //! [`OpenHandles`], which keep what was opened; the [`DownloadStates`], the
 //! [`RangeFetcher`] and the [`FileDownloader`], for a file that is not downloaded; the
 //! [`InterruptibleReads`], which give up a read that waits for OneDrive; and the runtime
-//! such a read waits on. Where the bytes of a read come from is decided in
-//! [`read_origin`](super::read_origin).
+//! such a read waits on. Where the bytes of a read come from is found as a value
+//! ([`ReadRequests::find_read_origin`], a [`ReadOrigin`] that carries what is read from),
+//! and the read is then answered from it; what is decided of a file that is not downloaded
+//! is decided in [`read_origin`](super::read_origin).
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use fuser::{Errno, FileHandle, FopenFlags, OpenFlags, ReplyData, ReplyOpen, Request};
@@ -19,7 +21,7 @@ use konedrive_tree::Row;
 
 use super::describe_caller;
 use super::interruptible_reads::{InterruptibleReads, RequestId};
-use super::read_origin::{choose_read_origin, ReadFacts, ReadOrigin};
+use super::read_origin::{choose_read_origin, ReadOrigin};
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::directory_contents::{DirectoryContents, DirectorySyncState, EntryState, FileSyncState};
 use crate::fuse::download_states::DownloadStates;
@@ -42,16 +44,6 @@ fn answer_from_file(file: &File, offset: u64, size: u32, reply: ReplyData) {
         }
     }
     reply.data(&buf[..got])
-}
-
-/// What is known, when it is read, of a file that was opened while it was not downloaded:
-/// the facts the origin of the read is decided from, and what the read is then answered
-/// with — the store's row of the file, and the file a running download writes into.
-#[derive(Default)]
-struct RemoteOnlyRead {
-    facts: ReadFacts,
-    row: Option<Row>,
-    download_file: Option<Arc<File>>,
 }
 
 #[derive(Clone)]
@@ -106,52 +98,40 @@ impl ReadRequests {
         reply.opened(FileHandle::from(self.open_handles.add_file(file)), FopenFlags::FOPEN_KEEP_CACHE);
     }
 
-    /// The bytes asked for, from wherever they are ([`choose_read_origin`]): the file in the
-    /// backing directory; what a download under way has written; or OneDrive, as a range.
+    /// The bytes asked for, from wherever they are ([`find_read_origin`](Self::find_read_origin)).
     pub(super) fn answer_read(&self, req: &Request, fh: Fh, offset: u64, size: u32, reply: ReplyData) {
-        let Some(open_file) = self.open_handles.find_file(fh) else { return reply.error(Errno::EBADF) };
-        let remote_only_read = match &open_file {
-            OpenFile::ReadingRemoteOnly { onedrive_id, path } => match self.find_remote_only_read(onedrive_id, path) {
-                Ok(remote_only_read) => remote_only_read,
-                Err(e) => return reply.error(e),
-            },
-            OpenFile::ReadingBackingFile { .. } | OpenFile::Writing { .. } => RemoteOnlyRead::default(),
-        };
-        match (choose_read_origin(&open_file, &remote_only_read.facts, offset, size), open_file, remote_only_read) {
-            (ReadOrigin::BackingFile, OpenFile::ReadingBackingFile { backing_file } | OpenFile::Writing { backing_file, .. }, _) => answer_from_file(&backing_file, offset, size, reply),
-            (ReadOrigin::BackingFile, OpenFile::ReadingRemoteOnly { path, .. }, _) => self.answer_from_downloaded_copy(fh, &path, offset, size, reply),
-            (ReadOrigin::RunningDownload, _, RemoteOnlyRead { download_file: Some(download_file), .. }) => answer_from_file(&download_file, offset, size, reply),
-            (ReadOrigin::OneDriveRange { from, end }, OpenFile::ReadingRemoteOnly { path, .. }, RemoteOnlyRead { row: Some(row), .. }) => self.answer_from_onedrive(req, row, path, from, end, reply),
-            (ReadOrigin::Nothing, ..) => reply.data(&[]),
-            // An origin the facts it was decided from do not have: none is given.
-            (ReadOrigin::RunningDownload | ReadOrigin::OneDriveRange { .. }, ..) => reply.error(Errno::EIO),
+        match self.find_read_origin(fh, offset, size) {
+            Ok(ReadOrigin::BackingFile(file) | ReadOrigin::RunningDownload(file)) => answer_from_file(&file, offset, size, reply),
+            Ok(ReadOrigin::OneDriveRange { row, path, from, end }) => self.answer_from_onedrive(req, row, path, from, end, reply),
+            Ok(ReadOrigin::Nothing) => reply.data(&[]),
+            Err(e) => reply.error(e),
         }
     }
 
-    /// What is known now of the OneDrive file `id`, which was opened at `path` while it was
-    /// not downloaded. The handle has the path the file was opened at, which is not an entry
-    /// looked up now: the directory contents are asked about that path. `ENOENT` for a file
-    /// that is not downloaded and is gone from the store.
-    fn find_remote_only_read(&self, id: &str, path: &Path) -> Result<RemoteOnlyRead, Errno> {
-        if self.directory_contents.has_downloaded_copy_at(path, id) {
-            return Ok(RemoteOnlyRead { facts: ReadFacts { downloaded_since_open: true, ..ReadFacts::default() }, row: None, download_file: None });
-        }
-        let row = self.directory_contents.find_row(id).ok_or(Errno::ENOENT)?;
-        let running = self.download_states.find_running_download(id);
-        let facts = ReadFacts { downloaded_since_open: false, file_size: row.size, download_written_up_to: running.as_ref().map(|running| running.written_up_to) };
-        Ok(RemoteOnlyRead { facts, row: Some(row), download_file: running.map(|running| running.file) })
-    }
-
-    /// Downloaded since it was opened: the handle `fh` reads the downloaded copy at `path`
-    /// from now on.
-    fn answer_from_downloaded_copy(&self, fh: Fh, path: &Path, offset: u64, size: u32, reply: ReplyData) {
-        match self.backing_directory.open_to_read(path) {
-            Ok(file) => {
-                let file = Arc::new(file);
-                self.open_handles.switch_to_backing_file(fh, Arc::clone(&file));
-                answer_from_file(&file, offset, size, reply)
+    /// Where the `size` bytes at `offset` of the file held open by `fh` come from, or the
+    /// errno the read is refused with: `EBADF` for an `fh` that holds no file open, the
+    /// disk's when a downloaded copy cannot be opened, and `ENOENT` for a file that is not
+    /// downloaded and is gone from the store.
+    ///
+    /// - A file opened from the backing directory is read there.
+    /// - A file opened while it was not downloaded, and downloaded since: its copy is
+    ///   opened, and the handle reads it from now on. The handle has the path the file was
+    ///   opened at, which is not an entry looked up now: the directory contents are asked
+    ///   about that path.
+    /// - A file that is still not downloaded: decided from the store's row of it and from a
+    ///   download of it that runs now ([`choose_read_origin`]).
+    pub(super) fn find_read_origin(&self, fh: Fh, offset: u64, size: u32) -> Result<ReadOrigin, Errno> {
+        match self.open_handles.find_file(fh).ok_or(Errno::EBADF)? {
+            OpenFile::ReadingBackingFile { backing_file } | OpenFile::Writing { backing_file, .. } => Ok(ReadOrigin::BackingFile(backing_file)),
+            OpenFile::ReadingRemoteOnly { onedrive_id, path } if self.directory_contents.has_downloaded_copy_at(&path, &onedrive_id) => {
+                let backing_file = Arc::new(self.backing_directory.open_to_read(&path).map_err(|e| to_errno(&e))?);
+                self.open_handles.switch_to_backing_file(fh, Arc::clone(&backing_file));
+                Ok(ReadOrigin::BackingFile(backing_file))
             }
-            Err(e) => reply.error(to_errno(&e)),
+            OpenFile::ReadingRemoteOnly { onedrive_id, path } => {
+                let row = self.directory_contents.find_row(&onedrive_id).ok_or(Errno::ENOENT)?;
+                Ok(choose_read_origin(row, path, self.download_states.find_running_download(&onedrive_id), offset, size))
+            }
         }
     }
 
@@ -187,3 +167,6 @@ impl ReadRequests {
         self.interruptible_reads.interrupt(request_id);
     }
 }
+
+#[cfg(test)]
+mod tests;

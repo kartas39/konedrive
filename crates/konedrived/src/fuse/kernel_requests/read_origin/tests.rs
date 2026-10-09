@@ -1,67 +1,67 @@
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::{choose_read_origin, ReadFacts, ReadOrigin, WRITTEN_BEHIND};
-use crate::fuse::node_table::NodeId;
-use crate::fuse::open_handles::OpenFile;
+use konedrive_tree::{Kind, Row};
 
-fn backing_file() -> Arc<File> {
-    Arc::new(tempfile::tempfile().unwrap())
+use super::{choose_read_origin, ReadOrigin, WRITTEN_BEHIND};
+use crate::fuse::directory_contents::tests::row;
+use crate::fuse::download_states::RunningDownloadFile;
+
+/// The OneDrive file `A` of 100 bytes.
+fn file_of_100_bytes() -> Row {
+    Row { size: 100, ..row("A", Some("R"), "a.txt", Kind::File) }
 }
 
-fn remote_only() -> OpenFile {
-    OpenFile::ReadingRemoteOnly { onedrive_id: "A".into(), path: "a.txt".into() }
+/// Where `size` bytes at `offset` of the file come from, which was opened at `a.txt`.
+fn origin(running_download: Option<RunningDownloadFile>, offset: u64, size: u32) -> ReadOrigin {
+    choose_read_origin(file_of_100_bytes(), PathBuf::from("a.txt"), running_download, offset, size)
 }
 
-/// A file of 100 bytes that is not downloaded, and of which no download runs.
-fn not_downloaded() -> ReadFacts {
-    ReadFacts { downloaded_since_open: false, file_size: 100, download_written_up_to: None }
+/// A download that has written `written_up_to` bytes in order, into `file`.
+fn running(file: &Arc<File>, written_up_to: u64) -> Option<RunningDownloadFile> {
+    Some(RunningDownloadFile { file: Arc::clone(file), written_up_to })
 }
 
-#[test]
-fn a_file_opened_from_the_backing_directory_is_read_there() {
-    let reading = OpenFile::ReadingBackingFile { backing_file: backing_file() };
-    assert_eq!(choose_read_origin(&reading, &ReadFacts::default(), 0, 10), ReadOrigin::BackingFile);
-    let writing = OpenFile::Writing { node_id: NodeId(2), onedrive_id: None, backing_file: backing_file() };
-    assert_eq!(choose_read_origin(&writing, &ReadFacts::default(), 50, 10), ReadOrigin::BackingFile);
-}
-
-#[test]
-fn a_file_downloaded_since_it_was_opened_is_read_from_its_copy() {
-    let facts = ReadFacts { downloaded_since_open: true, ..not_downloaded() };
-    assert_eq!(choose_read_origin(&remote_only(), &facts, 0, 10), ReadOrigin::BackingFile);
-    // Whatever is asked for: the copy answers a read past its end itself.
-    assert_eq!(choose_read_origin(&remote_only(), &facts, 500, 10), ReadOrigin::BackingFile);
+fn is_range(origin: &ReadOrigin, from: u64, end: u64) -> bool {
+    matches!(origin, ReadOrigin::OneDriveRange { row, path, from: f, end: e } if row.id == "A" && path == &PathBuf::from("a.txt") && (*f, *e) == (from, end))
 }
 
 #[test]
-fn a_file_that_is_not_downloaded_is_read_from_onedrive_as_a_range() {
-    assert_eq!(choose_read_origin(&remote_only(), &not_downloaded(), 20, 10), ReadOrigin::OneDriveRange { from: 20, end: 30 });
+fn a_file_that_is_not_downloaded_is_read_from_onedrive_as_a_range_of_it() {
+    let origin = origin(None, 20, 10);
+    assert!(is_range(&origin, 20, 30), "{origin:?}");
 }
 
 #[test]
 fn a_range_is_cut_at_the_end_of_the_file() {
-    assert_eq!(choose_read_origin(&remote_only(), &not_downloaded(), 95, 10), ReadOrigin::OneDriveRange { from: 95, end: 100 });
+    let origin = origin(None, 95, 10);
+    assert!(is_range(&origin, 95, 100), "{origin:?}");
 }
 
 #[test]
 fn a_read_at_or_past_the_end_of_the_file_comes_from_nowhere() {
-    assert_eq!(choose_read_origin(&remote_only(), &not_downloaded(), 100, 10), ReadOrigin::Nothing);
-    assert_eq!(choose_read_origin(&remote_only(), &not_downloaded(), 500, 10), ReadOrigin::Nothing);
-    assert_eq!(choose_read_origin(&remote_only(), &not_downloaded(), 10, 0), ReadOrigin::Nothing);
+    assert!(matches!(origin(None, 100, 10), ReadOrigin::Nothing));
+    assert!(matches!(origin(None, 500, 10), ReadOrigin::Nothing));
+    assert!(matches!(origin(None, 10, 0), ReadOrigin::Nothing));
+    // Also while a download of it runs.
+    let file = Arc::new(tempfile::tempfile().unwrap());
+    assert!(matches!(origin(running(&file, WRITTEN_BEHIND + 500), 100, 10), ReadOrigin::Nothing));
 }
 
 #[test]
 fn a_read_well_below_what_a_running_download_has_written_comes_from_its_file() {
-    let facts = ReadFacts { download_written_up_to: Some(WRITTEN_BEHIND + 30), ..not_downloaded() };
-    assert_eq!(choose_read_origin(&remote_only(), &facts, 20, 10), ReadOrigin::RunningDownload);
+    let file = Arc::new(tempfile::tempfile().unwrap());
+    let origin = origin(running(&file, WRITTEN_BEHIND + 30), 20, 10);
+    assert!(matches!(&origin, ReadOrigin::RunningDownload(read_from) if Arc::ptr_eq(read_from, &file)), "{origin:?}");
 }
 
 /// The download may still be writing the piece the read ends in.
 #[test]
 fn a_read_that_ends_too_near_what_a_running_download_has_written_comes_from_onedrive() {
-    let facts = ReadFacts { download_written_up_to: Some(WRITTEN_BEHIND + 29), ..not_downloaded() };
-    assert_eq!(choose_read_origin(&remote_only(), &facts, 20, 10), ReadOrigin::OneDriveRange { from: 20, end: 30 });
-    let nothing_written = ReadFacts { download_written_up_to: Some(0), ..not_downloaded() };
-    assert_eq!(choose_read_origin(&remote_only(), &nothing_written, 20, 10), ReadOrigin::OneDriveRange { from: 20, end: 30 });
+    let file = Arc::new(tempfile::tempfile().unwrap());
+    let too_near = origin(running(&file, WRITTEN_BEHIND + 29), 20, 10);
+    assert!(is_range(&too_near, 20, 30), "{too_near:?}");
+    let nothing_written = origin(running(&file, 0), 20, 10);
+    assert!(is_range(&nothing_written, 20, 30), "{nothing_written:?}");
 }
