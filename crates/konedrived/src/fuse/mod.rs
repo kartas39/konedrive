@@ -36,7 +36,7 @@
 //!   mount holds, each entry with its sync state, and the one rule of what the mount shows
 //!   as local-only) is over those two; [`node_table`] holds the node ids given to the
 //!   kernel, which are the kernel's inode numbers, and [`node_resolver`] is over the
-//!   directory contents and the backing directory, and owns the table; [`to_attributes`] is a
+//!   directory contents and the backing directory, and owns the table; [`attributes`] is a
 //!   function of an entry and the access mode, with the modes the backing directory's
 //!   table of write bits gives; the values these pass around are a [`directory_reference`],
 //!   an [`entry_place`] and a [`local_only_entry`].

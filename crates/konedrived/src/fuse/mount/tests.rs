@@ -234,7 +234,9 @@ fn the_switches_of_a_mount_set_and_clear_what_wakes_the_outbox() {
     built.mount.outbox_recorder.wake_outbox();
     assert_eq!(count(), 0, "nothing wakes a worker before the folder uploads");
     let waker = Arc::clone(&woken);
-    assert!(built.mount.switch_to_read_write(Arc::new(move || drop(waker.fetch_add(1, std::sync::atomic::Ordering::SeqCst)))));
+    assert!(built.mount.switch_to_read_write(Arc::new(move || {
+        waker.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })));
     built.mount.outbox_recorder.wake_outbox();
     assert_eq!(count(), 1);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
