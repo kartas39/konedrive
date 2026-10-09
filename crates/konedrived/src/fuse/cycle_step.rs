@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use konedrive_tree::{Kind, Placement, Row, Table, TreeError, TreeStore};
 
-use super::access_mode_switch::AccessModeSwitch;
+use super::access_mode_switch::{AccessMode, AccessModeSwitch};
 use super::backing_directory::BackingDirectory;
 use super::conflict_copies::{ConflictCopies, CycleConflicts, MoveAsideOutcome};
 use super::detections::{rebase, OutboxBatch};
@@ -64,7 +64,8 @@ struct StepProgress {
 pub(super) struct CycleStep {
     backing_directory: Arc<BackingDirectory>,
     directory_contents: Arc<DirectoryContents>,
-    /// Whether a directory that is kept is made again in OneDrive.
+    /// Whether what is kept of the user's own is recorded, to be sent: in a read-write
+    /// folder alone.
     access_mode_switch: Arc<AccessModeSwitch>,
     /// What drops the ranges the source remembered of a file that changed.
     range_fetcher: Arc<RangeFetcher>,
@@ -102,8 +103,9 @@ impl CycleStep {
     ///
     /// A read-write folder's cycle brings what the outbox holds (`rw`): a file or directory a
     /// change of the user's waits on is left as it is. What the user made where something of
-    /// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`]), and
-    /// in a folder that is read-write a directory that is kept is made again in OneDrive.
+    /// OneDrive comes, or in a directory that goes, is kept ([`super::conflict_copies`])
+    /// whatever the access mode; it is recorded, to be sent, in a folder that is read-write
+    /// alone — a read-only folder's cycle leaves no row in the outbox.
     pub(super) fn apply_staged_cycle(&self, store: &mut TreeStore, rw: Option<&Rw>) -> Result<CycleOutcome, TreeError> {
         let changed_ids = list_changed_ids(store, rw)?;
         // Whatever the source of the content remembered of a file is of what it was.
@@ -115,7 +117,7 @@ impl CycleStep {
         let mut progress = StepProgress::default();
         for change in &changes {
             let facts = self.read_backing_directory_facts(change);
-            self.perform(store, list_cycle_actions(change, &facts), recorded_at, &mut progress);
+            self.perform(store, list_cycle_actions(change, &facts), access_mode, recorded_at, &mut progress);
         }
         let StepProgress { mut conflicts, removed_directories, announcements } = progress;
         for directory in order_deepest_first(removed_directories) {
@@ -175,11 +177,11 @@ impl CycleStep {
     /// Performs `actions`, the actions of one change, in their order; what is left for the
     /// end of the step and for the commit goes into `progress`. `store` is the cycle's own,
     /// with the new tree staged.
-    fn perform(&self, store: &TreeStore, actions: Vec<CycleAction>, recorded_at: i64, progress: &mut StepProgress) {
+    fn perform(&self, store: &TreeStore, actions: Vec<CycleAction>, access_mode: AccessMode, recorded_at: i64, progress: &mut StepProgress) {
         let mut moved_aside = MoveAsideOutcome::NothingInTheWay;
         for action in actions {
             match action {
-                CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), recorded_at, &mut progress.conflicts),
+                CycleAction::MoveLocalOnlyEntryAside { path, parent_id } => moved_aside = self.conflict_copies.move_aside(&path, parent_id.as_deref(), access_mode, recorded_at, &mut progress.conflicts),
                 CycleAction::RebaseOutboxRows { from, to } => progress.conflicts.ops.push(rebase(&from, &to)),
                 CycleAction::RemoveDownloadedCopy { path, id } => drop(self.backing_directory.remove_downloaded_copy(&path, &id)),
                 // The user's own is still at the new path: nothing is moved onto it.

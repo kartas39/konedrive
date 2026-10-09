@@ -9,7 +9,10 @@
 //!
 //! [`ConflictCopies`] owns the machine's name, which a conflict copy is named with. What a
 //! cycle's conflicts left is collected in a [`CycleConflicts`], which the cycle step records
-//! through the outbox recorder; it records nothing itself.
+//! through the outbox recorder; it records nothing itself. In a read-only folder the disk
+//! is changed all the same and nothing is left to record: such a folder's outbox holds no
+//! row, and what was kept is found by the scan for unrecorded entries once the folder takes
+//! changes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,7 +32,7 @@ use crate::local::names::copy_name;
 /// What the conflicts of one cycle left for the outbox, and what they did in the folder.
 #[derive(Default)]
 pub struct CycleConflicts {
-    /// What the cycle recorded in the outbox for them.
+    /// What the cycle recorded in the outbox for them: nothing in a read-only folder.
     pub detections: Vec<Detection>,
     pub ops: Vec<OutboxOp>,
     /// The user's own, moved aside.
@@ -78,8 +81,12 @@ impl ConflictCopies {
 
     /// Something of OneDrive comes to `rel`, in the directory with the OneDrive id
     /// `parent_id`: the local-only entry that is there is renamed to a conflict copy's name
-    /// beside it. `now` is the time the rows are dated by. What became of the entry.
-    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
+    /// beside it, whatever the folder's access mode — nothing of the user's own is ever
+    /// hidden or overwritten. In a folder that is read-write by `access_mode` it is recorded
+    /// to be uploaded from there, dated `now`; in a read-only one nothing is recorded, and
+    /// the scan for unrecorded entries finds it when the folder is switched to read-write.
+    /// What became of the entry.
+    pub(super) fn move_aside(&self, rel: &Path, parent_id: Option<&str>, access_mode: AccessMode, now: i64, conflicts: &mut CycleConflicts) -> MoveAsideOutcome {
         let Some(on_disk) = self.backing_directory.find_unmarked_disk_entry(rel) else { return MoveAsideOutcome::NothingInTheWay };
         let (Some(name), Some(parent)) = (rel.file_name().and_then(|n| n.to_str()), rel.parent()) else { return MoveAsideOutcome::StillInTheWay };
         let directory = DirectoryReference { onedrive_id: parent_id.map(str::to_owned), path: parent.to_path_buf() };
@@ -93,10 +100,12 @@ impl ConflictCopies {
                 tracing::warn!("{} could not be kept beside what comes to its name from OneDrive: {e}", rel.display());
                 return MoveAsideOutcome::StillInTheWay;
             }
-            let upload_status = self.upload_rules.find_upload_status(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
-            let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_status }.detect(now);
-            conflicts.ops.extend(kept.ops);
-            conflicts.detections.extend(kept.detections);
+            if access_mode == AccessMode::ReadWrite {
+                let upload_status = self.upload_rules.find_upload_status(&directory.path, &copy, |at| self.backing_directory.read_onedrive_id(at).is_some());
+                let kept = EntryKeptAside { on_disk, from: rel.to_path_buf(), to: EntryPlace::new(&directory, &copy), upload_status }.detect(now);
+                conflicts.ops.extend(kept.ops);
+                conflicts.detections.extend(kept.detections);
+            }
             conflicts.moved_aside.push(ConflictCopy { original: rel.to_path_buf(), copy: to });
             return MoveAsideOutcome::MovedAside;
         }

@@ -97,6 +97,12 @@ impl BuiltMount {
         xattr::set(self.disk.join(rel), XATTR_ITEM_ID, id.as_bytes()).unwrap();
     }
 
+    /// Runs `job` on the mount's write-operation thread, and waits for it: every job the
+    /// thread was given before has run then.
+    pub(in crate::fuse) fn run_on_write_operation_thread(&self, job: impl FnOnce() + Send + 'static) {
+        self.mount.write_operation_thread.run_and_wait(job).blocking_recv().unwrap();
+    }
+
     /// The folder's path, which a mount would lie over: what the `Files` interface is asked
     /// about is a path below it.
     pub(in crate::fuse) fn path(&self, rel: &str) -> PathBuf {

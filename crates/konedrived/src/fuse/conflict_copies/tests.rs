@@ -31,14 +31,42 @@ fn a_conflict_copys_name_carries_the_machines() {
 }
 
 #[test]
-fn a_local_only_file_in_the_way_is_moved_aside_and_uploaded_from_there() {
+fn a_local_only_file_in_the_way_in_a_read_write_folder_is_moved_aside_and_uploaded_from_there() {
     let (dir, conflict_copies) = conflict_copies();
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert!(!dir.path().join("new.txt").exists() && dir.path().join("new-fedora.txt").is_file());
     assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora.txt") }]);
     assert_eq!(conflicts.detections.iter().map(|d| (d.kind, d.rel.clone())).collect::<Vec<_>>(), [(OutboxKind::Create, PathBuf::from("new-fedora.txt"))]);
+}
+
+/// The user's own is never hidden or overwritten, so it is moved aside all the same; but a
+/// read-only folder's outbox takes no row.
+#[test]
+fn a_local_only_file_in_the_way_in_a_read_only_folder_is_moved_aside_and_not_recorded() {
+    let (dir, conflict_copies) = conflict_copies();
+    fs::write(dir.path().join("new.txt"), b"mine").unwrap();
+    let mut conflicts = CycleConflicts::default();
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadOnly, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert!(!dir.path().join("new.txt").exists());
+    assert_eq!(fs::read(dir.path().join("new-fedora.txt")).unwrap(), b"mine");
+    assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora.txt") }]);
+    assert!(conflicts.detections.is_empty() && conflicts.ops.is_empty());
+}
+
+/// Every conflict copy's name of it is taken: it stays where it is, and that is said.
+#[test]
+fn a_local_only_file_that_no_name_is_free_for_is_still_in_the_way() {
+    let (dir, conflict_copies) = conflict_copies();
+    fs::write(dir.path().join("new.txt"), b"mine").unwrap();
+    for n in 1..=100 {
+        fs::write(dir.path().join(conflict_copies.copy_name("new.txt", n)), b"an earlier copy").unwrap();
+    }
+    let mut conflicts = CycleConflicts::default();
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::StillInTheWay);
+    assert_eq!(fs::read(dir.path().join("new.txt")).unwrap(), b"mine");
+    assert!(conflicts.moved_aside.is_empty() && conflicts.detections.is_empty());
 }
 
 /// What is marked with a OneDrive id is OneDrive's own, and stays where it is.
@@ -48,7 +76,7 @@ fn what_is_marked_with_a_onedrive_id_is_not_moved_aside() {
     fs::write(dir.path().join("a.txt"), b"copy").unwrap();
     conflict_copies.backing_directory.mark_downloaded_copy(Path::new("a.txt"), "A").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("a.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
+    assert_eq!(conflict_copies.move_aside(Path::new("a.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::NothingInTheWay);
     assert!(dir.path().join("a.txt").is_file() && conflicts.moved_aside.is_empty() && conflicts.detections.is_empty());
 }
 
@@ -81,7 +109,7 @@ fn a_conflict_copy_gets_the_first_name_that_is_free() {
     fs::write(dir.path().join("new.txt"), b"mine").unwrap();
     fs::write(dir.path().join("new-fedora.txt"), b"an earlier copy").unwrap();
     let mut conflicts = CycleConflicts::default();
-    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
+    assert_eq!(conflict_copies.move_aside(Path::new("new.txt"), Some("R"), AccessMode::ReadWrite, 1_000, &mut conflicts), MoveAsideOutcome::MovedAside);
     assert_eq!(conflicts.moved_aside, [ConflictCopy { original: PathBuf::from("new.txt"), copy: PathBuf::from("new-fedora-2.txt") }]);
     assert_eq!(fs::read(dir.path().join("new-fedora.txt")).unwrap(), b"an earlier copy");
 }

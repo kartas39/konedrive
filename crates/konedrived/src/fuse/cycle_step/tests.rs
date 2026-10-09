@@ -103,15 +103,34 @@ fn the_directories_gone_from_onedrive_are_removed_deepest_first() {
     assert!(outcome.conflicts.kept_directories.is_empty());
 }
 
-/// What the user made where a file of OneDrive comes is moved aside, and that is recorded in
-/// the outbox inside the cycle's own call of the store.
+/// What the user made where a file of OneDrive comes is moved aside, and in a read-write
+/// folder that is recorded in the outbox inside the cycle's own call of the store.
 #[test]
-fn what_a_cycle_keeps_of_the_users_own_is_recorded() {
+fn what_a_cycle_keeps_of_the_users_own_in_a_read_write_folder_is_recorded() {
+    let built = build_mount();
+    assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
+    std::fs::write(built.disk.join("new.txt"), b"mine").unwrap();
+    let outcome = apply(&built, vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File))], None);
+    assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "new.txt".into(), copy: "new-fedora.txt".into() }]);
+    assert_eq!(std::fs::read(built.disk.join("new-fedora.txt")).unwrap(), b"mine");
+    assert_eq!(rows_said(&built), [(OutboxKind::Create, PathBuf::from("new-fedora.txt"))]);
+}
+
+/// A read-only folder with a row in its outbox would run no further cycle: its cycle moves
+/// the user's own aside all the same, and leaves no row. The scan for unrecorded entries
+/// records the conflict copy once the folder is switched to read-write.
+#[test]
+fn what_a_cycle_keeps_of_the_users_own_in_a_read_only_folder_is_recorded_only_once_it_is_read_write() {
     let built = build_mount();
     std::fs::write(built.disk.join("new.txt"), b"mine").unwrap();
     let outcome = apply(&built, vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File))], None);
     assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "new.txt".into(), copy: "new-fedora.txt".into() }]);
     assert_eq!(std::fs::read(built.disk.join("new-fedora.txt")).unwrap(), b"mine");
+    assert!(outcome.conflicts.detections.is_empty() && outcome.conflicts.ops.is_empty());
+    assert!(rows_said(&built).is_empty());
+    assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
+    // The scan runs on the write-operation thread: the next job there is after it.
+    built.run_on_write_operation_thread(|| {});
     assert_eq!(rows_said(&built), [(OutboxKind::Create, PathBuf::from("new-fedora.txt"))]);
 }
 
