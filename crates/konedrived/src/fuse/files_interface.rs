@@ -225,3 +225,6 @@ impl FilesInterface {
         Ok(copies.fold(DownloadedCopies::default(), |counted, copy| DownloadedCopies { files: counted.files + 1, bytes: counted.bytes + copy.blocks * 512 }))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -68,28 +68,58 @@ impl LookupRequests {
         self.directory_contents.find_entry(&directory, name)
     }
 
-    /// Answers with the entry `name` of `parent`, as the folder has it now.
-    pub(super) fn answer_with_entry(&self, parent: NodeId, name: &OsStr, reply: ReplyEntry) {
-        match self.find_entry(parent, name) {
-            Some(entry) => {
-                let node_id = self.node_resolver.assign_node_id(&entry, parent);
-                reply.entry(&TTL, &self.attributes_of(&entry, node_id), Generation(0))
-            }
-            None => reply.error(Errno::ENOENT),
+    /// The attributes of the entry `name` of `parent`, as the folder has it now, which is
+    /// given its node id; `ENOENT` when the directory holds no such name.
+    pub(super) fn find_entry_attributes(&self, parent: NodeId, name: &OsStr) -> Result<FileAttr, Errno> {
+        let entry = self.find_entry(parent, name).ok_or(Errno::ENOENT)?;
+        let node_id = self.node_resolver.assign_node_id(&entry, parent);
+        Ok(self.attributes_of(&entry, node_id))
+    }
+
+    /// What a lookup of `name` in `parent` is answered: the attributes, and for how long
+    /// the kernel may keep them. The inotify bridge's thread (`is_from_inotify_bridge`) is
+    /// answered what the name it announces was before the change — absent (`ENOENT`), or
+    /// still there with its node and kind, not to be kept; everyone else, and the bridge
+    /// for every other name, what the folder has now.
+    pub(super) fn find_lookup_answer(&self, is_from_inotify_bridge: bool, parent: NodeId, name: &OsStr) -> Result<(FileAttr, Duration), Errno> {
+        let before_change = if is_from_inotify_bridge { self.inotify_bridge.find_name_before_change(parent, name) } else { None };
+        match before_change {
+            Some(NameBeforeChange::Absent) => Err(Errno::ENOENT),
+            Some(NameBeforeChange::Present { node_id, kind }) => Ok((self.attributes_of(&make_vanished_entry(&name.to_string_lossy(), kind), node_id), Duration::ZERO)),
+            None => Ok((self.find_entry_attributes(parent, name)?, TTL)),
         }
     }
 
-    /// The inotify bridge's thread (`is_from_inotify_bridge`) is answered what the name it
-    /// announces was before the change; everyone else, and the bridge for every other name,
-    /// what the folder has now.
+    /// Whether a remove the inotify bridge announces is done: the name is gone from the
+    /// store already. One the folder still has is not removed for the bridge (`EROFS`).
+    pub(super) fn check_announced_remove(&self, parent: NodeId, name: &OsStr) -> Result<(), Errno> {
+        match self.find_entry(parent, name) {
+            None => Ok(()),
+            Some(_) => Err(Errno::EROFS),
+        }
+    }
+
+    /// Whether the caller may do what `mask` asks: anything, but write to a read-only
+    /// folder.
+    pub(super) fn check_access(&self, mask: AccessFlags) -> Result<(), Errno> {
+        match mask.contains(AccessFlags::W_OK) && self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
+            true => Err(Errno::EROFS),
+            false => Ok(()),
+        }
+    }
+
+    /// Answers with the entry `name` of `parent`, as the folder has it now.
+    pub(super) fn answer_with_entry(&self, parent: NodeId, name: &OsStr, reply: ReplyEntry) {
+        match self.find_entry_attributes(parent, name) {
+            Ok(attributes) => reply.entry(&TTL, &attributes, Generation(0)),
+            Err(e) => reply.error(e),
+        }
+    }
+
     pub(super) fn answer_lookup(&self, is_from_inotify_bridge: bool, parent: NodeId, name: &OsStr, reply: ReplyEntry) {
-        let before_change = if is_from_inotify_bridge { self.inotify_bridge.find_name_before_change(parent, name) } else { None };
-        match before_change {
-            Some(NameBeforeChange::Absent) => reply.error(Errno::ENOENT),
-            Some(NameBeforeChange::Present { node_id, kind }) => {
-                reply.entry(&Duration::ZERO, &self.attributes_of(&make_vanished_entry(&name.to_string_lossy(), kind), node_id), Generation(0));
-            }
-            None => self.answer_with_entry(parent, name, reply),
+        match self.find_lookup_answer(is_from_inotify_bridge, parent, name) {
+            Ok((attributes, ttl)) => reply.entry(&ttl, &attributes, Generation(0)),
+            Err(e) => reply.error(e),
         }
     }
 
@@ -97,21 +127,19 @@ impl LookupRequests {
         answer_with_attributes(&self.node_resolver, self.access_mode_switch.access_mode(), node_id, reply)
     }
 
-    /// Answers a remove the inotify bridge announces: done, as the name is gone from the
-    /// store already.
+    /// Answers a remove the inotify bridge announces ([`check_announced_remove`](Self::check_announced_remove)).
     pub(super) fn answer_announced_remove(&self, parent: NodeId, name: &OsStr, reply: ReplyEmpty) {
-        match self.find_entry(parent, name) {
-            None => reply.ok(),
-            Some(_) => reply.error(Errno::EROFS),
+        match self.check_announced_remove(parent, name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
         }
     }
 
-    /// Whether the caller may do what it asks: anything, but write to a read-only folder.
     pub(super) fn answer_access(&self, mask: AccessFlags, reply: ReplyEmpty) {
-        if mask.contains(AccessFlags::W_OK) && self.access_mode_switch.access_mode() == AccessMode::ReadOnly {
-            return reply.error(Errno::EROFS);
+        match self.check_access(mask) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
         }
-        reply.ok();
     }
 
     /// The space of the filesystem the backing directory is on.
@@ -122,3 +150,6 @@ impl LookupRequests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

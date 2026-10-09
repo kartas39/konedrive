@@ -67,3 +67,6 @@ fn collect_into(backing_directory: &BackingDirectory, upload_rules: &UploadRules
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -47,3 +47,6 @@ impl ContentSource for WatermarkedSource<'_> {
         self.inner.progress(done, size);
     }
 }
+
+#[cfg(test)]
+mod tests;

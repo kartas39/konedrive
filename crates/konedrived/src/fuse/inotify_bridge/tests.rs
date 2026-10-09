@@ -100,3 +100,19 @@ fn no_request_is_the_bridges_own_before_its_thread_runs() {
     let bridge = bridge();
     assert!(!bridge.is_own_thread(1) && !bridge.is_own_thread(std::process::id()));
 }
+
+/// What the tests of the parts that announce through a bridge ask of one whose thread is not
+/// started.
+impl InotifyBridge {
+    /// What waits to be announced, in its order.
+    pub(in crate::fuse) fn list_queued_announcements(&self) -> Vec<Announcement> {
+        crate::panic::lock(&self.queued).as_ref().map(|queued| queued.try_iter().flatten().collect()).unwrap_or_default()
+    }
+
+    /// The bridge's thread is the caller's from now on, and it announces `in_progress`.
+    pub(in crate::fuse) fn begin_announcing_on_this_thread(&self, in_progress: AnnouncementInProgress) {
+        // SAFETY: a system call that takes nothing and cannot fail.
+        self.thread_id.store(unsafe { libc::gettid() }, std::sync::atomic::Ordering::SeqCst);
+        *crate::panic::lock(&self.in_progress) = Some(in_progress);
+    }
+}

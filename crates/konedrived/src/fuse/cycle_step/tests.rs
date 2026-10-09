@@ -160,3 +160,46 @@ fn only_the_last_cycle_applied_leaves_anything() {
     assert_eq!(uncommitted_cycle.removed_ids, ["B"]);
     assert!(matches!(&uncommitted_cycle.announcements[..], [Announcement::NameVanished { id, .. }] if id == "B"));
 }
+
+/// Every conflict copy's name of the user's own is taken, so it could not be moved aside:
+/// the downloaded copy that moves with its file is not moved onto it, and stays where it
+/// was.
+#[test]
+fn nothing_is_moved_onto_what_is_still_in_the_way() {
+    let built = build_mount();
+    built.download("a.txt", "A", b"content");
+    built.make_marked_directory("docs", "D");
+    std::fs::write(built.disk.join("docs/a.txt"), b"mine").unwrap();
+    for n in 1..=100 {
+        std::fs::write(built.disk.join("docs").join(crate::local::names::copy_name("a.txt", "fedora", n)), b"an earlier copy").unwrap();
+    }
+    let outcome = apply(&built, vec![Change::Upsert(row("A", Some("D"), "a.txt", Kind::File))], None);
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { id, .. }] if id == "A"));
+    assert!(outcome.conflicts.moved_aside.is_empty());
+    assert_eq!(std::fs::read(built.disk.join("docs/a.txt")).unwrap(), b"mine");
+    assert_eq!(std::fs::read(built.disk.join("a.txt")).unwrap(), b"content");
+}
+
+/// What the backing directory holds of a directory is the directory itself: it moves with
+/// all it holds, the user's own too.
+#[test]
+fn a_directory_of_the_backing_directory_moves_with_its_directory_of_onedrive() {
+    let built = build_mount();
+    built.make_marked_directory("docs", "D");
+    std::fs::write(built.disk.join("docs/own.txt"), b"mine").unwrap();
+    let outcome = apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
+    assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { id, .. }] if id == "D"));
+    assert!(!built.disk.join("docs").exists());
+    assert_eq!(std::fs::read(built.disk.join("papers/own.txt")).unwrap(), b"mine");
+    assert_eq!(xattr::get(built.disk.join("papers"), XATTR_ITEM_ID).unwrap().as_deref(), Some(b"D".as_slice()));
+}
+
+/// A directory at the old path that is marked with another OneDrive id backs that other
+/// directory, and is not moved.
+#[test]
+fn a_directory_at_the_old_path_that_backs_another_directory_is_not_moved() {
+    let built = build_mount();
+    built.make_marked_directory("docs", "OTHER");
+    apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
+    assert!(built.disk.join("docs").is_dir() && !built.disk.join("papers").exists());
+}

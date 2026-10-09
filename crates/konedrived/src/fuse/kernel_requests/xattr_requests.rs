@@ -59,14 +59,22 @@ impl XattrRequests {
         to_xattr_value(name, &entry, self.pins.is_pinned(id), self.download_states.is_downloading(id))
     }
 
+    /// The names of the attributes the node `node_id` has, as `listxattr` hands them out:
+    /// each ended by a zero byte.
+    fn list_xattr_names(&self, node_id: NodeId) -> Vec<u8> {
+        let names = [XATTR_ROOT, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN, XATTR_SYNC];
+        names.iter().filter(|name| self.find_xattr(node_id, name).is_some()).flat_map(|name| name.bytes().chain(std::iter::once(0))).collect()
+    }
+
     pub(super) fn answer_getxattr(&self, node_id: NodeId, name: &OsStr, size: u32, reply: ReplyXattr) {
         let Some(value) = name.to_str().and_then(|name| self.find_xattr(node_id, name)) else { return reply.error(Errno::ENODATA) };
         answer_with_value(value.as_bytes(), size, reply)
     }
 
     pub(super) fn answer_listxattr(&self, node_id: NodeId, size: u32, reply: ReplyXattr) {
-        let names = [XATTR_ROOT, XATTR_DRIVE, XATTR_ITEM_ID, XATTR_STATE, XATTR_PIN, XATTR_SYNC];
-        let held: Vec<u8> = names.iter().filter(|name| self.find_xattr(node_id, name).is_some()).flat_map(|name| name.bytes().chain(std::iter::once(0))).collect();
-        answer_with_value(&held, size, reply)
+        answer_with_value(&self.list_xattr_names(node_id), size, reply)
     }
 }
+
+#[cfg(test)]
+mod tests;

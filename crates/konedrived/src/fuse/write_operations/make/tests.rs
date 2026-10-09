@@ -58,7 +58,7 @@ fn what_may_not_be_made_is_refused_and_nothing_is_made() {
 }
 
 #[test]
-fn a_name_that_stays_here_is_made_and_not_recorded() {
+fn an_ignored_name_is_made_and_not_recorded() {
     let f = folder(Vec::new());
     f.ops.make(NodeId::ROOT, "x.tmp", EntryToMake::File).unwrap();
     assert!(f.disk.join("x.tmp").is_file() && f.rows().is_empty());

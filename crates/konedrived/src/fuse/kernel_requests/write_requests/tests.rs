@@ -6,11 +6,12 @@ use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use fuser::Errno;
+use fuser::{Errno, RenameFlags};
 
-use super::ErrnoReply;
+use super::{check_mknod_mode, ErrnoReply};
 use crate::fuse::mount::tests::build_mount;
 use crate::fuse::node_table::NodeId;
+use crate::fuse::write_operations::RenameMode;
 
 /// What a request was answered: the errno it was refused with, or that its operation ran.
 #[derive(Debug, PartialEq, Eq)]
@@ -120,4 +121,75 @@ fn a_time_set_on_a_file_of_a_read_only_folder_is_refused_without_waiting_for_the
     built.kernel_requests.write_requests.run_set_modified_time(NodeId::ROOT, None, ToldReply(tell), |_, _, _| {});
     assert_eq!(told.try_recv(), Ok(Answer::Refused(Errno::EROFS)));
     drop(held);
+}
+
+/// A device, a pipe or a socket has nothing OneDrive could hold.
+#[test]
+fn mknod_makes_a_regular_file_and_nothing_else() {
+    assert_eq!(check_mknod_mode(libc::S_IFREG | 0o644), Ok(()));
+    for kind in [libc::S_IFIFO, libc::S_IFSOCK, libc::S_IFCHR, libc::S_IFBLK, libc::S_IFDIR, libc::S_IFLNK] {
+        assert_eq!(check_mknod_mode(kind | 0o644), Err(Errno::EPERM));
+    }
+}
+
+#[test]
+fn a_rename_replaces_what_is_at_the_new_place_unless_it_is_told_not_to() {
+    let built = build_mount();
+    let write_requests = &built.kernel_requests.write_requests;
+    assert_eq!(write_requests.find_rename_mode(RenameFlags::empty()), Ok(RenameMode::Replace));
+    assert_eq!(write_requests.find_rename_mode(RenameFlags::RENAME_NOREPLACE), Ok(RenameMode::NoReplace));
+}
+
+/// A change the mount never takes: refused as a read-only filesystem does in a read-only
+/// folder, and as an argument it does not take in a read-write one.
+#[test]
+fn an_exchange_of_two_names_is_refused() {
+    let built = build_mount();
+    let write_requests = &built.kernel_requests.write_requests;
+    assert_eq!(write_requests.find_rename_mode(RenameFlags::RENAME_EXCHANGE), Err(Errno::EROFS));
+    write_requests.access_mode_switch.switch_to_read_write();
+    assert_eq!(write_requests.find_rename_mode(RenameFlags::RENAME_EXCHANGE), Err(Errno::EINVAL));
+}
+
+/// The folder itself needs no download: the write is put on the thread at once, and waits
+/// there for the tree lock.
+#[test]
+fn a_write_of_what_needs_no_download_runs_on_the_write_operation_thread() {
+    let built = build_mount();
+    let write_requests = &built.kernel_requests.write_requests;
+    write_requests.access_mode_switch.switch_to_read_write();
+    let held = built.tree_lock.try_lock().unwrap();
+    let (tell, told) = mpsc::channel();
+    write_requests.run_with_content(NodeId::ROOT, ToldReply(tell), |_, reply| reply.0.send(Answer::OperationRan("with content".into())).unwrap());
+    assert_eq!(told.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout));
+    drop(held);
+    assert_eq!(told.recv_timeout(Duration::from_secs(5)), Ok(Answer::OperationRan("with content".into())));
+}
+
+/// Before anything is downloaded for a write the folder will not take.
+#[test]
+fn a_write_to_a_read_only_folder_is_refused_before_anything_is_downloaded() {
+    let built = build_mount();
+    let write_requests = &built.kernel_requests.write_requests;
+    let held = built.tree_lock.try_lock().unwrap();
+    let (tell, told) = mpsc::channel();
+    let a = built.kernel_requests.lookup_requests.find_lookup_answer(false, NodeId::ROOT, OsStr::new("a.txt")).unwrap().0.ino;
+    write_requests.run_with_content(NodeId::from(a), ToldReply(tell.clone()), |_, _| panic!("no write in a read-only folder"));
+    assert_eq!(told.try_recv(), Ok(Answer::Refused(Errno::EROFS)));
+    write_requests.run_without_content(ToldReply(tell), |_, _| panic!("no write in a read-only folder"));
+    assert_eq!(told.try_recv(), Ok(Answer::Refused(Errno::EROFS)));
+    assert!(!write_requests.file_downloader.is_downloading("A"));
+    drop(held);
+}
+
+/// A file cut to nothing needs nothing of its content: nothing is downloaded for it.
+#[test]
+fn a_write_that_cuts_its_file_to_nothing_runs_without_a_download() {
+    let built = build_mount();
+    let write_requests = &built.kernel_requests.write_requests;
+    write_requests.access_mode_switch.switch_to_read_write();
+    let (tell, told) = mpsc::channel();
+    write_requests.run_without_content(ToldReply(tell), |_, reply| reply.0.send(Answer::OperationRan("without content".into())).unwrap());
+    assert_eq!(told.recv_timeout(Duration::from_secs(5)), Ok(Answer::OperationRan("without content".into())));
+    assert!(!write_requests.file_downloader.is_downloading("A"));
 }

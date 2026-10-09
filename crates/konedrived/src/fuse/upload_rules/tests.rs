@@ -14,7 +14,7 @@ fn none(_: &Path) -> bool {
 }
 
 #[test]
-fn a_name_on_the_ignore_list_stays_on_this_computer() {
+fn a_name_on_the_ignore_list_is_ignored() {
     let rules = rules();
     assert!(rules.is_ignored(Path::new(""), "a.tmp", none));
     assert!(rules.is_ignored(Path::new("docs"), "cache", none));
@@ -47,7 +47,7 @@ fn an_ignored_name_that_is_in_onedrive_holds_nothing_back() {
 /// The directory a thing is in is asked by its chain alone: its own name is not a name of the
 /// thing.
 #[test]
-fn a_directory_is_local_by_what_it_is_in_and_itself_not_by_what_it_holds() {
+fn a_directory_is_ignored_by_what_it_is_in_and_itself_not_by_what_it_holds() {
     let rules = UploadRules::new(IgnoreList::new(["*"]).shared());
     assert!(!rules.is_in_ignored_directory(Path::new(""), none));
     assert!(rules.is_in_ignored_directory(Path::new("docs"), none));

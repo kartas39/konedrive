@@ -21,3 +21,6 @@ impl DirectoryReference {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

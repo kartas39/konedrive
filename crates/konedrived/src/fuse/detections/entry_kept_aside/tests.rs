@@ -21,7 +21,7 @@ fn a_directory_kept_aside_takes_the_rows_below_it_along() {
 }
 
 #[test]
-fn a_conflict_copy_under_a_name_that_stays_here_is_not_uploaded() {
+fn a_conflict_copy_under_an_ignored_name_is_not_uploaded() {
     let file_kept = EntryKeptAside { on_disk: file(1, 3), from: rel("docs/c.tmp"), to: in_docs("c-fedora.tmp"), upload_status: UploadStatus::Ignored }.detect(NOW);
     assert!(file_kept.is_empty());
     let directory_kept = EntryKeptAside { on_disk: directory(2), from: rel("docs/c"), to: in_docs("c-fedora"), upload_status: UploadStatus::Ignored }.detect(NOW);

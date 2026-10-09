@@ -91,3 +91,6 @@ impl DirectoryRequests {
         reply.ok();
     }
 }
+
+#[cfg(test)]
+mod tests;

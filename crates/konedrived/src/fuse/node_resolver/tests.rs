@@ -64,7 +64,7 @@ fn the_root_is_node_one_and_a_directory() {
 
 /// A directory listed as its listed names gives each name the node id its entry has.
 #[test]
-fn the_source_of_an_entry_gets_the_node_id_of_the_entry() {
+fn the_listed_name_of_an_entry_gets_the_node_id_of_the_entry() {
     let (dir, contents, node_resolver) = node_resolver(Vec::new());
     fs::write(dir.path().join("own.txt"), b"mine").unwrap();
     let root = contents.find_root_directory();

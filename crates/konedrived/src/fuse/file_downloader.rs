@@ -198,3 +198,6 @@ impl FileDownloader {
         landed
     }
 }
+
+#[cfg(test)]
+mod tests;

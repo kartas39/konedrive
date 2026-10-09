@@ -146,7 +146,7 @@ fn a_file_made_here_is_local_only() {
 }
 
 #[test]
-fn a_onedrive_directory_is_synced_whether_or_not_the_disk_has_it() {
+fn a_onedrive_directory_is_in_onedrive_whether_or_not_the_disk_has_it() {
     let (dir, contents) = directory_contents(Vec::new());
     assert!(matches!(directory_state(&contents, "docs"), DirectorySyncState::InOneDrive(row) if row.id == "D"));
     fs::create_dir(dir.path().join("docs")).unwrap();
