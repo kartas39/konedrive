@@ -2,8 +2,8 @@ use konedrive_reason::Reason;
 
 use super::memory_row::read_memory;
 use super::*;
-use crate::item_store::tests::{is_refused, item, make_directory, make_file, place, synced};
-use crate::model::{ContentVersion, ItemVersion, LocalVersionChange, OneDriveItemId};
+use crate::item_store::tests::{is_refused, item, make_directory, make_file, place, reference, synced};
+use crate::model::{ContentVersion, ItemVersion, LocalVersionChange};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -11,6 +11,10 @@ const ROOT: LocalItemId = LocalItemId::ROOT;
 mod binding_moves;
 /// Every fact against every operation that changes what it was learnt for.
 mod enumeration;
+/// The item an upload left with other content, told by its own id.
+mod mismatched_item;
+/// What was learnt of one unsent change, and what is answered of it for the next.
+mod unsent_change;
 
 use FactStanding::{StillSaid, VersionGone};
 use UploadSessionStanding::{Abandoned, Continued};
@@ -50,6 +54,39 @@ fn temporary_toward(store: &mut TreeStore, id: LocalItemId) -> TemporaryName {
 
 fn space_refusal(store: &mut TreeStore, id: LocalItemId, free_space: u64) -> SpaceRefusal {
     SpaceRefusal { content: local_content(store, id), free_space }
+}
+
+/// The stamp of what is unsent of `id`, as its row has it now: what a step planned from the
+/// row gives with what it learns.
+fn stamp(store: &mut TreeStore, id: LocalItemId) -> Option<u64> {
+    store.item_store().find_item(id).unwrap().and_then(|row| row.unsent_since)
+}
+
+// Each fact of an unsent change, given as a step planned from the row as it is now gives it.
+
+fn remember_session(store: &mut TreeStore, id: LocalItemId, session: &UploadSession) -> UploadSessionStanding {
+    let unsent_since = stamp(store, id);
+    store.step_memory().remember_upload_session(id, unsent_since, session).unwrap()
+}
+
+fn remember_try(store: &mut TreeStore, id: LocalItemId, reason: &Reason, next_try_at: Option<i64>) -> Option<u32> {
+    let unsent_since = stamp(store, id);
+    store.step_memory().remember_failed_try(id, unsent_since, reason, next_try_at).unwrap()
+}
+
+fn remember_space(store: &mut TreeStore, id: LocalItemId, space_refusal: &SpaceRefusal) -> FactStanding {
+    let unsent_since = stamp(store, id);
+    store.step_memory().remember_space_refusal(id, unsent_since, space_refusal).unwrap()
+}
+
+fn remember_refused(store: &mut TreeStore, id: LocalItemId, refusal: &Refusal) -> FactStanding {
+    let unsent_since = stamp(store, id);
+    store.step_memory().remember_refusal(id, unsent_since, refusal).unwrap()
+}
+
+fn remember_taken(store: &mut TreeStore, id: LocalItemId, taken_name: &TakenName) -> FactStanding {
+    let unsent_since = stamp(store, id);
+    store.step_memory().remember_taken_name(id, unsent_since, taken_name).unwrap()
 }
 
 fn said(store: &mut TreeStore, id: LocalItemId) -> ItemMemory {
@@ -105,8 +142,9 @@ fn change_content(store: &mut TreeStore, id: LocalItemId) {
 /// Every fact of a file the folder shows, written each by its operation.
 fn remember_everything_of_a_shown_file(store: &mut TreeStore, file: LocalItemId) -> ItemMemory {
     let expected = ItemMemory {
+        unsent_since: stamp(store, file),
         upload_session: Some(new_file_session(store, file, "1")),
-        mismatched_item: Some(MismatchedItem::of_answer(OneDriveItemId::new("B"), Some("c-B"), None)),
+        mismatched_item: Some(MismatchedItem::of_answer(reference("B"), Some("c-B"), None)),
         temporary_name: Some(temporary_toward(store, file)),
         failed_tries: Some(FailedTries { count: 1, next_try_at: Some(60), last_failure: Reason::Refused(Some("no".to_owned())) }),
         space_refusal: Some(space_refusal(store, file, 5)),
@@ -114,14 +152,13 @@ fn remember_everything_of_a_shown_file(store: &mut TreeStore, file: LocalItemId)
         refusal: Some(refusal_of(store, file, Reason::Forbidden)),
         taken_name: Some(taken_at(store, file, "REPORT")),
     };
-    let mut memory = store.step_memory();
-    assert_eq!(memory.remember_upload_session(file, expected.upload_session.as_ref().unwrap()).unwrap(), Continued);
-    memory.remember_mismatched_item(file, expected.mismatched_item.as_ref().unwrap()).unwrap();
-    memory.remember_temporary_name(file, expected.temporary_name.as_ref().unwrap()).unwrap();
-    assert_eq!(memory.remember_failed_try(file, &Reason::Refused(Some("no".to_owned())), Some(60)).unwrap(), 1);
-    assert_eq!(memory.remember_space_refusal(file, expected.space_refusal.as_ref().unwrap()).unwrap(), StillSaid);
-    assert_eq!(memory.remember_refusal(file, expected.refusal.as_ref().unwrap()).unwrap(), StillSaid);
-    assert_eq!(memory.remember_taken_name(file, expected.taken_name.as_ref().unwrap()).unwrap(), StillSaid);
+    assert_eq!(remember_session(store, file, expected.upload_session.as_ref().unwrap()), Continued);
+    store.step_memory().remember_mismatched_item(file, expected.mismatched_item.as_ref().unwrap()).unwrap();
+    store.step_memory().remember_temporary_name(file, expected.temporary_name.as_ref().unwrap()).unwrap();
+    assert_eq!(remember_try(store, file, &Reason::Refused(Some("no".to_owned())), Some(60)), Some(1));
+    assert_eq!(remember_space(store, file, expected.space_refusal.as_ref().unwrap()), StillSaid);
+    assert_eq!(remember_refused(store, file, expected.refusal.as_ref().unwrap()), StillSaid);
+    assert_eq!(remember_taken(store, file, expected.taken_name.as_ref().unwrap()), StillSaid);
     expected
 }
 
@@ -143,13 +180,13 @@ fn a_name_that_is_not_utf8_and_a_hashed_content_are_read_back_as_written() {
     use std::os::unix::ffi::OsStringExt;
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
-    synced(&mut store, file, "A");
+    store.item_store().apply(&LocalVersionChange::ClosedChanged { item: file, size: 3, mtime: 300, mtime_nsec: 0 }).unwrap();
     let holder_name = std::ffi::OsString::from_vec(vec![b'R', 0xff, b'T']);
     let taken = TakenName { place: local_place(&mut store, file), holder_name };
     let session = UploadSession { address: address("1"), expires_at: None, next_offset: 5, content: local_content(&mut store, file), empty_file_place: None };
-    assert_eq!(store.step_memory().remember_taken_name(file, &taken).unwrap(), StillSaid);
-    assert_eq!(store.step_memory().remember_upload_session(file, &session).unwrap(), Continued);
-    assert_eq!(said(&mut store, file), ItemMemory { taken_name: Some(taken), upload_session: Some(session), ..ItemMemory::default() });
+    assert_eq!(remember_taken(&mut store, file, &taken), StillSaid);
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
+    assert_eq!(said(&mut store, file), ItemMemory { unsent_since: stamp(&mut store, file), taken_name: Some(taken), upload_session: Some(session), ..ItemMemory::default() });
 }
 
 /// Each fact is forgotten by itself, the others staying; with the last the item's row of the
@@ -164,13 +201,18 @@ fn each_fact_is_forgotten_by_itself_and_the_last_takes_the_row() {
     store.step_memory().forget_ended_upload_session(file, &address("1")).unwrap();
     expected.upload_session = None;
     assert_eq!(said(&mut store, file), expected, "the session ended");
-    let steps: [(StepFact, fn(&mut ItemMemory)); 6] = [
-        (StepFact::MismatchedItem, |memory| memory.mismatched_item = None),
+    store.step_memory().forget_mismatched_item(&reference("B")).unwrap();
+    expected.mismatched_item = None;
+    assert_eq!(said(&mut store, file), expected, "the item an upload left is forgotten by its own id");
+    let steps: [(StepFact, fn(&mut ItemMemory)); 5] = [
         (StepFact::TemporaryName, |memory| memory.temporary_name = None),
         (StepFact::FailedTries, |memory| memory.failed_tries = None),
         (StepFact::SpaceRefusal, |memory| memory.space_refusal = None),
         (StepFact::Refusal, |memory| memory.refusal = None),
-        (StepFact::TakenName, |memory| memory.taken_name = None),
+        (StepFact::TakenName, |memory| {
+            memory.taken_name = None;
+            memory.unsent_since = None;
+        }),
     ];
     for (fact, clear) in steps {
         store.step_memory().forget_fact(file, fact).unwrap();
@@ -188,9 +230,9 @@ fn nothing_is_written_for_an_id_with_no_row() {
     let file = make_file(&mut store, ROOT, "report");
     let (refusal, gone) = (refusal_of(&mut store, file, Reason::Forbidden), LocalItemId::new(99));
     let mut memory = store.step_memory();
-    assert!(is_refused(memory.remember_failed_try(gone, &Reason::Network, None)));
-    assert!(is_refused(memory.remember_refusal(gone, &refusal)));
-    assert!(is_refused(memory.remember_refusal(ROOT, &refusal)));
+    assert!(is_refused(memory.remember_failed_try(gone, Some(1), &Reason::Network, None)));
+    assert!(is_refused(memory.remember_refusal(gone, Some(1), &refusal)));
+    assert!(is_refused(memory.remember_refusal(ROOT, Some(1), &refusal)));
     assert!(is_refused(memory.remember_upload_session_opening(gone, &place(ROOT, "report"), 10)));
     assert!(is_refused(memory.remember_upload_session_opening(file, &place(gone, "report"), 10)));
     assert_eq!((count(&store, "step_memory"), count(&store, "upload_session_openings")), (0, 0));
@@ -206,14 +248,14 @@ fn a_session_a_temporary_name_and_an_opening_are_found_again_after_a_crash() {
     let mut store = TreeStore::open(&path).unwrap();
     let (file, other) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "other"));
     let (session, temporary) = (new_file_session(&mut store, file, "1"), temporary_toward(&mut store, file));
-    store.step_memory().remember_upload_session(file, &session).unwrap();
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
     store.step_memory().remember_temporary_name(file, &temporary).unwrap();
     store.step_memory().remember_upload_session_opening(other, &place(ROOT, "other"), 10).unwrap();
     // The daemon dies: nothing is closed.
     std::mem::forget(store);
 
     let mut store = TreeStore::open(&path).unwrap();
-    assert_eq!(said(&mut store, file), ItemMemory { upload_session: Some(session), temporary_name: Some(temporary), ..ItemMemory::default() });
+    assert_eq!(said(&mut store, file), ItemMemory { unsent_since: stamp(&mut store, file), upload_session: Some(session), temporary_name: Some(temporary), ..ItemMemory::default() });
     assert_eq!(windows(&mut store, &place(ROOT, "OTHER")), [(10, 10)]);
 }
 
@@ -233,7 +275,7 @@ fn what_is_remembered_of_an_item_goes_with_its_row() {
 
     // And by a statement no operation of the store makes.
     let second = make_file(&mut store, ROOT, "second");
-    store.step_memory().remember_failed_try(second, &Reason::Network, Some(5)).unwrap();
+    remember_try(&mut store, second, &Reason::Network, Some(5));
     store.conn.execute("DELETE FROM items WHERE local_item_id = ?1", [second.as_i64()]).unwrap();
     assert_eq!(count(&store, "step_memory"), 0);
 }
@@ -259,8 +301,8 @@ fn what_was_learnt_of_a_content_is_not_answered_once_the_content_changed() {
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
     let (session, big) = (new_file_session(&mut store, file, "1"), space_refusal(&mut store, file, 5));
-    store.step_memory().remember_upload_session(file, &session).unwrap();
-    store.step_memory().remember_space_refusal(file, &big).unwrap();
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
+    assert_eq!(remember_space(&mut store, file, &big), StillSaid);
 
     change_content(&mut store, file);
     assert_eq!(said(&mut store, file), ItemMemory::default(), "not answered");
@@ -270,7 +312,7 @@ fn what_was_learnt_of_a_content_is_not_answered_once_the_content_changed() {
     assert_eq!((kept(&store, file).upload_session, abandoned(&mut store)), (None, vec![address("1")]), "abandoned by that write, with its place");
     assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "report")).unwrap(), [EmptyFileSession::Abandoned { address: address("1") }]);
 
-    store.step_memory().remember_failed_try(file, &Reason::Network, None).unwrap();
+    remember_try(&mut store, file, &Reason::Network, None);
     let after = kept(&store, file);
     assert_eq!((after.upload_session, after.space_refusal, after.failed_tries.map(|tries| tries.count)), (None, None, Some(1)));
     assert_eq!(abandoned(&mut store), [address("1")]);
@@ -284,21 +326,21 @@ fn what_was_learnt_of_a_place_is_not_answered_once_the_place_changed() {
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
     let (refusal, temporary, taken) = (refusal_of(&mut store, file, Reason::Forbidden), temporary_toward(&mut store, file), taken_at(&mut store, file, "REPORT"));
-    store.step_memory().remember_refusal(file, &refusal).unwrap();
+    assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
     store.step_memory().remember_temporary_name(file, &temporary).unwrap();
-    store.step_memory().remember_taken_name(file, &taken).unwrap();
-    store.step_memory().remember_failed_try(file, &Reason::Locked, Some(40)).unwrap();
+    assert_eq!(remember_taken(&mut store, file, &taken), StillSaid);
+    remember_try(&mut store, file, &Reason::Locked, Some(40));
     assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap(), [ItemTakenName { item: file, taken_name: taken }]);
 
     rename(&mut store, file, "renamed");
     let tries = Some(FailedTries { count: 1, next_try_at: Some(40), last_failure: Reason::Locked });
-    let with_no_version = ItemMemory { failed_tries: tries, temporary_name: Some(temporary), ..ItemMemory::default() };
+    let with_no_version = ItemMemory { unsent_since: stamp(&mut store, file), failed_tries: tries, temporary_name: Some(temporary), ..ItemMemory::default() };
     assert_eq!(said(&mut store, file), with_no_version);
     assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap(), []);
     assert_eq!(store.step_memory().list_refusal_reasons(None, None, 10).unwrap(), []);
     assert!(kept(&store, file).refusal.is_some(), "kept until the next write");
 
-    store.step_memory().forget_fact(file, StepFact::MismatchedItem).unwrap();
+    store.step_memory().forget_fact(file, StepFact::SpaceRefusal).unwrap();
     assert_eq!(kept(&store, file), with_no_version);
     rename(&mut store, file, "report");
     assert_eq!(said(&mut store, file), with_no_version, "at the place again: what was taken away is not answered again");
@@ -315,11 +357,10 @@ fn a_fact_the_row_does_not_say_any_more_is_not_written() {
     store.step_memory().remember_upload_session_opening(file, &place(ROOT, "report"), 10).unwrap();
     change_content(&mut store, file);
     rename(&mut store, file, "renamed");
-    let mut memory = store.step_memory();
-    assert_eq!(memory.remember_upload_session(file, &session).unwrap(), Abandoned);
-    assert_eq!(memory.remember_space_refusal(file, &big).unwrap(), VersionGone);
-    assert_eq!(memory.remember_refusal(file, &refusal).unwrap(), VersionGone);
-    assert_eq!(memory.remember_taken_name(file, &taken).unwrap(), VersionGone);
+    assert_eq!(remember_session(&mut store, file, &session), Abandoned);
+    assert_eq!(remember_space(&mut store, file, &big), VersionGone);
+    assert_eq!(remember_refused(&mut store, file, &refusal), VersionGone);
+    assert_eq!(remember_taken(&mut store, file, &taken), VersionGone);
     assert_eq!((count(&store, "step_memory"), count(&store, "upload_session_openings"), abandoned(&mut store)), (0, 0, vec![address("1")]));
 }
 
@@ -331,16 +372,19 @@ fn an_upload_session_advances_is_replaced_and_is_abandoned() {
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
     let first = new_file_session(&mut store, file, "1");
-    store.step_memory().remember_upload_session(file, &first).unwrap();
+    assert_eq!(remember_session(&mut store, file, &first), Continued);
     assert_eq!(store.step_memory().advance_upload_session(file, &first.address, 4096, Some(950)).unwrap(), Continued);
     assert_eq!(said(&mut store, file).upload_session, Some(UploadSession { next_offset: 4096, expires_at: Some(950), ..first.clone() }));
     assert_eq!(store.step_memory().list_empty_file_sessions(&place(ROOT, "REPORT")).unwrap(), [EmptyFileSession::Continued { item: file, address: address("1") }]);
 
     let second = new_file_session(&mut store, file, "2");
-    assert_eq!(store.step_memory().remember_upload_session(file, &second).unwrap(), Continued);
+    assert_eq!(remember_session(&mut store, file, &second), Continued);
     assert_eq!((said(&mut store, file).upload_session, abandoned(&mut store)), (Some(second), vec![address("1")]));
     assert_eq!(store.step_memory().advance_upload_session(file, &address("1"), 1, None).unwrap(), Abandoned, "the item has another session");
     assert_eq!(store.step_memory().advance_upload_session(LocalItemId::new(99), &address("3"), 1, None).unwrap(), Abandoned, "no row");
+    let other = make_file(&mut store, ROOT, "other");
+    assert!(is_refused(store.step_memory().advance_upload_session(other, &address("2"), 1, None)), "the session another item's memory keeps is not this item's to advance");
+    assert_eq!((said(&mut store, file).upload_session.map(|session| session.address), abandoned(&mut store)), (Some(address("2")), vec![address("1"), address("3")]), "nor to cancel");
 
     store.step_memory().abandon_upload_session(file).unwrap();
     assert_eq!((said(&mut store, file), abandoned(&mut store)), (ItemMemory::default(), vec![address("1"), address("3"), address("2")]), "the one abandoned first first");
@@ -355,20 +399,19 @@ fn an_upload_session_advances_is_replaced_and_is_abandoned() {
 fn the_tries_are_counted_and_the_items_that_wait_are_read_soonest_first() {
     let mut store = TreeStore::in_memory().unwrap();
     let (a, b, c) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"), make_file(&mut store, ROOT, "c"));
-    let mut memory = store.step_memory();
-    assert_eq!(memory.remember_failed_try(a, &Reason::Network, Some(300)).unwrap(), 1);
-    assert_eq!(memory.remember_failed_try(b, &Reason::Network, Some(100)).unwrap(), 1);
-    assert_eq!(memory.remember_failed_try(b, &Reason::Locked, Some(200)).unwrap(), 2);
-    assert_eq!(memory.remember_failed_try(c, &Reason::Network, None).unwrap(), 1);
-    assert_eq!(memory.list_timed_waits(10).unwrap(), [TimedWait { item: b, until: 200 }, TimedWait { item: a, until: 300 }], "one due at once does not wait");
-    assert_eq!(memory.list_timed_waits(1).unwrap(), [TimedWait { item: b, until: 200 }]);
+    assert_eq!(remember_try(&mut store, a, &Reason::Network, Some(300)), Some(1));
+    assert_eq!(remember_try(&mut store, b, &Reason::Network, Some(100)), Some(1));
+    assert_eq!(remember_try(&mut store, b, &Reason::Locked, Some(200)), Some(2));
+    assert_eq!(remember_try(&mut store, c, &Reason::Network, None), Some(1));
+    assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [TimedWait { item: b, until: 200 }, TimedWait { item: a, until: 300 }], "one due at once does not wait");
+    assert_eq!(store.step_memory().list_timed_waits(1).unwrap(), [TimedWait { item: b, until: 200 }]);
     assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: Some(200), last_failure: Reason::Locked }));
 
     assert_eq!(store.step_memory().clear_next_tries().unwrap(), 2);
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), []);
     assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: None, last_failure: Reason::Locked }));
     store.step_memory().forget_fact(b, StepFact::FailedTries).unwrap();
-    assert_eq!(store.step_memory().remember_failed_try(b, &Reason::Network, Some(1)).unwrap(), 1, "counted anew after a step went through");
+    assert_eq!(remember_try(&mut store, b, &Reason::Network, Some(1)), Some(1), "counted anew after a step went through");
 }
 
 /// A quota read forgets the refusal of every file that fits in the free space and says the
@@ -381,8 +424,8 @@ fn a_quota_read_lets_go_what_fits_and_says_the_free_space_of_the_rest() {
     store.item_store().apply(&LocalVersionChange::ClosedChanged { item: small, size: 10, mtime: 300, mtime_nsec: 0 }).unwrap();
     store.item_store().apply(&LocalVersionChange::ClosedChanged { item: large, size: 1000, mtime: 300, mtime_nsec: 0 }).unwrap();
     let (small_fact, large_fact) = (space_refusal(&mut store, small, 5), space_refusal(&mut store, large, 5));
-    store.step_memory().remember_space_refusal(small, &small_fact).unwrap();
-    store.step_memory().remember_space_refusal(large, &large_fact).unwrap();
+    assert_eq!(remember_space(&mut store, small, &small_fact), StillSaid);
+    assert_eq!(remember_space(&mut store, large, &large_fact), StillSaid);
     let too_big = [ItemRefusalReason { item: small, reason: Reason::TooBig(Some((10, 5))) }, ItemRefusalReason { item: large, reason: Reason::TooBig(Some((1000, 5))) }];
     assert_eq!(store.step_memory().list_space_refusal_reasons(None, 10).unwrap(), too_big);
     assert_eq!(store.step_memory().list_space_refusal_reasons(Some(small), 10).unwrap(), too_big[1..]);
@@ -409,7 +452,7 @@ fn a_confirmation_is_written_of_a_removal_that_is_not_sent() {
     assert_eq!(UnsentRemoval::of(&item(&mut store, shown)), None);
     let given = [of_removed, UnsentRemoval { item: shown, unsent_since: 1 }, UnsentRemoval { item: never_sent, unsent_since: 3 }, UnsentRemoval { item: LocalItemId::new(99), unsent_since: 1 }, of_second];
     assert_eq!(store.step_memory().remember_removals_confirmed(&given).unwrap(), 2);
-    assert_eq!(said(&mut store, removed).removal_confirmation, Some(RemovalConfirmation { unsent_since: of_removed.unsent_since }));
+    assert_eq!(said(&mut store, removed), ItemMemory { unsent_since: Some(of_removed.unsent_since), removal_confirmation: Some(RemovalConfirmation { unsent_since: of_removed.unsent_since }), ..ItemMemory::default() });
     assert_eq!((said(&mut store, shown), said(&mut store, never_sent)), (ItemMemory::default(), ItemMemory::default()));
     assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), [removed, second]);
     assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 1).unwrap(), [removed]);
@@ -433,15 +476,15 @@ fn a_confirmation_and_a_refusal_of_a_removal_are_not_answered_for_the_next_remov
         synced(&mut store, file, "A");
         remove(&mut store, file);
         let first = unsent_removal(&mut store, file);
-        let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal { unsent_since: first.unsent_since } };
+        let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal };
         assert_eq!(store.step_memory().remember_removals_confirmed(&[first]).unwrap(), 1);
-        assert_eq!(store.step_memory().remember_refusal(file, &refusal).unwrap(), StillSaid);
+        assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
         assert_eq!(store.step_memory().list_refusal_reasons(None, None, 10).unwrap(), [ItemRefusalReason { item: file, reason: Reason::Forbidden }]);
 
         show_again(&mut store, file, "report");
         assert_eq!((said(&mut store, file), store.step_memory().list_refusal_reasons(None, None, 10).unwrap()), (ItemMemory::default(), vec![]));
         if writes_in_between {
-            store.step_memory().remember_failed_try(file, &Reason::Network, None).unwrap();
+            remember_try(&mut store, file, &Reason::Network, None);
             store.step_memory().forget_fact(file, StepFact::FailedTries).unwrap();
         }
         remove(&mut store, file);
@@ -450,7 +493,7 @@ fn a_confirmation_and_a_refusal_of_a_removal_are_not_answered_for_the_next_remov
         assert_eq!(said(&mut store, file), ItemMemory::default(), "written in between: {writes_in_between}");
         assert_eq!(store.step_memory().list_items_with_confirmed_removal(None, 10).unwrap(), []);
         assert_eq!(store.step_memory().remember_removals_confirmed(&[first]).unwrap(), 0, "the removal the user was asked about is not this one");
-        assert_eq!(store.step_memory().remember_refusal(file, &refusal).unwrap(), VersionGone);
+        assert_eq!(store.step_memory().remember_refusal(file, Some(first.unsent_since), &refusal).unwrap(), VersionGone, "nor is the refusal of the first");
     }
 }
 
@@ -464,10 +507,10 @@ fn the_items_onedrive_refused_are_read_bounded_and_counted() {
     let files: Vec<LocalItemId> = (0..5).map(|n| make_file(&mut store, ROOT, &format!("file-{n}"))).collect();
     for (file, reason) in [(files[0], Reason::Forbidden), (files[1], Reason::Refused(Some("bad name".to_owned()))), (files[2], Reason::Forbidden), (files[4], Reason::Forbidden)] {
         let refusal = refusal_of(&mut store, file, reason);
-        store.step_memory().remember_refusal(file, &refusal).unwrap();
+        assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
     }
     let big = space_refusal(&mut store, files[0], 5);
-    store.step_memory().remember_space_refusal(files[0], &big).unwrap();
+    assert_eq!(remember_space(&mut store, files[0], &big), StillSaid);
     rename(&mut store, files[2], "renamed");
 
     let reason = |item, reason| ItemRefusalReason { item, reason };
@@ -493,9 +536,9 @@ fn the_taken_names_are_read_for_one_directory() {
     let directory = make_directory(&mut store, ROOT, "docs");
     let (inside, other_inside, outside) = (make_file(&mut store, directory, "straße"), make_file(&mut store, directory, "plain"), make_file(&mut store, ROOT, "top"));
     let (taken_inside, taken_outside) = (taken_at(&mut store, inside, "STRASSE"), taken_at(&mut store, outside, "TOP"));
-    store.step_memory().remember_taken_name(inside, &taken_inside).unwrap();
-    store.step_memory().remember_taken_name(outside, &taken_outside).unwrap();
-    store.step_memory().remember_failed_try(other_inside, &Reason::Network, None).unwrap();
+    assert_eq!(remember_taken(&mut store, inside, &taken_inside), StillSaid);
+    assert_eq!(remember_taken(&mut store, outside, &taken_outside), StillSaid);
+    remember_try(&mut store, other_inside, &Reason::Network, None);
     assert_eq!(store.step_memory().list_taken_names(directory).unwrap(), [ItemTakenName { item: inside, taken_name: taken_inside }]);
     assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap(), [ItemTakenName { item: outside, taken_name: taken_outside }]);
 }
@@ -540,7 +583,7 @@ fn the_address_of_a_session_replaces_its_opening() {
     let file = make_file(&mut store, ROOT, "report");
     store.step_memory().remember_upload_session_opening(file, &place(ROOT, "report"), 10).unwrap();
     let session = new_file_session(&mut store, file, "1");
-    store.step_memory().remember_upload_session(file, &session).unwrap();
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
     assert_eq!((count(&store, "upload_session_openings"), said(&mut store, file).upload_session), (0, Some(session)));
 }
 
@@ -552,7 +595,7 @@ fn a_session_that_ended_is_not_abandoned_though_the_content_changed_since() {
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
     let session = new_file_session(&mut store, file, "1");
-    store.step_memory().remember_upload_session(file, &session).unwrap();
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
     synced(&mut store, file, "A");
     store.step_memory().forget_ended_upload_session(file, &address("1")).unwrap();
     assert_eq!((kept(&store, file), abandoned(&mut store)), (ItemMemory::default(), vec![]));
@@ -568,7 +611,7 @@ fn a_new_try_of_an_upload_abandons_the_session_of_the_former_content() {
     let at = place(ROOT, "report");
     store.step_memory().remember_upload_session_opening(file, &at, 10).unwrap();
     let former = new_file_session(&mut store, file, "former");
-    store.step_memory().remember_upload_session(file, &former).unwrap();
+    assert_eq!(remember_session(&mut store, file, &former), Continued);
     change_content(&mut store, file);
     assert_eq!(said(&mut store, file).upload_session, None, "the plan sends the file as a new one");
 
@@ -590,7 +633,7 @@ fn the_address_of_a_session_whose_item_went_is_queued_for_its_cancel() {
     store.step_memory().remember_upload_session_opening(file, &at, 10).unwrap();
     let session = new_file_session(&mut store, file, "late");
     remove(&mut store, file);
-    assert_eq!(store.step_memory().remember_upload_session(file, &session).unwrap(), Abandoned);
+    assert_eq!(remember_session(&mut store, file, &session), Abandoned);
     assert_eq!(abandoned(&mut store), [address("late")]);
     assert_eq!(store.step_memory().list_empty_file_sessions(&at).unwrap(), [EmptyFileSession::Abandoned { address: address("late") }]);
     assert_eq!(windows(&mut store, &at), [(10, 10)], "the opening is of the place and stays");
@@ -604,8 +647,8 @@ fn an_opening_abandons_the_session_another_items_row_does_not_say_at_the_place()
     let mut store = TreeStore::in_memory().unwrap();
     let (former, live) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "other"));
     let (of_former, of_live) = (new_file_session(&mut store, former, "former"), new_file_session(&mut store, live, "live"));
-    store.step_memory().remember_upload_session(former, &of_former).unwrap();
-    store.step_memory().remember_upload_session(live, &of_live).unwrap();
+    assert_eq!(remember_session(&mut store, former, &of_former), Continued);
+    assert_eq!(remember_session(&mut store, live, &of_live), Continued);
     change_content(&mut store, former);
     rename(&mut store, former, "renamed");
     rename(&mut store, live, "elsewhere");
@@ -628,8 +671,8 @@ fn a_cancelled_session_is_not_left_in_the_row_that_does_not_say_it() {
     let mut store = TreeStore::in_memory().unwrap();
     let (stale, live) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "other"));
     let (of_stale, of_live) = (new_file_session(&mut store, stale, "stale"), new_file_session(&mut store, live, "live"));
-    store.step_memory().remember_upload_session(stale, &of_stale).unwrap();
-    store.step_memory().remember_upload_session(live, &of_live).unwrap();
+    assert_eq!(remember_session(&mut store, stale, &of_stale), Continued);
+    assert_eq!(remember_session(&mut store, live, &of_live), Continued);
     change_content(&mut store, stale);
     store.step_memory().forget_upload_session_cancellation(&address("stale")).unwrap();
     assert_eq!((kept(&store, stale).upload_session, abandoned(&mut store)), (None, vec![]));
@@ -644,7 +687,7 @@ fn a_session_is_kept_without_a_place_in_a_directory_that_went() {
     let mut store = TreeStore::in_memory().unwrap();
     let file = make_file(&mut store, ROOT, "report");
     let session = UploadSession { empty_file_place: Some(place(LocalItemId::new(99), "report")), ..new_file_session(&mut store, file, "1") };
-    assert_eq!(store.step_memory().remember_upload_session(file, &session).unwrap(), Continued);
+    assert_eq!(remember_session(&mut store, file, &session), Continued);
     assert_eq!(said(&mut store, file).upload_session, Some(UploadSession { empty_file_place: None, ..session }));
 }
 
@@ -654,7 +697,7 @@ fn a_session_is_kept_without_a_place_in_a_directory_that_went() {
 fn the_item_an_upload_left_is_kept_to_be_removed_when_its_files_row_goes() {
     let mut store = TreeStore::in_memory().unwrap();
     let (first, second, kept_file) = (make_file(&mut store, ROOT, "first"), make_file(&mut store, ROOT, "second"), make_file(&mut store, ROOT, "kept"));
-    let left = |id: &str| MismatchedItem::of_answer(OneDriveItemId::new(id), Some(&format!("c-{id}")), None);
+    let left = |id: &str| MismatchedItem::of_answer(reference(id), Some(&format!("c-{id}")), None);
     for (file, id) in [(first, "B1"), (second, "B2"), (kept_file, "B3")] {
         store.step_memory().remember_mismatched_item(file, &left(id)).unwrap();
     }
@@ -663,7 +706,7 @@ fn the_item_an_upload_left_is_kept_to_be_removed_when_its_files_row_goes() {
     remove(&mut store, first);
     assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), [left("B2"), left("B1")]);
     assert_eq!(store.step_memory().list_mismatched_item_removals(1).unwrap(), [left("B2")]);
-    store.step_memory().forget_mismatched_item_removal(&OneDriveItemId::new("B2")).unwrap();
+    store.step_memory().forget_mismatched_item(&reference("B2")).unwrap();
     assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), [left("B1")]);
     assert_eq!(said(&mut store, kept_file).mismatched_item, Some(left("B3")));
 }
@@ -676,9 +719,9 @@ fn what_was_learnt_of_a_place_in_a_directory_goes_with_the_directorys_row() {
     let directory = make_directory(&mut store, ROOT, "docs");
     let file = make_file(&mut store, directory, "report");
     let (refusal, taken) = (refusal_of(&mut store, file, Reason::Forbidden), taken_at(&mut store, file, "REPORT"));
-    store.step_memory().remember_refusal(file, &refusal).unwrap();
-    store.step_memory().remember_taken_name(file, &taken).unwrap();
-    store.step_memory().remember_failed_try(file, &Reason::Network, None).unwrap();
+    assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
+    assert_eq!(remember_taken(&mut store, file, &taken), StillSaid);
+    remember_try(&mut store, file, &Reason::Network, None);
     rename(&mut store, file, "report");
     remove(&mut store, directory);
     let after = kept(&store, file);

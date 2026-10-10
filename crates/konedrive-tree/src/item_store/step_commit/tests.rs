@@ -160,7 +160,7 @@ fn a_new_item_a_listing_brought_before_its_commit_is_one_row_with_it() {
 fn a_new_file_sent_has_onedrives_content_as_the_content_agreed_on_and_as_its_own_while_that_is_the_one_sent() {
     let mut store = store_with_listed_root();
     let file = make(&mut store, ItemKind::File, ROOT, "a.txt");
-    commit(&mut store, file, |items, planned_from| items.commit_send_new_file(planned_from, &reference("R"), "a.txt".as_ref(), &confirmed("A", "R", "a.txt", Some(confirmed_content(5, "h5")), "e-A")));
+    commit(&mut store, file, |items, planned_from| items.commit_send_new_file(planned_from, &reference("R"), "a.txt".as_ref(), &confirmed("A", "R", "a.txt", Some(confirmed_content(5, "h5")), "e-A"), None));
     let sent = row(&mut store, file);
     assert!(agrees(&sent), "{sent:?}");
     assert_eq!((sent.synced_content, sent.content_presence), (Some(confirmed_content(5, "h5")), ContentPresence::OnDisk));
@@ -172,7 +172,7 @@ fn a_new_file_sent_has_onedrives_content_as_the_content_agreed_on_and_as_its_own
     write_here(&mut store, changed, 9);
     move_here(&mut store, changed, ROOT, "c.txt");
     let answer = confirmed("B", "R", "b.txt", Some(confirmed_content(5, "h5")), "e-B");
-    assert_eq!(store.item_store().commit_send_new_file(&planned_from, &reference("R"), "b.txt".as_ref(), &answer).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_new_file(&planned_from, &reference("R"), "b.txt".as_ref(), &answer, None).unwrap(), StepCommitOutcome::Written);
     let sent = row(&mut store, changed);
     assert_eq!(sent.onedrive, Some(ItemVersion { place: Some(place(ROOT, "b.txt")), content: Some(confirmed_content(5, "h5")) }));
     assert_eq!((sent.synced_place, sent.synced_content), (Some(place(ROOT, "b.txt")), Some(confirmed_content(5, "h5"))));
@@ -183,7 +183,7 @@ fn a_new_file_sent_has_onedrives_content_as_the_content_agreed_on_and_as_its_own
     let removed = make(&mut store, ItemKind::File, ROOT, "d.txt");
     let planned_from = versions(&mut store, removed);
     store.item_store().apply(&LocalVersionChange::Removed { item: removed }).unwrap();
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_new_file(&planned_from, &reference("R"), "d.txt".as_ref(), &confirmed("X", "R", "d.txt", Some(confirmed_content(5, "h5")), "e-X"))));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_new_file(&planned_from, &reference("R"), "d.txt".as_ref(), &confirmed("X", "R", "d.txt", Some(confirmed_content(5, "h5")), "e-X"), None)));
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn content_sent_is_onedrives_content_and_the_content_agreed_on() {
     let mut store = store_with_listed_root();
     let file = show_file(&mut store, "A", "a.txt");
     write_here(&mut store, file, 9);
-    commit(&mut store, file, |items, planned_from| items.commit_send_content(planned_from, &confirmed("A", "R", "a.txt", Some(confirmed_content(9, "h9")), "e-A-2")));
+    commit(&mut store, file, |items, planned_from| items.commit_send_content(planned_from, &confirmed("A", "R", "a.txt", Some(confirmed_content(9, "h9")), "e-A-2"), None));
     let sent = row(&mut store, file);
     assert!(agrees(&sent), "{sent:?}");
     assert_eq!((sent.synced_content, sent.onedrive_etag.as_deref(), sent.confirmed_at_count), (Some(confirmed_content(9, "h9")), Some("e-A-2"), 1));
@@ -200,7 +200,7 @@ fn content_sent_is_onedrives_content_and_the_content_agreed_on() {
     write_here(&mut store, file, 11);
     let planned_from = versions(&mut store, file);
     write_here(&mut store, file, 12);
-    assert_eq!(store.item_store().commit_send_content(&planned_from, &confirmed("A", "R", "a.txt", Some(confirmed_content(11, "h11")), "e-A-3")).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_content(&planned_from, &confirmed("A", "R", "a.txt", Some(confirmed_content(11, "h11")), "e-A-3"), None).unwrap(), StepCommitOutcome::Written);
     let sent = row(&mut store, file);
     assert_eq!(sent.synced_content, Some(confirmed_content(11, "h11")));
     assert_eq!(sent.local.unwrap().content.unwrap().size(), 12);
@@ -494,7 +494,7 @@ fn a_step_no_plan_asks_for_is_refused() {
     let planned_from = versions(&mut store, file);
     let is_refused = |result: Result<StepCommitOutcome, TreeError>| matches!(result, Err(TreeError::Refused(_))) || panic!("not refused: {result:?}");
     let mut items = store.item_store();
-    assert!(is_refused(items.commit_send_content(&planned_from, &confirmed("other", "R", "a.txt", Some(confirmed_content(3, "h")), "e"))));
+    assert!(is_refused(items.commit_send_content(&planned_from, &confirmed("other", "R", "a.txt", Some(confirmed_content(3, "h")), "e"), None)));
     assert!(is_refused(items.commit_send_file_removal(&planned_from)), "the folder shows it");
     assert!(is_refused(items.commit_show_item(&planned_from, false)), "the folder shows it");
     assert!(is_refused(items.commit_agree_on_removal(&planned_from)));
@@ -521,10 +521,11 @@ fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     assert_eq!((store.item_store().find_item(file).unwrap(), bound(&mut store, "G").local_item_id), (None, saved), "the replacing item has the binding");
     let saved_content = row(&mut store, saved).local.unwrap().content;
     // A try of the running upload failed and is remembered of the row that has the binding.
-    store.step_memory().remember_failed_try(saved, &konedrive_reason::Reason::Network, Some(900)).unwrap();
+    let unsent_since = row(&mut store, saved).unsent_since;
+    assert_eq!(store.step_memory().remember_failed_try(saved, unsent_since, &konedrive_reason::Reason::Network, Some(900)).unwrap(), Some(1));
 
     let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
-    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent, None).unwrap(), StepCommitOutcome::Written);
     // What the confirmed request ends is forgotten of the row it was confirmed of.
     assert_eq!(store.step_memory().find_item_memory(saved).unwrap().failed_tries, None);
     let now = row(&mut store, saved);
@@ -536,7 +537,7 @@ fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
 
     // A commit planned from other versions of OneDrive's side than the row has now writes
     // nothing, whichever row has the binding.
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_content(&planned_from, &sent)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_content(&planned_from, &sent, None)));
 }
 
 /// S1, for a move: the place OneDrive confirmed is written to the row that has the binding
@@ -634,7 +635,7 @@ fn a_file_opened_during_its_upload_and_closed_unchanged_agrees_with_what_was_con
     let planned_from = versions(&mut store, file);
     store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: file }).unwrap();
     let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
-    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent, None).unwrap(), StepCommitOutcome::Written);
     store.item_store().apply(&LocalVersionChange::ClosedUnchanged { item: file }).unwrap();
     let closed = row(&mut store, file);
     assert!(agrees(&closed), "{closed:?}");

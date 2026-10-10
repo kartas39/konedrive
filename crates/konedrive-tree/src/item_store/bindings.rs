@@ -197,7 +197,10 @@ pub(crate) fn bind_item(tx: &Transaction<'_>, item: LocalItemId, onedrive_item: 
         return Err(refuse(format!("item {item} is not a new item of the folder: it has a binding, or the folder does not show it")));
     }
     match find_bound_item(tx, onedrive_item)? {
-        None => set_binding(tx, item, onedrive_item),
+        None => {
+            super::step_memory::drop_facts_of_binding(tx, item)?;
+            set_binding(tx, item, onedrive_item)
+        }
         Some(holder) if holder.local.is_some() => Err(refuse(format!("the folder shows item {} as the item of OneDrive {}: item {item} is not bound to it too", holder.local_item_id, onedrive_item.item_id.as_str()))),
         Some(holder) => merge_items(tx, item, holder.local_item_id),
     }

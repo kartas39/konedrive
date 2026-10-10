@@ -10,7 +10,7 @@ use rusqlite::types::{FromSql, Value};
 use rusqlite::{Connection, OptionalExtension};
 
 use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
-use crate::model::{ContentVersion, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId};
+use crate::model::{ContentVersion, DriveId, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::outbox::{path_from, path_value};
 use crate::{FoldedName, TreeError};
 
@@ -27,12 +27,13 @@ fn columns() -> Vec<(String, &'static str)> {
         CONTENT_COLUMNS.iter().map(|column| (format!("{of}_{column}"), if matches!(*column, "hash" | "ctag") { "TEXT" } else { "INTEGER" })).collect()
     }
     [
+        named(&["unsent_since"], "INTEGER"),
         named(&["session_address"], "TEXT"),
         named(&["session_expires_at", "session_next_offset"], "INTEGER"),
         content("session"),
         named(&["session_empty_file_parent_id"], "INTEGER"),
         named(&["session_empty_file_name", "session_empty_file_folded_name"], ""),
-        named(&["mismatched_item_id", "mismatched_ctag", "mismatched_etag"], "TEXT"),
+        named(&["mismatched_drive_id", "mismatched_item_id", "mismatched_ctag", "mismatched_etag"], "TEXT"),
         named(&["temporary_name"], ""),
         named(&["temporary_toward_parent_id"], "INTEGER"),
         named(&["temporary_toward_name"], ""),
@@ -40,12 +41,11 @@ fn columns() -> Vec<(String, &'static str)> {
         named(&["last_failure"], "TEXT"),
         content("space_refusal"),
         named(&["space_refusal_free_space"], "INTEGER"),
-        named(&["removal_confirmed_unsent_since"], "INTEGER"),
+        named(&["is_removal_confirmed"], "INTEGER"),
         named(&["refusal_reason"], "TEXT"),
         named(&["refused_parent_id"], "INTEGER"),
         named(&["refused_name"], ""),
         content("refused"),
-        named(&["refused_removal_unsent_since"], "INTEGER"),
         named(&["taken_parent_id"], "INTEGER"),
         named(&["taken_name", "taken_holder_name"], ""),
     ]
@@ -53,39 +53,45 @@ fn columns() -> Vec<(String, &'static str)> {
 }
 
 /// The table `step_memory`: one row per item by its local item id, every fact in columns of
-/// its own and null while it is not remembered. A refusal is of a version at a place or of
-/// a removal with a stamp, never of both. Each reader that is not by the item has an index:
+/// its own and null while it is not remembered. `unsent_since` is the stamp the facts of an
+/// unsent change were learnt under, and none of them is kept without it. A refusal with a
+/// place is of the version shown there, and one without is of a removal. The item an
+/// upload left is kept with its drive. Each reader that is not by the item has an index:
 /// the items that wait until a time, those OneDrive refused for good and those it refused
 /// for lack of space, those whose removal is confirmed, and by directory the names that are
 /// taken in it, the versions that were refused in it and the empty files of upload
-/// sessions in it; a session is found by its address too.
+/// sessions in it; a session is found by its address, and the item an upload left by its
+/// id.
 pub(super) fn schema() -> String {
     let columns: String = columns().iter().map(|(name, kind)| format!("{name} {kind}, ")).collect();
     format!(
         "CREATE TABLE step_memory (
              local_item_id INTEGER PRIMARY KEY,
              {columns}
+             CHECK (unsent_since IS NOT NULL OR (session_address IS NULL AND tries_count IS NULL AND space_refusal_size IS NULL
+                AND is_removal_confirmed IS NULL AND refusal_reason IS NULL AND taken_parent_id IS NULL)),
              CHECK ((session_address IS NULL) = (session_next_offset IS NULL) AND (session_address IS NULL) = (session_size IS NULL)),
              CHECK (session_address IS NOT NULL OR (session_expires_at IS NULL AND session_empty_file_parent_id IS NULL)),
              CHECK ((session_empty_file_parent_id IS NULL) = (session_empty_file_name IS NULL)
                 AND (session_empty_file_parent_id IS NULL) = (session_empty_file_folded_name IS NULL)),
+             CHECK ((mismatched_item_id IS NULL) = (mismatched_drive_id IS NULL)),
              CHECK (mismatched_item_id IS NOT NULL OR (mismatched_ctag IS NULL AND mismatched_etag IS NULL)),
              CHECK ((temporary_name IS NULL) = (temporary_toward_parent_id IS NULL) AND (temporary_name IS NULL) = (temporary_toward_name IS NULL)),
              CHECK ((tries_count IS NULL) = (last_failure IS NULL) AND (next_try_at IS NULL OR tries_count IS NOT NULL)),
              CHECK ((space_refusal_size IS NULL) = (space_refusal_free_space IS NULL)),
              CHECK ((refused_parent_id IS NULL) = (refused_name IS NULL)),
-             CHECK ((refusal_reason IS NULL AND refused_parent_id IS NULL AND refused_size IS NULL AND refused_removal_unsent_since IS NULL)
-                 OR (refusal_reason IS NOT NULL AND (refused_parent_id IS NULL) != (refused_removal_unsent_since IS NULL))),
+             CHECK (refusal_reason IS NOT NULL OR (refused_parent_id IS NULL AND refused_size IS NULL)),
              CHECK ((taken_parent_id IS NULL) = (taken_name IS NULL) AND (taken_parent_id IS NULL) = (taken_holder_name IS NULL)));
          CREATE INDEX step_memory_next_try ON step_memory(next_try_at, local_item_id) WHERE next_try_at IS NOT NULL;
          CREATE INDEX step_memory_refusal ON step_memory(local_item_id) WHERE refusal_reason IS NOT NULL;
          CREATE INDEX step_memory_space_refusal ON step_memory(local_item_id) WHERE space_refusal_size IS NOT NULL;
-         CREATE INDEX step_memory_removal_confirmation ON step_memory(local_item_id) WHERE removal_confirmed_unsent_since IS NOT NULL;
+         CREATE INDEX step_memory_removal_confirmation ON step_memory(local_item_id) WHERE is_removal_confirmed IS NOT NULL;
          CREATE INDEX step_memory_taken_name ON step_memory(taken_parent_id) WHERE taken_parent_id IS NOT NULL;
          CREATE INDEX step_memory_refused_place ON step_memory(refused_parent_id) WHERE refused_parent_id IS NOT NULL;
          CREATE INDEX step_memory_session_empty_file ON step_memory(session_empty_file_parent_id, session_empty_file_folded_name)
              WHERE session_empty_file_parent_id IS NOT NULL;
-         CREATE INDEX step_memory_session_address ON step_memory(session_address) WHERE session_address IS NOT NULL;"
+         CREATE INDEX step_memory_session_address ON step_memory(session_address) WHERE session_address IS NOT NULL;
+         CREATE INDEX step_memory_mismatched_item ON step_memory(mismatched_item_id) WHERE mismatched_item_id IS NOT NULL;"
     )
 }
 
@@ -152,6 +158,7 @@ impl RowReader<'_, '_> {
 /// An [`ItemMemory`] read from a query that selects [`columns`], from the column `first`.
 fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMemory> {
     let mut read = RowReader { row, at: first };
+    let unsent_since = read.next::<Option<i64>>()?.map(|unsent_since| unsent_since.max(0) as u64);
     let (address, expires_at, next_offset): (Option<String>, Option<i64>, Option<i64>) = (read.next()?, read.next()?, read.next()?);
     let (content, empty_file_place) = (read.content()?, read.place()?);
     read.next::<Value>()?;
@@ -162,26 +169,43 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
         content,
         empty_file_place,
     });
-    let (item_id, ctag, etag): (Option<String>, Option<String>, Option<String>) = (read.next()?, read.next()?, read.next()?);
-    let mismatched_item = item_id.map(|item_id| MismatchedItem::of_answer(OneDriveItemId::new(item_id), ctag.as_deref(), etag.as_deref()));
+    let (drive_id, item_id, ctag, etag): (Option<String>, Option<String>, Option<String>, Option<String>) = (read.next()?, read.next()?, read.next()?, read.next()?);
+    let mismatched_item = mismatched_item_from(drive_id, item_id, ctag.as_deref(), etag.as_deref());
     let (name, toward) = (read.name()?, read.place()?);
     let temporary_name = name.zip(toward).map(|(name, toward)| TemporaryName { name, toward });
     let (count, next_try_at, last_failure): (Option<u32>, Option<i64>, Option<String>) = (read.next()?, read.next()?, read.next()?);
     let failed_tries = count.zip(last_failure).map(|(count, last_failure)| FailedTries { count, next_try_at, last_failure: Reason::parse(&last_failure) });
     let (content, free_space) = (read.content()?, read.next::<Option<i64>>()?);
     let space_refusal = content.zip(free_space).map(|(content, free_space)| SpaceRefusal { content, free_space: free_space.max(0) as u64 });
-    let removal_confirmation = read.next::<Option<i64>>()?.map(|unsent_since| RemovalConfirmation { unsent_since: unsent_since.max(0) as u64 });
-    let (reason, place, content, removal) = (read.next::<Option<String>>()?, read.place()?, read.content()?, read.next::<Option<i64>>()?);
-    // A refused version has a place; a refused removal has its stamp.
-    let refused = match (place, removal) {
-        (Some(place), _) => Some(RefusedVersion::Shown(ItemVersion { place: Some(place), content })),
-        (None, Some(unsent_since)) => Some(RefusedVersion::Removal { unsent_since: unsent_since.max(0) as u64 }),
-        (None, None) => None,
+    // The confirmation is of the removal the memory's stamp is of.
+    let removal_confirmation = read.next::<Option<i64>>()?.and(unsent_since).map(|unsent_since| RemovalConfirmation { unsent_since });
+    let (reason, place, content) = (read.next::<Option<String>>()?, read.place()?, read.content()?);
+    // A refused version has a place; a refused removal has none.
+    let refused = match place {
+        Some(place) => RefusedVersion::Shown(ItemVersion { place: Some(place), content }),
+        None => RefusedVersion::Removal,
     };
-    let refusal = reason.zip(refused).map(|(reason, version)| Refusal { reason: Reason::parse(&reason), version });
+    let refusal = reason.map(|reason| Refusal { reason: Reason::parse(&reason), version: refused });
     let (place, holder_name) = (read.place()?, read.name()?);
     let taken_name = place.zip(holder_name).map(|(place, holder_name)| TakenName { place, holder_name });
-    Ok(ItemMemory { upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, removal_confirmation, refusal, taken_name })
+    Ok(ItemMemory { unsent_since, upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, removal_confirmation, refusal, taken_name })
+}
+
+/// The item an upload left, as two tables keep it: its drive, its id, and the tag of the
+/// upload's answer. `None` where no id is kept, and for a drive id that is no drive's.
+pub(super) fn mismatched_item_from(drive_id: Option<String>, item_id: Option<String>, ctag: Option<&str>, etag: Option<&str>) -> Option<MismatchedItem> {
+    let item = OneDriveItemReference { drive_id: drive_id.and_then(DriveId::new)?, item_id: OneDriveItemId::new(item_id?) };
+    Some(MismatchedItem::of_answer(item, ctag, etag))
+}
+
+/// The cTag and the eTag an upload's tag is kept as.
+fn tag_values(tag: Option<&UploadTag>) -> [Value; 2] {
+    let (ctag, etag) = match tag {
+        Some(UploadTag::CTag(ctag)) => (Some(ctag.clone()), None),
+        Some(UploadTag::ETag(etag)) => (None, Some(etag.clone())),
+        Some(UploadTag::NotGiven) | None => (None, None),
+    };
+    [optional(ctag), optional(etag)]
 }
 
 fn content_values(content: Option<&ContentVersion>) -> [Value; 6] {
@@ -209,7 +233,7 @@ fn optional<T: Into<Value>>(value: Option<T>) -> Value {
 
 /// The values of [`columns`], in their order.
 fn values_of(memory: &ItemMemory) -> Vec<Value> {
-    let mut values: Vec<Value> = Vec::new();
+    let mut values: Vec<Value> = vec![optional(memory.unsent_since.map(|unsent_since| unsent_since as i64))];
     let session = memory.upload_session.as_ref();
     values.push(optional(session.map(|session| session.address.as_str().to_owned())));
     values.push(optional(session.and_then(|session| session.expires_at)));
@@ -219,13 +243,9 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     values.extend(place_values(empty_file_place));
     values.push(empty_file_place.map_or(Value::Null, |place| folded_name_value(&place.name)));
     let mismatched = memory.mismatched_item.as_ref();
-    values.push(optional(mismatched.map(|upload| upload.item_id.as_str().to_owned())));
-    let (ctag, etag) = match mismatched.map(|upload| &upload.tag) {
-        Some(UploadTag::CTag(ctag)) => (Some(ctag.clone()), None),
-        Some(UploadTag::ETag(etag)) => (None, Some(etag.clone())),
-        Some(UploadTag::NotGiven) | None => (None, None),
-    };
-    values.extend([optional(ctag), optional(etag)]);
+    values.push(optional(mismatched.map(|upload| upload.item.drive_id.as_str().to_owned())));
+    values.push(optional(mismatched.map(|upload| upload.item.item_id.as_str().to_owned())));
+    values.extend(tag_values(mismatched.map(|upload| &upload.tag)));
     let temporary = memory.temporary_name.as_ref();
     values.push(temporary.map_or(Value::Null, |temporary| name_value(&temporary.name)));
     values.extend(place_values(temporary.map(|temporary| &temporary.toward)));
@@ -236,17 +256,15 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     let space_refusal = memory.space_refusal.as_ref();
     values.extend(content_values(space_refusal.map(|space_refusal| &space_refusal.content)));
     values.push(optional(space_refusal.map(|space_refusal| space_refusal.free_space as i64)));
-    values.push(optional(memory.removal_confirmation.map(|confirmation| confirmation.unsent_since as i64)));
+    values.push(optional(memory.removal_confirmation.map(|_| 1i64)));
     let refusal = memory.refusal.as_ref();
-    let (refused, refused_removal) = match refusal.map(|refusal| &refusal.version) {
-        Some(RefusedVersion::Shown(version)) => (Some(version), None),
-        Some(RefusedVersion::Removal { unsent_since }) => (None, Some(*unsent_since as i64)),
-        None => (None, None),
+    let refused = match refusal.map(|refusal| &refusal.version) {
+        Some(RefusedVersion::Shown(version)) => Some(version),
+        Some(RefusedVersion::Removal) | None => None,
     };
     values.push(optional(refusal.map(|refusal| refusal.reason.to_string())));
     values.extend(place_values(refused.and_then(|version| version.place.as_ref())));
     values.extend(content_values(refused.and_then(|version| version.content.as_ref())));
-    values.push(optional(refused_removal));
     let taken = memory.taken_name.as_ref();
     values.extend(place_values(taken.map(|taken| &taken.place)));
     values.push(taken.map_or(Value::Null, |taken| name_value(&taken.holder_name)));
@@ -267,6 +285,9 @@ pub(super) fn read_memory(conn: &Connection, item: LocalItemId) -> Result<ItemMe
 /// `memory` is what is kept of `item` from now on, whole; a memory with nothing in it keeps
 /// no row.
 pub(super) fn write_memory(conn: &Connection, item: LocalItemId, memory: &ItemMemory) -> Result<(), TreeError> {
+    let mut memory = memory.clone();
+    memory.keep_stamp_only_with_its_facts();
+    let memory = &memory;
     if memory.is_empty() {
         conn.prepare_cached("DELETE FROM step_memory WHERE local_item_id = ?1")?.execute([item.as_i64()])?;
         return Ok(());

@@ -7,11 +7,14 @@ fn the_versions_a_step_was_planned_from_are_those_of_the_row_until_one_of_them_c
     let planned_from = ItemVersions::of(&row);
     assert!(planned_from.are_those_of(&row));
 
-    // What is no version is not asked: the stamps.
+    // What is no version is not asked: the stamp of the last confirmation.
     let mut same_versions = row.clone();
     same_versions.confirmed_at_count = 9;
-    same_versions.unsent_since = Some(4);
     assert!(planned_from.are_those_of(&same_versions));
+    let mut other = row.clone();
+    other.unsent_since = Some(4);
+    assert!(!planned_from.are_those_of(&other), "which unsent change it is");
+    assert!(planned_from.are_onedrive_and_synced_those_of(&other), "not asked by a step that leaves the folder free to change");
 
     assert!(!planned_from.are_those_of(&moved_here(row.clone(), ROOT, "b.txt")), "the local version");
     assert!(!planned_from.are_those_of(&with_content_in_onedrive(row.clone(), hashed("theirs"))), "the OneDrive version");

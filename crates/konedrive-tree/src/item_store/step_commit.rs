@@ -45,14 +45,22 @@
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
 //! guard against an outdated listing, in one statement.
 //!
-//! **What the steps remember of the item** ([`step_memory`](super::step_memory)) is kept
-//! right in the same transaction, where the commit knows more than the rows say: a commit
-//! of a step towards OneDrive forgets what was kept for the request OneDrive confirmed
-//! ([`ConfirmedRequest`]) — the failed tries, the upload session that sent the content,
-//! which ended and is not to be cancelled, the temporary name of a move that reached the
-//! place the name led to —, and
-//! the commit of the step that hashed the local content carries that content, the same
-//! bytes, into the facts that hold it.
+//! **What the steps remember of the item** ([`step_memory`](super::step_memory)). What a
+//! step learnt of a local change that was not sent is answered only while the row has the
+//! stamp of that change, so a commit that makes the two sides agree forgets it by what it
+//! writes, and so does every commit that gives or moves a binding, by the operation on the
+//! binding: none of them says a word here. A commit says what the rows do not:
+//!
+//! - the commit of an upload is told the upload session that ended with it, which is
+//!   forgotten and not cancelled ([`forget_ended_upload_session`]);
+//! - the commits of an upload into an item OneDrive has and of a move may leave the item
+//!   unsent, changed here again while the request ran, under the stamp it had: the failed
+//!   tries of the request that went through are forgotten, and the temporary name once
+//!   OneDrive confirmed the item at another place ([`ConfirmedRequest`]);
+//! - the commit of a removal forgets the temporary name of what OneDrive does not have any
+//!   more;
+//! - the commit of the step that hashed the local content carries that content, the same
+//!   bytes, into the facts that hold it.
 
 use std::ffi::{OsStr, OsString};
 
@@ -61,7 +69,7 @@ use rusqlite::{Connection, Transaction};
 use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
-use super::step_memory::{carry_content, forget_confirmed_request, ConfirmedRequest};
+use super::step_memory::{carry_content, forget_confirmed_request, forget_ended_upload_session, ConfirmedRequest, UploadSessionAddress};
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
 use crate::sync_plan::ItemVersions;
@@ -99,23 +107,29 @@ impl ItemStore<'_> {
     /// this one. When the rows changed, nothing is written, and the directory OneDrive made
     /// is the step's to remove where the item's row is gone.
     pub fn commit_make_directory(&mut self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_new_item(tx, item, ItemKind::Directory, parent, name, made))
+        self.write(|tx| commit_new_item(tx, item, ItemKind::Directory, parent, name, made, None))
     }
 
     /// The commit of [`OneDriveStep::SendNewFile`](crate::OneDriveStep::SendNewFile): as for
     /// a directory ([`commit_make_directory`](Self::commit_make_directory)), and the
     /// content OneDrive answered is the content agreed on, and the local content too when
-    /// that is still the one that was sent.
-    pub fn commit_send_new_file(&mut self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_new_item(tx, item, ItemKind::File, parent, name, made))
+    /// that is still the one that was sent. `name` is the name the request was made under:
+    /// for an upload that went on with an upload session, the name of the session's empty
+    /// file, whatever the file is called here by now. `ended_session` is the upload
+    /// session that ended with the upload, when one sent it: it is forgotten, and not
+    /// cancelled.
+    pub fn commit_send_new_file(&mut self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem, ended_session: Option<&UploadSessionAddress>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_new_item(tx, item, ItemKind::File, parent, name, made, ended_session))
     }
 
     /// The commit of [`OneDriveStep::SendContent`](crate::OneDriveStep::SendContent):
     /// OneDrive has the content that was sent, and answered the item as `sent`. OneDrive's
     /// version is what was answered, its content is the content agreed on, and the local
-    /// content too when that is still the one that was sent.
-    pub fn commit_send_content(&mut self, item: &ItemVersions, sent: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_content(tx, item, sent))
+    /// content too when that is still the one that was sent. `ended_session` is the upload
+    /// session that ended with the upload, when one sent it: it is forgotten, and not
+    /// cancelled.
+    pub fn commit_send_content(&mut self, item: &ItemVersions, sent: &ConfirmedItem, ended_session: Option<&UploadSessionAddress>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| commit_send_content(tx, item, sent, ended_session))
     }
 
     /// The commit of [`OneDriveStep::SendMove`](crate::OneDriveStep::SendMove): OneDrive
@@ -350,7 +364,15 @@ fn agree_on_confirmed_content(row: &mut Item, sent: Option<&ContentVersion>, con
 
 /// [`ItemStore::commit_make_directory`] and [`ItemStore::commit_send_new_file`], inside the
 /// caller's transaction, which is dropped on any error.
-pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: ItemKind, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_new_item(
+    tx: &Transaction<'_>,
+    item: &ItemVersions,
+    kind: ItemKind,
+    parent: &OneDriveItemReference,
+    name: &OsStr,
+    made: &ConfirmedItem,
+    ended_session: Option<&UploadSessionAddress>,
+) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned_new_item(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
     if row.kind != kind || row.onedrive_item.is_some() || row.local.is_none() {
@@ -361,10 +383,13 @@ pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: I
     if find_bound_item(tx, &made.item)?.is_some_and(|holder| holder.local.is_some()) {
         return Ok(StepCommitOutcome::RowsChanged);
     }
-    // Before the binding is given: when a row a listing made is merged into this one, a
-    // binding moves, and a session still kept then is taken for one to cancel.
+    // Before the binding is given: the item gets a binding, and a session still kept then
+    // is taken for one to cancel. All else the steps learnt of the item as one OneDrive did
+    // not have goes with that.
+    if let Some(address) = ended_session {
+        forget_ended_upload_session(tx, id, address)?;
+    }
     let sent = item.local.as_ref().and_then(|local| local.content.as_ref());
-    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent })?;
     bind_item(tx, id, &made.item)?;
     if !confirm_item(tx, id, made)? {
         return Err(refuse(format!("the directory OneDrive has item {id} in lost its row within one transaction")));
@@ -390,7 +415,7 @@ fn find_planned_item_of_onedrive(conn: &Connection, planned: &ItemVersions, conf
 
 /// [`ItemStore::commit_send_content`], inside the caller's transaction, which is dropped on
 /// any error.
-pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sent: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
+pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sent: &ConfirmedItem, ended_session: Option<&UploadSessionAddress>) -> Result<StepCommitOutcome, TreeError> {
     let Some(id) = find_planned_item_of_onedrive(tx, item, sent)?.map(|row| row.local_item_id) else { return Ok(StepCommitOutcome::RowsChanged) };
     if !confirm_item(tx, id, sent)? {
         return Ok(StepCommitOutcome::RowsChanged);
@@ -399,7 +424,7 @@ pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sen
     let sent_content = item.local.as_ref().and_then(|local| local.content.as_ref());
     agree_on_confirmed_content(&mut row, sent_content, sent.content.as_ref());
     write_item(tx, &row)?;
-    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent: sent_content })?;
+    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { ended_session })?;
     Ok(StepCommitOutcome::Written)
 }
 

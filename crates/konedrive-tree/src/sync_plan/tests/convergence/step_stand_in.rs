@@ -132,7 +132,7 @@ impl StepStandIn {
                 let answer = self.next_answer();
                 let made = ConfirmedItem { item: reference(&format!("N{answer}")), parent: parent.clone(), name: name.clone(), content: self.confirm_content(item.local.as_ref()), etag: format!("e-{answer}") };
                 if made.content.is_some() {
-                    store.item_store().commit_send_new_file(item, parent, name, &made)
+                    store.item_store().commit_send_new_file(item, parent, name, &made, None)
                 } else {
                     store.item_store().commit_make_directory(item, parent, name, &made)
                 }
@@ -140,7 +140,7 @@ impl StepStandIn {
             OneDriveStep::SendContent { item } => {
                 let content = self.confirm_content(item.local.as_ref());
                 let Some(sent) = row_of_binding(store, item).and_then(|row| self.confirm_where_it_is(store, &row, content)) else { return StepOutcome::RowsChanged };
-                store.item_store().commit_send_content(item, &sent)
+                store.item_store().commit_send_content(item, &sent, None)
             }
             OneDriveStep::SendMove { item, parent, name } => {
                 let Some(row) = row_of_binding(store, item) else { return StepOutcome::RowsChanged };

@@ -1,7 +1,7 @@
 use konedrive_reason::Reason;
 
 use super::*;
-use crate::model::{ContentPresence, DriveId, ItemKind, LocalItemId, OneDriveItemReference, Placement};
+use crate::model::{ContentPresence, DriveId, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -39,8 +39,13 @@ fn row(local: Option<ItemVersion>, is_bound: bool, is_synced: bool) -> Item {
     }
 }
 
+/// The stamp every fact of an unsent change in [`everything`] was learnt under.
+const LEARNT_UNDER: u64 = 4;
+
+/// The row of a file the folder shows under `name` with the content `change_count`, which
+/// OneDrive does not have, unsent since [`LEARNT_UNDER`].
 fn shown(name: &str, change_count: u64) -> Item {
-    row(Some(version(name, change_count)), false, false)
+    Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(version(name, change_count)), false, false) }
 }
 
 /// The row of a file of OneDrive removed here, its removal unsent since `unsent_since`.
@@ -48,33 +53,73 @@ fn removed(unsent_since: u64) -> Item {
     Item { unsent_since: Some(unsent_since), ..row(None, true, true) }
 }
 
-use FactStanding::{StillSaid, VersionGone};
-
-/// An upload session is the item's while the bytes being sent are the file's: not after the
-/// content changed, not once the folder does not show the file; a rename leaves it, and so
-/// does a writer that has the file open and has not closed it yet.
-#[test]
-fn an_upload_session_stands_while_the_files_content_is_the_one_being_sent() {
-    let session = UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: None, next_offset: 0, content: content(1), empty_file_place: Some(place("report")) };
-    assert_eq!(session.decide_standing(&shown("report", 1)), StillSaid, "the content being sent");
-    assert_eq!(session.decide_standing(&shown("renamed", 1)), StillSaid, "a rename leaves the content");
-    assert_eq!(session.decide_standing(&shown("report", 2)), VersionGone, "the content changed");
-    assert_eq!(session.decide_standing(&row(None, true, true)), VersionGone, "the folder does not show the file");
-    let opened = Item { content_before_write: Some(content(1)), ..shown("report", 2) };
-    assert_eq!(session.decide_standing(&opened), StillSaid, "a writer has it open: what it was before is what is sent");
-    let opened_after_another_content = Item { content_before_write: Some(content(5)), ..shown("report", 6) };
-    assert_eq!(session.decide_standing(&opened_after_another_content), VersionGone);
+fn reference(item_id: &str) -> OneDriveItemReference {
+    OneDriveItemReference { drive_id: DriveId::new("d1").unwrap(), item_id: OneDriveItemId::new(item_id) }
 }
 
-/// A file too big for the space is so while the bytes that were refused are the file's.
+/// Every fact of a file shown as `report` with the content 1, learnt under [`LEARNT_UNDER`].
+fn everything() -> ItemMemory {
+    ItemMemory {
+        unsent_since: Some(LEARNT_UNDER),
+        upload_session: Some(UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: Some(9), next_offset: 3, content: content(1), empty_file_place: Some(place("report")) }),
+        mismatched_item: Some(MismatchedItem::of_answer(reference("B"), Some("c-B"), Some("e-B"))),
+        temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
+        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
+        space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
+        removal_confirmation: None,
+        refusal: Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) }),
+        taken_name: Some(TakenName { place: place("report"), holder_name: "REPORT".into() }),
+    }
+}
+
+/// What is of OneDrive in [`everything`]: under no stamp, said of any row.
+fn of_onedrive() -> ItemMemory {
+    ItemMemory { mismatched_item: everything().mismatched_item, temporary_name: everything().temporary_name, ..ItemMemory::default() }
+}
+
+/// What a row says of `memory`.
+fn said(memory: ItemMemory, item: &Item) -> ItemMemory {
+    memory.split_by_standing(item).said
+}
+
+/// The rule: a fact of an unsent change is answered only while the row has the stamp it was
+/// learnt under. A row with another stamp, and a row with nothing unsent, answer none of
+/// them, whatever else the row says; what is of OneDrive is under no stamp.
 #[test]
-fn a_file_too_big_for_the_space_stands_while_its_content_is_the_refused_one() {
-    let space_refusal = SpaceRefusal { content: content(1), free_space: 5 };
-    assert_eq!(space_refusal.decide_standing(&shown("report", 1)), StillSaid);
-    assert_eq!(space_refusal.decide_standing(&shown("renamed", 1)), StillSaid, "a rename leaves the content");
-    assert_eq!(space_refusal.decide_standing(&shown("report", 2)), VersionGone, "the content changed");
-    assert_eq!(space_refusal.decide_standing(&row(None, true, true)), VersionGone, "the folder does not show the file");
-    assert_eq!(space_refusal.decide_standing(&Item { content_before_write: Some(content(1)), ..shown("report", 2) }), StillSaid, "a writer has it open");
+fn a_fact_of_an_unsent_change_is_said_only_by_a_row_with_the_stamp_it_was_learnt_under() {
+    let parts = everything().split_by_standing(&shown("report", 1));
+    assert_eq!((parts.said, parts.gone), (everything(), ItemMemory::default()), "the row it was learnt of");
+
+    let with_another_stamp = Item { unsent_since: Some(LEARNT_UNDER + 1), ..shown("report", 1) };
+    let parts = everything().split_by_standing(&with_another_stamp);
+    assert_eq!(parts.said, of_onedrive(), "the same versions, unsent a second time");
+    assert_eq!(parts.gone, ItemMemory { mismatched_item: None, temporary_name: None, ..everything() }, "all of the first change is gone, with its stamp");
+
+    let with_nothing_unsent = Item { unsent_since: None, ..shown("report", 1) };
+    assert_eq!(said(everything(), &with_nothing_unsent), of_onedrive(), "the two sides agree: nothing is answered of what was unsent");
+
+    let learnt_under_no_stamp = ItemMemory { unsent_since: None, ..everything() };
+    assert_eq!(said(learnt_under_no_stamp, &with_nothing_unsent), of_onedrive(), "no stamp is not a stamp two can share");
+}
+
+/// Beside the stamp, an upload session and a refusal for lack of space are asked that the
+/// bytes are the file's: not after the content changed, not once the folder does not show
+/// the file; a rename leaves them, and so does a writer that has the file open and has not
+/// closed it yet.
+#[test]
+fn a_session_and_a_refusal_for_lack_of_space_are_said_while_the_bytes_are_the_files() {
+    let of_content = |item: &Item| {
+        let said = said(everything(), item);
+        (said.upload_session.is_some(), said.space_refusal.is_some())
+    };
+    assert_eq!(of_content(&shown("report", 1)), (true, true), "the content being sent");
+    assert_eq!(of_content(&shown("renamed", 1)), (true, true), "a rename leaves the content");
+    assert_eq!(of_content(&shown("report", 2)), (false, false), "the content changed again under the same stamp");
+    assert_eq!(of_content(&removed(LEARNT_UNDER)), (false, false), "the folder does not show the file");
+    let opened = Item { content_before_write: Some(content(1)), ..shown("report", 2) };
+    assert_eq!(of_content(&opened), (true, true), "a writer has it open: what it was before is what is sent");
+    let opened_after_another_content = Item { content_before_write: Some(content(5)), ..shown("report", 6) };
+    assert_eq!(of_content(&opened_after_another_content), (false, false));
 }
 
 /// A file refused for lack of space fits when its size is no more than the free space.
@@ -86,86 +131,73 @@ fn a_file_fits_when_its_size_is_no_more_than_the_free_space() {
     assert_eq!(space_refusal.decide_fit(11), SpaceFit::Fits);
 }
 
-/// A refusal of a version is the item's while it is at the refused place with the refused
-/// bytes.
+/// Beside the stamp, a refusal of a shown version is asked that the item is at the refused
+/// place with the refused bytes, and a refusal of a removal that the row is a removal.
 #[test]
-fn a_refusal_of_a_version_stands_while_the_local_version_is_the_refused_one() {
+fn a_refusal_is_said_while_the_row_is_the_version_or_the_removal_that_was_refused() {
+    let is_said = |refusal: &Refusal, item: &Item| said(ItemMemory { unsent_since: Some(LEARNT_UNDER), refusal: Some(refusal.clone()), ..ItemMemory::default() }, item).refusal.is_some();
     let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) };
-    assert_eq!(refusal.decide_standing(&shown("report", 1)), StillSaid);
-    assert_eq!(refusal.decide_standing(&shown("renamed", 1)), VersionGone, "the place changed");
-    assert_eq!(refusal.decide_standing(&shown("report", 2)), VersionGone, "the content changed");
-    assert_eq!(refusal.decide_standing(&removed(4)), VersionGone, "removed here since");
-    assert_eq!(refusal.decide_standing(&Item { content_before_write: Some(content(1)), ..shown("report", 2) }), StillSaid, "a writer has it open");
+    assert!(is_said(&refusal, &shown("report", 1)));
+    assert!(!is_said(&refusal, &shown("renamed", 1)), "the place changed");
+    assert!(!is_said(&refusal, &shown("report", 2)), "the content changed");
+    assert!(!is_said(&refusal, &removed(LEARNT_UNDER)), "removed here since, unsent all the while");
+    assert!(is_said(&refusal, &Item { content_before_write: Some(content(1)), ..shown("report", 2) }), "a writer has it open");
     let of_a_directory = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(ItemVersion { place: Some(place("docs")), content: None }) };
-    assert_eq!(of_a_directory.decide_standing(&row(Some(ItemVersion { place: Some(place("docs")), content: None }), false, false)), StillSaid);
-    assert_eq!(of_a_directory.decide_standing(&shown("docs", 1)), VersionGone, "a version with a content is not the directory's");
+    assert!(is_said(&of_a_directory, &Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(ItemVersion { place: Some(place("docs")), content: None }), false, false) }));
+    assert!(!is_said(&of_a_directory, &shown("docs", 1)), "a version with a content is not the directory's");
+
+    let of_a_removal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal };
+    assert!(is_said(&of_a_removal, &removed(LEARNT_UNDER)), "removed here, OneDrive not told");
+    assert!(!is_said(&of_a_removal, &removed(9)), "shown again and removed again: another removal");
+    assert!(!is_said(&of_a_removal, &Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(version("report", 1)), true, true) }), "the folder shows it");
 }
 
-/// A confirmation of a removal and a refusal of a removal are of that removal: the row is a
-/// removal that is not sent — bound, not shown, with a place agreed on — and has the stamp
-/// the fact holds. A row that is a removal again with another stamp is another removal.
+/// The confirmation of a removal is of that removal: the row is a removal — bound, not
+/// shown, with a place agreed on — and has the stamp the removal was held with.
 #[test]
-fn a_fact_of_a_removal_stands_while_the_row_is_that_removal() {
-    let confirmation = RemovalConfirmation { unsent_since: 4 };
-    let refusal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal { unsent_since: 4 } };
-    let both = |item: &Item| (confirmation.decide_standing(item), refusal.decide_standing(item));
-    assert_eq!(both(&removed(4)), (StillSaid, StillSaid), "removed here, OneDrive not told");
-    assert_eq!(both(&removed(9)), (VersionGone, VersionGone), "shown again and removed again: another removal");
-    assert_eq!(both(&Item { unsent_since: Some(4), ..row(Some(version("report", 1)), true, true) }), (VersionGone, VersionGone), "the folder shows it");
-    assert_eq!(both(&Item { unsent_since: None, ..row(None, true, false) }), (VersionGone, VersionGone), "nothing is agreed on: no removal is unsent");
-    assert_eq!(both(&Item { unsent_since: Some(4), ..row(None, false, false) }), (VersionGone, VersionGone), "an item OneDrive does not have");
+fn a_confirmation_is_said_while_the_row_is_the_removal_that_was_confirmed() {
+    let confirmed = ItemMemory { unsent_since: Some(LEARNT_UNDER), removal_confirmation: Some(RemovalConfirmation { unsent_since: LEARNT_UNDER }), ..ItemMemory::default() };
+    let is_said = |item: &Item| said(confirmed.clone(), item).removal_confirmation.is_some();
+    assert!(is_said(&removed(LEARNT_UNDER)));
+    assert!(!is_said(&removed(9)), "shown again and removed again: another removal");
+    assert!(!is_said(&Item { unsent_since: Some(LEARNT_UNDER), ..row(Some(version("report", 1)), true, true) }), "the folder shows it");
+    assert!(!is_said(&Item { unsent_since: None, ..row(None, true, false) }), "nothing is agreed on: no removal is unsent");
+    assert!(!is_said(&Item { unsent_since: Some(LEARNT_UNDER), ..row(None, false, false) }), "an item OneDrive does not have");
 }
 
-/// The removal a row is now: told by the row's stamp, and none for a row that is no removal
-/// that is not sent.
+/// The removal a row is now, and the one a step was planned from: told by the stamp, and
+/// none for what is no removal that is not sent.
 #[test]
 fn an_unsent_removal_is_told_by_the_stamp_of_its_row() {
-    assert_eq!(UnsentRemoval::of(&removed(4)), Some(UnsentRemoval { item: LocalItemId::new(7), unsent_since: 4 }));
-    assert_eq!(UnsentRemoval::of(&Item { unsent_since: Some(4), ..shown("report", 1) }), None, "the folder shows it");
+    let of_removed = Some(UnsentRemoval { item: LocalItemId::new(7), unsent_since: 4 });
+    assert_eq!(UnsentRemoval::of(&removed(4)), of_removed);
+    assert_eq!(UnsentRemoval::of_versions(&ItemVersions::of(&removed(4))), of_removed, "as a plan held it");
+    assert_eq!(UnsentRemoval::of(&shown("report", 1)), None, "the folder shows it");
     assert_eq!(UnsentRemoval::of(&row(None, true, false)), None, "the removal was sent");
 }
 
-/// A taken name is the item's while its local place is the place that was sent; a change of
-/// the content leaves it.
+/// Beside the stamp, a taken name is asked that the item's local place is the place that
+/// was sent; a change of the content leaves it. The failed tries are asked nothing more.
 #[test]
-fn a_taken_name_stands_while_the_local_place_is_the_one_that_was_sent() {
-    let taken = TakenName { place: place("report"), holder_name: "REPORT".into() };
-    assert_eq!(taken.decide_standing(&shown("report", 1)), StillSaid);
-    assert_eq!(taken.decide_standing(&shown("report", 2)), StillSaid, "the content changed");
-    assert_eq!(taken.decide_standing(&shown("renamed", 1)), VersionGone, "the place changed");
-    assert_eq!(taken.decide_standing(&row(None, true, true)), VersionGone, "the folder does not show it");
+fn a_taken_name_is_said_while_the_local_place_is_the_one_that_was_sent() {
+    let of = |item: &Item| {
+        let said = said(everything(), item);
+        (said.taken_name.is_some(), said.failed_tries.is_some())
+    };
+    assert_eq!(of(&shown("report", 1)), (true, true));
+    assert_eq!(of(&shown("report", 2)), (true, true), "the content changed");
+    assert_eq!(of(&shown("renamed", 1)), (false, true), "the place changed");
+    assert_eq!(of(&removed(LEARNT_UNDER)), (false, true), "the folder does not show it, and it is unsent still");
 }
 
-fn everything() -> ItemMemory {
-    ItemMemory {
-        upload_session: Some(UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: Some(9), next_offset: 3, content: content(1), empty_file_place: Some(place("report")) }),
-        mismatched_item: Some(MismatchedItem::of_answer(OneDriveItemId::new("B"), Some("c-B"), Some("e-B"))),
-        temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
-        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
-        space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
-        removal_confirmation: Some(RemovalConfirmation { unsent_since: 4 }),
-        refusal: Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) }),
-        taken_name: Some(TakenName { place: place("report"), holder_name: "REPORT".into() }),
-    }
-}
-
-/// The memory is parted by what the row says: each fact with a version goes to its side,
-/// and the temporary name, the failed tries and the item an upload left, which hold none,
-/// are always said.
+/// The memory holds the stamp only while it holds a fact that was learnt under it.
 #[test]
-fn a_memory_is_parted_into_what_the_row_says_and_what_is_gone() {
-    let memory = everything();
-    let parts = memory.clone().split_by_standing(&shown("report", 1));
-    assert_eq!(parts.said, ItemMemory { removal_confirmation: None, ..memory.clone() }, "the folder shows it: all but the confirmation");
-    assert_eq!(parts.gone, ItemMemory { removal_confirmation: memory.removal_confirmation, ..ItemMemory::default() });
-
-    let parts = memory.clone().split_by_standing(&shown("renamed", 2));
-    let with_no_version = ItemMemory { mismatched_item: memory.mismatched_item.clone(), temporary_name: memory.temporary_name.clone(), failed_tries: memory.failed_tries.clone(), ..ItemMemory::default() };
-    assert_eq!(parts.said, with_no_version, "what holds no version");
-    assert_eq!(parts.gone, ItemMemory { mismatched_item: None, temporary_name: None, failed_tries: None, ..memory.clone() });
-
-    let parts = memory.clone().split_by_standing(&removed(4));
-    assert_eq!(parts.said, ItemMemory { removal_confirmation: memory.removal_confirmation, ..with_no_version }, "removed here: the confirmation, and nothing of the content");
+fn a_memory_with_no_fact_of_an_unsent_change_holds_no_stamp() {
+    let parts = everything().split_by_standing(&shown("renamed", 2));
+    assert_eq!(parts.said, ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: everything().failed_tries, ..of_onedrive() }, "the tries are of the stamp alone");
+    let mut memory = ItemMemory { unsent_since: Some(LEARNT_UNDER), ..of_onedrive() };
+    memory.keep_stamp_only_with_its_facts();
+    assert_eq!(memory, of_onedrive());
 }
 
 /// A step computed the hash of a content: the facts that hold that content hold the hashed
@@ -184,42 +216,43 @@ fn a_content_told_by_its_hash_is_carried_into_the_facts_that_hold_it() {
     assert_eq!(of_another_content, everything());
 }
 
-/// A request OneDrive confirmed, a case each: the failed tries are forgotten with every
-/// one; the session that sent the content of an upload ended, and one of another content is
-/// left; the temporary name is forgotten by the move that reached the place it led to.
+/// A request OneDrive confirmed of an item it has, a case each. An upload and a move: the
+/// failed tries are forgotten, whatever the stamp. A move to another place than the
+/// temporary name, and a removal: the temporary name is forgotten. The upload session is
+/// not forgotten here: the one that ended is told by its address.
 #[test]
-fn what_was_kept_for_a_request_is_forgotten_once_onedrive_confirmed_it() {
+fn what_a_confirmed_request_ends_is_forgotten_whatever_the_stamp() {
     let mut memory = everything();
-    memory.forget_confirmed_request(ConfirmedRequest::Upload { sent: Some(&content(1)) });
-    assert_eq!(memory, ItemMemory { upload_session: None, failed_tries: None, ..everything() });
-
-    let mut memory = everything();
-    memory.forget_confirmed_request(ConfirmedRequest::Upload { sent: Some(&content(2)) });
-    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() }, "the session sends another content: it did not end");
-    let mut memory = everything();
-    memory.forget_confirmed_request(ConfirmedRequest::Upload { sent: None });
-    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() }, "a directory was made");
+    memory.forget_confirmed_request(ConfirmedRequest::Upload { ended_session: None });
+    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() });
 
     let mut memory = everything();
     memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place("report") });
-    assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, ..everything() });
+    assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, ..everything() }, "the place the name led to");
+    let mut memory = everything();
+    memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place("elsewhere") });
+    assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, ..everything() }, "any other place: OneDrive does not have it under the temporary name");
     let mut memory = everything();
     memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place(".konedrive-swap-A") });
     assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() }, "the move to the temporary name itself");
 
     let mut memory = everything();
     memory.forget_confirmed_request(ConfirmedRequest::Removal);
-    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() });
+    assert_eq!(memory, ItemMemory { temporary_name: None, ..everything() }, "the tries go by the stamp, which the commit takes");
+
+    let mut only_tries = ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: everything().failed_tries, ..ItemMemory::default() };
+    only_tries.forget_confirmed_request(ConfirmedRequest::Upload { ended_session: None });
+    assert_eq!(only_tries, ItemMemory::default(), "and the stamp with its last fact");
 }
 
-/// An item whose binding is another: what OneDrive answered its requests is dropped, and
-/// the session is given back to be cancelled; what is of its content and its place stays.
+/// An operation on the item's binding: every fact of an unsent change is dropped, with the
+/// stamp; the session is given back to be cancelled and the temporary name to go with the
+/// binding; the item an upload left stays.
 #[test]
-fn an_item_with_another_binding_drops_what_onedrive_answered_its_requests() {
-    let mut memory = everything();
-    assert_eq!(memory.drop_requests_of_binding(), everything().upload_session);
-    let kept = everything();
-    assert_eq!(memory, ItemMemory { mismatched_item: kept.mismatched_item, space_refusal: kept.space_refusal, taken_name: kept.taken_name, ..ItemMemory::default() });
+fn an_operation_on_the_items_binding_drops_every_fact_of_an_unsent_change() {
+    let mut memory = ItemMemory { removal_confirmation: Some(RemovalConfirmation { unsent_since: LEARNT_UNDER }), ..everything() };
+    assert_eq!(memory.drop_facts_of_binding(), (everything().upload_session, everything().temporary_name));
+    assert_eq!(memory, ItemMemory { mismatched_item: everything().mismatched_item, ..ItemMemory::default() });
 }
 
 /// A directory that gave its binding up: of an item in it, the refusal of a version there,
@@ -235,23 +268,23 @@ fn what_onedrive_answered_about_a_directory_is_dropped_when_it_gives_its_binding
     assert_eq!(of_another_directory.drop_answers_of_directory(LocalItemId::new(3)), None);
     assert_eq!(of_another_directory, everything());
 
-    let refused_removal = Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal { unsent_since: 4 } });
-    let mut removed_there = ItemMemory { refusal: refused_removal.clone(), ..ItemMemory::default() };
+    let refused_removal = Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal });
+    let mut removed_there = ItemMemory { unsent_since: Some(LEARNT_UNDER), refusal: refused_removal.clone(), ..ItemMemory::default() };
     assert_eq!(removed_there.drop_answers_of_directory(ROOT), None);
-    assert_eq!(removed_there.refusal, refused_removal, "removed from the same directory of OneDrive");
+    assert_eq!((removed_there.refusal, removed_there.unsent_since), (refused_removal, Some(LEARNT_UNDER)), "removed from the same directory of OneDrive");
 }
 
 /// What tells an item an upload left from what another client wrote since: the cTag of the
 /// answer, its eTag when it carried no cTag, and nothing when it carried neither.
 #[test]
 fn an_item_an_upload_left_is_told_by_the_tag_of_the_answer() {
-    let by_ctag = MismatchedItem::of_answer(OneDriveItemId::new("B"), Some("c1"), Some("e1"));
+    let by_ctag = MismatchedItem::of_answer(reference("B"), Some("c1"), Some("e1"));
     assert_eq!(by_ctag.tag, UploadTag::CTag("c1".to_owned()));
     assert!(by_ctag.is_unchanged_since_upload(Some("c1"), Some("e2")), "the eTag moved, the content did not");
     assert!(!by_ctag.is_unchanged_since_upload(Some("c2"), Some("e1")));
-    let by_etag = MismatchedItem::of_answer(OneDriveItemId::new("B"), None, Some("e1"));
+    let by_etag = MismatchedItem::of_answer(reference("B"), None, Some("e1"));
     assert!(by_etag.is_unchanged_since_upload(None, Some("e1")) && !by_etag.is_unchanged_since_upload(Some("c1"), Some("e2")));
-    assert!(MismatchedItem::of_answer(OneDriveItemId::new("B"), None, None).is_unchanged_since_upload(Some("c9"), Some("e9")), "nothing says it is not");
+    assert!(MismatchedItem::of_answer(reference("B"), None, None).is_unchanged_since_upload(Some("c9"), Some("e9")), "nothing says it is not");
 }
 
 /// The address of an upload session is not printed.

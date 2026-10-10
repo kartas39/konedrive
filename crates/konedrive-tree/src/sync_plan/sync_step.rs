@@ -12,8 +12,9 @@ use std::ffi::OsString;
 
 use crate::model::{ContentPresence, ContentVersion, Item, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
 
-/// The binding and the three versions of one item, with the eTag of the OneDrive one and
-/// whether its content is on disk, as its row had them when a step was planned from it.
+/// The binding and the three versions of one item, with the eTag of the OneDrive one,
+/// whether its content is on disk, and the stamp of what is unsent of it, as its row had
+/// them when a step was planned from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemVersions {
     pub local_item_id: LocalItemId,
@@ -27,6 +28,11 @@ pub struct ItemVersions {
     /// Whether the whole content of a file was on disk: a step planned from a copy on disk
     /// is not the step for a file whose copy went.
     pub content_presence: ContentPresence,
+    /// The stamp the row had while its local version was not the synced one
+    /// ([`Item::unsent_since`]), none when nothing was unsent: which unsent change the step
+    /// was planned for. What the step learns of that change it gives the store with this
+    /// stamp, and the store keeps it only for a row that still has it.
+    pub unsent_since: Option<u64>,
 }
 
 impl ItemVersions {
@@ -41,12 +47,13 @@ impl ItemVersions {
             synced_place: item.synced_place.clone(),
             synced_content: item.synced_content.clone(),
             content_presence: item.content_presence,
+            unsent_since: item.unsent_since,
         }
     }
 
     /// Whether `item`, a row read now, is the same item with the same binding, the same
-    /// three versions and the same eTag, its content on disk or not as it was: what a step
-    /// asks at its commit.
+    /// three versions and the same eTag, its content on disk or not as it was, and the same
+    /// unsent change or none: what a step asks at its commit.
     pub fn are_those_of(&self, item: &Item) -> bool {
         *self == Self::of(item)
     }
