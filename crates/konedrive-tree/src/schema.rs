@@ -44,8 +44,9 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
 ///   `items_parent_directory_update`, asked per row, at one read by the key for each side:
 ///   a directory's row is written before what is in it). A row is not deleted while another
-///   names it as its local or its synced parent (the trigger `items_parent_kept`, asked per
-///   row: what is in a directory is deleted before the directory). An outbox row may name an item whose row is gone: the
+///   names it as its local or its synced parent, and row 1 never (the trigger
+///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
+///   directory). An outbox row may name an item whose row is gone: the
 ///   removal of a file that was never sent leaves the rows that undo what was sent of it.
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
@@ -125,9 +126,10 @@ fn schema() -> String {
          CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
-             WHEN EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
+             WHEN OLD.local_item_id = {root}
+               OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
                OR EXISTS (SELECT 1 FROM items WHERE synced_parent_id = OLD.local_item_id)
-             BEGIN SELECT RAISE(ABORT, 'items: a row that is another row''s parent is not deleted'); END;
+             BEGIN SELECT RAISE(ABORT, 'items: the root''s row and a row that is another row''s parent are not deleted'); END;
          CREATE TRIGGER items_parent_directory_insert BEFORE INSERT ON items
              WHEN {no_local_parent_directory} OR {no_synced_parent_directory}
              BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;

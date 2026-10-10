@@ -902,7 +902,7 @@ fn the_schema_refuses_a_binding_with_an_empty_drive_id() {
 
 /// A child's parent exists, whoever deletes a row: the schema refuses to delete a row that
 /// another names as its parent in the folder, or as the directory the two sides agreed it
-/// is in. With nothing in it on either side, the row goes.
+/// is in. With nothing in it on either side, the row goes; the root's never does.
 #[test]
 fn the_schema_refuses_to_delete_a_row_from_under_what_is_in_it() {
     let mut store = TreeStore::in_memory().unwrap();
@@ -922,6 +922,8 @@ fn the_schema_refuses_to_delete_a_row_from_under_what_is_in_it() {
     delete(&store, local_parent).unwrap();
     delete(&store, synced_parent).unwrap();
     assert_eq!(store.item_store().list_children(ROOT).unwrap(), Vec::new());
+    assert!(is_refused_by_schema(delete(&store, ROOT)), "the root, with nothing in it");
+    assert_eq!(item(&mut store, ROOT).kind, ItemKind::Directory);
 }
 
 /// An item's parent exists and is a directory, on both sides and whoever writes a row: the

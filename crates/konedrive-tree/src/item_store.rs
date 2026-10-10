@@ -29,8 +29,9 @@
 //!   A binding moves only between items of one kind ([`bindings`]).
 //! - *A name is the name of a directory entry.* The code, where a row is written
 //!   ([`item_row`]): not empty, not `.` or `..`, with no `/` and no NUL.
-//! - *The root is item 1, a directory with no place, and stays.* The schema's checks; the
-//!   code refuses every change of it.
+//! - *The root is item 1, a directory with no place, and stays.* The schema's checks, and
+//!   its trigger `items_parent_kept`, which lets nobody delete row 1; the code refuses
+//!   every change of it.
 //! - *An id is never given twice.* The schema: `AUTOINCREMENT`.
 //!
 //! What the code refuses is [`TreeError::Refused`], and a rule of the schema that an
