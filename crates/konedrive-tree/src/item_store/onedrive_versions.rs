@@ -36,6 +36,16 @@
 //! 5. A row left with its binding and nothing else, that no row names as its parent, goes.
 //!    Such a row names no parent itself, so no row that goes holds another.
 //!
+//! **What this relies on.** A page that names an item as there, in a directory the same
+//! listing says is gone, and never names that item gone, is not written rightly when it
+//! is given a second time: the removed directory's row went at the first writing, so the
+//! second finds the item a new parent and keeps its version. A delta of a personal
+//! account was seen to name every item below a removed directory as gone, one moved into
+//! it within the same delta too, so no such page was seen; a large directory and
+//! OneDrive for Business were not measured. Should one come, nothing of the user's is
+//! lost: the rows say OneDrive has an item below a directory that has no version, while
+//! no listing is under way, which the sync plan answers with a full listing.
+//!
 //! **What becomes of each change is answered** ([`ListedChangeOutcome`]): written; left,
 //! because it may be older than what OneDrive confirmed; or refused, for the one item and
 //! with its reason ([`ListedChangeRefusal`]), the rest of the page being written.
