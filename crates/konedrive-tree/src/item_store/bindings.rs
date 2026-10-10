@@ -24,9 +24,11 @@ impl ItemStore<'_> {
     /// The item, which the folder shows, keeps its id, its local version and its content,
     /// and is an item OneDrive does not have; a new row of its kind takes the binding and
     /// nothing else, and is returned: what OneDrive has under that binding is that row's to
-    /// be given.
-    pub fn give_up_binding(&mut self, item: LocalItemId) -> Result<LocalItemId, TreeError> {
-        self.write(|tx| give_up_binding(tx, item))
+    /// be given. `is_name_ignored` is what the upload rules say of the item's name, written
+    /// here as where an item without a binding gets a name: it is asked of the item from
+    /// now on ([`is_ignored`](Self::is_ignored)).
+    pub fn give_up_binding(&mut self, item: LocalItemId, is_name_ignored: bool) -> Result<LocalItemId, TreeError> {
+        self.write(|tx| give_up_binding(tx, item, is_name_ignored))
     }
 
     /// The item `item` of the folder, which OneDrive did not have, is the item
@@ -113,7 +115,7 @@ pub(crate) fn take_over_binding(tx: &Transaction<'_>, replacing: LocalItemId, re
 }
 
 /// [`ItemStore::give_up_binding`], inside the caller's transaction.
-pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId) -> Result<LocalItemId, TreeError> {
+pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_ignored: bool) -> Result<LocalItemId, TreeError> {
     let mut giver = read_below_root(tx, item)?;
     if giver.local.is_none() {
         return Err(refuse(format!("the folder does not show item {item}: with no binding its row would be of nothing")));
@@ -123,6 +125,7 @@ pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId) -> Result
     };
     giver.synced_place = None;
     giver.synced_content = None;
+    giver.is_name_ignored = is_name_ignored;
     // The row that has the binding lets it go before another takes it.
     write_item(tx, &giver)?;
     let taker = insert_item(tx, giver.kind, Some(&onedrive_item), None, ContentPresence::NotOnDisk, false)?;

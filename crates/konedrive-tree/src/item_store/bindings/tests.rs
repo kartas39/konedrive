@@ -74,7 +74,7 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
     store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: file }).unwrap();
     let before = item(&mut store, file);
 
-    let taker = store.item_store().give_up_binding(file).unwrap();
+    let taker = store.item_store().give_up_binding(file, false).unwrap();
     assert_ne!(taker, file);
     assert_eq!(
         item(&mut store, file),
@@ -109,12 +109,32 @@ fn give_up_binding_of_a_directory_keeps_its_content_and_hands_on_what_was_agreed
     synced(&mut store, dir, "D");
     synced(&mut store, sent, "S");
 
-    let taker = store.item_store().give_up_binding(dir).unwrap();
+    let taker = store.item_store().give_up_binding(dir, false).unwrap();
     for (id, name) in [(sent, "sent"), (own, "own")] {
         assert_eq!(item(&mut store, id).local.unwrap().place, Some(place(dir, name)), "the folder shows it where it was");
     }
     assert_eq!(item(&mut store, sent).synced_place, Some(place(taker, "sent")), "OneDrive has it in the directory of that binding");
     assert_eq!(item(&mut store, own).synced_place, None);
+}
+
+/// An item that gives its binding up is an item with no binding that has a name: what the
+/// upload rules say of that name is written then, as the caller says it, whatever the row
+/// said while OneDrive had the item. The row that takes the binding has no name.
+#[test]
+fn give_up_binding_writes_what_the_upload_rules_say_of_the_givers_name() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (cache, plain) = (make_directory(&mut store, ROOT, ".cache"), make_directory(&mut store, ROOT, "plain"));
+    let inside = make_file(&mut store, cache, "inside");
+    synced(&mut store, cache, "C");
+    synced(&mut store, plain, "P");
+    let mut plain_row = item(&mut store, plain);
+    plain_row.is_name_ignored = true;
+    write_item(&store.conn, &plain_row).unwrap();
+
+    let cache_taker = store.item_store().give_up_binding(cache, true).unwrap();
+    let plain_taker = store.item_store().give_up_binding(plain, false).unwrap();
+    assert_eq!([cache, plain, cache_taker, plain_taker].map(|id| item(&mut store, id).is_name_ignored), [true, false, false, false]);
+    assert!(store.item_store().is_ignored(inside).unwrap(), "what is in a directory OneDrive does not have any more, whose name is ignored");
 }
 
 /// What `give_up_binding` refuses: an item with no binding, the root, an id with no row,
@@ -130,7 +150,7 @@ fn give_up_binding_refuses_an_item_with_none_the_root_and_one_not_shown() {
     synced(&mut store, ROOT, "R");
     let mut items = store.item_store();
     for id in [local, removed, ROOT, LocalItemId::new(99)] {
-        assert!(is_refused(items.give_up_binding(id)), "{id}");
+        assert!(is_refused(items.give_up_binding(id, false)), "{id}");
     }
     assert_eq!(bound_to(&mut store, "R"), Some(ROOT));
     assert_eq!(item(&mut store, removed).synced_place, removed_row.synced_place, "the removed row is as it was");
@@ -203,7 +223,7 @@ fn a_binding_does_not_move_between_a_file_and_a_directory() {
     assert_eq!([bound_to(&mut store, "F"), bound_to(&mut store, "D")], [Some(file), Some(directory)]);
 
     store.item_store().merge_items(new_directory, directory).unwrap();
-    let taker = store.item_store().give_up_binding(new_directory).unwrap();
+    let taker = store.item_store().give_up_binding(new_directory, false).unwrap();
     assert_eq!(item(&mut store, taker).kind, ItemKind::Directory, "the row that took the binding is what the giver is");
 }
 

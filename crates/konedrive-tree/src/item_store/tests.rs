@@ -281,8 +281,9 @@ fn a_renamed_directory_leaves_what_was_ignored_in_it_ignored() {
 }
 
 /// A directory OneDrive has is OneDrive's whatever its name: what is in it is not left here
-/// for the directory's name. When the directory gives its binding up, it is; and an item's
-/// own ignored name counts wherever it is. An id with no row is refused.
+/// for the directory's name. When the directory gives its binding up with its name said to
+/// be ignored, it is; and the ignored name of an item with no binding counts wherever it
+/// is. An id with no row is refused.
 #[test]
 fn a_directory_of_onedrive_with_an_ignored_name_does_not_ignore_what_is_in_it() {
     let mut store = TreeStore::in_memory().unwrap();
@@ -291,7 +292,7 @@ fn a_directory_of_onedrive_with_an_ignored_name_does_not_ignore_what_is_in_it() 
     let lock = make_named(&mut store, ItemKind::File, cache, ".~lock", true);
     synced(&mut store, cache, "C");
     assert_eq!([inside, lock].map(|id| store.item_store().is_ignored(id).unwrap()), [false, true]);
-    store.item_store().give_up_binding(cache).unwrap();
+    store.item_store().give_up_binding(cache, true).unwrap();
     assert_eq!([inside, lock].map(|id| store.item_store().is_ignored(id).unwrap()), [true, true], "a directory OneDrive does not have any more");
     assert!(is_refused(store.item_store().is_ignored(LocalItemId::new(99))));
     assert!(!store.item_store().is_ignored(ROOT).unwrap());
