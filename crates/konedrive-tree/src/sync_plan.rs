@@ -72,6 +72,7 @@ mod sync_step;
 
 pub use conflict_copy_name::make_conflict_copy_name;
 pub use name_exchange::make_temporary_name;
+pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
 pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 
 use plan_items::PlanItems;
@@ -116,9 +117,17 @@ pub enum SendingState {
 ///    planned for an item given without the directories above it in OneDrive.
 /// 2. for a directory that was removed here, all OneDrive has in it and below it, at any
 ///    depth ([`ItemStore::list_below_in_onedrive`](crate::ItemStore::list_below_in_onedrive)),
-///    and how many those are, in `onedrive_item_count_below`. *Enforced*: with another
-///    number given than rows, or none, the directory waits
-///    ([`WaitReason::ItemsInDirectoryNotGiven`]) and no removal is planned.
+///    and how many those are, in `onedrive_item_count_below`: its removal is sent only when
+///    all of that was shown here and removed here. *Enforced*: with another number given
+///    than rows, or none, the directory waits ([`WaitReason::ItemsInDirectoryNotGiven`])
+///    and no removal is planned. The rows and both numbers of this and the next point are
+///    of one reading, one read transaction of the store: a number and rows read at one
+///    time agree whatever the store says since, and a number taken from the rows given
+///    (their length) agrees always, and enforces nothing. What covers the time after the
+///    reading: the step asks the store again before its request leaves
+///    ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)),
+///    and its commit once more; for what OneDrive made in the directory after the last
+///    listing, nothing does.
 /// 3. for a directory the folder shows that OneDrive does not have, and for one OneDrive
 ///    has where the folder cannot show it (the caller asks
 ///    [`ItemStore::find_folder_visibility`](crate::ItemStore::find_folder_visibility) of
@@ -139,7 +148,14 @@ pub enum SendingState {
 ///
 /// **What only the caller knows of an item** is said by the item's id: a set names the
 /// items it holds for, a map the items it has a value for. An item of which nothing is said
-/// is one nothing holds for.
+/// is one nothing holds for: none of these is *enforced*, as the plan cannot see from the
+/// rows what was left out. What a missing entry costs is said with each. Two of them guard
+/// against a loss, and are asked a second time where the loss would happen:
+/// `items_with_running_step` and `destinations_of_running_steps`, by the store before a
+/// directory's removal leaves
+/// ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)).
+/// An entry that stands too long — a step that ended, a next try of an item that changed
+/// since — only holds its item longer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPlanInput {
     pub items: Vec<Item>,
@@ -152,17 +168,30 @@ pub struct SyncPlanInput {
     pub ignored_items: BTreeSet<LocalItemId>,
     /// The items whose name here OneDrive cannot hold, each with the reason.
     pub name_refusals: BTreeMap<LocalItemId, Reason>,
-    /// The files a program holds open for writing.
+    /// The files a program holds open for writing. One left out is planned as its row
+    /// says, while its content on disk is not the row's.
     pub items_open_for_writing: BTreeSet<LocalItemId>,
     /// The files whose content was changed within the quiet time, each with the time, in
-    /// Unix seconds, at which its quiet time ends.
+    /// Unix seconds, at which its quiet time ends. One left out is sent at once.
     pub quiet_until: BTreeMap<LocalItemId, i64>,
-    /// The items a step is running for now.
+    /// The items a step is running for: every item a request of this client is about that
+    /// is not settled yet, and every item a step towards the folder or of the rows is
+    /// running for. A request is not settled until its outcome is known — its commit was
+    /// written, OneDrive refused it, or the item was read from OneDrive after it — and so
+    /// also while its answer is lost, and across a stop of the daemon: each request is on
+    /// record before it leaves, and at start, before the first plan, the caller settles
+    /// each record that stands by reading its item (the design's §7). One step per item:
+    /// an item left out gets a second step beside the one that runs.
     pub items_with_running_step: BTreeSet<LocalItemId>,
-    /// The directories the steps that are running now send their items into: where a new
-    /// directory is made, a new file sent, an item moved. The rows say such an item is
-    /// there only once the step's commit is written; until then no removal of that
-    /// directory, or of one above it, is sent, as it would take the item with it.
+    /// The directories the requests that are not settled yet send their items into: where
+    /// a new directory is made, a new file sent, an item moved — as long as the request is
+    /// not settled, as `items_with_running_step` says it, also when its answer is lost and
+    /// across a stop. The rows say such an item is there only once the step's commit is
+    /// written; until then no removal of that directory, or of one above it, is sent, as
+    /// it would take the item with it. A directory left out, with the item's own row
+    /// agreeing on everything (it was moved back here meanwhile), is removed with the item
+    /// in it: the one entry whose absence is a loss, and so asked of the caller again
+    /// before the removal leaves.
     pub destinations_of_running_steps: BTreeSet<LocalItemId>,
     /// The files a pin holds for, their own or that of a directory above them.
     pub pinned_items: BTreeSet<LocalItemId>,
@@ -216,16 +245,20 @@ pub struct SyncPlanInput {
     /// waits for the user ([`WaitReason::User`]) in place of any step towards OneDrive; the
     /// caller forgets the entry when the item changes or OneDrive has more space.
     pub sending_refusals: BTreeMap<LocalItemId, Reason>,
-    /// The items the check of the backing directory at start could not decide, and by the
-    /// caller's closing what is below them: nothing of such an item is sent, nothing is
-    /// taken over for it, and no removal takes it from OneDrive
-    /// ([`WaitReason::StartUpCheck`]).
+    /// The items the check of the backing directory at start could not decide: nothing of
+    /// such an item is sent, nothing is taken over for it, and no removal takes it from
+    /// OneDrive ([`WaitReason::StartUpCheck`]). What the folder shows in such an item, or
+    /// the two sides agreed is in it, at any depth, is held with it: *enforced*, the plan
+    /// finds those by the rows it was given, and the caller names the items the check left
+    /// and no others.
     pub items_left_by_start_up_check: BTreeSet<LocalItemId>,
     /// For every directory given that was removed here: how many items the rows say
-    /// OneDrive has in it and below it, at any depth.
+    /// OneDrive has in it and below it, at any depth, counted by the store in the reading
+    /// the rows are of.
     pub onedrive_item_count_below: BTreeMap<LocalItemId, u64>,
     /// For every directory given that the folder shows and that OneDrive does not have, or
-    /// has where the folder cannot show it: how many items the folder shows in it.
+    /// has where the folder cannot show it: how many items the folder shows in it, counted
+    /// by the store in the reading the rows are of.
     pub shown_item_count_in: BTreeMap<LocalItemId, u64>,
 }
 
@@ -431,8 +464,41 @@ fn is_in_directory_the_folder_cannot_name(items: &PlanItems<'_>, item: &Item) ->
     false
 }
 
+/// Whether the check at start left `item`: the caller named it, or a directory the folder
+/// shows it in, or the two sides agreed it is in, at any depth.
+fn is_left_by_start_up_check(input: &SyncPlanInput, items: &PlanItems<'_>, item: &Item) -> bool {
+    let left = &input.items_left_by_start_up_check;
+    let ways_up: [fn(&Item) -> Option<&ItemPlace>; 2] = [|item| item.local.as_ref().and_then(|local| local.place.as_ref()), |item| item.synced_place.as_ref()];
+    left.contains(&item.local_item_id)
+        || (!left.is_empty()
+            && ways_up.iter().any(|place_of| {
+                let mut above = place_of(item).map(|place| place.parent_local_item_id);
+                for _ in 0..items.count() {
+                    match above {
+                        Some(directory) if left.contains(&directory) => return true,
+                        Some(directory) => above = items.find(directory).and_then(place_of).map(|place| place.parent_local_item_id),
+                        None => return false,
+                    }
+                }
+                false
+            }))
+}
+
+/// Every item of `input` as the plan decides on it ([`describe_item`]), and with a
+/// directory that was removed here, what the rows and the caller say of all OneDrive has
+/// below it.
+fn describe_items<'a>(input: &'a SyncPlanInput, items: &PlanItems<'_>) -> Vec<ItemCase<'a>> {
+    let mut cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, items, item)).collect();
+    let mut below = removed_directory::list_below_removed_directories(&cases, items);
+    for case in &mut cases {
+        case.below_in_onedrive = below.remove(&case.item.local_item_id).unwrap_or_default();
+    }
+    cases
+}
+
 /// `item` as the plan decides on it: its row, with what `input` says of it and what the
-/// other rows of the plan say about it.
+/// other rows of the plan say about it; but what is below a directory that was removed
+/// here ([`describe_items`]).
 fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Item) -> ItemCase<'a> {
     let id = item.local_item_id;
     let folder_visibility = find_folder_visibility(input, items, item);
@@ -445,11 +511,12 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         is_pinned: input.pinned_items.contains(&id),
         local_directory: find_local_directory_binding(input, items, item),
         local_place_availability: find_local_place_availability(items, item),
-        is_left_by_start_up_check: input.items_left_by_start_up_check.contains(&id),
+        is_left_by_start_up_check: is_left_by_start_up_check(input, items, item),
         is_sent_into_by_running_step: input.destinations_of_running_steps.contains(&id),
         first_shown_in_it: items.find_first_shown_in(id),
         is_given_with_all_in_it: is_given_with_all_in_it(input, items, item, folder_visibility),
         onedrive_directory_not_given: find_onedrive_directory_not_given(items, item),
+        below_in_onedrive: Vec::new(),
         sending: SendingConditions {
             is_ignored: input.ignored_items.contains(&id),
             name_refusal: input.name_refusals.get(&id).cloned(),
@@ -496,9 +563,10 @@ impl SyncPlan {
 /// 1. a directory moved here into what OneDrive has in it (`move_cycle`);
 /// 2. the items that have or want one name of a directory of OneDrive (`name_contest`);
 /// 3. the items the rows say OneDrive has under one name (`onedrive_name_holders`);
-/// 4. a directory one side removed, and what the other has in it (`removed_directory`);
-///    then a directory that gives up its binding, and what was agreed to be in it
-///    (`directory_binding`);
+/// 4. what OneDrive has below a directory that was removed here, while that directory's
+///    removal is still to be sent, and a directory OneDrive removed that holds the user's
+///    own (`removed_directory`); then a directory that gives up its binding, and what was
+///    agreed to be in it (`directory_binding`);
 /// 5. the items that wait for each other's names (`name_exchange`);
 /// 6. the guard against a mass removal (`mass_removal`);
 /// 7. where each wait for another item ends (`wait_chain`); and, for a file whose wait
@@ -509,14 +577,14 @@ impl SyncPlan {
 /// (`ItemAnswers::overrule`).
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
-    let cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, &items, item)).collect();
+    let cases = describe_items(input, &items);
     let mut answers = ItemAnswers::of(&cases);
     let move_cycles = move_cycle::take_back_moves_into_own_content(&cases, &items, &answers);
     answers.overrule(move_cycles.overrulings);
     let name_contests = name_contest::settle_name_contests(&cases, &items, &answers, &input.computer_name, &input.places_taken_in_onedrive, &move_cycles.moves_taken_back);
     answers.overrule(name_contests.overrulings);
     answers.overrule(onedrive_name_holders::bring_one_holder_of_each_name_here(&cases, &items, &answers));
-    answers.overrule(removed_directory::decide_removals_of_directories(&cases, &items, &answers));
+    answers.overrule(removed_directory::wait_for_removals_of_directories(&cases, &items));
     answers.overrule(removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &answers));
     answers.overrule(directory_binding::wait_for_directories_that_give_up_their_binding(&cases, &answers));
     answers.overrule(name_exchange::break_circles_of_names(&cases, &items, &name_contests.sendings_that_wait, &answers));

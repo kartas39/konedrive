@@ -292,9 +292,11 @@ enum Relation {
     /// The third was in the second, a directory in the first, a directory, and is moved out
     /// of both.
     MovedOutOfNested,
+    /// The second and the third are both in the first, a directory.
+    InsideTogether,
 }
 
-const EVERY_RELATION: [Relation; 9] = [
+const EVERY_RELATION: [Relation; 10] = [
     Relation::SameName,
     Relation::SameNameByCase,
     Relation::Inside,
@@ -304,6 +306,7 @@ const EVERY_RELATION: [Relation; 9] = [
     Relation::IntoEachOther,
     Relation::InsideNested,
     Relation::MovedOutOfNested,
+    Relation::InsideTogether,
 ];
 
 impl Relation {
@@ -320,6 +323,7 @@ impl Relation {
             Relation::IntoEachOther => vec![(place(ROOT, "a"), place(id(3), "a")), (place(ROOT, "b"), place(id(2), "b"))],
             Relation::InsideNested => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "e-was"), place(id(2), "e")), (place(ROOT, "b-was"), place(id(3), "x"))],
             Relation::MovedOutOfNested => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "e-was"), place(id(2), "e")), (place(id(3), "x"), place(ROOT, "b-now"))],
+            Relation::InsideTogether => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "b-was"), place(id(2), "x")), (place(ROOT, "c-was"), place(id(2), "y"))],
         }
     }
 
@@ -332,7 +336,10 @@ impl Relation {
 
     /// The sets of members this relation is enumerated for. Two items: every member with
     /// every member. A directory in a directory: each of the two agreed on or removed, on
-    /// either side or both, and every member as the third.
+    /// either side or both, and every member as the third. Two items in one directory: the
+    /// directory agreed on, moved here or removed on a side, every member as the second,
+    /// and as the third a file the user removed, one the folder never showed, or one the
+    /// user made.
     fn member_sets(self) -> Vec<Vec<Member>> {
         let members = every_member();
         let directory = |shape| Member { shape, kind: ItemKind::Directory };
@@ -343,6 +350,17 @@ impl Relation {
                 for outer in nesting {
                     for inner in nesting {
                         sets.extend(members.iter().map(|third| vec![directory(outer), directory(inner), *third]));
+                    }
+                }
+            }
+            // What a directory's removal or its leaving is decided from is all that is in
+            // it: beside any second item, one the user removed, one the folder never
+            // showed, or one the user made.
+            Relation::InsideTogether => {
+                let file = |shape| Member { shape, kind: ItemKind::File };
+                for first in [Shape::Agreed, Shape::MovedHere, Shape::RemovedHere, Shape::RemovedInOneDrive] {
+                    for third in [Shape::RemovedHere, Shape::NewInOneDrive, Shape::MadeHere] {
+                        sets.extend(members.iter().map(|second| vec![directory(first), *second, file(third)]));
                     }
                 }
             }
@@ -549,11 +567,12 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 /// - A step of an item a step is running for, that a program holds open for writing or
 ///   that the check at start left; a merge with an item that is held back so. A step
 ///   towards OneDrive of an item whose next try is later or that OneDrive refused.
-/// - A removal sent to OneDrive while anything it would take with it has a step running or
-///   is shown by the folder, where it waits to be moved out or is unsent: every row the rows
-///   say OneDrive has below the removed directory, at any depth. And the removal of an item
-///   that OneDrive has in a directory that was removed here, whatever is answered for that
-///   directory: one removal, of the outermost.
+/// - A removal sent to OneDrive while anything it would take with it has a step running,
+///   is shown by the folder, where it waits to be moved out or is unsent, or was never shown
+///   by the folder: every row the rows say OneDrive has below the removed directory, at any
+///   depth. And the removal of an item that OneDrive has in a directory that was removed
+///   here and whose removal is still to be sent: one removal, of the outermost.
+/// - The move of a directory the folder cannot show.
 /// - The removal of a directory while a listing is under way; a removal while the unsent
 ///   removals are a mass removal the user did not confirm.
 /// - In a read-only folder, a step towards OneDrive of what came to be unsent after the
@@ -595,10 +614,12 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
         let is_removal = matches!(sending, OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. });
         let sends_content = matches!(sending, OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. });
         if is_removal {
+            // A directory whose removal is of the folder alone is not to be removed.
+            let forgets = |directory: LocalItemId| plan.steps.iter().any(|step| matches!(step, SyncStep::Row(RowStep::ForgetSyncedVersion { item }) if item.local_item_id == directory));
             let mut above = directory_in_onedrive(row);
             for _ in 0..given.items.len() {
                 let Some(directory) = above.and_then(row_of) else { break };
-                if is_removed_here(directory) {
+                if is_removed_here(directory) && !forgets(directory.local_item_id) {
                     return Some(format!("the removal of item {number} is sent while the directory {} above it in OneDrive is still to be removed", directory.local_item_id));
                 }
                 above = directory_in_onedrive(directory);
@@ -606,6 +627,9 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
             if given.unsent_removal_count > 500 && !given.items_with_confirmed_removal.contains(&number) {
                 return Some(format!("the removal of item {number} is sent in a mass removal the user did not confirm"));
             }
+        }
+        if matches!(sending, OneDriveStep::SendMove { .. }) && row.kind == ItemKind::Directory && cannot_be_shown(number) {
+            return Some(format!("the move of the directory {number} is sent, which the folder cannot show"));
         }
         if let OneDriveStep::SendDirectoryRemoval { .. } = sending {
             if given.is_listing_under_way {
@@ -625,6 +649,9 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
                 }
                 if taken.local.is_some() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder shows", taken.local_item_id));
+                }
+                if taken.synced_place.is_none() && taken.synced_content.is_none() {
+                    return Some(format!("the removal of the directory {number} takes with it item {}, which the folder never showed", taken.local_item_id));
                 }
             }
         }
@@ -766,7 +793,7 @@ fn every_set_of_related_items_has_a_plan_that_can_proceed_whatever_the_caller_sa
         count += 1;
         cannot_proceed.extend(find_what_cannot_proceed(given, &make_sync_plan(given)).map(|what| format!("{words}: {what}")));
     });
-    assert!(count > 30_000, "the enumeration lost its cells: {count}");
+    assert!(count > 80_000, "the enumeration lost its cells: {count}");
     assert!(cannot_proceed.is_empty(), "{} of {count} cannot proceed:\n{}", cannot_proceed.len(), cannot_proceed.join("\n"));
 }
 

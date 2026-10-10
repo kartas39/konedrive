@@ -36,10 +36,13 @@
 //! ([`take_over_binding`](super::bindings)): the client's own upload is then confirmed of
 //! the replacing file, and is never read as a change OneDrive made.
 //!
-//! **A directory's removal** asks again, in its transaction, what the plan asked: the
-//! folder shows nothing of what the rows say OneDrive has below the directory
-//! ([`ItemStore::can_directory_removal_be_sent`], which a step asks before its request
-//! leaves too). Every row it takes the OneDrive version from is stamped with it.
+//! **A directory's removal** is sent on a positive condition, which the plan decides, the
+//! step asks again before its request leaves
+//! ([`ItemStore::can_directory_removal_be_sent`]) and the commit asks once more, in its
+//! transaction, each time by the one function
+//! (`sync_plan::removed_directory::decide_directory_removal`): all the rows say OneDrive
+//! has below the directory was shown here and removed here. Every row it takes the
+//! OneDrive version from is stamped with it.
 //!
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
@@ -67,13 +70,14 @@
 //! - the commit of the step that hashed the local content carries that content, the same
 //!   bytes, into the facts that hold it.
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 
 use rusqlite::{Connection, Transaction};
 
 use super::bindings::{bind_item, give_up_binding, merge_items};
-use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
-use super::onedrive_versions::confirm_onedrive_version;
+use super::item_row::{confirm_removal_below, find_bound_item, find_item, list_below_in_onedrive, write_item};
+use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
 use super::sent_removal_window::add_sent_removals;
 use super::step_memory::{
@@ -81,7 +85,7 @@ use super::step_memory::{
 };
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
-use crate::sync_plan::ItemVersions;
+use crate::sync_plan::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory, ItemVersions};
 use crate::{ConfirmedOneDriveVersion, TreeError};
 
 /// What became of a step's commit.
@@ -164,23 +168,37 @@ impl ItemStore<'_> {
     /// [`OneDriveStep::SendDirectoryRemoval`](crate::OneDriveStep::SendDirectoryRemoval):
     /// OneDrive removed the directory with all it had in it. The rows of the directory and
     /// of each of `below`, what was removed here with it, are left with their binding
-    /// alone, stamped; every other row the rows say OneDrive has in it loses its OneDrive
-    /// version, as a listing would say, and is stamped too. Nothing is written unless the
-    /// versions of the directory and of every one of `below` are still their rows', and
-    /// the folder shows nothing OneDrive has below the directory
-    /// ([`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent)).
+    /// alone, stamped. Nothing is written unless the rows still say what the removal was
+    /// planned from and sent on: the versions of the directory and of every one of `below`
+    /// are their rows', and `below` is all the rows say OneDrive has below the directory —
+    /// what [`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent) asks,
+    /// of the rows alone. When the rows changed, OneDrive has removed what they still say
+    /// it has: the step asks for a listing.
     pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_send_directory_removal(tx, item, below))
     }
 
     /// Whether the removal of the directory of `item`, planned with `below` as what was
-    /// removed here with it, can be sent as the rows are now: the versions of the directory
-    /// and of each of `below` are still their rows', and the folder shows nothing of what
-    /// the rows say OneDrive has in the directory and below it. What the step asks under
-    /// the lock before its request leaves, and what its commit asks again: a directory's
-    /// removal is unguarded in OneDrive and takes all that is in it.
-    pub fn can_directory_removal_be_sent(&self, item: &ItemVersions, below: &[ItemVersions]) -> Result<bool, TreeError> {
-        is_directory_removal_as_planned(&self.store.conn, item, below)
+    /// removed here with it, can be sent as the rows are now: what the step asks under the
+    /// lock before its request leaves. A directory's removal is unguarded in OneDrive and
+    /// takes all that is in it, so it is sent on a positive condition, the one the plan
+    /// decided it on (`sync_plan::removed_directory::decide_directory_removal`), asked
+    /// again of the rows as they are: no listing is under way; the versions of the
+    /// directory and of each of `below` are still their rows'; and all the rows say
+    /// OneDrive has in the directory and below it was shown here and removed here — it is
+    /// `below`, no row more and none less, none shown by the folder, none the folder never
+    /// showed.
+    ///
+    /// What the rows do not say, the caller gives, as it gives it to the plan
+    /// ([`SyncPlanInput`](crate::SyncPlanInput)): `items_with_running_step`, the items a
+    /// request of this client that is not settled is about, and
+    /// `destinations_of_running_steps`, the directories such a request sends an item
+    /// into. The removal is not sent while the directory or anything below it is among
+    /// either: an entry the plan was not given is then no removal.
+    pub fn can_directory_removal_be_sent(&self, item: &ItemVersions, below: &[ItemVersions], items_with_running_step: &BTreeSet<LocalItemId>, destinations_of_running_steps: &BTreeSet<LocalItemId>) -> Result<bool, TreeError> {
+        let conn = &self.store.conn;
+        let is_held_back = |item: LocalItemId| items_with_running_step.contains(&item) || destinations_of_running_steps.contains(&item);
+        Ok(!is_held_back(item.local_item_id) && is_directory_removal_as_planned(conn, item, below, ListingUnderWay::find(conn)?.is_some(), &is_held_back)?)
     }
 
     /// The commit of [`FolderStep::ShowItem`](crate::FolderStep::ShowItem): the folder
@@ -333,14 +351,24 @@ fn find_planned_new_item(conn: &Connection, planned: &ItemVersions) -> Result<Op
 }
 
 /// Whether the removal of the directory of `item` with `below` is still what the rows say
-/// ([`ItemStore::can_directory_removal_be_sent`]).
-fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below: &[ItemVersions]) -> Result<bool, TreeError> {
-    for planned in std::iter::once(item).chain(below) {
-        if find_planned(conn, planned)?.is_none() {
-            return Ok(false);
-        }
+/// ([`ItemStore::can_directory_removal_be_sent`]): the directory's row is as planned, and
+/// the plan's own decision ([`decide_directory_removal`]), made from all the rows say
+/// OneDrive has below it now, is that the removal is sent, for `below` and nothing else.
+/// `is_held_back`: what the caller says of an item the rows do not say.
+fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below: &[ItemVersions], is_listing_under_way: bool, is_held_back: &dyn Fn(LocalItemId) -> bool) -> Result<bool, TreeError> {
+    if find_planned(conn, item)?.is_none() {
+        return Ok(false);
     }
-    Ok(!is_anything_shown_below_in_onedrive(conn, item.local_item_id)?)
+    let rows_below: Vec<ItemBelowRemovedDirectory> = list_below_in_onedrive(conn, item.local_item_id)?.iter().map(|row| ItemBelowRemovedDirectory::of(row, is_held_back(row.local_item_id))).collect();
+    let by_id = |versions: &[ItemVersions]| {
+        let mut versions: Vec<ItemVersions> = versions.to_vec();
+        versions.sort_by_key(|versions| versions.local_item_id);
+        versions
+    };
+    Ok(match decide_directory_removal(is_listing_under_way, &rows_below) {
+        DirectoryRemovalOutcome::IsSent { removed_with_it } => by_id(&removed_with_it) == by_id(below),
+        DirectoryRemovalOutcome::IsOfFolderAlone | DirectoryRemovalOutcome::WaitsFor(_) | DirectoryRemovalOutcome::WaitsForListing => false,
+    })
 }
 
 /// The directory that has the binding `directory`, when a row has it and says OneDrive has
@@ -506,21 +534,17 @@ pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions
 
 /// [`ItemStore::commit_send_directory_removal`], inside the caller's transaction, which is
 /// dropped on any error. The removal is confirmed of the directory; then all the rows say
-/// OneDrive has below it, those of `below` among them, lose their OneDrive version and what
-/// was agreed on, under the same stamp.
+/// OneDrive has below it, which are those of `below`, lose their OneDrive version and what
+/// was agreed on, under the same stamp. The rows alone are asked: a listing under way and
+/// a request not settled hold a removal back before it is sent, not once OneDrive
+/// confirmed it.
 pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
     if row.kind != ItemKind::Directory || row.local.is_some() || row.onedrive_item.is_none() {
         return Err(refuse_step(id, "it is of another kind, the folder shows it, or it has no binding"));
     }
-    for removed_with_it in below {
-        let Some(row) = find_planned(tx, removed_with_it)? else { return Ok(StepCommitOutcome::RowsChanged) };
-        if row.local.is_some() || row.onedrive_item.is_none() {
-            return Err(refuse_step(row.local_item_id, "the folder shows it, or it has no binding: it is not removed with a directory"));
-        }
-    }
-    if is_anything_shown_below_in_onedrive(tx, id)? {
+    if !is_directory_removal_as_planned(tx, item, below, false, &|_| false)? {
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let count = confirm_onedrive_version(tx, id, &ConfirmedOneDriveVersion::Removed)?;

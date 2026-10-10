@@ -237,12 +237,16 @@ impl OneDriveSteps {
     /// Request: today's `delete_folder` (`upload/steps/meta.rs:275`), which calls
     /// `delete_folder` (`G/write.rs:153`). 404 is a confirmation. BEFORE the request
     /// leaves, under the tree lock: `ItemStore::can_directory_removal_be_sent(item,
-    /// below)`; when it answers no, nothing is sent and the step ends
-    /// `RowsChanged(Nothing)` — an unguarded removal takes all OneDrive has in the
-    /// directory, and the rows must still say that all of it was removed here.
-    /// Commit: `commit_send_directory_removal(item, below)`, which checks the versions of
-    /// the directory and of every row of `below` first. `RowsChanged`: the directory is
-    /// gone in OneDrive with what the rows do not say: a listing cycle is asked for.
+    /// below, items_with_running_step, destinations_of_running_steps)`, the two sets as
+    /// the plan is given them — every item a request not settled yet is about, and every
+    /// directory such a request sends an item into, this step's own left out; when it
+    /// answers no, nothing is sent and the step ends `RowsChanged(Nothing)` — an
+    /// unguarded removal takes all OneDrive has in the directory, and it is sent only
+    /// while the rows still say that all of it was shown here and removed here, no
+    /// listing is under way and no request not settled is about any of it.
+    /// Commit: `commit_send_directory_removal(item, below)`, which asks the same of the
+    /// rows alone. `RowsChanged`: the directory is gone in OneDrive with what the rows
+    /// still say it has: a listing cycle is asked for.
     async fn run_send_directory_removal(&self, item: &ItemVersions, below: &[ItemVersions]) -> StepOutcome {
         todo!()
     }

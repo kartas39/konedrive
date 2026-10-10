@@ -17,6 +17,8 @@ mod content;
 mod existence;
 mod place;
 mod item_relations;
+mod directory_removal;
+mod start_up_check;
 mod enumeration;
 mod convergence;
 

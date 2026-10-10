@@ -20,8 +20,10 @@
 //!    changed there, is on both sides under some name; every item one side alone had is on
 //!    both sides; every item both sides had, that neither removed, still is; and what the
 //!    user made is in the folder whatever became of it in OneDrive. One loss is the
-//!    design's own and is left out: what OneDrive made or changed in a directory that was
-//!    removed here goes with that removal, which stands;
+//!    design's own and is left out: what OneDrive changed of an item the user removed with
+//!    a directory goes with that removal, which stands. What OneDrive made in such a
+//!    directory, and the folder never showed, is no such loss: it is on both sides at the
+//!    end;
 //! 5. a plan over every row of what has converged has no step.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use konedrive_reason::Reason;
 
 use super::*;
-use crate::item_store::tests::listed_drive::{listed_directory, listed_file, store_with_listed_root, write_listing_of_changes};
+use crate::item_store::tests::listed_drive::{listed_directory, listed_file, reference as onedrive_reference, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::row_rules::find_broken_rule;
 use crate::model::{Change, ContentPresence, LocalVersionChange};
 use crate::{ListingLink, TreeStore};
@@ -40,6 +42,8 @@ mod plan_input;
 mod random_changes;
 /// The stand-in for OneDrive and the folder: the commits of the steps.
 mod step_stand_in;
+/// The sequences of the reviews, as the reviews ran them, with the state each ends in.
+mod review_sequences;
 
 use plan_input::{describe_every_item, plan_next_steps, CallerFacts, WideningCount};
 use random_changes::{OneDriveChanges, RandomChanges, RandomSource};
@@ -410,8 +414,10 @@ impl World {
 ///   or that was moved here with its content on disk, is sent again, and is on both sides
 ///   at the end.
 ///
-/// Left out, by the design: what OneDrive has, and the folder does not show, below a
-/// directory that was removed here — that removal is sent and stands; and what is left
+/// Left out, by the design: what the folder showed and the user removed below a directory
+/// that was removed here, whatever OneDrive changed of it since — that removal is sent and
+/// stands. Not left out: what OneDrive has below such a directory that the folder never
+/// showed, which no removal takes. And what is left
 /// here, which is never sent, with what the folder shows in a directory that is left here:
 /// an item of OneDrive moved here into one waits for the user, with all of it.
 struct ExpectedEnd {
@@ -442,7 +448,7 @@ impl ExpectedEnd {
                 is_below_removed |= is_directory_removed_here(directory);
                 above = directory_of(directory);
             }
-            row.local.is_none() && is_below_removed
+            row.local.is_none() && is_below_removed && (row.synced_place.is_some() || row.synced_content.is_some())
         };
         let cannot_be_shown: BTreeSet<LocalItemId> =
             rows.iter().filter(|row| row.onedrive.is_some() && store.item_store().find_folder_visibility(row.local_item_id).unwrap() != FolderVisibility::CanBeShown).map(|row| row.local_item_id).collect();

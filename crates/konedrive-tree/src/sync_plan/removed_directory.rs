@@ -1,21 +1,29 @@
 //! A directory one side removed, and what the other side has in it.
 //!
-//! Removed here: its removal is one removal in OneDrive for all OneDrive has in it, and
-//! stands whatever OneDrive changed there. It is the removal of the outermost of the
-//! directories removed in one another, and it is not sent while anything it would take
-//! with it is held back or is shown by the folder ([`decide_directory_removal`]).
-//! Whatever is answered for that directory, nothing OneDrive has below it, and the folder
-//! does not show, has a removal or any other step of its own: it waits for the directory.
+//! Removed here: its removal is sent on a positive condition — all the rows say OneDrive
+//! has below it, at any depth, was shown here and removed here by the user
+//! ([`decide_directory_removal`]). It is then one removal in OneDrive for all of that, and
+//! stands whatever OneDrive changed of those items since. Where OneDrive has anything
+//! below it that the folder never showed — it cannot be shown, it was not shown yet,
+//! another client put it there — the removal is of the folder alone: what was agreed on of
+//! the directory is forgotten, it is an item OneDrive has that the folder does not show,
+//! and each item the user did remove below it is decided by itself. The same function is
+//! asked by the plan, by the step before its request leaves and by the step's commit
+//! ([`ItemStore::can_directory_removal_be_sent`](crate::ItemStore::can_directory_removal_be_sent)).
+//!
+//! While the removal of a directory is still to be sent, nothing OneDrive has below it,
+//! and the folder does not show, has a removal or any other step of its own: it waits for
+//! the directory, the outermost of those removed in one another.
 //!
 //! Removed in OneDrive: it goes here once the folder shows nothing in it; where what it
 //! holds is the user's own, it stays, gives up its binding and is sent again. A directory
 //! that has a binding and that no listing told of gives its binding up in the same order.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::item_decision::{find_hold, ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, Overruling};
 use super::plan_items::PlanItems;
-use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
+use super::sync_step::{FolderStep, ItemVersions, RowStep, SyncStep};
 use super::WaitReason;
 use crate::model::{Item, ItemKind, ItemPlace, LocalItemId};
 
@@ -46,13 +54,32 @@ pub(crate) enum ItemBelowRemovedDirectory {
     /// The folder shows it: it was moved out of the directory here, or OneDrive moved it
     /// into the directory, where the folder cannot follow. Its place here is unsent.
     ShownHere(LocalItemId),
-    /// It is held back: a step is running for it, or the check at start could not decide
-    /// it.
+    /// It is held back: a request of this client about it, or one that sends an item into
+    /// it, is not settled, or the check at start could not decide it.
     IsHeldBack(LocalItemId),
-    /// It was removed here with the directory: its versions.
+    /// The folder showed it, and the user removed it here: its versions. Something is
+    /// agreed on of it still.
     RemovedHere(ItemVersions),
-    /// OneDrive made it there, or moved it there, and the folder never showed it.
+    /// The folder never showed it, as the rows say: nothing is agreed on of it. OneDrive
+    /// made it there or moved it there since, the folder cannot show it, or the plan took
+    /// it off the folder because it could not.
     NeverShownHere(LocalItemId),
+}
+
+impl ItemBelowRemovedDirectory {
+    /// What `row` is, a row OneDrive has below a directory that was removed here.
+    /// `is_held_back`: what the rows do not say — whether something holds the item back.
+    pub(crate) fn of(row: &Item, is_held_back: bool) -> Self {
+        if row.local.is_some() {
+            ItemBelowRemovedDirectory::ShownHere(row.local_item_id)
+        } else if is_held_back {
+            ItemBelowRemovedDirectory::IsHeldBack(row.local_item_id)
+        } else if row.synced_place.is_some() || row.synced_content.is_some() {
+            ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
+        } else {
+            ItemBelowRemovedDirectory::NeverShownHere(row.local_item_id)
+        }
+    }
 }
 
 /// What becomes of the removal of a directory that was removed here.
@@ -61,83 +88,107 @@ pub(crate) enum DirectoryRemovalOutcome {
     /// It is sent, one removal for all OneDrive has below the directory: what was removed
     /// here with it.
     IsSent { removed_with_it: Vec<ItemVersions> },
+    /// It is of the folder alone, and nothing is sent: OneDrive has below the directory
+    /// what the folder never showed.
+    IsOfFolderAlone,
     /// It waits for this item, which it would take with it.
     WaitsFor(LocalItemId),
+    /// It waits for the listing under way to end: the rows may be behind OneDrive.
+    WaitsForListing,
 }
 
 /// What becomes of the removal of a directory that was removed here, `below` being all the
-/// rows say OneDrive has below it. It waits for the first item the folder shows or that is
-/// held back: such an item is not removed with the directory, its place here is sent
-/// first, or what holds it ends first. Otherwise it is sent, and stands for what OneDrive made
-/// there since.
-pub(crate) fn decide_directory_removal(below: &[ItemBelowRemovedDirectory]) -> DirectoryRemovalOutcome {
+/// rows say OneDrive has below it. The first that holds:
+///
+/// - a listing is under way: nothing is decided, as a later page may say an item is
+///   elsewhere, or is another one;
+/// - the folder shows an item of `below`, or one is held back: the removal waits for the
+///   first such item — its place here is sent first, or what holds it ends first;
+/// - the folder never showed an item of `below`: the removal is of the folder alone. An
+///   unguarded removal takes all that is in the directory, and what the user never saw
+///   here is not theirs to have removed;
+/// - otherwise all of `below` was shown here and removed here: the removal is sent, and
+///   stands whatever OneDrive changed of those items since.
+pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[ItemBelowRemovedDirectory]) -> DirectoryRemovalOutcome {
+    if is_listing_under_way {
+        return DirectoryRemovalOutcome::WaitsForListing;
+    }
     let mut removed_with_it = Vec::new();
+    let mut is_anything_never_shown = false;
     for item in below {
         match item {
             ItemBelowRemovedDirectory::ShownHere(kept) | ItemBelowRemovedDirectory::IsHeldBack(kept) => return DirectoryRemovalOutcome::WaitsFor(*kept),
             ItemBelowRemovedDirectory::RemovedHere(versions) => removed_with_it.push(versions.clone()),
-            ItemBelowRemovedDirectory::NeverShownHere(_) => {}
+            ItemBelowRemovedDirectory::NeverShownHere(_) => is_anything_never_shown = true,
         }
     }
-    DirectoryRemovalOutcome::IsSent { removed_with_it }
+    if is_anything_never_shown {
+        DirectoryRemovalOutcome::IsOfFolderAlone
+    } else {
+        DirectoryRemovalOutcome::IsSent { removed_with_it }
+    }
 }
 
-/// What the rows and the caller say of each item OneDrive has below `directory`, each
-/// directory before what is in it.
-fn list_below_removed_directory(case_of: &HashMap<LocalItemId, &ItemCase<'_>>, items: &PlanItems<'_>, directory: LocalItemId) -> Vec<ItemBelowRemovedDirectory> {
-    let describe = |below: LocalItemId| {
-        let row = items.find(below)?;
-        Some(if row.local.is_some() {
-            ItemBelowRemovedDirectory::ShownHere(below)
-        } else if case_of.get(&below).is_some_and(|case| find_hold(case).is_some()) {
-            ItemBelowRemovedDirectory::IsHeldBack(below)
-        } else if row.synced_place.is_some() || row.synced_content.is_some() {
-            ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
-        } else {
-            ItemBelowRemovedDirectory::NeverShownHere(below)
-        })
-    };
-    items.list_below_in_onedrive(directory).into_iter().filter_map(describe).collect()
+/// What the rows and the caller say of each item OneDrive has below each directory of
+/// `cases` that was removed here, each directory before what is in it: what its removal is
+/// decided from, by the directory's id.
+pub(crate) fn list_below_removed_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> HashMap<LocalItemId, Vec<ItemBelowRemovedDirectory>> {
+    let held: HashSet<LocalItemId> = cases.iter().filter(|case| find_hold(case).is_some()).map(|case| case.item.local_item_id).collect();
+    let describe = |below: LocalItemId| Some(ItemBelowRemovedDirectory::of(items.find(below)?, held.contains(&below)));
+    cases
+        .iter()
+        .filter(|case| is_directory_removed_here(case.item))
+        .map(|case| (case.item.local_item_id, items.list_below_in_onedrive(case.item.local_item_id).into_iter().filter_map(describe).collect()))
+        .collect()
 }
 
-/// Decides the removal of each directory that was removed here, the outermost of those
-/// removed in one another, from what the rows and the caller say of all OneDrive has below
-/// it ([`decide_directory_removal`]) — never from what was answered for another item.
+/// How many directories OneDrive has above `item`, as far as the rows given say.
+fn count_directories_above_in_onedrive(items: &PlanItems<'_>, item: &Item) -> usize {
+    let directory_of = |item: &Item| item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).and_then(|place| items.find(place.parent_local_item_id));
+    let (mut above, mut count) = (directory_of(item), 0);
+    while let Some(directory) = above.filter(|_| count < items.count()) {
+        count += 1;
+        above = directory_of(directory);
+    }
+    count
+}
+
+/// Lets what OneDrive has below a directory that was removed here wait for that directory
+/// while its removal is still to be sent: the outermost of the directories removed in one
+/// another first. Each directory's removal is decided for it by itself, from what the rows
+/// and the caller say of all OneDrive has below it
+/// ([`decide_item`](super::item_decision::decide_item)); here only what follows from it for
+/// the items below.
 ///
-/// - Everything OneDrive has below it that the folder does not show waits for the
-///   directory, whatever is answered for the directory itself: what was removed here with
-///   it, the directories among that too, what OneDrive made in it since, and a file
-///   removed here whose content OneDrive changed, which does not come back. So none of
-///   them has a removal of its own while a directory above it is still to be removed.
-/// - Where the removal of the directory is what its row answers, it is sent or waits; any
-///   other answer of the directory stands — it is held back, a rule keeps its removal from
-///   being sent now, or the plan was not given all that is in it.
-pub(crate) fn decide_removals_of_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>, answers: &ItemAnswers) -> Vec<Overruling> {
-    let case_of: HashMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
+/// - The directory's removal is of the folder alone
+///   ([`ItemCase::is_removal_of_folder_alone`]): nothing below waits for it by this rule.
+///   Each item below is decided by itself, a directory removed here among them by what is
+///   below it in its turn.
+/// - Otherwise — the removal is sent, it waits, the directory is held back, a rule keeps
+///   it from being sent now, or the plan was not given all that is in it — everything
+///   OneDrive has below it that the folder does not show waits for the directory: what was
+///   removed here with it, the directories among that too, and a file removed here whose
+///   content OneDrive changed, which does not come back. So none of them has a removal of
+///   its own while a directory above it is still to be removed.
+pub(crate) fn wait_for_removals_of_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> Vec<Overruling> {
+    let mut removed: Vec<&ItemCase<'_>> = cases.iter().filter(|case| is_directory_removed_here(case.item)).collect();
+    removed.sort_by_key(|case| (count_directories_above_in_onedrive(items, case.item), case.item.local_item_id));
+    let mut waiting: HashSet<LocalItemId> = HashSet::new();
     let mut overrulings = Vec::new();
-    for case in cases {
+    for case in removed {
         let directory = case.item.local_item_id;
-        if !is_directory_removed_here(case.item) || is_in_directory_removed_here(items, case.item) {
+        if waiting.contains(&directory) || case.is_removal_of_folder_alone() {
             continue;
         }
-        let below = list_below_removed_directory(&case_of, items, directory);
-        for item in &below {
-            match item {
-                ItemBelowRemovedDirectory::ShownHere(_) => {}
-                ItemBelowRemovedDirectory::IsHeldBack(goes_with_it) | ItemBelowRemovedDirectory::NeverShownHere(goes_with_it) => overrulings.push(Overruling::of(*goes_with_it, ItemDecision::Wait(WaitReason::AnotherItem(directory)))),
-                ItemBelowRemovedDirectory::RemovedHere(goes_with_it) => overrulings.push(Overruling::of(goes_with_it.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(directory)))),
+        for item in &case.below_in_onedrive {
+            let goes_with_it = match item {
+                ItemBelowRemovedDirectory::ShownHere(_) => continue,
+                ItemBelowRemovedDirectory::IsHeldBack(item) | ItemBelowRemovedDirectory::NeverShownHere(item) => *item,
+                ItemBelowRemovedDirectory::RemovedHere(item) => item.local_item_id,
+            };
+            if waiting.insert(goes_with_it) {
+                overrulings.push(Overruling::of(goes_with_it, ItemDecision::Wait(WaitReason::AnotherItem(directory))));
             }
-        }
-        match answers.find(directory) {
-            Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { item, .. }))) => overrulings.push(Overruling::of(
-                directory,
-                match decide_directory_removal(&below) {
-                    DirectoryRemovalOutcome::IsSent { removed_with_it } => ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { item: item.clone(), below: removed_with_it })),
-                    DirectoryRemovalOutcome::WaitsFor(kept) => ItemDecision::Wait(WaitReason::AnotherItem(kept)),
-                },
-            )),
-            // The row of a directory that was removed here answers its removal or a wait.
-            Some(ItemDecision::Step(_) | ItemDecision::Wait(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => {}
         }
     }
     overrulings

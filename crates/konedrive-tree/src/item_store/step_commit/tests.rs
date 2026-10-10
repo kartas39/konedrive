@@ -255,7 +255,7 @@ fn the_removal_of_a_file_sent_leaves_its_row_with_its_binding_alone_stamped() {
 }
 
 #[test]
-fn the_removal_of_a_directory_sent_takes_all_onedrive_has_in_it() {
+fn the_removal_of_a_directory_sent_takes_all_that_was_removed_with_it() {
     let mut store = store_with_listed_root();
     let directory = show_directory(&mut store, "D", "R", "d");
     let inner = show_directory(&mut store, "E", "D", "e");
@@ -264,8 +264,6 @@ fn the_removal_of_a_directory_sent_takes_all_onedrive_has_in_it() {
     for item in [file, inner, directory] {
         store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
     }
-    // What OneDrive made in it since goes with it, as a listing would say.
-    write_listing_of_changes(&mut store, &[listed_file("N", "E", "new.txt", (4, "h-N"), "e-N")]);
     let below = [versions(&mut store, inner), versions(&mut store, file)];
 
     // One of those removed with it changed since: nothing is written.
@@ -278,8 +276,6 @@ fn the_removal_of_a_directory_sent_takes_all_onedrive_has_in_it() {
         let removed = row(&mut store, removed);
         assert!(is_binding_alone(&removed) && removed.confirmed_at_count > 0, "{removed:?}");
     }
-    let made_since = bound(&mut store, "N");
-    assert!(is_binding_alone(&made_since) && made_since.confirmed_at_count > 0, "what the removal took is stamped: {made_since:?}");
 }
 
 // -- towards the folder
@@ -574,56 +570,6 @@ fn a_move_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     let now = row(&mut store, saved);
     assert_eq!((now.synced_place.clone(), now.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone())), (Some(place(ROOT, "g2")), Some(place(ROOT, "g2"))));
     assert_eq!(now.local.as_ref().and_then(|local| local.place.clone()), Some(place(ROOT, "g2")));
-}
-
-/// The review's S2, new: the commit of a directory's removal asks again, in its
-/// transaction, what the plan asked: the folder shows nothing of what OneDrive has below
-/// the directory. A listing that moved an item into it meanwhile is answered "the rows
-/// changed", and the store answers the same question to a step before its request leaves.
-#[test]
-fn the_removal_of_a_directory_is_not_written_while_the_folder_shows_what_onedrive_has_below_it() {
-    let mut store = store_with_listed_root();
-    let directory = show_directory(&mut store, "D", "R", "d");
-    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (3, "h-F"), "e-F")]);
-    let (inside, kept) = (show(&mut store, "F"), show_file(&mut store, "G", "g"));
-    for item in [inside, directory] {
-        store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
-    }
-    let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
-    assert!(store.item_store().can_directory_removal_be_sent(&planned_from, &below).unwrap());
-
-    // OneDrive moved `g` into the directory: the folder shows it, in the root.
-    write_listing_of_changes(&mut store, &[listed_file("G", "D", "g", (3, "h-G"), "e-G2")]);
-    assert!(!store.item_store().can_directory_removal_be_sent(&planned_from, &below).unwrap());
-    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below)));
-    assert!(row(&mut store, kept).onedrive.is_some());
-
-    // Versions that are not the rows' any more are no removal to send either.
-    let outdated = ItemVersions { onedrive_etag: Some("e-outdated".to_owned()), ..planned_from.clone() };
-    assert!(!store.item_store().can_directory_removal_be_sent(&outdated, &below).unwrap());
-}
-
-/// The review's S3, new: every row a confirmed removal of a directory took the OneDrive
-/// version from is stamped, also one the plan did not name: a page fetched before the
-/// removal that names such an item does not bring it back.
-#[test]
-fn what_a_directory_removal_took_from_onedrive_is_not_brought_back_by_an_outdated_page() {
-    let mut store = store_with_listed_root();
-    let directory = show_directory(&mut store, "D", "R", "d");
-    // OneDrive made a file in it that the folder never showed.
-    write_listing_of_changes(&mut store, &[listed_file("N", "D", "new.txt", (4, "h-N"), "e-N")]);
-    store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
-    let listing = store.item_store().begin_delta_listing().unwrap();
-    let planned_from = versions(&mut store, directory);
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &[]).unwrap(), StepCommitOutcome::Written);
-    let taken = bound(&mut store, "N");
-    assert!(is_binding_alone(&taken) && taken.confirmed_at_count > listing.began_at_count, "{taken:?}");
-
-    // The page was fetched before the removal, and names the file as it was.
-    let page = [listed_file("N", "D", "new.txt", (4, "h-N"), "e-N")];
-    let outcome = store.item_store().write_listed_changes(listing.id, &page, listing.began_at_count, &crate::ListingLink::DeltaLink("link".into())).unwrap();
-    assert_eq!(outcome.changes, [crate::ListedChangeOutcome::Outdated]);
-    assert!(is_binding_alone(&bound(&mut store, "N")));
 }
 
 /// The review's S4, new: a step is conditional on whether the content is on disk too. A

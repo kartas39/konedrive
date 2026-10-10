@@ -58,10 +58,15 @@ pub struct PlanSettings {
 /// What the daemon knows beside the rows when a plan is made, as values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonFacts {
+    /// Every item a step runs for, and every item a request to OneDrive that is not
+    /// settled yet is about: also one whose answer was lost, and one on record from before
+    /// a stop, until its item was read from OneDrive (the plan's
+    /// `items_with_running_step`).
     pub items_with_running_step: BTreeSet<LocalItemId>,
-    /// The directories of OneDrive the running `MakeDirectory`, `SendNewFile` and
-    /// `SendMove` steps send into (`RunningStep::destination`): their rows are the plan's
-    /// `destinations_of_running_steps`.
+    /// The directories of OneDrive the `MakeDirectory`, `SendNewFile` and `SendMove`
+    /// requests that are not settled yet send into (`RunningStep::destination`, and the
+    /// records of requests whose answer was lost or that a stop left): their rows are the
+    /// plan's `destinations_of_running_steps`.
     pub destinations_of_running_steps: Vec<OneDriveItemReference>,
     pub is_onedrive_full: bool,
     /// Unix seconds: the plan's `now`.

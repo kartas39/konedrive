@@ -374,20 +374,8 @@ fn the_removal_of_a_directory_waits_for_what_was_moved_out_of_it() {
     assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "kept.txt".into() }));
 }
 
-/// B4c. Today: `a_removed_directory_is_removed_whole_and_unguarded`
-/// (`upload/tests/row_kinds.rs`): the removal is sent and stands, whatever OneDrive changed
-/// below it.
-#[test]
-fn the_removal_of_a_directory_stands_whatever_onedrive_changed_in_it() {
-    let given = input(vec![
-        removed_here(synced_directory(2, ROOT, "d")),
-        listed(3, ItemKind::File, id(2), "new.txt"),
-        removed_here(with_content_in_onedrive(synced_file(4, id(2), "a.txt"), hashed("theirs"))),
-    ]);
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 4)] }));
-    assert_eq!(answer(&given, 3), waits_for(2), "it does not appear here");
-    assert_eq!(answer(&given, 4), waits_for(2), "it does not come back");
-}
+// B4c, "the removal of a directory stands whatever OneDrive changed in it", is in
+// `directory_removal`, beside the rule that replaced its other half.
 
 /// Open: an item the folder shows that OneDrive moved into a directory that was removed
 /// here. The design says the removal "is sent and stands" whatever OneDrive changed below
@@ -545,15 +533,14 @@ fn a_mass_removal_waits_for_the_user_to_confirm_it() {
 
     // A removed directory is one step for all OneDrive has in it; what is in it waits for it.
     let mut tree = vec![removed_here(synced_directory(2, ROOT, "d"))];
-    tree.extend((3..8).map(|number| removed_here(synced_file(number, id(2), &format!("f{number}")))));
-    tree.extend((8..12).map(|number| listed(number, ItemKind::File, id(2), &format!("f{number}"))));
+    tree.extend((3..12).map(|number| removed_here(synced_file(number, id(2), &format!("f{number}")))));
     let mut given = input(tree);
     given.shown_item_count = 40;
     given.unsent_removal_count = 10;
     assert_eq!(answer(&given, 2), held);
     assert_eq!(answer(&given, 3), waits_for(2));
     given.items_with_confirmed_removal = [id(2)].into();
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: (3..8).map(|number| versions(&given, number)).collect() }));
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: (3..12).map(|number| versions(&given, number)).collect() }));
 }
 
 // -- the answer
@@ -892,7 +879,7 @@ fn an_item_the_check_at_start_left_is_not_planned() {
     for left in [2, 4, 6, 7] {
         assert_eq!(answer(&given, left), Answer::Wait(WaitReason::StartUpCheck), "item {left}");
     }
-    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::StartUpCheck), "what is in an item the check left is held with it");
     assert_eq!(answer(&given, 5), waits_for(6));
 }
 

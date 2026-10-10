@@ -159,7 +159,7 @@ fn read_count(conn: &Connection, key: &str) -> Result<u64, TreeError> {
 impl ListingUnderWay {
     /// [`ItemStore::find_listing_under_way`]: a listing is under way while the store keeps
     /// its id.
-    pub(super) fn find(conn: &Connection) -> Result<Option<Self>, TreeError> {
+    pub(in crate::item_store) fn find(conn: &Connection) -> Result<Option<Self>, TreeError> {
         let Some(id) = meta::get(conn, meta::LISTING_UNDER_WAY)?.and_then(|id| id.parse().ok()) else { return Ok(None) };
         let kind = if meta::get(conn, meta::FULL_LISTING_UNDER_WAY)?.is_some() { ListingKind::Full } else { ListingKind::Delta };
         Ok(Some(Self { id: ListingId(id), kind, began_at_count: read_count(conn, meta::LISTING_BEGAN_AT_COUNT)?, next_link: meta::get(conn, meta::LISTING_NEXT_LINK)? }))

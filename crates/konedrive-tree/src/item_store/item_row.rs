@@ -547,14 +547,6 @@ pub(super) fn confirm_removal_below(conn: &Connection, directory: LocalItemId, c
     Ok(())
 }
 
-/// Whether the folder shows anything of what the rows say OneDrive has in `directory` and
-/// below it, at any depth: what the removal of the directory would take from OneDrive
-/// though it is in the folder.
-pub(super) fn is_anything_shown_below_in_onedrive(conn: &Connection, directory: LocalItemId) -> Result<bool, TreeError> {
-    let sql = format!("SELECT EXISTS (SELECT 1 FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND local_parent_id IS NOT NULL)");
-    Ok(conn.prepare_cached(&sql)?.query_row([directory.as_i64()], |row| row.get(0))?)
-}
-
 /// SQL for "the row has a place in OneDrive, and the full listing of the id `?1` did not
 /// list it": what the index `items_seen_in_full_listing` finds.
 const UNSEEN_IN_FULL_LISTING: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
