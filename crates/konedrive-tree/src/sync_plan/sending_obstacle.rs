@@ -8,7 +8,7 @@ use super::SendingState;
 
 /// What a step towards OneDrive sends of an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Sending {
+pub(crate) enum SentPart {
     /// A directory made here: its name.
     NewDirectory,
     /// A file made here: its name and its content.
@@ -20,15 +20,15 @@ pub(crate) enum Sending {
     Removal,
 }
 
-impl Sending {
+impl SentPart {
     /// Whether the item's name here is sent.
     fn has_name(self) -> bool {
-        matches!(self, Sending::NewDirectory | Sending::NewFile | Sending::Place)
+        matches!(self, SentPart::NewDirectory | SentPart::NewFile | SentPart::Place)
     }
 
     /// Whether a file's content is sent.
     fn has_content(self) -> bool {
-        matches!(self, Sending::NewFile | Sending::Content)
+        matches!(self, SentPart::NewFile | SentPart::Content)
     }
 }
 
@@ -69,7 +69,7 @@ pub(crate) enum SendingObstacle {
     QuietTime { until: i64 },
 }
 
-/// Why `sending` of an item is not sent, under `conditions`; `None` when it is. The first
+/// Why `sent_part` of an item is not sent, under `conditions`; `None` when it is. The first
 /// that holds, what never ends by itself before what does:
 ///
 /// - an ignored item is never sent, whatever is sent of it;
@@ -77,7 +77,7 @@ pub(crate) enum SendingObstacle {
 /// - a name OneDrive cannot hold, where the name is sent;
 /// - a file larger than OneDrive takes, OneDrive being full, and the quiet time, where
 ///   content is sent.
-pub(crate) fn find_sending_obstacle(sending: Sending, conditions: &SendingConditions) -> Option<SendingObstacle> {
+pub(crate) fn find_sending_obstacle(sent_part: SentPart, conditions: &SendingConditions) -> Option<SendingObstacle> {
     if conditions.is_ignored {
         return Some(SendingObstacle::Ignored);
     }
@@ -86,12 +86,12 @@ pub(crate) fn find_sending_obstacle(sending: Sending, conditions: &SendingCondit
             return Some(SendingObstacle::ReadOnlyFolder);
         }
     }
-    if sending.has_name() {
+    if sent_part.has_name() {
         if let Some(reason) = &conditions.name_refusal {
             return Some(SendingObstacle::NameRefused(reason.clone()));
         }
     }
-    if sending.has_content() {
+    if sent_part.has_content() {
         if conditions.size.is_some_and(|size| size > conditions.largest_file_size) {
             return Some(SendingObstacle::TooLarge);
         }

@@ -89,3 +89,19 @@ fn the_content_in_onedrive_is_the_same_or_changed_and_never_not_known() {
     assert_eq!(content_in_onedrive(no_hash("c-h2", 4)), ContentChange::Changed, "another size");
     assert_eq!(compare_onedrive_content(Some(&hashed("h2")), Some(&written_here())), ContentChange::Changed, "what OneDrive has is not hashed here");
 }
+
+/// New (the brief's §5): a copy's cTag mark survives an edit in place, so a content the rows
+/// took from a mark (a cTag and no hash) is another content's only when the size and the
+/// time in whole seconds are the same too.
+#[test]
+fn the_content_here_taken_from_a_mark_is_the_same_only_with_the_same_size_and_whole_second() {
+    let from_mark = |ctag: &str, size, mtime| ContentVersion::Hashed { size, mtime, mtime_nsec: 500, hash: None, ctag: Some(ctag.to_owned()) };
+    // `hashed("h2")` is of size 3, of the time 100 and of the cTag `c-h2`.
+    assert_eq!(compare_local_content(Some(&from_mark("c-h2", 3, 100)), Some(&hashed("h2"))), ContentChange::Same, "the part of a second is the disk's alone");
+    assert_eq!(compare_local_content(Some(&from_mark("c-h2", 3, 101)), Some(&hashed("h2"))), ContentChange::NotKnownWithoutHash, "edited in place: the mark stayed, the time did not");
+    assert_eq!(compare_local_content(Some(&from_mark("c-h2", 4, 100)), Some(&hashed("h2"))), ContentChange::Changed, "another size");
+    assert_eq!(compare_local_content(Some(&from_mark("c-other", 3, 100)), Some(&hashed("h2"))), ContentChange::NotKnownWithoutHash, "another mark says nothing");
+    let no_hash = ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: None, ctag: Some("c-h2".to_owned()) };
+    assert_eq!(compare_local_content(Some(&from_mark("c-h2", 3, 100)), Some(&no_hash)), ContentChange::Same, "against a content OneDrive gave no hash for");
+    assert_eq!(compare_local_content(Some(&from_mark("c-h2", 3, 101)), Some(&no_hash)), ContentChange::Changed);
+}

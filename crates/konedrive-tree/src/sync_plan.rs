@@ -37,7 +37,7 @@ mod sync_step;
 pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 
 use plan_items::PlanItems;
-use item_decision::{decide_item, ItemCase, ItemDecision, LocalDirectoryBinding, OneDrivePlaceHere};
+use item_decision::{decide_item, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability};
 use sending_obstacle::SendingConditions;
 
 /// The folder's state of sending.
@@ -175,17 +175,17 @@ fn find_local_directory_binding(items: &PlanItems<'_>, item: &Item) -> LocalDire
 }
 
 /// Whether the folder can take the place OneDrive has `item` at.
-fn find_onedrive_place_here(items: &PlanItems<'_>, item: &Item) -> OneDrivePlaceHere {
-    let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return OneDrivePlaceHere::NoOneDrivePlace };
+fn find_local_place_availability(items: &PlanItems<'_>, item: &Item) -> LocalPlaceAvailability {
+    let Some(place) = item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) else { return LocalPlaceAvailability::NoOneDrivePlace };
     if !is_directory_entry_name(&place.name) {
-        return OneDrivePlaceHere::NameUnusable;
+        return LocalPlaceAvailability::NameUnusable;
     }
     if !items.find(place.parent_local_item_id).is_some_and(|directory| directory.local.is_some()) {
-        return OneDrivePlaceHere::DirectoryNotShown(place.parent_local_item_id);
+        return LocalPlaceAvailability::DirectoryNotShown(place.parent_local_item_id);
     }
     match items.find_shown_at(place) {
-        Some(holder) if holder != item.local_item_id => OneDrivePlaceHere::NameTaken(holder),
-        _ => OneDrivePlaceHere::Free,
+        Some(holder) if holder != item.local_item_id => LocalPlaceAvailability::NameTaken(holder),
+        _ => LocalPlaceAvailability::Free,
     }
 }
 
@@ -202,7 +202,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         is_open_for_writing: input.items_open_for_writing.contains(&id),
         is_pinned: input.pinned_items.contains(&id),
         local_directory: find_local_directory_binding(items, item),
-        onedrive_place_here: find_onedrive_place_here(items, item),
+        local_place_availability: find_local_place_availability(items, item),
         first_shown_in_it: items.find_first_shown_in(id),
         sending: SendingConditions {
             is_ignored: input.ignored_items.contains(&id),

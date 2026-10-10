@@ -9,7 +9,7 @@
 
 use konedrive_reason::Reason;
 
-use super::sending_obstacle::{find_sending_obstacle, Sending, SendingConditions, SendingObstacle};
+use super::sending_obstacle::{find_sending_obstacle, SentPart, SendingConditions, SendingObstacle};
 use super::side_change::{compare_local_content, ContentChange, PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::{ExclusionReason, WaitReason};
@@ -43,7 +43,7 @@ pub(crate) enum LocalDirectoryBinding {
 
 /// Whether the folder can take the place OneDrive has an item at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OneDrivePlaceHere {
+pub(crate) enum LocalPlaceAvailability {
     /// The folder shows the directory, and nothing but the item itself has the name there.
     Free,
     /// The folder does not show the directory, or its row was not given: which directory.
@@ -70,7 +70,7 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) is_open_for_writing: bool,
     pub(crate) is_pinned: bool,
     pub(crate) local_directory: LocalDirectoryBinding,
-    pub(crate) onedrive_place_here: OneDrivePlaceHere,
+    pub(crate) local_place_availability: LocalPlaceAvailability,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
     pub(crate) sending: SendingConditions,
@@ -184,10 +184,10 @@ fn decide_bound_item_onedrive_never_listed(case: &ItemCase<'_>) -> ItemDecision 
     row_step(RowStep::GiveUpBinding { item: case.versions() })
 }
 
-/// What keeps `sending` of the item from being sent, as the plan answers it; `None` when it
+/// What keeps `sent_part` of the item from being sent, as the plan answers it; `None` when it
 /// is sent.
-fn find_decision_not_to_send(case: &ItemCase<'_>, sending: Sending) -> Option<ItemDecision> {
-    Some(match find_sending_obstacle(sending, &case.sending)? {
+fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option<ItemDecision> {
+    Some(match find_sending_obstacle(sent_part, &case.sending)? {
         SendingObstacle::Ignored => ItemDecision::Exclusion(ExclusionReason::NameIgnored),
         SendingObstacle::ReadOnlyFolder => ItemDecision::Wait(WaitReason::User(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned())))),
         SendingObstacle::NameRefused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
@@ -219,9 +219,9 @@ fn send_into_local_directory(case: &ItemCase<'_>, step: impl FnOnce(OneDriveItem
 fn decide_new_here(case: &ItemCase<'_>) -> ItemDecision {
     let item = case.versions();
     match case.item.kind {
-        ItemKind::Directory => find_decision_not_to_send(case, Sending::NewDirectory)
+        ItemKind::Directory => find_decision_not_to_send(case, SentPart::NewDirectory)
             .unwrap_or_else(|| send_into_local_directory(case, |parent, name| OneDriveStep::MakeDirectory { item, parent, name })),
-        ItemKind::File => find_decision_not_to_send(case, Sending::NewFile)
+        ItemKind::File => find_decision_not_to_send(case, SentPart::NewFile)
             .unwrap_or_else(|| send_into_local_directory(case, |parent, name| OneDriveStep::SendNewFile { item, parent, name })),
     }
 }
@@ -233,10 +233,10 @@ fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> 
     match (case.item.kind, onedrive_content) {
         (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => show_onedrive_item(case),
         (ItemKind::File, ContentChange::Same) => {
-            find_decision_not_to_send(case, Sending::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendFileRemoval { item: case.versions() }))
+            find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendFileRemoval { item: case.versions() }))
         }
         (ItemKind::Directory, _) => {
-            find_decision_not_to_send(case, Sending::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendDirectoryRemoval { item: case.versions(), below: Vec::new() }))
+            find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendDirectoryRemoval { item: case.versions(), below: Vec::new() }))
         }
     }
 }
@@ -250,12 +250,12 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
         FolderVisibility::CannotBeShown if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
         FolderVisibility::CannotBeShown => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
         FolderVisibility::NotInOneDrive => ItemDecision::Fault,
-        FolderVisibility::CanBeShown => match case.onedrive_place_here {
-            OneDrivePlaceHere::Free => folder_step(FolderStep::ShowItem { item: case.versions() }),
-            OneDrivePlaceHere::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-            OneDrivePlaceHere::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
-            OneDrivePlaceHere::NameUnusable => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
-            OneDrivePlaceHere::NoOneDrivePlace => ItemDecision::Fault,
+        FolderVisibility::CanBeShown => match case.local_place_availability {
+            LocalPlaceAvailability::Free => folder_step(FolderStep::ShowItem { item: case.versions() }),
+            LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
+            LocalPlaceAvailability::NameUnusable => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
+            LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
         },
     }
 }
@@ -283,7 +283,7 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
 /// The step that sends the item's place here to OneDrive.
 fn send_move(case: &ItemCase<'_>) -> ItemDecision {
     let item = case.versions();
-    find_decision_not_to_send(case, Sending::Place).unwrap_or_else(|| send_into_local_directory(case, |parent, name| OneDriveStep::SendMove { item, parent, name }))
+    find_decision_not_to_send(case, SentPart::Place).unwrap_or_else(|| send_into_local_directory(case, |parent, name| OneDriveStep::SendMove { item, parent, name }))
 }
 
 /// OneDrive has the item where the folder cannot show it, and the item was not moved here:
@@ -316,24 +316,24 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
     match (here, in_onedrive) {
         (PlaceChange::Same, _) if !can_be_shown => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
         (PlaceChange::Same, PlaceChange::Same) => ItemDecision::NothingToDo,
-        (PlaceChange::Same, PlaceChange::Moved) => match case.onedrive_place_here {
-            OneDrivePlaceHere::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
-            OneDrivePlaceHere::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-            OneDrivePlaceHere::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
-            OneDrivePlaceHere::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
-            OneDrivePlaceHere::NoOneDrivePlace => ItemDecision::Fault,
+        (PlaceChange::Same, PlaceChange::Moved) => match case.local_place_availability {
+            LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
+            LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
+            LocalPlaceAvailability::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
+            LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
         },
         (PlaceChange::Moved, PlaceChange::Same) => send_move(case),
         (PlaceChange::Moved, PlaceChange::Moved) => {
             let is_one_place = item.local.as_ref().map(|local| &local.place) == item.onedrive.as_ref().map(|onedrive| &onedrive.place);
-            match case.onedrive_place_here {
+            match case.local_place_availability {
                 _ if is_one_place => row_step(RowStep::AgreeOnPlace { item: case.versions() }),
                 _ if !can_be_shown && case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
                 _ if !can_be_shown => send_move(case),
-                OneDrivePlaceHere::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
-                OneDrivePlaceHere::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-                OneDrivePlaceHere::NameTaken(_) | OneDrivePlaceHere::NameUnusable => send_move(case),
-                OneDrivePlaceHere::NoOneDrivePlace => ItemDecision::Fault,
+                LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
+                LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+                LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable => send_move(case),
+                LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
             }
         }
     }
@@ -357,7 +357,7 @@ pub(crate) fn decide_content(case: &ItemCase<'_>, here: ContentChange, in_onedri
         (ContentChange::Same, ContentChange::Same) => row_step(RowStep::AgreeOnContent { item: case.versions() }),
         (ContentChange::Same, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => folder_step(FolderStep::TakeOneDriveContent { item: case.versions() }),
         (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Same) => {
-            find_decision_not_to_send(case, Sending::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() }))
+            find_decision_not_to_send(case, SentPart::Content).unwrap_or_else(|| onedrive_step(OneDriveStep::SendContent { item: case.versions() }))
         }
         (ContentChange::Changed | ContentChange::NotKnownWithoutHash, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => match compare_local_content(local, onedrive) {
             ContentChange::Same => row_step(RowStep::AgreeOnContent { item: case.versions() }),

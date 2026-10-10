@@ -1,6 +1,6 @@
 use super::*;
 
-const EVERY_SENDING: [Sending; 5] = [Sending::NewDirectory, Sending::NewFile, Sending::Content, Sending::Place, Sending::Removal];
+const EVERY_SENT_PART: [SentPart; 5] = [SentPart::NewDirectory, SentPart::NewFile, SentPart::Content, SentPart::Place, SentPart::Removal];
 
 /// A file of 3 bytes in a read-write folder, with nothing in its way.
 fn conditions() -> SendingConditions {
@@ -16,9 +16,9 @@ fn conditions() -> SendingConditions {
     }
 }
 
-/// What is in the way of each sending, in the order of [`EVERY_SENDING`].
+/// What is in the way of each part, in the order of [`EVERY_SENT_PART`].
 fn obstacles(conditions: &SendingConditions) -> [Option<SendingObstacle>; 5] {
-    EVERY_SENDING.map(|sending| find_sending_obstacle(sending, conditions))
+    EVERY_SENT_PART.map(|sent_part| find_sending_obstacle(sent_part, conditions))
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn of_several_obstacles_the_one_that_does_not_end_by_itself_is_said_first() {
         sending_state: SendingState::ReadOnly { last_unsent_since: 0 },
         ..conditions()
     };
-    let new_file = |conditions: &SendingConditions| find_sending_obstacle(Sending::NewFile, conditions);
+    let new_file = |conditions: &SendingConditions| find_sending_obstacle(SentPart::NewFile, conditions);
     assert_eq!(new_file(&all), Some(SendingObstacle::Ignored));
     let all = SendingConditions { is_ignored: false, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::ReadOnlyFolder));

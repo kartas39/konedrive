@@ -81,6 +81,9 @@ fn ctag_of(content: &ContentVersion) -> Option<&str> {
 ///
 /// - the same content version, whole: the same;
 /// - another size: changed, and no hash is needed to know it;
+/// - no hash here and the cTag of the other, with its time in whole seconds: the same. Such
+///   a local content was taken from the mark of a copy on disk, and the mark survives an
+///   edit in place, so the cTag alone does not say it;
 /// - a hash on both: the same when the hashes are, whatever the times and the cTags say;
 /// - no hash here and one there: not known without hashing the local content;
 /// - no hash there: changed. No hash of what OneDrive has can be computed here, so a local
@@ -91,6 +94,7 @@ pub(crate) fn compare_local_content(local: Option<&ContentVersion>, other: Optio
         (None, Some(_)) | (Some(_), None) => ContentChange::Changed,
         (Some(local), Some(other)) if local == other => ContentChange::Same,
         (Some(local), Some(other)) if local.size() != other.size() => ContentChange::Changed,
+        (Some(local), Some(other)) if hash_of(local).is_none() && ctag_of(local).is_some() && ctag_of(local) == ctag_of(other) && local.mtime().0 == other.mtime().0 => ContentChange::Same,
         (Some(local), Some(other)) => match (hash_of(local), hash_of(other)) {
             (Some(local), Some(other)) if local == other => ContentChange::Same,
             (Some(_), Some(_)) => ContentChange::Changed,

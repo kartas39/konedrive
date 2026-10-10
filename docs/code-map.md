@@ -827,7 +827,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   an exclusion or nothing (`ItemDecision`). Reads no other row.
 - `sync_plan/sending_obstacle.rs` — what is not sent to OneDrive, and why
   (`find_sending_obstacle`, `SendingObstacle`), by what a step sends of the item
-  (`Sending`). `[tests]`
+  (`SentPart`). `[tests]`
 - `sync_plan/sync_step.rs` — one thing the plan does: `OneDriveStep` (a request to
   OneDrive), `FolderStep` (a change of the folder and of the local version), `RowStep` (a
   change of the rows alone), each case with the versions of the row it was planned from
