@@ -164,7 +164,8 @@ async fn a_sign_in_that_succeeds_makes_the_account_under_its_email() {
     assert_eq!(account.state().await.unwrap(), "signed-in");
     assert_eq!(account.mode().await.unwrap(), "read-only");
     let config = s.config_text();
-    assert!(config.contains("label = \"test@outlook.com\"") && config.contains("drive_id = \"D1\""), "{config}");
+    // The drive's id as a drive id is made: its letters in lower case.
+    assert!(config.contains("label = \"test@outlook.com\"") && config.contains("drive_id = \"d1\""), "{config}");
     assert!(config.contains("login_hint = \"test@outlook.com\"") && !config.contains("draft"), "{config}");
     assert_eq!(s.wallet.current(&Slot::Account(id_of(&path))).as_deref(), Some("RT1"));
     s.there_are(1).await;

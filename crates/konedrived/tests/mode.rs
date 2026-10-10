@@ -175,7 +175,7 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     eventually("signed in", || async move { proxy.state().await.unwrap() == "signed-in" }).await;
     let service = Arc::clone(&daemon.manager.accounts()[0].account);
     let config = Arc::clone(daemon.manager.config());
-    let recorded = || config.account(service.id()).unwrap().drive_id.as_deref() == Some("D1");
+    let recorded = || config.account(service.id()).unwrap().drive_id == DriveId::new("D1");
     for _ in 0..500 {
         if recorded() {
             break;
@@ -319,7 +319,7 @@ async fn a_switch_that_is_not_granted_changes_nothing() {
 
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     assert_eq!(s.account.state().await.unwrap(), "signed-in");
-    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"));
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id, DriveId::new("D1"));
 }
 
 /// An account with no drive recorded is asked which drive it is before any sign-in begins:
@@ -342,7 +342,7 @@ async fn a_switch_of_an_account_with_no_recorded_drive_learns_it_or_is_refused_b
     forget_drive(&s);
     let url = s.account.set_mode("read-write", false).await.unwrap();
     assert!(url.contains("scope="), "the sign-in begins: {url}");
-    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"), "asked and recorded first");
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id, DriveId::new("D1"), "asked and recorded first");
     s.account.cancel_sign_in().await.unwrap();
 
     forget_drive(&s);
@@ -547,7 +547,8 @@ async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_writ
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO", "the token that could write is not used");
     assert_eq!(refreshes(&s.server).await.last().unwrap(), "Files.Read User.Read offline_access");
     s.account.refresh_info().await.unwrap();
-    wait_for_error(&s.account, "config.toml records drive D3").await;
+    // The recorded drive is named as a drive id is made: its letters in lower case.
+    wait_for_error(&s.account, "config.toml records drive d3").await;
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 }
 
@@ -565,8 +566,9 @@ async fn a_drive_taken_off_the_list_while_running_loses_the_token_export_only() 
     assert_eq!(s.export.read_write().await.unwrap(), "AT2", "handed out for a listed drive");
 
     let text = std::fs::read_to_string(s.config().file()).unwrap();
-    assert!(text.contains("write_test_drive_ids = [\"D1\"]"), "{text}");
-    std::fs::write(s.config().file(), text.replace("write_test_drive_ids = [\"D1\"]", "write_test_drive_ids = []")).unwrap();
+    // The file has the drive's id as a drive id is made: its letters in lower case.
+    assert!(text.contains("write_test_drive_ids = [\"d1\"]"), "{text}");
+    std::fs::write(s.config().file(), text.replace("write_test_drive_ids = [\"d1\"]", "write_test_drive_ids = []")).unwrap();
     let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
     s.account.refresh_info().await.unwrap();
@@ -642,6 +644,6 @@ async fn a_read_write_account_signing_in_as_someone_else_stores_nothing() {
     eventually("signed out", || async move { account.state().await.unwrap() == "signed-out" }).await;
     assert!(s.account.last_error().await.unwrap().contains("different Microsoft account"));
     assert_eq!(s.refresh_token(), None, "nothing stored");
-    assert_eq!(s.config().account(&s.id).unwrap().drive_id.as_deref(), Some("D1"));
+    assert_eq!(s.config().account(&s.id).unwrap().drive_id, DriveId::new("D1"));
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 }

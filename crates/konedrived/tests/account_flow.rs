@@ -8,7 +8,7 @@ use konedrived::account::testing::single_account;
 use konedrived::account::{AccountError, AccountService};
 use konedrived::account::cache::AccountInfo;
 use konedrived::account::quota::QuotaFigures;
-use konedrived::config::{ConfigStore, Paths, DEFAULT_CLIENT_ID};
+use konedrived::config::{ConfigStore, DriveId, Paths, DEFAULT_CLIENT_ID};
 use konedrive_graph::oauth::TokenResponse;
 use konedrive_graph::secret::MemoryStore;
 use konedrived::account::secret::SecretStore;
@@ -49,7 +49,7 @@ async fn sign_in_happy_path() {
     assert_eq!(s.published_error(), "");
     assert_eq!(f.store.current().as_deref(), Some("RT1"));
     assert!(f.cache().exists());
-    assert_eq!(f.svc.config().account(f.svc.id()).unwrap().drive_id.as_deref(), Some("D1"), "the sign-in recorded its drive");
+    assert_eq!(f.svc.config().account(f.svc.id()).unwrap().drive_id, DriveId::new("D1"), "the sign-in recorded its drive");
 }
 
 #[tokio::test]
@@ -584,9 +584,9 @@ async fn sign_in_read(account: &Arc<AccountService>, code: &str) -> (konedrived:
     (wait_for(account.state(), |s| s.state == SignInState::SignedOut || s.quota.total != 0).await, page)
 }
 
-/// The drive `config.toml` records for `account`; empty for none.
-fn drive_of(two: &Two, account: &AccountService) -> String {
-    two.config.account(account.id()).unwrap().drive_id.map(|drive| drive.into_string()).unwrap_or_default()
+/// The drive `config.toml` records for `account`.
+fn drive_of(two: &Two, account: &AccountService) -> Option<DriveId> {
+    two.config.account(account.id()).unwrap().drive_id
 }
 
 /// A Microsoft account already connected as one account is refused to another, which
@@ -595,7 +595,7 @@ fn drive_of(two: &Two, account: &AccountService) -> String {
 async fn a_drive_connected_as_one_account_is_refused_to_another() {
     let two = two_accounts().await;
     assert_eq!(sign_in_with(&two.a, "code-a").await.state, SignInState::SignedIn);
-    assert_eq!(drive_of(&two, &two.a), "DA");
+    assert_eq!(drive_of(&two, &two.a), DriveId::new("DA"));
 
     let (b, page) = sign_in_read(&two.b, "code-a").await;
 
@@ -603,7 +603,7 @@ async fn a_drive_connected_as_one_account_is_refused_to_another() {
     assert_eq!(b.last_error, "This Microsoft account is already connected as 'A'.");
     assert!(page.contains("<p>This Microsoft account is already connected as &#39;A&#39;.</p>"), "{page}");
     assert_eq!(two.b_wallet.current(), None, "a refused sign-in stores nothing");
-    assert_eq!(drive_of(&two, &two.b), "");
+    assert_eq!(drive_of(&two, &two.b), None);
     assert_eq!(two.b.set_label(" a "), Err(AccountError::InvalidLabel("the label \"A\" is already used".into())));
 }
 
@@ -622,7 +622,7 @@ async fn an_account_signed_in_again_as_someone_else_is_refused() {
     let said = a.last_error.replace('\'', "&#39;");
     assert!(page.contains(&format!("<p>{said}</p>")), "{page}");
     assert_eq!(two.a_wallet.current(), None);
-    assert_eq!(drive_of(&two, &two.a), "DA", "the slot keeps its drive");
+    assert_eq!(drive_of(&two, &two.a), DriveId::new("DA"), "the slot keeps its drive");
 }
 
 /// A signed-in account with no drive recorded yet — one migrated from a folder that never
@@ -648,7 +648,7 @@ async fn an_account_with_no_drive_recorded_is_asked_first() {
     two.a_wallet.store("RT-a").await.unwrap();
     let b = sign_in_with(&two.b, "code-b").await;
     assert_eq!(b.state, SignInState::SignedIn, "{}", b.last_error);
-    assert_eq!((drive_of(&two, &two.a), drive_of(&two, &two.b)), ("DA".to_owned(), "DB".to_owned()));
+    assert_eq!((drive_of(&two, &two.a), drive_of(&two, &two.b)), (DriveId::new("DA"), DriveId::new("DB")));
     assert_eq!(two.b_wallet.current().as_deref(), Some("RT-b"));
 }
 
