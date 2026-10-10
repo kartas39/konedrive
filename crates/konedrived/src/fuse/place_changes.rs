@@ -416,7 +416,7 @@ impl PlaceChanges {
                 },
                 Err(error) => Err(to_refusal(&error, &directory)),
             };
-            if let Err(refusal) = made.and_then(|()| self.mark_directory(&directory, directory_marks.get(index))) {
+            if let Err(refusal) = made.and_then(|()| self.mark_directory(&directory, directory_marks.get(index)).map(|_| ())) {
                 self.remove_directories(&directories_made);
                 return Err(refusal);
             }
@@ -425,13 +425,14 @@ impl PlaceChanges {
     }
 
     /// Marks the directory at `directory` with `mark`, when it has one and is not marked
-    /// with it already.
-    fn mark_directory(&self, directory: &Path, mark: Option<&Option<OneDriveItemId>>) -> Result<(), PlaceRefusal> {
-        let Some(Some(mark)) = mark else { return Ok(()) };
+    /// with it already. Whether a mark was written.
+    fn mark_directory(&self, directory: &Path, mark: Option<&Option<OneDriveItemId>>) -> Result<bool, PlaceRefusal> {
+        let Some(Some(mark)) = mark else { return Ok(false) };
         if self.backing_directory.read_onedrive_id(directory).as_deref() == Some(mark.as_str()) {
-            return Ok(());
+            return Ok(false);
         }
-        self.backing_directory.mark_with_onedrive_id(directory, mark.as_str()).map_err(|error| to_refusal(&error, directory))
+        self.backing_directory.mark_with_onedrive_id(directory, mark.as_str()).map_err(|error| to_refusal(&error, directory))?;
+        Ok(true)
     }
 
     /// Removes `directories`, the innermost first: what a change made above its place,
@@ -477,7 +478,9 @@ impl PlaceChange<'_> {
     /// Makes a file or a directory at `path`, with the directories above it that are not
     /// on disk, each marked. A file is refused when something is at `path`. A directory
     /// that is on disk already — one a removal left there because it still held what no
-    /// row says — is taken as the made one and marked again (`PlaceUndo::UnmarkTaken`).
+    /// row says — is taken as the made one and marked again (`PlaceUndo::UnmarkTaken`;
+    /// `PlaceUndo::Nothing` when no mark was written: none was given, or it carried that
+    /// very mark).
     ///
     /// `directory_marks` is read against the names of `path`, the outermost first: its
     /// first mark is of the first name, and so on. Marks for the directories above `path`
@@ -499,7 +502,7 @@ impl PlaceChange<'_> {
                 match kind {
                     EntryKind::File => return Ok((file, undo)),
                     EntryKind::Directory => match place_changes.mark_directory(path, own_mark) {
-                        Ok(()) => return Ok((None, undo)),
+                        Ok(_) => return Ok((None, undo)),
                         Err(refusal) => {
                             if let Err(error) = self.undo(undo) {
                                 tracing::warn!("cannot remove {} from the backing directory, which could not be marked: {error}", path.display());
@@ -510,9 +513,12 @@ impl PlaceChange<'_> {
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists && kind == EntryKind::Directory && place_changes.is_directory(path) => {
-                // It was on disk, so the directories above it were: none was made.
-                place_changes.mark_directory(path, own_mark)?;
-                return Ok((None, PlaceUndo::UnmarkTaken { path: path.to_owned() }));
+                // It was on disk, so the directories above it were: none was made. A mark
+                // that was not written here is not the undo's to take off.
+                return match place_changes.mark_directory(path, own_mark)? {
+                    true => Ok((None, PlaceUndo::UnmarkTaken { path: path.to_owned() })),
+                    false => Ok((None, PlaceUndo::Nothing)),
+                };
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => PlaceRefusal::PlaceHeld { path: path.to_owned() },
             Err(error) => to_refusal(&error, path),

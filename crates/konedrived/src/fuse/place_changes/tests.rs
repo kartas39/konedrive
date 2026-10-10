@@ -712,6 +712,14 @@ fn a_directory_made_where_one_is_on_disk_takes_it_and_marks_it_again() {
     f.change(move |change| change.undo(undo)).unwrap();
     assert_eq!(f.read_mark("docs"), None, "the mark is taken off again");
     assert_eq!(f.read("docs/by-hand").as_deref(), Some("the user's"), "the directory stays, with what it holds");
+    // Taken with no mark written — none given, or the directory carries it already —
+    // there is nothing to take back: the mark it has is not this change's.
+    assert_eq!(f.change(|change| change.make_entry(Path::new("docs"), EntryKind::Directory, &no_marks()).map(|(_, undo)| undo)), Ok(PlaceUndo::Nothing));
+    f.backing_directory.mark_with_onedrive_id(Path::new("docs"), "D-NEW").unwrap();
+    let undo = f.change(|change| change.make_entry(Path::new("docs"), EntryKind::Directory, &marks(&[Some("D-NEW")])).map(|(_, undo)| undo)).unwrap();
+    assert_eq!(undo, PlaceUndo::Nothing);
+    f.change(move |change| change.undo(undo)).unwrap();
+    assert_eq!(f.read_mark("docs").as_deref(), Some("D-NEW"));
 }
 
 #[test]
