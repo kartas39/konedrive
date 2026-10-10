@@ -7,8 +7,11 @@
 //! - *An item's parent exists in the folder and is a directory.* The code: an item is made
 //!   or moved only into a directory the folder shows ([`check_directory`]), and a directory
 //!   leaves the folder only when the folder shows nothing in it ([`check_empty`]). The
-//!   schema, whoever deletes: a row does not go while another names it as its local or its
-//!   synced parent (the trigger `items_parent_kept`).
+//!   schema, whoever writes, and for the synced place as for the local one: a row is made
+//!   with, and moved to, only a parent that is the row of a directory (the triggers
+//!   `items_parent_directory_insert` and `items_parent_directory_update`), and a row does
+//!   not go while another names it as its local or its synced parent (the trigger
+//!   `items_parent_kept`).
 //! - *No item is above itself.* The schema refuses a row that is its own parent; the code
 //!   refuses a move into what is below the item ([`check_not_below`]).
 //! - *The folder is no deeper than the rows are walked.* The code: an item is not made at a
@@ -40,7 +43,8 @@
 //!
 //! The OneDrive version is not in the rows yet (`onedrive_items` holds it), so the rules of
 //! that side are not held here. A synced place names its directory by local item id; the
-//! operations on bindings keep it pointing at a row.
+//! schema keeps it pointing at a directory's row, and the operations on bindings at the row
+//! that has that directory's binding.
 
 use std::ffi::OsStr;
 use std::path::PathBuf;

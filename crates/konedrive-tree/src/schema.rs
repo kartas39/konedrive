@@ -40,9 +40,12 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   content and nothing else has one; a directory has no content on any side, none on disk
 ///   and none before a write; neither has an item the folder does not show.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
-///   below it. A row is not deleted while another names it as its local or its synced
-///   parent (the trigger `items_parent_kept`, asked per row: what is in a directory is
-///   deleted before the directory). An outbox row may name an item whose row is gone: the
+///   below it. A row is made with, and moved to, only a local and a synced parent that is
+///   the row of a directory (the triggers `items_parent_directory_insert` and
+///   `items_parent_directory_update`, asked per row, at one read by the key for each side:
+///   a directory's row is written before what is in it). A row is not deleted while another
+///   names it as its local or its synced parent (the trigger `items_parent_kept`, asked per
+///   row: what is in a directory is deleted before the directory). An outbox row may name an item whose row is gone: the
 ///   removal of a file that was never sent leaves the rows that undo what was sent of it.
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
@@ -90,6 +93,13 @@ fn schema() -> String {
              CREATE INDEX {table}_parent ON {table}(parent_id);"
         )
     };
+    // Whether a row being written names, on that side, a parent that is no directory's row.
+    let no_parent_directory = |side: &str| {
+        format!(
+            "(NEW.{side}_parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM items WHERE local_item_id = NEW.{side}_parent_id AND kind = '{}'))",
+            ItemKind::Directory.as_str()
+        )
+    };
     let content = |of: &str| format!("{of}_size INTEGER, {of}_mtime INTEGER, {of}_mtime_nsec INTEGER, {of}_hash TEXT, {of}_ctag TEXT, {of}_change_count INTEGER");
     format!(
         "CREATE TABLE items (
@@ -118,6 +128,12 @@ fn schema() -> String {
              WHEN EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
                OR EXISTS (SELECT 1 FROM items WHERE synced_parent_id = OLD.local_item_id)
              BEGIN SELECT RAISE(ABORT, 'items: a row that is another row''s parent is not deleted'); END;
+         CREATE TRIGGER items_parent_directory_insert BEFORE INSERT ON items
+             WHEN {no_local_parent_directory} OR {no_synced_parent_directory}
+             BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
+         CREATE TRIGGER items_parent_directory_update BEFORE UPDATE OF local_parent_id, synced_parent_id ON items
+             WHEN {no_local_parent_directory} OR {no_synced_parent_directory}
+             BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}
@@ -167,6 +183,8 @@ fn schema() -> String {
          CREATE INDEX upload_openings_parent ON upload_openings(parent);
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
+        no_local_parent_directory = no_parent_directory("local"),
+        no_synced_parent_directory = no_parent_directory("synced"),
         local_content = content("local"),
         synced_content = content("synced"),
         content_before_write = content("before_write"),

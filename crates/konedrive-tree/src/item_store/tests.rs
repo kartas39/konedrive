@@ -924,6 +924,41 @@ fn the_schema_refuses_to_delete_a_row_from_under_what_is_in_it() {
     assert_eq!(store.item_store().list_children(ROOT).unwrap(), Vec::new());
 }
 
+/// An item's parent exists and is a directory, on both sides and whoever writes a row: the
+/// schema refuses a row made with, or moved to, a local or a synced parent that has no row
+/// or is a file. A directory's row is taken as either parent.
+#[test]
+fn the_schema_refuses_a_parent_that_has_no_row_or_is_a_file() {
+    let store = TreeStore::in_memory().unwrap();
+    store
+        .bench_sql(
+            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5, 'directory', 1, 'dir');
+             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (6, 'file', 1, 'file', 0);
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_size, synced_parent_id, synced_name, synced_size)
+                 VALUES (7, 'file', 'd1', 'A', 1, 'sent', 3, 1, 'sent', 3);",
+        )
+        .unwrap();
+    for (what, sql) in [
+        ("made in a directory that has no row", "INSERT INTO items (kind, local_parent_id, local_name) VALUES ('directory', 99, 'x')"),
+        ("made in a file", "INSERT INTO items (kind, local_parent_id, local_name) VALUES ('directory', 6, 'x')"),
+        ("moved into a directory that has no row", "UPDATE items SET local_parent_id = 99 WHERE local_item_id = 7"),
+        ("moved into a file", "UPDATE items SET local_parent_id = 6 WHERE local_item_id = 7"),
+        ("made as agreed to be in a directory that has no row", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 99, 'x')"),
+        ("made as agreed to be in a file", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 6, 'x')"),
+        ("agreed to be in a directory that has no row", "UPDATE items SET synced_parent_id = 99 WHERE local_item_id = 7"),
+        ("agreed to be in a file", "UPDATE items SET synced_parent_id = 6 WHERE local_item_id = 7"),
+        ("several rows at once, into a file", "UPDATE items SET synced_parent_id = 6 WHERE synced_parent_id = 1"),
+    ] {
+        assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
+    }
+    store
+        .bench_sql(
+            "UPDATE items SET local_parent_id = 5, synced_parent_id = 5 WHERE local_item_id = 7;
+             INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 5, 'x', 5, 'x');",
+        )
+        .unwrap();
+}
+
 fn onedrive_root(id: &str) -> Change {
     Change::Root(Row {
         id: id.into(),
