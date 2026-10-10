@@ -11,6 +11,9 @@
 //!   synced parent (the trigger `items_parent_kept`).
 //! - *No item is above itself.* The schema refuses a row that is its own parent; the code
 //!   refuses a move into what is below the item ([`check_not_below`]).
+//! - *The folder is no deeper than the rows are walked.* The code: an item is not made at a
+//!   place, nor moved to one with what is below it, deeper than `MAX_CHAIN` directories
+//!   ([`check_depth`]), so that every walk up from a row ends at the root.
 //! - *In the folder, one item per name in a directory.* The schema: the unique index
 //!   `items_local_place`.
 //! - *A binding belongs to one item.* The schema: the unique index `items_onedrive_item`.
@@ -86,7 +89,9 @@ impl ItemStore<'_> {
 
     /// Where the folder shows `item`, relative to the root: the names of its local places
     /// from the root down, and the empty path for the root. `None` for an item the folder
-    /// does not show, and for an id with no row.
+    /// does not show and for an id with no row, which [`find_item`](Self::find_item) tells
+    /// apart. Refused, not `None`, when the directories above it do not end at the root
+    /// within the bound of the folder's depth: no operation leaves such rows.
     pub fn find_path(&self, item: LocalItemId) -> Result<Option<PathBuf>, TreeError> {
         find_path(&self.store.conn, item)
     }
@@ -145,7 +150,7 @@ fn find_path(conn: &Connection, item: LocalItemId) -> Result<Option<PathBuf>, Tr
             None => return Ok(Some(names.iter().rev().collect())),
         }
     }
-    Ok(None)
+    Err(refuse(format!("the directories above item {item} do not end at the root")))
 }
 
 /// The item `id` as the folder shows it, with its local version; refused when it has no
@@ -213,19 +218,63 @@ fn check_empty(conn: &Connection, id: LocalItemId) -> Result<(), TreeError> {
     Ok(())
 }
 
-/// The rule "no item is above itself": refused when `directory` is `item` or below it, so
-/// that `item` placed in it would be above itself.
-fn check_not_below(conn: &Connection, directory: LocalItemId, item: LocalItemId) -> Result<(), TreeError> {
+/// `directory` and each directory above it in the folder, up to the root. Refused when
+/// they do not end at the root within the bound of every walk of the rows.
+fn list_directories_up(conn: &Connection, directory: LocalItemId) -> Result<Vec<LocalItemId>, TreeError> {
     let mut parent_of = conn.prepare_cached("SELECT local_parent_id FROM items WHERE local_item_id = ?1")?;
+    let mut directories = Vec::new();
     let mut at = Some(directory);
-    for _ in 0..=MAX_CHAIN {
-        let Some(here) = at else { return Ok(()) };
-        if here == item {
-            return Err(refuse(format!("item {item} would be placed in itself or below itself")));
+    while let Some(here) = at {
+        if directories.len() > MAX_CHAIN {
+            return Err(refuse(format!("the directories above item {directory} do not end at the root")));
         }
+        directories.push(here);
         at = parent_of.query_row([here.as_i64()], |row| row.get::<_, Option<i64>>(0)).optional()?.flatten().map(LocalItemId::new);
     }
-    Err(refuse(format!("the directories above item {directory} do not end at the root")))
+    Ok(directories)
+}
+
+/// The rule "no item is above itself": refused when `item` is among `directories`, a
+/// directory and those above it, so that `item` placed in that directory would be in itself
+/// or below itself.
+fn check_not_below(directories: &[LocalItemId], item: LocalItemId) -> Result<(), TreeError> {
+    if directories.contains(&item) {
+        return Err(refuse(format!("item {item} would be placed in itself or below itself")));
+    }
+    Ok(())
+}
+
+/// How many directories deep the folder shows something below `item`: 0 for a file and for
+/// a directory that holds nothing.
+fn count_levels_below(conn: &Connection, item: LocalItemId) -> Result<usize, TreeError> {
+    let levels: i64 = conn
+        .prepare_cached(&format!(
+            "WITH RECURSIVE below(id, depth) AS (
+                 SELECT ?1, 0
+                 UNION ALL
+                 SELECT c.local_item_id, b.depth + 1 FROM items c JOIN below b ON c.local_parent_id = b.id WHERE b.depth <= {MAX_CHAIN})
+             SELECT max(depth) FROM below"
+        ))?
+        .query_row([item.as_i64()], |row| row.get(0))?;
+    Ok(levels.max(0) as usize)
+}
+
+/// The bound of the folder's depth, which every walk of the rows has: refused when an item
+/// placed in the first of `directories` (a directory and those above it), with
+/// `levels_below` levels of the folder below the item, would be deeper than the walks go.
+fn check_depth(directories: &[LocalItemId], levels_below: usize) -> Result<(), TreeError> {
+    if directories.len() + levels_below > MAX_CHAIN {
+        return Err(refuse(format!("the place is deeper than {MAX_CHAIN} directories below the root of the folder, with what is below the item")));
+    }
+    Ok(())
+}
+
+/// `item`, with all the folder shows below it, can be placed in `directory`: not in itself
+/// or below itself ([`check_not_below`]), and not too deep ([`check_depth`]).
+fn check_can_hold(conn: &Connection, directory: LocalItemId, item: LocalItemId) -> Result<(), TreeError> {
+    let directories = list_directories_up(conn, directory)?;
+    check_not_below(&directories, item)?;
+    check_depth(&directories, count_levels_below(conn, item)?)
 }
 
 /// The rule "one item per name in a directory": refused when the folder shows an item at
@@ -280,6 +329,7 @@ fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option
         return Err(refuse("a file is made with a content and a directory without".to_owned()));
     }
     check_directory(tx, place.parent_local_item_id)?;
+    check_depth(&list_directories_up(tx, place.parent_local_item_id)?, 0)?;
     check_place_is_free(tx, place)?;
     if let Some(replaced) = replaced {
         check_replaced_by_made_file(tx, kind, replaced)?;
@@ -296,7 +346,7 @@ fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option
 fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
     read_shown_below_root(tx, item)?;
     check_directory(tx, place.parent_local_item_id)?;
-    check_not_below(tx, place.parent_local_item_id, item)?;
+    check_can_hold(tx, place.parent_local_item_id, item)?;
     check_place_is_free(tx, place)?;
     set_local_place(tx, item, place, is_name_ignored)
 }
@@ -324,7 +374,7 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
         return Err(refuse(format!("item {replacing} and item {replaced} are not of one kind")));
     }
     check_empty(tx, replaced)?;
-    check_not_below(tx, place.parent_local_item_id, replacing)?;
+    check_can_hold(tx, place.parent_local_item_id, replacing)?;
     // The replacing item has the replaced one's name, and what the rules say of that name.
     let is_name_ignored = replaced_item.is_name_ignored;
     match (replacing_item.kind, &replacing_item.onedrive_item, &replaced_item.onedrive_item) {
@@ -407,8 +457,8 @@ pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, se
     }
     let (first_item, _, first_place) = read_shown_below_root(tx, first)?;
     let (second_item, _, second_place) = read_shown_below_root(tx, second)?;
-    check_not_below(tx, second_place.parent_local_item_id, first)?;
-    check_not_below(tx, first_place.parent_local_item_id, second)?;
+    check_can_hold(tx, second_place.parent_local_item_id, first)?;
+    check_can_hold(tx, first_place.parent_local_item_id, second)?;
     set_local_place_aside(tx, first, &first_place, first_item.is_name_ignored)?;
     set_local_place(tx, second, &first_place, first_item.is_name_ignored)?;
     set_local_place(tx, first, &second_place, second_item.is_name_ignored)

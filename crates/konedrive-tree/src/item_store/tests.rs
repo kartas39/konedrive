@@ -756,6 +756,73 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
     }
 }
 
+/// A chain of `count` directories named `name`, the first in the root and each other in
+/// the one before: their ids.
+fn make_chain(store: &mut TreeStore, name: &str, count: usize) -> Vec<LocalItemId> {
+    let mut chain = Vec::new();
+    for _ in 0..count {
+        chain.push(make_directory(store, *chain.last().unwrap_or(&ROOT), name));
+    }
+    chain
+}
+
+fn refusal<T: std::fmt::Debug>(result: Result<T, TreeError>) -> String {
+    match result {
+        Err(TreeError::Refused(why)) => why,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+/// The folder is as deep as the walks of the rows go, and no deeper: an item made below the
+/// last directory that may hold one is refused, and so is a move that would put the item,
+/// or anything below it, deeper. Each says that the place is too deep.
+#[test]
+fn an_item_is_not_made_or_moved_deeper_than_the_rows_are_walked() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let chain = make_chain(&mut store, "d", crate::MAX_CHAIN - 1);
+    let deepest = *chain.last().unwrap();
+    let file = make_file(&mut store, deepest, "file");
+    assert_eq!(path(&mut store, file).unwrap().components().count(), crate::MAX_CHAIN, "the deepest place has a path");
+    assert!(!store.item_store().is_ignored(file).unwrap());
+    store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
+    let last = make_directory(&mut store, deepest, "last");
+    assert!(refusal(store.item_store().apply(&made(place(last, "too-deep"), ItemKind::File))).contains("deeper"));
+
+    let pair = make_chain(&mut store, "p", 2);
+    let single = make_directory(&mut store, ROOT, "single");
+    let moved = |item, parent| LocalVersionChange::Moved { item, place: place(parent, "moved"), is_name_ignored: false };
+    assert!(refusal(store.item_store().apply(&moved(single, last))).contains("deeper"), "the moved item itself");
+    assert!(refusal(store.item_store().apply(&moved(pair[0], deepest))).contains("deeper"), "what is below the moved item");
+    store.item_store().apply(&moved(single, deepest)).unwrap();
+
+    // Renamed over an empty directory, and exchanged: what is below comes along.
+    let empty = make_directory(&mut store, deepest, "empty");
+    assert!(refusal(store.item_store().apply(&LocalVersionChange::SavedOver { replacing: pair[0], replaced: empty })).contains("deeper"));
+    assert!(refusal(store.item_store().exchange_local_places(pair[0], empty)).contains("deeper"));
+    assert_eq!(path(&mut store, pair[1]), Some(PathBuf::from("p/p")), "nothing was changed");
+}
+
+/// The path of an item: none for an id with no row and for an item the folder does not
+/// show, which `find_item` tells apart; and refused, not none, for rows whose directories
+/// do not end at the root within the bound, which no operation leaves.
+#[test]
+fn a_path_is_none_for_an_item_that_is_not_shown_and_refused_for_rows_that_are_too_deep() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let gone = make_file(&mut store, ROOT, "gone");
+    synced(&mut store, gone, "G");
+    store.item_store().apply(&LocalVersionChange::Removed { item: gone }).unwrap();
+    assert_eq!(path(&mut store, gone), None);
+    assert!(store.item_store().find_item(gone).unwrap().is_some(), "it has a row");
+    assert_eq!(path(&mut store, LocalItemId::new(999)), None);
+    assert_eq!(store.item_store().find_item(LocalItemId::new(999)).unwrap(), None);
+
+    let chain = make_chain(&mut store, "d", crate::MAX_CHAIN);
+    let deepest = *chain.last().unwrap();
+    store.bench_sql(&format!("INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5000, 'directory', {deepest}, 'below')")).unwrap();
+    assert!(refusal(store.item_store().find_path(LocalItemId::new(5000))).contains("do not end at the root"));
+    assert!(refusal(store.item_store().is_ignored(LocalItemId::new(5000))).contains("do not end at the root"));
+}
+
 /// A name is checked where it enters the rows: the empty name, `.`, `..`, a name with a
 /// `/` and a name with a NUL are no names of a directory entry, and a path built from them
 /// would be another item's or outside the folder. Refused when an item is made, when it is
