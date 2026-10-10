@@ -8,6 +8,15 @@
 //! So that the disk change can be undone, the entry is first set aside
 //! (`PlaceChange::set_aside`), and removed for good only after the row is written.
 //!
+//! **On record before the disk:** `PlaceChangeRecord::SetAside { item, place, aside_name }`,
+//! `aside_name` being `folder::disk::make_aside_entry_name(item)`. `RowAlone` changes no
+//! name on disk and writes no record. The row takes the record
+//! (`settle_place_change_record` with the `Removed`); the removal for good comes after,
+//! with no record. A death between the set-aside and the row: the check at start puts the
+//! entry back under its name, and nothing is removed, here or in OneDrive. So the entries
+//! that were set aside must still be there when the check runs
+//! (`PlaceChanges::remove_aside_entries` after it, never before).
+//!
 //! **Tested without the rest:**
 // test: a_file_removed_is_set_aside_then_gone_from_its_row_then_gone_from_disk
 // test: a_file_not_on_disk_is_removed_with_no_disk_change
@@ -66,9 +75,12 @@ impl ItemWriteOperations {
 
     /// Unlink and rmdir: removes `name` from `directory`.
     ///
-    /// `read_remove_case`; [`decide_remove`]; a place change begun; the entry set aside;
-    /// `LocalVersionChange::Removed { item }` through `write_row_or_undo` (undo:
-    /// `PlaceUndo::Restore`); the change ended; `PlaceChanges::discard`. A writer that still holds
+    /// `read_remove_case`; [`decide_remove`]; the record written
+    /// (`ItemStore::record_place_change(SetAside { item, place, aside_name })`; none for
+    /// `RowAlone`); a place change begun; the entry set aside;
+    /// `settle_place_change_record(record, LocalVersion(Removed { item }))` through
+    /// `write_row_or_undo` (undo: `PlaceUndo::Restore`, and then
+    /// `forget_place_change_record`); the change ended; `PlaceChanges::discard`. A writer that still holds
     /// the file keeps its descriptor; its last close finds no shown row and writes
     /// nothing. What the download states keep of the item is forgotten.
     ///

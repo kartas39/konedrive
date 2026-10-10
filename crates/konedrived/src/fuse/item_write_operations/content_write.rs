@@ -20,6 +20,16 @@
 //! the backing file of a row is opened on this thread, under the tree lock, where no
 //! place change can run.
 //!
+//! **On record before the row**, for each of the three: `PlaceChangeRecord::MakeEntry {
+//! kind: File, place, owner: MadeEntryOwner::Item(item) }`, written
+//! (`ItemStore::record_place_change`) before the place change is begun. Here the row is
+//! written BEFORE the file, so the record does not go with the row: it is taken by itself
+//! (`ItemStore::forget_place_change_record`) after the file was made, and also when the
+//! row was refused. A death between the row and the file: the check at start puts the row
+//! of a writer's open back as it was before the open, not on disk
+//! (`PlaceChangeRowWrite::ContentBeforeWrite`); a truncation keeps nothing to put back, and
+//! its row, which says on disk over no file, is the check's to decide like any other.
+//!
 //! **The row's time and the file's are kept the same**: whatever writes a time into the
 //! row (a truncation, a time set) gives the backing file that very time after it changed
 //! the file, so that a step towards OneDrive finds the content it was planned from by its
@@ -106,7 +116,9 @@ impl ItemWriteOperations {
     }
 
     /// Open for writing (no `O_TRUNC`): one read job (the row and its path);
-    /// [`decide_open_change`]; the row; then the backing file opened and the writer added
+    /// [`decide_open_change`]; for `OpenedForWritingAndOnDisk` the record
+    /// (`MakeEntry { owner: Item(node) }`) and a place change begun; the row; then the
+    /// backing file made, or opened, the record taken by itself, and the writer added
     /// to `ItemHandles`. A file that is still not on disk and not empty is `ESTALE`: its
     /// download did not land. Called on the write-operation thread.
     pub(in crate::fuse) fn open_to_write(&self, node: LocalItemId) -> Result<OpenedWriter, Errno> {
@@ -122,7 +134,9 @@ impl ItemWriteOperations {
     /// Truncate (setattr with a size). With a writer open (found by the item, or `fh`
     /// given): the backing file is cut and the handle marked written; no row. With none:
     /// the row first — `Truncated { item, size, mtime, mtime_nsec }`, with `OnDisk` in the
-    /// same transaction for a file that was not on disk and is cut to nothing — then the
+    /// same transaction for a file that was not on disk and is cut to nothing, whose
+    /// backing file is then made: on record before that row (`MakeEntry { owner:
+    /// Item(node) }`), the record taken by itself once the file is made — then the
     /// file is cut and given the time the row was given. A node whose row is gone, asked
     /// with the `fh` of a writer: the handle's file is cut, and no row written (design
     /// §3). Answers the attributes after it.

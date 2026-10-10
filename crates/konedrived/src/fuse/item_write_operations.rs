@@ -12,14 +12,26 @@
 //!    case (`read_make_case`, `read_rename_case`, `read_remove_case`), with the paths —
 //!    through the writer, so that it sees the thread's own last write;
 //! 2. the decision, a pure function of the case, in the operation's module;
-//! 3. `PlaceChanges::begin`: from here a reader that opens by path waits or tries again;
-//! 4. the disk, through the place change, which keeps the undo; a place the rows say is
+//! 3. the record: what is about to be done to the disk's names is written to the store
+//!    (`ItemStore::record_place_change`, one job of the store, a transaction of its own),
+//!    before the disk is touched (design §8). An operation that changes no name on disk —
+//!    an item with nothing there — writes none;
+//! 4. `PlaceChanges::begin`: from here a reader that opens by path waits or tries again;
+//! 5. the disk, through the place change, which keeps the undo; a place the rows say is
 //!    free and the disk holds is `EEXIST`, and nothing is replaced;
-//! 5. the row ([`write_row_or_undo`](ItemWriteOperations::write_row_or_undo)); refused or
-//!    failed: the undo; an undo that fails: `MountTakeDown::ask`;
-//! 6. the place change ended; then what was set aside removed for good
-//!    (`PlaceChanges::discard`, outside the change); the plan woken
-//!    (`WakeCause::LocalVersionWritten`).
+//! 6. the row ([`write_row_or_undo`](ItemWriteOperations::write_row_or_undo)), which takes
+//!    the record in the row's own transaction
+//!    (`ItemStore::settle_place_change_record`); refused or failed: the undo, and then the
+//!    record taken by itself (`ItemStore::forget_place_change_record`); an undo that
+//!    fails: `MountTakeDown::ask`, and the record stands for the check at start;
+//! 7. the place change ended; then what was set aside removed for good
+//!    (`PlaceChanges::discard`, outside the change, with no record: it went with the
+//!    row); the plan woken (`WakeCause::LocalVersionWritten`).
+//!
+//! A daemon that dies between 3 and 6 leaves the record, and the check at start finishes
+//! or undoes exactly that change from it (`backing_directory_check`'s
+//! `standing_place_changes`): a made entry gets its row, a moved or set-aside entry goes
+//! back where its row says it is.
 //!
 //! **A file's content** goes the other way (design §8): the row first — the first
 //! writer's open writes `OpenedForWriting`, and then bytes go to disk with no row touched
@@ -113,7 +125,12 @@ impl ItemWriteOperations {
     /// Runs `write` as one job of the store's thread and wakes the plan; when the store
     /// refuses or fails, takes `undo` back through `change` and answers the errno of
     /// [`decide_store_errno`]; when the undo fails too, asks for the mount's take-down
-    /// (which switches the folder to read-only). On success answers `undo` back with what
+    /// (which switches the folder to read-only). `write` is the row AND the going of the
+    /// operation's record, in one transaction: `ItemStore::settle_place_change_record(record,
+    /// &PlaceChangeRowWrite::LocalVersion(change))`, never `apply` beside a record. After an
+    /// undo that went through, the record is taken by itself
+    /// (`ItemStore::forget_place_change_record`); after one that failed it is left standing.
+    /// On success answers `undo` back with what
     /// was written: the caller ends its change and then discards
     /// (`PlaceChanges::discard`). Called by make, rename and remove after their change of the backing
     /// directory, with their place change still open. Relies on the tree lock the

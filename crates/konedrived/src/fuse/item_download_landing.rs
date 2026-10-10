@@ -14,6 +14,15 @@
 //! only marks, links, syncs the directory and commits: no write operation waits for a
 //! large file to reach the disk.
 //!
+//! **On record before the link:** `PlaceChangeRecord::LinkFile { item, place, content }`,
+//! `content` the content version that was downloaded, written
+//! (`ItemStore::record_place_change`) after the row and its path were read and before the
+//! place change is begun. The commit takes the record in its transaction; on `RowsChanged`
+//! the named file is removed again and the record taken by itself. A death between the
+//! link and the commit: the check at start says `OnDisk` when the row still has the
+//! recorded content (`PlaceChangeRowWrite::ContentOnDisk`), and removes the file when the
+//! row has another by now — left there, it would be read as content the user put there.
+//!
 //! **Tested without the rest**, over the fixture (`item_fixture`):
 // test: a_landed_file_is_named_marked_with_id_state_and_ctag_and_then_on_disk_in_its_row
 // test: the_directory_of_a_landed_file_is_synced_before_the_row_is_written
@@ -71,11 +80,13 @@ impl ItemDownloadLanding {
 
     /// Lands the unnamed file `file`, whole, checked and synced, as the copy of the item
     /// of `condition`: one job of the store reads the row and its path now (the item may
-    /// have been renamed during the download, `ItemReader::find_path_with_marks`); a
+    /// have been renamed during the download, `ItemReader::find_path_with_marks`); the
+    /// record is written (`LinkFile { item, place, content }`); a
     /// place change is begun; the file's time is set to the content's and it is marked;
     /// it is linked under its name (`PlaceChange::link_file`: the directories above made
     /// and marked, nothing replaced, the directory synced); then the commit `condition`
-    /// names; on `RowsChanged` the undo (the named file removed again); the change ended.
+    /// names, which takes the record; on `RowsChanged` the undo (the named file removed
+    /// again) and the record taken by itself; the change ended.
     ///
     /// Called as a job of the write-operation thread, under the tree lock, by
     /// `ItemDownloader` alone.

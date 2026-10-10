@@ -7,6 +7,13 @@
 //! `ItemStore::apply_made_open_for_writing`, the making and the first writer's open in
 //! one transaction.
 //!
+//! **On record before the disk:** `PlaceChangeRecord::MakeEntry { kind, place, owner:
+//! MadeEntryOwner::NewItem { replaced } }`, with the `replaced` the decision answered. The
+//! row takes it: `settle_place_change_record` with the `Made`, and for a created file the
+//! record's id given to `apply_made_open_for_writing`, which takes it in its transaction.
+//! A death between the entry and the row: the check at start makes the row from the record
+//! (the entry is there, no row has its place), taking the binding of `replaced` over.
+//!
 //! **Tested without the rest:**
 // test: a_directory_made_is_on_disk_and_then_in_its_row
 // test: a_file_made_is_empty_on_disk_changed_here_and_on_disk_in_its_row
@@ -102,12 +109,15 @@ impl ItemWriteOperations {
 
     /// Mkdir, mknod, create: makes `name` in `directory`.
     ///
-    /// `read_make_case`; [`decide_make`]; a place change begun; the entry made
-    /// (`PlaceChange::make_entry`, with the directories above); a file that replaces a
-    /// removed one marked as the copy of that item; then the row through
-    /// `write_row_or_undo` (undo: `PlaceUndo::RemoveMade`): `ItemStore::apply(Made { kind,
-    /// place, content, is_name_ignored, replaced })`, or for a created file
-    /// `apply_made_open_for_writing`, after which the writer is added to `ItemHandles`.
+    /// `read_make_case`; [`decide_make`]; the record written
+    /// (`ItemStore::record_place_change(MakeEntry { kind, place, owner: NewItem { replaced }
+    /// })`); a place change begun; the entry made (`PlaceChange::make_entry`, with the
+    /// directories above); a file that replaces a removed one marked as the copy of that
+    /// item; then the row through `write_row_or_undo` (undo: `PlaceUndo::RemoveMade`, and
+    /// then `forget_place_change_record`): `ItemStore::settle_place_change_record(record,
+    /// LocalVersion(Made { kind, place, content, is_name_ignored, replaced }))`, or for a
+    /// created file `apply_made_open_for_writing` with the record, after which the writer
+    /// is added to `ItemHandles`.
     /// The new file's content is `ContentVersion::ChangedHere` of size 0, the backing
     /// file's time, change count 1.
     ///

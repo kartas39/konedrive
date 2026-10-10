@@ -16,35 +16,51 @@
 //!    disk is touched, so that what is left to race with the commit is a listing's page
 //!    alone, which does not take the tree lock;
 //! 2. the item's former place is taken from that row, for the announcement;
-//! 3. `PlaceChanges::begin`, then the backing directory changed through the place
+//! 3. the record of what is about to be done to the disk's names
+//!    (`ItemStore::record_place_change`, a transaction of its own; none for a step that
+//!    changes no name on disk: `ShowItem`, an item with nothing on disk); then
+//!    `PlaceChanges::begin`, then the backing directory changed through the place
 //!    change, which keeps the undo and replaces nothing the rows do not say;
 //! 4. its commit of `step_commit`, with whether the item's new name is ignored
-//!    (`UploadRules::is_name_ignored`) where the commit asks;
-//! 5. on `RowsChanged` the undo, and `StepOutcome::RowsChanged(Nothing)`; an undo that
-//!    fails asks for the mount's take-down; the place change ended; and only then, on
-//!    `Written`, what was set aside removed for good (`PlaceChanges::discard`, outside
-//!    the change: no opener waits for an unlink);
+//!    (`UploadRules::is_name_ignored`) where the commit asks, and with the record's id:
+//!    a commit that writes takes the record in its own transaction (the store's
+//!    `forget_place_change_record` over that transaction); one that answers `RowsChanged`
+//!    leaves it;
+//! 5. on `RowsChanged` the undo, then the record taken by itself
+//!    (`ItemStore::forget_place_change_record`), and `StepOutcome::RowsChanged(Nothing)`;
+//!    an undo that fails asks for the mount's take-down, and the record stands for the
+//!    check at start; the place change ended; and only then, on `Written`, what was set
+//!    aside removed for good (`PlaceChanges::discard`, outside the change: no opener
+//!    waits for an unlink);
 //! 6. the change announced through the bridge by item and former name; what the download
 //!    states and the range fetcher keep of an item that left or changed content
 //!    forgotten; what happened answered for the activity log.
 //!
-//! | Case | Disk | Commit | Order |
-//! |---|---|---|---|
-//! | `ShowItem` | nothing | `commit_show_items` | the commit alone, several in one job |
-//! | `MoveItem` | move to OneDrive's place | `commit_move_item` | disk, commit |
-//! | `TakeMoveBack` | move to OneDrive's place | `commit_take_move_back` | disk, commit |
-//! | `MoveToTemporaryName` | move to the temporary name | `commit_move_to_temporary_name` | disk, commit |
-//! | `RenameToConflictCopy` | move to the copy's name | `commit_rename_to_conflict_copy_on_record` | disk, commit |
-//! | `RemoveItem` | the entry set aside, then removed | `commit_remove_item` | set aside, commit, remove |
-//! | `TakeOneDriveContent` | the copy set aside, then removed | `commit_take_onedrive_content` | set aside, commit, remove |
-//! | `DownloadContent` | the file landed | `commit_download_content` | synced, named, directory synced, commit |
+//! | Case | Record | Disk | Commit | Order |
+//! |---|---|---|---|---|
+//! | `ShowItem` | none | nothing | `commit_show_items` | the commit alone, several in one job |
+//! | `MoveItem` | `MoveEntry` | move to OneDrive's place | `commit_move_item` | record, disk, commit |
+//! | `TakeMoveBack` | `MoveEntry` | move to OneDrive's place | `commit_take_move_back` | record, disk, commit |
+//! | `MoveToTemporaryName` | `MoveEntry` | move to the temporary name | `commit_move_to_temporary_name` | record, disk, commit |
+//! | `RenameToConflictCopy` | `MoveEntry` | move to the copy's name | `commit_rename_to_conflict_copy_on_record` | record, disk, commit |
+//! | `RemoveItem` | `SetAside` | the entry set aside, then removed | `commit_remove_item` | record, set aside, commit, remove |
+//! | `TakeOneDriveContent` | `SetAside` | the copy set aside, then removed | `commit_take_onedrive_content` | record, set aside, commit, remove |
+//! | `DownloadContent` | `LinkFile` | the file landed | `commit_download_content` | synced, record, named, directory synced, commit |
+//!
+//! The record is the same for a step and for a program's operation, and does not say whose
+//! it is. So the check at start never writes a step's row from it: a move or a set-aside
+//! that died before its commit is undone on disk, the rows are as they were, and the plan
+//! plans the step again.
 //!
 //! `TakeOneDriveContent` is NOT "commit, then disk", as a free-up is: its copy is of the
 //! OLD content. A death after the commit and before the disk would leave that copy under
 //! a row that says not on disk with the NEW content, which the check at start reads as
 //! content the user put there, and the old content would be sent over OneDrive's new one.
-//! Set aside first, a death at any point leaves either the old row with no copy at its
-//! name ("a clean copy that is gone": not on disk again) or the new row with no copy.
+//! Set aside first and on record, a death before the commit leaves the old row and the
+//! record: the check at start puts the old copy back under its name, and the plan takes
+//! OneDrive's content again. A death after the commit leaves the new row, which says not
+//! on disk, and no record: the copy that was set aside is not put back
+//! (`AsideRow::Otherwise`) and goes with the cleaning of what was set aside.
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`), with no mount and no
 //! OneDrive; and by the races' test of design §12, which puts a failure and a death at
@@ -63,7 +79,8 @@
 // test: a_conflict_copy_is_on_record_with_its_commit
 // test: the_items_of_several_show_steps_are_committed_in_one_job_each_by_its_own_versions
 // test: every_step_announces_the_former_name_and_the_new_one
-// test: a_death_between_the_disk_and_the_commit_is_read_by_the_check_at_start_as_a_hand_move
+// test: a_death_between_the_disk_and_the_commit_is_undone_by_the_check_at_start_from_the_steps_record
+// test: a_commit_that_writes_takes_the_steps_record_and_one_that_finds_the_rows_changed_leaves_it
 #![allow(dead_code, unused_variables)]
 
 use std::ffi::OsStr;
@@ -200,18 +217,20 @@ impl FolderSteps {
         todo!()
     }
 
-    /// `RemoveItem`: the folder shows the item no more. `PlaceChange::set_aside` of what
-    /// it has on disk, then `commit_remove_item`; undo: restore; after the change ended,
-    /// `PlaceChanges::discard`.
+    /// `RemoveItem`: the folder shows the item no more. On record (`SetAside { item, place,
+    /// aside_name }`), then `PlaceChange::set_aside` of what it has on disk, then
+    /// `commit_remove_item`, which takes the record; undo: restore, and the record taken
+    /// by itself; after the change ended, `PlaceChanges::discard`.
     /// Announces the name vanishing; the download states and the ranges of the item are
     /// forgotten.
     fn run_remove_item(&self, item: &ItemVersions) -> StepOutcome {
         todo!()
     }
 
-    /// `TakeOneDriveContent`: the file shows OneDrive's content from now on. The copy of
-    /// the old content set aside (`PlaceChange::set_aside`), then
-    /// `commit_take_onedrive_content`; undo: restore; after the change ended,
+    /// `TakeOneDriveContent`: the file shows OneDrive's content from now on. On record
+    /// (`SetAside { item, place, aside_name }`), the copy of the old content set aside
+    /// (`PlaceChange::set_aside`), then `commit_take_onedrive_content`, which takes the
+    /// record; undo: restore, and the record taken by itself; after the change ended,
     /// `PlaceChanges::discard` (see the module's doc for why not the commit first). Announces the content changed; the ranges the
     /// content source remembers of the item (`ItemRangeFetcher::forget_ranges`; today the
     /// cycle step, for every cycle: `cycle_step.rs:126`) and its download states are
@@ -222,7 +241,10 @@ impl FolderSteps {
 
     /// Moves what `item` has on disk from the path of its local version to the path of
     /// `place` (`PlaceChange::move_entry`, with the directories above made and marked by
-    /// what `ItemReader::find_path_with_marks` of the directory answered).
+    /// what `ItemReader::find_path_with_marks` of the directory answered). The caller wrote
+    /// the record before it began `change` (`MoveEntry { item, from: the item's local
+    /// place, to: place }`; none for an item with nothing on disk), and gives the record's
+    /// id to its commit.
     /// Answers how to take it back; `PlaceUndo::Nothing` for an item with nothing on
     /// disk; `StepObstacle::PlaceHeldOnDisk` as the outcome for a held place. Called by
     /// the four cases that move.
@@ -230,9 +252,10 @@ impl FolderSteps {
         todo!()
     }
 
-    /// Takes `undo` back through `change`; when that fails, asks for the mount's
-    /// take-down and answers `StepFailure::UndoFailed`. Called after a commit answered
-    /// `RowsChanged` or failed.
+    /// Takes `undo` back through `change`, and then the step's record by itself
+    /// (`ItemStore::forget_place_change_record`); when the undo fails, asks for the mount's
+    /// take-down, leaves the record standing and answers `StepFailure::UndoFailed`. Called
+    /// after a commit answered `RowsChanged` or failed.
     fn undo_on_disk(&self, change: &PlaceChange<'_>, undo: PlaceUndo) -> Result<(), StepOutcome> {
         todo!()
     }

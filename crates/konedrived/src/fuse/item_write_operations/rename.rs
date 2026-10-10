@@ -6,6 +6,17 @@
 //! §5). What is below a renamed directory needs no write: its rows name their parent by
 //! id.
 //!
+//! **On record before the disk:** `PlaceChangeRecord::MoveEntry { item, from, to }` for a
+//! move to a place nothing is at; `MoveEntryOver { item, from, to, replaced, aside_name }`
+//! over an entry, `aside_name` being `folder::disk::make_aside_entry_name(replaced)`, the
+//! name `PlaceChange::move_entry_over` sets the displaced entry aside to. The places are
+//! the rows' (`ItemPlace`: the directory's local item id and the name), `from` the moved
+//! item's local place as it was read. An item with nothing on disk changes no name on disk
+//! and writes no record. The row takes the record (`settle_place_change_record` with the
+//! `Moved` or the `SavedOver`). A death between the disk and the row: the check at start
+//! moves the entry back, and puts the displaced one back under its name; no row changes,
+//! and the rename did not happen.
+//!
 //! **Tested without the rest:**
 // test: an_item_renamed_to_a_free_name_is_moved_on_disk_and_then_in_its_row
 // test: a_directory_renamed_takes_what_is_in_it_with_one_row_written
@@ -98,10 +109,14 @@ impl ItemWriteOperations {
 
     /// Renames `name` in `directory` to `new_name` in `new_directory`.
     ///
-    /// `read_rename_case`; [`decide_rename`]; a place change begun; the disk through it
+    /// `read_rename_case`; [`decide_rename`]; the record written
+    /// (`ItemStore::record_place_change(MoveEntry { .. })` or `MoveEntryOver { .. }`; none
+    /// for an item with nothing on disk); a place change begun; the disk through it
     /// (an item with nothing on disk changes no disk); the row through
-    /// `write_row_or_undo` — `Moved { item, place, is_name_ignored }` or `SavedOver {
-    /// replacing, replaced }` (undo: `MoveBack` / `MoveBackAndRestore`); then a file that
+    /// `write_row_or_undo` — `settle_place_change_record(record, LocalVersion(Moved { item,
+    /// place, is_name_ignored }))` or `LocalVersion(SavedOver { replacing, replaced })`
+    /// (undo: `MoveBack` / `MoveBackAndRestore`, and then
+    /// `forget_place_change_record`); then a file that
     /// took a binding over marked as the copy of that item. From the begin of the place
     /// change to its end no reader opens by a path of either place (the map's E3).
     ///
