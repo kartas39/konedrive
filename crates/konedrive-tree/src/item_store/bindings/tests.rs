@@ -219,3 +219,81 @@ fn the_schema_refuses_a_second_row_with_one_binding() {
     assert!(is_refused_by_schema(write_item(&store.conn, &second)));
     assert_eq!(bound_to(&mut store, "A"), Some(a));
 }
+
+/// `bind_item`: an item of the folder that OneDrive did not have gets its binding when
+/// OneDrive confirms it as a new item. It keeps its id and everything else.
+#[test]
+fn bind_item_gives_an_item_of_the_folder_its_first_binding() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let file = make_file(&mut store, ROOT, "new");
+    let before = item(&mut store, file);
+    store.item_store().bind_item(file, &reference("N")).unwrap();
+    assert_eq!(item(&mut store, file), Item { onedrive_item: Some(reference("N")), ..before });
+    assert_eq!(bound_to(&mut store, "N"), Some(file));
+}
+
+/// A daemon that died between marking an uploaded file and its commit finds, when it runs
+/// again, the item OneDrive has under that reference as a row of its own that the folder
+/// does not show. Binding the item of the folder to the reference merges that row into it:
+/// the item keeps its id and takes what was agreed on, and the other row goes.
+#[test]
+fn bind_item_merges_the_row_the_folder_does_not_show_that_has_the_reference() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let listed = make_file(&mut store, ROOT, "listed");
+    let listed_row = synced(&mut store, listed, "N");
+    remove(&mut store, listed);
+    let uploaded = make_file(&mut store, ROOT, "uploaded");
+    let before = item(&mut store, uploaded);
+
+    store.item_store().bind_item(uploaded, &reference("N")).unwrap();
+    assert_eq!(item(&mut store, uploaded), Item { onedrive_item: Some(reference("N")), synced_place: listed_row.synced_place, synced_content: listed_row.synced_content, ..before });
+    assert_eq!(store.item_store().find_item(listed).unwrap(), None);
+    assert_eq!(bound_to(&mut store, "N"), Some(uploaded));
+}
+
+/// What `bind_item` refuses, and never by the index of bindings: a reference that is an
+/// item's the folder shows, a reference of an item of another kind, an item that has a
+/// binding, one the folder does not show, the root, and an id with no row.
+#[test]
+fn bind_item_refuses_a_reference_of_a_shown_item_and_an_item_that_has_a_binding() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (local, shown, gone) = (make_file(&mut store, ROOT, "local"), make_file(&mut store, ROOT, "shown"), make_file(&mut store, ROOT, "gone"));
+    let directory = make_directory(&mut store, ROOT, "directory");
+    for (id, onedrive_id) in [(shown, "S"), (gone, "G"), (directory, "D")] {
+        synced(&mut store, id, onedrive_id);
+    }
+    remove(&mut store, gone);
+    remove(&mut store, directory);
+    let mut items = store.item_store();
+    for (id, onedrive_id) in [(local, "S"), (local, "D"), (shown, "X"), (gone, "X"), (ROOT, "X"), (LocalItemId::new(99), "X")] {
+        assert!(is_refused(items.bind_item(id, &reference(onedrive_id))), "{id} to {onedrive_id}");
+    }
+    assert_eq!([bound_to(&mut store, "S"), bound_to(&mut store, "G"), bound_to(&mut store, "D"), bound_to(&mut store, "X")], [Some(shown), Some(gone), Some(directory), None]);
+}
+
+/// `make_onedrive_item`: a row for an item of OneDrive the client did not know, as at a
+/// parent's first mention in a listing: the binding and the kind, and nothing else. A
+/// reference that is an item's already is refused.
+#[test]
+fn make_onedrive_item_makes_a_row_with_the_binding_and_the_kind_alone() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let parent = store.item_store().make_onedrive_item(&reference("P"), ItemKind::Directory).unwrap();
+    assert_eq!(
+        item(&mut store, parent),
+        Item {
+            local_item_id: parent,
+            onedrive_item: Some(reference("P")),
+            kind: ItemKind::Directory,
+            local: None,
+            synced_place: None,
+            synced_content: None,
+            content_presence: ContentPresence::NotOnDisk,
+            content_before_write: None,
+            is_name_ignored: false,
+        }
+    );
+    let file = store.item_store().make_onedrive_item(&reference("F"), ItemKind::File).unwrap();
+    assert_eq!((item(&mut store, file).kind, item(&mut store, file).file_sync_state()), (ItemKind::File, None));
+    assert!(is_refused(store.item_store().make_onedrive_item(&reference("P"), ItemKind::Directory)));
+    assert_eq!(bound_to(&mut store, "P"), Some(parent));
+}

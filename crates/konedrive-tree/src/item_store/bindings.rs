@@ -5,15 +5,19 @@
 //! `give_up_binding` and `merge_items` are operations of [`ItemStore`]. `take_over_binding`
 //! is done only with the change of a local version that says which item replaces which.
 //!
+//! A binding is given first here too: to an item of the folder that OneDrive confirmed as a
+//! new item (`bind_item`), and with a row made for an item of OneDrive the client did not
+//! know (`make_onedrive_item`).
+//!
 //! Each keeps a binding one item's (the row that had it lets it go before another takes
 //! it), and keeps a synced place pointing at a row: what the two sides agreed is in a
 //! directory of OneDrive stays with the row that has that directory's binding.
 
 use rusqlite::{params, Connection, Transaction};
 
-use super::stored::{delete_item, find_item, insert_item, write_item};
+use super::stored::{delete_item, find_bound_item, find_item, insert_item, set_binding, write_item};
 use super::{check_empty, refuse, ItemStore};
-use crate::model::{ContentPresence, Item, ItemKind, LocalItemId};
+use crate::model::{ContentPresence, Item, ItemKind, LocalItemId, OneDriveItemReference};
 use crate::TreeError;
 
 impl ItemStore<'_> {
@@ -23,6 +27,23 @@ impl ItemStore<'_> {
     /// be given.
     pub fn give_up_binding(&mut self, item: LocalItemId) -> Result<LocalItemId, TreeError> {
         self.write(|tx| give_up_binding(tx, item))
+    }
+
+    /// The item `item` of the folder, which OneDrive did not have, is the item
+    /// `onedrive_item` of OneDrive from now on: OneDrive confirmed it as a new item. Refused
+    /// when the folder shows another item that has the reference. When a row the folder
+    /// does not show has it (a daemon died between marking an uploaded file and its commit,
+    /// and a listing brought the item since), that row is merged into this one, as
+    /// [`merge_items`](Self::merge_items) does.
+    pub fn bind_item(&mut self, item: LocalItemId, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
+        self.write(|tx| bind_item(tx, item, onedrive_item))
+    }
+
+    /// A row for an item of OneDrive the client did not know, of this kind: the binding and
+    /// nothing else, as at a parent's first mention in a listing. Its id. Refused when the
+    /// reference is an item's already.
+    pub fn make_onedrive_item(&mut self, onedrive_item: &OneDriveItemReference, kind: ItemKind) -> Result<LocalItemId, TreeError> {
+        self.write(|tx| make_onedrive_item(tx, onedrive_item, kind))
     }
 
     /// A new item here (`local`) and a new item in OneDrive (`onedrive`, which the folder
@@ -122,6 +143,27 @@ pub(crate) fn merge_items(tx: &Transaction<'_>, local: LocalItemId, onedrive: Lo
         return Err(refuse(format!("item {onedrive} is not a new item of OneDrive: it has no binding, or the folder shows it as an item of its own")));
     }
     hand_over(tx, giver, taker)
+}
+
+/// [`ItemStore::bind_item`], inside the caller's transaction.
+pub(crate) fn bind_item(tx: &Transaction<'_>, item: LocalItemId, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
+    let taker = read_below_root(tx, item)?;
+    if taker.onedrive_item.is_some() || taker.local.is_none() {
+        return Err(refuse(format!("item {item} is not a new item of the folder: it has a binding, or the folder does not show it")));
+    }
+    match find_bound_item(tx, onedrive_item)? {
+        None => set_binding(tx, item, onedrive_item),
+        Some(holder) if holder.local.is_some() => Err(refuse(format!("the folder shows item {} as the item of OneDrive {}: item {item} is not bound to it too", holder.local_item_id, onedrive_item.item_id.as_str()))),
+        Some(holder) => merge_items(tx, item, holder.local_item_id),
+    }
+}
+
+/// [`ItemStore::make_onedrive_item`], inside the caller's transaction.
+pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveItemReference, kind: ItemKind) -> Result<LocalItemId, TreeError> {
+    if let Some(holder) = find_bound_item(tx, onedrive_item)? {
+        return Err(refuse(format!("item {} is the item of OneDrive {} already", holder.local_item_id, onedrive_item.item_id.as_str())));
+    }
+    insert_item(tx, kind, Some(onedrive_item), None, ContentPresence::NotOnDisk, false)
 }
 
 #[cfg(test)]
