@@ -516,6 +516,9 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         first_shown_in_it: items.find_first_shown_in(id),
         is_given_with_all_in_it: is_given_with_all_in_it(input, items, item, folder_visibility),
         onedrive_directory_not_given: find_onedrive_directory_not_given(items, item),
+        holds_what_was_agreed_on_in_it: items.list_shown_in(id).iter().filter_map(|shown| items.find(*shown)).any(|shown| {
+            [shown.synced_place.as_ref(), shown.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref())].into_iter().flatten().any(|place| place.parent_local_item_id == id)
+        }),
         below_in_onedrive: Vec::new(),
         sending: SendingConditions {
             is_ignored: input.ignored_items.contains(&id),

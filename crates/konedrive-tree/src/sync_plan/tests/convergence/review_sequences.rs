@@ -197,3 +197,31 @@ fn a_mass_removal_in_two_halves_with_a_listing_between_them_is_held() {
     world.store.item_store().begin_sent_removal_window().unwrap();
     assert_eq!(run_and_tell_steps(&mut world).len(), 6);
 }
+
+/// From the review of the check at start: after a store was rebuilt, the check binds an
+/// entry to the item of OneDrive its mark names; the entry is a copy of that file at
+/// another place (`d/a.txt`), and a listing says the item is at `a/a.txt`. No move is sent
+/// and the entry is not moved: the binding was a guess, and is given up.
+///
+/// End: the folder shows `a/a.txt` as OneDrive has it, not on disk; `d/a.txt` is the
+/// folder's own file, sent as a new item; the item the mark named is in OneDrive where it
+/// was, under the eTag the listing said — nothing was moved or removed there.
+#[test]
+fn an_entry_bound_by_its_mark_at_another_place_than_onedrive_has_the_item_gives_the_binding_up() {
+    let mut world = World::new(1);
+    let (a, d) = (find(&mut world, ROOT, "a"), find(&mut world, ROOT, "d"));
+    let copy = make_file(&mut world, d, "a.txt");
+    world.store.item_store().bind_item(copy, &onedrive_reference("Z1")).unwrap();
+    write_listing_of_changes(&mut world.store, &[listed_file("Z1", "D1", "a.txt", (41, "h41-1000"), "e-Z1")]);
+    let bound = row(&mut world, copy);
+    assert_eq!((local_place(&bound), onedrive_place(&bound), bound.synced_place.clone()), (Some(place(d, "a.txt")), Some(place(a, "a.txt")), None));
+
+    let ran = run_and_tell_steps(&mut world);
+    assert_eq!(ran[0], format!("{copy}:GiveUpBinding"));
+    assert!(ran.contains(&format!("{copy}:SendNewFile")) && !ran.iter().any(|step| step.ends_with("Move") || step.ends_with("MoveItem") || step.ends_with("Removal") || step.ends_with("RemoveItem")), "{ran:?}");
+    let listed = world.store.item_store().find_bound_item(&onedrive_reference("Z1")).unwrap().expect("the row of the item the mark named");
+    assert_eq!((local_place(&listed), onedrive_place(&listed), listed.onedrive_etag.as_deref(), listed.content_presence), (Some(place(a, "a.txt")), Some(place(a, "a.txt")), Some("e-Z1"), ContentPresence::NotOnDisk));
+    let own = row(&mut world, copy);
+    assert!(own.onedrive_item.is_some() && own.onedrive_item != listed.onedrive_item && own.local == own.onedrive, "{own:?}");
+    assert_eq!((local_place(&own), content_of(&own.local)), (Some(place(d, "a.txt")), Some("h888-5888".to_owned())));
+}

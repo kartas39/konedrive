@@ -221,6 +221,10 @@ pub(crate) struct ItemCase<'a> {
     /// The first directory above the item in OneDrive, on the way up to the root, whose row
     /// was not given.
     pub(crate) onedrive_directory_not_given: Option<LocalItemId>,
+    /// The item is a directory in which the folder shows an item the two sides agreed is
+    /// in it, or OneDrive has in it: its binding is no guess, whatever its own row agrees
+    /// on.
+    pub(crate) holds_what_was_agreed_on_in_it: bool,
     /// For a directory that was removed here: what the rows and the caller say of each item
     /// OneDrive has below it, at any depth. What its removal is decided from.
     pub(crate) below_in_onedrive: Vec<ItemBelowRemovedDirectory>,
@@ -530,7 +534,23 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
     }
 }
 
-/// Is there on both sides: its place, then for a file its content, and last the download
+/// Whether both sides have `item` with nothing agreed on of it, at two places: in two
+/// directories, or under names that are two names also as OneDrive compares them. Its
+/// binding was then a guess — the check at start bound an entry to the item its mark
+/// names, and the entry is a copy of that file, or a hard link to it, made while no daemon
+/// ran. Nobody moved anything: the place here is no move to send, and OneDrive's place is
+/// none to move the entry to. (Two new items that were merged are in one directory under
+/// one name as OneDrive compares names, and are not this.)
+fn is_bound_by_guess(item: &Item) -> bool {
+    let place = |version: &Option<crate::model::ItemVersion>| version.as_ref().and_then(|version| version.place.as_ref()).map(|place| (place.parent_local_item_id, crate::FoldedName::of(&place.name)));
+    item.synced_place.is_none() && item.synced_content.is_none() && item.local.is_some() && item.onedrive.is_some() && place(&item.local) != place(&item.onedrive)
+}
+
+/// Is there on both sides. An item of which nothing is agreed on, at two places, gives up
+/// its binding, once no listing is under way ([`is_bound_by_guess`]): the entry here is a
+/// new item of the folder, and OneDrive's item is shown at its own place by the plans
+/// that follow; but a directory in which the folder shows what was agreed to be in it,
+/// whose binding is then no guess. Otherwise: its place, then for a file its content, and last the download
 /// of a pinned file whose content is not on disk. What the row says the upload rules say of
 /// its name ([`Item::is_name_ignored`]) is not asked: an item OneDrive has is never left
 /// here, and no removal is sent because a name is ignored.
@@ -540,6 +560,9 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
     }
     if matches!(case.folder_visibility, FolderVisibility::NotInOneDrive) {
         return row_fault(case);
+    }
+    if is_bound_by_guess(case.item) && !case.holds_what_was_agreed_on_in_it {
+        return if case.is_listing_under_way { ItemDecision::Wait(WaitReason::Listing) } else { row_step(RowStep::GiveUpBinding { item: case.versions() }) };
     }
     let place = decide_place(case, here.0, in_onedrive.0, (here.1, in_onedrive.1));
     if place != ItemDecision::NothingToDo || case.item.kind == ItemKind::Directory {

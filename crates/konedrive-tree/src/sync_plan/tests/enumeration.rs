@@ -35,6 +35,8 @@ enum Shape {
     RemovedInOneDrive,
     RemovedOnBothSides,
     BoundNeverListed,
+    /// Both sides have it, at two places, and nothing is agreed on of it: bound by a guess.
+    BoundByGuess,
     ChangedHere,
     ChangedInOneDrive,
     ChangedOnBothSides,
@@ -43,7 +45,7 @@ enum Shape {
     Ignored,
 }
 
-const EVERY_SHAPE: [Shape; 16] = [
+const EVERY_SHAPE: [Shape; 17] = [
     Shape::Agreed,
     Shape::MadeHere,
     Shape::NewInOneDrive,
@@ -54,6 +56,7 @@ const EVERY_SHAPE: [Shape; 16] = [
     Shape::RemovedInOneDrive,
     Shape::RemovedOnBothSides,
     Shape::BoundNeverListed,
+    Shape::BoundByGuess,
     Shape::ChangedHere,
     Shape::ChangedInOneDrive,
     Shape::ChangedOnBothSides,
@@ -92,6 +95,7 @@ impl Shape {
             Shape::RemovedInOneDrive => (version(at, &agreed), None, Some(at), &agreed),
             Shape::RemovedOnBothSides => (None, None, Some(at), &agreed),
             Shape::BoundNeverListed => (version(at, &agreed), None, None, &None),
+            Shape::BoundByGuess => (version(at, &agreed), version(&elsewhere, &theirs), None, &None),
             Shape::ChangedHere => (version(at, &mine), version(at, &agreed), Some(at), &agreed),
             Shape::ChangedInOneDrive => (version(at, &agreed), version(at, &theirs), Some(at), &agreed),
             Shape::ChangedOnBothSides => (version(at, &Some(hashed_here(&format!("mine{number}")))), version(at, &theirs), Some(at), &agreed),
@@ -461,6 +465,9 @@ fn is_to_be_planned(item: &Item) -> bool {
 ///   shows another item under that name, or another step of the plan brings one there.
 /// - A step that moves a directory into what is in it, on the side it moves it on.
 /// - A conflict copy's name that is taken on either side, as OneDrive compares names.
+/// - A move, on either side, of an item both sides have at two places with nothing agreed
+///   on of it: its binding was a guess, and nobody moved it. Not so of a directory in which
+///   the folder shows what the two sides agreed is in it.
 /// - Two steps for one item; the removal of a directory that would remove an item moved out
 ///   of it here, or beside the removal of what OneDrive has in it; a directory that gives
 ///   up its binding while the folder shows in it what the two sides agreed on there, unless
@@ -524,6 +531,12 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
             if is_in(number, Some(brought.parent_local_item_id), &local_place) {
                 return Some(format!("the step of item {number} brings it into what the folder shows in it"));
             }
+        }
+        let is_bound_by_guess = row.synced_place.is_none() && row.synced_content.is_none() && local_place(row).is_some() && onedrive_place(row).is_some() && local_place(row).map(|place| folded(&place)) != onedrive_place(row).map(|place| folded(&place));
+        // A directory in which the folder shows what was agreed to be in it is no guess.
+        let holds_what_was_agreed_on = given.items.iter().any(|item| local_place(item).is_some_and(|place| place.parent_local_item_id == number) && (item.synced_place.as_ref().is_some_and(|place| place.parent_local_item_id == number) || onedrive_place(item).is_some_and(|place| place.parent_local_item_id == number)));
+        if is_bound_by_guess && !holds_what_was_agreed_on && matches!(step, SyncStep::OneDrive(OneDriveStep::SendMove { .. }) | SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. } | FolderStep::MoveToTemporaryName { .. })) {
+            return Some(format!("item {number}, of which nothing is agreed on, is moved on a side though nobody moved it"));
         }
         if plan.steps.iter().filter(|other| other.local_item_id() == number).count() > 1 {
             return Some(format!("item {number} has more than one step"));

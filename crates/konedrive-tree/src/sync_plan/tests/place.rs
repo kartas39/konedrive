@@ -189,18 +189,47 @@ fn an_item_moved_to_different_places_waits_for_onedrives_directory_to_be_shown()
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
 }
 
-/// New: an item the folder shows and OneDrive has in one row, with nothing agreed on (two
-/// new items that were merged; an item the start-up check bound by its mark). At one place
-/// the two agree; at two, OneDrive's stands, as for an item moved on both sides.
+/// An item the folder shows and OneDrive has in one row, with nothing agreed on: two new
+/// items that were merged, or an entry the check at start bound by the mark it carries. At
+/// one place the two agree — also where the names differ only as OneDrive compares them,
+/// as two merged items' may: the folder then follows OneDrive's spelling.
+///
+/// At two places the binding was a guess (a copy of a marked file, or a hard link, made
+/// while no daemon ran): no move is sent and the entry is not moved here, as nobody moved
+/// anything. It gives its binding up: the entry is a new item of the folder, and OneDrive's
+/// item is shown at its own place by the plans that follow. While a listing is under way
+/// it waits. (Stage A answered `MoveItem` here, "OneDrive's stands, as for an item moved
+/// on both sides", and `SendMove` where the folder could not follow.)
 #[test]
-fn an_item_both_sides_have_with_nothing_agreed_on_agrees_on_one_place_and_follows_onedrive_to_another() {
-    let mut at_one_place = synced_directory(2, ROOT, "d");
-    at_one_place.synced_place = None;
-    let mut at_two_places = moved_in_onedrive(synced_directory(3, ROOT, "e"), ROOT, "f");
-    at_two_places.synced_place = None;
-    let given = input(vec![at_one_place, at_two_places]);
+fn an_item_both_sides_have_with_nothing_agreed_on_agrees_on_one_place_and_gives_up_its_binding_at_another() {
+    let nothing_agreed_on = |mut item: Item| {
+        item.synced_place = None;
+        item.synced_content = None;
+        item
+    };
+    let rows = || {
+        vec![
+            nothing_agreed_on(synced_directory(2, ROOT, "d")),
+            nothing_agreed_on(moved_in_onedrive(synced_directory(3, ROOT, "e"), ROOT, "f")),
+            synced_directory(4, ROOT, "docs"),
+            nothing_agreed_on(on_disk(moved_in_onedrive(synced_file(5, ROOT, "copy.txt"), id(4), "a.txt"))),
+            nothing_agreed_on(moved_in_onedrive(synced_directory(6, ROOT, "Readme"), ROOT, "README")),
+            // Where the folder could not follow: the name is taken here.
+            nothing_agreed_on(moved_in_onedrive(synced_file(7, ROOT, "seven"), ROOT, "taken")),
+            synced_file(8, ROOT, "taken"),
+        ]
+    };
+    let given = input(rows());
     assert_eq!(answer(&given, 2), row_step(RowStep::AgreeOnPlace { item: versions(&given, 2) }));
-    assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveItem { item: versions(&given, 3) }));
+    for guessed in [3, 5, 7] {
+        assert_eq!(answer(&given, guessed), row_step(RowStep::GiveUpBinding { item: versions(&given, guessed) }), "item {guessed}");
+    }
+    assert_eq!(answer(&given, 6), folder_step(FolderStep::MoveItem { item: versions(&given, 6) }), "one name to OneDrive: its spelling stands");
+    let mut given = input(rows());
+    given.is_listing_under_way = true;
+    for guessed in [3, 5, 7] {
+        assert_eq!(answer(&given, guessed), Answer::Wait(WaitReason::Listing), "item {guessed}");
+    }
 }
 
 /// The design's "a name OneDrive cannot hold is not sent and not altered": also the name a
