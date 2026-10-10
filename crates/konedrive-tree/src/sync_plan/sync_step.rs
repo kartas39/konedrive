@@ -89,19 +89,14 @@ pub enum OneDriveStep {
     /// as the place agreed on is the place that was sent, so that an item sent to a
     /// temporary name is still moved here, and its move is sent again once its name is free.
     SendMove { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
-    /// The removal of a file is sent, guarded by the eTag: of a file that was removed here;
-    /// and of one the folder shows, whose name is ignored now and which got its binding
-    /// while it was sent. For that one the commit gives the binding up first
-    /// ([`ItemStore::give_up_binding`](crate::ItemStore::give_up_binding), its name
-    /// ignored), and the removal is confirmed of the row that took it.
+    /// The removal of a file that was removed here is sent, guarded by the eTag.
     SendFileRemoval { item: ItemVersions },
     /// The removal of a directory is sent, with no guard: it stands whatever OneDrive
     /// changed below it, and removes all OneDrive has in the directory. `below` is what
     /// was removed here with it: those rows are left with their binding alone by its
     /// confirmation, as the directory's is. Every other row OneDrive has in it (what
     /// OneDrive made there since) loses its OneDrive version with the confirmation, as a
-    /// listing would say. Of a directory the folder shows, whose name is ignored now, as
-    /// for a file ([`SendFileRemoval`](Self::SendFileRemoval)).
+    /// listing would say.
     SendDirectoryRemoval { item: ItemVersions, below: Vec<ItemVersions> },
 }
 

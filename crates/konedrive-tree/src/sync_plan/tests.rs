@@ -197,6 +197,8 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         computer_name: "pc".to_owned(),
         shown_item_count: 1000,
         items_with_confirmed_removal: BTreeSet::new(),
+        unsent_removal_count: 0,
+        places_taken_in_onedrive: BTreeMap::new(),
     }
 }
 

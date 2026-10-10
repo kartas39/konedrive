@@ -226,44 +226,47 @@ fn open_an_item_that_is_left_here_at_the_name_of_an_item_of_onedrive_is_renamed_
     assert_eq!(answer(&given, 5), waits_for(4));
 }
 
-/// The map's "a local-only entry moved to an ignored name leaves the queue; one already
-/// going up is deleted afterwards" (`a_fresh_file_renamed_to_an_ignored_name_while_it_is_sent_is_removed_from_onedrive`,
-/// `fuse/detections/entry_renamed/tests.rs`). The folder goes on showing the item: the
-/// step's commit gives its binding up and confirms the removal of the row that took it.
-///
-/// Open, twice.
-///
-/// What the row can say. The plan reads "got its binding while it was sent, and its name
-/// is ignored now" as: the row has a binding, both sides have the item, and
-/// `is_name_ignored` is set. That is the case only if the flag is written as the design's
-/// §3 says, "where an item without a binding gets a name". `ItemStore` writes it with every
-/// local place (`LocalVersionChange::Moved`), also of an item OneDrive has, and the
-/// design's §4 names "a step towards the folder" among its writers: a row written so says
-/// the same of an item of OneDrive that was renamed here to an ignored name, or shown
-/// under one, and its removal would be sent.
-///
-/// - Reading 1 (implemented, the design's §3): the flag on a row that has a binding is
-///   written by nothing but the race; the removal is sent.
-/// - Reading 2: the rows cannot tell the race from a rename, and the plan sends no removal
-///   on the flag; the step whose sending was running decides at its commit, or the plan is
-///   given the fact.
-///
-/// A directory OneDrive has something in. The design says "its removal is sent", which
-/// would remove from OneDrive what was sent into it since.
-///
-/// - Reading 1 (implemented): such a directory stays as it is, in OneDrive too.
-/// - Reading 2: its removal is sent with all OneDrive has in it.
+/// Decided after stage B (the brief's §6, 1; the design's §6): no removal is ever sent
+/// because a name is ignored. An item OneDrive has is never left here, whatever its row says
+/// of its name: one that got its binding while its sending was running and whose name is
+/// ignored now stays in OneDrive under that name, and one renamed here to an ignored name
+/// has its move sent like any other. Differs from today, where nothing of an ignored name
+/// is recorded (`fuse/upload_rules.rs`).
 #[test]
-fn open_an_item_that_got_its_binding_while_it_was_sent_and_whose_name_is_ignored_now_has_its_removal_sent() {
+fn a_bound_item_whose_name_is_ignored_is_planned_as_any_bound_item() {
     let ignored = |mut item: Item| {
         item.is_name_ignored = true;
         item
     };
-    let given = input(vec![ignored(on_disk(synced_file(2, ROOT, "notes.tmp"))), ignored(synced_directory(3, ROOT, "build")), ignored(synced_directory(4, ROOT, "target")), synced_file(5, id(4), "sent.o")]);
-    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
-    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 3), below: Vec::new() }));
-    assert_eq!(answer(&given, 4), Answer::Nothing, "open: OneDrive has something in it");
-    assert_eq!(answer(&given, 5), Answer::Nothing);
+    let given = input(vec![
+        ignored(on_disk(synced_file(2, ROOT, "notes.tmp"))),
+        ignored(synced_directory(3, ROOT, "build")),
+        ignored(moved_here(synced_file(4, ROOT, "notes.txt"), ROOT, "notes.bak")),
+        ignored(with_content_here(synced_file(5, ROOT, "draft.tmp"), written_here())),
+        ignored(removed_in_onedrive(synced_file(6, ROOT, "gone.tmp"))),
+    ]);
+    assert_eq!(answer(&given, 2), Answer::Nothing);
+    assert_eq!(answer(&given, 3), Answer::Nothing);
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "notes.bak".into() }));
+    assert_eq!(answer(&given, 5), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 5) }));
+    assert_eq!(answer(&given, 6), folder_step(FolderStep::RemoveItem { item: versions(&given, 6) }));
+}
+
+/// The design's "OneDrive is the judge" (§6, "Names"; §7, what a step remembers): new. The
+/// plan's own rule says two names are two, OneDrive answered the sending that the name is
+/// taken, and that answer is given: the item steps aside as from any name another item
+/// holds for good. Today the worker makes the copy on the spot (`upload/steps/shared.rs`).
+#[test]
+fn an_item_whose_name_onedrive_answered_is_taken_is_renamed_to_a_conflict_copys_name() {
+    let mut given = input(vec![made_file(2, ROOT, "Straße.txt"), moved_here(synced_file(3, ROOT, "b.txt"), ROOT, "c.txt"), made_directory(4, ROOT, "d")]);
+    given.places_taken_in_onedrive = [(id(2), place(ROOT, "Straße.txt")), (id(3), place(ROOT, "c.txt")), (id(4), place(ROOT, "elsewhere"))].into();
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 2), name: "Straße-pc.txt".into() }));
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 3), name: "c-pc.txt".into() }));
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 4), parent: reference("root"), name: "d".into() }), "the answer was of another place");
+
+    // A listing under way may yet bring the item that has the name.
+    given.is_listing_under_way = true;
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
 }
 
 // -- directories
@@ -463,35 +466,49 @@ fn an_item_of_onedrive_in_a_directory_whose_name_the_folder_cannot_hold_is_not_s
 
 /// Differs from today, as the design says: today the guard runs as each removal is
 /// recorded, and the first ones leave before it trips
-/// (`a_mass_delete_is_held_until_confirmed`, `local/record/tests.rs`). The plan counts the
-/// removals of everything it was given, a removed directory with all OneDrive has in it,
-/// and none leaves before the user confirms.
+/// (`a_mass_delete_is_held_until_confirmed`, `local/record/tests.rs`). The plan is given
+/// the count of every unsent removal the user did not confirm, given to it or not
+/// ([`ItemStore::count_unsent_removals`](crate::ItemStore::count_unsent_removals)), and
+/// none leaves before the user confirms.
 #[test]
 fn a_mass_removal_waits_for_the_user_to_confirm_it() {
     let removed: Vec<Item> = (2..12).map(|number| removed_here(synced_file(number, ROOT, &format!("f{number}")))).collect();
     let held = Answer::Wait(WaitReason::User(Reason::MassDelete));
     let mut given = input(removed.clone());
     given.shown_item_count = 40;
+    given.unsent_removal_count = 10;
     for number in 2..12 {
         assert_eq!(answer(&given, number), held, "ten of forty: {number}");
     }
     given.shown_item_count = 50;
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "a fifth, and no more");
 
-    // What the user confirmed is sent and counted no more: nine are left, and are no mass
-    // removal.
+    // The count is of every unsent removal, also of those the plan was not given: three of
+    // the ten are given, and none of them leaves.
+    let mut given = input(removed[..3].to_vec());
     given.shown_item_count = 40;
-    given.items_with_confirmed_removal = [id(2)].into();
-    for number in 2..12 {
-        assert_eq!(answer(&given, number), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, number) }), "{number}");
+    given.unsent_removal_count = 10;
+    for number in 2..5 {
+        assert_eq!(answer(&given, number), held, "three given of ten: {number}");
     }
+    given.unsent_removal_count = 3;
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "three in all");
 
-    // A removed directory counts with all OneDrive has in it, removed here or not.
+    // What the user confirmed is sent, whatever is counted beside it.
+    let mut given = input(removed);
+    given.shown_item_count = 40;
+    given.unsent_removal_count = 10;
+    given.items_with_confirmed_removal = [id(2)].into();
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), held);
+
+    // A removed directory is one step for all OneDrive has in it; what is in it waits for it.
     let mut tree = vec![removed_here(synced_directory(2, ROOT, "d"))];
     tree.extend((3..8).map(|number| removed_here(synced_file(number, id(2), &format!("f{number}")))));
     tree.extend((8..12).map(|number| listed(number, ItemKind::File, id(2), &format!("f{number}"))));
     let mut given = input(tree);
     given.shown_item_count = 40;
+    given.unsent_removal_count = 10;
     assert_eq!(answer(&given, 2), held);
     assert_eq!(answer(&given, 3), waits_for(2));
     given.items_with_confirmed_removal = [id(2)].into();

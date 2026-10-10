@@ -14,7 +14,7 @@ use super::side_change::{compare_local_content, ContentChange, PlaceChange, Side
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::{PlanFault, WaitReason};
 use crate::folded_name::FoldedName;
-use crate::model::{Item, ItemKind, ItemVersion, LocalItemId};
+use crate::model::{Item, ItemKind, ItemPlace, ItemVersion, LocalItemId};
 
 /// The other item OneDrive has under the name an item is to have there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +35,8 @@ pub(crate) struct NameClaim<'a> {
     /// Another item of the folder is to have the name in OneDrive too, and came to be
     /// unsent earlier.
     pub(crate) has_earlier_rival: bool,
+    /// OneDrive answered the sending of the claimant to this name that the name is taken.
+    pub(crate) is_answered_taken: bool,
     pub(crate) is_listing_under_way: bool,
 }
 
@@ -59,7 +61,10 @@ pub(crate) enum NameContestOutcome {
 ///
 /// - another item of the folder is to have the name too, and was unsent earlier: the
 ///   claimant steps aside;
-/// - nothing in OneDrive has the name: it is free;
+/// - nothing in OneDrive has the name, by the plan's rule for comparing names: it is free,
+///   unless OneDrive answered the claimant's sending that the name is taken. OneDrive is
+///   the judge: the claimant then steps aside, once no listing is under way that may yet
+///   bring the item that has the name;
 /// - the holder leaves the name: the claimant waits for it; one that is left here, and so
 ///   never sent, waits for nothing;
 /// - the holder stays, and a listing is under way: the claimant waits for the listing;
@@ -74,6 +79,7 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
         return NameContestOutcome::StepsAside;
     }
     let holder = match claim.holder {
+        None if claim.is_answered_taken && !claim.is_left_here => return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::StepsAside },
         None => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(holder)) => return NameContestOutcome::WaitsFor(holder),
@@ -120,13 +126,21 @@ fn leaves_its_name(holder: &Item, decision: Option<&ItemDecision>, directory: Lo
 /// or wants that name there ([`decide_name_contest`]), the items by their ids. An item
 /// that is left here is decided too: it steps aside for an item of OneDrive that stays at
 /// its name. An item a step is running for, and a file open for writing, is not decided.
-/// `moves_taken_back` are the items whose move here does not stand
+/// `places_taken_in_onedrive` is what OneDrive answered is taken
+/// ([`SyncPlanInput`](super::SyncPlanInput)). `moves_taken_back` are the items whose move here does not stand
 /// ([`move_cycle`](super::move_cycle)): such a holder stays at its name in OneDrive.
 ///
 /// The steps towards OneDrive that now wait for a name another item leaves are returned,
 /// by item: what waits in a circle goes through a temporary name
 /// ([`name_exchange`](super::name_exchange)).
-pub(crate) fn settle_name_contests(cases: &[ItemCase<'_>], items: &PlanItems<'_>, computer_name: &str, moves_taken_back: &BTreeSet<LocalItemId>, decisions: &mut ItemDecisions) -> BTreeMap<LocalItemId, OneDriveStep> {
+pub(crate) fn settle_name_contests(
+    cases: &[ItemCase<'_>],
+    items: &PlanItems<'_>,
+    computer_name: &str,
+    places_taken_in_onedrive: &BTreeMap<LocalItemId, ItemPlace>,
+    moves_taken_back: &BTreeSet<LocalItemId>,
+    decisions: &mut ItemDecisions,
+) -> BTreeMap<LocalItemId, OneDriveStep> {
     let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     let is_left_here = |item: LocalItemId| case_of.get(&item).is_some_and(|case| case.sending.is_ignored);
     let mut sendings_that_wait = BTreeMap::new();
@@ -153,7 +167,7 @@ pub(crate) fn settle_name_contests(cases: &[ItemCase<'_>], items: &PlanItems<'_>
             rival_id != id && !in_onedrive.contains(&rival_id) && !is_left_here(rival_id) && claims_its_name(rival, decisions.find(rival_id)) && (rival.unsent_since, rival_id) < (item.unsent_since, id)
         };
         let has_earlier_rival = !is_left_here(id) && items.list_shown_with_name(directory, &name).into_iter().filter_map(|rival| items.find(rival)).any(|rival| is_earlier_rival(&rival));
-        let claim = NameClaim { claimant: item, is_left_here: is_left_here(id), holder, has_earlier_rival, is_listing_under_way: case.is_listing_under_way };
+        let claim = NameClaim { claimant: item, is_left_here: is_left_here(id), holder, has_earlier_rival, is_answered_taken: places_taken_in_onedrive.get(&id) == Some(place), is_listing_under_way: case.is_listing_under_way };
         let sending = match &decision {
             Some(ItemDecision::Step(SyncStep::OneDrive(step @ (OneDriveStep::MakeDirectory { .. } | OneDriveStep::SendNewFile { .. } | OneDriveStep::SendMove { .. })))) => Some(step.clone()),
             _ => None,

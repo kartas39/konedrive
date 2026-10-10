@@ -121,8 +121,6 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) local_place_availability: LocalPlaceAvailability,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
-    /// Whether OneDrive has something in the item, a directory, among the rows given.
-    pub(crate) has_items_in_onedrive: bool,
     pub(crate) sending: SendingConditions,
 }
 
@@ -333,15 +331,12 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
 }
 
 /// Is there on both sides: its place, then for a file its content, and last the download
-/// of a pinned file whose content is not on disk.
+/// of a pinned file whose content is not on disk. What the row says the upload rules say of
+/// its name ([`Item::is_name_ignored`]) is not asked: an item OneDrive has is never left
+/// here, and no removal is sent because a name is ignored.
 fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentChange), in_onedrive: (PlaceChange, ContentChange)) -> ItemDecision {
     if matches!(case.folder_visibility, FolderVisibility::NotKnownYet) {
         return wait_for_listing(case);
-    }
-    if case.item.is_name_ignored {
-        if let Some(removal) = decide_bound_item_whose_name_is_ignored(case) {
-            return removal;
-        }
     }
     if matches!(case.folder_visibility, FolderVisibility::NotInOneDrive) {
         return row_fault(case);
@@ -355,24 +350,6 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
         return folder_step(FolderStep::DownloadContent { item: case.versions() });
     }
     content
-}
-
-/// OneDrive has an item the folder shows, whose row says its name is ignored: it got its
-/// binding because its sending was running when it got that name. Its removal is sent, the
-/// folder showing it as before: the commit of the step gives its binding up. `None` for a
-/// directory OneDrive has something in, which stays as it is.
-///
-/// This reads [`Item::is_name_ignored`] of a row that has a binding as written only while
-/// the item had none. A writer that sets it for an item of OneDrive (a rename here to an
-/// ignored name, an item shown under one) would have that item removed from OneDrive.
-fn decide_bound_item_whose_name_is_ignored(case: &ItemCase<'_>) -> Option<ItemDecision> {
-    let item = case.versions();
-    let removal = match case.item.kind {
-        ItemKind::File => OneDriveStep::SendFileRemoval { item },
-        ItemKind::Directory if case.has_items_in_onedrive => return None,
-        ItemKind::Directory => OneDriveStep::SendDirectoryRemoval { item, below: Vec::new() },
-    };
-    Some(find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(removal)))
 }
 
 /// The step that sends the item's place here to OneDrive.

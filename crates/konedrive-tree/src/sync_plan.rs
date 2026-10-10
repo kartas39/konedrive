@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use konedrive_reason::Reason;
 
-use crate::model::{FolderVisibility, Item, LocalItemId};
+use crate::model::{FolderVisibility, Item, ItemPlace, LocalItemId};
 
 /// The name of a conflict copy.
 mod conflict_copy_name;
@@ -143,6 +143,17 @@ pub struct SyncPlanInput {
     /// The items whose removal from OneDrive the user confirmed: a removed directory, for
     /// all OneDrive has in it.
     pub items_with_confirmed_removal: BTreeSet<LocalItemId>,
+    /// How many items the unsent removals take from OneDrive that the user did not confirm,
+    /// those of items that were not given too: every item that was removed here and that
+    /// OneDrive has, a removed directory with all OneDrive has in it
+    /// ([`ItemStore::count_unsent_removals`](crate::ItemStore::count_unsent_removals)).
+    /// What the guard against a mass removal asks of.
+    pub unsent_removal_count: u64,
+    /// What the steps remember of a name OneDrive answered is taken: for each item whose
+    /// sending OneDrive refused so, the place it was sent to. While the item is at that
+    /// place here, its name there is another item's to the plan, whatever the plan's own
+    /// rule for comparing names says.
+    pub places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
 }
 
 /// Why an item's step cannot run now.
@@ -300,7 +311,6 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         local_directory: find_local_directory_binding(items, item),
         local_place_availability: find_local_place_availability(items, item),
         first_shown_in_it: items.find_first_shown_in(id),
-        has_items_in_onedrive: !items.list_in_onedrive_in(id).is_empty(),
         sending: SendingConditions {
             is_ignored: input.ignored_items.contains(&id),
             name_refusal: input.name_refusals.get(&id).cloned(),
@@ -352,11 +362,11 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, &items, item)).collect();
     let mut decisions = ItemDecisions::of(cases.iter().map(|case| (case.item.local_item_id, decide_item(case))));
     let moves_taken_back = move_cycle::take_back_moves_into_own_content(&cases, &items, &mut decisions);
-    let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &moves_taken_back, &mut decisions);
+    let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &input.places_taken_in_onedrive, &moves_taken_back, &mut decisions);
     removed_directory::send_one_removal_for_each_directory(&cases, &items, &mut decisions);
     removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &mut decisions);
     name_exchange::break_circles_of_names(&cases, &items, &sendings_that_wait, &mut decisions);
-    mass_removal::hold_mass_removal(&cases, &items, input.shown_item_count, &input.items_with_confirmed_removal, &mut decisions);
+    mass_removal::hold_mass_removal(input.unsent_removal_count, input.shown_item_count, &input.items_with_confirmed_removal, &mut decisions);
     wait_end::end_waits_for_other_items(input.is_listing_under_way, &items, &mut decisions);
     SyncPlan::of_decisions(&input.items, decisions)
 }

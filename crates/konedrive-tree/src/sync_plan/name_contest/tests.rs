@@ -3,7 +3,7 @@ use crate::model::ItemKind;
 use crate::sync_plan::tests::{hashed_here, id, listed, made_directory, made_file, moved_here, moved_in_onedrive, synced_file, with_content_here, written_here, ROOT};
 
 fn claim<'a>(claimant: &'a Item, holder: Option<NameHolder<'a>>) -> NameClaim<'a> {
-    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_listing_under_way: false }
+    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_answered_taken: false, is_listing_under_way: false }
 }
 
 #[test]
@@ -69,4 +69,19 @@ fn nothing_is_decided_against_a_holder_that_stays_while_a_listing_is_under_way()
     let onedrive_directory = listed(3, ItemKind::Directory, ROOT, "d");
     let new = made_directory(2, ROOT, "d");
     assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..claim(&new, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::WaitsForListing);
+}
+
+/// The design's "OneDrive is the judge": the plan's rule finds nothing under the name, and
+/// OneDrive answered that the name is taken.
+#[test]
+fn an_item_steps_aside_from_a_name_onedrive_answered_is_taken() {
+    let new = made_file(2, ROOT, "a.txt");
+    let answered_taken = NameClaim { is_answered_taken: true, ..claim(&new, None) };
+    assert_eq!(decide_name_contest(&answered_taken), NameContestOutcome::StepsAside);
+    assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..answered_taken }), NameContestOutcome::WaitsForListing, "a page to come may bring the holder");
+    // A holder the rule finds decides as it does with no answer.
+    assert_eq!(decide_name_contest(&NameClaim { is_answered_taken: true, ..claim(&new, Some(NameHolder::Leaves(id(3)))) }), NameContestOutcome::WaitsFor(id(3)));
+    let onedrive_directory = listed(3, ItemKind::Directory, ROOT, "d");
+    let new_directory = made_directory(2, ROOT, "d");
+    assert_eq!(decide_name_contest(&NameClaim { is_answered_taken: true, ..claim(&new_directory, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::MergesWith(id(3)));
 }

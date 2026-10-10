@@ -838,8 +838,9 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   OneDrive, against what has or wants it there as OneDrive compares names
   (`decide_name_contest` over a `NameClaim` and its `NameHolder`, to a
   `NameContestOutcome`): it waits for what leaves the name, is merged with a new item of
-  OneDrive, has its content hashed first, or steps aside; `settle_name_contests` finds the
-  claims among the rows. `[tests]`
+  OneDrive, has its content hashed first, or steps aside, also from a name OneDrive
+  answered is taken though the rule finds nothing under it; `settle_name_contests` finds
+  the claims among the rows. `[tests]`
 - `sync_plan/conflict_copy_name.rs` — the name of a conflict copy
   (`make_conflict_copy_name`), and the first that is free (`find_free_conflict_copy_name`).
   `[tests]`
@@ -852,8 +853,9 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   through a temporary name (`make_temporary_name`), towards OneDrive or in the folder
   (`break_circles_of_names`).
 - `sync_plan/mass_removal.rs` — the guard against a mass removal: the limits
-  (`is_mass_removal`), and the removals of one plan held until the user confirms
-  (`hold_mass_removal`). `[tests]`
+  (`is_mass_removal`) asked of the count of every unsent removal, which the plan is
+  given, and the removals of one plan held until the user confirms (`hold_mass_removal`).
+  `[tests]`
 - `sync_plan/wait_end.rs` — where a wait for another item ends: an item that was not
   given is said, and a wait nothing ends is a fault (`end_waits_for_other_items`).
 - `sync_plan/sync_step.rs` — one thing the plan does: `OneDriveStep` (a request to
