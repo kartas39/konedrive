@@ -200,26 +200,37 @@ impl Store {
             .as_ref()
     }
 
+    /// Runs `job` on the thread of the store's read-only connection, which never waits for
+    /// a writer and sees what was last committed; on the store's own thread for a store in
+    /// memory, or one whose second connection cannot be opened. What every read of the
+    /// shared store goes through, whatever view of the store it hands out.
+    pub(crate) async fn call_reading_connection<T: Send + 'static>(&self, job: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        match self.reader() {
+            Some(reader) => reader.call(job).await,
+            None => self.call(job).await,
+        }
+    }
+
+    /// [`call_reading_connection`](Self::call_reading_connection) for plain threads.
+    pub(crate) fn call_reading_connection_blocking<T: Send + 'static>(&self, job: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        match self.reader() {
+            Some(reader) => reader.call_blocking(job),
+            None => self.call_blocking(job),
+        }
+    }
+
     /// Runs `f` on the store's read-only connection, which never waits for a
     /// writer and sees what was last committed: the bus's lists and
     /// sums. A store in memory, or one whose second connection cannot be
     /// opened, is read through its own thread; `f` is handed the same
     /// [`ReadStore`] either way.
     pub async fn read<T: Send + 'static>(&self, f: impl FnOnce(&ReadStore<'_>) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
-        let f = move |store: &mut TreeStore| f(&ReadStore::of(store));
-        match self.reader() {
-            Some(reader) => reader.call(f).await,
-            None => self.call(f).await,
-        }
+        self.call_reading_connection(move |store: &mut TreeStore| f(&ReadStore::of(store))).await
     }
 
     /// [`read`](Self::read) for plain threads.
     pub fn read_blocking<T: Send + 'static>(&self, f: impl FnOnce(&ReadStore<'_>) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
-        let f = move |store: &mut TreeStore| f(&ReadStore::of(store));
-        match self.reader() {
-            Some(reader) => reader.call_blocking(f),
-            None => self.call_blocking(f),
-        }
+        self.call_reading_connection_blocking(move |store: &mut TreeStore| f(&ReadStore::of(store)))
     }
 
     /// What changed in the outbox, shared with the store.

@@ -4,6 +4,7 @@
 
 use rusqlite::{Connection, Transaction};
 
+use crate::item_store::item_pins::forget_pin_of_binding;
 use crate::item_store::item_row::{find_item, write_item};
 use crate::item_store::{refuse, ItemStore};
 use crate::model::{ContentVersion, Item, ItemKind, ItemVersion, LocalItemId, Placement};
@@ -46,7 +47,8 @@ pub(in crate::item_store) fn read_confirmation_count(conn: &Connection) -> Resul
 ///
 /// What the two sides agree on from then is the step's to write, in the same transaction,
 /// in the part that was confirmed (the place of a move, the content of an upload). A
-/// confirmed removal is whole: the row is left with its binding alone, stamped, and stays
+/// confirmed removal is whole: the row is left with its binding alone, stamped, without the
+/// pin its binding had (`item_pins`), and stays
 /// until a listing that began after it has ended, so that a page fetched before the removal
 /// finds the binding taken and does not make the item again.
 ///
@@ -61,9 +63,9 @@ pub(in crate::item_store) fn read_confirmation_count(conn: &Connection) -> Resul
 /// place that is not in the row of a directory.
 pub(crate) fn confirm_onedrive_version(tx: &Transaction<'_>, item: LocalItemId, confirmed: &ConfirmedOneDriveVersion) -> Result<u64, TreeError> {
     let mut row = find_item(tx, item)?.ok_or_else(|| refuse(format!("item {item} has no row: nothing is confirmed of it")))?;
-    if row.onedrive_item.is_none() {
+    let Some(binding) = row.onedrive_item.clone() else {
         return Err(refuse(format!("item {item} has no binding: OneDrive confirms nothing of it")));
-    }
+    };
     match confirmed {
         ConfirmedOneDriveVersion::Present { version, etag } => {
             check_confirmed_version(tx, &row, version)?;
@@ -79,6 +81,8 @@ pub(crate) fn confirm_onedrive_version(tx: &Transaction<'_>, item: LocalItemId, 
             row.placement = Placement::Placed;
             row.synced_place = None;
             row.synced_content = None;
+            // A pin follows the binding, and OneDrive has nothing of this one any more.
+            forget_pin_of_binding(tx, &binding)?;
         }
     }
     row.onedrive_mime = None;

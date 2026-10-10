@@ -17,6 +17,7 @@
 use rusqlite::{Connection, Transaction};
 
 use super::confirmed_onedrive_version::read_confirmation_count;
+use crate::item_store::full_listing_request::forget_full_listing_request;
 use crate::item_store::{refuse, ItemStore};
 use crate::{meta, TreeError};
 
@@ -167,11 +168,15 @@ impl ListingUnderWay {
 
     /// A listing of `kind` begins, at the count of confirmations the store has reached,
     /// with the next id; the one that was under way is given up. A full listing forgets
-    /// the delta link. Refused, with nothing written, for a listing of changes in a store
+    /// the delta link, and takes away the request for one (`full_listing_request`). Refused, with nothing written, for a listing of changes in a store
     /// that has no delta link.
     pub(super) fn begin(tx: &Transaction<'_>, kind: ListingKind) -> Result<Self, TreeError> {
         match kind {
-            ListingKind::Full => meta::set(tx, meta::DELTA_LINK, None)?,
+            ListingKind::Full => {
+                meta::set(tx, meta::DELTA_LINK, None)?;
+                // What was asked for begins.
+                forget_full_listing_request(tx)?;
+            }
             ListingKind::Delta if meta::get(tx, meta::DELTA_LINK)?.is_none() => {
                 return Err(refuse("the store has no delta link to ask a listing of changes from: a full listing is begun".to_owned()));
             }

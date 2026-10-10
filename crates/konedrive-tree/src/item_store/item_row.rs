@@ -12,6 +12,7 @@ use std::path::Path;
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::item_pins::forget_pins_of_rows;
 use super::refuse;
 use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, PLACED};
 use crate::outbox::{path_from, path_value};
@@ -19,10 +20,10 @@ use crate::FoldedName;
 use crate::TreeError;
 
 /// The columns of a content, after the word that says whose it is.
-const CONTENT_COLUMNS: [&str; 6] = ["size", "mtime", "mtime_nsec", "hash", "ctag", "change_count"];
+pub(super) const CONTENT_COLUMNS: [&str; 6] = ["size", "mtime", "mtime_nsec", "hash", "ctag", "change_count"];
 
 /// The columns of an [`Item`], in the order [`item_from`] reads them and [`values_of`] gives them.
-const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, kind, \
+pub(super) const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, kind, \
      local_parent_id, local_name, local_folded_name, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
      onedrive_parent_id, onedrive_name, onedrive_folded_name, onedrive_size, onedrive_mtime, onedrive_mtime_nsec, onedrive_hash, onedrive_ctag, onedrive_change_count, \
      onedrive_etag, onedrive_mime, \
@@ -181,7 +182,7 @@ fn place_from(row: &rusqlite::Row<'_>, parent: usize, name: usize) -> rusqlite::
 }
 
 /// An [`Item`] read from a query that selects [`ITEM_COLUMNS`].
-fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+pub(super) fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     let (drive_id, item_id): (Option<String>, Option<String>) = (row.get(column_index::ONEDRIVE_DRIVE_ID)?, row.get(column_index::ONEDRIVE_ITEM_ID)?);
     let onedrive_item = match (drive_id.and_then(DriveId::new), item_id) {
         (Some(drive_id), Some(item_id)) => Some(OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(item_id) }),
@@ -431,8 +432,11 @@ pub(super) fn set_onedrive_version(conn: &Connection, item: LocalItemId, onedriv
 }
 
 /// OneDrive does not have `item` from now on: no version, no eTag, no MIME type, and the
-/// placement of an item it does not have. Nothing else of the row is written.
+/// placement of an item it does not have. Nothing else of the row is written; the pin of
+/// its binding goes, as wherever a row loses its OneDrive version to a removal
+/// ([`item_pins`](super::item_pins)).
 pub(super) fn clear_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
+    forget_pins_of_rows(conn, "WHERE local_item_id = ?1", [item.as_i64()])?;
     conn.prepare_cached(&format!("{} WHERE local_item_id = ?1", clear_onedrive_version_sql("")))?.execute([item.as_i64()])?;
     Ok(())
 }
@@ -532,6 +536,7 @@ pub(super) fn list_left_below_in_onedrive(conn: &Connection, directory: LocalIte
 /// What the rows say OneDrive has in `directory` and below it has no OneDrive version from
 /// now on, all of it: one statement, whatever is below.
 pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId) -> Result<(), TreeError> {
+    forget_pins_of_rows(conn, &format!("WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})"), [directory.as_i64()])?;
     conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})", clear_onedrive_version_sql("")))?.execute([directory.as_i64()])?;
     Ok(())
 }
@@ -543,6 +548,7 @@ pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalI
 pub(super) fn confirm_removal_below(conn: &Connection, directory: LocalItemId, count: u64) -> Result<(), TreeError> {
     let synced = ["parent_id", "name", "size", "mtime", "mtime_nsec", "hash", "ctag", "change_count"].map(|column| format!("synced_{column} = NULL")).join(", ");
     let sql = format!("{}, {synced}, confirmed_at_count = ?2 WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})", clear_onedrive_version_sql(""));
+    forget_pins_of_rows(conn, &format!("WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})"), [directory.as_i64()])?;
     conn.prepare_cached(&sql)?.execute([directory.as_i64(), count as i64])?;
     Ok(())
 }
@@ -569,7 +575,9 @@ const BELOW_LEFT_UNSEEN: &str = "WITH RECURSIVE below(id) AS (
 pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing: u64, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
     let values = [full_listing as i64, left_after_count as i64];
     let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count > ?2"), values)?;
-    let sql = format!("{} WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count <= ?2 AND local_item_id NOT IN ({BELOW_LEFT_UNSEEN})", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing"));
+    let unseen = format!("WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count <= ?2 AND local_item_id NOT IN ({BELOW_LEFT_UNSEEN})");
+    forget_pins_of_rows(conn, &format!("INDEXED BY items_seen_in_full_listing {unseen}"), values)?;
+    let sql = format!("{} {unseen}", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing"));
     conn.prepare_cached(&sql)?.execute(values)?;
     Ok(left)
 }
@@ -578,13 +586,15 @@ pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing: u6
 /// side, and that were not stamped after the count `left_after_count`, go. Found by the index of such rows.
 /// A row that goes names no parent, so none of them holds another.
 pub(super) fn delete_rows_of_binding_alone(conn: &Connection, left_after_count: u64) -> Result<(), TreeError> {
-    let sql = format!(
-        "DELETE FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count <= ?1
+    let rows = format!(
+        "INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count <= ?1
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.local_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.onedrive_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.synced_parent_id = items.local_item_id)"
     );
-    conn.prepare_cached(&sql)?.execute([left_after_count as i64])?;
+    // A pin follows its binding, and the binding goes with its row.
+    forget_pins_of_rows(conn, &rows, [left_after_count as i64])?;
+    conn.prepare_cached(&format!("DELETE FROM items {rows}"))?.execute([left_after_count as i64])?;
     Ok(())
 }
 

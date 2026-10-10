@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{place_change_records_schema, step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
+use crate::item_store::{own_upload_contents_schema, place_change_records_schema, step_memory_schema, thumbnail_marks_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, IMAGE_OR_VIDEO, LEFT_HERE, NOT_PLACED, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -18,15 +18,14 @@ mod old_store;
 pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 
 /// The schema this daemon reads and writes, kept in `meta` as
-/// `schema_version`. A store of a version a step starts from is brought to
-/// it in place, one numbered step at a time ([`migrations`]); one of any
-/// other version — a newer daemon's, or an earlier one no step starts from, as
-/// every version before this one — is rebuilt from a full listing.
+/// `schema_version`. A store of any other version — an earlier one, or a newer
+/// daemon's — is rebuilt from a full listing and never brought to this one in
+/// place ([`decide_old_store`]); no step of [`migrations`] exists.
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "19";
+pub const SCHEMA_VERSION: &str = "20";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -71,7 +70,10 @@ pub const SCHEMA_VERSION: &str = "19";
 ///   what OneDrive has, by the full listing that saw it: none of the three is found by
 ///   reading every row. `items_shown_against_placement` holds the rows the folder shows
 ///   whose own placement says it cannot: a listing changed the placement of an item both
-///   sides agree on, which is in neither index of what differs.
+///   sides agree on, which is in neither index of what differs. `items_not_placed` holds
+///   every row whose own placement says so, shown or not: what the folder cannot show is
+///   counted and listed from it. `items_image_or_video` holds the rows whose MIME type is
+///   an image's or a video's: the files a thumbnail is made for.
 ///   `unsent_since` is a stamp of one counter of the store (`meta` `last_unsent_since`, whose
 ///   row is made here), set while the row's local place or content is not the synced one
 ///   and null while they are the same: three triggers keep it (`items_unsent_since_insert`,
@@ -102,7 +104,18 @@ pub const SCHEMA_VERSION: &str = "19";
 ///   about to make, each on record from before the disk is touched until its row is
 ///   written or it is undone ([`crate::item_store`]'s `place_change_records`, which has
 ///   its schema).
-/// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
+/// - `own_upload_contents`: the content an upload of this folder left in an item of
+///   OneDrive in place of what it sent, by local item id, and the trigger
+///   `own_upload_contents_item_gone` that takes it with the item's row
+///   ([`crate::item_store`]'s `own_upload_content`, which has its schema).
+/// - `thumbnail_marks`: which content of a file, at which path, a thumbnail was last made
+///   for, by local item id, and the trigger `thumbnail_marks_item_gone` that takes it with
+///   the item's row ([`crate::item_store`]'s `thumbnail_marks`, which has its schema).
+/// - `pins`: the items that carry a pin of their own, by OneDrive item id
+///   ([`crate::item_store`]'s `item_pins`).
+/// - `meta` keeps, beside what is named above, `full_listing_requested` while a full
+///   listing was asked for and has not begun, and `sending_read_only_since`, the stamp of
+///   the folder's switch to read-only.
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
@@ -208,6 +221,8 @@ fn schema() -> String {
          CREATE INDEX items_shown_against_placement ON items(local_item_id) WHERE {shown_against_placement};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL AND NOT {left_here};
+         CREATE INDEX items_not_placed ON items(local_item_id) WHERE {not_placed};
+         CREATE INDEX items_image_or_video ON items(local_item_id) WHERE {image_or_video};
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}
                OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
@@ -223,6 +238,8 @@ fn schema() -> String {
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          {step_memory}
          {place_change_records}
+         {own_upload_contents}
+         {thumbnail_marks}
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}
          {staging}
@@ -283,6 +300,10 @@ fn schema() -> String {
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
         step_memory = step_memory_schema(),
         place_change_records = place_change_records_schema(),
+        own_upload_contents = own_upload_contents_schema(),
+        thumbnail_marks = thumbnail_marks_schema(),
+        not_placed = NOT_PLACED,
+        image_or_video = IMAGE_OR_VIDEO,
         no_local_parent_directory = no_parent_directory("local"),
         no_onedrive_parent_directory = no_parent_directory("onedrive"),
         no_synced_parent_directory = no_parent_directory("synced"),
@@ -322,46 +343,16 @@ fn at_version(conn: &Connection, version: &str, work: impl FnOnce(&Connection) -
     Ok(())
 }
 
-/// Whether `TreeStore::open` should discard what is on disk and rebuild empty:
-/// only for an unknown schema version, or a file SQLite itself reports as not
-/// a database or corrupt. Permission errors, other I/O failures,
-/// and anything else are returned unchanged — the store on disk is untouched.
-fn should_rebuild(error: &TreeError) -> bool {
-    match error {
-        TreeError::Schema(_) => true,
-        TreeError::Sql(rusqlite::Error::SqliteFailure(e, _)) => {
-            matches!(e.code, rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
-        }
-        _ => false,
-    }
-}
-
 impl TreeStore {
     /// Opens the store at `path`, creating it — and rebuilding it empty when it
-    /// is missing, unreadable as a database, or of an unknown schema version.
+    /// is unreadable as a database or of another schema version than this daemon's
+    /// ([`TreeStore::open_with_origin`], which also says which of these happened).
     /// Every other error — permission denied, disk I/O, brief lock
     /// contention that outlasts the busy timeout — is returned unchanged, and
     /// nothing on disk is touched: a transient failure is not corruption, and
     /// must never cost the user their tree.
     pub fn open(path: &Path) -> Result<Self, TreeError> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        match Self::open_file(path) {
-            Ok(store) => Ok(store),
-            Err(e) if should_rebuild(&e) => {
-                tracing::warn!("{} cannot be used ({e}); it is rebuilt from a full listing", path.display());
-                for suffix in ["", "-wal", "-shm"] {
-                    match std::fs::remove_file(format!("{}{suffix}", path.display())) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                Self::open_file(path)
-            }
-            Err(e) => Err(e),
-        }
+        Self::open_with_origin(path).map(|(store, _)| store)
     }
 
     /// A store in memory: the tests' store.

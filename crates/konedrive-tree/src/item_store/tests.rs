@@ -1428,3 +1428,5 @@ mod unsent_items;
 pub(crate) mod listed_drive;
 /// The rules that hold of the rows at all times, asked of rows read whole.
 pub(crate) mod row_rules;
+/// A store with items of OneDrive the folder shows.
+pub(crate) mod shown_items;

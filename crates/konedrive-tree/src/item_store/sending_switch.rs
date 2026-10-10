@@ -15,11 +15,21 @@
 // test: a_second_switch_to_read_only_keeps_the_first_stamp
 // test: the_switch_back_to_read_write_forgets_the_stamp
 // test: the_stamp_of_the_switch_is_read_again_after_the_store_is_opened_again
-#![allow(dead_code, unused_variables)]
+use rusqlite::Connection;
 
 use super::ItemStore;
 use crate::sync_plan::SendingState;
-use crate::TreeError;
+use crate::{meta, TreeError};
+
+/// The folder's state of sending as the store keeps it: read-only while the stamp of the
+/// switch is kept, with that stamp. A stamp that cannot be read is the earliest one:
+/// nothing that came to be unsent is taken for sent first by mistake.
+pub(super) fn read_sending_state(conn: &Connection) -> Result<SendingState, TreeError> {
+    Ok(match meta::get(conn, meta::SENDING_READ_ONLY_SINCE)? {
+        Some(stamp) => SendingState::ReadOnly { last_unsent_since: stamp.parse().unwrap_or(0) },
+        None => SendingState::ReadWrite,
+    })
+}
 
 impl ItemStore<'_> {
     /// The folder is read-only from now on: keeps
@@ -32,12 +42,24 @@ impl ItemStore<'_> {
     /// closes of files that were open, and a close gives no new stamp, so the stamp read
     /// here is the last one given before the switch. MISSING-1.c.
     pub fn switch_sending_to_read_only(&mut self) -> Result<SendingState, TreeError> {
-        todo!()
+        let last_unsent_since = self.last_unsent_since()?;
+        self.write(|tx| {
+            if meta::get(tx, meta::SENDING_READ_ONLY_SINCE)?.is_none() {
+                meta::set(tx, meta::SENDING_READ_ONLY_SINCE, Some(&last_unsent_since.to_string()))?;
+            }
+            read_sending_state(tx)
+        })
     }
 
     /// The folder is read-write again: the stamp of the switch is forgotten. Called by the
     /// switch of the access mode before the mount takes changes again. One transaction.
     pub fn switch_sending_to_read_write(&mut self) -> Result<SendingState, TreeError> {
-        todo!()
+        self.write(|tx| {
+            meta::set(tx, meta::SENDING_READ_ONLY_SINCE, None)?;
+            read_sending_state(tx)
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

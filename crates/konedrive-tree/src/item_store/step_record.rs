@@ -13,12 +13,14 @@
 //! **Tested without the rest:**
 // test: a_conflict_copy_and_its_record_are_written_together
 // test: a_commit_that_finds_the_rows_changed_leaves_no_record
-#![allow(dead_code, unused_variables)]
-
+// test: conflicts_added_in_a_transaction_are_those_the_stores_own_call_adds
 use std::ffi::OsStr;
 
-use rusqlite::Transaction;
+use rusqlite::{params, Transaction};
 
+use super::place_change_records::forget_place_change_record_when_written;
+use super::step_commit::commit_rename_to_conflict_copy;
+use super::step_memory::forget_tries_of_onedrive_version;
 use super::{ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::conflicts::ConflictRow;
 use crate::sync_plan::ItemVersions;
@@ -27,7 +29,14 @@ use crate::TreeError;
 /// Writes `conflicts` to the table `conflicts` inside `tx`: what `TreeStore::add_conflicts`
 /// (`conflicts.rs:62`) writes in a transaction of its own. Called by the commit below.
 pub(crate) fn add_conflicts_in(tx: &Transaction<'_>, conflicts: &[ConflictRow]) -> Result<(), TreeError> {
-    todo!()
+    let mut statement = tx.prepare_cached(
+        "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = excluded.kind",
+    )?;
+    for conflict in conflicts {
+        statement.execute(params![conflict.rescued, conflict.at, conflict.original, conflict.kind.as_str()])?;
+    }
+    Ok(())
 }
 
 impl ItemStore<'_> {
@@ -42,6 +51,18 @@ impl ItemStore<'_> {
     /// (`place_change_records::forget_place_change_record_when_written`, or
     /// `forget_place_change_record` for a write that has no outcome), and stands otherwise.
     pub fn commit_rename_to_conflict_copy_on_record(&mut self, item: &ItemVersions, name: &OsStr, is_name_ignored: bool, conflict: &ConflictRow, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
-        todo!()
+        self.write(|tx| {
+            let outcome = commit_rename_to_conflict_copy(tx, item, name, is_name_ignored)?;
+            if outcome == StepCommitOutcome::Written {
+                // As the commit without the record: the failed tries of a step for what
+                // OneDrive has of the item are over.
+                forget_tries_of_onedrive_version(tx, item.local_item_id)?;
+                add_conflicts_in(tx, std::slice::from_ref(conflict))?;
+            }
+            forget_place_change_record_when_written(tx, record, outcome)
+        })
     }
 }
+
+#[cfg(test)]
+mod tests;

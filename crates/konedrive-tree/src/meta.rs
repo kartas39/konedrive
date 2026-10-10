@@ -53,6 +53,13 @@ pub(crate) const LAST_UNSENT_SINCE: &str = "last_unsent_since";
 pub(crate) const SENT_REMOVAL_COUNT: &str = "sent_removal_count";
 /// The count of confirmations at which that window began.
 pub(crate) const SENT_REMOVAL_WINDOW_BEGAN_AT_COUNT: &str = "sent_removal_window_began_at_count";
+/// Set while a full listing was asked for and has not begun, to the words of who asked
+/// (`item_store::full_listing_request`, which alone reads and writes it).
+pub(crate) const FULL_LISTING_REQUESTED: &str = "full_listing_requested";
+/// The last stamp `unsent_since` given before the folder was switched to read-only; absent
+/// while the folder is read-write (`item_store::sending_switch`, which alone reads and
+/// writes it).
+pub(crate) const SENDING_READ_ONLY_SINCE: &str = "sending_read_only_since";
 /// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 
