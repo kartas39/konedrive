@@ -67,7 +67,7 @@ pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
 pub use shared::{Store, QUEUE};
 pub use sync_plan::{
-    make_conflict_copy_name, make_sync_plan, ExclusionReason, FolderStep, ItemExclusion, ItemVersions, ItemWait, OneDriveStep, PlanFault, RowStep, SendingState, SyncPlan, SyncPlanInput, SyncStep,
+    make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, ItemExclusion, ItemVersions, ItemWait, OneDriveStep, PlanFault, RowStep, SendingState, SyncPlan, SyncPlanInput, SyncStep,
     WaitReason,
 };
 pub use thumbs::{Thumbnail, ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};

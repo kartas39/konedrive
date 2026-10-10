@@ -79,9 +79,11 @@ impl ItemDecisions {
 pub(crate) enum LocalDirectoryBinding {
     /// OneDrive has the directory, as this item.
     Bound(OneDriveItemReference),
-    /// The directory has no binding, or OneDrive does not have it by its row, or its row was
-    /// not given: which directory.
+    /// The directory has no binding, or OneDrive does not have it by its row: which
+    /// directory.
     NotBound(LocalItemId),
+    /// The directory's row was not given: which directory.
+    NotGiven(LocalItemId),
     /// The folder does not show the item.
     NoLocalPlace,
 }
@@ -268,14 +270,14 @@ pub(crate) const READ_ONLY_FOLDER: &str = "the folder is read-only";
 
 /// A step towards OneDrive that sends the item into the directory the folder shows it in,
 /// under its name here: made by `step` from that directory's binding and the name. Waits
-/// for the directory while OneDrive does not have it, and for a listing while OneDrive's
-/// root is not known for the root of the folder.
+/// for the directory while OneDrive does not have it or its row was not given, and for a
+/// listing while OneDrive's root is not known for the root of the folder.
 fn send_into_local_directory(case: &ItemCase<'_>, step: impl FnOnce(OneDriveItemReference, std::ffi::OsString) -> OneDriveStep) -> ItemDecision {
     let Some(place) = case.item.local.as_ref().and_then(|local| local.place.as_ref()) else { return row_fault(case) };
     match &case.local_directory {
         LocalDirectoryBinding::Bound(directory) => onedrive_step(step(directory.clone(), place.name.clone())),
         LocalDirectoryBinding::NotBound(LocalItemId::ROOT) => wait_for_listing(case),
-        LocalDirectoryBinding::NotBound(directory) => ItemDecision::Wait(WaitReason::AnotherItem(*directory)),
+        LocalDirectoryBinding::NotBound(directory) | LocalDirectoryBinding::NotGiven(directory) => ItemDecision::Wait(WaitReason::AnotherItem(*directory)),
         LocalDirectoryBinding::NoLocalPlace => row_fault(case),
     }
 }

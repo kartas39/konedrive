@@ -19,7 +19,11 @@ const TEMPORARY_NAME_TRIES: u32 = 100;
 
 /// The `attempt`th temporary name of `item`, counted from 1. The item's id makes it another
 /// name than any other item's.
-pub(crate) fn make_temporary_name(item: LocalItemId, attempt: u32) -> OsString {
+///
+/// The caller of the plan asks it too: the rows of what has the first such name in a
+/// directory of an item, on either side, are given with the item
+/// ([`SyncPlanInput`](super::SyncPlanInput)).
+pub fn make_temporary_name(item: LocalItemId, attempt: u32) -> OsString {
     if attempt <= 1 {
         format!(".konedrive-swap-{item}").into()
     } else {

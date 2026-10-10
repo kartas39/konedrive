@@ -14,8 +14,10 @@
 //! - a directory moved here into what OneDrive has in it ([`move_cycle`]);
 //! - the items that have or want one name of a directory of OneDrive ([`name_contest`]),
 //!   and the name the one that steps aside gets ([`conflict_copy_name`]);
-//! - a directory one side removed, and what the other side has in it
-//!   ([`removed_directory`]);
+//! - the items the rows say OneDrive has under one name, while a listing is being written
+//!   ([`onedrive_name_holders`]);
+//! - a directory one side removed, and what the other side has in it, and a directory that
+//!   gives up its binding ([`removed_directory`]);
 //! - the items that wait for each other's names, and the temporary name one of them goes
 //!   through ([`name_exchange`]);
 //! - the guard against a mass removal ([`mass_removal`]);
@@ -46,6 +48,8 @@ mod move_cycle;
 mod name_contest;
 /// The items that wait for each other's names, and the temporary name one goes through.
 mod name_exchange;
+/// The items the rows say OneDrive has under one name of a directory.
+mod onedrive_name_holders;
 /// A directory one side removed, and what the other side has in it.
 mod removed_directory;
 /// Where a wait for another item ends.
@@ -62,6 +66,7 @@ mod side_change;
 mod sync_step;
 
 pub use conflict_copy_name::make_conflict_copy_name;
+pub use name_exchange::make_temporary_name;
 pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 
 use plan_items::PlanItems;
@@ -255,7 +260,8 @@ fn is_directory_entry_name(name: &std::ffi::OsStr) -> bool {
 /// keep their binding and are nothing to send into.
 fn find_local_directory_binding(items: &PlanItems<'_>, item: &Item) -> LocalDirectoryBinding {
     let Some(place) = item.local.as_ref().and_then(|local| local.place.as_ref()) else { return LocalDirectoryBinding::NoLocalPlace };
-    match items.find(place.parent_local_item_id).filter(|directory| directory.onedrive.is_some()).and_then(|directory| directory.onedrive_item.clone()) {
+    let Some(directory) = items.find(place.parent_local_item_id) else { return LocalDirectoryBinding::NotGiven(place.parent_local_item_id) };
+    match directory.onedrive.as_ref().and(directory.onedrive_item.clone()) {
         Some(directory) => LocalDirectoryBinding::Bound(directory),
         None => LocalDirectoryBinding::NotBound(place.parent_local_item_id),
     }
@@ -353,18 +359,22 @@ impl SyncPlan {
 ///
 /// 1. a directory moved here into what OneDrive has in it (`move_cycle`);
 /// 2. the items that have or want one name of a directory of OneDrive (`name_contest`);
-/// 3. a directory one side removed, and what the other has in it (`removed_directory`);
-/// 4. the items that wait for each other's names (`name_exchange`);
-/// 5. the guard against a mass removal (`mass_removal`);
-/// 6. where each wait for another item ends (`wait_end`).
+/// 3. the items the rows say OneDrive has under one name (`onedrive_name_holders`);
+/// 4. a directory one side removed, and what the other has in it; then a directory that
+///    gives up its binding, and what was agreed to be in it (`removed_directory`);
+/// 5. the items that wait for each other's names (`name_exchange`);
+/// 6. the guard against a mass removal (`mass_removal`);
+/// 7. where each wait for another item ends (`wait_end`).
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
     let cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, &items, item)).collect();
     let mut decisions = ItemDecisions::of(cases.iter().map(|case| (case.item.local_item_id, decide_item(case))));
     let moves_taken_back = move_cycle::take_back_moves_into_own_content(&cases, &items, &mut decisions);
     let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &input.places_taken_in_onedrive, &moves_taken_back, &mut decisions);
+    onedrive_name_holders::bring_one_holder_of_each_name_here(&cases, &items, &mut decisions);
     removed_directory::send_one_removal_for_each_directory(&cases, &items, &mut decisions);
     removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &mut decisions);
+    removed_directory::wait_for_directories_that_give_up_their_binding(&cases, &mut decisions);
     name_exchange::break_circles_of_names(&cases, &items, &sendings_that_wait, &mut decisions);
     mass_removal::hold_mass_removal(input.unsent_removal_count, input.shown_item_count, &input.items_with_confirmed_removal, &mut decisions);
     wait_end::end_waits_for_other_items(input.is_listing_under_way, &items, &mut decisions);

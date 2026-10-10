@@ -7,6 +7,10 @@
 //! Removed in OneDrive: it goes here once the folder shows nothing in it; where what it
 //! holds is the user's own, it stays, gives up its binding and is sent again. A directory
 //! that has a binding and that no listing told of gives its binding up in the same order.
+//!
+//! A directory that gives up its binding: what the two sides agreed is in it, and what
+//! OneDrive has in it, is then in the row that takes the binding, so the steps of those
+//! items wait for it.
 
 use std::collections::HashMap;
 
@@ -122,5 +126,25 @@ pub(crate) fn keep_directories_that_hold_the_users_own(cases: &[ItemCase<'_>], i
             None => ItemDecision::Step(SyncStep::Row(RowStep::GiveUpBinding { item: ItemVersions::of(item) })),
         };
         decisions.replace(directory, decision);
+    }
+}
+
+/// Lets every step wait whose item the two sides agreed is in a directory that gives up its
+/// binding in this plan, or that OneDrive has in it: the commit of that directory's step
+/// writes those places into the rows of such items (they follow the binding to the row
+/// that takes it), and a step that ran beside it would find its row changed. Those are
+/// items the folder does not show in the directory: what it shows there went before, or
+/// stays.
+pub(crate) fn wait_for_directories_that_give_up_their_binding(cases: &[ItemCase<'_>], decisions: &mut ItemDecisions) {
+    let gives_up_its_binding = |decisions: &ItemDecisions, directory: LocalItemId| matches!(decisions.find(directory), Some(ItemDecision::Step(SyncStep::Row(RowStep::GiveUpBinding { .. }))));
+    for case in cases {
+        let (item, id) = (case.item, case.item.local_item_id);
+        if !matches!(decisions.find(id), Some(ItemDecision::Step(_))) {
+            continue;
+        }
+        let directories = [item.synced_place.as_ref(), item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref())].map(|place| place.map(|place| place.parent_local_item_id));
+        if let Some(directory) = directories.into_iter().flatten().find(|directory| *directory != id && gives_up_its_binding(decisions, *directory)) {
+            decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(directory)));
+        }
     }
 }

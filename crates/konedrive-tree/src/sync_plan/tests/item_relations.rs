@@ -269,7 +269,47 @@ fn an_item_whose_name_onedrive_answered_is_taken_is_renamed_to_a_conflict_copys_
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
 }
 
+/// The design's §3: "while [a listing] is being written, page by page, two rows may say one
+/// name on the OneDrive side, and the plan then lets the second wait". Found by the
+/// convergence test (a listing of two pages, the first with half of an exchange of two
+/// names): both items were brought to the one place here in one plan. New.
+#[test]
+fn of_two_items_the_rows_say_onedrive_has_under_one_name_the_second_waits_for_the_listing() {
+    let mut given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "a.txt"), ROOT, "d"), moved_in_onedrive(synced_file(3, ROOT, "b.txt"), ROOT, "D"), listed(4, ItemKind::File, ROOT, "d")]);
+    given.is_listing_under_way = true;
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveItem { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing), "one name, as OneDrive compares names");
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Listing));
+
+    // With no listing under way the rows say what OneDrive cannot have: a full listing
+    // mends them.
+    given.is_listing_under_way = false;
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveItem { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), Answer::OtherFault(PlanFault::FullListingNeeded(id(3))));
+    assert_eq!(answer(&given, 4), Answer::OtherFault(PlanFault::FullListingNeeded(id(4))));
+}
+
 // -- directories
+
+/// Found by the convergence test: the steps of one plan run at once, and a directory that
+/// gives up its binding takes what the two sides agreed is in it, and what OneDrive has in
+/// it, to the row that takes the binding — the rows of those items change under their own
+/// steps. So an item whose place agreed on is in such a directory, and that the folder
+/// shows elsewhere or not at all, waits for the directory. New.
+#[test]
+fn what_was_agreed_to_be_in_a_directory_that_gives_up_its_binding_waits_for_it() {
+    let given = input(vec![
+        removed_in_onedrive(synced_directory(2, ROOT, "d")),
+        made_file(3, id(2), "mine.txt"),
+        removed_in_onedrive(on_disk(moved_here(synced_file(4, id(2), "a.txt"), ROOT, "a.txt"))),
+        removed_in_onedrive(removed_here(synced_file(5, id(2), "b.txt"))),
+        removed_in_onedrive(moved_here(synced_file(6, id(2), "c.txt"), ROOT, "c.txt")),
+    ]);
+    assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 4), waits_for(2), "it gives up its own binding after");
+    assert_eq!(answer(&given, 5), waits_for(2), "its row is dropped after");
+    assert_eq!(answer(&given, 6), waits_for(2), "it leaves the folder after");
+}
 
 /// B3: no rule today (Graph's answer to such a move is not measured). The design: OneDrive's
 /// move stands and the local one is taken back.
@@ -525,6 +565,18 @@ fn an_item_that_waits_for_an_item_that_was_not_given_says_which() {
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemNotGiven(id(9))));
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::ItemNotGiven(id(8))));
     assert_eq!(answer(&given, 5), onedrive_step(OneDriveStep::SendNewFile { item: versions(&given, 5), parent: reference("I4"), name: "c.txt".into() }));
+}
+
+/// Found by the convergence test (the plan given two items at a time, and no directory
+/// above them): the root is an item like any other to the closed set. An item the folder
+/// shows in the root, whose row of the root was not given, waits for that row; it is not
+/// a fault of the rows that a full listing would mend.
+#[test]
+fn an_item_in_the_root_whose_row_was_not_given_waits_for_the_root() {
+    let mut given = input(vec![made_file(2, ROOT, "a.txt"), moved_here(synced_file(3, ROOT, "b.txt"), ROOT, "c.txt")]);
+    given.items.retain(|item| item.local_item_id != ROOT);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemNotGiven(ROOT)));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::ItemNotGiven(ROOT)));
 }
 
 /// The brief: the next steps that can run now, oldest `unsent_since` first. What OneDrive
