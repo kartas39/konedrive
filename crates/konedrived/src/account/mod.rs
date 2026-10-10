@@ -434,7 +434,7 @@ impl AccountService {
                     None => Some(ModeNote::NoDriveRecorded),
                     // Another drive seen comes first: signing in again cannot cure it.
                     Some(drive) if !s.live_drive.is_empty() && !same_drive => {
-                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.to_string() })
+                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.as_str().to_owned() })
                     }
                     Some(_) if !granted => Some(ModeNote::SignInToWrite),
                     Some(_) if s.live_drive.is_empty() => Some(ModeNote::DriveNotSeen),

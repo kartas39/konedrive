@@ -337,6 +337,11 @@ pub(crate) fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) ->
 /// here, where it is made ([`new`](Self::new)): its ASCII letters in lower case, and nothing
 /// else changed. Two spellings of one drive are then one `DriveId`, in a comparison, as a key
 /// and in the store. Compared with a text, the text is read the same way.
+///
+/// Its text is taken by [`as_str`](Self::as_str) or [`into_string`](Self::into_string) and
+/// in no other way: it is no `str` by itself and is not formatted into a text, so that
+/// every place that takes the lowered text, which may not be the spelling Graph knows the
+/// drive by, is found by those two names.
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(transparent)]
 pub struct DriveId(String);
@@ -368,20 +373,6 @@ impl DriveId {
 impl std::fmt::Debug for DriveId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl std::fmt::Display for DriveId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::ops::Deref for DriveId {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.0
     }
 }
 

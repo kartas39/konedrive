@@ -145,7 +145,7 @@ impl AccountService {
             .tokens
             .commit_as(&tokens, asked, || {
                 self.record_granted(asked, &granted);
-                self.record_live_drive(&identity.drive);
+                self.record_live_drive(identity.drive.as_str());
                 // The check again, and the write it allows, in one step.
                 let written = self.config.update(|config| match read_write_refusal(config, &self.id, &identity.drive, &who) {
                     Some(why) => Err(why),
@@ -285,7 +285,8 @@ impl AccountService {
             self.recompute_mode();
             return Err(ModeError::WritesNotAllowed(format!(
                 "the account's token reaches drive {live}, not drive {drive}, which config.toml records \
-                 and write_test_drive_ids lists; it is not handed out, and the account runs read-only"
+                 and write_test_drive_ids lists; it is not handed out, and the account runs read-only",
+                drive = drive.as_str()
             )));
         }
         Ok(token)

@@ -335,8 +335,10 @@ impl AccountService {
         let recorded = self.config.record_drive(&self.id, &drive).map_err(|e| e.to_string())?;
         if recorded != drive {
             tracing::warn!(
-                "account {:?} is signed in to drive {drive}, but drive {recorded} is recorded for it",
-                self.id
+                "account {:?} is signed in to drive {}, but drive {} is recorded for it",
+                self.id,
+                drive.as_str(),
+                recorded.as_str()
             );
         }
         Ok(recorded)
@@ -530,7 +532,7 @@ impl AccountService {
         // What the sign-in granted, and the drive it reached, decide the mode (§10): a
         // read-write account that signed in again with Files.ReadWrite, to its own drive, is
         // read-write again.
-        self.record_live_drive(&identity.drive);
+        self.record_live_drive(identity.drive.as_str());
         self.note_granted(asked, &tokens.granted(asked));
         Ok(())
     }

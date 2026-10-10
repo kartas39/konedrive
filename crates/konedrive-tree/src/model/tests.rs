@@ -132,7 +132,7 @@ fn a_drive_id_is_the_same_in_either_letter_case() {
     let (upper, lower) = (DriveId::new("B!AbC9D1E2").unwrap(), DriveId::new("b!abc9d1e2").unwrap());
     assert_eq!(upper, lower);
     assert_eq!(upper.as_str(), "b!abc9d1e2");
-    assert_eq!(upper.to_string(), lower.clone().into_string());
+    assert_eq!(upper.as_str(), lower.clone().into_string());
     assert_eq!(std::collections::HashSet::from([upper.clone(), lower.clone()]).len(), 1);
     assert!(upper == "B!ABC9D1E2" && upper == *"b!abc9d1e2" && upper == "B!AbC9D1E2".to_owned());
     assert!(upper != "b!abc9d1e3");
