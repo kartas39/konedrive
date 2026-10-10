@@ -80,7 +80,7 @@ mod item_row;
 mod onedrive_versions;
 
 pub(crate) use bindings::bind_root_once_known;
-pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
+pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
 use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};

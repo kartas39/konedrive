@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
+use super::{ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 use crate::item_store::item_row::write_item;
 use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_directory, make_file, place, reference, synced};
 use crate::model::{Change, ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
@@ -82,10 +82,36 @@ fn ids(read_again: Vec<OneDriveItemId>) -> Vec<String> {
     read_again.iter().map(|id| id.as_str().to_owned()).collect()
 }
 
-/// Writes a page of a fetch that began at the count `fetch_began_at_count`, followed by
-/// `link`: what became of it.
+/// A full listing begins: the count it begins at.
+fn begin_full_listing(store: &mut TreeStore) -> u64 {
+    store.item_store().begin_full_listing().unwrap().began_at_count
+}
+
+/// The listing under way but its id: its kind, the count it began at, the link to its
+/// next page.
+fn kind_count_and_link(store: &mut TreeStore) -> Option<(ListingKind, u64, Option<String>)> {
+    under_way(store).map(|listing| (listing.kind, listing.began_at_count, listing.next_link))
+}
+
+/// A listing of changes begins: the count it begins at, which a fetch that begins now has.
+fn begin_delta_listing(store: &mut TreeStore) -> u64 {
+    store.item_store().begin_delta_listing().unwrap().began_at_count
+}
+
+/// The id of the listing under way; when none is, of a listing of changes that begins.
+fn listing(store: &mut TreeStore) -> ListingId {
+    match under_way(store) {
+        Some(listing) => listing.id,
+        None => store.item_store().begin_delta_listing().unwrap().id,
+    }
+}
+
+/// Writes a page of the listing under way, or of a listing of changes that begins with it,
+/// whose fetch began at the count `fetch_began_at_count`, followed by `link`: what became
+/// of it.
 fn write_page(store: &mut TreeStore, changes: &[Change], fetch_began_at_count: u64, link: &ListingLink) -> ListedPageOutcome {
-    store.item_store().write_listed_changes(changes, fetch_began_at_count, link).unwrap()
+    let listing = listing(store);
+    store.item_store().write_listed_changes(listing, changes, fetch_began_at_count, link).unwrap()
 }
 
 /// Writes a page fetched now, of a listing that goes on; what is to be read again.
@@ -680,80 +706,6 @@ fn present(parent: LocalItemId, name: &str, content_version: Option<&str>, etag:
     ConfirmedOneDriveVersion::Present { version: version(parent, name, content_version).unwrap(), etag: etag.to_owned() }
 }
 
-/// A confirmation writes, in one transaction, the OneDrive version as Graph answered it and
-/// that answer's eTag, raises the count of confirmations and stamps the row with it. Nothing
-/// else of the row is written: what the two sides agree on is the step's to write.
-#[test]
-fn a_confirmation_writes_the_version_and_the_etag_and_stamps_the_row_with_the_next_count() {
-    let mut store = listed_store();
-    write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1"), directory("D", "R", "D")]);
-    let (a, b, d) = (listed(&mut store, "A").local_item_id, listed(&mut store, "B").local_item_id, listed(&mut store, "D").local_item_id);
-    let before = item(&mut store, a);
-    assert_eq!(count(&mut store), 0);
-
-    assert_eq!(store.item_store().confirm_onedrive_version(a, &present(d, "moved", Some("22"), "e-A-22")).unwrap(), 1);
-    assert_eq!(item(&mut store, a), Item { onedrive: version(d, "moved", Some("22")), onedrive_etag: Some("e-A-22".to_owned()), confirmed_at_count: 1, ..before });
-    assert_eq!(store.item_store().confirm_onedrive_version(b, &present(ROOT, "b", Some("1"), "e-B-1")).unwrap(), 2);
-    assert_eq!(store.item_store().confirm_onedrive_version(a, &present(ROOT, "a", Some("333"), "e-A-333")).unwrap(), 3);
-    assert_eq!((item(&mut store, a).confirmed_at_count, item(&mut store, b).confirmed_at_count, count(&mut store)), (3, 2, 3));
-    assert_eq!(store.item_store().confirm_onedrive_version(d, &present(ROOT, "Renamed", None, "e-D-2")).unwrap(), 4);
-    assert_eq!(listed(&mut store, "D").onedrive, version(ROOT, "Renamed", None));
-}
-
-/// A confirmed removal leaves the row with its binding alone, stamped: no version on either
-/// side, no eTag, nothing agreed on. The row stays, so that a page fetched before the
-/// removal finds the binding taken.
-#[test]
-fn a_confirmed_removal_leaves_the_row_with_its_binding_alone_stamped() {
-    let mut store = listed_store();
-    let kept = make_file(&mut store, ROOT, "kept");
-    synced(&mut store, kept, "K");
-    write(&mut store, &[file("K", "R", "kept", "1")]);
-    store.item_store().apply(&LocalVersionChange::Removed { item: kept }).unwrap();
-    assert!(item(&mut store, kept).synced_place.is_some());
-
-    assert_eq!(store.item_store().confirm_onedrive_version(kept, &ConfirmedOneDriveVersion::Removed).unwrap(), 1);
-    let tombstone = item(&mut store, kept);
-    assert_eq!(
-        (tombstone.onedrive_item.clone(), tombstone.local.clone(), tombstone.onedrive.clone(), tombstone.onedrive_etag.clone(), tombstone.synced_place.clone(), tombstone.synced_content.clone(), tombstone.confirmed_at_count),
-        (Some(reference("K")), None, None, None, None, None, 1)
-    );
-    assert_eq!(bound(&mut store, "K"), Some(tombstone));
-}
-
-/// What OneDrive cannot have confirmed is refused, and is no confirmation: of an id with no
-/// row, of an item with no binding, of the root as removed or with a place, a removal of an
-/// item the folder still shows, a file with no content or a directory with one, a content
-/// told by a change count, and a place in a file, in itself or in a directory with no row.
-#[test]
-fn a_confirmation_that_cannot_be_is_refused_and_raises_no_count() {
-    let mut store = listed_store();
-    write(&mut store, &[file("A", "R", "a", "1"), directory("D", "R", "D")]);
-    let (a, d) = (listed(&mut store, "A").local_item_id, listed(&mut store, "D").local_item_id);
-    let here = make_file(&mut store, ROOT, "made-here");
-    let shown = make_file(&mut store, ROOT, "shown");
-    synced(&mut store, shown, "S");
-    let changed_here = ConfirmedOneDriveVersion::Present { version: ItemVersion { place: Some(place(ROOT, "a")), content: Some(ContentVersion::ChangedHere { size: 1, mtime: 1, mtime_nsec: 0, change_count: 1 }) }, etag: "e".to_owned() };
-    let rows = every_row(&mut store);
-    for (what, item_id, confirmed) in [
-        ("an id with no row", LocalItemId::new(999), present(ROOT, "x", Some("1"), "e")),
-        ("an item with no binding", here, present(ROOT, "made-here", Some("1"), "e")),
-        ("the root removed", ROOT, ConfirmedOneDriveVersion::Removed),
-        ("the root with a place", ROOT, present(d, "root", None, "e")),
-        ("a removal of an item the folder shows", shown, ConfirmedOneDriveVersion::Removed),
-        ("a file with no content", a, present(ROOT, "a", None, "e")),
-        ("a directory with a content", d, present(ROOT, "D", Some("1"), "e")),
-        ("a content told by a change count", a, changed_here),
-        ("a place in a file", d, present(a, "D", None, "e")),
-        ("a place in itself", d, present(d, "D", None, "e")),
-        ("a place in a directory with no row", a, present(LocalItemId::new(999), "a", Some("1"), "e")),
-    ] {
-        assert!(is_refused(store.item_store().confirm_onedrive_version(item_id, &confirmed)), "{what}");
-    }
-    assert_eq!(count(&mut store), 0, "a refused confirmation is none");
-    assert_eq!(every_row(&mut store), rows);
-}
-
 /// The guard against an outdated listing: a page fetched before a confirmation and written
 /// after it. What it says of the row is not taken, and the item's id is answered for it to
 /// be read again; the same page saying what was confirmed is taken; so is a page of a fetch
@@ -763,7 +715,7 @@ fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() 
     let mut store = listed_store();
     write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")]);
     let a = listed(&mut store, "A").local_item_id;
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, a, version(ROOT, "a", Some("333")), Some("e-A-333"));
     let confirmed = item(&mut store, a);
 
@@ -775,7 +727,8 @@ fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() 
     assert_eq!(item(&mut store, a), confirmed);
 
     assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at_count, &next_link("next")), Vec::<String>::new());
-    assert_eq!(item(&mut store, a), confirmed);
+    let confirmed = Item { onedrive_mime: Some("text/plain".to_owned()), ..confirmed };
+    assert_eq!(item(&mut store, a), confirmed, "the page says what was confirmed, and gives the MIME type the confirmation did not");
 
     assert_eq!(write(&mut store, &[file("A", "R", "a", "4444")]), Vec::<String>::new());
     assert_eq!(item(&mut store, a), Item { onedrive: version(ROOT, "a", Some("4444")), onedrive_etag: Some("e-A-4444".to_owned()), ..confirmed });
@@ -790,7 +743,7 @@ fn a_page_fetched_before_a_confirmed_removal_does_not_bring_the_item_back() {
     let mut store = listed_store();
     write(&mut store, &[file("A", "R", "a", "1")]);
     let a = listed(&mut store, "A").local_item_id;
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, a, None, None);
     let removed = item(&mut store, a);
     assert_eq!((removed.local.clone(), removed.onedrive.clone(), removed.synced_place.clone()), (None, None, None));
@@ -836,7 +789,7 @@ fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetc
     let mut store = listed_store();
     write(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "D", "b", "1")]);
     let (d, a) = (listed(&mut store, "D").local_item_id, listed(&mut store, "A").local_item_id);
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, a, version(d, "a", Some("22")), Some("e-A-22"));
 
     assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next")), ["A"]);
@@ -859,7 +812,7 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     let u = listed(&mut store, "U").local_item_id;
     let before = onedrive_side(&mut store);
 
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    let began_at_count = begin_full_listing(&mut store);
     assert_eq!(began_at_count, count(&mut store));
     confirm(&mut store, u, version(ROOT, "u", Some("22")), Some("e-U-22"));
     let confirmed = onedrive_side(&mut store);
@@ -875,7 +828,7 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")));
     assert_eq!(listed(&mut store, "U").onedrive, version(ROOT, "u", Some("22")));
     assert_eq!(store.delta_link().unwrap(), None, "the listing has not ended: U is to be read again");
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, Some("next-1".to_owned()))));
 
     let later = count(&mut store);
     assert!(write_page(&mut store, &[file("U", "R", "u", "22")], later, &delta_link("link-2")).is_link_written());
@@ -902,7 +855,7 @@ fn a_page_that_leaves_an_item_to_read_again_writes_no_link_so_that_a_failed_read
     store.item_store().begin_full_listing().unwrap();
     write_fetched_at(&mut store, &[root(), file("X", "R", "x", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-0"));
     let x = listed(&mut store, "X").local_item_id;
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, x, version(ROOT, "x", Some("22")), Some("e-X-22"));
     let confirmed = item(&mut store, x);
 
@@ -913,12 +866,12 @@ fn a_page_that_leaves_an_item_to_read_again_writes_no_link_so_that_a_failed_read
     assert_eq!(item(&mut store, x), confirmed);
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")), "the rest of the page is written");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"), "the link of a page that left something to read again is not written");
-    let not_ended = Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: fetch_began_at_count, next_link: None });
-    assert_eq!(under_way(&mut store), not_ended);
+    let not_ended = Some((ListingKind::Delta, fetch_began_at_count, None));
+    assert_eq!(kind_count_and_link(&mut store), not_ended);
     drop(store);
 
     let mut store = TreeStore::open(&path).unwrap();
-    assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-0"), not_ended));
+    assert_eq!((store.delta_link().unwrap().as_deref(), kind_count_and_link(&mut store)), (Some("link-0"), not_ended));
     let later = count(&mut store);
     let outcome = write_page(&mut store, &page, later, &delta_link("link-1"));
     assert_eq!((outcome.changes.clone(), outcome.is_link_written()), (vec![ListedChangeOutcome::Written; 2], true));
@@ -935,7 +888,7 @@ fn what_was_read_again_is_given_with_the_same_link_which_is_then_written() {
     let mut store = listed_store();
     write_fetched_at(&mut store, &[file("X", "R", "x", "1")], 0, &delta_link("link-1"));
     let x = listed(&mut store, "X").local_item_id;
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, x, version(ROOT, "x", Some("22")), Some("e-X-22"));
 
     let outcome = write_page(&mut store, &[gone("X")], fetch_began_at_count, &delta_link("link-2"));
@@ -946,12 +899,13 @@ fn what_was_read_again_is_given_with_the_same_link_which_is_then_written() {
     assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-2"), None));
     assert_eq!(listed(&mut store, "X").onedrive, version(ROOT, "x", Some("333")));
 
+    assert_eq!(begin_delta_listing(&mut store), later);
     confirm(&mut store, x, version(ROOT, "x", Some("4444")), Some("e-X-4444"));
     assert!(!write_page(&mut store, &[file("X", "R", "x", "333")], later, &next_link("next-1")).is_link_written());
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: later, next_link: None }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Delta, later, None)));
     let read_at = count(&mut store);
     assert!(write_page(&mut store, &[file("X", "R", "x", "4444")], read_at, &next_link("next-1")).is_link_written());
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: later, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Delta, later, Some("next-1".to_owned()))));
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"), "a link to the next page ends no listing");
 }
 
@@ -963,12 +917,12 @@ fn what_was_read_again_is_given_with_the_same_link_which_is_then_written() {
 fn a_full_listing_resumed_with_a_later_count_does_not_take_what_was_confirmed_since_it_began() {
     let mut store = listed_store();
     write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, &delta_link("link-1"));
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    let began_at_count = begin_full_listing(&mut store);
     write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], began_at_count, &next_link("next-1"));
     let sent = make_file(&mut store, ROOT, "n");
     store.item_store().bind_item(sent, &reference("N")).unwrap();
     confirm(&mut store, sent, version(ROOT, "n", Some("1")), Some("e-N-1"));
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, Some("next-1".to_owned()))));
 
     let later = count(&mut store);
     assert!(later > began_at_count);
@@ -992,49 +946,18 @@ fn the_store_says_whether_a_listing_is_under_way_and_where_it_goes_on() {
     let mut store = TreeStore::in_memory().unwrap();
     store.set_drive_id("d1").unwrap();
     assert_eq!(under_way(&mut store), None);
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: None }));
+    let began_at_count = begin_full_listing(&mut store);
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, None)));
     write_fetched_at(&mut store, &[root()], 0, &next_link("next-1"));
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, Some("next-1".to_owned()))));
     write_fetched_at(&mut store, &[], 0, &delta_link("link-0"));
     assert_eq!(under_way(&mut store), None);
 
     write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, &next_link("next-2"));
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: 0, next_link: Some("next-2".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Delta, 0, Some("next-2".to_owned()))));
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"));
     write_fetched_at(&mut store, &[], 0, &delta_link("link-1"));
     assert_eq!((under_way(&mut store), store.delta_link().unwrap().as_deref()), (None, Some("link-1")));
-}
-
-/// One listing at a time is the caller's rule, and the entry holds what it can of it: a
-/// page is refused whole, with nothing written, in a store that does not know its drive;
-/// when no listing is under way and the store has no delta link, so that what is listed
-/// can only be a full listing that was not begun; when its fetch is said to have begun at a
-/// count the store has not reached; and when its fetch began before the listing under way
-/// did, as a page of an older listing has.
-#[test]
-fn a_page_the_entry_cannot_write_rightly_is_refused_whole() {
-    let page = [root(), file("A", "R", "a", "1")];
-    let mut no_drive = TreeStore::in_memory().unwrap();
-    assert!(is_refused(no_drive.item_store().write_listed_changes(&page, 0, &delta_link("link-1"))));
-    assert_eq!((no_drive.delta_link().unwrap(), every_row(&mut no_drive).len()), (None, 1));
-
-    let mut not_begun = TreeStore::in_memory().unwrap();
-    not_begun.set_drive_id("d1").unwrap();
-    assert!(is_refused(not_begun.item_store().write_listed_changes(&page, 0, &next_link("next-1"))));
-    assert_eq!((under_way(&mut not_begun), every_row(&mut not_begun).len()), (None, 1));
-
-    let mut store = listed_store();
-    assert!(is_refused(store.item_store().write_listed_changes(&page, 1, &next_link("next-1"))), "the store counted no confirmation yet");
-    write(&mut store, &[file("B", "R", "b", "1")]);
-    let b = listed(&mut store, "B").local_item_id;
-    let older = count(&mut store);
-    confirm(&mut store, b, version(ROOT, "b", Some("22")), Some("e-B-22"));
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
-    let begun = under_way(&mut store);
-    assert!(older < began_at_count);
-    assert!(is_refused(store.item_store().write_listed_changes(&page, older, &delta_link("link-1"))), "a page fetched before the listing under way began");
-    assert_eq!((under_way(&mut store), store.delta_link().unwrap(), bound(&mut store, "A")), (begun, None, None));
 }
 
 /// A second full listing gives up the first: what only the first saw is not seen, its link
@@ -1048,8 +971,8 @@ fn a_second_full_listing_gives_up_the_first() {
     write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], 0, &next_link("next-1"));
     confirm(&mut store, a, version(ROOT, "a", Some("1")), Some("e-A-1"));
 
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: None }));
+    let began_at_count = begin_full_listing(&mut store);
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, None)));
     assert_eq!(began_at_count, 1);
     write_fetched_at(&mut store, &[root(), file("B", "R", "b", "1")], began_at_count, &delta_link("link-2"));
     assert_eq!(item(&mut store, a).onedrive, None, "A was seen by the listing that was given up, and not by this one");
@@ -1065,7 +988,7 @@ fn what_is_read_again_while_a_full_listing_is_under_way_is_seen_by_it() {
     let mut store = listed_store();
     write_fetched_at(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-1"));
     let a = listed(&mut store, "A").local_item_id;
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    let began_at_count = begin_full_listing(&mut store);
     confirm(&mut store, a, version(ROOT, "a", Some("22")), Some("e-A-22"));
     assert_eq!(write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], began_at_count, &next_link("next-1")), ["A"]);
     assert_eq!(store.delta_link().unwrap(), None);
@@ -1121,12 +1044,12 @@ fn a_full_listing_goes_on_in_a_store_opened_again() {
     store.set_drive_id("d1").unwrap();
     store.item_store().begin_full_listing().unwrap();
     write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-0"));
-    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    let began_at_count = begin_full_listing(&mut store);
     write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], 0, &next_link("next-1"));
     drop(store);
 
     let mut store = TreeStore::open(&path).unwrap();
-    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(kind_count_and_link(&mut store), Some((ListingKind::Full, began_at_count, Some("next-1".to_owned()))));
     write_fetched_at(&mut store, &[], 0, &delta_link("link-1"));
     assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "R"]);
 }
@@ -1159,7 +1082,7 @@ fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_but_what_w
     let mut store = listed_store();
     write(&mut store, &ten_thousand_below());
     let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
 
     let began = std::time::Instant::now();
@@ -1179,7 +1102,7 @@ fn a_full_listing_that_did_not_see_ten_thousand_items_takes_all_but_what_was_con
     let mut store = listed_store();
     write_fetched_at(&mut store, &ten_thousand_below(), 0, &delta_link("link-0"));
     let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
-    let fetch_began_at_count = store.item_store().begin_full_listing().unwrap();
+    let fetch_began_at_count = begin_full_listing(&mut store);
     confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
 
     let began = std::time::Instant::now();
@@ -1340,13 +1263,13 @@ fn list_in_full(store: &mut TreeStore, count: usize) -> Vec<std::time::Duration>
             items.push(file(&format!("F{n}"), &directory_id, &format!("f{n}"), "1"));
         }
     }
-    store.item_store().begin_full_listing().unwrap();
+    let listing = store.item_store().begin_full_listing().unwrap().id;
     let pages: Vec<&[Change]> = items.chunks(200).collect();
     let mut took = Vec::new();
     for (at, page) in pages.iter().enumerate() {
         let link = if at + 1 == pages.len() { delta_link("link") } else { next_link("next") };
         let began = std::time::Instant::now();
-        store.item_store().write_listed_changes(page, 0, &link).unwrap();
+        store.item_store().write_listed_changes(listing, page, 0, &link).unwrap();
         took.push(began.elapsed());
     }
     took
@@ -1380,9 +1303,9 @@ fn a_page_costs_the_same_whatever_the_store_holds() {
         println!("{what}: a full listing of 100 000 items in {} pages of 200 took {:?}; a page took {:?} on average over the first fifty and {:?} over the last fifty", listing.len(), listing.iter().sum::<std::time::Duration>(), mean(&listing[..50]), mean(&listing[listing.len() - 50..]));
         let mut took = Vec::new();
         for store in [small, large] {
-            let fetch_began_at_count = count(store);
+            let listing = store.item_store().begin_delta_listing().unwrap();
             let began = std::time::Instant::now();
-            store.item_store().write_listed_changes(&page, fetch_began_at_count, &delta_link("link-2")).unwrap();
+            store.item_store().write_listed_changes(listing.id, &page, listing.began_at_count, &delta_link("link-2")).unwrap();
             took.push(began.elapsed());
         }
         println!("{what}: a page of {} changes took {:?} over 1 000 rows and {:?} over 100 000", page.len(), took[0], took[1]);
@@ -1395,5 +1318,9 @@ fn a_page_costs_the_same_whatever_the_store_holds() {
     measure("on disk", &mut TreeStore::open(&dir.path().join("small.sqlite")).unwrap(), &mut TreeStore::open(&dir.path().join("large.sqlite")).unwrap());
 }
 
+/// What OneDrive confirmed of an item, written into its row.
+mod confirmed_onedrive_version;
+/// A page says which listing it is a page of.
+mod listing_under_way;
 /// A row a page leaves to be read again, against all else a page or its end can do.
 mod outdated_row;

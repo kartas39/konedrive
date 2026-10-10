@@ -28,13 +28,17 @@ pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
 /// the client, which the row it confirmed is stamped with (`items.confirmed_at_count`). The
 /// guard against an outdated listing compares the two.
 pub(crate) const CONFIRMATION_COUNT: &str = "confirmation_count";
-/// The count of full listings begun: what a full listing marks the rows it sees with
-/// (`items.seen_in_full_listing`).
-pub(crate) const FULL_LISTING_COUNT: &str = "full_listing_count";
-/// The count of confirmations at which the listing under way began; set from the beginning
-/// of a listing written into `items` to its end, and so what says one is under way.
+/// The count of listings begun, into `items`: the id of the last one. A full listing marks
+/// the rows it sees with its id (`items.seen_in_full_listing`). Read and written, as the
+/// four keys after it, by the owner of the listing under way alone
+/// (`item_store::onedrive_versions::listing_under_way`).
+pub(crate) const LISTING_COUNT: &str = "listing_count";
+/// The id of the listing under way; set from the beginning of a listing written into
+/// `items` to its end, and so what says one is under way.
+pub(crate) const LISTING_UNDER_WAY: &str = "listing_under_way";
+/// The count of confirmations at which the listing under way began.
 pub(crate) const LISTING_BEGAN_AT_COUNT: &str = "listing_began_at_count";
-/// Set while the listing under way is a full one, of the count [`FULL_LISTING_COUNT`].
+/// Set while the listing under way is a full one.
 pub(crate) const FULL_LISTING_UNDER_WAY: &str = "full_listing_under_way";
 /// The link the next page of the listing under way is asked from. Not [`LISTING_NEXT`],
 /// which is the resume point of today's first listing into `onedrive_items`.

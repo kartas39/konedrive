@@ -11,8 +11,8 @@
 
 use super::*;
 
-/// The rows the cells start from, before anything is confirmed. `is_x_shown`: the folder
-/// shows `X` too.
+/// The rows the cells start from, before anything is confirmed, with a listing of changes
+/// begun whose pages are fetched now. `is_x_shown`: the folder shows `X` too.
 fn store_of_tree(is_x_shown: bool) -> TreeStore {
     let mut store = listed_store();
     let kept = make_file(&mut store, ROOT, "kept");
@@ -23,6 +23,7 @@ fn store_of_tree(is_x_shown: bool) -> TreeStore {
     }
     let tree = [directory("G", "R", "G"), directory("D", "G", "D"), directory("X", "D", "x"), file("C", "X", "c", "1"), file("K", "X", "kept", "1"), directory("S", "X", "s"), file("F", "S", "f", "1")];
     write_fetched_at(&mut store, &tree, 0, &delta_link("link-1"));
+    begin_delta_listing(&mut store);
     store
 }
 

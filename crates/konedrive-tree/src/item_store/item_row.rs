@@ -374,7 +374,7 @@ fn onedrive_columns() -> Vec<String> {
 
 /// What OneDrive has of `item` is `onedrive` from now on, with this eTag, this MIME type of
 /// its content and this placement, and nothing else of the row is written.
-/// `seen_in_full_listing`: the count of the full listing that says so, when one does; the
+/// `seen_in_full_listing`: the id of the full listing that says so, when one does; the
 /// row keeps what it has otherwise. A name is kept as OneDrive gave it and is not asked to
 /// be the name of a directory entry: whether the folder can show the item is its placement.
 pub(super) fn set_onedrive_version(conn: &Connection, item: LocalItemId, onedrive: &ItemVersion, etag: Option<&str>, mime: Option<&str>, placement: Placement, seen_in_full_listing: Option<u64>) -> Result<(), TreeError> {
@@ -404,16 +404,16 @@ pub(super) fn set_onedrive_etag(conn: &Connection, item: LocalItemId, etag: Opti
     Ok(())
 }
 
-/// The count of the full listing that last listed `item`; 0 when none did, and for an id
+/// The id of the full listing that last listed `item`; 0 when none did, and for an id
 /// with no row.
 pub(super) fn find_seen_in_full_listing(conn: &Connection, item: LocalItemId) -> Result<u64, TreeError> {
     let count: Option<i64> = conn.prepare_cached("SELECT seen_in_full_listing FROM items WHERE local_item_id = ?1")?.query_row([item.as_i64()], |row| row.get(0)).optional()?;
     Ok(count.unwrap_or(0).max(0) as u64)
 }
 
-/// The full listing of this count listed `item`.
-pub(super) fn set_seen_in_full_listing(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
-    conn.prepare_cached("UPDATE items SET seen_in_full_listing = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])?;
+/// The full listing of this id listed `item`.
+pub(super) fn set_seen_in_full_listing(conn: &Connection, item: LocalItemId, full_listing: u64) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET seen_in_full_listing = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), full_listing as i64])?;
     Ok(())
 }
 
@@ -491,11 +491,11 @@ pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalI
     Ok(left)
 }
 
-/// SQL for "the row has a place in OneDrive, and the full listing of the count `?1` did not
+/// SQL for "the row has a place in OneDrive, and the full listing of the id `?1` did not
 /// list it": what the index `items_seen_in_full_listing` finds.
 const UNSEEN_IN_FULL_LISTING: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
 
-/// SQL for "what the rows say OneDrive has below a row that the full listing of the count
+/// SQL for "what the rows say OneDrive has below a row that the full listing of the id
 /// `?1` did not list and that was stamped after the count `?2`": below a row the listing's
 /// end leaves to be read again, at any depth.
 const BELOW_LEFT_UNSEEN: &str = "WITH RECURSIVE below(id) AS (
@@ -505,13 +505,13 @@ const BELOW_LEFT_UNSEEN: &str = "WITH RECURSIVE below(id) AS (
          SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
      SELECT id FROM below";
 
-/// What OneDrive has, by the rows, that the full listing of the count `full_listing_count`
-/// did not list has no OneDrive version from now on, but the rows stamped after the count
+/// What OneDrive has, by the rows, that the full listing of the id `full_listing` did not
+/// list has no OneDrive version from now on, but the rows stamped after the count
 /// `left_after_count` and all the rows say is below one of those: they are left, and the
 /// item ids of OneDrive of the stamped ones answered. Two statements whatever was not
 /// seen, by the index of the listing that saw a row.
-pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing_count: u64, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
-    let values = [full_listing_count as i64, left_after_count as i64];
+pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing: u64, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let values = [full_listing as i64, left_after_count as i64];
     let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count > ?2"), values)?;
     let sql = format!("{} WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count <= ?2 AND local_item_id NOT IN ({BELOW_LEFT_UNSEEN})", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing"));
     conn.prepare_cached(&sql)?.execute(values)?;
