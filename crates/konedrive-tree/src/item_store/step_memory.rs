@@ -87,7 +87,7 @@ mod upload_session_openings;
 pub(crate) use item_memory::ConfirmedRequest;
 pub use item_memory::{
     is_content_of, FactStanding, FailedTries, ItemMemory, ItemMemoryParts, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, TakenName,
-    TemporaryName, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    TemporaryName, TriedChange, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
 };
 pub use refusal_reasons::ItemRefusalReason;
 pub use upload_session_openings::{OpeningTry, OpeningWindow, UPLOAD_SESSION_OPENING_KEPT};
@@ -184,8 +184,8 @@ impl StepMemory<'_> {
     }
 
     /// The items that wait until a time, soonest first, at most `limit` of them. Found by an
-    /// index; an item whose row is not the unsent change the tries were of any more — and
-    /// so every item nothing is unsent of — is not among them.
+    /// index; an item whose row is not what the tries were of any more — another unsent
+    /// change or none, another version of OneDrive — is not among them.
     pub fn list_timed_waits(&self, limit: usize) -> Result<Vec<TimedWait>, TreeError> {
         list_timed_waits(&self.store.conn, limit)
     }
@@ -361,13 +361,16 @@ impl StepMemory<'_> {
         self.write(|tx| remember_temporary_name(tx, item, temporary_name))
     }
 
-    /// A try of the step of `item`, planned from a row stamped `unsent_since`, failed for
-    /// `reason`; the next is due at `next_try_at`, or at once. The count of tries of that
-    /// unsent change, with this one; `None`, with nothing written, when the row has another
-    /// stamp or none: the tries of one unsent change are not counted on to the next.
-    /// Refused for an id with no row.
-    pub fn remember_failed_try(&mut self, item: LocalItemId, unsent_since: Option<u64>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
-        self.write(|tx| remember_failed_try(tx, item, unsent_since, reason, next_try_at))
+    /// A try of the step of `item` to carry over `tried` failed for `reason`; the next is
+    /// due at `next_try_at`, or at once. `tried` is what the versions the step was planned
+    /// from say ([`TriedChange::of_versions`]): the unsent change by its stamp, or, for an
+    /// item nothing was unsent of, OneDrive's version by its eTag. The count of tries of
+    /// that change, with this one; `None`, with nothing written, when the row is not that
+    /// change any more — another stamp or none, another eTag — or none was given: the
+    /// tries of one piece of work are not counted on to the next. Refused for an id with no
+    /// row.
+    pub fn remember_failed_try(&mut self, item: LocalItemId, tried: Option<&TriedChange>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
+        self.write(|tx| remember_failed_try(tx, item, tried, reason, next_try_at))
     }
 
     /// Every item that waits until a time is due now, with its count and its reason kept:
@@ -444,10 +447,14 @@ pub(crate) fn find_item_memory(conn: &Connection, item: LocalItemId) -> Result<I
 
 /// [`StepMemory::list_timed_waits`], inside the caller's transaction.
 pub(crate) fn list_timed_waits(conn: &Connection, limit: usize) -> Result<Vec<TimedWait>, TreeError> {
-    // The tries are asked nothing beside the stamp, so the rows are asked in the statement.
+    // The tries are asked what they are tries of and nothing more, so the rows are asked in
+    // the statement: the stamp for those of an unsent change, the eTag for those of
+    // OneDrive's version.
     let mut statement = conn.prepare_cached(
         "SELECT local_item_id, next_try_at FROM step_memory INDEXED BY step_memory_next_try
-          WHERE next_try_at IS NOT NULL AND unsent_since = (SELECT unsent_since FROM items WHERE items.local_item_id = step_memory.local_item_id)
+          WHERE next_try_at IS NOT NULL
+            AND ((tries_onedrive_etag IS NULL AND unsent_since = (SELECT unsent_since FROM items WHERE items.local_item_id = step_memory.local_item_id))
+              OR (tries_onedrive_etag IS NOT NULL AND tries_onedrive_etag = (SELECT onedrive_etag FROM items WHERE items.local_item_id = step_memory.local_item_id)))
           ORDER BY next_try_at, local_item_id LIMIT ?1",
     )?;
     let waits = statement.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| Ok(TimedWait { item: LocalItemId::new(row.get(0)?), until: row.get(1)? }))?;
@@ -713,13 +720,55 @@ pub(crate) fn remember_temporary_name(conn: &Connection, item: LocalItemId, temp
 }
 
 /// [`StepMemory::remember_failed_try`], inside the caller's transaction.
-pub(crate) fn remember_failed_try(conn: &Connection, item: LocalItemId, unsent_since: Option<u64>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
+pub(crate) fn remember_failed_try(conn: &Connection, item: LocalItemId, tried: Option<&TriedChange>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
     write_fact(conn, item, |row, memory| {
-        let count = memory.failed_tries.as_ref().map_or(0, |tries| tries.count).saturating_add(1);
-        let tries = FailedTries { count, next_try_at, last_failure: reason.clone() };
-        let fact_standing = learn_of_unsent_change(row, memory, unsent_since, |memory| memory.failed_tries = Some(tries));
+        let Some(tried) = tried else { return Ok(None) };
+        // Counted on only from tries of the same change.
+        let count = memory.failed_tries.as_ref().filter(|tries| &tries.tried == tried).map_or(0, |tries| tries.count).saturating_add(1);
+        let tries = FailedTries { count, next_try_at, last_failure: reason.clone(), tried: tried.clone() };
+        let fact_standing = match tried {
+            TriedChange::Unsent { unsent_since } => learn_of_unsent_change(row, memory, Some(*unsent_since), |memory| memory.failed_tries = Some(tries)),
+            TriedChange::OfOneDrive { .. } => {
+                // Written when the row says it, by the readers' own decision.
+                let mut learnt = memory.clone();
+                learnt.failed_tries = Some(tries);
+                if learnt.clone().split_by_standing(row).said == learnt {
+                    *memory = learnt;
+                    FactStanding::StillSaid
+                } else {
+                    FactStanding::VersionGone
+                }
+            }
+        };
         Ok((fact_standing == FactStanding::StillSaid).then_some(count))
     })
+}
+
+/// The commit of a step towards the folder, or of the rows alone, was written of `item`: in
+/// its transaction. The tries of a step for what OneDrive has of the item are over; the
+/// eTag, which they are told by, is the same after such a step.
+pub(crate) fn forget_tries_of_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
+    change_kept_memory(conn, item, ItemMemory::forget_tries_of_onedrive_version)
+}
+
+/// A listing wrote that OneDrive has `item` at `listed`, where the row said another place
+/// before: in the listing's transaction. A temporary name that is not that place's is
+/// forgotten.
+pub(crate) fn forget_temporary_name_listed_elsewhere(conn: &Connection, item: LocalItemId, listed: &ItemPlace) -> Result<(), TreeError> {
+    change_kept_memory(conn, item, |memory| memory.forget_temporary_name_unless_at(listed))
+}
+
+/// The temporary name of every item the rows say OneDrive does not have is forgotten: after
+/// a listing, or a step, wrote that OneDrive removed items, however many, in its
+/// transaction. One statement, by the index of the temporary names.
+pub(crate) fn forget_temporary_names_of_items_onedrive_lacks(conn: &Connection) -> Result<(), TreeError> {
+    conn.prepare_cached(
+        "UPDATE step_memory INDEXED BY step_memory_temporary_name SET temporary_name = NULL, temporary_toward_parent_id = NULL, temporary_toward_name = NULL
+          WHERE temporary_name IS NOT NULL
+            AND EXISTS (SELECT 1 FROM items WHERE items.local_item_id = step_memory.local_item_id AND onedrive_item_id IS NOT NULL AND onedrive_parent_id IS NULL AND items.local_item_id != 1)",
+    )?
+    .execute([])?;
+    Ok(())
 }
 
 /// [`StepMemory::clear_next_tries`], inside the caller's transaction.

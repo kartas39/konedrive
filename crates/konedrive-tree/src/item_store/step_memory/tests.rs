@@ -62,6 +62,11 @@ fn stamp(store: &mut TreeStore, id: LocalItemId) -> Option<u64> {
     store.item_store().find_item(id).unwrap().and_then(|row| row.unsent_since)
 }
 
+/// What a step planned from the row of `id` as it is now tries to carry over.
+fn tried_now(store: &mut TreeStore, id: LocalItemId) -> TriedChange {
+    TriedChange::of_versions(&crate::sync_plan::ItemVersions::of(&item(store, id))).expect("something unsent, or a version of OneDrive")
+}
+
 // Each fact of an unsent change, given as a step planned from the row as it is now gives it.
 
 fn remember_session(store: &mut TreeStore, id: LocalItemId, session: &UploadSession) -> UploadSessionStanding {
@@ -70,8 +75,8 @@ fn remember_session(store: &mut TreeStore, id: LocalItemId, session: &UploadSess
 }
 
 fn remember_try(store: &mut TreeStore, id: LocalItemId, reason: &Reason, next_try_at: Option<i64>) -> Option<u32> {
-    let unsent_since = stamp(store, id);
-    store.step_memory().remember_failed_try(id, unsent_since, reason, next_try_at).unwrap()
+    let tried = TriedChange::of_versions(&crate::sync_plan::ItemVersions::of(&item(store, id)));
+    store.step_memory().remember_failed_try(id, tried.as_ref(), reason, next_try_at).unwrap()
 }
 
 fn remember_space(store: &mut TreeStore, id: LocalItemId, space_refusal: &SpaceRefusal) -> FactStanding {
@@ -146,7 +151,7 @@ fn remember_everything_of_a_shown_file(store: &mut TreeStore, file: LocalItemId)
         upload_session: Some(new_file_session(store, file, "1")),
         mismatched_item: Some(MismatchedItem::of_answer(reference("B"), Some("c-B"), None)),
         temporary_name: Some(temporary_toward(store, file)),
-        failed_tries: Some(FailedTries { count: 1, next_try_at: Some(60), last_failure: Reason::Refused(Some("no".to_owned())) }),
+        failed_tries: Some(FailedTries { count: 1, next_try_at: Some(60), last_failure: Reason::Refused(Some("no".to_owned())), tried: tried_now(store, file) }),
         space_refusal: Some(space_refusal(store, file, 5)),
         removal_confirmation: None,
         refusal: Some(refusal_of(store, file, Reason::Forbidden)),
@@ -230,7 +235,7 @@ fn nothing_is_written_for_an_id_with_no_row() {
     let file = make_file(&mut store, ROOT, "report");
     let (refusal, gone) = (refusal_of(&mut store, file, Reason::Forbidden), LocalItemId::new(99));
     let mut memory = store.step_memory();
-    assert!(is_refused(memory.remember_failed_try(gone, Some(1), &Reason::Network, None)));
+    assert!(is_refused(memory.remember_failed_try(gone, Some(&TriedChange::Unsent { unsent_since: 1 }), &Reason::Network, None)));
     assert!(is_refused(memory.remember_refusal(gone, Some(1), &refusal)));
     assert!(is_refused(memory.remember_refusal(ROOT, Some(1), &refusal)));
     assert!(is_refused(memory.remember_upload_session_opening(gone, &place(ROOT, "report"), 10)));
@@ -333,7 +338,7 @@ fn what_was_learnt_of_a_place_is_not_answered_once_the_place_changed() {
     assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap(), [ItemTakenName { item: file, taken_name: taken }]);
 
     rename(&mut store, file, "renamed");
-    let tries = Some(FailedTries { count: 1, next_try_at: Some(40), last_failure: Reason::Locked });
+    let tries = Some(FailedTries { count: 1, next_try_at: Some(40), last_failure: Reason::Locked, tried: tried_now(&mut store, file) });
     let with_no_version = ItemMemory { unsent_since: stamp(&mut store, file), failed_tries: tries, temporary_name: Some(temporary), ..ItemMemory::default() };
     assert_eq!(said(&mut store, file), with_no_version);
     assert_eq!(store.step_memory().list_taken_names(ROOT).unwrap(), []);
@@ -405,11 +410,11 @@ fn the_tries_are_counted_and_the_items_that_wait_are_read_soonest_first() {
     assert_eq!(remember_try(&mut store, c, &Reason::Network, None), Some(1));
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [TimedWait { item: b, until: 200 }, TimedWait { item: a, until: 300 }], "one due at once does not wait");
     assert_eq!(store.step_memory().list_timed_waits(1).unwrap(), [TimedWait { item: b, until: 200 }]);
-    assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: Some(200), last_failure: Reason::Locked }));
+    assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: Some(200), last_failure: Reason::Locked, tried: tried_now(&mut store, b) }));
 
     assert_eq!(store.step_memory().clear_next_tries().unwrap(), 2);
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), []);
-    assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: None, last_failure: Reason::Locked }));
+    assert_eq!(said(&mut store, b).failed_tries, Some(FailedTries { count: 2, next_try_at: None, last_failure: Reason::Locked, tried: tried_now(&mut store, b) }));
     store.step_memory().forget_fact(b, StepFact::FailedTries).unwrap();
     assert_eq!(remember_try(&mut store, b, &Reason::Network, Some(1)), Some(1), "counted anew after a step went through");
 }

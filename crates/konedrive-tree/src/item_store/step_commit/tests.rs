@@ -521,8 +521,8 @@ fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     assert_eq!((store.item_store().find_item(file).unwrap(), bound(&mut store, "G").local_item_id), (None, saved), "the replacing item has the binding");
     let saved_content = row(&mut store, saved).local.unwrap().content;
     // A try of the running upload failed and is remembered of the row that has the binding.
-    let unsent_since = row(&mut store, saved).unsent_since;
-    assert_eq!(store.step_memory().remember_failed_try(saved, unsent_since, &konedrive_reason::Reason::Network, Some(900)).unwrap(), Some(1));
+    let tried = row(&mut store, saved).unsent_since.map(|unsent_since| crate::TriedChange::Unsent { unsent_since });
+    assert_eq!(store.step_memory().remember_failed_try(saved, tried.as_ref(), &konedrive_reason::Reason::Network, Some(900)).unwrap(), Some(1));
 
     let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
     assert_eq!(store.item_store().commit_send_content(&planned_from, &sent, None).unwrap(), StepCommitOutcome::Written);

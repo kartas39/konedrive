@@ -157,7 +157,9 @@ impl OneDriveSteps {
     /// this step; an unknown empty file: `NameHeldByUploadSession`; the same content there
     /// that no row is bound to: adopted; another item: `NameTaken`. 404: `DirectoryGone`.
     /// 507: `OneDriveSpace::refuse_for_space`.
-    /// Commit: `commit_send_new_file(item, parent, name, made)`, which forgets the session
+    /// Commit: `commit_send_new_file(item, parent, name, made, ended_session)` — `name` the
+    /// name of the session's empty file, `ended_session` the address of the upload session
+    /// that sent the content, none for a small upload —, which forgets that session
     /// and the tries; then, with no lock, `ItemContentFiles::mark_sent_file`. Step memory
     /// before the request: the opening and the session (see `content_upload`).
     /// `RowsChanged`: `MadeItems::follow_up_new_item`; the session stays, and the next try
@@ -179,8 +181,8 @@ impl OneDriveSteps {
     /// own earlier upload and is adopted (`content.rs:400-403`); anything else is
     /// `ItemChanged`, and the next plan has the case as rows (today's `changed`,
     /// `content.rs:388`, decided it in place). 404: `ItemGone`. 507: as a new file.
-    /// Commit: `commit_send_content(item, sent)`, which forgets the session and the
-    /// tries; then `mark_sent_file`. `RowsChanged` — the versions changed, no row has the
+    /// Commit: `commit_send_content(item, sent, ended_session)`, which forgets the session
+    /// it is told ended and the tries; then `mark_sent_file`. `RowsChanged` — the versions changed, no row has the
     /// binding any more, or a second `SendContent` of the same item committed first: a
     /// listing cycle is asked for.
     async fn run_send_content(&self, item: &ItemVersions) -> StepOutcome {

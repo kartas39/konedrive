@@ -48,6 +48,8 @@ enum Fact {
     MismatchedItem,
     TemporaryName,
     FailedTries,
+    /// The failed tries of a step for an item nothing is unsent of: of OneDrive's version.
+    TriesOfOneDriveVersion,
     SpaceRefusal,
     Refusal,
     TakenName,
@@ -55,12 +57,13 @@ enum Fact {
     RemovalRefusal,
 }
 
-const FACTS: [Fact; 10] = [
+const FACTS: [Fact; 11] = [
     Fact::UploadSession,
     Fact::Opening,
     Fact::MismatchedItem,
     Fact::TemporaryName,
     Fact::FailedTries,
+    Fact::TriesOfOneDriveVersion,
     Fact::SpaceRefusal,
     Fact::Refusal,
     Fact::TakenName,
@@ -104,6 +107,11 @@ struct Happening {
     is_removal_confirmed: bool,
     /// A commit wrote the hash of the same bytes.
     is_hash_computed: bool,
+    /// The commit of a step towards the folder, or of the rows alone, was written of the
+    /// item.
+    is_folder_or_row_step_written: bool,
+    /// A listing wrote where OneDrive has the item: at this place, or nowhere.
+    listed_place: Option<Option<ItemPlace>>,
 }
 
 /// What the store says, beside the item's own row, when the cell is over.
@@ -130,9 +138,13 @@ struct RowsAfter {
 ///    directory, while that directory has the binding it had. The failed tries end with a
 ///    request OneDrive confirmed. An upload session that is not answered is queued to be
 ///    cancelled, unless a commit was told it ended.
-/// 2. A fact of what OneDrive has: the temporary name is with the row that has the binding,
-///    until OneDrive confirmed the item at another place than the temporary name, or
-///    removed; the item an upload left is void once a row the folder has is bound to it,
+///    A taken name ends with a commit that wrote that OneDrive has the item at that place.
+/// 2. A fact of what OneDrive has: the failed tries of a step for an item nothing is unsent
+///    of are answered while the row has the eTag they were learnt for, until a request of
+///    the item is confirmed or a step towards the folder or of the rows is written; the
+///    temporary name is with the row that has the binding, until a commit or a listing
+///    wrote that OneDrive has the item at another place than the temporary name, or does
+///    not have it; the item an upload left is void once a row the folder has is bound to it,
 ///    and is queued for removal when its file's row goes; an opening is of its place, and
 ///    with the row that has the directory's binding.
 fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAfter, happening: &Happening) -> Fate {
@@ -157,8 +169,16 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
                 _ if now.is_none() => Fate::Gone,
                 _ if happening.is_removal_confirmed => Fate::Gone,
                 _ if happening.confirmed_move.as_ref().is_some_and(|to| *to != temporary_place) => Fate::Gone,
+                _ if happening.listed_place.as_ref().is_some_and(|listed| listed.as_ref().is_none_or(|to| *to != temporary_place && Some(to) != learnt.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()))) => Fate::Gone,
                 _ => Fate::Answered,
             };
+        }
+        Fact::TriesOfOneDriveVersion => {
+            let is_answered = now.is_some_and(|now| now.onedrive_etag == learnt.onedrive_etag)
+                && !happening.is_item_binding_changed
+                && !happening.is_request_confirmed
+                && !happening.is_folder_or_row_step_written;
+            return if is_answered { Fate::Answered } else { Fate::Gone };
         }
         _ => {}
     }
@@ -178,10 +198,10 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
         Fact::UploadSession => !happening.is_session_ended && has_same_bytes && (learnt.onedrive_item.is_some() || is_in_same_directory_of_onedrive),
         Fact::SpaceRefusal => has_same_bytes,
         Fact::Refusal => is_at_same_place && (kind == ItemKind::Directory || has_same_bytes) && is_in_same_directory_of_onedrive,
-        Fact::TakenName => is_at_same_place && is_in_same_directory_of_onedrive,
+        Fact::TakenName => is_at_same_place && is_in_same_directory_of_onedrive && happening.confirmed_move.as_ref() != learnt_local.and_then(|local| local.place.as_ref()),
         Fact::FailedTries => !happening.is_request_confirmed,
         Fact::RemovalConfirmation | Fact::RemovalRefusal => true,
-        Fact::Opening | Fact::MismatchedItem | Fact::TemporaryName => unreachable!("decided above"),
+        Fact::Opening | Fact::MismatchedItem | Fact::TemporaryName | Fact::TriesOfOneDriveVersion => unreachable!("decided above"),
     };
     if is_answered {
         Fate::Answered
@@ -248,6 +268,7 @@ enum Operation {
     RowDeleted,
     // A listing changes the OneDrive version, and no step is committed.
     ListedAtAnotherPlace,
+    ListedAtItsTemporaryName,
     ListedWithAnotherContent,
     ListedGone,
     ListedAnotherItemAtItsName,
@@ -270,7 +291,7 @@ enum Operation {
 
 use Operation::*;
 
-const OPERATIONS: [Operation; 67] = [
+const OPERATIONS: [Operation; 68] = [
     Renamed,
     RenamedAndRenamedBack,
     MovedBackToSyncedPlace,
@@ -321,6 +342,7 @@ const OPERATIONS: [Operation; 67] = [
     CeasedToBeShown,
     RowDeleted,
     ListedAtAnotherPlace,
+    ListedAtItsTemporaryName,
     ListedWithAnotherContent,
     ListedGone,
     ListedAnotherItemAtItsName,
@@ -379,6 +401,7 @@ fn shapes_for(operation: Operation, kind: ItemKind) -> &'static [Shape] {
         CommitSendMoveChangedMeanwhile if is_file => &[Shape::Moved],
         CommitMoveItem => &[Agreeing, Edited],
         ListedAtAnotherPlace | ListedGone => BOUND,
+        ListedAtItsTemporaryName => BOUND_AND_SHOWN,
         ListedWithAnotherContent if is_file => BOUND,
         ShownAgain | ShownAgainAndRemovedAgain | ShownAgainAndGaveUpBinding | ShownAgainAndCeasedToBeShown | CommitSendRemoval | CommitSendRemovalOfTheDirectory | CommitForgetSyncedVersion
         | CommitAgreeOnRemoval => &[Removed],
@@ -532,6 +555,10 @@ impl Scene {
                 store.step_memory().remember_temporary_name(id, &temporary_toward_place(at?, id)).unwrap();
             }
             Fact::FailedTries => assert_eq!(remember_try(store, id, unsent_since?), Some(1)),
+            Fact::TriesOfOneDriveVersion => {
+                let _ = (unsent_since.is_none() && row.onedrive_etag.is_some()).then_some(())?;
+                assert_eq!(remember_try_of_onedrive_version(store, &row), Some(1));
+            }
             Fact::SpaceRefusal => {
                 let _ = (is_file && is_shown).then_some(())?;
                 let refused = space_refusal(store, id, 1);
@@ -574,7 +601,13 @@ fn remember_session(store: &mut TreeStore, id: LocalItemId, unsent_since: u64, s
 }
 
 fn remember_try(store: &mut TreeStore, id: LocalItemId, unsent_since: u64) -> Option<u32> {
-    store.step_memory().remember_failed_try(id, Some(unsent_since), &Reason::Network, Some(60)).unwrap()
+    store.step_memory().remember_failed_try(id, Some(&TriedChange::Unsent { unsent_since }), &Reason::Network, Some(60)).unwrap()
+}
+
+fn remember_try_of_onedrive_version(store: &mut TreeStore, row: &Item) -> Option<u32> {
+    let tried = TriedChange::of_versions(&ItemVersions::of(row));
+    assert!(matches!(tried, Some(TriedChange::OfOneDrive { .. })));
+    store.step_memory().remember_failed_try(row.local_item_id, tried.as_ref(), &Reason::Network, Some(60)).unwrap()
 }
 
 fn remember_space(store: &mut TreeStore, id: LocalItemId, unsent_since: u64, refused: &SpaceRefusal) -> FactStanding {
@@ -790,9 +823,23 @@ fn act(scene: &mut Scene, operation: Operation) {
         RowDeleted => {
             scene.step(|store| store.conn.execute("DELETE FROM items WHERE local_item_id = ?1", [id.as_i64()]).unwrap());
         }
-        ListedAtAnotherPlace => scene.step(|store| write_listing_of_changes(store, &[listed(kind, "X", "elsewhere", "e-X2")])),
-        ListedWithAnotherContent => scene.step(|store| write_listing_of_changes(store, &[listed_file("X", "D", "report", (9, "h-X2"), "e-X2")])),
-        ListedGone => scene.step(|store| write_listing_of_changes(store, &[listed_gone("X")])),
+        ListedAtAnotherPlace => {
+            scene.step(|store| write_listing_of_changes(store, &[listed(kind, "X", "elsewhere", "e-X2")]));
+            scene.happening.listed_place = Some(Some(place(directory, "elsewhere")));
+        }
+        ListedAtItsTemporaryName => {
+            let name = temporary_toward_place(at(), id).name.to_str().unwrap().to_owned();
+            scene.step(|store| write_listing_of_changes(store, &[listed(kind, "X", &name, "e-X2")]));
+            scene.happening.listed_place = Some(Some(place(directory, &name)));
+        }
+        ListedWithAnotherContent => {
+            scene.step(|store| write_listing_of_changes(store, &[listed_file("X", "D", "report", (9, "h-X2"), "e-X2")]));
+            scene.happening.listed_place = Some(Some(place(directory, "report")));
+        }
+        ListedGone => {
+            scene.step(|store| write_listing_of_changes(store, &[listed_gone("X")]));
+            scene.happening.listed_place = Some(None);
+        }
         ListedAnotherItemAtItsName => scene.step(|store| write_listing_of_changes(store, &[listed(kind, "N", "report", "e-N2")])),
         ListedTheMismatchedItem | ListedTheMismatchedItemAndShownIt | ShownTheMismatchedItemAndRemovedHere | RemovedHereAndShownTheMismatchedItem => {
             if operation == RemovedHereAndShownTheMismatchedItem {
@@ -848,6 +895,29 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitForgetSyncedVersion => scene.step(|store| is_written(store.item_store().commit_forget_synced_version(&planned_from))),
         CommitAgreeOnRemoval => scene.step(|store| is_written(store.item_store().commit_agree_on_removal(&planned_from))),
     }
+    scene.happening.is_folder_or_row_step_written = matches!(
+        operation,
+        CommitMoveItem
+            | CommitTakeMoveBack
+            | CommitTakeOneDriveContent
+            | CommitAgreeOnContent
+            | CommitRemoveItem
+            | CommitDownloadContent
+            | CommitRenameToConflictCopy
+            | CommitMoveToTemporaryName
+            | CommitHashLocalContent
+            | CommitAgreeOnPlace
+            | CommitForgetSyncedVersion
+            | CommitAgreeOnRemoval
+            | ShownAgain
+            | ShownAgainAndRemovedAgain
+            | ShownAgainAndGaveUpBinding
+            | ShownAgainAndCeasedToBeShown
+    );
+    // The folder took OneDrive's removal of the item: OneDrive has it nowhere.
+    if operation == CommitRemoveItem {
+        scene.happening.listed_place = Some(None);
+    }
 }
 
 /// Whether `memory` holds the fact.
@@ -857,7 +927,8 @@ fn holds(memory: &ItemMemory, fact: Fact) -> bool {
         Fact::Opening => false,
         Fact::MismatchedItem => memory.mismatched_item.is_some(),
         Fact::TemporaryName => memory.temporary_name.is_some(),
-        Fact::FailedTries => memory.failed_tries.is_some(),
+        Fact::FailedTries => matches!(&memory.failed_tries, Some(FailedTries { tried: TriedChange::Unsent { .. }, .. })),
+        Fact::TriesOfOneDriveVersion => matches!(&memory.failed_tries, Some(FailedTries { tried: TriedChange::OfOneDrive { .. }, .. })),
         Fact::SpaceRefusal => memory.space_refusal.is_some(),
         Fact::Refusal => memory.refusal.as_ref().is_some_and(|refusal| !is_removal_refusal(refusal)),
         Fact::TakenName => memory.taken_name.is_some(),
@@ -886,7 +957,7 @@ fn list_other_holders(store: &TreeStore, id: LocalItemId, fact: Fact) -> Vec<Loc
 fn is_listed(store: &mut TreeStore, id: LocalItemId, fact: Fact, at: Option<&ItemPlace>) -> Option<bool> {
     let memory = store.step_memory();
     Some(match fact {
-        Fact::FailedTries => memory.list_timed_waits(100).unwrap().iter().any(|wait| wait.item == id),
+        Fact::FailedTries | Fact::TriesOfOneDriveVersion => memory.list_timed_waits(100).unwrap().iter().any(|wait| wait.item == id),
         Fact::Refusal | Fact::RemovalRefusal => memory.list_refusal_reasons(None, None, 100).unwrap().iter().any(|refused| refused.item == id),
         Fact::SpaceRefusal => memory.list_space_refusal_reasons(None, 100).unwrap().iter().any(|refused| refused.item == id),
         Fact::RemovalConfirmation => memory.list_items_with_confirmed_removal(None, 100).unwrap().contains(&id),

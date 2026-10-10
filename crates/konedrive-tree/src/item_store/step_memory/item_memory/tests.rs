@@ -64,7 +64,7 @@ fn everything() -> ItemMemory {
         upload_session: Some(UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: Some(9), next_offset: 3, content: content(1), empty_file_place: Some(place("report")) }),
         mismatched_item: Some(MismatchedItem::of_answer(reference("B"), Some("c-B"), Some("e-B"))),
         temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
-        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
+        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network, tried: TriedChange::Unsent { unsent_since: LEARNT_UNDER } }),
         space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
         removal_confirmation: None,
         refusal: Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) }),
@@ -217,8 +217,8 @@ fn a_content_told_by_its_hash_is_carried_into_the_facts_that_hold_it() {
 }
 
 /// A request OneDrive confirmed of an item it has, a case each. An upload and a move: the
-/// failed tries are forgotten, whatever the stamp. A move to another place than the
-/// temporary name, and a removal: the temporary name is forgotten. The upload session is
+/// failed tries are forgotten, whatever the stamp. A move: the taken name of the place it
+/// was confirmed to, and the temporary name unless the move was to that very name. The upload session is
 /// not forgotten here: the one that ended is told by its address.
 #[test]
 fn what_a_confirmed_request_ends_is_forgotten_whatever_the_stamp() {
@@ -228,7 +228,7 @@ fn what_a_confirmed_request_ends_is_forgotten_whatever_the_stamp() {
 
     let mut memory = everything();
     memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place("report") });
-    assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, ..everything() }, "the place the name led to");
+    assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, taken_name: None, ..everything() }, "the place the name led to, which was answered as taken: OneDrive has the item there");
     let mut memory = everything();
     memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place("elsewhere") });
     assert_eq!(memory, ItemMemory { temporary_name: None, failed_tries: None, ..everything() }, "any other place: OneDrive does not have it under the temporary name");
@@ -236,9 +236,10 @@ fn what_a_confirmed_request_ends_is_forgotten_whatever_the_stamp() {
     memory.forget_confirmed_request(ConfirmedRequest::Move { to: &place(".konedrive-swap-A") });
     assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() }, "the move to the temporary name itself");
 
-    let mut memory = everything();
-    memory.forget_confirmed_request(ConfirmedRequest::Removal);
-    assert_eq!(memory, ItemMemory { temporary_name: None, ..everything() }, "the tries go by the stamp, which the commit takes");
+    let mut sent_elsewhere = ItemMemory { taken_name: Some(TakenName { place: place("taken"), holder_name: "TAKEN".into() }), ..everything() };
+    let kept_taken_name = sent_elsewhere.taken_name.clone();
+    sent_elsewhere.forget_confirmed_request(ConfirmedRequest::Move { to: &place("report") });
+    assert_eq!(sent_elsewhere.taken_name, kept_taken_name, "a name taken at another place than OneDrive confirmed");
 
     let mut only_tries = ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: everything().failed_tries, ..ItemMemory::default() };
     only_tries.forget_confirmed_request(ConfirmedRequest::Upload { ended_session: None });
@@ -291,4 +292,48 @@ fn an_item_an_upload_left_is_told_by_the_tag_of_the_answer() {
 #[test]
 fn the_address_of_an_upload_session_is_not_printed() {
     assert_eq!(format!("{:?}", UploadSessionAddress::new("https://up/secret")), "UploadSessionAddress(…)");
+}
+
+/// The failed tries are said by what they are tries of, a case each: the unsent change
+/// while the row has its stamp, OneDrive's version while the row has its eTag, whatever is
+/// unsent of the item then. What a step planned from a row tries is the unsent change when
+/// the row has a stamp, OneDrive's version otherwise, and nothing with neither.
+#[test]
+fn the_failed_tries_are_said_by_the_change_they_are_tries_of() {
+    let with_etag = |etag: &str, unsent_since: Option<u64>| Item { onedrive_etag: Some(etag.to_owned()), unsent_since, ..row(Some(version("report", 1)), true, true) };
+    let of_onedrive = TriedChange::OfOneDrive { etag: "e1".to_owned() };
+    let tries = |tried: &TriedChange| FailedTries { count: 1, next_try_at: Some(50), last_failure: Reason::Network, tried: tried.clone() };
+    let memory = ItemMemory { failed_tries: Some(tries(&of_onedrive)), ..ItemMemory::default() };
+    let is_said = |item: &Item| said(memory.clone(), item).failed_tries.is_some();
+    assert!(is_said(&with_etag("e1", None)), "the version of OneDrive the step was planned from");
+    assert!(is_said(&with_etag("e1", Some(9))), "changed here since: OneDrive's version is the same");
+    assert!(!is_said(&with_etag("e2", None)), "another version of OneDrive");
+    assert!(!is_said(&shown("report", 1)), "an item OneDrive does not have");
+    assert_eq!(said(memory.clone(), &with_etag("e1", None)).unsent_since, None, "they are under no stamp");
+
+    let of_unsent = ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: Some(tries(&TriedChange::Unsent { unsent_since: LEARNT_UNDER })), ..ItemMemory::default() };
+    assert!(said(of_unsent.clone(), &with_etag("e2", Some(LEARNT_UNDER))).failed_tries.is_some(), "the stamp, whatever OneDrive has");
+    assert!(said(of_unsent, &with_etag("e1", None)).failed_tries.is_none());
+
+    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&with_etag("e1", Some(4)))), Some(TriedChange::Unsent { unsent_since: 4 }));
+    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&with_etag("e1", None))), Some(of_onedrive));
+    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&row(None, true, false))), None);
+
+    let mut memory = ItemMemory { failed_tries: Some(tries(&TriedChange::OfOneDrive { etag: "e1".to_owned() })), ..everything() };
+    memory.forget_tries_of_onedrive_version();
+    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() });
+    let mut memory = everything();
+    memory.forget_tries_of_onedrive_version();
+    assert_eq!(memory, everything(), "the tries of an unsent change stay");
+}
+
+/// A listing wrote where OneDrive has the item: the temporary name stays only when that is
+/// the temporary name's own place.
+#[test]
+fn a_temporary_name_is_forgotten_once_onedrive_has_the_item_at_another_place() {
+    let mut memory = everything();
+    memory.forget_temporary_name_unless_at(&place(".konedrive-swap-A"));
+    assert_eq!(memory, everything());
+    memory.forget_temporary_name_unless_at(&place("elsewhere"));
+    assert_eq!(memory, ItemMemory { temporary_name: None, ..everything() });
 }

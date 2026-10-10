@@ -55,10 +55,15 @@
 //!   forgotten and not cancelled ([`forget_ended_upload_session`]);
 //! - the commits of an upload into an item OneDrive has and of a move may leave the item
 //!   unsent, changed here again while the request ran, under the stamp it had: the failed
-//!   tries of the request that went through are forgotten, and the temporary name once
-//!   OneDrive confirmed the item at another place ([`ConfirmedRequest`]);
-//! - the commit of a removal forgets the temporary name of what OneDrive does not have any
-//!   more;
+//!   tries of the request that went through are forgotten, the taken name of the place a
+//!   move was confirmed to, and the temporary name once OneDrive confirmed the item at
+//!   another place ([`ConfirmedRequest`]);
+//! - a commit that writes that OneDrive does not have an item any more — a removal sent,
+//!   a removal of OneDrive's taken by the folder — forgets the temporary name of what
+//!   OneDrive does not have;
+//! - the commit of a step towards the folder, or of the rows alone, that is written
+//!   forgets the failed tries of a step for what OneDrive has of the item
+//!   ([`forget_tries_when_written`]): they are told by the eTag, which such a step leaves;
 //! - the commit of the step that hashed the local content carries that content, the same
 //!   bytes, into the facts that hold it.
 
@@ -69,7 +74,9 @@ use rusqlite::{Connection, Transaction};
 use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
-use super::step_memory::{carry_content, forget_confirmed_request, forget_ended_upload_session, ConfirmedRequest, UploadSessionAddress};
+use super::step_memory::{
+    carry_content, forget_confirmed_request, forget_ended_upload_session, forget_temporary_names_of_items_onedrive_lacks, forget_tries_of_onedrive_version, ConfirmedRequest, UploadSessionAddress,
+};
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
 use crate::sync_plan::ItemVersions;
@@ -176,14 +183,14 @@ impl ItemStore<'_> {
     /// the two sides agree on both. `is_name_ignored` is what the upload rules say of its
     /// name there.
     pub fn commit_show_item(&mut self, item: &ItemVersions, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_show_item(tx, item, is_name_ignored))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_show_item(tx, item, is_name_ignored)?))
     }
 
     /// The commit of [`FolderStep::MoveItem`](crate::FolderStep::MoveItem): the folder
     /// shows the item at OneDrive's place, which is the place agreed on. `is_name_ignored`
     /// is what the upload rules say of its name there.
     pub fn commit_move_item(&mut self, item: &ItemVersions, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_move_to_onedrive_place(tx, item, is_name_ignored))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?))
     }
 
     /// The commit of
@@ -191,7 +198,7 @@ impl ItemStore<'_> {
     /// file shows OneDrive's content, which is the content agreed on, and its content is
     /// not on disk. The row is written before the copy on disk goes.
     pub fn commit_take_onedrive_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_take_onedrive_content(tx, item))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_take_onedrive_content(tx, item)?))
     }
 
     /// The commit of [`FolderStep::RemoveItem`](crate::FolderStep::RemoveItem): the folder
@@ -201,13 +208,13 @@ impl ItemStore<'_> {
     /// nothing reads as removed here and no removal is sent. The rows changed while the
     /// folder shows something in the item, a directory.
     pub fn commit_remove_item(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_remove_item(tx, item))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_remove_item(tx, item)?))
     }
 
     /// The commit of [`FolderStep::DownloadContent`](crate::FolderStep::DownloadContent):
     /// the whole content of the file is on disk.
     pub fn commit_download_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_download_content(tx, item))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_download_content(tx, item)?))
     }
 
     /// The commit of
@@ -215,14 +222,14 @@ impl ItemStore<'_> {
     /// folder shows the item under `name` in the directory it is in. `is_name_ignored` is
     /// what the upload rules say of that name. Nothing agreed on changes.
     pub fn commit_rename_to_conflict_copy(&mut self, item: &ItemVersions, name: &OsStr, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_rename_to_conflict_copy(tx, item, name, is_name_ignored))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_rename_to_conflict_copy(tx, item, name, is_name_ignored)?))
     }
 
     /// The commit of [`FolderStep::TakeMoveBack`](crate::FolderStep::TakeMoveBack): the
     /// folder shows the item at OneDrive's place again, which is the place agreed on.
     /// `is_name_ignored` is what the upload rules say of its name there.
     pub fn commit_take_move_back(&mut self, item: &ItemVersions, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_move_to_onedrive_place(tx, item, is_name_ignored))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?))
     }
 
     /// The commit of
@@ -230,7 +237,7 @@ impl ItemStore<'_> {
     /// folder shows the item at `place`, which is the place agreed on from now.
     /// `is_name_ignored` is what the upload rules say of its name there.
     pub fn commit_move_to_temporary_name(&mut self, item: &ItemVersions, place: &ItemPlace, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_move_to_temporary_name(tx, item, place, is_name_ignored))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_temporary_name(tx, item, place, is_name_ignored)?))
     }
 
     /// The commit of [`RowStep::GiveUpBinding`](crate::RowStep::GiveUpBinding)
@@ -251,34 +258,43 @@ impl ItemStore<'_> {
     /// sides removed the item; what they agreed on before is forgotten, and the row is a
     /// binding alone.
     pub fn commit_agree_on_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_forget_synced_version(tx, item, false))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_forget_synced_version(tx, item, false)?))
     }
 
     /// The commit of
     /// [`RowStep::ForgetSyncedVersion`](crate::RowStep::ForgetSyncedVersion): what the two
     /// sides agreed on of an item the folder does not show and OneDrive has is forgotten.
     pub fn commit_forget_synced_version(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_forget_synced_version(tx, item, true))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_forget_synced_version(tx, item, true)?))
     }
 
     /// The commit of [`RowStep::HashLocalContent`](crate::RowStep::HashLocalContent): the
     /// local content, of the size and the time it had, is told by `hash`, which was
     /// computed from the bytes on disk.
     pub fn commit_hash_local_content(&mut self, item: &ItemVersions, hash: &str) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_hash_local_content(tx, item, hash))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_hash_local_content(tx, item, hash)?))
     }
 
     /// The commit of [`RowStep::AgreeOnPlace`](crate::RowStep::AgreeOnPlace): the place both
     /// sides have the item at is the place agreed on.
     pub fn commit_agree_on_place(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_agree_on_place(tx, item))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_agree_on_place(tx, item)?))
     }
 
     /// The commit of [`RowStep::AgreeOnContent`](crate::RowStep::AgreeOnContent): OneDrive's
     /// content version is the local one and the one agreed on.
     pub fn commit_agree_on_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_agree_on_content(tx, item))
+        self.write(|tx| forget_tries_when_written(tx, item, commit_agree_on_content(tx, item)?))
     }
+}
+
+/// The commit of a step towards the folder, or of the rows alone, answered `outcome` for
+/// `item`: written, the failed tries of a step for what OneDrive has of the item are over.
+fn forget_tries_when_written(tx: &Transaction<'_>, item: &ItemVersions, outcome: StepCommitOutcome) -> Result<StepCommitOutcome, TreeError> {
+    if outcome == StepCommitOutcome::Written {
+        forget_tries_of_onedrive_version(tx, item.local_item_id)?;
+    }
+    Ok(outcome)
 }
 
 /// The row of the item of `planned`, when every version it was planned from is still the
@@ -467,9 +483,7 @@ pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kin
     if kind == ItemKind::Directory {
         confirm_removal_below(tx, id, count)?;
     }
-    for removed in std::iter::once(item).chain(below) {
-        forget_confirmed_request(tx, removed.local_item_id, ConfirmedRequest::Removal)?;
-    }
+    forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }
 
@@ -599,6 +613,7 @@ pub(crate) fn commit_remove_item(tx: &Transaction<'_>, item: &ItemVersions) -> R
     row.content_presence = ContentPresence::NotOnDisk;
     row.content_before_write = None;
     write_item(tx, &row)?;
+    forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }
 
