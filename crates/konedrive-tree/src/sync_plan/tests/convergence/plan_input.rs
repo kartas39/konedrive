@@ -24,11 +24,25 @@ pub(crate) struct CallerFacts {
     /// The user confirmed every removal.
     pub(crate) confirms_removals: bool,
     pub(crate) places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
+    pub(crate) items_open_for_writing: BTreeSet<LocalItemId>,
+    pub(crate) quiet_until: BTreeMap<LocalItemId, i64>,
+    pub(crate) items_with_running_step: BTreeSet<LocalItemId>,
+    pub(crate) is_onedrive_full: bool,
 }
 
 impl CallerFacts {
     pub(crate) fn of_read_write_folder() -> Self {
-        Self { sending_state: SendingState::ReadWrite, items_read_at_once: 1000, gives_directories_above: true, confirms_removals: true, places_taken_in_onedrive: BTreeMap::new() }
+        Self {
+            sending_state: SendingState::ReadWrite,
+            items_read_at_once: 1000,
+            gives_directories_above: true,
+            confirms_removals: true,
+            places_taken_in_onedrive: BTreeMap::new(),
+            items_open_for_writing: BTreeSet::new(),
+            quiet_until: BTreeMap::new(),
+            items_with_running_step: BTreeSet::new(),
+            is_onedrive_full: false,
+        }
     }
 }
 
@@ -123,12 +137,12 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         folder_visibility: rows.iter().filter(|row| row.onedrive.is_some()).map(|row| (row.local_item_id, items.find_folder_visibility(row.local_item_id).unwrap())).collect(),
         ignored_items: rows.iter().filter(|row| items.is_ignored(row.local_item_id).unwrap()).map(|row| row.local_item_id).collect(),
         name_refusals: rows.iter().filter_map(|row| Some((row.local_item_id, name_refusal(row)?))).collect(),
-        items_open_for_writing: BTreeSet::new(),
-        quiet_until: BTreeMap::new(),
-        items_with_running_step: BTreeSet::new(),
+        items_open_for_writing: facts.items_open_for_writing.clone(),
+        quiet_until: facts.quiet_until.clone(),
+        items_with_running_step: facts.items_with_running_step.clone(),
         pinned_items: rows.iter().filter(|row| row.kind == ItemKind::File && items.is_pinned(row.local_item_id).unwrap()).map(|row| row.local_item_id).collect(),
         is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
-        is_onedrive_full: false,
+        is_onedrive_full: facts.is_onedrive_full,
         largest_file_size: 250 << 30,
         sending_state: facts.sending_state,
         computer_name: COMPUTER_NAME.to_owned(),
@@ -136,7 +150,7 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_with_confirmed_removal: confirmed,
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
-        sent_removal_count: 0,
+        sent_removal_count: if facts.confirms_removals { 0 } else { items.count_removals_confirmed_since(0).unwrap() },
         now: 0,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),

@@ -65,6 +65,10 @@ pub(crate) struct RandomChanges {
     pub(crate) makes_items_the_folder_cannot_show: bool,
     /// Every change that was made, in words: what a failure is read by.
     pub(crate) said: Vec<String>,
+    /// The items of OneDrive the folder's last changes moved, removed or wrote into: the
+    /// other client changes one of them now and then, so that the two sides meet in one
+    /// item and not only in one name.
+    touched_here: Vec<String>,
 }
 
 fn name_here(item: &Item) -> String {
@@ -73,7 +77,7 @@ fn name_here(item: &Item) -> String {
 
 impl RandomChanges {
     pub(crate) fn new(seed: u64) -> Self {
-        Self { random: RandomSource::new(seed), number: 0, gives_ignored_names: true, makes_items_the_folder_cannot_show: true, said: Vec::new() }
+        Self { random: RandomSource::new(seed), number: 0, gives_ignored_names: true, makes_items_the_folder_cannot_show: true, said: Vec::new(), touched_here: Vec::new() }
     }
 
     fn next_number(&mut self) -> u64 {
@@ -115,7 +119,14 @@ impl RandomChanges {
         let is_ignored = is_name_ignored(name.as_ref());
         let (size, mtime) = self.content(&rows);
         let made_content = Some(ContentVersion::ChangedHere { size, mtime, mtime_nsec: 5, change_count: 1 });
-        let (said, changes): (String, Vec<LocalVersionChange>) = match (self.random.below(100), self.random.pick(&shown).copied(), self.random.pick(&files).copied()) {
+        let (kind_of_change, item, file) = (self.random.below(100), self.random.pick(&shown).copied(), self.random.pick(&files).copied());
+        let touched = match kind_of_change {
+            30..62 => item,
+            62..77 | 83..89 => file,
+            _ => None,
+        };
+        self.touched_here.extend(touched.and_then(|touched| touched.onedrive_item.as_ref()).map(|touched| touched.item_id.as_str().to_owned()));
+        let (said, changes): (String, Vec<LocalVersionChange>) = match (kind_of_change, item, file) {
             (0..20, _, _) => (format!("makes the file {directory}/{name} of {size} bytes at {mtime}"), vec![LocalVersionChange::Made { kind: ItemKind::File, place, content: made_content, is_name_ignored: is_ignored, replaced: None }]),
             (20..30, _, _) => (format!("makes the directory {directory}/{name}"), vec![LocalVersionChange::Made { kind: ItemKind::Directory, place, content: None, is_name_ignored: is_ignored, replaced: None }]),
             (30..50, Some(item), _) => (format!("moves {} ({}) to {directory}/{name}", item.local_item_id, name_here(item)), vec![LocalVersionChange::Moved { item: item.local_item_id, place, is_name_ignored: is_ignored }]),
@@ -191,6 +202,11 @@ impl RandomChanges {
         let directory = self.random.pick(&directories).cloned().unwrap_or_else(|| ROOT_ID.to_owned());
         let name = self.name(false);
         let (size, mtime) = (300 + self.next_number(), 9000 + self.number as i64);
+        // Every other time, an item the folder touched since, where OneDrive still has one.
+        let touched: Vec<String> = self.touched_here.iter().filter(|touched| drive.items.contains_key(*touched)).cloned().collect();
+        let touched_files: Vec<String> = touched.iter().filter(|touched| files.contains(touched)).cloned().collect();
+        let meets = self.random.below(2) == 0;
+        let (ids, files) = (if meets && !touched.is_empty() { touched } else { ids }, if meets && !touched_files.is_empty() { touched_files } else { files });
         match (self.random.below(100), self.random.pick(&ids).cloned(), self.random.pick(&files).cloned()) {
             (0..20, _, _) => {
                 let id = format!("X{}", self.next_number());

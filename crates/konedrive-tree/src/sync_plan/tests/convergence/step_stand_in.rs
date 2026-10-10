@@ -64,16 +64,17 @@ impl StepStandIn {
     /// Whether OneDrive has another item than `item` under `name` in `parent`, as it
     /// compares names: it then answers a request for that name that the name is taken.
     fn is_name_taken(store: &mut TreeStore, item: LocalItemId, parent: &OneDriveItemReference, name: &OsStr) -> bool {
-        let directory = store.item_store().find_bound_item(parent).unwrap().expect("the directory a step sends into has a row").local_item_id;
-        store.item_store().list_children_in_onedrive_with_folded_name(directory, &FoldedName::of(name)).unwrap().iter().any(|holder| holder.local_item_id != item)
+        // A step that ran for a while may find the directory gone: its commit says so.
+        let Some(directory) = store.item_store().find_bound_item(parent).unwrap() else { return false };
+        store.item_store().list_children_in_onedrive_with_folded_name(directory.local_item_id, &FoldedName::of(name)).unwrap().iter().any(|holder| holder.local_item_id != item)
     }
 
     /// OneDrive's answer for the item of `row` as OneDrive has it, with `content` and a new
     /// eTag.
-    fn confirm_where_it_is(&mut self, store: &mut TreeStore, row: &Item, content: Option<ContentVersion>) -> ConfirmedItem {
-        let place = row.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has the item");
-        let parent = store.item_store().find_item(place.parent_local_item_id).unwrap().and_then(|parent| parent.onedrive_item).expect("OneDrive has the directory");
-        ConfirmedItem { item: row.onedrive_item.clone().expect("the item has a binding"), parent, name: place.name, content, etag: format!("e-{}", self.next_answer()) }
+    fn confirm_where_it_is(&mut self, store: &mut TreeStore, row: &Item, content: Option<ContentVersion>) -> Option<ConfirmedItem> {
+        let place = row.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone())?;
+        let parent = store.item_store().find_item(place.parent_local_item_id).unwrap().and_then(|parent| parent.onedrive_item)?;
+        Some(ConfirmedItem { item: row.onedrive_item.clone()?, parent, name: place.name, content, etag: format!("e-{}", self.next_answer()) })
     }
 
     /// Runs `step` to its end: asks OneDrive or changes the folder, as far as these tests
@@ -121,7 +122,11 @@ impl StepStandIn {
                 return StepOutcome::NameTaken;
             }
         }
-        let row = store.item_store().find_item(id).unwrap().unwrap_or_else(|| panic!("item {id} has no row"));
+        // The row OneDrive's answer is made from: the one that has the item's binding now,
+        // which is another than the step's when a file was saved over it meanwhile. With
+        // none, or one OneDrive does not have any more, the request is refused: the rows
+        // changed.
+        let row_of_binding = |store: &mut TreeStore, item: &ItemVersions| item.onedrive_item.as_ref().and_then(|binding| store.item_store().find_bound_item(binding).unwrap());
         let outcome = match step {
             OneDriveStep::MakeDirectory { item, parent, name } | OneDriveStep::SendNewFile { item, parent, name } => {
                 let answer = self.next_answer();
@@ -134,12 +139,14 @@ impl StepStandIn {
             }
             OneDriveStep::SendContent { item } => {
                 let content = self.confirm_content(item.local.as_ref());
-                let sent = self.confirm_where_it_is(store, &row, content);
+                let Some(sent) = row_of_binding(store, item).and_then(|row| self.confirm_where_it_is(store, &row, content)) else { return StepOutcome::RowsChanged };
                 store.item_store().commit_send_content(item, &sent)
             }
             OneDriveStep::SendMove { item, parent, name } => {
+                let Some(row) = row_of_binding(store, item) else { return StepOutcome::RowsChanged };
                 let content = row.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone());
-                let moved = ConfirmedItem { parent: parent.clone(), name: name.clone(), ..self.confirm_where_it_is(store, &row, content) };
+                let Some(moved) = self.confirm_where_it_is(store, &row, content) else { return StepOutcome::RowsChanged };
+                let moved = ConfirmedItem { parent: parent.clone(), name: name.clone(), ..moved };
                 store.item_store().commit_send_move(item, parent, name, &moved)
             }
             OneDriveStep::SendFileRemoval { item } => store.item_store().commit_send_file_removal(item),

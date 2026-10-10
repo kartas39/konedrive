@@ -5,7 +5,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{ContentPresence, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId};
-use crate::FoldedName;
 
 fn place_of(version: &Option<ItemVersion>) -> Option<&ItemPlace> {
     version.as_ref().and_then(|version| version.place.as_ref())
@@ -61,8 +60,9 @@ pub(crate) fn find_broken_rule(items: &[Item], is_listing_under_way: bool) -> Op
             if !parent.is_some_and(|parent| parent.kind == ItemKind::Directory && parent.onedrive.is_some()) {
                 return Some(format!("OneDrive has item {id} in item {}, which is no directory OneDrive has", place.parent_local_item_id));
             }
-            if !onedrive_names.insert((place.parent_local_item_id, FoldedName::of(&place.name))) {
-                return Some(format!("OneDrive has two items under {:?} in item {}, as it compares names", place.name, place.parent_local_item_id));
+            // The very name: of two names that fold to one, OneDrive is the judge.
+            if !onedrive_names.insert((place.parent_local_item_id, place.name.clone())) {
+                return Some(format!("OneDrive has two items under {:?} in item {}", place.name, place.parent_local_item_id));
             }
             if !ends_at_root(&by_id, id, |item| place_of(&item.onedrive)) {
                 return Some(format!("item {id} is above itself in OneDrive"));

@@ -17,9 +17,11 @@
 //! 3. at the end every item has its three versions equal, but an item that is left here and
 //!    what is in one;
 //! 4. nothing is lost ([`ExpectedEnd`]): every content that one side alone had, new or
-//!    changed there, is on both sides under some name, and every item one side alone had is
-//!    on both sides. One loss is the design's own and is left out: what OneDrive made or
-//!    changed in a directory that was removed here goes with that removal, which stands;
+//!    changed there, is on both sides under some name; every item one side alone had is on
+//!    both sides; every item both sides had, that neither removed, still is; and what the
+//!    user made is in the folder whatever became of it in OneDrive. One loss is the
+//!    design's own and is left out: what OneDrive made or changed in a directory that was
+//!    removed here goes with that removal, which stands;
 //! 5. a plan over every row of what has converged has no step.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,7 +31,7 @@ use konedrive_reason::Reason;
 use super::*;
 use crate::item_store::tests::listed_drive::{listed_directory, listed_file, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::row_rules::find_broken_rule;
-use crate::model::{Change, LocalVersionChange};
+use crate::model::{Change, ContentPresence, LocalVersionChange};
 use crate::{ListingLink, TreeStore};
 
 /// The caller of the plan in miniature: what it reads and gives.
@@ -57,6 +59,15 @@ struct World {
     widening: WideningCount,
     listing_count: u64,
     round_count: usize,
+    /// For how many rounds more the caller's facts are drawn at random, and steps are left
+    /// running ([`RunKind::CallerFactsDrawn`]).
+    fact_rounds_left: usize,
+    /// The steps that are running: each with the number of rounds after which its commit
+    /// arrives, with the versions it was planned from.
+    running_steps: Vec<(SyncStep, usize)>,
+    what_facts_are_drawn_with: RandomSource,
+    /// What must be on both sides, read after the folder was last changed while steps ran.
+    expected_since_steps_ran: Option<ExpectedEnd>,
 }
 
 type Failure = String;
@@ -101,6 +112,10 @@ impl World {
             widening: WideningCount::default(),
             listing_count: 0,
             round_count: 0,
+            fact_rounds_left: 0,
+            running_steps: Vec::new(),
+            what_facts_are_drawn_with: RandomSource::new(seed ^ 0xFAC7),
+            expected_since_steps_ran: None,
         };
         let file = |id: &str, parent: &str, name: &str, size: u64| listed_file(id, parent, name, (size, &format!("h{size}-1000")), "e");
         let tree = [
@@ -120,11 +135,48 @@ impl World {
         world
     }
 
+    /// The commits of the steps that were left running arrive, each after its rounds: with
+    /// the versions the step was planned from, whatever became of the rows meanwhile. A
+    /// commit that finds the rows changed, or a name taken, is no failure here: that is
+    /// what a step that ran for a while is answered.
+    fn let_running_steps_end(&mut self) -> Result<(), Failure> {
+        let (ended, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.running_steps).into_iter().partition(|(_, rounds_left)| *rounds_left == 0);
+        self.running_steps = running.into_iter().map(|(step, rounds_left)| (step, rounds_left - 1)).collect();
+        for (step, _) in ended {
+            self.stand_in.run(&mut self.store, &step);
+            self.facts.items_with_running_step.remove(&step.local_item_id());
+            if let Some(rule) = find_broken_rule(&rows(&mut self.store), self.store.item_store().find_listing_under_way().unwrap().is_some()) {
+                return Err(format!("after {step:?}, which ran for a while: {rule}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// What only the caller knows, drawn at random for one round: files a program holds
+    /// open, files in their quiet time, OneDrive full, removals not confirmed. Nothing of it
+    /// once the rounds of drawn facts are over.
+    fn draw_callers_facts(&mut self) {
+        let is_drawn = self.fact_rounds_left > 0;
+        self.fact_rounds_left = self.fact_rounds_left.saturating_sub(1);
+        let files: Vec<LocalItemId> = rows(&mut self.store).iter().filter(|row| row.kind == ItemKind::File && row.local.is_some()).map(|row| row.local_item_id).collect();
+        let random = &mut self.what_facts_are_drawn_with;
+        self.facts.items_open_for_writing = files.iter().copied().filter(|_| is_drawn && random.below(6) == 0).collect();
+        self.facts.quiet_until = files.iter().copied().filter(|_| is_drawn && random.below(6) == 0).map(|file| (file, 1000)).collect();
+        self.facts.is_onedrive_full = is_drawn && random.below(4) == 0;
+        self.facts.confirms_removals = !is_drawn || random.below(3) != 0;
+    }
+
     /// Makes plans and runs their steps until a plan has none, for `rounds` rounds at most:
     /// the plan that has no step, or `None` when the last of the rounds still had one.
+    /// While the caller's facts are drawn ([`RunKind::CallerFactsDrawn`]), some of the
+    /// steps towards OneDrive and towards the folder are left running for a round or two,
+    /// and the folder is changed while they run.
     fn run(&mut self, rounds: usize) -> Result<Option<SyncPlan>, Failure> {
         for _ in 0..rounds {
             self.round_count += 1;
+            self.let_running_steps_end()?;
+            let leaves_steps_running = self.fact_rounds_left > 0;
+            self.draw_callers_facts();
             self.facts.places_taken_in_onedrive = self.stand_in.places_taken_in_onedrive.clone();
             let (input, plan) = plan_next_steps(&mut self.store, &self.facts, &mut self.widening);
             let given: Vec<i64> = input.items.iter().map(|item| item.local_item_id.as_i64()).collect();
@@ -132,20 +184,38 @@ impl World {
                 return Err(format!("the plan says it is at fault: {:?}\n  waits {:?}", plan.faults, plan.waits));
             }
             if plan.steps.is_empty() {
+                if leaves_steps_running || !self.running_steps.is_empty() {
+                    continue;
+                }
                 return Ok(Some(plan));
             }
             let mut steps = plan.steps.clone();
             self.step_order.shuffle(&mut steps);
+            let mut is_left_running = false;
             for step in &steps {
+                if leaves_steps_running && !matches!(step, SyncStep::Row(_)) && self.what_facts_are_drawn_with.below(3) == 0 {
+                    self.running_steps.push((step.clone(), self.what_facts_are_drawn_with.below(2)));
+                    self.facts.items_with_running_step.insert(step.local_item_id());
+                    is_left_running = true;
+                    continue;
+                }
                 match self.stand_in.run(&mut self.store, step) {
                     StepOutcome::Written => {}
                     StepOutcome::RowsChanged => return Err(format!("the rows changed under a step of one plan: {step:?}\n  the plan's steps: {:?}\n  given: {given:?}\n  waits: {:?}", plan.steps, plan.waits)),
+                    StepOutcome::NameTaken if !self.stand_in.places_taken_in_onedrive.is_empty() && self.expected_since_steps_ran.is_some() => {}
                     StepOutcome::NameTaken => return Err(format!("OneDrive answers that the name is taken, which the plan did not foresee: {step:?}")),
                 }
                 let is_listing_under_way = self.store.item_store().find_listing_under_way().unwrap().is_some();
                 if let Some(rule) = find_broken_rule(&rows(&mut self.store), is_listing_under_way) {
                     return Err(format!("after {step:?}: {rule}"));
                 }
+            }
+            if is_left_running {
+                // The user goes on working while the steps run.
+                for _ in 0..2 {
+                    self.changes.change_folder(&mut self.store);
+                }
+                self.expected_since_steps_ran = Some(ExpectedEnd::of(&mut self.store));
             }
         }
         Ok(None)
@@ -237,7 +307,9 @@ impl World {
         let listed = self.make_changes(here, in_onedrive);
         write_listing_of_changes(&mut self.store, &listed);
         let expected = ExpectedEnd::of(&mut self.store);
+        self.expected_since_steps_ran = None;
         self.run_to_the_end()?;
+        let expected = self.expected_since_steps_ran.take().unwrap_or(expected);
         self.check_converged(&expected)
     }
 
@@ -315,7 +387,15 @@ impl World {
 ///   (A content that was agreed on and that one side replaced or removed may go: that is
 ///   the change.)
 /// - *Items.* An item the folder shows and OneDrive never had, and one OneDrive has and
-///   the folder never showed, must be on both sides at the end.
+///   the folder never showed, must be on both sides at the end. What the user made must be
+///   in the folder at the end whatever else: also where it waits for the user for good, in
+///   a directory the folder cannot show as OneDrive has it.
+/// - *What both sides have* and neither removed must be on both sides at the end: the
+///   plan's first duty. Not asked of an item in a directory OneDrive removed, which goes
+///   with it when it is clean, nor of one the folder cannot show.
+/// - *What OneDrive removed and the folder changed*: a file whose content was changed here,
+///   or that was moved here with its content on disk, is sent again, and is on both sides
+///   at the end.
 ///
 /// Left out, by the design: what OneDrive has, and the folder does not show, below a
 /// directory that was removed here — that removal is sent and stands; and what is left
@@ -323,8 +403,12 @@ impl World {
 /// an item of OneDrive moved here into one waits for the user, with all of it.
 struct ExpectedEnd {
     contents: BTreeSet<String>,
+    /// The contents of the files the folder alone has: of what the user made.
+    contents_of_new_items: BTreeSet<String>,
     new_here: BTreeSet<LocalItemId>,
     new_in_onedrive: Vec<OneDriveItemReference>,
+    on_both_sides: BTreeSet<LocalItemId>,
+    sent_again: BTreeSet<LocalItemId>,
 }
 
 fn content_of(version: &Option<ItemVersion>) -> Option<String> {
@@ -347,6 +431,8 @@ impl ExpectedEnd {
             }
             row.local.is_none() && is_below_removed
         };
+        let cannot_be_shown: BTreeSet<LocalItemId> =
+            rows.iter().filter(|row| row.onedrive.is_some() && store.item_store().find_folder_visibility(row.local_item_id).unwrap() != FolderVisibility::CanBeShown).map(|row| row.local_item_id).collect();
         // Left here, or shown in a directory that is: left as it is, with all of it.
         let mut is_left_as_it_is = |row: &Item| {
             let mut at = Some(row.local_item_id);
@@ -359,7 +445,20 @@ impl ExpectedEnd {
             }
             false
         };
-        let mut expected = Self { contents: BTreeSet::new(), new_here: BTreeSet::new(), new_in_onedrive: Vec::new() };
+        // Shown in a directory OneDrive removed, at any depth: it goes with it when clean.
+        let is_in_directory_onedrive_removed = |row: &Item| {
+            let directory_of = |row: &Item| row.local.as_ref().and_then(|local| local.place.as_ref()).and_then(|place| by_id.get(&place.parent_local_item_id).copied());
+            let mut above = directory_of(row);
+            for _ in 0..rows.len() {
+                let Some(directory) = above else { break };
+                if directory.onedrive.is_none() && directory.local_item_id != ROOT {
+                    return true;
+                }
+                above = directory_of(directory);
+            }
+            false
+        };
+        let mut expected = Self { contents: BTreeSet::new(), contents_of_new_items: BTreeSet::new(), new_here: BTreeSet::new(), new_in_onedrive: Vec::new(), on_both_sides: BTreeSet::new(), sent_again: BTreeSet::new() };
         for row in rows.iter().filter(|row| row.local_item_id != ROOT) {
             let agreed_on = row.synced_content.as_ref().map(hash_of);
             if is_left_as_it_is(row) {
@@ -369,6 +468,15 @@ impl ExpectedEnd {
                 expected.contents.extend(content_of(&row.local).filter(|content| Some(content) != agreed_on.as_ref()));
                 if row.onedrive_item.is_none() {
                     expected.new_here.insert(row.local_item_id);
+                    expected.contents_of_new_items.extend(content_of(&row.local));
+                }
+                if row.onedrive.is_some() && !cannot_be_shown.contains(&row.local_item_id) && !is_in_directory_onedrive_removed(row) {
+                    expected.on_both_sides.insert(row.local_item_id);
+                }
+                let is_changed_here = content_of(&row.local) != agreed_on;
+                let is_moved_here_on_disk = row.local.as_ref().and_then(|local| local.place.as_ref()) != row.synced_place.as_ref() && row.content_presence == ContentPresence::OnDisk;
+                if row.kind == ItemKind::File && row.onedrive.is_none() && row.synced_place.is_some() && (is_changed_here || is_moved_here_on_disk) {
+                    expected.sent_again.insert(row.local_item_id);
                 }
             }
             if row.onedrive.is_some() && !goes_with_a_removal(row) {
@@ -388,7 +496,9 @@ impl ExpectedEnd {
         let here: BTreeSet<String> = rows.iter().filter_map(|row| content_of(&row.local)).collect();
         let in_onedrive: BTreeSet<String> = rows.iter().filter_map(|row| content_of(&row.onedrive)).collect();
         let left: Vec<&Item> = rows.iter().filter(|row| left_as_they_are.contains(&row.local_item_id)).collect();
-        let is_left_here = |content: &String| left.iter().any(|row| content_of(&row.local).as_ref() == Some(content));
+        // What is left here for good is never sent; an item OneDrive has that waits for the
+        // user with its place has its content sent all the same.
+        let is_left_here = |content: &String| left.iter().any(|row| row.onedrive_item.is_none() && content_of(&row.local).as_ref() == Some(content));
         let is_left_in_onedrive = |content: &String| left.iter().any(|row| content_of(&row.onedrive).as_ref() == Some(content));
         for content in &self.contents {
             if !here.contains(content) && !is_left_in_onedrive(content) {
@@ -398,10 +508,23 @@ impl ExpectedEnd {
                 return Some(format!("the content {content}, which one side alone had, is not in OneDrive"));
             }
         }
+        for content in &self.contents_of_new_items {
+            if !here.contains(content) {
+                return Some(format!("the content {content} of what the user made is not in the folder"));
+            }
+        }
         for new in &self.new_here {
-            let is_on_both_sides = rows.iter().any(|row| row.local_item_id == *new && ((row.local.is_some() && row.onedrive.is_some()) || left_as_they_are.contains(new)));
+            let is_on_both_sides = rows.iter().any(|row| row.local_item_id == *new && row.local.is_some() && (row.onedrive.is_some() || left_as_they_are.contains(new)));
             if !is_on_both_sides {
-                return Some(format!("item {new}, which the folder alone had, is not on both sides"));
+                return Some(format!("item {new}, which the folder alone had, is not on both sides, or not in the folder"));
+            }
+        }
+        for (items, what) in [(&self.on_both_sides, "which both sides had and neither removed"), (&self.sent_again, "which OneDrive removed and the folder changed or moved")] {
+            for item in items {
+                let is_on_both_sides = rows.iter().any(|row| row.local_item_id == *item && row.local.is_some() && (row.onedrive.is_some() || left_as_they_are.contains(item)));
+                if !is_on_both_sides {
+                    return Some(format!("item {item}, {what}, is not on both sides"));
+                }
             }
         }
         for new in &self.new_in_onedrive {
@@ -426,6 +549,10 @@ enum RunKind {
     /// Two unsent items and two OneDrive changed are read at first, and the directories
     /// above an item are given only when the plan asks for them.
     FewItemsGiven,
+    /// For four rounds what only the caller knows is drawn at random — files held open for
+    /// writing, files in their quiet time, OneDrive full, removals not confirmed — and
+    /// steps are left running for a round or two while the folder is changed again.
+    CallerFactsDrawn,
 }
 
 /// One run: a store from `seed`, changed and converged `times` times, `changes` changes on
@@ -442,8 +569,9 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
     }
     for time in 0..times {
         let said_before = world.changes.said.len();
+        world.fact_rounds_left = if kind == RunKind::CallerFactsDrawn { 4 } else { 0 };
         let converged = match kind {
-            RunKind::Plain | RunKind::FewItemsGiven => world.change_and_converge(changes, changes),
+            RunKind::Plain | RunKind::FewItemsGiven | RunKind::CallerFactsDrawn => world.change_and_converge(changes, changes),
             RunKind::ListingOfTwoPages => world.change_and_converge_through_a_listing_of_two_pages(changes, changes),
             RunKind::ReadOnlyFolder => world.change_and_converge_through_a_read_only_folder(changes, changes),
         };
@@ -455,7 +583,7 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
     Ok(world)
 }
 
-const RUN_KINDS: [RunKind; 4] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven];
+const RUN_KINDS: [RunKind; 5] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn];
 
 /// The design's §12, "convergence": new. A few seeds of each kind of run.
 #[test]
@@ -468,7 +596,7 @@ fn changes_made_at_random_on_both_sides_converge_and_nothing_is_lost() {
 }
 
 /// One run by hand, to read a failure of the larger run:
-/// `CONVERGENCE_RUN=<seed>,<kind 0 to 3>,<changes> cargo test -p konedrive-tree one_run_by_hand -- --ignored --nocapture`.
+/// `CONVERGENCE_RUN=<seed>,<kind 0 to 4>,<changes> cargo test -p konedrive-tree one_run_by_hand -- --ignored --nocapture`.
 #[test]
 #[ignore = "one run of the convergence test, named by the environment"]
 fn one_run_by_hand() {
@@ -592,4 +720,50 @@ fn directories_moved_into_one_another_in_a_ring_of_four_converge() {
     write_listing_of_changes(&mut world.store, &listed);
     let expected = ExpectedEnd::of(&mut world.store);
     world.run_to_the_end().and_then(|_| world.check_converged(&expected)).unwrap_or_else(|failure| panic!("{failure}\n{}", describe_rows(&rows(&mut world.store))));
+}
+
+// -- the findings of the review of part 3, as the review ran them
+
+/// The review's M3: a listing that has ended names two files in one directory under names
+/// that fold to one. Both are shown, and nothing asks for a listing again.
+#[test]
+fn two_files_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
+    let mut world = World::new(1);
+    let listed = [listed_file("U1", "R", "\u{e9}clair", (701, "h701-1000"), "e"), listed_file("U2", "R", "e\u{301}clair", (702, "h702-1000"), "e")];
+    write_listing_of_changes(&mut world.store, &listed);
+    let expected = ExpectedEnd::of(&mut world.store);
+    world.run_to_the_end().and_then(|_| world.check_converged(&expected)).unwrap_or_else(|failure| panic!("{failure}"));
+    for name in ["\u{e9}clair", "e\u{301}clair"] {
+        assert!(world.store.item_store().find_item_at(ROOT, name.as_ref()).unwrap().is_some(), "{name}");
+    }
+}
+
+/// The review's M1, its sequence: `a` is renamed here and its move is running; meanwhile a
+/// file is moved out of `a/b`, and `a` is removed with all in it. Whichever order the steps
+/// run in, the file that was moved out is on both sides at the end.
+#[test]
+fn a_file_moved_out_of_a_removed_directory_survives_the_removal_while_a_step_runs_for_the_outer_one() {
+    for seed in 1..=6 {
+        let mut world = World::new(seed);
+        let find = |world: &mut World, parent: LocalItemId, name: &str| world.store.item_store().find_item_at(parent, name.as_ref()).unwrap().expect("shown").local_item_id;
+        let a = find(&mut world, ROOT, "a");
+        let b = find(&mut world, a, "b");
+        let kept = find(&mut world, b, "c.txt");
+        world.store.item_store().apply(&LocalVersionChange::Moved { item: a, place: place(ROOT, "a2"), is_name_ignored: false }).unwrap();
+        let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+        let [move_of_a] = plan.steps.as_slice() else { panic!("{:?}", plan.steps) };
+        world.running_steps.push((move_of_a.clone(), 1));
+        world.facts.items_with_running_step.insert(a);
+        let inside: Vec<LocalItemId> = ["c.txt", "e.txt"].iter().map(|name| find(&mut world, a, name)).collect();
+        world.store.item_store().apply(&LocalVersionChange::Moved { item: kept, place: place(ROOT, "kept.txt"), is_name_ignored: false }).unwrap();
+        for removed in inside.into_iter().chain([b, a]) {
+            world.store.item_store().apply(&LocalVersionChange::Removed { item: removed }).unwrap();
+        }
+        let expected = ExpectedEnd::of(&mut world.store);
+        assert!(expected.on_both_sides.contains(&kept));
+        world.run_to_the_end().and_then(|_| world.check_converged(&expected)).unwrap_or_else(|failure| panic!("seed {seed}: {failure}\n{}", describe_rows(&rows(&mut world.store))));
+        let kept = world.store.item_store().find_item(kept).unwrap().expect("its row");
+        assert_eq!(kept.local.as_ref().and_then(|local| local.place.clone()), Some(place(ROOT, "kept.txt")));
+        assert!(kept.onedrive.is_some() && world.store.item_store().find_item_at(ROOT, "a2".as_ref()).unwrap().is_none());
+    }
 }
