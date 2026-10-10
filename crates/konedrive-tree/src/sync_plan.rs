@@ -163,10 +163,12 @@ fn is_directory_entry_name(name: &std::ffi::OsStr) -> bool {
     !bytes.is_empty() && bytes != b"." && bytes != b".." && !bytes.contains(&b'/') && !bytes.contains(&0) && bytes.len() <= konedrive_fs::NAME_MAX
 }
 
-/// How OneDrive knows the directory the folder shows `item` in.
+/// How OneDrive knows the directory the folder shows `item` in. A binding counts only while
+/// the rows say OneDrive has the directory: one it removed, and one no listing told of yet,
+/// keep their binding and are nothing to send into.
 fn find_local_directory_binding(items: &PlanItems<'_>, item: &Item) -> LocalDirectoryBinding {
     let Some(place) = item.local.as_ref().and_then(|local| local.place.as_ref()) else { return LocalDirectoryBinding::NoLocalPlace };
-    match items.find(place.parent_local_item_id).and_then(|directory| directory.onedrive_item.clone()) {
+    match items.find(place.parent_local_item_id).filter(|directory| directory.onedrive.is_some()).and_then(|directory| directory.onedrive_item.clone()) {
         Some(directory) => LocalDirectoryBinding::Bound(directory),
         None => LocalDirectoryBinding::NotBound(place.parent_local_item_id),
     }

@@ -99,6 +99,32 @@ fn a_directory_moved_here_that_onedrive_removed_goes_here_once_the_folder_shows_
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
 }
 
+/// Differs from today: a new item, or a move, into a directory that has a binding and that
+/// OneDrive does not have (it removed it; or no listing told of it yet) is not sent into
+/// that binding. Today the request is sent and answered 404 (`upload/steps/meta.rs:39-42`,
+/// `upload/content.rs:219-222`, the reason `parent-not-in-onedrive`). Here the item waits
+/// for the directory, as for one that has no binding. With a directory OneDrive removed
+/// the two wait for each other: which gives way is decided between items (the directory
+/// gives up its binding when what the folder shows in it is the user's own).
+#[test]
+fn nothing_is_sent_into_a_directory_onedrive_does_not_have() {
+    let mut never_listed = made_directory(6, ROOT, "marked");
+    never_listed.onedrive_item = Some(reference("I6"));
+    let given = input(vec![
+        removed_in_onedrive(synced_directory(2, ROOT, "d")),
+        made_file(3, id(2), "mine.txt"),
+        made_directory(4, id(2), "mine"),
+        moved_here(synced_file(5, ROOT, "a.txt"), id(2), "a.txt"),
+        never_listed,
+        made_file(7, id(6), "b.txt"),
+    ]);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
+    for sent_into_it in [3, 4, 5] {
+        assert_eq!(answer(&given, sent_into_it), Answer::Wait(WaitReason::AnotherItem(id(2))), "item {sent_into_it}");
+    }
+    assert_eq!(answer(&given, 7), Answer::Wait(WaitReason::AnotherItem(id(6))));
+}
+
 /// E11. Today: `conflicts_keep_both_and_the_first_rename_wins` (`upload/tests/conflicts.rs`,
 /// "rename × delete there", the file that is not downloaded).
 #[test]
