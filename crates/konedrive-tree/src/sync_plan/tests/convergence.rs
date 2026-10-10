@@ -135,6 +135,16 @@ impl World {
         world
     }
 
+    /// The directory `step` sends its item into, when it sends one into a directory.
+    fn destination_of(store: &mut TreeStore, step: &SyncStep) -> Option<LocalItemId> {
+        match step {
+            SyncStep::OneDrive(OneDriveStep::MakeDirectory { parent, .. } | OneDriveStep::SendNewFile { parent, .. } | OneDriveStep::SendMove { parent, .. }) => {
+                store.item_store().find_bound_item(parent).unwrap().map(|directory| directory.local_item_id)
+            }
+            _ => None,
+        }
+    }
+
     /// The commits of the steps that were left running arrive, each after its rounds: with
     /// the versions the step was planned from, whatever became of the rows meanwhile. A
     /// commit that finds the rows changed, or a name taken, is no failure here: that is
@@ -145,6 +155,7 @@ impl World {
         for (step, _) in ended {
             self.stand_in.run(&mut self.store, &step);
             self.facts.items_with_running_step.remove(&step.local_item_id());
+            self.facts.destinations_of_running_steps = self.running_steps.iter().filter_map(|(step, _)| Self::destination_of(&mut self.store, step)).collect();
             if let Some(rule) = find_broken_rule(&rows(&mut self.store), self.store.item_store().find_listing_under_way().unwrap().is_some()) {
                 return Err(format!("after {step:?}, which ran for a while: {rule}"));
             }
@@ -196,6 +207,8 @@ impl World {
                 if leaves_steps_running && !matches!(step, SyncStep::Row(_)) && self.what_facts_are_drawn_with.below(3) == 0 {
                     self.running_steps.push((step.clone(), self.what_facts_are_drawn_with.below(2)));
                     self.facts.items_with_running_step.insert(step.local_item_id());
+                    let destination = Self::destination_of(&mut self.store, step);
+                    self.facts.destinations_of_running_steps.extend(destination);
                     is_left_running = true;
                     continue;
                 }

@@ -137,9 +137,11 @@ enum ItemFact {
     /// OneDrive refused what was sent of it.
     SendingRefused,
     LeftByStartUpCheck,
+    /// A step that is running sends an item into it, a directory.
+    SentIntoByRunningStep,
 }
 
-const EVERY_ITEM_FACT: [ItemFact; 8] = [
+const EVERY_ITEM_FACT: [ItemFact; 9] = [
     ItemFact::StepRunning,
     ItemFact::OpenForWriting,
     ItemFact::InQuietTime,
@@ -148,6 +150,7 @@ const EVERY_ITEM_FACT: [ItemFact; 8] = [
     ItemFact::TriedAgainLater,
     ItemFact::SendingRefused,
     ItemFact::LeftByStartUpCheck,
+    ItemFact::SentIntoByRunningStep,
 ];
 
 impl ItemFact {
@@ -163,6 +166,7 @@ impl ItemFact {
             ItemFact::InQuietTime => content_here.is_some() && content_here != item.synced_content.as_ref(),
             ItemFact::NameRefused => item.local.is_some(),
             ItemFact::CannotBeShown => item.onedrive.is_some(),
+            ItemFact::SentIntoByRunningStep => item.kind == ItemKind::Directory && item.onedrive.is_some(),
         }
     }
 
@@ -170,6 +174,7 @@ impl ItemFact {
         match self {
             ItemFact::StepRunning => drop(given.items_with_running_step.insert(item)),
             ItemFact::LeftByStartUpCheck => drop(given.items_left_by_start_up_check.insert(item)),
+            ItemFact::SentIntoByRunningStep => drop(given.destinations_of_running_steps.insert(item)),
             ItemFact::TriedAgainLater => drop(given.next_tries.insert(item, NextTry { not_before: given.now + 60, reason: Reason::Network })),
             ItemFact::SendingRefused => drop(given.sending_refusals.insert(item, Reason::NotAllowed(None))),
             ItemFact::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
@@ -606,14 +611,17 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
             if given.is_listing_under_way {
                 return Some(format!("the removal of the directory {number} is sent while a listing is under way"));
             }
+            if given.destinations_of_running_steps.contains(&number) {
+                return Some(format!("the removal of the directory {number} is sent while a running step sends an item into it"));
+            }
             let mut below = vec![number];
             for _ in 0..given.items.len() {
                 let deeper: Vec<LocalItemId> = given.items.iter().filter(|row| directory_in_onedrive(row).is_some_and(|directory| below.contains(&directory)) && !below.contains(&row.local_item_id)).map(|row| row.local_item_id).collect();
                 below.extend(deeper);
             }
             for taken in below.iter().skip(1).filter_map(|taken| row_of(*taken)) {
-                if given.items_with_running_step.contains(&taken.local_item_id) || given.items_left_by_start_up_check.contains(&taken.local_item_id) {
-                    return Some(format!("the removal of the directory {number} takes with it item {}, which a step is running for or the check at start left", taken.local_item_id));
+                if given.items_with_running_step.contains(&taken.local_item_id) || given.items_left_by_start_up_check.contains(&taken.local_item_id) || given.destinations_of_running_steps.contains(&taken.local_item_id) {
+                    return Some(format!("the removal of the directory {number} takes with it item {}, which a step is running for or sends an item into, or the check at start left", taken.local_item_id));
                 }
                 if taken.local.is_some() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder shows", taken.local_item_id));

@@ -13,7 +13,7 @@
 //! did. *The rows changed*: nothing was written, and the plan made next decides. That is
 //! no error. It is answered when the versions of the step's item are not the row's any
 //! more, and when another row the step was planned against is not as it was: the directory
-//! the item was sent into has no binding any more, the place the item was to take in the
+//! the item was sent into has no binding any more or OneDrive does not have it, the place the item was to take in the
 //! folder is another item's, the folder shows something in a directory that was to leave
 //! it. An error ([`TreeError::Refused`]) is left for what no plan asks for: a step of a
 //! kind of item it is not for, an answer of OneDrive that is of another item.
@@ -290,9 +290,10 @@ fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below
     Ok(!is_anything_shown_below_in_onedrive(conn, item.local_item_id)?)
 }
 
-/// The directory that has the binding `directory`, when a row has it.
+/// The directory that has the binding `directory`, when a row has it and says OneDrive has
+/// the directory: nothing is confirmed to be in a directory OneDrive removed meanwhile.
 fn find_bound_directory(conn: &Connection, directory: &OneDriveItemReference) -> Result<Option<LocalItemId>, TreeError> {
-    Ok(find_bound_item(conn, directory)?.filter(|row| row.kind == ItemKind::Directory).map(|row| row.local_item_id))
+    Ok(find_bound_item(conn, directory)?.filter(|row| row.kind == ItemKind::Directory && row.onedrive.is_some()).map(|row| row.local_item_id))
 }
 
 /// Whether a check of the rows' rules held: a refusal says it did not, and anything else

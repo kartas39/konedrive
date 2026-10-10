@@ -159,6 +159,11 @@ pub struct SyncPlanInput {
     pub quiet_until: BTreeMap<LocalItemId, i64>,
     /// The items a step is running for now.
     pub items_with_running_step: BTreeSet<LocalItemId>,
+    /// The directories the steps that are running now send their items into: where a new
+    /// directory is made, a new file sent, an item moved. The rows say such an item is
+    /// there only once the step's commit is written; until then no removal of that
+    /// directory, or of one above it, is sent, as it would take the item with it.
+    pub destinations_of_running_steps: BTreeSet<LocalItemId>,
     /// The files a pin holds for, their own or that of a directory above them.
     pub pinned_items: BTreeSet<LocalItemId>,
     /// A listing is being written into the rows
@@ -439,6 +444,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         local_directory: find_local_directory_binding(input, items, item),
         local_place_availability: find_local_place_availability(items, item),
         is_left_by_start_up_check: input.items_left_by_start_up_check.contains(&id),
+        is_sent_into_by_running_step: input.destinations_of_running_steps.contains(&id),
         first_shown_in_it: items.find_first_shown_in(id),
         is_given_with_all_in_it: is_given_with_all_in_it(input, items, item, folder_visibility),
         onedrive_directory_not_given: find_onedrive_directory_not_given(items, item),

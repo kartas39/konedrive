@@ -204,6 +204,8 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) is_open_for_writing: bool,
     /// The check of the backing directory at start could not decide the item.
     pub(crate) is_left_by_start_up_check: bool,
+    /// A step that is running sends an item into the item, a directory.
+    pub(crate) is_sent_into_by_running_step: bool,
     pub(crate) is_pinned: bool,
     pub(crate) local_directory: LocalDirectoryBinding,
     pub(crate) local_place_availability: LocalPlaceAvailability,
@@ -256,8 +258,9 @@ fn row_step(step: RowStep) -> ItemDecision {
 }
 
 /// What holds the item of `case` back whatever its row and the other items say: a step is
-/// running for it, a program holds it open for writing, or the check of the backing
-/// directory at start could not decide it. Nothing of such an item is planned, by itself or
+/// running for it, a program holds it open for writing, the check of the backing directory
+/// at start could not decide it, or it is a directory the folder does not show into which
+/// a running step sends an item. Nothing of such an item is planned, by itself or
 /// between items: nothing of it is sent, and nothing is taken over for it.
 pub(crate) fn find_hold(case: &ItemCase<'_>) -> Option<WaitReason> {
     if case.has_running_step {
@@ -266,6 +269,10 @@ pub(crate) fn find_hold(case: &ItemCase<'_>) -> Option<WaitReason> {
         Some(WaitReason::User(Reason::OpenForWriting))
     } else if case.is_left_by_start_up_check {
         Some(WaitReason::StartUpCheck)
+    } else if case.is_sent_into_by_running_step && case.item.local.is_none() {
+        // A directory the folder does not show any more, into which a step still sends an
+        // item: its removal would take that item with it.
+        Some(WaitReason::RunningStep)
     } else {
         None
     }
@@ -304,17 +311,25 @@ pub(crate) fn decide_item(case: &ItemCase<'_>) -> ItemDecision {
 
 /// What the content table answers for the file of `case` while its place waits: its step,
 /// when the table has one. `None` for an item that is held back, for one that is not a file
-/// both sides have where the folder can show it, and when nothing of its content is to do
-/// or what is to do waits itself.
+/// both sides have, and when nothing of its content is to do or what is to do waits
+/// itself.
 ///
 /// One step per item, the place first: but a place that waits for the user may wait for
 /// good, and the content of the file is OneDrive's and the folder's all the same.
 pub(crate) fn decide_content_while_place_waits(case: &ItemCase<'_>) -> Option<SyncStep> {
     let item = case.item;
-    if find_hold(case).is_some() || item.kind != ItemKind::File || !matches!(case.folder_visibility, FolderVisibility::CanBeShown) {
+    if find_hold(case).is_some() || item.kind != ItemKind::File {
         return None;
     }
+    // Of a file the folder cannot show, the content that was changed here alone is decided,
+    // as where its place does not wait ([`decide_item_that_cannot_be_shown`]).
+    let is_decided = |here: ContentChange| match case.folder_visibility {
+        FolderVisibility::CanBeShown => true,
+        FolderVisibility::CannotBeShown => !case.is_listing_under_way && here != ContentChange::Same,
+        FolderVisibility::NotKnownYet | FolderVisibility::NotInOneDrive => false,
+    };
     match (SideChange::of_local(item), SideChange::of_onedrive(item)) {
+        (SideChange::IsThere { content: here, .. }, SideChange::IsThere { .. }) if !is_decided(here) => None,
         (SideChange::IsThere { content: here, .. }, SideChange::IsThere { content: in_onedrive, .. }) => match decide_content(case, here, in_onedrive) {
             ItemDecision::Step(step) => Some(step),
             ItemDecision::NothingToDo | ItemDecision::Wait(_) | ItemDecision::Exclusion(_) | ItemDecision::Fault(_) => None,

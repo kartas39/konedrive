@@ -895,3 +895,37 @@ fn an_item_the_check_at_start_left_is_not_planned() {
     assert_eq!(answer(&given, 3), waits_for(2));
     assert_eq!(answer(&given, 5), waits_for(6));
 }
+
+/// Found by the larger convergence run (seed 310, the caller's facts drawn): a file both
+/// sides agreed on, changed here and moved here within a directory the folder cannot show,
+/// which OneDrive moved too. Its place waits for the user; its content is sent where
+/// OneDrive has it, as for any item the folder cannot show (the brief's §7, M2).
+#[test]
+fn the_content_of_a_file_the_folder_cannot_show_whose_place_waits_for_the_user_is_sent() {
+    let file = with_content_here(moved_in_onedrive(moved_here(synced_file(4, id(2), "c.txt"), id(3), "A"), id(2), "d"), written_here());
+    let given = cannot_be_shown(input(vec![synced_directory(2, ROOT, "a"), synced_directory(3, id(2), "b"), file]), &[2, 3, 4]);
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 4) }));
+    // With its content sent, it waits for the user.
+    let file = moved_in_onedrive(moved_here(synced_file(4, id(2), "c.txt"), id(3), "A"), id(2), "d");
+    let given = cannot_be_shown(input(vec![synced_directory(2, ROOT, "a"), synced_directory(3, id(2), "b"), file]), &[2, 3, 4]);
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::Parent)));
+}
+
+/// Found by the larger convergence run (seed 12, the caller's facts drawn), the class of
+/// the review's M1: a step that is running sends an item into a directory — a move, a new
+/// file, a new directory. The rows do not say so until its commit, and the removal of that
+/// directory, or of one above it, would take the item with it: it waits for that step.
+#[test]
+fn the_removal_of_a_directory_waits_for_a_running_step_that_sends_an_item_into_it() {
+    let rows = || vec![removed_here(synced_directory(2, ROOT, "a")), removed_here(synced_directory(3, id(2), "b")), synced_file(4, ROOT, "kept.txt")];
+    let mut given = input(rows());
+    given.items_with_running_step = [id(4)].into();
+    given.destinations_of_running_steps = [id(3)].into();
+    assert_eq!(answer(&given, 2), waits_for(3), "what is sent into the inner directory would go with the outer one");
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::RunningStep));
+    given.destinations_of_running_steps = [id(2)].into();
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::RunningStep));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    given.destinations_of_running_steps.clear();
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3)] }));
+}

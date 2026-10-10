@@ -192,6 +192,7 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         quiet_until: BTreeMap::new(),
         items_with_running_step: BTreeSet::new(),
         pinned_items: BTreeSet::new(),
+        destinations_of_running_steps: BTreeSet::new(),
         is_listing_under_way: false,
         is_onedrive_full: false,
         largest_file_size: 250 << 30,

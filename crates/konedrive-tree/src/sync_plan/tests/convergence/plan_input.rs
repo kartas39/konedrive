@@ -28,6 +28,7 @@ pub(crate) struct CallerFacts {
     pub(crate) quiet_until: BTreeMap<LocalItemId, i64>,
     pub(crate) items_with_running_step: BTreeSet<LocalItemId>,
     pub(crate) is_onedrive_full: bool,
+    pub(crate) destinations_of_running_steps: BTreeSet<LocalItemId>,
 }
 
 impl CallerFacts {
@@ -42,6 +43,7 @@ impl CallerFacts {
             quiet_until: BTreeMap::new(),
             items_with_running_step: BTreeSet::new(),
             is_onedrive_full: false,
+            destinations_of_running_steps: BTreeSet::new(),
         }
     }
 }
@@ -140,6 +142,7 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_open_for_writing: facts.items_open_for_writing.clone(),
         quiet_until: facts.quiet_until.clone(),
         items_with_running_step: facts.items_with_running_step.clone(),
+        destinations_of_running_steps: facts.destinations_of_running_steps.clone(),
         pinned_items: rows.iter().filter(|row| row.kind == ItemKind::File && items.is_pinned(row.local_item_id).unwrap()).map(|row| row.local_item_id).collect(),
         is_listing_under_way: items.find_listing_under_way().unwrap().is_some(),
         is_onedrive_full: facts.is_onedrive_full,

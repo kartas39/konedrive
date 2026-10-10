@@ -668,3 +668,21 @@ fn the_removals_confirmed_since_a_count_are_counted() {
     assert_eq!(store.item_store().commit_remove_item(&planned_from).unwrap(), StepCommitOutcome::Written);
     assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0, "a listing that began after them has ended: their rows are gone");
 }
+
+/// Found by the larger convergence run: a move whose commit arrives after the directory it
+/// was sent into was removed from OneDrive writes nothing: the rows would say OneDrive has
+/// the item in a directory it does not have. The next listing says what became of it.
+#[test]
+fn a_move_into_a_directory_onedrive_does_not_have_any_more_is_not_written() {
+    let mut store = store_with_listed_root();
+    let directory = show_directory(&mut store, "D", "R", "d");
+    let file = show_file(&mut store, "G", "g");
+    move_here(&mut store, file, directory, "g");
+    let planned_from = versions(&mut store, file);
+    move_here(&mut store, file, ROOT, "g");
+    store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
+    let removal = versions(&mut store, directory);
+    assert_eq!(store.item_store().commit_send_directory_removal(&removal, &[]).unwrap(), StepCommitOutcome::Written);
+    let moved = confirmed("G", "D", "g", Some(listed_content(3, "h-G")), "e-moved");
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_move(&planned_from, &reference("D"), "g".as_ref(), &moved)));
+}
