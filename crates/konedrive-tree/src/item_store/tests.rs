@@ -297,6 +297,30 @@ fn a_directory_of_onedrive_with_an_ignored_name_does_not_ignore_what_is_in_it() 
     assert!(!store.item_store().is_ignored(ROOT).unwrap());
 }
 
+/// An item OneDrive has is never left here, whatever the upload rules say of a name: a file
+/// of OneDrive whose own name is ignored, a file of OneDrive below an ignored directory that
+/// OneDrive does not have, and a file made with an ignored name where a file of OneDrive
+/// was removed, which takes that file's binding over. The same file with no binding is.
+#[test]
+fn an_item_onedrive_has_is_never_left_here() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let own_name = make_named(&mut store, ItemKind::File, ROOT, "x.tmp", true);
+    let cache = make_named(&mut store, ItemKind::Directory, ROOT, ".cache", true);
+    let below = make_file(&mut store, cache, "below");
+    let removed = make_file(&mut store, ROOT, "y.tmp");
+    synced(&mut store, removed, "Y");
+    store.item_store().apply(&LocalVersionChange::Removed { item: removed }).unwrap();
+    let made_ignored = LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "y.tmp"), content: Some(made_here()), is_name_ignored: true, replaced: Some(removed) };
+    let replacing = store.item_store().apply(&made_ignored).unwrap();
+    assert!(item(&mut store, replacing).is_name_ignored, "the row says what the rules say of the name");
+    assert_eq!([own_name, below].map(|id| store.item_store().is_ignored(id).unwrap()), [true, true], "with no binding");
+
+    synced(&mut store, own_name, "X");
+    synced(&mut store, below, "B");
+    assert_eq!([own_name, below, replacing].map(|id| store.item_store().is_ignored(id).unwrap()), [false, false, false]);
+    assert!(store.item_store().is_ignored(cache).unwrap(), "the directory OneDrive does not have is left here still");
+}
+
 /// Two items exchange their places in one step, in one directory and across two, although
 /// the index of local places is checked at each statement; nothing is left under another
 /// name. Each takes, with the other's name, what the upload rules say of that name. A

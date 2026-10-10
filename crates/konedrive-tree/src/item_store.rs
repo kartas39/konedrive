@@ -103,10 +103,10 @@ impl ItemStore<'_> {
         find_path(&self.store.conn, item)
     }
 
-    /// Whether `item` is left here, and so never sent: the upload rules ignore its own name,
-    /// or the name of a directory above it in the folder that OneDrive does not have. A
-    /// directory OneDrive has is OneDrive's whatever its name. Derived from the rows at each
-    /// call. Refused for an id with no row.
+    /// Whether `item` is left here, and so never sent: it has no binding, and its own name is
+    /// ignored or that of a directory above it that has no binding. An item OneDrive has is
+    /// never left here, also below an ignored directory that OneDrive does not have. Derived
+    /// from the rows at each call, never stored. Refused for an id with no row.
     pub fn is_ignored(&self, item: LocalItemId) -> Result<bool, TreeError> {
         is_ignored(&self.store.conn, item)
     }
@@ -170,6 +170,9 @@ fn read_shown(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVersion),
 
 fn is_ignored(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
     let item = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
+    if item.onedrive_item.is_some() {
+        return Ok(false);
+    }
     if item.is_name_ignored {
         return Ok(true);
     }
