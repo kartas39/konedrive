@@ -350,13 +350,21 @@ fn marked_entries_no_row_knows_are_new_items_bound_to_the_ids_of_their_marks() {
     f.write("docs/a.txt", b"aaa");
     f.mark_copy("docs/a.txt", "A");
     f.write("own.txt", b"o");
-    assert_eq!(found(&f.check()), [(DiskFinding::Made, 1), (DiskFinding::MarkedWithoutRow, 2)]);
+    f.write("docs/unversioned.txt", b"uuuu");
+    xattr::set(f.disk("docs/unversioned.txt"), XATTR_ITEM_ID, b"U").unwrap();
+    xattr::set(f.disk("docs/unversioned.txt"), XATTR_STATE, State::Hydrated.as_str().as_bytes()).unwrap();
+    assert_eq!(found(&f.check()), [(DiskFinding::Made, 1), (DiskFinding::MarkedWithoutRow, 3)]);
 
     assert_eq!(f.row("docs").unwrap().onedrive_item, Some(reference("d1", "D")));
     let a = f.row("docs/a.txt").unwrap();
-    assert_eq!((a.onedrive_item.clone(), content(&a), a.content_presence), (Some(reference("d1", "A")), changed_here(3, 1), ContentPresence::OnDisk));
+    // The content is told by the cTag of the mark, with no hash: the plan takes the copy as
+    // clean when a listing brings that cTag as OneDrive's.
+    let marked = ContentVersion::Hashed { size: 3, mtime: MTIME, mtime_nsec: 0, hash: None, ctag: Some("c-A".to_owned()) };
+    assert_eq!((a.onedrive_item.clone(), content(&a), a.content_presence), (Some(reference("d1", "A")), Some(marked), ContentPresence::OnDisk));
     assert_eq!(a.synced_content, None, "nothing is agreed on before a listing brings OneDrive's version");
-    assert_eq!(xattr::get(f.disk("docs/a.txt"), XATTR_CTAG).unwrap().as_deref(), Some(&b"c-A"[..]), "the cTag mark stays for the plan to compare");
+    assert_eq!(xattr::get(f.disk("docs/a.txt"), XATTR_CTAG).unwrap().as_deref(), Some(&b"c-A"[..]));
+    // A copy landed before a landing wrote the cTag has no such mark: nothing tells its content but that it is here.
+    assert_eq!(content(&f.row("docs/unversioned.txt").unwrap()), changed_here(4, 1));
     assert_eq!(f.row("own.txt").unwrap().onedrive_item, None);
     f.assert_settled();
 }

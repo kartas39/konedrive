@@ -480,7 +480,8 @@ pub struct ItemPlace {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ContentVersion {
     /// Told by what OneDrive gave or the client computed from the bytes: the QuickXorHash
-    /// (base64) and the cTag.
+    /// (base64) and the cTag. Either may be missing; a copy on disk whose row was lost has
+    /// the cTag it is marked with and no hash.
     Hashed { size: u64, mtime: i64, mtime_nsec: u32, hash: Option<String>, ctag: Option<String> },
     /// Changed by a program here, with no hash known yet: told by a number the client raises
     /// each time a program begins to change the content.

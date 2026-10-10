@@ -175,7 +175,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
                 if finding == DiskFinding::MadeWithStaleMark {
                     self.remove_stale_marks(index)?;
                 }
-                let item = self.make(index, directory, finding == DiskFinding::Made)?;
+                let item = self.make(index, directory, finding)?;
                 if finding == DiskFinding::MarkedWithoutRow {
                     self.bind(item, directory, index)?;
                 }
@@ -214,9 +214,16 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
     }
 
     /// A new item for the entry `index`, at its name in `directory`, its content on disk.
-    fn make(&mut self, index: EntryIndex, directory: LocalItemId, is_unmarked: bool) -> Result<LocalItemId, UnresolvedReason> {
+    fn make(&mut self, index: EntryIndex, directory: LocalItemId, finding: DiskFinding) -> Result<LocalItemId, UnresolvedReason> {
         let entry = self.inputs.contents.entry(index);
-        let content = (entry.kind == ItemKind::File).then(|| ContentVersion::ChangedHere { size: entry.file.size, mtime: entry.file.mtime, mtime_nsec: entry.file.mtime_nsec, change_count: 1 });
+        let is_unmarked = finding == DiskFinding::Made;
+        let (size, mtime, mtime_nsec) = (entry.file.size, entry.file.mtime, entry.file.mtime_nsec);
+        let content = (entry.kind == ItemKind::File).then(|| match &entry.file.ctag {
+            // The copy of an item whose row is lost: its content is told by the cTag it is
+            // marked with, with no hash, for the plan to compare with OneDrive's.
+            Some(ctag) if finding == DiskFinding::MarkedWithoutRow => ContentVersion::Hashed { size, mtime, mtime_nsec, hash: None, ctag: Some(ctag.clone()) },
+            _ => ContentVersion::ChangedHere { size, mtime, mtime_nsec, change_count: 1 },
+        });
         // A file made where one was removed here, whose removal is not sent, is that file
         // with another content, as the mount's own make has it.
         let replaced = if is_unmarked && entry.kind == ItemKind::File { self.inputs.rows.find_file_removed_at(directory, &entry.name) } else { None };
