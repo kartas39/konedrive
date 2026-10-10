@@ -129,6 +129,53 @@ mod unsent_changes;
 mod upload_rules;
 mod write_operation_thread;
 mod write_operations;
+// The mount over the rows of `items`, and the runner of the plan's steps towards the
+// folder: no caller until the mount reads the rows.
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod folder_steps;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_announcements;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_attributes;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_content_files;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_download_landing;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_download_states;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_downloader;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_files_interface;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_free_up;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_handles;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_inotify_bridge;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_kernel_requests;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_lookup;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_mount;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_range_fetcher;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_read_origin;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod item_write_operations;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod mount_take_down;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod place_changes;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod read_connections;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+mod start_check;
+// The fixture the tests of the mount over the rows, the steps and the plan's task share.
+#[cfg(test)]
+pub(crate) mod item_fixture;
 
 pub use access_mode_switch::AccessModeSwitch;
 pub use backing_directory::BackingDirectory;
@@ -136,6 +183,14 @@ pub use conflict_copies::{ConflictCopy, CycleConflicts};
 pub use cycle_step::{CycleOutcome, CycleStep, OneDriveChange};
 #[cfg(any(test, feature = "fault-injection"))]
 pub use file_downloader::UnfinishedDownload;
+pub use folder_steps::FolderSteps;
+pub use item_announcements::ItemAnnouncement;
+pub use item_content_files::{ItemContentFiles, LocalContentFile};
+pub use item_files_interface::{ItemFilesInterface, ItemPathStatus};
+pub use item_handles::ItemHandles;
+pub use item_mount::{ItemMount, ItemMountError, ItemMountSetup};
+pub use mount_take_down::{MountTakeDown, TakeDownCause, TakeDownReport};
+pub use start_check::StartCheckFindings;
 pub use files_interface::{DownloadedSpace, FilesInterface, FilesRefusal, FreedSpace, PathStatus};
 pub use free_up_decision::FreeUpDecision;
 pub use mount::{Mount, MountSetup, WriteSetup};
