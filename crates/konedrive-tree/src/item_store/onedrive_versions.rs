@@ -55,7 +55,7 @@ use std::ffi::OsString;
 use rusqlite::{Connection, Transaction};
 
 use super::bindings::{bind_root, make_onedrive_item};
-use super::item_row::{clear_onedrive_version, delete_rows_of_binding_alone, find_bound_item, find_item, list_below_in_onedrive, list_unseen_in_full_listing, set_onedrive_etag, set_onedrive_version, write_item};
+use super::item_row::{clear_onedrive_version, clear_onedrive_versions_below, clear_onedrive_versions_unseen, delete_rows_of_binding_alone, find_bound_item, find_item, set_onedrive_etag, set_onedrive_version, write_item};
 use super::{refuse, ItemStore};
 use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, Kind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 use crate::{meta, TreeError};
@@ -231,29 +231,16 @@ fn find_or_make_listed_item(tx: &Transaction<'_>, onedrive_item: &OneDriveItemRe
 /// The listing says OneDrive does not have `item`: neither it nor what the rows say
 /// OneDrive has below it has an OneDrive version from now on. What was confirmed of one of
 /// them after the fetch began is left, and its id is added to `read_again`.
-fn clear_onedrive_version_with_what_is_below(tx: &Transaction<'_>, item: &Item, fetch_began_at_count: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
+fn clear_listed_gone(tx: &Transaction<'_>, item: &Item, fetch_began_at_count: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
     if is_listed_removal_outdated(item, fetch_began_at_count) {
         read_again.extend(item.onedrive_item.as_ref().map(|reference| reference.item_id.clone()));
         return Ok(());
     }
-    for below in list_below_in_onedrive(tx, item.local_item_id)? {
-        clear_onedrive_version_unless_outdated(tx, &below, fetch_began_at_count, read_again)?;
-    }
+    read_again.extend(clear_onedrive_versions_below(tx, item.local_item_id, fetch_began_at_count)?);
     if item.onedrive.is_some() {
         clear_onedrive_version(tx, item.local_item_id)?;
     }
     Ok(())
-}
-
-/// `item`, which OneDrive has by its row, has no OneDrive version from now on, unless
-/// something was confirmed of it after the fetch began: then its id is added to
-/// `read_again`.
-fn clear_onedrive_version_unless_outdated(tx: &Transaction<'_>, item: &Item, fetch_began_at_count: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
-    if is_listed_removal_outdated(item, fetch_began_at_count) {
-        read_again.extend(item.onedrive_item.as_ref().map(|reference| reference.item_id.clone()));
-        return Ok(());
-    }
-    clear_onedrive_version(tx, item.local_item_id)
 }
 
 /// A listing's folder is a directory, and its file a file.
@@ -329,7 +316,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
             tracing::warn!("the listing says the root of the drive is gone: it is not written");
             continue;
         }
-        clear_onedrive_version_with_what_is_below(tx, &item, fetch_began_at_count, &mut read_again)?;
+        clear_listed_gone(tx, &item, fetch_began_at_count, &mut read_again)?;
     }
 
     match delta_link {
@@ -337,9 +324,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
         // removals confirmed before its fetch began have been passed.
         Some(delta_link) => {
             if let Some(count) = full_listing {
-                for unseen in list_unseen_in_full_listing(tx, count)? {
-                    clear_onedrive_version_unless_outdated(tx, &unseen, fetch_began_at_count, &mut read_again)?;
-                }
+                read_again.extend(clear_onedrive_versions_unseen(tx, count, fetch_began_at_count)?);
                 meta::set(tx, meta::FULL_LISTING_UNDER_WAY, None)?;
             }
             delete_rows_of_binding_alone(tx, fetch_began_at_count)?;

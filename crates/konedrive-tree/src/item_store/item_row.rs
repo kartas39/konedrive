@@ -329,8 +329,7 @@ pub(super) fn set_onedrive_version(conn: &Connection, item: LocalItemId, onedriv
 /// OneDrive does not have `item` from now on: no version, no eTag, and the placement of an
 /// item it does not have. Nothing else of the row is written.
 pub(super) fn clear_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
-    let sets = onedrive_columns().iter().map(|column| format!("{column} = NULL")).collect::<Vec<_>>().join(", ");
-    conn.prepare_cached(&format!("UPDATE items SET {sets}, placement = '{PLACED}' WHERE local_item_id = ?1"))?.execute([item.as_i64()])?;
+    conn.prepare_cached(&format!("{} WHERE local_item_id = ?1", clear_onedrive_version_sql()))?.execute([item.as_i64()])?;
     Ok(())
 }
 
@@ -364,29 +363,59 @@ pub(super) fn list_changed_in_onedrive(conn: &Connection, after: Option<LocalIte
     Ok(items)
 }
 
-/// Every item OneDrive has in `directory` and below it, as the rows say: found from the
-/// directory down by the index of places in OneDrive, each item once also when the rows of
-/// a listing that has not ended name each other in a circle.
+/// Every item OneDrive has in `directory` and below it, as the rows say ([`BELOW_IN_ONEDRIVE`]).
 pub(super) fn list_below_in_onedrive(conn: &Connection, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
-    let sql = format!(
-        "WITH RECURSIVE below(id) AS (
-             SELECT local_item_id FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1
-             UNION
-             SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
-         SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id IN (SELECT id FROM below)"
-    );
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})");
     let mut statement = conn.prepare_cached(&sql)?;
     let items = statement.query_map([directory.as_i64()], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)
 }
 
-/// What OneDrive has, by the rows, that the full listing of this count did not list: found
-/// by the index of the listing that saw a row.
-pub(super) fn list_unseen_in_full_listing(conn: &Connection, count: u64) -> Result<Vec<Item>, TreeError> {
-    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_seen_in_full_listing WHERE onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1");
-    let mut statement = conn.prepare_cached(&sql)?;
-    let items = statement.query_map([count as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
-    Ok(items)
+/// SQL that takes the OneDrive version from the rows it is run for: no version, no eTag,
+/// and the placement of an item OneDrive does not have. Nothing else of a row is written.
+fn clear_onedrive_version_sql() -> String {
+    let sets = onedrive_columns().iter().map(|column| format!("{column} = NULL")).collect::<Vec<_>>().join(", ");
+    format!("UPDATE items SET {sets}, placement = '{PLACED}'")
+}
+
+/// The item ids of OneDrive a query answers, one a row.
+fn list_onedrive_item_ids(conn: &Connection, sql: &str, values: [i64; 2]) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let mut statement = conn.prepare_cached(sql)?;
+    let ids = statement.query_map(values, |row| row.get::<_, String>(0).map(OneDriveItemId::new))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// SQL for "the local item ids of what the rows say OneDrive has in the directory `?1` and
+/// below it": found from the directory down by the index of places in OneDrive, each item
+/// once also when the rows of a listing that has not ended name each other in a circle.
+const BELOW_IN_ONEDRIVE: &str = "WITH RECURSIVE below(id) AS (
+         SELECT local_item_id FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1
+         UNION
+         SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
+     SELECT id FROM below";
+
+/// What the rows say OneDrive has in `directory` and below it has no OneDrive version from
+/// now on, but the rows stamped after the count `stamped_until`: those are left, and their
+/// item ids of OneDrive answered. Two statements whatever is below: the rows that are left
+/// are read, and then the others are written, each found from what the rows said before
+/// either.
+pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId, stamped_until: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let values = [directory.as_i64(), stamped_until as i64];
+    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count > ?2"), values)?;
+    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count <= ?2", clear_onedrive_version_sql()))?.execute(values)?;
+    Ok(left)
+}
+
+/// What OneDrive has, by the rows, that the full listing of the count `full_listing_count`
+/// did not list has no OneDrive version from now on, but the rows stamped after the count
+/// `stamped_until`: those are left, and their item ids of OneDrive answered. Two statements
+/// whatever was not seen, by the index of the listing that saw a row.
+pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing_count: u64, stamped_until: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    const UNSEEN: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
+    let values = [full_listing_count as i64, stamped_until as i64];
+    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN} AND confirmed_at_count > ?2"), values)?;
+    conn.prepare_cached(&format!("{} WHERE {UNSEEN} AND confirmed_at_count <= ?2", clear_onedrive_version_sql()))?.execute(values)?;
+    Ok(left)
 }
 
 /// The rows that are a binding and nothing else, that no row names as its parent on any

@@ -790,6 +790,56 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     assert_eq!(onedrive_side(&mut store), after, "the full listing ended: a listing of changes takes nothing it does not name");
 }
 
+/// A directory `D` with a hundred directories in it and 9 900 files in those, as a listing
+/// gives them.
+fn ten_thousand_below() -> Vec<Change> {
+    let mut tree = vec![directory("D", "R", "D")];
+    tree.extend((0..100).map(|n| directory(&format!("S{n}"), "D", &format!("s{n}"))));
+    tree.extend((0..9900).map(|n| file(&format!("F{n}"), &format!("S{}", n % 100), &format!("f{n}"), "1")));
+    tree
+}
+
+/// A directory with ten thousand items below it listed gone takes them all, whatever their
+/// number, but the one item among them that was confirmed after the fetch began: it keeps
+/// its version and is answered to be read again. How long the page took is printed.
+#[test]
+fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_but_what_was_confirmed_since() {
+    let mut store = listed_store();
+    write(&mut store, &ten_thousand_below());
+    let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
+    let fetch_began_at_count = count(&mut store);
+    confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
+
+    let began = std::time::Instant::now();
+    let read_again = write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, None);
+    println!("a directory with ten thousand items below it listed gone: the page took {:?}", began.elapsed());
+    assert_eq!(read_again, ["F5050"]);
+    assert_eq!(item(&mut store, guarded).onedrive, version(its_directory, "f5050", Some("22")));
+    let left: Vec<String> = every_row(&mut store).into_iter().filter_map(|row| row.onedrive_item).map(|reference| reference.item_id.as_str().to_owned()).collect();
+    assert_eq!(left, ["R", "S50", "F5050"], "a row stays while a row names it as its parent, and no other");
+    assert_eq!(listed(&mut store, "S50").onedrive, None);
+}
+
+/// A full listing's end takes what it did not see, whatever its number, but what was
+/// confirmed after the listing began. How long the page took is printed.
+#[test]
+fn a_full_listing_that_did_not_see_ten_thousand_items_takes_all_but_what_was_confirmed_since() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &ten_thousand_below(), 0, Some("link-0"));
+    let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
+    store.item_store().begin_full_listing().unwrap();
+    let fetch_began_at_count = count(&mut store);
+    confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
+
+    let began = std::time::Instant::now();
+    let read_again = write_fetched_at(&mut store, &[root()], fetch_began_at_count, Some("link-1"));
+    println!("a full listing that did not see ten thousand items: its last page took {:?}", began.elapsed());
+    assert_eq!(read_again, ["F5050"]);
+    let left: Vec<String> = every_row(&mut store).into_iter().filter_map(|row| row.onedrive_item).map(|reference| reference.item_id.as_str().to_owned()).collect();
+    assert_eq!(left, ["R", "S50", "F5050"]);
+    assert_eq!(item(&mut store, guarded).onedrive, version(its_directory, "f5050", Some("22")));
+}
+
 /// A full listing that begins forgets the delta link, in its own transaction: while one is
 /// under way the store has no link to ask a listing of changes from, so none can be asked
 /// whose end would take what the full listing has not seen yet.
