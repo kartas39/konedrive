@@ -43,6 +43,8 @@ pub(super) struct ItemInotifyBridge {
     is_queued: std::sync::Condvar,
     thread_id: std::sync::OnceLock<u32>,
     is_stopping: std::sync::atomic::AtomicBool,
+    /// The bridge's thread, kept by its start for the stop to wait for.
+    thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ItemInotifyBridge {
@@ -51,7 +53,7 @@ impl ItemInotifyBridge {
     /// daemon's leaves, since every runner of steps and the downloader announce through
     /// it; the thread (`start`, and the performing by path) with the reading requests.
     pub(super) fn new(folder: PathBuf) -> Self {
-        todo!()
+        ItemInotifyBridge { folder, read_connections: std::sync::OnceLock::new(), queued: std::sync::Mutex::default(), in_progress: std::sync::Mutex::new(None), is_queued: std::sync::Condvar::new(), thread_id: std::sync::OnceLock::new(), is_stopping: std::sync::atomic::AtomicBool::new(false), thread: std::sync::Mutex::new(None) }
     }
 
     /// Starts the bridge's thread, which reads the paths of what it announces through a
@@ -65,23 +67,75 @@ impl ItemInotifyBridge {
     /// in order. Called after the change's row was committed, never before: the bridge's
     /// requests are answered from the rows.
     pub(super) fn announce(&self, announcements: Vec<ItemAnnouncement>) {
-        todo!()
+        if announcements.is_empty() {
+            return;
+        }
+        let mut queued = crate::panic::lock(&self.queued);
+        // Asked under the queue's lock, which the stop empties the queue under: nothing
+        // is queued behind a stop.
+        if self.is_stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        queued.push_back(announcements);
+        self.is_queued.notify_one();
     }
 
     /// Whether the kernel's thread id `thread_id` is the bridge's own: its requests are
     /// answered as `item_announcements::find_announced_name` says.
     pub(super) fn is_own_thread(&self, thread_id: u32) -> bool {
-        todo!()
+        self.thread_id.get() == Some(&thread_id)
     }
 
     /// The announcement being performed now. Called by lookup, mkdir, mknod, unlink, rmdir
     /// and setattr when the request is the bridge's own.
     pub(super) fn find_in_progress(&self) -> Option<ItemAnnouncement> {
-        todo!()
+        crate::panic::lock(&self.in_progress).clone()
+    }
+
+    /// The announcements of the change that was queued first, taken off the queue; waits
+    /// while nothing is queued. `None` once the bridge is stopping: the thread ends.
+    /// Called by the bridge's thread alone, which performs them one by one.
+    fn wait_for_announcements(&self) -> Option<Vec<ItemAnnouncement>> {
+        let mut queued = crate::panic::lock(&self.queued);
+        loop {
+            if self.is_stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            if let Some(announcements) = queued.pop_front() {
+                return Some(announcements);
+            }
+            queued = self.is_queued.wait(queued).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// `announcement` is being performed from now on, or nothing is. Called by the
+    /// bridge's thread around each name it creates, touches or removes.
+    fn mark_in_progress(&self, announcement: Option<ItemAnnouncement>) {
+        *crate::panic::lock(&self.in_progress) = announcement;
     }
 
     /// Stops the thread; what is queued is dropped. Called by the mount's stop.
+    ///
+    /// It waits for the thread: the announcement being performed is finished, and when
+    /// this returns nothing more is made by path through the mount — which, once the
+    /// mount is off, would land in the backing directory. Never called on the bridge's
+    /// own thread, nor by what a request of that thread waits for.
     pub(super) fn stop(&self) {
-        todo!()
+        {
+            let mut queued = crate::panic::lock(&self.queued);
+            self.is_stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+            queued.clear();
+            // Under the queue's lock: the thread is either before its look at the flag or
+            // in its wait.
+            self.is_queued.notify_all();
+        }
+        // Taken out first: the lock is not held while the thread is waited for.
+        let thread = crate::panic::lock(&self.thread).take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

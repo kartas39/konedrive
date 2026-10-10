@@ -48,18 +48,25 @@ impl MountTakeDown {
     /// Nothing asked. Made by the mount's build, with the mount's switch and the report
     /// of the mount's setup.
     pub(super) fn new(access_mode_switch: Arc<AccessModeSwitch>, report: TakeDownReport) -> Self {
-        todo!()
+        MountTakeDown { access_mode_switch, report, is_asked: std::sync::atomic::AtomicBool::new(false) }
     }
 
     /// Asks for the take-down: the folder is read-only from this line on, and the owner is
     /// told, once. Called on the write-operation thread, which answers the program `EIO`.
     pub(super) fn ask(&self, cause: TakeDownCause) {
-        todo!()
+        // Read-only first, whoever asked first: no further change is taken from here on.
+        self.access_mode_switch.switch_to_read_only();
+        if !self.is_asked.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            (self.report)(cause);
+        }
     }
 
     /// Whether a take-down was asked for. Called by the steps towards the folder, which
     /// then end as `StepObstacle::SendingStopped` without touching the disk.
     pub fn is_asked(&self) -> bool {
-        todo!()
+        self.is_asked.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -46,7 +46,7 @@ impl ItemRangeFetcher {
     /// daemon's leaves (the steps towards the folder call `forget_ranges`); `fetch_range`
     /// with the reading requests.
     pub(super) fn new(range_readers: Arc<RangeReaders>, source: Arc<dyn ContentSource>) -> Self {
-        todo!()
+        ItemRangeFetcher { range_readers, source }
     }
 
     /// The bytes of `source` from `from` up to `end`. Asks the content source by the
@@ -66,6 +66,9 @@ impl ItemRangeFetcher {
     /// that take OneDrive's content or remove an item (today the cycle step, for every
     /// cycle: `cycle_step.rs:126`).
     pub(super) fn forget_ranges(&self, source: &RangeSource) {
-        todo!()
+        self.source.forget(source.onedrive_item.item_id.as_str());
     }
 }
+
+#[cfg(test)]
+mod tests;
