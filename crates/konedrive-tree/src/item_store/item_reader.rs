@@ -265,7 +265,9 @@ impl ItemReader<'_> {
 impl ItemReader<'_> {
     /// The file that was removed here from `name` in `directory` and whose removal is not
     /// sent: a file OneDrive has, which the folder does not show, whose synced place is
-    /// that one. `None` when there is none, or the row there is a directory's.
+    /// that one. `None` when there is none, or the row there is a directory's, or a
+    /// listing said since that OneDrive does not have the file any more: a file made there
+    /// is then a new item, and the two removals agree.
     ///
     /// Called by the write operation that makes a file (mknod, create), under the tree
     /// lock, before it writes `LocalVersionChange::Made { replaced }`: the store checks
@@ -275,7 +277,7 @@ impl ItemReader<'_> {
     pub fn find_removed_file_at_synced_place(&self, directory: LocalItemId, name: &OsStr) -> Result<Option<Item>, TreeError> {
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_synced_place
-             WHERE synced_parent_id = ?1 AND synced_name = ?2 AND local_parent_id IS NULL AND onedrive_item_id IS NOT NULL AND kind = '{}'
+             WHERE synced_parent_id = ?1 AND synced_name = ?2 AND local_parent_id IS NULL AND onedrive_parent_id IS NOT NULL AND kind = '{}'
              ORDER BY unsent_since DESC, local_item_id DESC LIMIT 1",
             ItemKind::File.as_str()
         );

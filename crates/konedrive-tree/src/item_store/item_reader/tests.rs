@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::item_store::tests::listed_drive::{listed_directory, listed_file, not_placed, reference, store_with_listed_root, write_listing_of_changes};
+use crate::item_store::tests::listed_drive::{listed_directory, listed_file, listed_gone, not_placed, reference, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::shown_items::{bound, row, show_listed_directory, show_listed_file, store_in_file_with_listed_root};
 use crate::item_store::tests::{made, make_directory, make_file, place};
 use crate::item_store::apply_change;
@@ -266,6 +266,15 @@ fn a_removed_file_is_found_by_the_place_the_two_sides_agreed_on() {
     let replacing = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(a, "f"), content: Some(ContentVersion::ChangedHere { size: 0, mtime: 1, mtime_nsec: 0, change_count: 1 }), is_name_ignored: false, replaced: Some(file) }).unwrap();
     assert_eq!(row(&mut store, replacing).onedrive_item, Some(reference("F")));
     assert_eq!(find(&mut store, "f"), None, "the made file took the binding, and the removed file's row went");
+
+    // A file removed here that a listing then says is gone from OneDrive too: no binding
+    // of an item OneDrive does not have is taken over.
+    let gone = show_listed_file(&mut store, "G", "A", "g", "h3");
+    remove(&mut store, gone);
+    assert_eq!(find(&mut store, "g"), Some(gone));
+    write_listing_of_changes(&mut store, &[listed_gone("G")]);
+    assert!(row(&mut store, gone).synced_place.is_some(), "the place agreed on stands until the plan agrees on the removal");
+    assert_eq!(find(&mut store, "g"), None);
 }
 
 #[test]

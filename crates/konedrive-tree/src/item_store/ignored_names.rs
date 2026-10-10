@@ -27,18 +27,18 @@ use crate::TreeError;
 const ROWS_READ_AT_ONCE: i64 = 1000;
 
 /// What the go-over reads of a row the folder shows: its place, and the flag it has.
-struct NamedRow {
+struct RowPlace {
     item: LocalItemId,
     place: ItemPlace,
     is_name_ignored: bool,
 }
 
 /// The rows the folder shows, the root left out, after the item `after`, by local item id.
-fn list_named_rows(conn: &Connection, after: i64) -> Result<Vec<NamedRow>, TreeError> {
+fn list_row_places(conn: &Connection, after: i64) -> Result<Vec<RowPlace>, TreeError> {
     let mut statement = conn.prepare_cached("SELECT local_item_id, local_parent_id, local_name, is_name_ignored FROM items WHERE local_parent_id IS NOT NULL AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2")?;
     let rows = statement.query_map([after, ROWS_READ_AT_ONCE], |row| {
         let place = ItemPlace { parent_local_item_id: LocalItemId::new(row.get(1)?), name: path_from(row.get_ref(2)?).into_os_string() };
-        Ok(NamedRow { item: LocalItemId::new(row.get(0)?), place, is_name_ignored: row.get::<_, i64>(3)? != 0 })
+        Ok(RowPlace { item: LocalItemId::new(row.get(0)?), place, is_name_ignored: row.get::<_, i64>(3)? != 0 })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
@@ -61,7 +61,7 @@ impl ItemStore<'_> {
             let mut after = 0;
             // The rows the folder shows, a bounded number at a time, by local item id.
             loop {
-                let rows = list_named_rows(tx, after)?;
+                let rows = list_row_places(tx, after)?;
                 let Some(last) = rows.last() else { break };
                 after = last.item.as_i64();
                 for row in &rows {
