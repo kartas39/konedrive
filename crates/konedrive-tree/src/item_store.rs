@@ -14,7 +14,7 @@
 //! - *A binding belongs to one item.* The schema: the unique index `items_onedrive_item`.
 //!   The binding is changed by the three operations of [`bindings`] and by nothing else,
 //!   but for the root's, which is written where the store learns the drive's root
-//!   ([`bind_root`]).
+//!   ([`bindings::bind_root`]), and but for the binding an item is given first.
 //!
 //! A row is read and written in [`stored`], whose writers ask no rule and are reachable
 //! from this module and [`bindings`] alone: what is outside changes a row through an
@@ -36,8 +36,7 @@ use std::path::PathBuf;
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use crate::meta;
-use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference};
+use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
@@ -45,7 +44,9 @@ mod bindings;
 /// A row of `items` as the database keeps it, and its raw writers.
 mod stored;
 
-use stored::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, name_value, set_binding, set_local_place, write_item};
+pub(crate) use bindings::bind_root;
+
+use stored::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, name_value, set_local_place, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -405,15 +406,6 @@ pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, se
     set_local_place(tx, first, first_place.parent_local_item_id, aside, first_item.is_name_ignored)?;
     set_local_place(tx, second, first_place.parent_local_item_id, name_value(&first_place.name), first_item.is_name_ignored)?;
     set_local_place(tx, first, second_place.parent_local_item_id, name_value(&second_place.name), second_item.is_name_ignored)
-}
-
-/// The root of the folder is bound to the root of the drive, once the store knows both the
-/// drive and its root's item id: called wherever it learns either. Nothing to do before.
-pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
-    let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?) else {
-        return Ok(());
-    };
-    set_binding(conn, LocalItemId::ROOT, &OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) })
 }
 
 #[cfg(test)]

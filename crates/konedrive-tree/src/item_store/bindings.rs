@@ -17,8 +17,8 @@ use rusqlite::{params, Connection, Transaction};
 
 use super::stored::{delete_item, find_bound_item, find_item, insert_item, set_binding, write_item};
 use super::{check_empty, refuse, ItemStore};
-use crate::model::{ContentPresence, Item, ItemKind, LocalItemId, OneDriveItemReference};
-use crate::TreeError;
+use crate::model::{ContentPresence, DriveId, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use crate::{meta, TreeError};
 
 impl ItemStore<'_> {
     /// The item, which the folder shows, keeps its id, its local version and its content,
@@ -164,6 +164,31 @@ pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveI
         return Err(refuse(format!("item {} is the item of OneDrive {} already", holder.local_item_id, onedrive_item.item_id.as_str())));
     }
     insert_item(tx, kind, Some(onedrive_item), None, ContentPresence::NotOnDisk, false)
+}
+
+/// The root of the folder is bound to the root of the drive, once the store knows both the
+/// drive and its root's item id: called wherever it learns either. Nothing to do before.
+///
+/// The reference is row 1's whatever row was made first: a row that has it already (a page
+/// of a listing named children before the root, and their parent got a row at that first
+/// mention) goes, and what was agreed to be in it is in the root.
+pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
+    let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?) else {
+        return Ok(());
+    };
+    let root = OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) };
+    match find_bound_item(conn, &root)? {
+        Some(holder) if holder.local_item_id == LocalItemId::ROOT => return Ok(()),
+        Some(holder) if holder.local.is_some() || holder.kind != ItemKind::Directory => {
+            return Err(refuse(format!("item {} is bound to the root of the drive, and is a file or an item the folder shows: it is not the root", holder.local_item_id)));
+        }
+        Some(holder) => {
+            move_synced_children(conn, holder.local_item_id, LocalItemId::ROOT)?;
+            delete_item(conn, holder.local_item_id)?;
+        }
+        None => {}
+    }
+    set_binding(conn, LocalItemId::ROOT, &root)
 }
 
 #[cfg(test)]

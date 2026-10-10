@@ -776,6 +776,29 @@ fn the_root_is_bound_once_the_drive_and_its_root_are_known() {
     assert_eq!(item(&mut store, ROOT).onedrive_item, Some(root_of("d9", "R")));
 }
 
+/// The root's OneDrive item reference is the root's, whatever row was made first: a page
+/// that names children before the root makes a row for their parent, and when the store
+/// learns that this parent is the drive's root, that row goes and what was agreed to be in
+/// it is in row 1.
+#[test]
+fn the_roots_reference_is_row_1s_also_when_another_row_had_it_first() {
+    let mut store = TreeStore::in_memory().unwrap();
+    store.set_drive_id("d1").unwrap();
+    let mentioned = store.item_store().make_onedrive_item(&reference("R"), ItemKind::Directory).unwrap();
+    let child = make_file(&mut store, ROOT, "child");
+    let mut child_row = synced(&mut store, child, "C");
+    child_row.synced_place = Some(place(mentioned, "child"));
+    write_item(&store.conn, &child_row).unwrap();
+
+    store.begin_staging(crate::NewTree::Whole).unwrap();
+    store.stage(&[onedrive_root("R")]).unwrap();
+    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(reference("R")));
+    assert_eq!(store.item_store().find_item(mentioned).unwrap(), None);
+    assert_eq!(item(&mut store, child).synced_place, Some(place(ROOT, "child")));
+    store.set_drive_id("D1").unwrap();
+    assert_eq!(item(&mut store, ROOT).onedrive_item, Some(reference("R")), "learnt again, nothing changes");
+}
+
 /// A change of a local version and the outbox's rows of the same operation are written in
 /// one transaction: both are there once it is committed, and neither when it is not.
 #[test]
