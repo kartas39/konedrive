@@ -24,8 +24,10 @@
 //!    answer was lost (`name_holders`, `lost_answers`) — and otherwise decide nothing;
 //! 5. turns Graph's `driveItem` into a `ConfirmedItem` (`confirmed_item`): the id, the
 //!    parent's reference, the name Graph stored, the eTag, a file's content;
-//! 6. takes the folder's tree lock, calls its commit of `step_commit`, and lets the lock
-//!    go. The commit itself forgets what the step memory kept for the confirmed request:
+//! 6. says its commit begins (`RunningSteps::begin_commit`: a stop aborts the step's task
+//!    no more; when the answer is that the step runs no more, it was aborted, and the
+//!    runner returns with nothing written); takes the folder's tree lock, calls its
+//!    commit of `step_commit`, and lets the lock go. The commit itself forgets what the step memory kept for the confirmed request:
 //!    the session that sent the content, the tries, a temporary name that led to the
 //!    confirmed place;
 //! 7. with NO lock: on `Written` marks what it sent on disk and answers the event; on
@@ -58,6 +60,7 @@ use std::sync::Arc;
 
 use konedrive_tree::{ItemVersions, OneDriveItemReference, OneDriveStep, Store};
 
+use crate::folder::running_steps::RunningSteps;
 use crate::folder::step_outcome::StepOutcome;
 use crate::fuse::ItemContentFiles;
 
@@ -108,19 +111,24 @@ pub struct OneDriveSteps {
     name_holders: NameHolders,
     lost_answers: LostAnswers,
     made_items: MadeItems,
+    /// Told when a step's commit begins: from then on a stop does not abort the step.
+    running_steps: Arc<RunningSteps>,
 }
 
 impl OneDriveSteps {
     /// Made by the folder's start (`sync::sync_tasks::start_order::start_sync_tasks`),
     /// with the parts it made before.
-    pub fn new(graph: GraphAccess, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, content_upload: ContentUpload, name_holders: NameHolders, lost_answers: LostAnswers, made_items: MadeItems) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(graph: GraphAccess, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, content_upload: ContentUpload, name_holders: NameHolders, lost_answers: LostAnswers, made_items: MadeItems, running_steps: Arc<RunningSteps>) -> Self {
         todo!()
     }
 
     /// Runs `step` and answers what came of it. Called by the plan's task, which runs one
     /// step per item, content in the pool's upload slots and the rest one at a time. Its
-    /// task is aborted at a stop of the folder's sync (`RunningSteps::abort_requests`):
-    /// what the step memory holds lets the next run go on or adopt.
+    /// task is aborted at a stop of the folder's sync (`RunningSteps::abort_requests`)
+    /// while its request is in flight, and never once its commit has begun
+    /// (`RunningSteps::begin_commit`): what the step memory holds lets the next run go on
+    /// or adopt.
     pub async fn run(&self, step: OneDriveStep) -> StepOutcome {
         todo!()
     }

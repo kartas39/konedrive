@@ -1,7 +1,7 @@
 //! The steps of the sync plan that run now: one per item.
 //!
 //! **State owned:** which items have a step running, of which class, how far a content
-//! got, and the handle each step's task is aborted by. Written by the plan's task alone
+//! got, whether its commit has begun, and the handle each step's task is aborted by. Written by the plan's task alone
 //! ([`RunningSteps::begin`] before a step's task is spawned, [`RunningSteps::end`] when it
 //! was settled) and by the upload's progress; read by the plan's input, by the mount (a
 //! made file does not take over the binding of a file whose removal is being sent; the
@@ -21,6 +21,8 @@
 // test: a_step_is_not_begun_for_an_item_that_has_one
 // test: progress_told_for_an_item_with_no_running_step_is_dropped
 // test: the_requests_are_aborted_at_a_stop_and_the_steps_towards_the_folder_are_left_running
+// test: a_step_whose_commit_has_begun_is_left_to_a_stop_and_settled
+// test: a_stop_aborts_a_request_in_flight_of_every_class_but_the_one_towards_the_folder
 #![allow(dead_code, unused_variables)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,9 +63,29 @@ pub struct RunningStep {
     pub total: u64,
 }
 
+/// How far a running step got, for what a stop does to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepPhase {
+    /// Its request is in flight — or its hash, or its download: nothing of the step is
+    /// written yet. A stop aborts its task, unless it is a step towards the folder.
+    RequestInFlight,
+    /// Its commit has begun (`RunningSteps::begin_commit`): a job of the store's thread
+    /// that an abort of the task would neither stop nor hear the answer of. A stop leaves
+    /// the step running, and the plan's loop settles it.
+    CommitBegun,
+}
+
+/// Whether a stop aborts the task of a step of `class` that is in `phase`. Pure. Never a
+/// step towards the folder: it is between a disk change and its commit. Never one whose
+/// commit has begun.
+pub fn decide_is_aborted_at_stop(class: StepClass, phase: StepPhase) -> bool {
+    class != StepClass::Folder && phase == StepPhase::RequestInFlight
+}
+
 struct Running {
     step: RunningStep,
     abort: Option<AbortHandle>,
+    phase: StepPhase,
 }
 
 impl RunningStep {
@@ -114,7 +136,7 @@ impl RunningSteps {
         for row in step.list_rows() {
             steps.step_items_by_row.insert(row, step.item);
         }
-        steps.by_item.insert(step.item, Running { step, abort: None });
+        steps.by_item.insert(step.item, Running { step, abort: None, phase: StepPhase::RequestInFlight });
         true
     }
 
@@ -166,30 +188,47 @@ impl RunningSteps {
         }
     }
 
-    /// Aborts the tasks of the steps towards the network (`Content`, `Metadata`,
-    /// `Download`) and of a `Row` step that has not reached its commit (a hash): their
-    /// requests are dropped, and what the step memory holds lets the next run go on or
-    /// adopt. Their rows have no running step afterwards. A step towards the folder is
-    /// never aborted. Called by the plan's loop when its stop comes.
-    ///
-    /// Every `Row` step's task is aborted: nothing here says how far one got. An abort
-    /// takes a task at its next wait, so one whose commit is a job of the store's thread
-    /// already still commits, and nobody is told.
-    pub fn abort_requests(&self) {
-        let aborted: Vec<Running> = {
-            let mut steps = crate::panic::lock(&self.steps);
-            let items: Vec<LocalItemId> = steps.by_item.values().filter(|running| running.step.class != StepClass::Folder).map(|running| running.step.item).collect();
-            items.into_iter().filter_map(|item| steps.remove(item)).collect()
-        };
-        for abort in aborted.into_iter().filter_map(|running| running.abort) {
-            abort.abort();
+    /// The step of `item` begins its commit: from here on a stop leaves it alone
+    /// (`StepPhase::CommitBegun`). `false` when the step runs no more — a stop aborted it
+    /// between its request and this call: the caller writes nothing and returns. Called
+    /// by the runners of the steps towards OneDrive and of the rows, right before the job
+    /// of the store's thread that commits; a step towards the folder need not say it.
+    pub fn begin_commit(&self, item: LocalItemId) -> bool {
+        match crate::panic::lock(&self.steps).by_item.get_mut(&item) {
+            Some(running) => {
+                running.phase = StepPhase::CommitBegun;
+                true
+            }
+            None => false,
         }
     }
 
-    /// How many steps towards the folder still run: what the plan's loop settles before
-    /// it returns at a stop.
-    pub fn count_folder_steps(&self) -> usize {
-        crate::panic::lock(&self.steps).by_item.values().filter(|running| running.step.class == StepClass::Folder).count()
+    /// Aborts the task of every step a stop may abort ([`decide_is_aborted_at_stop`]):
+    /// one towards the network or of the rows whose request — or hash, or download — is
+    /// in flight. Their requests are dropped, and what the step memory holds lets the
+    /// next run go on or adopt; their rows have no running step afterwards. The items of
+    /// the steps aborted, in their order. A step towards the folder, and one whose commit
+    /// has begun, is left running: the loop settles it
+    /// ([`count_steps_to_settle`](Self::count_steps_to_settle)). Called by the plan's
+    /// loop when its stop comes.
+    pub fn abort_requests(&self) -> Vec<LocalItemId> {
+        let aborted: Vec<Running> = {
+            let mut steps = crate::panic::lock(&self.steps);
+            let items: Vec<LocalItemId> = steps.by_item.values().filter(|running| decide_is_aborted_at_stop(running.step.class, running.phase)).map(|running| running.step.item).collect();
+            items.into_iter().filter_map(|item| steps.remove(item)).collect()
+        };
+        let items = aborted.iter().map(|running| running.step.item).collect();
+        for abort in aborted.into_iter().filter_map(|running| running.abort) {
+            abort.abort();
+        }
+        items
+    }
+
+    /// How many running steps a stop does not abort: those towards the folder, and those
+    /// whose commit has begun. What the plan's loop goes on settling before it returns at
+    /// a stop.
+    pub fn count_steps_to_settle(&self) -> usize {
+        crate::panic::lock(&self.steps).by_item.values().filter(|running| !decide_is_aborted_at_stop(running.step.class, running.phase)).count()
     }
 }
 

@@ -4,7 +4,9 @@
 //!
 //! **State owned:** none.
 //!
-//! **Every step:** takes the folder's tree lock for its commit and lets it go; what it
+//! **Every step:** says its commit begins (`RunningSteps::begin_commit`: a stop aborts a
+//! hash in flight, never a commit; told that the step runs no more, it writes nothing),
+//! takes the folder's tree lock for its commit and lets it go; what it
 //! reads or writes on disk — a file hashed, marks written or taken off — it does with NO
 //! lock: a hash of a file of any size holds up no write operation, and the marks go
 //! through `ItemContentFiles`, whose opens cannot be crossed by a rename. `RowsChanged`
@@ -24,6 +26,7 @@ use std::sync::Arc;
 
 use konedrive_tree::{ItemVersions, RowStep, Store};
 
+use crate::folder::running_steps::RunningSteps;
 use crate::folder::step_outcome::StepOutcome;
 use crate::fuse::ItemContentFiles;
 use crate::local::SharedIgnore;
@@ -37,11 +40,13 @@ pub struct RowSteps {
     /// item's name is ignored, now that nothing of OneDrive's keeps it from being left
     /// here.
     ignore: SharedIgnore,
+    /// Told when a step's commit begins: from then on a stop does not abort the step.
+    running_steps: Arc<RunningSteps>,
 }
 
 impl RowSteps {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
-    pub fn new(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, ignore: SharedIgnore) -> Self {
+    pub fn new(store: Store, tree_lock: Arc<tokio::sync::Mutex<()>>, content_files: Arc<ItemContentFiles>, ignore: SharedIgnore, running_steps: Arc<RunningSteps>) -> Self {
         todo!()
     }
 

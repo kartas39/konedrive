@@ -85,8 +85,8 @@ async fn the_requests_are_aborted_at_a_stop_and_the_steps_towards_the_folder_are
         running_steps.keep_abort_handle(item(number), task.abort_handle());
         tasks.push(task);
     }
-    assert_eq!(running_steps.count_folder_steps(), 1);
-    running_steps.abort_requests();
+    assert_eq!(running_steps.count_steps_to_settle(), 1);
+    assert_eq!(running_steps.abort_requests(), [item(1), item(2), item(3), item(4)], "every step whose request is in flight, but the one towards the folder");
     let folder_task = tasks.pop().unwrap();
     for (task, class) in tasks.into_iter().zip(classes) {
         assert!(task.await.unwrap_err().is_cancelled(), "{class:?}");
@@ -94,15 +94,56 @@ async fn the_requests_are_aborted_at_a_stop_and_the_steps_towards_the_folder_are
     tokio::task::yield_now().await;
     assert!(!folder_task.is_finished(), "a step towards the folder is never aborted");
     assert_eq!(running_steps.list_items(), items(&[5, 15]), "the rows of what was aborted have no running step");
-    assert_eq!(running_steps.count_folder_steps(), 1);
+    assert_eq!(running_steps.count_steps_to_settle(), 1);
     running_steps.end(item(5));
-    assert_eq!(running_steps.count_folder_steps(), 0);
+    assert_eq!(running_steps.count_steps_to_settle(), 0);
     folder_task.abort();
     // A handle for a step that runs no more is dropped.
     let late = tokio::spawn(std::future::pending::<()>());
     running_steps.keep_abort_handle(item(1), late.abort_handle());
-    running_steps.abort_requests();
+    assert!(running_steps.abort_requests().is_empty());
     tokio::task::yield_now().await;
     assert!(!late.is_finished());
     late.abort();
+}
+
+/// A commit is a job of the store's thread: an abort would drop the task that waits for
+/// it, the job would write all the same, and nobody would be told.
+#[tokio::test]
+async fn a_step_whose_commit_has_begun_is_left_to_a_stop_and_settled() {
+    let running_steps = RunningSteps::new();
+    let mut tasks = Vec::new();
+    for (number, class) in (1..).zip([StepClass::Content, StepClass::Metadata, StepClass::Row]) {
+        assert!(running_steps.begin(step(class, number, &[number + 10])));
+        let task = tokio::spawn(std::future::pending::<()>());
+        running_steps.keep_abort_handle(item(number), task.abort_handle());
+        tasks.push(task);
+    }
+    assert_eq!(running_steps.count_steps_to_settle(), 0, "a request in flight is not waited for");
+    assert!(running_steps.begin_commit(item(2)));
+    assert!(running_steps.begin_commit(item(3)));
+    assert!(running_steps.begin_commit(item(3)), "said twice, the same");
+    assert_eq!(running_steps.count_steps_to_settle(), 2);
+    assert_eq!(running_steps.abort_requests(), [item(1)]);
+    assert!(tasks.remove(0).await.unwrap_err().is_cancelled());
+    tokio::task::yield_now().await;
+    assert!(tasks.iter().all(|task| !task.is_finished()), "a step that commits is not aborted");
+    assert_eq!(running_steps.list_items(), items(&[2, 12, 3, 13]), "and runs until it is settled");
+    // One that was aborted is told so when it asks: it does not commit.
+    assert!(!running_steps.begin_commit(item(1)));
+    assert!(!running_steps.begin_commit(item(12)), "asked by the step's own item");
+    running_steps.end(item(2));
+    running_steps.end(item(3));
+    assert_eq!(running_steps.count_steps_to_settle(), 0);
+    tasks.iter().for_each(|task| task.abort());
+}
+
+#[test]
+fn a_stop_aborts_a_request_in_flight_of_every_class_but_the_one_towards_the_folder() {
+    for class in [StepClass::Content, StepClass::Metadata, StepClass::Download, StepClass::Row] {
+        assert!(decide_is_aborted_at_stop(class, StepPhase::RequestInFlight), "{class:?}");
+        assert!(!decide_is_aborted_at_stop(class, StepPhase::CommitBegun), "{class:?}");
+    }
+    assert!(!decide_is_aborted_at_stop(StepClass::Folder, StepPhase::RequestInFlight));
+    assert!(!decide_is_aborted_at_stop(StepClass::Folder, StepPhase::CommitBegun));
 }

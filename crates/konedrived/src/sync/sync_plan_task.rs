@@ -48,9 +48,11 @@
 //!
 //! **The stop.** When `stop` comes the loop itself ends its steps and then returns:
 //! `SendingHolds::set_stopping`; `RunningSteps::abort_requests` — the tasks of the steps
-//! towards the network and of a hash, none of which has written anything before its
-//! commit; then it goes on taking and settling the outcomes of the steps towards the
-//! folder and of the rows that still run, until none does. Nobody else ends a step.
+//! towards the network and of the rows whose request or hash is in flight, none of which
+//! has written anything; a step whose commit has begun (`RunningSteps::begin_commit`,
+//! said by its runner) is left, as every step towards the folder is; then it goes on
+//! taking and settling the outcomes of the steps that still run, until none does
+//! (`RunningSteps::count_steps_to_settle`). Nobody else ends a step.
 //!
 //! **Tested without the rest**, over the fixture (`fuse::item_fixture`) with its stand-in
 //! for the runners (`step_runners_stand_in`), its poll handle and a clock the test
