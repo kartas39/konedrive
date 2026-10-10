@@ -1424,3 +1424,7 @@ fn several_changes_are_applied_in_one_transaction_or_none() {
 
 /// The unsent items a plan reads: what is left here is not among them.
 mod unsent_items;
+/// A listing of OneDrive as a test gives it to the store.
+pub(crate) mod listed_drive;
+/// The rules that hold of the rows at all times, asked of rows read whole.
+pub(crate) mod row_rules;

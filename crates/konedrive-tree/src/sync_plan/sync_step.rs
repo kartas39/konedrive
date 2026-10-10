@@ -45,6 +45,15 @@ impl ItemVersions {
     pub fn are_those_of(&self, item: &Item) -> bool {
         *self == Self::of(item)
     }
+
+    /// Whether `item`, a row read now, is the same item with the same binding, the same
+    /// OneDrive version and eTag and the same place and content agreed on, whatever the
+    /// folder shows of it now: what a step that made, moved or filled the item in OneDrive
+    /// asks at its commit, a program being free to change the item here while the request
+    /// runs.
+    pub fn are_those_of_but_local_version(&self, item: &Item) -> bool {
+        Self { local: None, ..self.clone() } == Self { local: None, ..Self::of(item) }
+    }
 }
 
 /// One thing to do.

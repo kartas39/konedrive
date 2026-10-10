@@ -80,8 +80,13 @@ mod item_row;
 mod local_and_synced_version;
 /// What a listing of OneDrive says of an item, written into its row.
 mod onedrive_versions;
+/// The files a pin holds for, by local item id.
+mod pinned_items;
+/// What a step of the sync plan writes into the rows once it is done.
+mod step_commit;
 
 pub(crate) use bindings::bind_root_once_known;
+pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 
@@ -185,6 +190,22 @@ impl ItemStore<'_> {
     /// read-only, to tell afterwards what was unsent then.
     pub fn last_unsent_since(&self) -> Result<u64, TreeError> {
         Ok(crate::meta::get(&self.store.conn, crate::meta::LAST_UNSENT_SINCE)?.and_then(|stamp| stamp.parse().ok()).unwrap_or(0))
+    }
+
+    /// How many items the folder shows, the root not among them: what the guard against a
+    /// mass removal takes a share of.
+    pub fn count_shown_items(&self) -> Result<u64, TreeError> {
+        item_row::count_shown_items(&self.store.conn)
+    }
+
+    /// How many items the unsent removals take from OneDrive: every item that was removed
+    /// here and that OneDrive has, and with a removed directory all the rows say OneDrive
+    /// has in it and below it that the folder does not show. Each item once. Left out are
+    /// the items of `confirmed`, the removals the user confirmed, each with all OneDrive
+    /// has below it. What the guard against a mass removal asks of, whatever part of the
+    /// unsent items a plan is given. Found from the index of what is unsent.
+    pub fn count_unsent_removals(&self, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
+        item_row::count_unsent_removals(&self.store.conn, confirmed)
     }
 
     /// What OneDrive has in `directory`, as the rows say, by name there: the items whose
@@ -625,4 +646,4 @@ impl ItemStore<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

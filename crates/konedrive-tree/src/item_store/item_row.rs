@@ -590,3 +590,71 @@ pub(super) fn set_content_presence(conn: &Connection, item: LocalItemId, content
     conn.prepare_cached("UPDATE items SET content_presence = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), content_presence.as_str()])?;
     Ok(())
 }
+
+/// How many rows have a local place: the items the folder shows, the root not among them.
+pub(super) fn count_shown_items(conn: &Connection) -> Result<u64, TreeError> {
+    let count: i64 = conn.prepare_cached("SELECT COUNT(*) FROM items INDEXED BY items_local_place WHERE local_parent_id IS NOT NULL")?.query_row([], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+/// SQL for "the items of `seeds`, and what the rows say OneDrive has in them and below them
+/// that the folder does not show", as a table `{name}(id)`: what goes from OneDrive with
+/// the removal of each of the seeds. Each item once, also when rows name each other in a
+/// circle.
+fn removed_with_sql(name: &str, seeds: &str) -> String {
+    format!(
+        "{name}(id) AS (
+             {seeds}
+             UNION
+             SELECT child.local_item_id FROM {name} JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = {name}.id WHERE child.local_parent_id IS NULL)"
+    )
+}
+
+/// [`ItemStore::count_unsent_removals`](super::ItemStore::count_unsent_removals): the rows
+/// that were removed here and that OneDrive has are found by the index of what is unsent.
+pub(super) fn count_unsent_removals(conn: &Connection, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
+    let removed_here = format!("SELECT local_item_id FROM items INDEXED BY items_unsent WHERE unsent_since IS NOT NULL AND NOT {LEFT_HERE} AND local_parent_id IS NULL AND onedrive_parent_id IS NOT NULL");
+    // Local item ids are numbers: nothing of the caller's is put into the statement as text.
+    let confirmed = confirmed.iter().map(|item| item.as_i64().to_string()).collect::<Vec<_>>().join(", ");
+    let confirmed = format!("SELECT local_item_id FROM items WHERE local_item_id IN ({confirmed})");
+    let sql = format!(
+        "WITH RECURSIVE {}, {} SELECT COUNT(*) FROM removed WHERE id NOT IN (SELECT id FROM confirmed)",
+        removed_with_sql("removed", &removed_here),
+        removed_with_sql("confirmed", &confirmed)
+    );
+    let count: i64 = conn.prepare(&sql)?.query_row([], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+/// Whether a pin holds for `item`: a row from `item` up, by the directories the folder
+/// shows it in, has an item id of OneDrive that is pinned. The way up is as long as every
+/// walk of the rows.
+pub(super) fn find_is_pinned(conn: &Connection, item: LocalItemId) -> Result<bool, TreeError> {
+    let sql = format!(
+        "WITH RECURSIVE above(id, depth) AS (
+             SELECT local_item_id, 0 FROM items WHERE local_item_id = ?1 AND local_parent_id IS NOT NULL
+             UNION ALL
+             SELECT items.local_parent_id, above.depth + 1 FROM above JOIN items ON items.local_item_id = above.id WHERE items.local_parent_id IS NOT NULL AND above.depth <= {})
+         SELECT EXISTS (SELECT 1 FROM above JOIN items ON items.local_item_id = above.id JOIN pins ON pins.id = items.onedrive_item_id)",
+        crate::MAX_CHAIN
+    );
+    Ok(conn.prepare_cached(&sql)?.query_row([item.as_i64()], |row| row.get(0))?)
+}
+
+/// [`ItemStore::list_pinned_files_to_download`](super::ItemStore::list_pinned_files_to_download):
+/// from each pinned row the folder shows, down by what the folder shows in it.
+pub(super) fn list_pinned_files_to_download(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+    let sql = format!(
+        "WITH RECURSIVE held(id) AS (
+             SELECT items.local_item_id FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE items.local_parent_id IS NOT NULL OR items.local_item_id = 1
+             UNION
+             SELECT child.local_item_id FROM held JOIN items child INDEXED BY items_local_place ON child.local_parent_id = held.id)
+         SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id IN (SELECT id FROM held) AND local_item_id > ?1
+             AND kind = 'file' AND content_presence = 'not-on-disk' AND local_parent_id IS NOT NULL AND onedrive_parent_id IS NOT NULL
+             AND unsent_since IS NULL AND NOT {CHANGED_IN_ONEDRIVE}
+         ORDER BY local_item_id LIMIT ?2"
+    );
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}

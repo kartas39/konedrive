@@ -113,6 +113,7 @@ mod listed_change;
 mod listing_under_way;
 
 pub use confirmed_onedrive_version::ConfirmedOneDriveVersion;
+pub(super) use confirmed_onedrive_version::confirm_onedrive_version;
 pub use listed_change::{ListedChangeOutcome, ListedChangeRefusal};
 use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, ListedItem};
 pub use listing_under_way::{ListingId, ListingKind, ListingLink, ListingUnderWay};

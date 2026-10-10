@@ -34,6 +34,24 @@ fn the_versions_a_step_was_planned_from_are_those_of_the_row_until_one_of_them_c
 }
 
 #[test]
+fn all_versions_but_the_local_one_are_those_of_the_row_whatever_the_folder_shows_of_it() {
+    let row = synced_file(2, ROOT, "a.txt");
+    let planned_from = ItemVersions::of(&row);
+    assert!(planned_from.are_those_of_but_local_version(&row));
+    assert!(planned_from.are_those_of_but_local_version(&moved_here(row.clone(), ROOT, "b.txt")), "moved here since");
+    let mut removed_here = row.clone();
+    removed_here.local = None;
+    assert!(planned_from.are_those_of_but_local_version(&removed_here), "removed here since");
+    assert!(!planned_from.are_those_of_but_local_version(&with_content_in_onedrive(row.clone(), hashed("theirs"))), "the OneDrive version");
+    let mut other = row.clone();
+    other.synced_place = None;
+    assert!(!planned_from.are_those_of_but_local_version(&other), "the synced place");
+    let mut other = row;
+    other.onedrive_item = Some(reference("other"));
+    assert!(!planned_from.are_those_of_but_local_version(&other), "the binding");
+}
+
+#[test]
 fn a_step_is_of_the_item_whose_versions_it_carries_and_a_merge_of_the_item_the_folder_shows() {
     let (here, in_onedrive) = (ItemVersions::of(&made_file(2, ROOT, "a.txt")), ItemVersions::of(&synced_file(3, ROOT, "a.txt")));
     assert_eq!(SyncStep::OneDrive(OneDriveStep::SendContent { item: in_onedrive.clone() }).local_item_id(), id(3));

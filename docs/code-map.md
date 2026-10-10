@@ -811,6 +811,19 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   item OneDrive has, for one that is gone and for the root, each from what the listing says
   and the rows it is about, and the two questions of the guard against an outdated listing.
   Reads and writes no store. `[tests]`
+- `item_store/step_commit.rs` — what a step of the sync plan writes into the rows once it is
+  done: one function for each case of a `SyncStep` (`commit_make_directory` …
+  `commit_agree_on_content`), each one transaction that asks whether the versions the step
+  was planned from are still the row's and answers `StepCommitOutcome` (written; or the
+  rows changed, nothing written). A step that made, moved or filled an item in OneDrive
+  gives what Graph answered (`ConfirmedItem`) and asks all versions but the local one. No
+  caller in the daemon yet. `[tests]`
+- `item_store/pinned_items.rs` — the files a pin holds for, by local item id
+  (`is_pinned`), and those of them that are only to be downloaded
+  (`list_pinned_files_to_download`). `[tests]`
+- `item_store/tests/listed_drive.rs`, `row_rules.rs` — for the tests of the store and of
+  the plan: a listing as a test gives it, and the rules that hold of the rows at all times
+  (`find_broken_rule`).
 - `sync_plan.rs` — the sync plan: `make_sync_plan`, one pure function from rows and a few
   facts given as values (`SyncPlanInput`, with the folder's `SendingState`) to the steps that
   can run now and, for every other item, why not (`SyncPlan`: `SyncStep`s, `ItemWait`s with
