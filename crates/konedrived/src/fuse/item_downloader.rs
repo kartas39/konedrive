@@ -30,6 +30,7 @@
 // test: a_download_a_read_joined_goes_on_after_the_plans_cancel
 // test: a_download_aborted_and_asked_again_is_not_ended_by_the_aborted_tasks_guard
 // test: the_pools_class_is_open_for_every_asker_but_the_plans_pin
+// test: the_landing_asks_every_version_for_the_plans_pin_and_the_content_alone_for_anyone_else
 // test: a_stop_aborts_every_download
 #![allow(dead_code, unused_variables)]
 
@@ -41,14 +42,15 @@ use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, OneDriveItemRefe
 
 use super::backing_directory::BackingDirectory;
 use super::download_states::Waiter;
-use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome};
+use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome, LandingCondition};
 use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
 use crate::hydration::source::{ContentSource, Share};
 use crate::status::report::Report;
 
-/// A file of OneDrive that is to be downloaded whole.
+/// A file of OneDrive that is to be downloaded whole. Who asks, and for the plan the
+/// versions its step was planned from, is not said here: `DownloadAsker` says it, once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ItemToDownload {
     pub(super) item: LocalItemId,
@@ -57,10 +59,6 @@ pub(super) struct ItemToDownload {
     /// The content to download: the item's local content, which is OneDrive's while the
     /// file is not on disk.
     pub(super) content: ContentVersion,
-    /// The versions the plan's step was planned from, for a download the plan asked for:
-    /// its landing commits as the step (`commit_download_content`). `None` for a read, an
-    /// open for writing and `Files.Hydrate`, whose landing asks the content alone.
-    pub(super) planned_from: Option<ItemVersions>,
 }
 
 /// Why the content source did not give a file, by what the plan's task does about it.
@@ -78,7 +76,13 @@ pub enum DownloadRefusal {
 
 /// The pool's class a download of `asker` runs in: `Open` for a read, an open for writing
 /// and `Files.Hydrate`, `Download` for the plan's pin. Pure.
-pub(super) fn decide_pool_class(asker: DownloadAsker) -> Class {
+pub(super) fn decide_pool_class(asker: &DownloadAsker) -> Class {
+    todo!()
+}
+
+/// What the landing of a download of `file` that `asker` started asks of the row: every
+/// version for the plan's pin, the content alone for anyone else. Pure.
+pub(super) fn decide_landing_condition(file: &ItemToDownload, asker: &DownloadAsker) -> LandingCondition {
     todo!()
 }
 
@@ -132,17 +136,19 @@ impl ItemDownloader {
     /// Called by read at the threshold of bytes read as ranges (`DownloadAsker::Read`, no
     /// waiter), by the open for writing and the truncation of a file that is not on disk
     /// (`OpenForWriting`), by `ItemFilesInterface::download` (`FilesInterface`), and by
-    /// [`download_and_land`](Self::download_and_land) (`PlanPin`: `file.planned_from` is
-    /// given for that asker and for no other).
+    /// [`download_and_land`](Self::download_and_land) (`PlanPin`, which carries the
+    /// versions the step was planned from). The landing's condition follows from the
+    /// asker that STARTED the download ([`decide_landing_condition`]); one that joins
+    /// takes the landing it finds.
     pub(super) fn download(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>) {
         todo!()
     }
 
-    /// As [`download`](Self::download) for the plan's pin (`DownloadAsker::PlanPin`),
-    /// awaited: what the landing answered, or the source's refusal typed, for the plan's
-    /// step (`FolderSteps::run_download_content`, which turns it into
-    /// `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`).
-    pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload) -> Result<ItemLandingOutcome, DownloadRefusal> {
+    /// As [`download`](Self::download) for the plan's pin (`DownloadAsker::PlanPin {
+    /// planned_from }`), awaited: what the landing answered, or the source's refusal
+    /// typed, for the plan's step (`FolderSteps::run_download_content`, which turns it
+    /// into `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`).
+    pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload, planned_from: ItemVersions) -> Result<ItemLandingOutcome, DownloadRefusal> {
         todo!()
     }
 

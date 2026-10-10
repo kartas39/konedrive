@@ -32,7 +32,7 @@ use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use konedrive_tree::{ContentVersion, LocalItemId};
+use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId};
 
 use super::download_states::{reaches_download_threshold, RunningDownloadFile, Waiter};
 
@@ -47,8 +47,9 @@ pub(super) struct DownloadKey {
     pub(super) content: ContentVersion,
 }
 
-/// Who asks for a download.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Who asks for a download, with what only that asker has: the one place that says a
+/// download is the plan's, and from which versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DownloadAsker {
     /// A read, at the threshold of bytes read as ranges.
     Read,
@@ -56,9 +57,11 @@ pub(super) enum DownloadAsker {
     OpenForWriting,
     /// `Files.Hydrate`.
     FilesInterface,
-    /// The plan's step for a pinned file: the one asker whose asking is taken back
+    /// The plan's step for a pinned file, with the versions it was planned from: its
+    /// landing commits as the step (`ItemStore::commit_download_content`), where every
+    /// other asker's asks the content alone. The one asker whose asking is taken back
     /// (`ItemDownloadStates::abort_if_plan_alone_asked`).
-    PlanPin,
+    PlanPin { planned_from: ItemVersions },
 }
 
 /// One download that runs, told from every other — also from an earlier and a later one
@@ -180,8 +183,8 @@ impl ItemDownloadStates {
     /// it ends. Who asked is kept: a download anything but the plan's pin asked for, with
     /// a waiter or without, is not aborted for the plan. Called by
     /// `ItemDownloader::download` alone.
-    pub(super) fn start_or_join(&self, key: &DownloadKey, asker: DownloadAsker, waiter: Option<Waiter>) -> ItemDownloadStart {
-        let is_asker_beyond_plan = asker != DownloadAsker::PlanPin;
+    pub(super) fn start_or_join(&self, key: &DownloadKey, asker: &DownloadAsker, waiter: Option<Waiter>) -> ItemDownloadStart {
+        let is_asker_beyond_plan = !matches!(asker, DownloadAsker::PlanPin { .. });
         let mut states = crate::panic::lock(&self.states);
         if let Some(State::Running { waiters, is_asked_beyond_plan, .. }) = states.get_mut(key) {
             waiters.extend(waiter);

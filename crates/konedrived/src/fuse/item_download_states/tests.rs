@@ -11,6 +11,22 @@ fn key(item: i64, ctag: &str) -> DownloadKey {
     DownloadKey { item: LocalItemId::new(item), content: ContentVersion::Hashed { size: 10, mtime: 1_700_000_000, mtime_nsec: 0, hash: None, ctag: Some(ctag.into()) } }
 }
 
+/// The plan's pin, as its step asks: with the versions the step was planned from.
+fn plan_pin() -> DownloadAsker {
+    let planned_from = ItemVersions {
+        local_item_id: LocalItemId::new(5),
+        onedrive_item: None,
+        local: None,
+        onedrive: None,
+        onedrive_etag: None,
+        synced_place: None,
+        synced_content: None,
+        content_presence: konedrive_tree::ContentPresence::NotOnDisk,
+        unsent_since: None,
+    };
+    DownloadAsker::PlanPin { planned_from }
+}
+
 fn unnamed_file() -> Arc<File> {
     Arc::new(tempfile::tempfile().unwrap())
 }
@@ -22,7 +38,7 @@ fn start(download_states: &ItemDownloadStates, key: &DownloadKey) -> Option<(Dow
 }
 
 fn start_as(download_states: &ItemDownloadStates, key: &DownloadKey, asker: DownloadAsker, waiter: Option<Waiter>) -> Option<(DownloadRun, Option<Arc<File>>)> {
-    match download_states.start_or_join(key, asker, waiter) {
+    match download_states.start_or_join(key, &asker, waiter) {
         ItemDownloadStart::Started { run, unfinished_file } => Some((run, unfinished_file)),
         ItemDownloadStart::Joined => None,
     }
@@ -89,7 +105,7 @@ fn every_waiter_is_answered_when_the_download_ends_however_it_ends() {
     let download_states = download_states();
     let ((first, first_told), (second, second_told)) = (oneshot::channel(), oneshot::channel());
     let (run, _) = start_as(&download_states, &key(5, "c1"), DownloadAsker::Read, Some(first)).unwrap();
-    assert!(start_as(&download_states, &key(5, "c1"), DownloadAsker::PlanPin, Some(second)).is_none());
+    assert!(start_as(&download_states, &key(5, "c1"), plan_pin(), Some(second)).is_none());
     download_states.finish(&run, Ok(()));
     assert_eq!((first_told.blocking_recv(), second_told.blocking_recv()), (Ok(Ok(())), Ok(Ok(()))));
 
@@ -188,7 +204,7 @@ fn the_waiters_are_failed_when_the_mount_stops() {
     let download_states = download_states();
     let ((first, first_told), (second, second_told)) = (oneshot::channel(), oneshot::channel());
     let (run, _) = start_as(&download_states, &key(5, "c1"), DownloadAsker::Read, Some(first)).unwrap();
-    start_as(&download_states, &key(6, "c1"), DownloadAsker::PlanPin, Some(second)).unwrap();
+    start_as(&download_states, &key(6, "c1"), plan_pin(), Some(second)).unwrap();
     download_states.fail_waiters();
     assert_eq!((first_told.blocking_recv(), second_told.blocking_recv()), (Ok(Err(libc::EIO)), Ok(Err(libc::EIO))));
     assert!(download_states.is_downloading(LocalItemId::new(5)), "a download that still runs ends as any other, with nobody waiting");
@@ -201,7 +217,7 @@ fn the_waiters_are_failed_when_the_mount_stops() {
 async fn a_download_only_the_plan_asked_for_is_aborted_by_its_cancel_and_keeps_its_unfinished_file() {
     let download_states = download_states();
     let (plan_waiter, plan_told) = oneshot::channel();
-    let (run, unfinished_file) = start_as(&download_states, &key(5, "c1"), DownloadAsker::PlanPin, Some(plan_waiter)).unwrap();
+    let (run, unfinished_file) = start_as(&download_states, &key(5, "c1"), plan_pin(), Some(plan_waiter)).unwrap();
     assert!(unfinished_file.is_none());
     let task = spawn_download();
     download_states.keep_abort_handle(&run, task.abort_handle());
@@ -215,7 +231,7 @@ async fn a_download_only_the_plan_asked_for_is_aborted_by_its_cancel_and_keeps_i
     // The aborted task's guard changes nothing; the unfinished file is kept as after a
     // failure, for whoever asks next.
     download_states.abandon(&run);
-    let (_, kept) = start_as(&download_states, &key(5, "c1"), DownloadAsker::PlanPin, None).unwrap();
+    let (_, kept) = start_as(&download_states, &key(5, "c1"), plan_pin(), None).unwrap();
     assert!(Arc::ptr_eq(&kept.unwrap(), &file));
     assert!(download_states.abort_if_plan_alone_asked(&key(5, "c1")), "the plan alone, with no waiter");
 }
@@ -227,10 +243,10 @@ async fn a_download_anything_but_the_plan_asked_for_is_not_aborted_by_the_plans_
     for (item, asker) in [(5, DownloadAsker::Read), (6, DownloadAsker::OpenForWriting), (7, DownloadAsker::FilesInterface)] {
         let key = key(item, "c1");
         let (plan_waiter, plan_told) = oneshot::channel();
-        let (run, _) = start_as(&download_states, &key, DownloadAsker::PlanPin, Some(plan_waiter)).unwrap();
+        let (run, _) = start_as(&download_states, &key, plan_pin(), Some(plan_waiter)).unwrap();
         let task = spawn_download();
         download_states.keep_abort_handle(&run, task.abort_handle());
-        assert!(start_as(&download_states, &key, asker, None).is_none());
+        assert!(start_as(&download_states, &key, asker.clone(), None).is_none());
         // The plan's step was aborted: nobody hears its waiter.
         drop(plan_told);
         assert!(!download_states.abort_if_plan_alone_asked(&key), "{asker:?} wants it");
@@ -243,7 +259,7 @@ async fn a_download_anything_but_the_plan_asked_for_is_not_aborted_by_the_plans_
     let (run, _) = start_as(&download_states, &key(8, "c1"), DownloadAsker::Read, None).unwrap();
     let task = spawn_download();
     download_states.keep_abort_handle(&run, task.abort_handle());
-    assert!(start_as(&download_states, &key(8, "c1"), DownloadAsker::PlanPin, None).is_none());
+    assert!(start_as(&download_states, &key(8, "c1"), plan_pin(), None).is_none());
     assert!(!download_states.abort_if_plan_alone_asked(&key(8, "c1")));
     assert!(download_states.is_downloading(LocalItemId::new(8)));
     task.abort();

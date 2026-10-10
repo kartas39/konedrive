@@ -33,6 +33,8 @@
 // test: a_landing_of_an_item_the_folder_does_not_show_any_more_is_dropped
 // test: a_landing_at_a_place_the_disk_holds_though_the_row_says_not_on_disk_replaces_nothing
 // test: a_landing_for_the_plan_asks_every_version_and_one_for_a_read_the_content_alone
+// test: a_landing_for_the_plan_says_its_commit_begins_before_anything_is_recorded_or_linked
+// test: a_landing_for_a_step_a_stop_aborted_records_links_and_writes_nothing
 #![allow(dead_code, unused_variables)]
 
 use std::fs::File;
@@ -41,6 +43,7 @@ use std::sync::Arc;
 use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, Store};
 
 use super::place_changes::PlaceChanges;
+use crate::folder::running_steps::RunningSteps;
 
 /// Who asked for the download that lands, which says what its commit asks of the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,22 +69,34 @@ pub(super) enum ItemLandingOutcome {
     PlaceHeld,
     /// The disk or the store refused: the errno.
     Failed { errno: i32 },
+    /// The plan's step this landing commits as runs no more: a stop of the sync aborted
+    /// it before the landing began. Nothing was recorded, linked or written; the next run
+    /// of the sync plans the download again.
+    StepStopped,
 }
 
 /// The landing of one mount's downloads.
 pub(super) struct ItemDownloadLanding {
     place_changes: Arc<PlaceChanges>,
     store: Store,
+    /// Told when the landing of the plan's download begins to commit: from then on a
+    /// stop leaves that step alone.
+    running_steps: Arc<RunningSteps>,
 }
 
 impl ItemDownloadLanding {
-    /// Made by the mount's build.
-    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store) -> Self {
+    /// Made by the mount's build, with the folder's running steps.
+    pub(super) fn new(place_changes: Arc<PlaceChanges>, store: Store, running_steps: Arc<RunningSteps>) -> Self {
         todo!()
     }
 
     /// Lands the unnamed file `file`, whole, checked and synced, as the copy of the item
-    /// of `condition`: one job of the store reads the row and its path now (the item may
+    /// of `condition`. For the plan's download (`VersionsUnchanged`), first of all: its
+    /// commit begins (`RunningSteps::begin_commit` of the step's item) — a stop of the
+    /// sync aborts the step's task no more, and the plan's loop settles what this landing
+    /// answers; told that the step runs no more (a stop aborted it before this job),
+    /// nothing is recorded, linked or written: `StepStopped`. Then: one job of the store
+    /// reads the row and its path now (the item may
     /// have been renamed during the download, `ItemReader::find_path_with_marks`); the
     /// record is written (`LinkFile { item, place, content }`); a
     /// place change is begun; the file's time is set to the content's and it is marked;

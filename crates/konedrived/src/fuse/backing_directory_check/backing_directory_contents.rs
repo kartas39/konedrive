@@ -19,7 +19,6 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::ops::Range;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,7 +28,7 @@ use konedrive_tree::ItemKind;
 use super::disk_finding::{CopyWholeness, DiskContent, UnresolvedReason};
 use super::mark_change::EntryLinks;
 use super::UnresolvedPath;
-use crate::folder::disk::{daemon_owned, ASIDE_ENTRY_PREFIX};
+use crate::folder::disk::{daemon_owned, is_rowless_entry_name};
 use crate::fuse::backing_directory::{BackingDirectory, DiskMarks};
 
 /// How many threads read the disk at most: the measurement the check is built on found no
@@ -81,13 +80,6 @@ pub(super) struct BackingDirectoryContents {
     unresolved: Vec<UnresolvedPath>,
 }
 
-/// Whether `name`, in the directory `rel`, is a name the daemon uses for itself: nothing of
-/// the folder. An entry that was set aside is in the root alone.
-// When `folder::disk::is_rowless_entry_name` is filled in, it is this rule for the root.
-fn is_daemons_own_name(rel: &Path, name: &OsStr) -> bool {
-    daemon_owned(name) || (rel.as_os_str().is_empty() && name.as_bytes().starts_with(ASIDE_ENTRY_PREFIX.as_bytes()))
-}
-
 fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
     let mut read = DirectoryScan::default();
     let listed = match backing_directory.read_directory(rel) {
@@ -100,7 +92,9 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
             Err(e) => return DirectoryScan { unreadable: Some(e.to_string()), ..DirectoryScan::default() },
         };
         let name = listed.file_name();
-        if is_daemons_own_name(rel, &name) {
+        // Nothing of the folder: a name of the daemon's own anywhere, and in the root an
+        // entry no row says — one that was set aside is in the root alone.
+        if daemon_owned(&name) || (rel.as_os_str().is_empty() && is_rowless_entry_name(&name)) {
             continue;
         }
         let metadata = match listed.metadata() {

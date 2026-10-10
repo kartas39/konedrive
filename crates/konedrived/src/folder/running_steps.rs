@@ -192,7 +192,9 @@ impl RunningSteps {
     /// (`StepPhase::CommitBegun`). `false` when the step runs no more — a stop aborted it
     /// between its request and this call: the caller writes nothing and returns. Called
     /// by the runners of the steps towards OneDrive and of the rows, right before the job
-    /// of the store's thread that commits; a step towards the folder need not say it.
+    /// of the store's thread that commits, and by the landing of the plan's download
+    /// (`fuse::item_download_landing`), which commits as that step; any other step
+    /// towards the folder need not say it.
     pub fn begin_commit(&self, item: LocalItemId) -> bool {
         match crate::panic::lock(&self.steps).by_item.get_mut(&item) {
             Some(running) => {
