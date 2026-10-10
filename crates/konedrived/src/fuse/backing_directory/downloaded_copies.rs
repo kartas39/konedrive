@@ -30,6 +30,18 @@ impl DiskMarks {
         DiskMarks { onedrive_id: xattr::get(path, XATTR_ITEM_ID).ok().flatten(), state: xattr::get(path, XATTR_STATE).ok().flatten() }
     }
 
+    /// [`read`](Self::read), which says so when the filesystem denies the reading of the
+    /// marks, as it does of what the user may not read: such an entry is not unmarked, its
+    /// marks are not known.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn try_read(path: &Path) -> std::io::Result<Self> {
+        let get = |name: &str| match xattr::get(path, name) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(e),
+            got => Ok(got.ok().flatten()),
+        };
+        Ok(DiskMarks { onedrive_id: get(XATTR_ITEM_ID)?, state: get(XATTR_STATE)? })
+    }
+
     /// The OneDrive id it is marked with.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::fuse) fn onedrive_id(&self) -> Option<String> {

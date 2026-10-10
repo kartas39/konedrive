@@ -20,6 +20,8 @@ mod convergence;
 mod cost;
 mod daemon_death;
 mod hand_moves;
+mod place_losses;
+mod unread_parts;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -136,7 +138,12 @@ impl Folder {
     /// of the cTag `c-<onedrive_id>` on both sides. No operation of the store writes what
     /// was agreed on yet, so it is written as it is.
     pub(super) fn agree(&mut self, id: LocalItemId, onedrive_id: &str) {
-        self.store.item_store().bind_item(id, &reference("d1", onedrive_id)).unwrap();
+        self.agree_in(id, "d1", onedrive_id);
+    }
+
+    /// [`agree`](Self::agree) for an item of another drive than the folder's own.
+    pub(super) fn agree_in(&mut self, id: LocalItemId, drive: &str, onedrive_id: &str) {
+        self.store.item_store().bind_item(id, &reference(drive, onedrive_id)).unwrap();
         let content = if self.item(id).kind == ItemKind::File {
             format!(
                 ", local_hash = 'h-{onedrive_id}', local_ctag = 'c-{onedrive_id}', local_change_count = NULL, local_mtime_nsec = 0, \
@@ -371,7 +378,8 @@ fn marked_entries_no_row_knows_are_new_items_bound_to_the_ids_of_their_marks() {
 
 /// A lost store whose listing came first: the rows of OneDrive's items are there, and the
 /// folder shows none of them. The item on disk is merged with the row that has its id, in
-/// whichever drive that row says.
+/// whichever drive that row says: the drive of the directory only tells two rows of one id
+/// apart.
 #[test]
 fn a_marked_entry_is_merged_with_the_row_of_its_id_that_the_folder_does_not_show() {
     let mut f = folder();
@@ -462,10 +470,12 @@ fn a_directory_of_onedrive_that_is_gone_stays_and_its_clean_copies_are_not_on_di
     f.assert_settled();
 }
 
-/// A directory OneDrive does not have goes with all that was in it, also what OneDrive has:
-/// a row cannot stay in a directory whose row is gone.
+/// A directory OneDrive does not have goes, and a row cannot stay in a directory whose row
+/// is gone. What OneDrive has and was in it is not removed with it: a file that was not on
+/// disk was not there to be seen, and a clean copy that is gone is no removal anywhere.
+/// They lose their place, and are OneDrive's alone.
 #[test]
-fn a_directory_onedrive_does_not_have_that_is_gone_takes_the_items_of_onedrive_in_it() {
+fn a_directory_onedrive_does_not_have_that_is_gone_does_not_remove_the_items_of_onedrive_in_it() {
     let mut f = folder();
     f.own_directory("mine");
     let clean = f.copy("a.txt", b"aaa", "A");
@@ -474,9 +484,10 @@ fn a_directory_onedrive_does_not_have_that_is_gone_takes_the_items_of_onedrive_i
     let place = ItemPlace { parent_local_item_id: f.id("mine"), name: "remote.bin".into() };
     f.store.item_store().apply(&LocalVersionChange::Moved { item: remote, place, is_name_ignored: false }).unwrap();
     fs::remove_dir_all(f.disk("mine")).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::Removed, 3)]);
+    assert_eq!(found(&f.check()), [(DiskFinding::Removed, 1), (DiskFinding::PlaceLost, 2)]);
     assert_eq!((f.row("mine"), f.item(clean).local, f.item(remote).local), (None, None, None));
     assert_eq!(f.item(clean).onedrive_item, Some(reference("d1", "A")));
+    assert_eq!((f.item(clean).synced_place, f.item(remote).synced_place, f.item(clean).unsent_since), (None, None, None), "nothing of them is to be sent");
     f.assert_settled();
 }
 
@@ -604,7 +615,8 @@ fn the_rows_below_a_directory_that_cannot_be_read_are_left_and_the_directory_is_
     let before = f.rows();
     let findings = f.check();
     fs::set_permissions(f.disk("mine"), fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5)]);
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4)]);
+    assert!(!findings.is_read_whole());
     assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("mine") && matches!(left.reason, UnresolvedReason::Unreadable(_))), "{:?}", findings.unresolved());
     assert_eq!(f.rows(), before);
 }

@@ -102,14 +102,16 @@ fn a_file_moved_over_another_items_place_has_it_and_the_other_is_removed_here() 
 }
 
 /// A file that is not downloaded has nothing in the backing directory to be seen: an item
-/// moved to its name is moved over it all the same, and it is removed here.
+/// moved to its name has the name, and the file that was not seen is not removed. It loses
+/// its place, and is OneDrive's alone.
 #[test]
-fn a_file_moved_to_the_name_of_one_that_is_not_downloaded_is_moved_over_it() {
+fn a_file_moved_to_the_name_of_one_that_is_not_downloaded_has_the_name_and_removes_nothing() {
     let mut f = folder_of_each();
     let (a, remote) = (f.id("docs/a.txt"), f.id("docs/remote.bin"));
     f.rename("docs/a.txt", "docs/remote.bin");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 4), (DiskFinding::MovedOverAnotherItem, 1), (DiskFinding::Removed, 1)]);
-    assert_eq!((f.id("docs/remote.bin"), f.item(remote).local), (a, None));
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 4), (DiskFinding::MovedOverAnotherItem, 1), (DiskFinding::PlaceLost, 1)]);
+    assert_eq!((f.id("docs/remote.bin"), f.item(remote).local, f.item(remote).synced_place), (a, None, None));
+    assert_eq!(f.item(remote).onedrive_item, Some(reference("d1", "R")));
     f.assert_settled();
 }
 
@@ -187,20 +189,26 @@ fn three_files_whose_names_were_turned_round_by_hand_have_each_its_place() {
     f.assert_settled();
 }
 
-/// `rm -r docs; echo > docs`: the directory is removed here with all the rows say is in it,
-/// and the file is a new item at its name.
+/// `rm -r docs; echo > docs`: the file is a new item at the directory's name. A directory of
+/// the user's own is removed here with what was in it. A directory of OneDrive is not, nor
+/// what OneDrive has in it: `rm -r` of it alone removes nothing in OneDrive, and a file at
+/// its name does not change that. They lose their place.
 #[test]
-fn a_directory_replaced_by_a_file_of_its_name_is_removed_with_what_was_in_it() {
+fn a_directory_replaced_by_a_file_of_its_name_goes_and_what_onedrive_has_of_it_is_not_removed() {
     let mut f = folder_of_each();
     let (docs, a, remote, mine) = (f.id("docs"), f.id("docs/a.txt"), f.id("docs/remote.bin"), f.id("mine"));
     fs::remove_dir_all(f.disk("docs")).unwrap();
     f.write("docs", b"a file now");
     fs::remove_dir_all(f.disk("mine")).unwrap();
     f.write("mine", b"m");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 1), (DiskFinding::Made, 2), (DiskFinding::Removed, 5)]);
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 1), (DiskFinding::Made, 2), (DiskFinding::Removed, 2), (DiskFinding::PlaceLost, 3)]);
     let file = f.row("docs").unwrap();
     assert_eq!((file.kind, file.onedrive_item.clone(), content(&file)), (ItemKind::File, None, changed_here(10, 1)));
-    assert_eq!((f.item(docs).local, f.item(a).local, f.item(remote).local), (None, None, None), "removed here, to be removed in OneDrive");
+    for item in [docs, a, remote] {
+        let row = f.item(item);
+        assert_eq!((row.local.clone(), row.synced_place.clone(), row.unsent_since), (None, None, None), "not shown, and nothing to be sent: {row:?}");
+        assert!(row.onedrive_item.is_some());
+    }
     assert_eq!(f.store.item_store().find_item(mine).unwrap(), None);
     f.assert_settled();
 }

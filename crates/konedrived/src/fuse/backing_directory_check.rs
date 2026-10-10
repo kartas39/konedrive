@@ -15,8 +15,14 @@
 //!   memory, a directory before what is in it;
 //! - [`path_findings`]: the finding of each path, by the one decision
 //!   ([`disk_finding`]), which has no disk and no store in it;
-//! - [`write_order`]: the findings written through [`ItemStore`], in an order the schema
-//!   accepts, over [`local_places`], the places as the writes so far leave them.
+//! - [`write_order`]: which finding is written before which, so that the schema accepts
+//!   each write; what a finding writes is [`written_rows`]'s, through [`ItemStore`] and
+//!   over [`local_places`], the places as the writes so far leave them.
+//!
+//! Two rules stand over all of it. What the person could not see is not removed: an item of
+//! OneDrive with nothing of its own on disk loses its place and stays OneDrive's
+//! ([`DiskFinding::PlaceLost`]). And nothing leaves the folder while part of the backing
+//! directory was not read ([`DiskFindings::is_read_whole`]).
 //!
 //! It reads the backing directory through [`BackingDirectory`] and writes rows through
 //! [`ItemStore`]. It changes nothing on disk but one thing: a mark that is not the row's
@@ -37,6 +43,7 @@ mod item_rows;
 mod local_places;
 mod path_findings;
 mod write_order;
+mod written_rows;
 
 pub(in crate::fuse) use disk_finding::{DiskFinding, UnresolvedReason};
 
@@ -44,7 +51,7 @@ use backing_directory_contents::BackingDirectoryContents;
 use entry_identities::EntryIdentities;
 use item_rows::ItemRows;
 use path_findings::PathFindings;
-use write_order::{WriteInputs, WriteOrder};
+use write_order::WriteOrder;
 
 /// A path the check left as it found it, with what is below it, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,12 +61,14 @@ pub(in crate::fuse) struct UnresolvedPath {
     pub(in crate::fuse) reason: UnresolvedReason,
 }
 
-/// What a check answers: how many of each finding it wrote to the rows, and the paths it
-/// left. A path that is not among those it left, and its row, agree.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What a check answers: how many of each finding it wrote to the rows, the paths it left,
+/// and whether it read the whole backing directory. A path that is not among those it
+/// left, and its row, agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::fuse) struct DiskFindings {
     counts: [usize; DiskFinding::ALL.len()],
     unresolved: Vec<UnresolvedPath>,
+    is_read_whole: bool,
 }
 
 impl DiskFindings {
@@ -71,6 +80,30 @@ impl DiskFindings {
     /// The paths that were left as they were found, by path: nothing is left silently.
     pub(in crate::fuse) fn unresolved(&self) -> &[UnresolvedPath] {
         &self.unresolved
+    }
+
+    /// Whether the whole backing directory was read. While it was not, what is missing may
+    /// be in the part that was not read: nothing was found removed, and the folder sends
+    /// nothing before a check has read everything.
+    pub(in crate::fuse) fn is_read_whole(&self) -> bool {
+        self.is_read_whole
+    }
+
+    /// Nothing written yet: the paths that were not read are left already.
+    fn begin(unread: Vec<UnresolvedPath>, is_read_whole: bool) -> Self {
+        DiskFindings { counts: [0; DiskFinding::ALL.len()], unresolved: unread, is_read_whole }
+    }
+
+    /// `path` is left as it was found.
+    fn leave(&mut self, path: PathBuf, reason: UnresolvedReason) {
+        self.unresolved.push(UnresolvedPath { path, reason });
+    }
+
+    /// The answer: the paths that were left by path, each said once for a reason.
+    fn finish(mut self) -> Self {
+        self.unresolved.sort_by(|a, b| a.path.cmp(&b.path));
+        self.unresolved.dedup();
+        self
     }
 
     fn add(&mut self, finding: DiskFinding) {
@@ -100,10 +133,9 @@ impl<'a> BackingDirectoryCheck<'a> {
     pub(in crate::fuse) fn run(&self, item_store: &mut ItemStore<'_>) -> Result<DiskFindings, TreeError> {
         let rows = ItemRows::new(item_store.list_items()?);
         let contents = BackingDirectoryContents::read(self.backing_directory);
-        let identities = EntryIdentities::settle(&rows, &contents);
+        let identities = EntryIdentities::settle(&rows, &contents, self.drive_id);
         let findings = PathFindings::decide(&rows, &contents, &identities);
-        let inputs = WriteInputs { rows: &rows, contents: &contents, identities: &identities, findings: &findings };
-        Ok(WriteOrder::new(item_store, self.backing_directory, self.upload_rules, self.drive_id, inputs).write())
+        Ok(WriteOrder::new(item_store, self.backing_directory, self.upload_rules, self.drive_id, &rows, &contents, &identities, &findings).write())
     }
 }
 

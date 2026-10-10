@@ -26,12 +26,18 @@ use konedrive_tree::usable_id;
 pub const HOLDING: &str = ".konedrive-holding";
 /// A new folder's name until it is labelled and marked.
 pub const NEW_PREFIX: &str = ".konedrive-new-";
+/// How the name begins that the check of the backing directory at start sets an item's row
+/// aside to, in the root of the folder, while the place the item is to have is not free yet.
+/// No entry of the backing directory has such a name.
+pub const SET_ASIDE_PREFIX: &str = ".konedrive-check-";
 
 /// Whether `name` is one the daemon uses for itself in the folder: the holding
-/// directory, or a new folder before it has its name. Nothing under such a name is
-/// the user's: the mount shows none of it.
+/// directory, a new folder before it has its name, or a name a row is set aside to by the
+/// check of the backing directory. Nothing under such a name is the user's: the mount shows
+/// none of it.
 pub fn daemon_owned(name: &OsStr) -> bool {
-    name == OsStr::new(HOLDING) || name.as_bytes().starts_with(NEW_PREFIX.as_bytes())
+    let begins_with = |prefix: &str| name.as_bytes().starts_with(prefix.as_bytes());
+    name == OsStr::new(HOLDING) || begins_with(NEW_PREFIX) || begins_with(SET_ASIDE_PREFIX)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

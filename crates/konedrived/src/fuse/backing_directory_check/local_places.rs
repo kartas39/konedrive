@@ -62,3 +62,6 @@ impl LocalPlaces {
         }
     }
 }
+
+#[cfg(test)]
+pub(super) mod tests;

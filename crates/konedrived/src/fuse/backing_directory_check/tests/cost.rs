@@ -71,7 +71,7 @@ fn the_cost_of_a_check_of_a_hundred_thousand_files() {
     let contents = BackingDirectoryContents::read(&f.backing_directory);
     eprintln!("the backing directory read, {} entries: {:?}", contents.len(), started.elapsed());
     let started = Instant::now();
-    let identities = EntryIdentities::settle(&read, &contents);
+    let identities = EntryIdentities::settle(&read, &contents, &f.drive_id);
     eprintln!("each entry matched to its item: {:?}", started.elapsed());
     let started = Instant::now();
     let findings = PathFindings::decide(&read, &contents, &identities);

@@ -7,8 +7,12 @@
 //! not read is said, never taken for nothing: a directory that cannot be read, one deeper
 //! than the rows go, a name that is neither a file nor a directory. The names the daemon
 //! uses for itself are not the folder's and are left out.
+//!
+//! The reading of one directory ([`DirectoryScan`]) and the putting together of all of them
+//! ([`BackingDirectoryContents::gather`]) are apart: the contents are made from whatever
+//! reads a level of directories, the disk or values a test gives.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::ops::Range;
 use std::os::unix::fs::MetadataExt;
@@ -45,12 +49,13 @@ pub(super) struct BackingDirectoryEntry {
 
 /// One directory as it was read.
 #[derive(Default)]
-struct DirectoryScan {
-    entries: Vec<BackingDirectoryEntry>,
+pub(super) struct DirectoryScan {
+    /// By name.
+    pub(super) entries: Vec<BackingDirectoryEntry>,
     /// The names that are no file and no directory, or that could not be looked at.
-    unknown_names: Vec<(OsString, UnresolvedReason)>,
+    pub(super) unknown_names: Vec<(OsString, UnresolvedReason)>,
     /// Why the directory could not be read to its end.
-    unreadable: Option<String>,
+    pub(super) unreadable: Option<String>,
 }
 
 pub(super) struct BackingDirectoryContents {
@@ -63,9 +68,9 @@ pub(super) struct BackingDirectoryContents {
     /// The entries in the backing directory itself.
     inside_root: Range<usize>,
     by_onedrive_id: HashMap<String, Vec<EntryIndex>>,
-    /// The directories whose entries are not known.
-    unread: HashSet<Option<EntryIndex>>,
-    unknown_names: HashSet<(Option<EntryIndex>, OsString)>,
+    /// The directories whose entries are not known, each with why.
+    unread: HashMap<Option<EntryIndex>, UnresolvedReason>,
+    unknown_names: HashMap<(Option<EntryIndex>, OsString), UnresolvedReason>,
     unresolved: Vec<UnresolvedPath>,
 }
 
@@ -99,7 +104,15 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
                 continue;
             }
         };
-        let marks = DiskMarks::read(&listed.path());
+        // Marks that may not be read say nothing of the entry: it is not taken for an
+        // unmarked one.
+        let marks = match DiskMarks::try_read(&listed.path()) {
+            Ok(marks) => marks,
+            Err(e) => {
+                read.unknown_names.push((name, UnresolvedReason::Unreadable(e.to_string())));
+                continue;
+            }
+        };
         let onedrive_id = marks.onedrive_id();
         let wholeness = if onedrive_id.is_none() || marks.is_whole() { CopyWholeness::Whole } else { CopyWholeness::Partial };
         let ctag = if kind == ItemKind::File && onedrive_id.is_some() { backing_directory.read_ctag_mark(&rel.join(&name)) } else { None };
@@ -146,14 +159,20 @@ fn read_level(backing_directory: &BackingDirectory, level: &[PathBuf]) -> Vec<Di
 impl BackingDirectoryContents {
     /// Reads the whole backing directory.
     pub(super) fn read(backing_directory: &BackingDirectory) -> Self {
+        Self::gather(|level| read_level(backing_directory, level))
+    }
+
+    /// The contents as `read_level` reads them: it is given the paths of the directories of
+    /// one depth, the backing directory itself first, and answers each as it was read.
+    pub(super) fn gather(mut read_level: impl FnMut(&[PathBuf]) -> Vec<DirectoryScan>) -> Self {
         let mut contents = BackingDirectoryContents {
             entries: Vec::new(),
             parents: Vec::new(),
             inside: Vec::new(),
             inside_root: 0..0,
             by_onedrive_id: HashMap::new(),
-            unread: HashSet::new(),
-            unknown_names: HashSet::new(),
+            unread: HashMap::new(),
+            unknown_names: HashMap::new(),
             unresolved: Vec::new(),
         };
         // The directories of one depth, each with its path: the backing directory itself first.
@@ -162,15 +181,16 @@ impl BackingDirectoryContents {
         while !level.is_empty() {
             let paths: Vec<PathBuf> = level.iter().map(|(_, rel)| rel.clone()).collect();
             let mut next_level = Vec::new();
-            for ((directory, rel), read) in level.into_iter().zip(read_level(backing_directory, &paths)) {
+            for ((directory, rel), read) in level.into_iter().zip(read_level(&paths)) {
                 if let Some(reason) = read.unreadable {
-                    contents.unread.insert(directory);
-                    contents.unresolved.push(UnresolvedPath { path: rel, reason: UnresolvedReason::Unreadable(reason) });
+                    let reason = UnresolvedReason::Unreadable(reason);
+                    contents.unread.insert(directory, reason.clone());
+                    contents.unresolved.push(UnresolvedPath { path: rel, reason });
                     continue;
                 }
                 for (name, reason) in read.unknown_names {
-                    contents.unresolved.push(UnresolvedPath { path: rel.join(&name), reason });
-                    contents.unknown_names.insert((directory, name));
+                    contents.unresolved.push(UnresolvedPath { path: rel.join(&name), reason: reason.clone() });
+                    contents.unknown_names.insert((directory, name), reason);
                 }
                 let first = contents.entries.len();
                 for entry in read.entries {
@@ -183,7 +203,7 @@ impl BackingDirectoryContents {
                         if depth + 1 < konedrive_fs::MAX_DEPTH {
                             next_level.push((Some(index), rel.join(&entry.name)));
                         } else {
-                            contents.unread.insert(Some(index));
+                            contents.unread.insert(Some(index), UnresolvedReason::TooDeep);
                             contents.unresolved.push(UnresolvedPath { path: rel.join(&entry.name), reason: UnresolvedReason::TooDeep });
                         }
                     }
@@ -238,13 +258,29 @@ impl BackingDirectoryContents {
 
     /// Whether what is in `directory` is not known: it could not be read, or is too deep.
     pub(super) fn is_unread(&self, directory: Option<EntryIndex>) -> bool {
-        self.unread.contains(&directory)
+        self.unread.contains_key(&directory)
+    }
+
+    /// Why what is in `directory` is not known; `None` when it was read.
+    pub(super) fn find_unread_reason(&self, directory: Option<EntryIndex>) -> Option<&UnresolvedReason> {
+        self.unread.get(&directory)
+    }
+
+    /// Whether some directory was not read: what is missing elsewhere may be in it.
+    pub(super) fn has_unread_directory(&self) -> bool {
+        !self.unread.is_empty()
+    }
+
+    /// The names that are no file and no directory, or that could not be looked at: each
+    /// with the directory it is in and why.
+    pub(super) fn list_unknown_names(&self) -> impl Iterator<Item = (Option<EntryIndex>, &OsStr, &UnresolvedReason)> {
+        self.unknown_names.iter().map(|((directory, name), reason)| (*directory, name.as_os_str(), reason))
     }
 
     /// Whether `directory` holds this name as something that is no file and no directory,
     /// or that could not be looked at.
     pub(super) fn has_unknown_name(&self, directory: Option<EntryIndex>, name: &OsStr) -> bool {
-        !self.unknown_names.is_empty() && self.unknown_names.contains(&(directory, name.to_owned()))
+        !self.unknown_names.is_empty() && self.unknown_names.contains_key(&(directory, name.to_owned()))
     }
 
     /// The path of the entry, relative to the backing directory.
@@ -263,3 +299,6 @@ impl BackingDirectoryContents {
         &self.unresolved
     }
 }
+
+#[cfg(test)]
+pub(super) mod tests;
