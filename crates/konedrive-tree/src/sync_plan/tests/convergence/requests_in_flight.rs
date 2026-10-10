@@ -4,6 +4,14 @@
 //! only a listing says what OneDrive has. A listing reads it: its page is fetched at one
 //! time and written at another, before or after the answers that came in between.
 //!
+//! **An open case, which this caller closes by reading.** OneDrive makes a new item for a
+//! request, another client removes it at once, and the page that says so is written before
+//! the request's answer comes: the page names an item no row has, and writes nothing; the
+//! commit then writes that OneDrive has the item, and no later page names it. Nothing is
+//! lost, and the rows are untrue until a request into the item is refused or a full listing
+//! runs. Here the caller reads a new item again when its answer was slow, and gives what it
+//! read with the next page.
+//!
 //! What is asked of such a run: the rules of the rows after every step and every page; no
 //! step that must not leave ([`step_rules`](super::step_rules)); no commit of a
 //! directory's removal written against the rows; and, once every request is settled, that
@@ -184,6 +192,13 @@ impl World {
         let (arrived, in_flight): (Vec<_>, Vec<_>) = std::mem::take(&mut self.requests.in_flight).into_iter().partition(|request| all || request.rounds_left == 0);
         self.requests.in_flight = in_flight.into_iter().map(|request| RequestInFlight { rounds_left: request.rounds_left - 1, ..request }).collect();
         for request in arrived {
+            // A new item whose answer was slow: a page written meanwhile may have named it
+            // gone, or changed, before any row had its binding, and no later page names it
+            // again. The caller reads it once more (an open case of the design: see the
+            // module).
+            if let (Some(RequestOutcome::Confirmed(Some(made))), OneDriveStep::MakeDirectory { .. } | OneDriveStep::SendNewFile { .. }) = (&request.answer, &request.step) {
+                self.requests.read_again.push(made.item.item_id.as_str().to_owned());
+            }
             let answer = match request.answer {
                 Some(answer) => answer,
                 None => self.drive().request(&request.step),
@@ -221,16 +236,24 @@ impl World {
         }
     }
 
-    /// A listing of what OneDrive changed since the one before, fetched and written now,
-    /// with what was read again of the items a refused request named. It began after
-    /// every request whose answer was lost: those are settled. Whether it said anything.
-    pub(super) fn list_drive_changes(&mut self) -> Result<bool, Failure> {
-        let listing = self.store.item_store().begin_delta_listing().unwrap();
+    /// The page a listing fetched now says: what OneDrive changed since the one before, and
+    /// what the caller read again — the items a refused request named, and a new item whose
+    /// answer was slow.
+    fn fetch_page(&mut self) -> Vec<Change> {
         let mut page = self.drive().fetch_changes();
         for item in std::mem::take(&mut self.requests.read_again) {
             let read = self.drive().read(&item);
             page.push(read);
         }
+        page
+    }
+
+    /// A listing of what OneDrive changed since the one before, fetched and written now,
+    /// with what was read again of the items a refused request named. It began after
+    /// every request whose answer was lost: those are settled. Whether it said anything.
+    pub(super) fn list_drive_changes(&mut self) -> Result<bool, Failure> {
+        let listing = self.store.item_store().begin_delta_listing().unwrap();
+        let page = self.fetch_page();
         let said_anything = !page.is_empty();
         self.write_page(listing.id, page, listing.began_at_count)?;
         self.requests.lost.clear();
@@ -327,7 +350,7 @@ impl World {
             }
             if self.requests.held_page.is_none() {
                 let listing = self.store.item_store().begin_delta_listing().unwrap();
-                let page = self.drive().fetch_changes();
+                let page = self.fetch_page();
                 // The page may be written before the answers that are on their way: what
                 // those requests sent is then known by the listing first.
                 for answer in self.requests.in_flight.iter().filter_map(|request| request.answer.clone()).collect::<Vec<_>>() {

@@ -89,6 +89,33 @@ fn is_move_to_be_sent(answer: Option<&ItemDecision>) -> bool {
     }
 }
 
+/// The steps of one plan run in any order: the directory `moved` is to be moved here into
+/// `directory`, and another directory of a lower id is to be moved here by a step of this
+/// plan too, after which the folder would show `directory` below `moved`. That other one:
+/// its move goes first, and the plan made after it decides. `None` when no such move is on
+/// the way up from `directory`, by the places the folder shows and the places the moves
+/// of directories with a lower id lead to.
+fn find_earlier_move_that_closes_cycle(items: &PlanItems<'_>, answers: &OverruledAnswers<'_>, directory: LocalItemId, moved: LocalItemId) -> Option<LocalItemId> {
+    let is_moved_here_earlier = |at: LocalItemId| at < moved && matches!(answers.find(at), Some(ItemDecision::Step(SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. }))));
+    // The ways up from `directory`, each with the first earlier move it went through.
+    let mut ways: Vec<(LocalItemId, Option<LocalItemId>)> = vec![(directory, None)];
+    let mut passed = BTreeSet::new();
+    while let Some((at, through)) = ways.pop() {
+        if at == moved {
+            if through.is_some() {
+                return through;
+            }
+            continue;
+        }
+        let Some(row) = items.find(at).filter(|_| passed.insert((at, through))) else { continue };
+        ways.extend(directory_here(row).map(|above| (above, through)));
+        if is_moved_here_earlier(at) {
+            ways.extend(directory_in_onedrive(row).map(|above| (above, through.or(Some(at)))));
+        }
+    }
+    None
+}
+
 /// What was decided of the directories that were moved in a cycle.
 pub(crate) struct MoveCycles {
     pub(crate) overrulings: Vec<Overruling>,
@@ -104,7 +131,9 @@ pub(crate) struct MoveCycles {
 ///   plan made after it sees whether their moves still close a cycle. This holds also for a
 ///   move that is not sent now (a read-only folder, a name OneDrive cannot hold).
 /// - A directory OneDrive moved into what the folder shows in it is not moved here yet: it
-///   waits for the first directory on the way that is out of place. Likewise a directory
+///   waits for the first directory on the way that is out of place. Nor into what the
+///   folder would show in it once another directory's move of this plan ran: of two such
+///   moves the one of the directory with the lower id goes first. Likewise a directory
 ///   moved here into what OneDrive still has in it, whose move closes no cycle, is not
 ///   sent yet: a directory before what is in it.
 pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, answers: &ItemAnswers) -> MoveCycles {
@@ -136,6 +165,8 @@ pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &P
                 let Some(directory) = directory_in_onedrive(case.item) else { continue };
                 if directory == id || items.is_shown_in(directory, id) {
                     answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_here))));
+                } else if let Some(earlier) = find_earlier_move_that_closes_cycle(items, &answers, directory, id) {
+                    answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(earlier)));
                 }
             }
             Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => {

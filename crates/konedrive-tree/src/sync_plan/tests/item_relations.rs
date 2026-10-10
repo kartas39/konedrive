@@ -327,6 +327,19 @@ fn what_was_agreed_to_be_in_a_directory_that_gives_up_its_binding_waits_for_it()
     assert_eq!(answer(&given, 6), waits_for(2), "it leaves the folder after");
 }
 
+/// Found by the larger convergence run (seed 73, the caller's facts drawn): the steps of one
+/// plan run in any order, and two moves towards the folder must not close a cycle between
+/// them. `d` was moved here into `e`; OneDrive moved `e` into `c` and `c` into `d`. The move
+/// here is taken back. Were `e` moved into `c` first, the folder would show `d` below `c`,
+/// and refuse `c` its move into `d`: so `e` waits for `c`, whose move is the earlier one's.
+#[test]
+fn two_directories_onedrive_moved_are_not_both_moved_here_where_that_closes_a_cycle_in_the_folder() {
+    let given = input(vec![moved_in_onedrive(synced_directory(3, ROOT, "c"), id(4), "c"), moved_here(synced_directory(4, ROOT, "d"), id(5), "d"), moved_in_onedrive(synced_directory(5, ROOT, "e"), id(3), "e")]);
+    assert_eq!(answer(&given, 4), folder_step(FolderStep::TakeMoveBack { item: versions(&given, 4) }));
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveItem { item: versions(&given, 3) }));
+    assert_eq!(answer(&given, 5), waits_for(3));
+}
+
 /// Found by the convergence run in which OneDrive is a state of its own (seed 157): a new
 /// directory here and a new one in OneDrive are one item, and the merge moves the binding
 /// to the row of the folder's — with it, what OneDrive has in the directory is in that row.

@@ -262,7 +262,15 @@ impl World {
                 for _ in 0..2 {
                     self.changes.change_folder(&mut self.store);
                 }
-                self.expected_since_steps_ran = Some(ExpectedEnd::of(&mut self.store));
+                let mut expected = ExpectedEnd::of(&mut self.store);
+                // A file removed here while a step runs for it: where OneDrive has it is
+                // known once that step ended — its move into a directory that was removed
+                // here since may yet be confirmed, and its content then goes with that
+                // directory's removal, which stands.
+                for row in rows(&mut self.store).iter().filter(|row| row.local.is_none() && self.facts.items_with_running_step.contains(&row.local_item_id)) {
+                    expected.contents.retain(|content| Some(content) != content_of(&row.onedrive).as_ref());
+                }
+                self.expected_since_steps_ran = Some(expected);
             }
         }
         Ok(None)
