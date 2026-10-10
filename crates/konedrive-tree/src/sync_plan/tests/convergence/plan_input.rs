@@ -186,11 +186,11 @@ pub(crate) fn plan_next_steps(store: &mut TreeStore, facts: &CallerFacts, wideni
             let items = store.item_store();
             (items.list_unsent(None, read_at_once).unwrap(), items.list_changed_in_onedrive(None, read_at_once).unwrap(), items.list_pinned_files_to_download(None, read_at_once).unwrap())
         };
-        let not_placed = store.item_store().list_shown_items_that_cannot_be_shown(None, read_at_once).unwrap();
-        let is_all_read = [unsent.len(), changed.len(), pinned.len(), not_placed.len()].iter().all(|read| *read < read_at_once);
+        let cannot_be_shown = store.item_store().list_shown_items_that_cannot_be_shown(None, read_at_once).unwrap();
+        let is_all_read = [unsent.len(), changed.len(), pinned.len(), cannot_be_shown.len()].iter().all(|read| *read < read_at_once);
         // The last of these: an item the folder shows and agrees on, whose placement a
         // listing changed, is in neither of the two indexes.
-        given.give(unsent.into_iter().chain(changed).chain(pinned).chain(not_placed));
+        given.give(unsent.into_iter().chain(changed).chain(pinned).chain(cannot_be_shown));
         // No more askings than rows: each adds one at least.
         let (input, plan) = loop {
             given.close(store, facts.gives_directories_above);

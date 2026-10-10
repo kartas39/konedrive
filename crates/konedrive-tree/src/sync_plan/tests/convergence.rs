@@ -24,7 +24,11 @@
 //!    a directory goes with that removal, which stands. What OneDrive made in such a
 //!    directory, and the folder never showed, is no such loss: it is on both sides at the
 //!    end;
-//! 5. a plan over every row of what has converged has no step.
+//! 5. a plan over every row of what has converged has no step;
+//! 6. no step leaves that must not ([`step_rules`]): asked of every step of every run, in
+//!    words of its own, beside the plan's and the commits';
+//! 7. where OneDrive is a state of its own ([`requests_in_flight`]), the rows say at the
+//!    end what it has.
 
 use std::collections::{BTreeMap, BTreeSet};
 

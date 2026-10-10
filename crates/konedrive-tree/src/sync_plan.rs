@@ -575,6 +575,14 @@ impl SyncPlan {
 /// Each of them is given the answers so far to read and answers what it overrules; the
 /// answers are changed here and nowhere else, and never for an item that is held back
 /// (`ItemAnswers::overrule`).
+///
+/// What depends on the order: the names (2) are settled before what is below a removed
+/// directory is made to wait for it (4), and read a file removed here that waits for
+/// another item as one that comes back and stays at its name — true of what an item is
+/// answered by itself, and not of the wait (4) gives everything below a removed directory,
+/// whose removal frees its name. The guard against a mass removal (6) holds only steps,
+/// so it comes after everything that makes or takes a removal; and the waits are followed
+/// to their ends (7) last, over the answers as they then stand.
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
     let cases = describe_items(input, &items);
