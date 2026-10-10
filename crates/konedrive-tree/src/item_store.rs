@@ -451,9 +451,12 @@ fn remove_local_version(conn: &Connection, mut item: Item) -> Result<(), TreeErr
 }
 
 /// The statement of a write operation that a file it made replaces the item `replaced`
-/// holds: `replaced` is a file of OneDrive the folder does not show, so one removed here
-/// whose removal OneDrive does not know of. Which removed file a made file replaces, where
-/// several could be meant, is not asked here.
+/// holds: `replaced` is a file removed here whose removal OneDrive does not know of — a
+/// bound file the folder does not show, with a place the two sides agreed on. Two other
+/// rows are bound files the folder does not show, and are not replaced: the row of a
+/// removal OneDrive confirmed, and an item a listing brought that the folder never showed;
+/// neither has a place agreed on. Which removed file a made file replaces, where several
+/// could be meant, is not asked here.
 fn check_replaced_by_made_file(conn: &Connection, kind: ItemKind, replaced: LocalItemId) -> Result<(), TreeError> {
     if kind != ItemKind::File {
         return Err(refuse(format!("a directory is made as a new item: it does not replace item {replaced}")));
@@ -466,6 +469,7 @@ fn check_replaced_by_made_file(conn: &Connection, kind: ItemKind, replaced: Loca
         Item { local: Some(_), .. } => Err(refuse(format!("the folder still shows item {replaced}: a made file does not replace it"))),
         Item { onedrive_item: None, .. } => Err(refuse(format!("item {replaced} has no binding for a made file to take over"))),
         Item { kind: ItemKind::Directory, .. } => Err(refuse(format!("item {replaced} is a directory: a made file does not replace it"))),
+        Item { synced_place: None, .. } => Err(refuse(format!("the two sides agreed on no place of item {replaced}: it was not removed here, and a made file does not replace it"))),
         Item { kind: ItemKind::File, .. } => Ok(()),
     }
 }

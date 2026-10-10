@@ -515,6 +515,30 @@ fn a_made_file_replaces_only_a_bound_file_the_folder_does_not_show() {
     assert_eq!(store.item_store().find_bound_item(&reference("F")).unwrap().map(|i| i.local_item_id), Some(removed_file));
 }
 
+/// S2 of the second review. A made file replaces a file removed here whose removal OneDrive
+/// does not know of: a row with something agreed on. Two other rows are bound files the
+/// folder does not show, and are refused, with nothing made: the row of a removal OneDrive
+/// confirmed, whose id OneDrive does not have any more, and an item a listing brought that
+/// the folder never showed, which is another item than the file made here.
+#[test]
+fn a_made_file_does_not_replace_a_confirmed_removal_nor_an_item_the_folder_never_showed() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let confirmed = make_file(&mut store, ROOT, "confirmed");
+    synced(&mut store, confirmed, "C");
+    store.item_store().apply(&LocalVersionChange::Removed { item: confirmed }).unwrap();
+    store.item_store().confirm_onedrive_version(confirmed, &crate::ConfirmedOneDriveVersion::Removed).unwrap();
+    let never_shown = store.item_store().make_onedrive_item(&reference("N"), ItemKind::File).unwrap();
+    let mut row = item(&mut store, never_shown);
+    row.onedrive = Some(ItemVersion { place: Some(place(ROOT, "new")), content: Some(hashed("N")) });
+    write_item(&store.conn, &row).unwrap();
+    let before = store.item_store().list_items().unwrap();
+
+    for replaced in [confirmed, never_shown] {
+        assert!(is_refused(store.item_store().apply(&made_replacing(place(ROOT, "new"), replaced))), "replacing {replaced}");
+    }
+    assert_eq!(store.item_store().list_items().unwrap(), before);
+}
+
 /// A file saved over another (an editor's temporary file renamed over the original) has its
 /// place and takes over its binding; the replaced row goes.
 #[test]
