@@ -117,17 +117,24 @@ fn give_up_binding_of_a_directory_keeps_its_content_and_hands_on_what_was_agreed
     assert_eq!(item(&mut store, own).synced_place, None);
 }
 
-/// What `give_up_binding` refuses: an item with no binding, the root, and an id with no row.
+/// What `give_up_binding` refuses: an item with no binding, the root, an id with no row,
+/// and an item the folder does not show: it would be left with no binding, no local
+/// version and nothing agreed on, a row that no operation ever takes away.
 #[test]
-fn give_up_binding_refuses_an_item_with_none_and_the_root() {
+fn give_up_binding_refuses_an_item_with_none_the_root_and_one_not_shown() {
     let mut store = TreeStore::in_memory().unwrap();
     let local = make_file(&mut store, ROOT, "local");
+    let removed = make_file(&mut store, ROOT, "removed");
+    let removed_row = synced(&mut store, removed, "G");
+    remove(&mut store, removed);
     synced(&mut store, ROOT, "R");
     let mut items = store.item_store();
-    for id in [local, ROOT, LocalItemId::new(99)] {
+    for id in [local, removed, ROOT, LocalItemId::new(99)] {
         assert!(is_refused(items.give_up_binding(id)), "{id}");
     }
     assert_eq!(bound_to(&mut store, "R"), Some(ROOT));
+    assert_eq!(item(&mut store, removed).synced_place, removed_row.synced_place, "the removed row is as it was");
+    assert_eq!(bound_to(&mut store, "G"), Some(removed));
 }
 
 /// `merge_items`: a new item here and a new item in OneDrive are one. The local row takes

@@ -17,9 +17,10 @@ use crate::model::{ContentPresence, Item, ItemKind, LocalItemId};
 use crate::TreeError;
 
 impl ItemStore<'_> {
-    /// The item keeps its id, its local version and its content, and is an item OneDrive
-    /// does not have; a new row takes the binding and nothing else, and is returned: what
-    /// OneDrive has under that binding is that row's to be given.
+    /// The item, which the folder shows, keeps its id, its local version and its content,
+    /// and is an item OneDrive does not have; a new row of its kind takes the binding and
+    /// nothing else, and is returned: what OneDrive has under that binding is that row's to
+    /// be given.
     pub fn give_up_binding(&mut self, item: LocalItemId) -> Result<LocalItemId, TreeError> {
         self.write(|tx| give_up_binding(tx, item))
     }
@@ -93,6 +94,9 @@ pub(crate) fn take_over_binding(tx: &Transaction<'_>, replacing: LocalItemId, re
 /// [`ItemStore::give_up_binding`], inside the caller's transaction.
 pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId) -> Result<LocalItemId, TreeError> {
     let mut giver = read_below_root(tx, item)?;
+    if giver.local.is_none() {
+        return Err(refuse(format!("the folder does not show item {item}: with no binding its row would be of nothing")));
+    }
     let Some(onedrive_item) = giver.onedrive_item.take() else {
         return Err(refuse(format!("item {item} has no binding to give up")));
     };
