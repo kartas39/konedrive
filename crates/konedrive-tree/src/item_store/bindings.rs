@@ -14,14 +14,19 @@
 //! and never commits it.
 //!
 //! Each keeps a binding one item's (the row that had it lets it go before another takes
-//! it), and keeps a synced place pointing at a row: what the two sides agreed is in a
-//! directory of OneDrive stays with the row that has that directory's binding.
+//! it), and keeps a synced place and an OneDrive place pointing at a row: what the two sides
+//! agreed is in a directory of OneDrive, and what OneDrive has in it, stay with the row that
+//! has that directory's binding.
+//!
+//! What is OneDrive's goes with the binding, in every one of them: the OneDrive version, its
+//! eTag, the placement, the stamp of the last confirmation and the full listing that saw
+//! the item. An item that lets its binding go keeps none of it.
 
 use rusqlite::{params, Connection, Transaction};
 
-use super::item_row::{delete_item, find_bound_item, find_item, insert_item, set_binding, write_item};
+use super::item_row::{delete_item, find_bound_item, find_item, find_seen_in_full_listing, insert_item, set_binding, set_seen_in_full_listing, write_item};
 use super::{check_empty, refuse, ItemStore};
-use crate::model::{ContentPresence, DriveId, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use crate::model::{ContentPresence, DriveId, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 use crate::{meta, TreeError};
 
 impl ItemStore<'_> {
@@ -69,25 +74,40 @@ fn read_below_root(conn: &Connection, id: LocalItemId) -> Result<Item, TreeError
     find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))
 }
 
-/// What the two sides agreed is in the directory `from` is in `to` from now on.
-fn move_synced_children(conn: &Connection, from: LocalItemId, to: LocalItemId) -> Result<(), TreeError> {
+/// What the two sides agreed is in the directory `from`, and what OneDrive has in it, is in
+/// `to` from now on.
+fn move_children_of_binding(conn: &Connection, from: LocalItemId, to: LocalItemId) -> Result<(), TreeError> {
     conn.prepare_cached("UPDATE items SET synced_parent_id = ?2 WHERE synced_parent_id = ?1")?.execute(params![from.as_i64(), to.as_i64()])?;
+    conn.prepare_cached("UPDATE items SET onedrive_parent_id = ?2 WHERE onedrive_parent_id = ?1")?.execute(params![from.as_i64(), to.as_i64()])?;
     Ok(())
 }
 
-/// The row `from` goes, and `to` has its binding and its synced place and content.
-fn hand_over(conn: &Connection, from: Item, mut to: Item) -> Result<(), TreeError> {
+/// What is OneDrive's of `from` is `to`'s: the binding, the OneDrive version, its eTag, the
+/// placement and the stamp. `from` keeps none of it.
+fn move_onedrive_side(from: &mut Item, to: &mut Item) {
+    to.onedrive_item = from.onedrive_item.take();
+    to.onedrive = from.onedrive.take();
+    to.onedrive_etag = from.onedrive_etag.take();
+    to.placement = std::mem::replace(&mut from.placement, Placement::Placed);
+    to.confirmed_count = std::mem::take(&mut from.confirmed_count);
+}
+
+/// The row `from` goes, and `to` has its binding, what is OneDrive's of it, and its synced
+/// place and content.
+fn hand_over(conn: &Connection, mut from: Item, mut to: Item) -> Result<(), TreeError> {
     if from.kind != to.kind {
         return Err(refuse(format!("item {} and item {} are not of one kind: an item of OneDrive never changes its kind", from.local_item_id, to.local_item_id)));
     }
     check_empty(conn, from.local_item_id)?;
-    move_synced_children(conn, from.local_item_id, to.local_item_id)?;
+    move_children_of_binding(conn, from.local_item_id, to.local_item_id)?;
+    let seen_in_full_listing = find_seen_in_full_listing(conn, from.local_item_id)?;
     // The row that has the binding goes before another takes it.
     delete_item(conn, from.local_item_id)?;
-    to.onedrive_item = from.onedrive_item;
+    move_onedrive_side(&mut from, &mut to);
     to.synced_place = from.synced_place;
     to.synced_content = from.synced_content;
-    write_item(conn, &to)
+    write_item(conn, &to)?;
+    set_seen_in_full_listing(conn, to.local_item_id, seen_in_full_listing)
 }
 
 /// The file `replacing` takes the binding and the synced place and content of the file
@@ -126,16 +146,25 @@ pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_i
     if giver.local.is_none() {
         return Err(refuse(format!("the folder does not show item {item}: with no binding its row would be of nothing")));
     }
-    let Some(onedrive_item) = giver.onedrive_item.take() else {
+    let Some(onedrive_item) = giver.onedrive_item.clone() else {
         return Err(refuse(format!("item {item} has no binding to give up")));
     };
+    let seen_in_full_listing = find_seen_in_full_listing(tx, item)?;
+    // What is OneDrive's of the giver, for the row that takes the binding.
+    let mut given = giver.clone();
+    move_onedrive_side(&mut giver, &mut given);
     giver.synced_place = None;
     giver.synced_content = None;
     giver.is_name_ignored = is_name_ignored;
     // The row that has the binding lets it go before another takes it.
     write_item(tx, &giver)?;
+    set_seen_in_full_listing(tx, item, 0)?;
     let taker = insert_item(tx, giver.kind, Some(&onedrive_item), None, ContentPresence::NotOnDisk, false)?;
-    move_synced_children(tx, item, taker)?;
+    let mut taker_row = find_item(tx, taker)?.ok_or_else(|| refuse(format!("item {taker} has no row")))?;
+    move_onedrive_side(&mut given, &mut taker_row);
+    write_item(tx, &taker_row)?;
+    set_seen_in_full_listing(tx, taker, seen_in_full_listing)?;
+    move_children_of_binding(tx, item, taker)?;
     Ok(taker)
 }
 
@@ -194,19 +223,26 @@ pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
     let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?.filter(|id| !id.is_empty())) else {
         return Ok(());
     };
-    let root = OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) };
-    match find_bound_item(conn, &root)? {
+    bind_root_to(conn, &OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) })
+}
+
+/// The root of the folder is bound to `root`, the root of the drive, whatever row had that
+/// reference: see [`bind_root`]. What OneDrive has in a row that goes is in the root, as
+/// what was agreed to be in it is. Inside the caller's transaction, which is dropped on any
+/// error.
+pub(super) fn bind_root_to(conn: &Connection, root: &OneDriveItemReference) -> Result<(), TreeError> {
+    match find_bound_item(conn, root)? {
         Some(holder) if holder.local_item_id == LocalItemId::ROOT => return Ok(()),
         Some(holder) if holder.local.is_some() || holder.kind != ItemKind::Directory => {
             return Err(refuse(format!("item {} is bound to the root of the drive, and is a file or an item the folder shows: it is not the root", holder.local_item_id)));
         }
         Some(holder) => {
-            move_synced_children(conn, holder.local_item_id, LocalItemId::ROOT)?;
+            move_children_of_binding(conn, holder.local_item_id, LocalItemId::ROOT)?;
             delete_item(conn, holder.local_item_id)?;
         }
         None => {}
     }
-    set_binding(conn, LocalItemId::ROOT, &root)
+    set_binding(conn, LocalItemId::ROOT, root)
 }
 
 #[cfg(test)]
