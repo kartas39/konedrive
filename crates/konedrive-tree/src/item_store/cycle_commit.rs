@@ -242,7 +242,11 @@ pub(crate) fn follow_onedrive_items(tx: &Transaction<'_>, copies_on_disk: &[Stri
     }
 
     // What OneDrive places no more and the folder does not show goes, deepest first. The
-    // placed items are read again only when such a row is there.
+    // placed items are read again only when a bound row the folder does not show is there.
+    let unshown = tx.prepare_cached("SELECT 1 FROM items WHERE onedrive_drive_id = ?1 AND local_parent_id IS NULL AND local_item_id != 1 LIMIT 1")?.exists([drive])?;
+    if !unshown {
+        return Ok(());
+    }
     let mut delete = tx.prepare_cached(&format!(
         "WITH RECURSIVE {placed}
          DELETE FROM items

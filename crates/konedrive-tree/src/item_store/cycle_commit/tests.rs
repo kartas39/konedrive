@@ -360,3 +360,27 @@ fn a_local_only_directory_in_the_way_keeps_what_comes_below_it_not_shown() {
     assert_eq!(shows(&mut store), ["docs: directory"]);
     assert!(bound(&mut store, "C").unwrap().local.is_none());
 }
+
+/// One delta makes a directory and moves a file into it, and makes a file at the name
+/// another leaves: the file moves once its new directory is shown, and the new file takes
+/// the name once it is free, in the same commit.
+#[test]
+fn what_one_delta_makes_and_moves_into_or_out_of_its_way_is_placed_in_one_commit() {
+    let mut store = listed(&[root(), file("A", "R", "a", "a1"), file("B", "R", "b", "b1")]);
+    commit_delta(&mut store, &[directory("P", "R", "p"), directory("Q", "P", "q"), file("A", "Q", "a", "a1"), file("B", "R", "c", "b1"), file("N", "R", "b", "n1")], &[]);
+    assert_eq!(shows(&mut store), ["b: RemoteOnly", "c: RemoteOnly", "p: directory", "p/q: directory", "p/q/a: RemoteOnly"]);
+    let q = bound_id(&mut store, "Q");
+    assert_eq!(bound(&mut store, "A").unwrap().synced_place, Some(place(q, "a")));
+}
+
+/// A file that OneDrive moved into a directory the folder cannot show, because an item of
+/// the user's own keeps the directory's name, stays where it is: it is not placed in a
+/// directory the folder does not show.
+#[test]
+fn a_file_moved_into_a_directory_the_folder_does_not_show_stays_where_it_is() {
+    let mut store = listed(&[root(), file("A", "R", "a", "a1")]);
+    make_directory(&mut store, ROOT, "p");
+    commit_delta(&mut store, &[directory("P", "R", "p"), file("A", "P", "a", "a1")], &[]);
+    assert_eq!(shows(&mut store), ["a: RemoteOnly", "p: directory"]);
+    assert_eq!(bound(&mut store, "A").unwrap().synced_place, Some(place(ROOT, "a")));
+}

@@ -214,8 +214,8 @@ impl PendingUploads for SyncService {
     /// whether or not the folder is ever told to follow.
     ///
     /// A folder read-only already — its sync holding its cycles for these changes — starts
-    /// its sync again without them, as a read-only start does: what a read-write cycle
-    /// deferred is the base's, and the first cycle is a Full reconcile.
+    /// its sync again without them, as a read-only start does: its first cycle stages what a
+    /// read-write cycle deferred, and is a Full reconcile.
     async fn drop_pending_uploads(&self) {
         let mut stopped = self.change().await;
         if stopped.folder().wanted == Mode::ReadWrite {
