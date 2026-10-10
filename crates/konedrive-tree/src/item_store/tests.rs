@@ -1365,3 +1365,35 @@ fn the_schema_refuses_a_name_without_its_folded_name() {
         assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
     }
 }
+
+/// The check of the backing directory reads the rows whole: every row, also one the folder
+/// does not show, in the order of the ids.
+#[test]
+fn all_rows_are_listed_with_those_the_folder_does_not_show() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let directory = make_directory(&mut store, ROOT, "directory");
+    let file = make_file(&mut store, directory, "file");
+    synced(&mut store, file, "A");
+    store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
+    let listed = store.item_store().list_items().unwrap();
+    assert_eq!(listed, [item(&mut store, ROOT), item(&mut store, directory), item(&mut store, file)]);
+    assert!(listed[2].local.is_none());
+}
+
+/// Several changes are one transaction: a refusal of the last leaves nothing of the first.
+#[test]
+fn several_changes_are_applied_in_one_transaction_or_none() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let file = make_file(&mut store, ROOT, "file");
+    let before = synced(&mut store, file, "A");
+    let open = LocalVersionChange::OpenedForWriting { item: file };
+    let refused = LocalVersionChange::Removed { item: ROOT };
+    assert!(is_refused(store.item_store().apply_all(&[open.clone(), refused])));
+    assert_eq!(item(&mut store, file), before, "the open was not written either");
+
+    let closed = LocalVersionChange::ClosedChanged { item: file, size: 9, mtime: 300, mtime_nsec: 5 };
+    assert_eq!(store.item_store().apply_all(&[open, closed]).unwrap(), [file, file]);
+    let changed = item(&mut store, file);
+    assert_eq!(changed.local.unwrap().content, Some(ContentVersion::ChangedHere { size: 9, mtime: 300, mtime_nsec: 5, change_count: 1 }));
+    assert_eq!(changed.content_before_write, None);
+}

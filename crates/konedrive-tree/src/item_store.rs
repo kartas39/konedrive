@@ -72,6 +72,8 @@ use crate::{FoldedName, TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
 mod bindings;
+/// Whether a file's content is in the backing directory, written by itself.
+mod content_presence;
 /// A row of `items`: its columns, reading it, and its raw writers.
 mod item_row;
 /// What a listing of OneDrive says of an item, written into its row.
@@ -609,6 +611,22 @@ pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, se
     set_local_place_aside(tx, first, &first_place, first_item.is_name_ignored)?;
     set_local_place(tx, second, &first_place, first_item.is_name_ignored)?;
     set_local_place(tx, first, &second_place, second_item.is_name_ignored)
+}
+
+impl ItemStore<'_> {
+    /// Every row of `items`, by local item id: also the rows of items the folder does not
+    /// show. For what compares all rows with something else in memory, where a lookup for
+    /// each would cost more than reading them whole.
+    pub fn list_items(&self) -> Result<Vec<Item>, TreeError> {
+        item_row::list_items(&self.store.conn)
+    }
+
+    /// Writes several changes of local versions in one transaction, in their order: all of
+    /// them or none. The item each is about, in the same order. A change that is refused,
+    /// or fails, leaves the rows as they were before the first.
+    pub fn apply_all(&mut self, changes: &[LocalVersionChange]) -> Result<Vec<LocalItemId>, TreeError> {
+        self.write(|tx| changes.iter().map(|change| apply_change(tx, change)).collect())
+    }
 }
 
 #[cfg(test)]

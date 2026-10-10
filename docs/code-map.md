@@ -727,15 +727,18 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   has it (`find_folder_visibility`, a decision over the rows above it), the items OneDrive
   changed, the unsent items in the order they came to be unsent, what OneDrive has in a
   directory and below it, and the items of one folded name in a directory on each side;
-  applying a change of its local version, each a case; the rules that hold of the rows, and
+  applying a change of its local version, each a case, or several in one transaction
+  (`apply_all`); all rows read whole (`list_items`); the rules that hold of the rows, and
   who holds each. `[tests]`
 - `item_store/item_row.rs` — a row of `items` in the database: its columns, where it is
-  read, written and deleted, and where a name and an item id of OneDrive are checked; the
+  read (one, or all), written and deleted, and where a name and an item id of OneDrive are checked; the
   folded name written with each local and OneDrive name; the writers of the OneDrive
   columns alone, one row or a set (what is below a directory, what a full listing did not
   see, each but the rows confirmed since); the words of the schema's index and trigger
   conditions (what OneDrive changed, what is unsent, a binding alone); the queries that go
   by an index. Reachable from `item_store` alone.
+- `item_store/content_presence.rs` — whether a file's content is in the backing directory,
+  written by itself (`set_content_presence`). `[tests]`
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
   the root's: `bind_root`, and `bind_root_once_known` for today's listing), and moved from
   one item to another (`take_over_binding`, done with the change that says so;

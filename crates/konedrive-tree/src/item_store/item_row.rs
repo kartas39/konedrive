@@ -506,3 +506,17 @@ pub(super) fn delete_rows_of_binding_alone(conn: &Connection, stamped_until: u64
     conn.prepare_cached(&sql)?.execute([stamped_until as i64])?;
     Ok(())
 }
+
+/// Every row, by local item id.
+pub(super) fn list_items(conn: &Connection) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items ORDER BY local_item_id");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map([], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// The whole content of `item` is in the backing directory from now on, or is not.
+pub(super) fn set_content_presence(conn: &Connection, item: LocalItemId, content_presence: ContentPresence) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET content_presence = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), content_presence.as_str()])?;
+    Ok(())
+}
