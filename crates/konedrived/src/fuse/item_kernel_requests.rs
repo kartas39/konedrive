@@ -215,7 +215,7 @@ impl ItemKernelRequests {
 
     /// The rest of a read as ranges, on the runtime: `ItemRangeFetcher::fetch_range`, the
     /// bytes counted towards the whole download (`count_bytes_read`, then
-    /// `ItemDownloader::download` at the threshold). No row is read here. The caller keeps
+    /// `ItemDownloader::download` as `DownloadAsker::Read` at the threshold). No row is read here. The caller keeps
     /// the task's abort handle for the kernel's interrupt, as today
     /// (`interruptible_reads`).
     pub(super) async fn fetch_read_range(&self, range: RangeToFetch) -> Result<Vec<u8>, Errno> {
@@ -229,7 +229,7 @@ impl ItemKernelRequests {
     }
 
     /// The rest of an open for writing, on the runtime: the download awaited
-    /// (`ItemDownloader::download` with a waiter: `ESTALE`, `EEXIST` and `EIO` reach the
+    /// (`ItemDownloader::download` as `DownloadAsker::OpenForWriting` with a waiter: `ESTALE`, `EEXIST` and `EIO` reach the
     /// program), then `open_to_write` queued as a job of the write-operation thread, which
     /// writes `OpenedForWriting` for the first writer before the file is opened and
     /// answers `reply`. With nothing to fill, the caller queues the job at once

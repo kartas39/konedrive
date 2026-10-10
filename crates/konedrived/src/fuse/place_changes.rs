@@ -38,12 +38,22 @@
 //!
 //! **The names of entries set aside.** An entry is set aside under
 //! `folder::disk::make_aside_entry_name` of its item, in the root: an entry no row says
-//! (`is_rowless_entry_name`), which the mount hides and the check at start skips. It is
-//! removed for good by [`PlaceChanges::discard`], after its change ended; a leftover of a
-//! death is removed by [`PlaceChanges::remove_aside_entries`], which the mount's build
-//! calls before the mount goes up: this part is the one owner of those entries. A
+//! (`is_rowless_entry_name`), which the mount hides. That name, in the root, is what the
+//! caller's record of the change stores and what the check at start puts an entry back
+//! from after a death. It is removed for good by [`PlaceChanges::discard`], after its
+//! change ended; what is still there once the check at start has run — the leftover of
+//! a failed discard — is removed by [`PlaceChanges::remove_aside_entries`], which the
+//! mount's build calls AFTER the check and before the mount goes up. A
 //! temporary name of an exchange is NOT one of them: it is a row's place, moved to by
 //! [`PlaceChange::move_entry`] like any other, and the check reads it as that row's.
+//!
+//! **The record of a change is the caller's.** This part writes none and reads none. A
+//! caller whose change must be undone or finished after a death keeps a record of it in
+//! the store, and the order is: the record written; [`PlaceChanges::begin`]; the disk,
+//! through the place change; the row, written with the record's going in one
+//! transaction; the change ended; [`PlaceChanges::discard`]. A death anywhere before the
+//! row leaves the record and the disk as the record says it may be, the aside entry
+//! under its item's name in the root among it.
 //!
 //! **The order of locks**, for everything of the mount over the rows. A later one may be
 //! taken while an earlier is held, never the other way:
@@ -88,7 +98,8 @@
 // test: a_file_is_linked_under_its_name_with_nothing_replaced
 // test: a_directory_made_where_one_is_on_disk_takes_it_and_marks_it_again
 // test: an_entry_set_aside_is_put_back_by_its_undo_and_gone_after_its_discard
-// test: the_entries_a_death_left_set_aside_are_removed_before_the_mount_goes_up
+// test: the_entries_still_set_aside_after_the_check_are_removed_before_the_mount_goes_up
+// test: an_entry_several_directories_down_is_set_aside_in_the_root_under_its_items_name
 // test: a_temporary_name_is_moved_to_like_any_place_and_is_not_cleaned
 // test: a_change_dropped_without_its_end_still_ends_the_count_and_wakes_the_sleepers
 // test: an_undo_that_fails_is_answered_as_such_and_asks_nothing_by_itself
@@ -254,11 +265,13 @@ impl PlaceChanges {
         PlaceChanges { backing_directory, count: AtomicU64::new(0), changes: std::sync::Mutex::new(()), ended: std::sync::Condvar::new(), write_operation_thread_id, sleeper_count: AtomicUsize::new(0) }
     }
 
-    /// Removes every entry of the root that was set aside and never discarded
-    /// (`folder::disk::ASIDE_ENTRY_PREFIX`): what a death between a set-aside and its
-    /// discard, or a failed discard, left. How many. Called by the mount's build before
-    /// the check at start, which skips such names: nothing of them is ever read as a file
-    /// made by hand.
+    /// Removes every entry of the root that is still set aside
+    /// (`folder::disk::ASIDE_ENTRY_PREFIX`): what a failed discard left, and what a death
+    /// left after its row was written. How many. Called by the mount's build AFTER the
+    /// check at start, never before: a death between a set-aside and its row leaves the
+    /// person's entry under its aside name, and the check puts it back from the record of
+    /// the change; cleaning first would delete it. What the check did not put back no row
+    /// says and no record asks for.
     pub(super) fn remove_aside_entries(&self) -> std::io::Result<usize> {
         let mut removed = 0;
         for entry in self.backing_directory.read_directory(Path::new(""))? {

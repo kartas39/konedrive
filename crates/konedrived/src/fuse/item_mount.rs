@@ -23,7 +23,7 @@
 //! **Tested without the rest**, over the fixture, with no kernel:
 // test: the_parts_are_built_in_an_order_in_which_each_has_what_it_is_made_with
 // test: the_check_at_start_runs_before_any_part_reads_the_rows
-// test: the_entries_left_set_aside_are_removed_before_the_check
+// test: the_entries_still_set_aside_are_removed_after_the_check_and_never_before
 // test: a_mount_that_stops_aborts_the_downloads_fails_the_waiters_closes_the_reading_connections_and_drops_the_queued_jobs
 // test: after_a_stop_and_the_drop_of_the_mount_no_clone_of_the_store_is_held_by_it
 // test: a_switch_to_read_only_is_made_on_the_write_operation_thread

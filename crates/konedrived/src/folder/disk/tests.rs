@@ -58,15 +58,9 @@ fn a_temporary_name_is_a_hidden_name_and_not_an_entry_no_row_says() {
 #[test]
 fn the_holding_directory_and_a_new_folder_are_both() {
     for name in [HOLDING.to_owned(), format!("{NEW_PREFIX}abc")] {
+        assert!(daemon_owned(name.as_ref()), "{name}");
         assert!(is_rowless_entry_name(name.as_ref()) && is_hidden_name(name.as_ref()), "{name}");
     }
-}
-
-#[test]
-fn a_row_the_check_set_aside_is_hidden_and_is_a_rows_place() {
-    let name = format!("{SET_ASIDE_PREFIX}7");
-    assert!(is_hidden_name(name.as_ref()));
-    assert!(!is_rowless_entry_name(name.as_ref()), "a row is at that name: the check does not skip it");
 }
 
 #[test]

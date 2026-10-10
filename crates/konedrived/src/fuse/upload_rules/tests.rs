@@ -68,8 +68,8 @@ fn the_daemons_names_and_a_trash_directory_are_told() {
     let rules = rules();
     assert!(rules.is_daemon_owned(HOLDING) && !rules.is_daemon_owned("docs"));
     // Every name the mount over the rows hides: an entry set aside, a temporary name of an
-    // exchange, a name the check sets a row aside to.
-    assert!([".konedrive-aside-7", ".konedrive-swap-7", ".konedrive-check-7", ".konedrive-new-x"].into_iter().all(|name| rules.is_daemon_owned(name)));
+    // exchange.
+    assert!([".konedrive-aside-7", ".konedrive-swap-7", ".konedrive-new-x"].into_iter().all(|name| rules.is_daemon_owned(name)));
     assert!(rules.is_trash(".Trash-1000") && rules.is_trash(".Trash") && !rules.is_trash("Trash"));
 }
 

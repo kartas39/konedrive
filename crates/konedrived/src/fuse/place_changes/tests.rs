@@ -842,7 +842,7 @@ fn a_move_over_what_is_not_on_disk_or_cannot_be_set_aside() {
 }
 
 #[test]
-fn the_entries_a_death_left_set_aside_are_removed_before_the_mount_goes_up() {
+fn the_entries_still_set_aside_after_the_check_are_removed_before_the_mount_goes_up() {
     let f = fixture();
     f.write(".konedrive-aside-7", "a file");
     f.make_directory(".konedrive-aside-8");
@@ -894,4 +894,23 @@ fn an_undo_that_fails_is_answered_as_such_and_asks_nothing_by_itself() {
     let failed = f.change(move |change| change.undo(undo).map_err(|error| error.raw_os_error()));
     assert_eq!(failed, Err(Some(libc::EEXIST)));
     assert_eq!(f.read(".konedrive-aside-7").as_deref(), Some("y"));
+}
+
+/// The name the caller's record stores, and the check at start puts an entry back from:
+/// the aside name of the item, in the ROOT of the backing directory, however deep the
+/// entry was.
+#[test]
+fn an_entry_several_directories_down_is_set_aside_in_the_root_under_its_items_name() {
+    let f = fixture();
+    f.write("a/b/c/file", "x");
+    f.write("a/b/c/displaced", "y");
+    f.write("a/moved", "z");
+    let undo = f.change(|change| change.set_aside(Path::new("a/b/c/file"), item(41))).unwrap();
+    assert_eq!(undo, PlaceUndo::Restore { set_aside: PathBuf::from(".konedrive-aside-41"), path: PathBuf::from("a/b/c/file") });
+    let undo = f.change(|change| change.move_entry_over(Path::new("a/moved"), Path::new("a/b/c/displaced"), item(42), &no_marks())).unwrap();
+    assert_eq!(undo, PlaceUndo::MoveBackAndRestore { from: PathBuf::from("a/moved"), to: PathBuf::from("a/b/c/displaced"), set_aside: PathBuf::from(".konedrive-aside-42") });
+    assert_eq!(f.list_root(), [".konedrive-aside-41", ".konedrive-aside-42", "a"]);
+    assert_eq!((f.read(".konedrive-aside-41").as_deref(), f.read(".konedrive-aside-42").as_deref()), (Some("x"), Some("y")));
+    assert_eq!(std::fs::read_dir(f.directory.path().join("a/b/c")).unwrap().count(), 1, "nothing is set aside beside the entry");
+    assert_eq!(aside_path(41), PathBuf::from(make_aside_entry_name(item(41))));
 }

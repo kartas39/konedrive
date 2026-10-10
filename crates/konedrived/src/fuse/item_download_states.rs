@@ -3,7 +3,8 @@
 //!
 //! **State owned:** per (item, content version): a running download with who waits for
 //! it, how far it was written and its file; or a failed one with its unfinished file kept
-//! to go on from; the handle each running download's task is aborted by; and how many
+//! to go on from; the handle each running download's task is aborted by, which download
+//! of its key it is, and whether anything but the plan asked for it; and how many
 //! bytes of each item were read as ranges. Changed by the
 //! downloader and by read alone, through the functions here; no I/O.
 //!
@@ -21,8 +22,9 @@
 // test: a_failed_download_keeps_its_unfinished_file_for_the_next_asking_of_that_content
 // test: the_bytes_read_as_ranges_reach_the_threshold_once_and_are_forgotten_with_the_item
 // test: the_waiters_are_failed_when_the_mount_stops
-// test: a_download_that_is_cancelled_is_aborted_and_its_waiters_answered
-// test: a_download_with_another_waiter_is_not_cancelled_for_the_plan
+// test: a_download_only_the_plan_asked_for_is_aborted_by_its_cancel_and_keeps_its_unfinished_file
+// test: a_download_anything_but_the_plan_asked_for_is_not_aborted_by_the_plans_cancel
+// test: an_end_told_by_an_older_download_of_the_key_changes_nothing_of_the_newer
 #![allow(dead_code, unused_variables)]
 
 use std::collections::HashMap;
@@ -45,16 +47,57 @@ pub(super) struct DownloadKey {
     pub(super) content: ContentVersion,
 }
 
+/// Who asks for a download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DownloadAsker {
+    /// A read, at the threshold of bytes read as ranges.
+    Read,
+    /// An open for writing, or a truncation, of a file that is not on disk.
+    OpenForWriting,
+    /// `Files.Hydrate`.
+    FilesInterface,
+    /// The plan's step for a pinned file: the one asker whose asking is taken back
+    /// (`ItemDownloadStates::abort_if_plan_alone_asked`).
+    PlanPin,
+}
+
+/// One download that runs, told from every other — also from an earlier and a later one
+/// of the same key. Handed out when a download is started, and given back with every
+/// word of that download: what an older download says changes nothing of a newer one.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct DownloadRun {
+    key: DownloadKey,
+    number: u64,
+}
+
+impl DownloadRun {
+    /// What the download is of.
+    pub(super) fn key(&self) -> &DownloadKey {
+        &self.key
+    }
+}
+
 /// What became of an asking for a download.
 pub(super) enum ItemDownloadStart {
-    /// A download of this item and content runs: the waiter was added to it.
+    /// A download of this item and content runs: the asker, and its waiter, were added
+    /// to it.
     Joined,
-    /// This asking starts it; the unfinished file of an earlier try, when one was kept.
-    Started { unfinished_file: Option<Arc<File>> },
+    /// This asking starts it: the download it starts, and the unfinished file of an
+    /// earlier try, when one was kept.
+    Started { run: DownloadRun, unfinished_file: Option<Arc<File>> },
 }
 
 enum State {
-    Running { waiters: Vec<Waiter>, written_up_to: Arc<AtomicU64>, file: Option<Arc<File>>, abort: Option<tokio::task::AbortHandle> },
+    Running {
+        /// Which download it is (`DownloadRun`).
+        number: u64,
+        waiters: Vec<Waiter>,
+        written_up_to: Arc<AtomicU64>,
+        file: Option<Arc<File>>,
+        abort: Option<tokio::task::AbortHandle>,
+        /// Whether anything but the plan's pin asked for it, with a waiter or without.
+        is_asked_beyond_plan: bool,
+    },
     Failed { unfinished_file: Arc<File>, failure_number: u64 },
 }
 
@@ -90,6 +133,12 @@ fn take_running(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey) -> 
     }
 }
 
+/// Whether `run` is the download that runs now for its key: not one that ended, was
+/// aborted or abandoned, whatever runs for the key since.
+fn is_running(states: &HashMap<DownloadKey, State>, run: &DownloadRun) -> bool {
+    matches!(states.get(&run.key), Some(State::Running { number, .. }) if *number == run.number)
+}
+
 /// The download of `key` ended with `unfinished_file` written in part: the file is kept,
 /// and the oldest one beyond [`UNFINISHED_FILES_KEPT`] is let go.
 fn keep_unfinished_file(states: &mut HashMap<DownloadKey, State>, key: &DownloadKey, unfinished_file: Arc<File>) {
@@ -116,60 +165,66 @@ pub(super) struct ItemDownloadStates {
     bytes_read_as_ranges: std::sync::Mutex<HashMap<LocalItemId, u64>>,
     /// `[transfers] download_after`.
     download_after: u64,
+    /// The number of the download started last.
+    last_run_number: AtomicU64,
 }
 
 impl ItemDownloadStates {
     /// No download runs. Made by the mount's build.
     pub(super) fn new(download_after: u64) -> Self {
-        ItemDownloadStates { states: std::sync::Mutex::default(), bytes_read_as_ranges: std::sync::Mutex::default(), download_after }
+        ItemDownloadStates { states: std::sync::Mutex::default(), bytes_read_as_ranges: std::sync::Mutex::default(), download_after, last_run_number: AtomicU64::new(0) }
     }
 
-    /// A download of `key` is asked for: joined when one runs, started otherwise. Called
-    /// by `ItemDownloader::download` alone.
-    pub(super) fn start_or_join(&self, key: &DownloadKey, waiter: Option<Waiter>) -> ItemDownloadStart {
+    /// A download of `key` is asked for by `asker`: joined when one runs, started
+    /// otherwise. `waiter`, when one is given, is answered when the download ends, however
+    /// it ends. Who asked is kept: a download anything but the plan's pin asked for, with
+    /// a waiter or without, is not aborted for the plan. Called by
+    /// `ItemDownloader::download` alone.
+    pub(super) fn start_or_join(&self, key: &DownloadKey, asker: DownloadAsker, waiter: Option<Waiter>) -> ItemDownloadStart {
+        let is_asker_beyond_plan = asker != DownloadAsker::PlanPin;
         let mut states = crate::panic::lock(&self.states);
-        if let Some(State::Running { waiters, .. }) = states.get_mut(key) {
+        if let Some(State::Running { waiters, is_asked_beyond_plan, .. }) = states.get_mut(key) {
             waiters.extend(waiter);
+            *is_asked_beyond_plan |= is_asker_beyond_plan;
             return ItemDownloadStart::Joined;
         }
-        let running = State::Running { waiters: waiter.into_iter().collect(), written_up_to: Arc::default(), file: None, abort: None };
+        let number = self.last_run_number.fetch_add(1, Ordering::SeqCst) + 1;
+        let running = State::Running { number, waiters: waiter.into_iter().collect(), written_up_to: Arc::default(), file: None, abort: None, is_asked_beyond_plan: is_asker_beyond_plan };
         let unfinished_file = match states.insert(key.clone(), running) {
             Some(State::Failed { unfinished_file, .. }) => Some(unfinished_file),
             Some(State::Running { .. }) | None => None,
         };
-        ItemDownloadStart::Started { unfinished_file }
+        ItemDownloadStart::Started { run: DownloadRun { key: key.clone(), number }, unfinished_file }
     }
 
-    /// The task of the running download of `key` is aborted by `abort`. Called by the
-    /// downloader right after it spawned the task.
+    /// The task of the download `run` is aborted by `abort`. Called by the downloader
+    /// right after it spawned the task.
     ///
-    /// When no download of `key` runs any more, the task is aborted at once: it was
-    /// cancelled, or the mount stopped, between its asking and this call — or it has
-    /// ended already, and the abort does nothing.
-    pub(super) fn keep_abort_handle(&self, key: &DownloadKey, abort: tokio::task::AbortHandle) {
-        match crate::panic::lock(&self.states).get_mut(key) {
-            Some(State::Running { abort: kept, .. }) => *kept = Some(abort),
-            Some(State::Failed { .. }) | None => abort.abort(),
+    /// When `run` runs no more, the task is aborted at once: it was cancelled, or the
+    /// mount stopped, between its asking and this call — or it has ended already, and the
+    /// abort does nothing. A newer download of the same key is not touched.
+    pub(super) fn keep_abort_handle(&self, run: &DownloadRun, abort: tokio::task::AbortHandle) {
+        let mut states = crate::panic::lock(&self.states);
+        match states.get_mut(&run.key) {
+            Some(State::Running { number, abort: kept, .. }) if *number == run.number => *kept = Some(abort),
+            _ => abort.abort(),
         }
     }
 
-    /// Aborts the running download of `key` when nobody but the plan waits for it: its
-    /// unfinished file is kept as after a failure. Whether it was aborted.
+    /// The plan gives the download of `key` up: aborted when the plan's pin alone asked
+    /// for it — nothing else started or joined it, with a waiter or without — its waiters
+    /// answered `EIO` and its unfinished file kept as after a failure. Whether it was
+    /// aborted. A download a read, an open for writing or `Files.Hydrate` asked for too
+    /// goes on, whoever still listens.
     ///
-    /// Who waits is told by the waiters themselves: one whose other end was dropped waits
-    /// no more. The plan's step is such a one when this is called — its task was aborted,
-    /// and what it awaited its waiter's answer by went with it — so the download is
-    /// aborted when no waiter is still heard, and when it never had one. A read, an open
-    /// or `Files.Hydrate` that still waits keeps it running.
-    ///
-    /// The state is changed here, not by the aborted task: the task is not to report an
-    /// end ([`finish`](Self::finish), [`abandon`](Self::abandon)) after it was aborted,
-    /// since by then the next download of the same key may run, and would be taken for
-    /// the one that ended.
-    pub(super) fn abort_if_unawaited(&self, key: &DownloadKey) -> bool {
+    /// The state is changed here, at once. What the aborted task still says of its
+    /// download — its guard's [`abandon`](Self::abandon), a late
+    /// [`finish`](Self::finish) — is of a `DownloadRun` that runs no more, and changes
+    /// nothing, whatever runs for the key by then.
+    pub(super) fn abort_if_plan_alone_asked(&self, key: &DownloadKey) -> bool {
         let taken = {
             let mut states = crate::panic::lock(&self.states);
-            if !matches!(states.get(key), Some(State::Running { waiters, .. }) if waiters.iter().all(Waiter::is_closed)) {
+            if !matches!(states.get(key), Some(State::Running { is_asked_beyond_plan: false, .. })) {
                 return false;
             }
             let Some(taken) = take_running(&mut states, key) else { return false };
@@ -193,16 +248,17 @@ impl ItemDownloadStates {
         taken.into_iter().for_each(TakenDownload::abort);
     }
 
-    /// The running download of `key` writes into `file` from now on; how far it was
-    /// written, raised by the downloader as bytes come.
-    pub(super) fn begin_writing(&self, key: &DownloadKey, file: Arc<File>) -> Arc<AtomicU64> {
-        match crate::panic::lock(&self.states).get_mut(key) {
-            Some(State::Running { written_up_to, file: writes_into, .. }) => {
+    /// The download `run` writes into `file` from now on; how far it was written, raised
+    /// by the downloader as bytes come. A download that runs no more keeps nothing of it.
+    pub(super) fn begin_writing(&self, run: &DownloadRun, file: Arc<File>) -> Arc<AtomicU64> {
+        let mut states = crate::panic::lock(&self.states);
+        match states.get_mut(&run.key) {
+            Some(State::Running { number, written_up_to, file: writes_into, .. }) if *number == run.number => {
                 *writes_into = Some(file);
                 Arc::clone(written_up_to)
             }
             // Abandoned or aborted meanwhile: nobody reads what it writes.
-            Some(State::Failed { .. }) | None => Arc::default(),
+            _ => Arc::default(),
         }
     }
 
@@ -215,11 +271,16 @@ impl ItemDownloadStates {
         }
     }
 
-    /// The download of `key` ended: its waiters are answered `outcome` (the errno of a
-    /// failure); a failure keeps the unfinished file.
-    pub(super) fn finish(&self, key: &DownloadKey, outcome: Result<(), i32>) {
+    /// The download `run` ended: its waiters are answered `outcome` (the errno of a
+    /// failure); a failure keeps the unfinished file. Nothing for a download that runs no
+    /// more — it was aborted, or this is said twice.
+    pub(super) fn finish(&self, run: &DownloadRun, outcome: Result<(), i32>) {
+        let key = &run.key;
         let waiters = {
             let mut states = crate::panic::lock(&self.states);
+            if !is_running(&states, run) {
+                return;
+            }
             let Some(taken) = take_running(&mut states, key) else { return };
             if let (Err(_), Some(file)) = (outcome, taken.file) {
                 keep_unfinished_file(&mut states, key, file);
@@ -235,11 +296,19 @@ impl ItemDownloadStates {
         }
     }
 
-    /// The download of `key` was dropped without an end (a panic, an abort): its waiters
-    /// get `EIO`.
-    pub(super) fn abandon(&self, key: &DownloadKey) {
-        let Some(taken) = take_running(&mut crate::panic::lock(&self.states), key) else { return };
-        for waiter in taken.waiters {
+    /// The download `run` was dropped without an end — a panic, an abort of its task from
+    /// outside the states: its waiters get `EIO`, and nothing of it is kept. What a guard
+    /// the task holds calls when it is dropped, whatever dropped it: for a download that
+    /// ended or was aborted here it changes nothing.
+    pub(super) fn abandon(&self, run: &DownloadRun) {
+        let taken = {
+            let mut states = crate::panic::lock(&self.states);
+            if !is_running(&states, run) {
+                return;
+            }
+            take_running(&mut states, &run.key)
+        };
+        for waiter in taken.into_iter().flat_map(|taken| taken.waiters) {
             let _ = waiter.send(Err(libc::EIO));
         }
     }

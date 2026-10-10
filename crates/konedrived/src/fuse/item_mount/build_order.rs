@@ -5,10 +5,12 @@
 //!    `UploadRules::new(ignore)`;
 //! 2. `AccessModeSwitch::new(ReadOnly)`; `MountTakeDown::new(switch, report)`;
 //!    `WriteOperationThread::start(tree_lock)`; `PlaceChanges::new` with that thread's
-//!    id (`WriteOperationThread::thread_id`), and `PlaceChanges::remove_aside_entries`:
-//!    what a death left set aside goes;
+//!    id (`WriteOperationThread::thread_id`);
 //! 3. THE CHECK AT START (`start_check::check_backing_directory_at_start`), over the
-//!    writer, before anything else reads the rows;
+//!    writer, before anything else reads the rows: it undoes or finishes, from the
+//!    record the store keeps, a change of a name the daemon died in; and only AFTER it
+//!    `PlaceChanges::remove_aside_entries`: what is still set aside then goes (before
+//!    it, the entry the check is to put back would be deleted);
 //! 4. `ReadConnections::new(store_path)`; `ItemHandles::new`;
 //!    `ItemDownloadStates::new(download_after)`;
 //! 5. `ItemInotifyBridge::new` (its queue; its thread starts when the mount is served); `RangeReaders` and `ItemRangeFetcher::new`;

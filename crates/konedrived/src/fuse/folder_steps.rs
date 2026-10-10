@@ -174,7 +174,7 @@ impl FolderSteps {
     /// (`ItemDownloadLanding::land`, which calls `commit_download_content`). The source's
     /// refusal is answered as `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`.
     /// When this future is dropped (the step's task aborted), a guard cancels the
-    /// download (`ItemDownloader::cancel`). The plan's task runs it as its own class of step
+    /// download (`ItemDownloader::cancel`: aborted when the plan alone asked for it). The plan's task runs it as its own class of step
     /// (`StepClass::Download`), held by the pause and the sign-out, never holding back
     /// the other steps towards the folder. Replaces `pinned_file_downloader.rs`.
     pub async fn run_download_content(self: &Arc<Self>, item: ItemVersions) -> StepOutcome {

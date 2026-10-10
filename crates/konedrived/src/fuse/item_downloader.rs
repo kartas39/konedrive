@@ -26,7 +26,10 @@
 // test: the_file_is_synced_before_the_landing_job_is_queued
 // test: a_download_for_the_plan_commits_as_the_plans_step
 // test: a_sign_out_a_throttle_and_a_missing_item_of_the_source_are_answered_as_such
-// test: the_plans_download_is_cancelled_when_nobody_else_waits_for_it
+// test: the_plans_download_is_cancelled_when_the_plan_alone_asked_for_it
+// test: a_download_a_read_joined_goes_on_after_the_plans_cancel
+// test: a_download_aborted_and_asked_again_is_not_ended_by_the_aborted_tasks_guard
+// test: the_pools_class_is_open_for_every_asker_but_the_plans_pin
 // test: a_stop_aborts_every_download
 #![allow(dead_code, unused_variables)]
 
@@ -39,7 +42,7 @@ use konedrive_tree::{ContentVersion, ItemVersions, LocalItemId, OneDriveItemRefe
 use super::backing_directory::BackingDirectory;
 use super::download_states::Waiter;
 use super::item_download_landing::{ItemDownloadLanding, ItemLandingOutcome};
-use super::item_download_states::ItemDownloadStates;
+use super::item_download_states::{DownloadAsker, ItemDownloadStates};
 use super::item_inotify_bridge::ItemInotifyBridge;
 use super::write_operation_thread::WriteOperationThread;
 use crate::hydration::source::{ContentSource, Share};
@@ -71,6 +74,12 @@ pub enum DownloadRefusal {
     ItemGone,
     /// The network, or the download was aborted: tried again later.
     Transient { detail: String },
+}
+
+/// The pool's class a download of `asker` runs in: `Open` for a read, an open for writing
+/// and `Files.Hydrate`, `Download` for the plan's pin. Pure.
+pub(super) fn decide_pool_class(asker: DownloadAsker) -> Class {
+    todo!()
 }
 
 /// The downloader of one mount.
@@ -108,29 +117,39 @@ impl ItemDownloader {
         todo!()
     }
 
-    /// Downloads `file` unless a download of the same item and content runs already;
-    /// `waiter` is answered when the download ends, however it ends. `class` is the pool's:
-    /// `Open` for a read, an open for writing and `Files.Hydrate`, `Download` for the
-    /// plan's pin. Spawns on the runtime and returns at once.
+    /// Downloads `file` for `asker` unless a download of the same item and content runs
+    /// already, which `asker` then joins (`ItemDownloadStates::start_or_join`, which keeps
+    /// who asked); `waiter` is answered when the download ends, however it ends. The
+    /// pool's class follows from who asks ([`decide_pool_class`]). Spawns on the runtime
+    /// and returns at once.
     ///
-    /// Called by read at the threshold of bytes read as ranges, by the open for writing
-    /// and the truncation of a file that is not on disk, by
-    /// `ItemFilesInterface::download`, and by `FolderSteps::run_download_content`.
-    pub(super) fn download(self: &Arc<Self>, file: ItemToDownload, class: Class, waiter: Option<Waiter>) {
+    /// The spawned task holds the `DownloadRun` its start answered and says every word of
+    /// its download with it: the abort handle kept (`keep_abort_handle`), the file
+    /// (`begin_writing`), its end (`finish`), and — by a guard it holds from its first
+    /// line, whatever drops it — `abandon`. None of them touches a later download of the
+    /// same item and content.
+    ///
+    /// Called by read at the threshold of bytes read as ranges (`DownloadAsker::Read`, no
+    /// waiter), by the open for writing and the truncation of a file that is not on disk
+    /// (`OpenForWriting`), by `ItemFilesInterface::download` (`FilesInterface`), and by
+    /// [`download_and_land`](Self::download_and_land) (`PlanPin`: `file.planned_from` is
+    /// given for that asker and for no other).
+    pub(super) fn download(self: &Arc<Self>, file: ItemToDownload, asker: DownloadAsker, waiter: Option<Waiter>) {
         todo!()
     }
 
-    /// As [`download`](Self::download), awaited: what the landing answered, or the
-    /// source's refusal typed, for the plan's step
-    /// (`FolderSteps::run_download_content`, which turns it into
+    /// As [`download`](Self::download) for the plan's pin (`DownloadAsker::PlanPin`),
+    /// awaited: what the landing answered, or the source's refusal typed, for the plan's
+    /// step (`FolderSteps::run_download_content`, which turns it into
     /// `StepRefusal::{SignedOut, Throttled, ItemGone, Transient}`).
-    pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload, class: Class) -> Result<ItemLandingOutcome, DownloadRefusal> {
+    pub(super) async fn download_and_land(self: &Arc<Self>, file: ItemToDownload) -> Result<ItemLandingOutcome, DownloadRefusal> {
         todo!()
     }
 
     /// The plan gives the download of `item`'s `content` up — a pause, a sign-out, a stop
-    /// of the sync: aborted when nobody else waits for it
-    /// (`ItemDownloadStates::abort_if_unawaited`). Called when the task that awaits
+    /// of the sync: aborted when the plan's pin alone asked for it
+    /// (`ItemDownloadStates::abort_if_plan_alone_asked`); one a read, an open for writing
+    /// or `Files.Hydrate` asked for too goes on. Called when the task that awaits
     /// `download_and_land` is aborted (`RunningSteps::abort_requests`): by a guard that
     /// task holds.
     pub(super) fn cancel(&self, item: LocalItemId, content: &ContentVersion) {
