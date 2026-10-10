@@ -94,3 +94,79 @@ fn an_item_is_left_here_by_the_directory_it_comes_to_be_in() {
     assert_eq!(unsent(&mut store, 100), [dir, deep, made], "saved over a file in the directory that is left here");
     assert_eq!(names(&mut store, cache), ["inside"]);
 }
+
+/// Whether each row's item is left here, derived by the walk up the rows that the stored
+/// fact stands for: the item has no binding, and its own name is ignored or that of a
+/// directory above it in the folder that has no binding.
+fn derive_left_here(rows: &[Item]) -> Vec<(LocalItemId, bool)> {
+    let row_of = |id: LocalItemId| rows.iter().find(|row| row.local_item_id == id);
+    let parent_of = |row: &Item| row.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| place.parent_local_item_id);
+    let derive = |row: &Item| {
+        if row.onedrive_item.is_some() {
+            return false;
+        }
+        let mut is_left_here = row.is_name_ignored;
+        let mut above = parent_of(row).and_then(row_of);
+        while let Some(directory) = above {
+            is_left_here |= directory.is_name_ignored && directory.onedrive_item.is_none();
+            above = parent_of(directory).and_then(row_of);
+        }
+        is_left_here
+    };
+    rows.iter().map(|row| (row.local_item_id, derive(row))).collect()
+}
+
+/// The stored fact against its derivation, over every row, after each of a long sequence
+/// of operations drawn from a seed: items made, moved, renamed to and from ignored names,
+/// bound, giving their binding up, merged, exchanged, saved over and removed. And what
+/// the reader of the unsent gives is what the derivation leaves, by stamp. A writer that
+/// forgot the fact would drift here.
+#[test]
+fn whether_an_item_is_left_here_is_what_the_rows_above_it_say_after_any_sequence_of_operations() {
+    for seed in [1_u64, 0x9E37_79B9_7F4A_7C15, 20_261_010] {
+        let mut state = seed;
+        let mut next = move |below: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % below as u64) as usize
+        };
+        let mut store = TreeStore::in_memory().unwrap();
+        for step in 0..400 {
+            let rows = store.item_store().list_items().unwrap();
+            let shown: Vec<&Item> = rows.iter().filter(|row| row.local.is_some() && row.local_item_id != ROOT).collect();
+            let directories: Vec<LocalItemId> = rows.iter().filter(|row| row.local.is_some() && row.kind == ItemKind::Directory).map(|row| row.local_item_id).collect();
+            let directory = directories[next(directories.len())];
+            let is_name_ignored = next(4) == 0;
+            let name = format!("n{step}");
+            let pick = |at: usize| shown.get(at % shown.len().max(1)).map(|row| (row.local_item_id, row.kind, row.local.clone().unwrap().place.unwrap()));
+            let (first, second) = (pick(next(1000)), pick(next(1000)));
+            let mut items = store.item_store();
+            let done = match (next(10), first, second) {
+                (0..=2, _, _) | (_, None, _) | (_, _, None) => {
+                    let kind = if next(2) == 0 { ItemKind::Directory } else { ItemKind::File };
+                    items.apply(&LocalVersionChange::Made { kind, place: place(directory, &name), content: (kind == ItemKind::File).then(made_here), is_name_ignored, replaced: None }).map(|_| ())
+                }
+                (3, Some((item, _, _)), _) => items.apply(&LocalVersionChange::Moved { item, place: place(directory, &name), is_name_ignored }).map(|_| ()),
+                (4, Some((item, _, at)), _) => items.apply(&LocalVersionChange::Moved { item, place: at, is_name_ignored }).map(|_| ()),
+                (5, Some((item, _, _)), _) => items.bind_item(item, &reference(&format!("B{step}"))),
+                (6, Some((item, _, _)), _) => items.give_up_binding(item, is_name_ignored).map(|_| ()),
+                (7, Some((item, kind, _)), _) => items.make_onedrive_item(&reference(&format!("M{step}")), kind).and_then(|listed| items.merge_items(item, listed)),
+                (8, Some((first, _, _)), Some((second, _, _))) => items.exchange_local_places(first, second),
+                (_, Some((first, _, _)), Some((second, _, _))) if next(2) == 0 => items.apply(&LocalVersionChange::SavedOver { replacing: first, replaced: second }).map(|_| ()),
+                (_, Some((item, _, _)), _) => items.apply(&LocalVersionChange::Removed { item }).map(|_| ()),
+            };
+            assert!(matches!(done, Ok(()) | Err(TreeError::Refused(_))), "seed {seed}, step {step}: {done:?}");
+
+            let rows = store.item_store().list_items().unwrap();
+            let derived = derive_left_here(&rows);
+            let stored: Vec<(LocalItemId, bool)> = rows.iter().map(|row| (row.local_item_id, store.item_store().is_ignored(row.local_item_id).unwrap())).collect();
+            assert_eq!(stored, derived, "seed {seed}, step {step}");
+            let mut sent: Vec<(u64, LocalItemId)> = rows.iter().zip(&derived).filter(|(_, (_, is_left_here))| !is_left_here).filter_map(|(row, _)| Some((row.unsent_since?, row.local_item_id))).collect();
+            sent.sort();
+            assert_eq!(unsent(&mut store, 10_000), sent.into_iter().map(|(_, id)| id).collect::<Vec<_>>(), "seed {seed}, step {step}");
+        }
+        let rows = store.item_store().list_items().unwrap();
+        assert!(derive_left_here(&rows).iter().filter(|(_, is_left_here)| *is_left_here).count() > 5 && rows.iter().filter(|row| row.onedrive_item.is_some()).count() > 5, "seed {seed}: the sequence reached both");
+    }
+}

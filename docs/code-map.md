@@ -765,8 +765,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   folded name written with each local and OneDrive name; whether a directory above an item
   has an ignored name and no binding, kept with every write of a place, of a name's rule
   and of a binding; the writers of the OneDrive columns alone, one row or a set (what is
-  below a directory, what a full listing did not see, each as far as a row confirmed
-  since, which is left with all below it); the words of the schema's index and trigger
+  below a directory, all of it or, when a row confirmed since is met, none; what a full
+  listing did not see, but a row confirmed since and all below it); the words of the schema's index and trigger
   conditions (what OneDrive changed, what is unsent, what is left here, a binding alone);
   the queries that go by an index. Reachable from `item_store` alone.
 - `item_store/content_presence.rs` — whether a file's content is in the backing directory,
@@ -780,7 +780,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   the link that followed it, in one transaction, in an order of its own; `ListedPageOutcome`
   says what became of each change and what is to be read again): the OneDrive version, the
   eTag, the MIME type, the placement. A call takes nothing through a row it leaves to be
-  read again. No caller in the daemon yet. `[tests]`: the entry, the listing's identity,
+  read again: a removal whose walk meets one is not written at all. No caller in the daemon yet. `[tests]`: the entry, the listing's identity,
   a confirmation, and the cells of a row left to be read again (`tests/outdated_row.rs`).
 - `item_store/onedrive_versions/listing_under_way.rs` — `ListingUnderWay`: the listing
   under way, from its beginning to its end, and the one place its keys of `meta` are read
