@@ -256,7 +256,7 @@ pub const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
 /// of a death is removed before the mount goes up (`PlaceChanges::remove_aside_entries`).
 #[allow(dead_code, unused_variables)]
 pub fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsString {
-    todo!()
+    format!("{ASIDE_ENTRY_PREFIX}{item}").into()
 }
 
 /// Whether `name`, in the root of the backing directory, is an entry no row says: the
@@ -267,7 +267,8 @@ pub fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsS
 /// would make the check find the row's file gone.
 #[allow(dead_code, unused_variables)]
 pub fn is_rowless_entry_name(name: &OsStr) -> bool {
-    todo!()
+    let begins_with = |prefix: &str| name.as_bytes().starts_with(prefix.as_bytes());
+    name == OsStr::new(HOLDING) || begins_with(NEW_PREFIX) || begins_with(ASIDE_ENTRY_PREFIX)
 }
 
 /// Whether the mount hides `name` and refuses it to programs (lookup `ENOENT`, make and
@@ -277,5 +278,6 @@ pub fn is_rowless_entry_name(name: &OsStr) -> bool {
 /// queue's answers, which show no such row.
 #[allow(dead_code, unused_variables)]
 pub fn is_hidden_name(name: &OsStr) -> bool {
-    todo!()
+    let begins_with = |prefix: &str| name.as_bytes().starts_with(prefix.as_bytes());
+    is_rowless_entry_name(name) || begins_with(SET_ASIDE_PREFIX) || begins_with(TEMPORARY_NAME_PREFIX)
 }
