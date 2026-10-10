@@ -39,7 +39,9 @@ pub(super) struct WriteOperationThread {
     /// Held by the thread from before it takes a job off the queue until the job has ended:
     /// whoever stops the thread waits for the job in flight here.
     job_in_flight: Arc<Mutex<()>>,
-    /// The id of the thread, kept from its start.
+    /// The id of the thread, kept from its start. No reader until the mount over the
+    /// rows is built.
+    #[allow(dead_code)]
     thread_id: std::thread::ThreadId,
 }
 
@@ -86,6 +88,7 @@ impl WriteOperationThread {
     /// The id of the thread every job runs on: what `PlaceChanges::new` is given, which
     /// asserts by it that a place change begins on this thread and that no backing file
     /// is opened by a row's path on it.
+    #[allow(dead_code)]
     pub(super) fn thread_id(&self) -> std::thread::ThreadId {
         self.thread_id
     }
