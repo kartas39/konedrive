@@ -136,14 +136,14 @@ mod column_index {
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
 /// keeps a path, so that one name always has one form and is found by equality.
-fn name_value(name: &OsStr) -> Value {
+pub(super) fn name_value(name: &OsStr) -> Value {
     path_value(Path::new(name))
 }
 
 /// The one check of every name a row is written with, local or synced: the name of a
 /// directory entry is not empty, not `.` or `..`, and holds no `/` and no NUL. An item's
 /// path is made of the stored names, and the disk is touched by it.
-fn check_name(name: &OsStr) -> Result<(), TreeError> {
+pub(super) fn check_name(name: &OsStr) -> Result<(), TreeError> {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') || bytes.contains(&0) {
         return Err(refuse(format!("{name:?} is no name of a directory entry")));
@@ -164,7 +164,7 @@ fn check_names(item_local: Option<&ItemVersion>, synced_place: Option<&ItemPlace
     item_local.and_then(|local| local.place.as_ref()).into_iter().chain(synced_place).try_for_each(|place| check_name(&place.name))
 }
 
-fn content_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Option<ContentVersion>> {
+pub(super) fn content_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Option<ContentVersion>> {
     let Some(size) = row.get::<_, Option<i64>>(first)? else { return Ok(None) };
     let (size, mtime, mtime_nsec) = (size.max(0) as u64, row.get::<_, Option<i64>>(first + 1)?.unwrap_or(0), row.get::<_, Option<u32>>(first + 2)?.unwrap_or(0));
     Ok(Some(match row.get::<_, Option<i64>>(first + 5)? {
@@ -219,7 +219,7 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     })
 }
 
-fn content_values(content: Option<&ContentVersion>) -> [Value; CONTENT_COLUMNS.len()] {
+pub(super) fn content_values(content: Option<&ContentVersion>) -> [Value; CONTENT_COLUMNS.len()] {
     match content {
         None => [Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null],
         Some(ContentVersion::Hashed { size, mtime, mtime_nsec, hash, ctag }) => {

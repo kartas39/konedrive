@@ -63,6 +63,7 @@ pub use item_store::{
     UPLOAD_SESSION_OPENING_KEPT,
 };
 pub use item_store::{OwnUploadContent, PinChange};
+pub use item_store::{MadeEntryOwner, PlaceChangeRecord, PlaceChangeRecordId, PlaceChangeRowWrite};
 pub use item_store::{FullListingCause, ItemCounts, ItemNotShown, ItemReader, ThumbnailCandidate, UnsentTotal};
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,

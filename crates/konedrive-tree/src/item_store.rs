@@ -82,6 +82,8 @@ mod local_and_synced_version;
 mod onedrive_versions;
 /// The files a pin holds for, by local item id.
 mod pinned_items;
+/// The changes of the backing directory's names the daemon is about to make, on record.
+mod place_change_records;
 /// What a step of the sync plan writes into the rows once it is done.
 mod step_commit;
 /// What a step remembers of an item beyond the versions.
@@ -114,6 +116,8 @@ pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use full_listing_request::FullListingCause;
 pub use item_pins::PinChange;
 pub use own_upload_content::OwnUploadContent;
+pub use place_change_records::{MadeEntryOwner, PlaceChangeRecord, PlaceChangeRecordId, PlaceChangeRowWrite};
+pub(crate) use place_change_records::schema as place_change_records_schema;
 pub use item_reader::{ItemCounts, ItemNotShown, ItemReader, UnsentTotal};
 pub use thumbnail_marks::ThumbnailCandidate;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};

@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
+use crate::item_store::{place_change_records_schema, step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -98,6 +98,10 @@ pub const SCHEMA_VERSION: &str = "18";
 ///   `mismatched_item_removals`: what the steps remember beyond the versions, and the
 ///   trigger `step_memory_item_gone` that takes it with an item's row
 ///   ([`crate::item_store`]'s `step_memory`, whose modules have their schema).
+/// - `place_change_records`: the changes of the backing directory's names the daemon is
+///   about to make, each on record from before the disk is touched until its row is
+///   written or it is undone ([`crate::item_store`]'s `place_change_records`, which has
+///   its schema).
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
@@ -218,6 +222,7 @@ fn schema() -> String {
              BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          {step_memory}
+         {place_change_records}
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}
          {staging}
@@ -277,6 +282,7 @@ fn schema() -> String {
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
         step_memory = step_memory_schema(),
+        place_change_records = place_change_records_schema(),
         no_local_parent_directory = no_parent_directory("local"),
         no_onedrive_parent_directory = no_parent_directory("onedrive"),
         no_synced_parent_directory = no_parent_directory("synced"),
