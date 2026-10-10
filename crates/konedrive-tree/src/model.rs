@@ -510,8 +510,9 @@ impl ContentVersion {
         }
     }
 
-    /// How many times a program began to change the content since a hash was last known.
-    pub(crate) fn change_count(&self) -> u64 {
+    /// How many times a program began to change the content since a hash was last known: 0
+    /// for a hashed content.
+    pub fn change_count(&self) -> u64 {
         match self {
             ContentVersion::Hashed { .. } => 0,
             ContentVersion::ChangedHere { change_count, .. } => *change_count,

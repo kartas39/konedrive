@@ -58,7 +58,9 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   holding it. `handle` is the file handle of the local object a row is
 ///   about, which is what the object is. `local_item_id` is the row of `items` it is
 ///   about. The content being sent is `snapshot_size`,
-///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`.
+///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`, and
+///   `snapshot_change_count`, the change count the local content of the row's item had
+///   then (null where the snapshot was taken with no item's row at hand).
 /// - `upload_sessions`: the upload sessions opened and not yet completed,
 ///   cancelled or found gone, with the place a new file's
 ///   session holds in OneDrive with its empty placeholder until then. A row
@@ -142,7 +144,7 @@ fn schema() -> String {
              target_parent TEXT, target_name TEXT,
              state TEXT NOT NULL,
              reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER,
-             snapshot_size INTEGER, snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER,
+             snapshot_size INTEGER, snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER, snapshot_change_count INTEGER,
              session_url TEXT, session_expires INTEGER, session_next INTEGER,
              handle BLOB,
              confirmed INTEGER NOT NULL DEFAULT 0,

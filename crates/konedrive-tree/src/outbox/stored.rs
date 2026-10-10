@@ -17,7 +17,7 @@ use crate::TreeError;
 /// What a query that reads rows selects, in the order [`outbox_row`] finds
 /// them by name.
 const OUTBOX_COLUMNS: &str = "seq, kind, item_id, rel, base_etag, base_ctag, base_parent, base_name, \
-     target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, \
+     target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, snapshot_change_count, \
      session_url, session_expires, session_next, handle, confirmed, size, local_item_id";
 
 /// A path as the store keeps it: text when it is UTF-8, its bytes otherwise
@@ -59,6 +59,7 @@ mod at {
     pub(super) const SNAPSHOT_SIZE: usize = column(OUTBOX_COLUMNS, "snapshot_size");
     pub(super) const SNAPSHOT_MTIME: usize = column(OUTBOX_COLUMNS, "snapshot_mtime");
     pub(super) const SNAPSHOT_MTIME_NSEC: usize = column(OUTBOX_COLUMNS, "snapshot_mtime_nsec");
+    pub(super) const SNAPSHOT_CHANGE_COUNT: usize = column(OUTBOX_COLUMNS, "snapshot_change_count");
     pub(super) const SESSION_URL: usize = column(OUTBOX_COLUMNS, "session_url");
     pub(super) const SESSION_EXPIRES: usize = column(OUTBOX_COLUMNS, "session_expires");
     pub(super) const SESSION_NEXT: usize = column(OUTBOX_COLUMNS, "session_next");
@@ -79,6 +80,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         size: row.get(at::SNAPSHOT_SIZE)?,
         mtime: row.get(at::SNAPSHOT_MTIME)?,
         mtime_nsec: row.get(at::SNAPSHOT_MTIME_NSEC)?,
+        change_count: row.get(at::SNAPSHOT_CHANGE_COUNT)?,
     }
     .read();
     // A value no konedrive writes fails closed: the row is blocked, never
@@ -150,6 +152,7 @@ fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
         ("snapshot_size", snapshot.size.into()),
         ("snapshot_mtime", snapshot.mtime.into()),
         ("snapshot_mtime_nsec", snapshot.mtime_nsec.into()),
+        ("snapshot_change_count", snapshot.change_count.into()),
         ("session_url", row.session_url.as_ref().map(|url| url.as_str().to_owned()).into()),
         ("session_expires", row.session_expires.into()),
         ("session_next", row.session_next.map(|n| n as i64).into()),
@@ -182,8 +185,8 @@ pub(super) fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeErro
 /// The content row `seq` sends is `snapshot` from now on.
 pub(super) fn set_snapshot(conn: &Connection, seq: i64, snapshot: Option<super::Snapshot>) -> Result<(), TreeError> {
     let stored = StoredSnapshot::of(snapshot);
-    conn.prepare_cached("UPDATE outbox SET snapshot_size = ?2, snapshot_mtime = ?3, snapshot_mtime_nsec = ?4 WHERE seq = ?1")?
-        .execute(params![seq, stored.size, stored.mtime, stored.mtime_nsec])?;
+    conn.prepare_cached("UPDATE outbox SET snapshot_size = ?2, snapshot_mtime = ?3, snapshot_mtime_nsec = ?4, snapshot_change_count = ?5 WHERE seq = ?1")?
+        .execute(params![seq, stored.size, stored.mtime, stored.mtime_nsec, stored.change_count])?;
     Ok(())
 }
 
