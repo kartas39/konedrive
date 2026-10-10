@@ -236,32 +236,40 @@ fn remove_local_version(conn: &Connection, mut item: Item) -> Result<(), TreeErr
     write_item(conn, &item)
 }
 
-/// The file removed here whose removal is not sent yet and that OneDrive has at `place`: a
-/// bound row of a file the folder does not show, whose synced place is `place`.
-fn find_removed_file_at(conn: &Connection, place: &ItemPlace) -> Result<Option<LocalItemId>, TreeError> {
-    let id: Option<i64> = conn
-        .prepare_cached(
-            "SELECT local_item_id FROM items
-              WHERE synced_parent_id = ?1 AND synced_name = ?2 AND onedrive_item_id IS NOT NULL AND local_parent_id IS NULL AND kind = 'file'
-              ORDER BY local_item_id LIMIT 1",
-        )?
-        .query_row(params![place.parent_local_item_id.as_i64(), name_value(&place.name)], |row| row.get(0))
-        .optional()?;
-    Ok(id.map(LocalItemId::new))
+/// The statement of a write operation that a file it made replaces the item `replaced`
+/// holds: `replaced` is a file of OneDrive the folder does not show, so one removed here
+/// whose removal OneDrive does not know of. Which removed file a made file replaces, where
+/// several could be meant, is not asked here.
+fn check_replaced_by_made_file(conn: &Connection, kind: ItemKind, replaced: LocalItemId) -> Result<(), TreeError> {
+    if kind != ItemKind::File {
+        return Err(refuse(format!("a directory is made as a new item: it does not replace item {replaced}")));
+    }
+    if replaced == LocalItemId::ROOT {
+        return Err(refuse("the root of the folder is not replaced".to_owned()));
+    }
+    let row = find_item(conn, replaced)?.ok_or_else(|| refuse(format!("item {replaced}, which a made file is to replace, has no row")))?;
+    match row {
+        Item { local: Some(_), .. } => Err(refuse(format!("the folder still shows item {replaced}: a made file does not replace it"))),
+        Item { onedrive_item: None, .. } => Err(refuse(format!("item {replaced} has no binding for a made file to take over"))),
+        Item { kind: ItemKind::Directory, .. } => Err(refuse(format!("item {replaced} is a directory: a made file does not replace it"))),
+        Item { kind: ItemKind::File, .. } => Ok(()),
+    }
 }
 
-fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option<&ContentVersion>, is_ignored: bool) -> Result<LocalItemId, TreeError> {
+fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option<&ContentVersion>, is_ignored: bool, replaced: Option<LocalItemId>) -> Result<LocalItemId, TreeError> {
     if (kind == ItemKind::File) != content.is_some() {
         return Err(refuse("a file is made with a content and a directory without".to_owned()));
     }
     check_directory(tx, place.parent_local_item_id)?;
     check_place_is_free(tx, place)?;
-    let removed = if kind == ItemKind::File { find_removed_file_at(tx, place)? } else { None };
+    if let Some(replaced) = replaced {
+        check_replaced_by_made_file(tx, kind, replaced)?;
+    }
     // What a program makes is in the backing directory.
     let content_presence = if kind == ItemKind::File { ContentPresence::OnDisk } else { ContentPresence::NotOnDisk };
     let made = insert_item(tx, kind, None, Some(&ItemVersion { place: Some(place.clone()), content: content.cloned() }), content_presence, is_ignored)?;
-    if let Some(removed) = removed {
-        bindings::take_over_binding(tx, made, removed)?;
+    if let Some(replaced) = replaced {
+        bindings::take_over_binding(tx, made, replaced)?;
     }
     Ok(made)
 }
@@ -290,10 +298,11 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
     check_empty(tx, replaced)?;
     check_not_below(tx, place.parent_local_item_id, replacing)?;
     let takes_over = replacing_item.kind == ItemKind::File && replacing_item.onedrive_item.is_none() && replaced_item.onedrive_item.is_some();
+    // The replaced item leaves the folder first: a binding is taken over from an item
+    // the folder does not show.
+    remove_local_version(tx, replaced_item)?;
     if takes_over {
         bindings::take_over_binding(tx, replacing, replaced)?;
-    } else {
-        remove_local_version(tx, replaced_item)?;
     }
     set_local_place(tx, replacing, place.parent_local_item_id, name_value(&place.name))?;
     set_ignored(tx, replacing, is_ignored)
@@ -318,7 +327,7 @@ fn set_local_content(tx: &Transaction<'_>, mut item: Item, mut local: ItemVersio
 /// with other rows of the store in one.
 pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
     match change {
-        LocalVersionChange::Made { kind, place, content, is_ignored } => make(tx, *kind, place, content.as_ref(), *is_ignored),
+        LocalVersionChange::Made { kind, place, content, is_ignored, replaced } => make(tx, *kind, place, content.as_ref(), *is_ignored, *replaced),
         LocalVersionChange::Moved { item, place, is_ignored } => move_item(tx, *item, place, *is_ignored).map(|()| *item),
         LocalVersionChange::SavedOver { replacing, replaced, is_ignored } => save_over(tx, *replacing, *replaced, *is_ignored).map(|()| *replacing),
         LocalVersionChange::Removed { item } => remove(tx, *item).map(|()| *item),

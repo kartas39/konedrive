@@ -618,9 +618,11 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalVersionChange {
     /// A file or directory was made at `place`: a file with `content`, a directory with none.
-    /// A file made at the place of a file removed here whose removal is not sent yet takes
-    /// over that item's binding.
-    Made { kind: ItemKind, place: ItemPlace, content: Option<ContentVersion>, is_ignored: bool },
+    /// `replaced` is the write operation's statement that the file is made where that file
+    /// was removed here, whose removal is not sent yet: the made file takes over its
+    /// binding, and OneDrive sees one item whose content changed. The store checks the
+    /// statement and finds no such item by itself.
+    Made { kind: ItemKind, place: ItemPlace, content: Option<ContentVersion>, is_ignored: bool, replaced: Option<LocalItemId> },
     /// `item` was renamed or moved to `place`, where nothing is. `is_ignored` is what the
     /// upload rules say of it there, for it and all below it.
     Moved { item: LocalItemId, place: ItemPlace, is_ignored: bool },

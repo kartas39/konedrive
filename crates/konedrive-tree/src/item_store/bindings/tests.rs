@@ -1,7 +1,8 @@
 use crate::item_store::tests::{hashed, is_refused, is_refused_by_schema, item, make_directory, make_file, place, reference, synced};
 use crate::item_store::stored::write_item;
 use crate::model::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, LocalVersionChange};
-use crate::TreeStore;
+use super::take_over_binding;
+use crate::{TreeError, TreeStore};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -9,22 +10,28 @@ fn bound_to(store: &mut TreeStore, onedrive_id: &str) -> Option<LocalItemId> {
     store.item_store().find_bound_item(&reference(onedrive_id)).unwrap().map(|item| item.local_item_id)
 }
 
+/// `take_over_binding` in a transaction of its own, as `ItemStore` has the other two.
+fn take_over(store: &mut TreeStore, replacing: LocalItemId, replaced: LocalItemId) -> Result<(), TreeError> {
+    store.item_store().write(|tx| take_over_binding(tx, replacing, replaced))
+}
+
 fn remove(store: &mut TreeStore, id: LocalItemId) {
     store.item_store().apply(&LocalVersionChange::Removed { item: id }).unwrap();
 }
 
-/// `take_over_binding`: the replacing item takes the binding and the synced place and
-/// content of the replaced one, and keeps its id and its local version; the replaced row
-/// goes; the binding is one item's.
+/// `take_over_binding`: the replacing file takes the binding and the synced place and
+/// content of the replaced one, which the folder does not show any more, and keeps its id
+/// and its local version; the replaced row goes; the binding is one item's.
 #[test]
 fn take_over_binding_moves_the_binding_and_the_replaced_row_goes() {
     let mut store = TreeStore::in_memory().unwrap();
     let replaced = make_file(&mut store, ROOT, "report");
     let replaced_row = synced(&mut store, replaced, "A");
+    remove(&mut store, replaced);
     let replacing = make_file(&mut store, ROOT, "copy");
     let before = item(&mut store, replacing);
 
-    store.item_store().take_over_binding(replacing, replaced).unwrap();
+    take_over(&mut store, replacing, replaced).unwrap();
     assert_eq!(
         item(&mut store, replacing),
         Item { onedrive_item: Some(reference("A")), synced_place: Some(place(ROOT, "report")), synced_content: Some(hashed("A")), ..before },
@@ -36,25 +43,24 @@ fn take_over_binding_moves_the_binding_and_the_replaced_row_goes() {
     assert_eq!(item(&mut store, replacing).file_sync_state(), Some(FileSyncState::ModifiedHere));
 }
 
-/// What `take_over_binding` refuses: an item that has a binding already (it would lose
-/// one), a replaced item with none to take, an item over itself, the root, an id with no
-/// row, and a replaced directory the folder shows something in.
+/// What `take_over_binding` refuses: a replaced item the folder still shows (its file
+/// stands at its name, and its row would go from under it), an item that has a binding
+/// already (it would lose one), a replacing item the folder does not show, a replaced item
+/// with no binding, an item over itself, the root, and an id with no row.
 #[test]
-fn take_over_binding_refuses_what_would_lose_a_binding_or_a_parent() {
+fn take_over_binding_refuses_what_would_lose_a_binding_or_a_shown_item() {
     let mut store = TreeStore::in_memory().unwrap();
-    let (a, b, local) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"), make_file(&mut store, ROOT, "local"));
-    let dir = make_directory(&mut store, ROOT, "dir");
-    make_file(&mut store, dir, "inside");
-    let other = make_directory(&mut store, ROOT, "other");
-    for (id, onedrive_id) in [(a, "A"), (b, "B"), (dir, "D")] {
+    let (a, b, local, shown) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"), make_file(&mut store, ROOT, "local"), make_file(&mut store, ROOT, "shown"));
+    for (id, onedrive_id) in [(a, "A"), (b, "B"), (shown, "S"), (ROOT, "R")] {
         synced(&mut store, id, onedrive_id);
     }
-    synced(&mut store, ROOT, "R");
-    let mut items = store.item_store();
-    for (replacing, replaced) in [(a, b), (a, local), (local, local), (local, ROOT), (ROOT, a), (local, LocalItemId::new(99)), (LocalItemId::new(99), a), (other, dir)] {
-        assert!(is_refused(items.take_over_binding(replacing, replaced)), "{replacing} over {replaced}");
+    remove(&mut store, a);
+    remove(&mut store, b);
+    let other_local = make_file(&mut store, ROOT, "other-local");
+    for (replacing, replaced) in [(local, shown), (shown, a), (b, a), (local, other_local), (local, local), (local, ROOT), (ROOT, a), (local, LocalItemId::new(99)), (LocalItemId::new(99), a)] {
+        assert!(is_refused(take_over(&mut store, replacing, replaced)), "{replacing} over {replaced}");
     }
-    assert_eq!([bound_to(&mut store, "A"), bound_to(&mut store, "B"), bound_to(&mut store, "D")], [Some(a), Some(b), Some(dir)]);
+    assert_eq!([bound_to(&mut store, "A"), bound_to(&mut store, "B"), bound_to(&mut store, "S")], [Some(a), Some(b), Some(shown)]);
 }
 
 /// `give_up_binding`: the item keeps its id, its place and its content and is an item
@@ -91,10 +97,6 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
         }
     );
     assert_eq!(bound_to(&mut store, "A"), Some(taker));
-    // Not "removed here and not sent": a file made at the name takes nothing over.
-    remove(&mut store, file);
-    let made = make_file(&mut store, ROOT, "report");
-    assert_eq!(item(&mut store, made).onedrive_item, None);
 }
 
 /// A directory that gives up its binding keeps what the folder shows in it; what the two
@@ -185,9 +187,10 @@ fn a_binding_does_not_move_between_a_file_and_a_directory() {
     remove(&mut store, file);
     remove(&mut store, directory);
     let (new_file, new_directory) = (make_file(&mut store, ROOT, "new-file"), make_directory(&mut store, ROOT, "new-directory"));
+    assert!(is_refused(take_over(&mut store, new_directory, file)), "a directory over a file");
+    assert!(is_refused(take_over(&mut store, new_file, directory)), "a file over a directory");
+    assert!(is_refused(take_over(&mut store, new_directory, directory)), "a directory over a directory: only a file's binding is taken over");
     let mut items = store.item_store();
-    assert!(is_refused(items.take_over_binding(new_directory, file)), "a directory over a file");
-    assert!(is_refused(items.take_over_binding(new_file, directory)), "a file over a directory");
     assert!(is_refused(items.merge_items(new_file, directory)), "a file with a directory");
     assert!(is_refused(items.merge_items(new_directory, file)), "a directory with a file");
     assert_eq!([bound_to(&mut store, "F"), bound_to(&mut store, "D")], [Some(file), Some(directory)]);

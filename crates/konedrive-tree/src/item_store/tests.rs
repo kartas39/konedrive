@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
+use super::stored::write_item;
 use super::*;
 use crate::model::{Change, ContentPresence, ContentVersion, DriveId, FileSyncState, ItemKind, ItemPlace, ItemVersion, Kind, OneDriveItemId, Placement, Row};
 
@@ -27,7 +28,12 @@ pub(super) fn reference(id: &str) -> OneDriveItemReference {
 
 pub(super) fn made(place: ItemPlace, kind: ItemKind) -> LocalVersionChange {
     let content = (kind == ItemKind::File).then(made_here);
-    LocalVersionChange::Made { kind, place, content, is_ignored: false }
+    LocalVersionChange::Made { kind, place, content, is_ignored: false, replaced: None }
+}
+
+/// A file made at `place` that the write operation says replaces the removed item `replaced`.
+fn made_replacing(place: ItemPlace, replaced: LocalItemId) -> LocalVersionChange {
+    LocalVersionChange::Made { kind: ItemKind::File, place, content: Some(made_here()), is_ignored: false, replaced: Some(replaced) }
 }
 
 pub(super) fn make_file(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
@@ -173,7 +179,7 @@ fn an_item_is_made_and_moved_only_into_a_directory_the_folder_shows() {
 fn a_file_is_made_with_a_content_and_a_directory_without() {
     let mut store = TreeStore::in_memory().unwrap();
     let mut items = store.item_store();
-    let version = |kind, content| LocalVersionChange::Made { kind, place: place(ROOT, "x"), content, is_ignored: false };
+    let version = |kind, content| LocalVersionChange::Made { kind, place: place(ROOT, "x"), content, is_ignored: false, replaced: None };
     assert!(is_refused(items.apply(&version(ItemKind::File, None))));
     assert!(is_refused(items.apply(&version(ItemKind::Directory, Some(made_here())))));
     assert_eq!(names(&mut store, ROOT), Vec::<String>::new());
@@ -234,7 +240,7 @@ fn a_move_changes_the_path_and_what_is_ignored_of_all_below() {
     assert_eq!([dir, inner, file, beside].map(|id| item(&mut store, id).is_ignored), [true, true, true, false]);
     store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, "dir"), is_ignored: false }).unwrap();
     assert_eq!([dir, inner, file].map(|id| item(&mut store, id).is_ignored), [false, false, false]);
-    let ignored = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "x.tmp"), content: Some(made_here()), is_ignored: true }).unwrap();
+    let ignored = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "x.tmp"), content: Some(made_here()), is_ignored: true, replaced: None }).unwrap();
     assert!(item(&mut store, ignored).is_ignored);
 }
 
@@ -311,18 +317,17 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: LocalItemId::new(99) })));
 }
 
-/// A file made at the place of a file removed here whose removal is not sent yet (a bound
-/// row the folder does not show, whose synced place is that place) takes over its binding:
-/// OneDrive sees one item whose content changed. The new file has an id of its own, and the
-/// removed row goes.
+/// A file made where a file was removed here whose removal is not sent yet takes over that
+/// item's binding when the write operation says which item it replaces: OneDrive sees one
+/// item whose content changed. The new file has an id of its own, and the removed row goes.
 #[test]
-fn a_file_made_where_one_was_removed_and_not_sent_takes_over_its_binding() {
+fn a_file_made_as_replacing_a_removed_file_takes_over_its_binding() {
     let mut store = TreeStore::in_memory().unwrap();
     let old = make_file(&mut store, ROOT, "report");
     let old_row = synced(&mut store, old, "A");
     store.item_store().apply(&LocalVersionChange::Removed { item: old }).unwrap();
 
-    let new = make_file(&mut store, ROOT, "report");
+    let new = store.item_store().apply(&made_replacing(place(ROOT, "report"), old)).unwrap();
     assert_ne!(new, old, "the kernel was told the old file is gone");
     assert_eq!(store.item_store().find_item(old).unwrap(), None, "the removed row went");
     let new_row = item(&mut store, new);
@@ -332,40 +337,74 @@ fn a_file_made_where_one_was_removed_and_not_sent_takes_over_its_binding() {
     assert_eq!(store.item_store().find_bound_item(&reference("A")).unwrap().map(|i| i.local_item_id), Some(new));
 }
 
-/// What does not take a binding over when it is made: a directory at a removed file's
-/// place, a file at a removed directory's, a file at another name, a file at the place of a
-/// bound row that has no synced place (a directory a listing only mentioned), and a file at
-/// the place a removed file was moved to before it was removed (its synced place is where
-/// OneDrive has it).
+/// Which item a made file replaces is the write operation's to say, and the store finds
+/// none by itself. The cases in which the place alone would say otherwise:
+///
+/// - a file moved and then removed, and a file made where it was removed from: it replaces
+///   that file when the operation says so, though OneDrive has the file at another place;
+/// - a file made where OneDrive has a removed file, with nothing said: a new item;
+/// - a removal that is being sent, which the operation does not name: a new item;
+/// - two removed files that OneDrive has at one place: the one named, and only that one.
 #[test]
-fn only_a_file_at_a_removed_files_synced_place_takes_a_binding_over() {
+fn a_made_file_replaces_the_item_the_operation_names_and_no_other() {
     let mut store = TreeStore::in_memory().unwrap();
-    let file = make_file(&mut store, ROOT, "file");
+    let moved = make_file(&mut store, ROOT, "a");
+    synced(&mut store, moved, "M");
+    store.item_store().apply(&LocalVersionChange::Moved { item: moved, place: place(ROOT, "b"), is_ignored: false }).unwrap();
+    store.item_store().apply(&LocalVersionChange::Removed { item: moved }).unwrap();
+    let being_sent = make_file(&mut store, ROOT, "sent");
+    synced(&mut store, being_sent, "S");
+    store.item_store().apply(&LocalVersionChange::Removed { item: being_sent }).unwrap();
+
+    let at_synced_place = make_file(&mut store, ROOT, "a");
+    assert_eq!(item(&mut store, at_synced_place).onedrive_item, None, "nothing said: a new item where OneDrive has the removed file");
+    let at_sent = make_file(&mut store, ROOT, "sent");
+    assert_eq!(item(&mut store, at_sent).onedrive_item, None, "nothing said: a new item where a removal is being sent");
+    assert_eq!(store.item_store().find_bound_item(&reference("S")).unwrap().map(|i| i.local_item_id), Some(being_sent), "the removed row is as it was");
+    let at_removed_place = store.item_store().apply(&made_replacing(place(ROOT, "b"), moved)).unwrap();
+    let row = item(&mut store, at_removed_place);
+    assert_eq!((row.onedrive_item, row.synced_place), (Some(reference("M")), Some(place(ROOT, "a"))), "said: the file removed from this place, which OneDrive has elsewhere");
+
+    // Two removed files OneDrive has at one place: the synced place is not one item's.
     let dir = make_directory(&mut store, ROOT, "dir");
-    let moved = make_file(&mut store, ROOT, "moved");
-    for (id, onedrive_id) in [(file, "F"), (dir, "D"), (moved, "M")] {
-        synced(&mut store, id, onedrive_id);
-    }
-    store.item_store().apply(&LocalVersionChange::Moved { item: moved, place: place(ROOT, "elsewhere"), is_ignored: false }).unwrap();
-    for id in [file, dir, moved] {
+    let (first, second) = (make_file(&mut store, dir, "first"), make_file(&mut store, dir, "second"));
+    synced(&mut store, first, "1");
+    let mut second_row = synced(&mut store, second, "2");
+    second_row.synced_place = Some(place(dir, "first"));
+    write_item(&store.conn, &second_row).unwrap();
+    for id in [first, second] {
         store.item_store().apply(&LocalVersionChange::Removed { item: id }).unwrap();
     }
-    insert_item(&store.conn, ItemKind::Directory, Some(&reference("P")), None, ContentPresence::NotOnDisk, false).unwrap();
+    let new = store.item_store().apply(&made_replacing(place(dir, "first"), second)).unwrap();
+    assert_eq!(item(&mut store, new).onedrive_item, Some(reference("2")), "the one named, though it is not the first of the two");
+    assert_eq!(store.item_store().find_bound_item(&reference("1")).unwrap().map(|i| i.local_item_id), Some(first), "the other keeps its row");
+}
 
-    let made_ids = [
-        make_directory(&mut store, ROOT, "file"),
-        make_file(&mut store, ROOT, "dir"),
-        make_file(&mut store, ROOT, "other"),
-        make_file(&mut store, ROOT, "elsewhere"),
-    ];
-    for id in made_ids {
-        assert_eq!(item(&mut store, id).onedrive_item, None, "{id}");
+/// What a made item is refused to replace, with nothing made: an item the folder still
+/// shows, one OneDrive never had, a directory, the root, an id with no row; and a made
+/// directory replaces nothing.
+#[test]
+fn a_made_file_replaces_only_a_bound_file_the_folder_does_not_show() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let shown = make_file(&mut store, ROOT, "shown");
+    let local = make_file(&mut store, ROOT, "local");
+    let (removed_dir, removed_file) = (make_directory(&mut store, ROOT, "removed-dir"), make_file(&mut store, ROOT, "removed-file"));
+    for (id, onedrive_id) in [(shown, "S"), (removed_dir, "D"), (removed_file, "F"), (ROOT, "R")] {
+        synced(&mut store, id, onedrive_id);
     }
-    for (id, onedrive_id) in [(file, "F"), (dir, "D"), (moved, "M")] {
-        assert_eq!(store.item_store().find_bound_item(&reference(onedrive_id)).unwrap().map(|i| i.local_item_id), Some(id), "{onedrive_id} keeps its row");
+    for id in [removed_dir, removed_file] {
+        store.item_store().apply(&LocalVersionChange::Removed { item: id }).unwrap();
     }
-    let at_moved = make_file(&mut store, ROOT, "moved");
-    assert_eq!(item(&mut store, at_moved).onedrive_item, Some(reference("M")), "where OneDrive has the removed file");
+    let mut items = store.item_store();
+    for replaced in [shown, local, removed_dir, ROOT, LocalItemId::new(99)] {
+        assert!(is_refused(items.apply(&made_replacing(place(ROOT, "new"), replaced))), "replacing {replaced}");
+    }
+    let directory_back = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_ignored: false, replaced: Some(removed_dir) };
+    assert!(is_refused(items.apply(&directory_back)), "a directory takes no binding over");
+    let directory_over_file = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_ignored: false, replaced: Some(removed_file) };
+    assert!(is_refused(items.apply(&directory_over_file)));
+    assert_eq!(names(&mut store, ROOT), ["local", "shown"], "nothing was made");
+    assert_eq!(store.item_store().find_bound_item(&reference("F")).unwrap().map(|i| i.local_item_id), Some(removed_file));
 }
 
 /// A file saved over another (an editor's temporary file renamed over the original) has its

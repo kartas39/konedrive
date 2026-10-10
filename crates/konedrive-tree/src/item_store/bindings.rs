@@ -2,6 +2,9 @@
 //! item id follows the file the kernel holds; the binding follows what OneDrive must see as
 //! one item. Where the two part, the binding moves, here and nowhere else.
 //!
+//! `give_up_binding` and `merge_items` are operations of [`ItemStore`]. `take_over_binding`
+//! is done only with the change of a local version that says which item replaces which.
+//!
 //! Each keeps a binding one item's (the row that had it lets it go before another takes
 //! it), and keeps a synced place pointing at a row: what the two sides agreed is in a
 //! directory of OneDrive stays with the row that has that directory's binding.
@@ -10,18 +13,10 @@ use rusqlite::{params, Connection, Transaction};
 
 use super::stored::{delete_item, find_item, insert_item, write_item};
 use super::{check_empty, refuse, ItemStore};
-use crate::model::{ContentPresence, Item, LocalItemId};
+use crate::model::{ContentPresence, Item, ItemKind, LocalItemId};
 use crate::TreeError;
 
 impl ItemStore<'_> {
-    /// The replacing item takes the binding and the synced place and content of the
-    /// replaced one, and the replaced row goes: a file saved by a rename over another, or
-    /// made at the place of one removed here whose removal is not sent yet. OneDrive sees
-    /// one item whose content changed.
-    pub fn take_over_binding(&mut self, replacing: LocalItemId, replaced: LocalItemId) -> Result<(), TreeError> {
-        self.write(|tx| take_over_binding(tx, replacing, replaced))
-    }
-
     /// The item keeps its id, its local version and its content, and is an item OneDrive
     /// does not have; a new row takes the binding and nothing else, and is returned: what
     /// OneDrive has under that binding is that row's to be given.
@@ -67,17 +62,30 @@ fn hand_over(conn: &Connection, from: Item, mut to: Item) -> Result<(), TreeErro
     write_item(conn, &to)
 }
 
-/// [`ItemStore::take_over_binding`], inside the caller's transaction.
+/// The file `replacing` takes the binding and the synced place and content of the file
+/// `replaced`, which the folder does not show any more, and the replaced row goes: OneDrive
+/// sees one item whose content changed. Inside the caller's transaction.
+///
+/// It is not an operation of [`ItemStore`] by itself: which item replaces which is said by
+/// a change of a local version, a file saved over another
+/// ([`SavedOver`](crate::LocalVersionChange::SavedOver)) or made where one was removed
+/// ([`Made`](crate::LocalVersionChange::Made)), and it is done with that change.
 pub(crate) fn take_over_binding(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId) -> Result<(), TreeError> {
     if replacing == replaced {
         return Err(refuse(format!("item {replacing} does not take over its own binding")));
     }
     let (taker, giver) = (read_below_root(tx, replacing)?, read_below_root(tx, replaced)?);
-    if taker.onedrive_item.is_some() {
-        return Err(refuse(format!("item {replacing} has a binding already and would lose it")));
+    if taker.onedrive_item.is_some() || taker.local.is_none() {
+        return Err(refuse(format!("item {replacing} takes no binding over: it has one already and would lose it, or the folder does not show it")));
     }
     if giver.onedrive_item.is_none() {
         return Err(refuse(format!("item {replaced} has no binding to take over")));
+    }
+    if giver.local.is_some() {
+        return Err(refuse(format!("the folder still shows item {replaced}: its row does not go from under its file")));
+    }
+    if giver.kind != ItemKind::File || taker.kind != ItemKind::File {
+        return Err(refuse(format!("item {replacing} and item {replaced} are not two files: only a file's binding is taken over")));
     }
     hand_over(tx, giver, taker)
 }
