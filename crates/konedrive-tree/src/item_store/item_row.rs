@@ -469,41 +469,66 @@ const BELOW_IN_ONEDRIVE: &str = "WITH RECURSIVE below(id) AS (
          SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
      SELECT id FROM below";
 
+/// SQL for "what the rows say OneDrive has in the directory `?1` and below it, as far as a
+/// row stamped after the count `?2`": the walk of [`BELOW_IN_ONEDRIVE`] that finds such a
+/// row, says so of it (`is_left`) and does not go on from it, so that nothing is reached
+/// through a row that is left to be read again, at any depth. To be followed by a `SELECT`
+/// from `below(id, is_left)`.
+const BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT: &str = "WITH RECURSIVE below(id, is_left) AS (
+         SELECT local_item_id, confirmed_at_count > ?2 FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1
+         UNION
+         SELECT child.local_item_id, child.confirmed_at_count > ?2 FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id WHERE NOT below.is_left)";
+
 /// What the rows say OneDrive has in `directory` and below it has no OneDrive version from
-/// now on, but the rows stamped after the count `stamped_until`: those are left, and their
-/// item ids of OneDrive answered. Two statements whatever is below: the rows that are left
-/// are read, and then the others are written, each found from what the rows said before
-/// either.
-pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId, stamped_until: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
-    let values = [directory.as_i64(), stamped_until as i64];
-    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count > ?2"), values)?;
-    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count <= ?2", clear_onedrive_version_sql("")))?.execute(values)?;
+/// now on, as far as the rows stamped after the count `left_after_count`: those are left,
+/// with all the rows say is below them, and their item ids of OneDrive answered. Two
+/// statements whatever is below: the rows that are left are read, and then the others are
+/// written, each found from what the rows said before either.
+pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let values = [directory.as_i64(), left_after_count as i64];
+    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT} SELECT id FROM below WHERE is_left)"), values)?;
+    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT} SELECT id FROM below WHERE NOT is_left)", clear_onedrive_version_sql("")))?.execute(values)?;
     Ok(left)
 }
 
+/// SQL for "the row has a place in OneDrive, and the full listing of the count `?1` did not
+/// list it": what the index `items_seen_in_full_listing` finds.
+const UNSEEN_IN_FULL_LISTING: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
+
+/// SQL for "what the rows say OneDrive has below a row that the full listing of the count
+/// `?1` did not list and that was stamped after the count `?2`": below a row the listing's
+/// end leaves to be read again, at any depth.
+const BELOW_LEFT_UNSEEN: &str = "WITH RECURSIVE below(id) AS (
+         SELECT child.local_item_id FROM items unseen INDEXED BY items_seen_in_full_listing JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = unseen.local_item_id
+             WHERE unseen.onedrive_parent_id IS NOT NULL AND unseen.seen_in_full_listing < ?1 AND unseen.confirmed_at_count > ?2
+         UNION
+         SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
+     SELECT id FROM below";
+
 /// What OneDrive has, by the rows, that the full listing of the count `full_listing_count`
 /// did not list has no OneDrive version from now on, but the rows stamped after the count
-/// `stamped_until`: those are left, and their item ids of OneDrive answered. Two statements
-/// whatever was not seen, by the index of the listing that saw a row.
-pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing_count: u64, stamped_until: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
-    const UNSEEN: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
-    let values = [full_listing_count as i64, stamped_until as i64];
-    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN} AND confirmed_at_count > ?2"), values)?;
-    conn.prepare_cached(&format!("{} WHERE {UNSEEN} AND confirmed_at_count <= ?2", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing")))?.execute(values)?;
+/// `left_after_count` and all the rows say is below one of those: they are left, and the
+/// item ids of OneDrive of the stamped ones answered. Two statements whatever was not
+/// seen, by the index of the listing that saw a row.
+pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing_count: u64, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let values = [full_listing_count as i64, left_after_count as i64];
+    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count > ?2"), values)?;
+    let sql = format!("{} WHERE {UNSEEN_IN_FULL_LISTING} AND confirmed_at_count <= ?2 AND local_item_id NOT IN ({BELOW_LEFT_UNSEEN})", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing"));
+    conn.prepare_cached(&sql)?.execute(values)?;
     Ok(left)
 }
 
 /// The rows that are a binding and nothing else, that no row names as its parent on any
-/// side, and whose stamp is `stamped_until` at most, go. Found by the index of such rows.
+/// side, and that were not stamped after the count `left_after_count`, go. Found by the index of such rows.
 /// A row that goes names no parent, so none of them holds another.
-pub(super) fn delete_rows_of_binding_alone(conn: &Connection, stamped_until: u64) -> Result<(), TreeError> {
+pub(super) fn delete_rows_of_binding_alone(conn: &Connection, left_after_count: u64) -> Result<(), TreeError> {
     let sql = format!(
         "DELETE FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count <= ?1
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.local_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.onedrive_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.synced_parent_id = items.local_item_id)"
     );
-    conn.prepare_cached(&sql)?.execute([stamped_until as i64])?;
+    conn.prepare_cached(&sql)?.execute([left_after_count as i64])?;
     Ok(())
 }
 

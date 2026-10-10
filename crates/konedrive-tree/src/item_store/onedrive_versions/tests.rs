@@ -1394,3 +1394,6 @@ fn a_page_costs_the_same_whatever_the_store_holds() {
     let dir = tempfile::tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")).unwrap();
     measure("on disk", &mut TreeStore::open(&dir.path().join("small.sqlite")).unwrap(), &mut TreeStore::open(&dir.path().join("large.sqlite")).unwrap());
 }
+
+/// A row a page leaves to be read again, against all else a page or its end can do.
+mod outdated_row;

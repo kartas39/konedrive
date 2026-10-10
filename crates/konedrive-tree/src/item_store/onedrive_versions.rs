@@ -25,7 +25,9 @@
 //! 4. Every item the page says is gone, after all of the above: its row has no OneDrive
 //!    version from then on, and neither has what the rows say OneDrive has below it, which
 //!    a listing does not always name. What the same page moved out of a directory is not
-//!    below it any more when this runs, and what it moved into it is.
+//!    below it any more when this runs, and what it moved into it is; a change that was
+//!    left ([`ListedChangeOutcome::Outdated`]) moved nothing, so its item is below still,
+//!    and the walk stops there (below).
 //! 5. A row left with its binding and nothing else, that no row names as its parent, goes.
 //!    Such a row names no parent itself, so no row that goes holds another.
 //!
@@ -43,6 +45,15 @@
 //! row whose removal was confirmed has no version on either side; it stays until a listing
 //! ends that began at its stamp or after, so that no page fetched before the removal finds
 //! the binding free and makes the item again.
+//!
+//! **A call takes nothing through a row it leaves to be read again.** What a page says of
+//! the items below a directory, by a removal or by a full listing's end, stops at a row
+//! stamped later, at any depth: that row is left and answered, and what the rows say is
+//! below it keeps its OneDrive version until the row's own fate is written. Read again it
+//! is gone, and that removal takes what is below; or it is somewhere, and what is below it
+//! is there. The row of a removed directory that a row left still names as its parent
+//! stays, with no version, as a parent named and never listed does, and goes at the first
+//! call's end at which no row names it.
 //!
 //! **A listing, from its beginning to its end.** One listing at a time is the caller's
 //! rule. A full listing (the first one, and after OneDrive asks to start over) is begun
