@@ -53,7 +53,7 @@ pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
 pub use item_store::{ConfirmedOneDriveVersion, ItemStore};
 pub use model::{
-    usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
+    usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
     LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,
 };
 pub use konedrive_reason::WaitsFor;

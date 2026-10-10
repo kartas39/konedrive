@@ -575,7 +575,7 @@ pub struct Item {
     pub content_before_write: Option<ContentVersion>,
     /// Whether the folder can show the item at all, as OneDrive's listing said of the item
     /// itself: an item below a directory that cannot be shown cannot be shown either, which
-    /// [`ItemStore::can_be_shown`](crate::ItemStore::can_be_shown) asks. `Placed` for an
+    /// [`ItemStore::find_folder_visibility`](crate::ItemStore::find_folder_visibility) asks. `Placed` for an
     /// item OneDrive does not have.
     pub placement: Placement,
     /// The upload rules ignore the item's own name. Whether the item is left here is not
@@ -586,6 +586,23 @@ pub struct Item {
     /// listing: what a listing fetched before that count says of the item may be older than
     /// what was confirmed.
     pub confirmed_at_count: u64,
+}
+
+/// Whether the folder can show an item as OneDrive has it
+/// ([`ItemStore::find_folder_visibility`](crate::ItemStore::find_folder_visibility)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FolderVisibility {
+    /// Its own placement says so, and that of every directory above it in OneDrive, up to
+    /// the root.
+    CanBeShown,
+    /// Its own placement, or that of a directory above it, says no: so it stays until
+    /// OneDrive says otherwise of that item or directory.
+    CannotBeShown,
+    /// A directory above it was never listed, or the rows above it do not end at the root:
+    /// a listing that has not ended, or has not said it yet, will say.
+    NotKnownYet,
+    /// OneDrive does not have the item, by its row.
+    NotInOneDrive,
 }
 
 /// How a file the folder shows stands between OneDrive and this computer.

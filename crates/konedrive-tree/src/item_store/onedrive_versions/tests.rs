@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::{is_listed_removal_outdated, is_listed_version_outdated};
 use crate::item_store::item_row::write_item;
 use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_file, place, reference, synced};
-use crate::model::{Change, ContentPresence, ContentVersion, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
+use crate::model::{Change, ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
 use crate::{ConfirmedOneDriveVersion, TreeStore};
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
@@ -280,11 +280,11 @@ fn a_parent_named_before_it_arrives_gets_its_row_at_its_first_mention() {
     assert_eq!((docs.kind, docs.onedrive.clone(), docs.onedrive_etag.clone(), docs.local.clone()), (ItemKind::Directory, None, None, None));
     let a = listed(&mut store, "A");
     assert_eq!(a.onedrive, version(docs.local_item_id, "a.txt", Some("1")));
-    assert!(!store.item_store().can_be_shown(a.local_item_id).unwrap(), "its directory is not known");
+    assert_eq!(store.item_store().find_folder_visibility(a.local_item_id).unwrap(), FolderVisibility::NotKnownYet, "its directory was never listed");
 
     write(&mut store, &[directory("D", "R", "Docs")]);
     assert_eq!(listed(&mut store, "D"), Item { onedrive: version(ROOT, "Docs", None), onedrive_etag: Some("e-D".to_owned()), ..docs });
-    assert!(store.item_store().can_be_shown(a.local_item_id).unwrap());
+    assert_eq!(store.item_store().find_folder_visibility(a.local_item_id).unwrap(), FolderVisibility::CanBeShown);
 
     write(&mut store, &[file("C", "N", "c", "1"), directory("N", "M", "N"), directory("M", "R", "M")]);
     let (m, n) = (listed(&mut store, "M").local_item_id, listed(&mut store, "N").local_item_id);
@@ -554,7 +554,7 @@ fn a_directory_moved_with_ten_thousand_items_below_it_is_one_row_written() {
     assert_eq!(written, [d.as_i64()]);
     assert_eq!(onedrive_place(&mut store, "D"), Some(place(e, "D")));
     let deep = listed(&mut store, "F9899").local_item_id;
-    assert!(store.item_store().can_be_shown(deep).unwrap());
+    assert_eq!(store.item_store().find_folder_visibility(deep).unwrap(), FolderVisibility::CanBeShown);
 }
 
 fn present(parent: LocalItemId, name: &str, content_version: Option<&str>, etag: &str) -> ConfirmedOneDriveVersion {
@@ -878,39 +878,59 @@ fn the_items_onedrive_changed_are_those_whose_onedrive_version_is_not_the_synced
     assert_eq!(changed(&mut store), ["G"]);
 }
 
-/// Whether the folder can show an item, a case each: its own placement and that of every
-/// directory above it in OneDrive say so, up to the root. An item OneDrive does not have,
-/// one below a directory that was never listed, and one whose directories do not end at
-/// the root cannot be shown; the root can. An id with no row is refused.
+/// Whether the folder can show an item as OneDrive has it, a case each. It can: its own
+/// placement and that of every directory above it say so, up to the root; and the root. It
+/// cannot: its own placement says no, or that of a directory above it, also one whose own
+/// directory was never listed. Not known yet: a directory above it was never listed, or the
+/// rows above it name each other in a circle. Not in OneDrive: an item made here, and a row
+/// that is a binding alone. An id with no row is refused.
 #[test]
-fn the_folder_can_show_an_item_that_is_placed_with_every_directory_above_it() {
+fn whether_the_folder_can_show_an_item_is_one_of_four_cases() {
+    use FolderVisibility::{CanBeShown, CannotBeShown, NotInOneDrive, NotKnownYet};
     let mut store = listed_store();
-    let Change::Upsert(vault) = directory("V", "R", "Vault") else { unreachable!() };
-    let Change::Upsert(long) = file("L", "D", "long", "1") else { unreachable!() };
+    let skipped = |change: Change, reason: SkipReason| {
+        let Change::Upsert(row) = change else { unreachable!() };
+        Change::Upsert(Row { placement: Placement::Skipped(reason), ..row })
+    };
     write(
         &mut store,
         &[
             directory("D", "R", "D"),
             directory("E", "D", "E"),
             file("A", "E", "a", "1"),
-            Change::Upsert(Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..long }),
-            Change::Upsert(Row { placement: Placement::Skipped(SkipReason::PersonalVault), ..vault }),
+            skipped(file("L", "D", "long", "1"), SkipReason::NameTooLong),
+            skipped(directory("V", "R", "Vault"), SkipReason::PersonalVault),
             directory("W", "V", "W"),
             file("B", "W", "b", "1"),
             file("X", "U", "x", "1"),
+            skipped(directory("S", "U", "Shared"), SkipReason::Shared),
+            file("Z", "S", "z", "1"),
             directory("P", "Q", "P"),
             directory("Q", "P", "Q"),
             file("Y", "Q", "y", "1"),
         ],
     );
     let here = make_file(&mut store, ROOT, "made-here");
-    for (id, shown) in [("D", true), ("A", true), ("L", false), ("V", false), ("W", false), ("B", false), ("X", false), ("U", false), ("P", false), ("Y", false)] {
+    for (id, visibility) in [
+        ("D", CanBeShown),
+        ("A", CanBeShown),
+        ("L", CannotBeShown),
+        ("V", CannotBeShown),
+        ("W", CannotBeShown),
+        ("B", CannotBeShown),
+        ("S", CannotBeShown),
+        ("Z", CannotBeShown),
+        ("X", NotKnownYet),
+        ("P", NotKnownYet),
+        ("Y", NotKnownYet),
+        ("U", NotInOneDrive),
+    ] {
         let item = listed(&mut store, id).local_item_id;
-        assert_eq!(store.item_store().can_be_shown(item).unwrap(), shown, "{id}");
+        assert_eq!(store.item_store().find_folder_visibility(item).unwrap(), visibility, "{id}");
     }
-    assert!(store.item_store().can_be_shown(ROOT).unwrap());
-    assert!(!store.item_store().can_be_shown(here).unwrap(), "OneDrive does not have it");
-    assert!(is_refused(store.item_store().can_be_shown(LocalItemId::new(999))));
+    assert_eq!(store.item_store().find_folder_visibility(ROOT).unwrap(), CanBeShown);
+    assert_eq!(store.item_store().find_folder_visibility(here).unwrap(), NotInOneDrive);
+    assert!(is_refused(store.item_store().find_folder_visibility(LocalItemId::new(999))));
 }
 
 /// A full listing of `count` items in pages of 200 into `store`: a directory for every

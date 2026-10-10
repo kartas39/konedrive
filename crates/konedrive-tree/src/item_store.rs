@@ -61,7 +61,7 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference, Placement};
+use crate::model::{ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference, Placement};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
@@ -139,14 +139,15 @@ impl ItemStore<'_> {
         list_changed_in_onedrive(&self.store.conn, after, limit)
     }
 
-    /// Whether the folder can show `item` at all, as OneDrive has it: its own placement
-    /// says so, and that of every directory above it in OneDrive, up to the root. An item
-    /// OneDrive does not have cannot be shown as OneDrive's, nor one whose directories do
-    /// not end at the root within the bound of every walk: a directory that was never
-    /// listed, or rows of a listing that has not ended that name each other in a circle.
-    /// The root can. Refused for an id with no row.
-    pub fn can_be_shown(&self, item: LocalItemId) -> Result<bool, TreeError> {
-        can_be_shown(&self.store.conn, item)
+    /// Whether the folder can show `item` as OneDrive has it, a case each
+    /// ([`FolderVisibility`]): it can when its own placement says so and that of every
+    /// directory above it in OneDrive, up to the root, and the root always; it cannot when
+    /// one of them says no; it is not known yet when a directory above it was never listed
+    /// or the rows above it do not end at the root within the bound of every walk, as rows
+    /// of a listing that has not ended may; and OneDrive may not have the item at all.
+    /// Refused for an id with no row.
+    pub fn find_folder_visibility(&self, item: LocalItemId) -> Result<FolderVisibility, TreeError> {
+        find_folder_visibility(&self.store.conn, item)
     }
 
     /// Writes one change of an item's local version, in one transaction: all of it or
@@ -226,18 +227,47 @@ fn is_ignored(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
     Err(refuse(format!("the directories above item {id} do not end at the root")))
 }
 
-fn can_be_shown(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
-    let mut row = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
+/// The row of `id` and of each directory above it in OneDrive, from the item up: as far
+/// as the root, or as a row that has no place in OneDrive, or as every walk of the rows
+/// goes.
+fn list_rows_up_in_onedrive(conn: &Connection, id: LocalItemId) -> Result<Vec<Item>, TreeError> {
+    let mut rows = Vec::new();
+    let mut at = Some(id);
     // One row for each directory above the item.
-    for _ in 0..=MAX_CHAIN {
-        if row.local_item_id == LocalItemId::ROOT {
-            return Ok(true);
-        }
-        let Some(place) = row.onedrive.and_then(|onedrive| onedrive.place).filter(|_| row.placement == Placement::Placed) else { return Ok(false) };
-        let Some(directory) = find_item(conn, place.parent_local_item_id)? else { return Ok(false) };
-        row = directory;
+    while let Some(row) = at.filter(|_| rows.len() <= MAX_CHAIN).and_then(|at| find_item(conn, at).transpose()).transpose()? {
+        at = row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).map(|place| place.parent_local_item_id);
+        rows.push(row);
     }
-    Ok(false)
+    Ok(rows)
+}
+
+/// [`ItemStore::find_folder_visibility`] of the first of `rows`, an item's row and those
+/// of the directories above it in OneDrive as far as they are known
+/// ([`list_rows_up_in_onedrive`]). The first that holds, from the item up: the root can be
+/// shown, and so can what reached it; a row with no OneDrive version is an item OneDrive
+/// does not have, or a directory that was never listed; a placement that says no says it of
+/// all below. Rows that do not end at the root say nothing yet.
+fn decide_folder_visibility(rows: &[Item]) -> FolderVisibility {
+    for (above, row) in rows.iter().enumerate() {
+        if row.local_item_id == LocalItemId::ROOT {
+            return FolderVisibility::CanBeShown;
+        }
+        if row.onedrive.is_none() {
+            return if above == 0 { FolderVisibility::NotInOneDrive } else { FolderVisibility::NotKnownYet };
+        }
+        if row.placement != Placement::Placed {
+            return FolderVisibility::CannotBeShown;
+        }
+    }
+    FolderVisibility::NotKnownYet
+}
+
+fn find_folder_visibility(conn: &Connection, id: LocalItemId) -> Result<FolderVisibility, TreeError> {
+    let rows = list_rows_up_in_onedrive(conn, id)?;
+    if rows.is_empty() {
+        return Err(refuse(format!("item {id} has no row")));
+    }
+    Ok(decide_folder_visibility(&rows))
 }
 
 /// [`read_shown`] for an item that is not the root, with its local place.

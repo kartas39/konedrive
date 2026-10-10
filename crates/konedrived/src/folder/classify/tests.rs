@@ -75,7 +75,7 @@ mod listed_into_items {
     //! with the delta link; nothing of today's staging is in between.
 
     use konedrive_graph::drive::{DeltaFrom, DeltaNext};
-    use konedrive_tree::{Change, ContentVersion, DriveId, ItemKind, OneDriveItemId, OneDriveItemReference, TreeStore};
+    use konedrive_tree::{Change, ContentVersion, DriveId, FolderVisibility, ItemKind, OneDriveItemId, OneDriveItemReference, TreeStore};
 
     use super::classify;
     use crate::fake_onedrive::{FakeGraph, FakeItem, ROOT};
@@ -124,7 +124,7 @@ mod listed_into_items {
             let content = (!fake.folder).then(|| ContentVersion::Hashed { size: fake.size, mtime: fake.mtime, mtime_nsec: 0, hash: fake.hash.clone(), ctag: Some(fake.ctag.clone()) });
             assert_eq!(onedrive.content, content, "the content of {id}");
             assert_eq!(row.onedrive_etag.as_deref(), Some(fake.etag.as_str()), "the eTag of {id}");
-            assert!(store.item_store().can_be_shown(row.local_item_id).unwrap(), "{id} can be shown");
+            assert_eq!(store.item_store().find_folder_visibility(row.local_item_id).unwrap(), FolderVisibility::CanBeShown, "{id}");
         }
         // Nothing is agreed on yet, so every item OneDrive has is one that it changed.
         let listed = store.item_store().list_changed_in_onedrive(None, 1000).unwrap();
