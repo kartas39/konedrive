@@ -14,6 +14,16 @@ use icu_normalizer::ComposingNormalizerBorrowed;
 /// one composed letter. What it does not: letters Unicode calls compatible and not the same
 /// (a ligature, a full-width letter), `ß` and `ss`, spaces and dots. A name that is not
 /// UTF-8 folds to itself: no rule of letters is read into bytes that are no text.
+///
+/// Two places where the lowering is Rust's and reads more than one letter: a capital sigma
+/// at the end of a word lowers to `ς` and elsewhere to `σ`, so `ΑΣ` and `ασ` do not fold to
+/// one; and a capital I with a dot (`İ`) lowers to two characters, `i` and a combining dot,
+/// which is not the fold of `i`. Each costs what a wrong rule costs: one refused request.
+///
+/// A fold is stored with its name (`items`' folded names), and looked up by equality. Its
+/// tables are the compiler's (lower case) and `icu_normalizer`'s (NFC): an upgrade of
+/// either may fold a name otherwise than its row says, and a lookup then misses with no
+/// error. A change of the rule, or of what either table gives, is a new schema version.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FoldedName(OsString);
 
