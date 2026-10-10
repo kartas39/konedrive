@@ -742,8 +742,10 @@ fn a_change_of_the_content_of_a_file_that_is_gone_is_nothing() {
 /// file or a directory; a row is not its own parent; a place is a parent and a name; a file
 /// the folder shows has a local content, and nothing else has one; a directory has no
 /// content on any side, none on disk and none before a write; an item the folder does not
-/// show has none on disk and none before a write; a binding is a drive and an item id; and
-/// the root is a directory with no place.
+/// show has none on disk and none before a write; a content is on disk or not on disk; a
+/// binding is a drive and an item id, neither the empty text; nothing is agreed on, a
+/// place or a content, for an item with no binding; and the root is a directory with no
+/// place.
 #[test]
 fn the_schema_refuses_a_row_that_contradicts_itself() {
     let store = TreeStore::in_memory().unwrap();
@@ -751,18 +753,19 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
         .bench_sql(
             "INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5, 'directory', 1, 'dir');
              INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (6, 'file', 1, 'file', 0);
-             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name, synced_size) VALUES (7, 'file', 'd1', 'G', 1, 'gone', 3);",
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name, synced_size) VALUES (7, 'file', 'd1', 'G', 1, 'gone', 3);
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name) VALUES (8, 'directory', 'd1', 'D', 1, 'sent-dir');",
         )
         .unwrap();
     for (what, sql) in [
         ("no kind", "INSERT INTO items (local_parent_id, local_name) VALUES (1, 'x')"),
         ("a kind that is neither", "UPDATE items SET kind = 'folder' WHERE local_item_id = 5"),
         ("its own parent", "UPDATE items SET local_parent_id = 5 WHERE local_item_id = 5"),
-        ("its own synced parent", "UPDATE items SET synced_parent_id = 5, synced_name = 'dir' WHERE local_item_id = 5"),
+        ("its own synced parent", "UPDATE items SET synced_parent_id = 8, synced_name = 'dir' WHERE local_item_id = 8"),
         ("a parent and no name", "UPDATE items SET local_name = NULL WHERE local_item_id = 5"),
         ("a synced name and no parent", "UPDATE items SET synced_name = 'dir' WHERE local_item_id = 5"),
         ("a directory with a local content", "UPDATE items SET local_size = 1 WHERE local_item_id = 5"),
-        ("a directory with a synced content", "UPDATE items SET synced_size = 1 WHERE local_item_id = 5"),
+        ("a directory with a synced content", "UPDATE items SET synced_size = 1 WHERE local_item_id = 8"),
         ("a directory on disk", "UPDATE items SET content_presence = 'on-disk' WHERE local_item_id = 5"),
         ("a directory with a content before a write", "UPDATE items SET before_write_size = 1 WHERE local_item_id = 5"),
         ("a shown file made a directory", "UPDATE items SET kind = 'directory' WHERE local_item_id = 6"),
@@ -773,6 +776,11 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
         ("a removed file made a directory", "UPDATE items SET kind = 'directory' WHERE local_item_id = 7"),
         ("an item id and no drive", "UPDATE items SET onedrive_item_id = 'A' WHERE local_item_id = 5"),
         ("a drive and no item id", "UPDATE items SET onedrive_drive_id = 'd1' WHERE local_item_id = 5"),
+        ("an item id that is the empty text", "UPDATE items SET onedrive_drive_id = 'd1', onedrive_item_id = '' WHERE local_item_id = 5"),
+        ("a place agreed on with no binding", "UPDATE items SET synced_parent_id = 1, synced_name = 'file' WHERE local_item_id = 6"),
+        ("a content agreed on with no binding", "UPDATE items SET synced_size = 0 WHERE local_item_id = 6"),
+        ("a binding gone from a row with something agreed on", "UPDATE items SET onedrive_drive_id = NULL, onedrive_item_id = NULL WHERE local_item_id = 7"),
+        ("a presence that is neither word", "UPDATE items SET content_presence = 'elsewhere' WHERE local_item_id = 6"),
         ("the root with a place", "UPDATE items SET local_parent_id = 5, local_name = 'root' WHERE local_item_id = 1"),
         ("the root with a synced place", "UPDATE items SET synced_parent_id = 5, synced_name = 'root' WHERE local_item_id = 1"),
         ("the root as a file", "UPDATE items SET kind = 'file' WHERE local_item_id = 1"),

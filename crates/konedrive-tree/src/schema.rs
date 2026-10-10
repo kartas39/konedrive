@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK};
+use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK};
 use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
@@ -28,9 +28,9 @@ pub const SCHEMA_VERSION: &str = "11";
 /// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
 ///   that is gone never names another. The root of the folder is row 1, made here. The
-///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, the drive's
-///   never the empty text, and no two rows have the same (`items_onedrive_item`). `kind` is the item's, a file or a directory, on
-///   every row, also one the folder does not show. The local version is the `local_`
+///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, neither ever
+///   the empty text, and no two rows have the same (`items_onedrive_item`). `kind` is the
+///   item's, a file or a directory, on every row, also one the folder does not show. The local version is the `local_`
 ///   columns: the folder shows the item when its local place is set, and the root always.
 ///   The synced place and content are the `synced_` ones, the content before the first
 ///   writer the `before_write_` ones; a content is six columns, `change_count` null for a
@@ -38,7 +38,10 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   what one row can say by itself: a place is a parent and a name; the root is a
 ///   directory with no place; no row is its own parent; a file the folder shows has a local
 ///   content and nothing else has one; a directory has no content on any side, none on disk
-///   and none before a write; neither has an item the folder does not show.
+///   and none before a write; neither has an item the folder does not show; a content is
+///   on disk or not on disk; nothing is agreed on, a place or a content, for an item with
+///   no binding, so that a row is bound before, or in the statement in which, a synced
+///   place or content is written to it.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
 ///   below it. A row is made with, and moved to, only a local and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
@@ -114,7 +117,9 @@ fn schema() -> String {
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
-             CHECK (onedrive_drive_id != ''),
+             CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
+             CHECK (onedrive_item_id IS NOT NULL OR (synced_parent_id IS NULL AND synced_size IS NULL)),
+             CHECK (content_presence IN ('{on_disk}', '{not_on_disk}')),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
              CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
              CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
@@ -193,6 +198,7 @@ fn schema() -> String {
         root = LocalItemId::ROOT,
         file = ItemKind::File.as_str(),
         directory = ItemKind::Directory.as_str(),
+        on_disk = ON_DISK,
         not_on_disk = NOT_ON_DISK,
         onedrive_items = tree("onedrive_items"),
         staging = tree("staging"),

@@ -20,6 +20,11 @@
 //! - *In the folder, one item per name in a directory.* The schema: the unique index
 //!   `items_local_place`.
 //! - *A binding belongs to one item.* The schema: the unique index `items_onedrive_item`.
+//!   Its drive id and its item id are never the empty text: the schema's checks, and the
+//!   code where a binding is written ([`item_row`]).
+//! - *Nothing is agreed on for an item with no binding.* The schema's check: a synced place
+//!   or content is written to a bound row, or with its binding in one statement. The code:
+//!   an item that gives its binding up gives up what was agreed on in the same statement.
 //!   A binding is given first and moved in [`bindings`] and nowhere else: to an item of the
 //!   folder OneDrive confirmed, with a row made for an item of OneDrive, to the root where
 //!   the store learns the drive's root, and from one item to another by its three
@@ -39,7 +44,7 @@
 //! only when SQLite or the disk failed.
 //!
 //! A row is read and written in [`item_row`], whose writers ask no rule but the one of names
-//! and are reachable from this module and [`bindings`] alone: what is outside changes a row
+//! and the one of an item id of OneDrive, and are reachable from this module and [`bindings`] alone: what is outside changes a row
 //! through an operation.
 //!
 //! The OneDrive version is not in the rows yet (`onedrive_items` holds it), so the rules of

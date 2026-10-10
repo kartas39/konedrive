@@ -170,13 +170,14 @@ pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveI
 }
 
 /// The root of the folder is bound to the root of the drive, once the store knows both the
-/// drive and its root's item id: called wherever it learns either. Nothing to do before.
+/// drive and its root's item id: called wherever it learns either. Nothing to do before,
+/// and an id that is the empty text is not known.
 ///
 /// The reference is row 1's whatever row was made first: a row that has it already (a page
 /// of a listing named children before the root, and their parent got a row at that first
 /// mention) goes, and what was agreed to be in it is in the root.
 pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
-    let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?) else {
+    let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?.filter(|id| !id.is_empty())) else {
         return Ok(());
     };
     let root = OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) };

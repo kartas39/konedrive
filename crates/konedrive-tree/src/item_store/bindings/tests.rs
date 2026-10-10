@@ -317,3 +317,19 @@ fn make_onedrive_item_makes_a_row_with_the_binding_and_the_kind_alone() {
     assert!(is_refused(store.item_store().make_onedrive_item(&reference("P"), ItemKind::Directory)));
     assert_eq!(bound_to(&mut store, "P"), Some(parent));
 }
+
+/// An item id of OneDrive is never the empty text: the code refuses a binding with one
+/// wherever a binding is written, before the schema would, and the root is not bound to a
+/// drive's root whose id the store has as the empty text.
+#[test]
+fn a_binding_with_an_empty_item_id_is_refused() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let local = make_file(&mut store, ROOT, "local");
+    assert!(is_refused(store.item_store().bind_item(local, &reference(""))));
+    assert!(is_refused(store.item_store().make_onedrive_item(&reference(""), ItemKind::Directory)));
+    assert_eq!((item(&mut store, local).onedrive_item, bound_to(&mut store, "")), (None, None));
+
+    store.set_meta(crate::meta::ROOT_ITEM_ID, Some("")).unwrap();
+    store.set_drive_id("d1").unwrap();
+    assert_eq!(item(&mut store, ROOT).onedrive_item, None);
+}

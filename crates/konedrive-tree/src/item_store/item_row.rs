@@ -1,6 +1,7 @@
 //! A row of `items` in the database: the one place it is read from SQLite, written to it
 //! and removed from it. What is here writes a row as it is told, with no rule of the rows
-//! asked but the one of names, which is asked wherever a name is written: only
+//! asked but the one of names and the one of an item id of OneDrive, each asked wherever
+//! such a thing is written: only
 //! [`ItemStore`](super::ItemStore)'s operations and the operations on bindings call it, and
 //! nothing outside `item_store` can.
 
@@ -62,6 +63,15 @@ fn check_name(name: &OsStr) -> Result<(), TreeError> {
         return Err(refuse(format!("{name:?} is no name of a directory entry")));
     }
     Ok(())
+}
+
+/// The one check of every binding a row is written with: an item id of OneDrive is not the
+/// empty text. A drive id never is ([`DriveId`]).
+fn check_onedrive_item_id(onedrive_item: Option<&OneDriveItemReference>) -> Result<(), TreeError> {
+    match onedrive_item {
+        Some(reference) if reference.item_id.as_str().is_empty() => Err(refuse("the empty text is no item id of OneDrive".to_owned())),
+        _ => Ok(()),
+    }
 }
 
 fn check_names(item_local: Option<&ItemVersion>, synced_place: Option<&ItemPlace>) -> Result<(), TreeError> {
@@ -162,6 +172,7 @@ pub(super) fn insert_item(
     is_name_ignored: bool,
 ) -> Result<LocalItemId, TreeError> {
     check_names(local, None)?;
+    check_onedrive_item_id(onedrive_item)?;
     let mut values: Vec<Value> = vec![onedrive_item.map(|b| b.drive_id.as_str().to_owned()).into(), onedrive_item.map(|b| b.item_id.as_str().to_owned()).into(), kind.as_str().to_owned().into()];
     values.extend(place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
@@ -177,6 +188,7 @@ pub(super) fn insert_item(
 /// The row of `item.local_item_id` is `item` from now on.
 pub(super) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError> {
     check_names(item.local.as_ref(), item.synced_place.as_ref())?;
+    check_onedrive_item_id(item.onedrive_item.as_ref())?;
     let sets = written_columns().enumerate().map(|(n, column)| format!("{column} = ?{}", n + 1)).collect::<Vec<_>>().join(", ");
     let mut values = values_of(item);
     values.push(item.local_item_id.as_i64().into());
@@ -239,6 +251,7 @@ fn write_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, 
 
 /// The binding of `item` is `onedrive_item` from now on, whatever it was.
 pub(super) fn set_binding(conn: &Connection, item: LocalItemId, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
+    check_onedrive_item_id(Some(onedrive_item))?;
     conn.prepare_cached("UPDATE items SET onedrive_drive_id = ?2, onedrive_item_id = ?3 WHERE local_item_id = ?1")?
         .execute(params![item.as_i64(), onedrive_item.drive_id.as_str(), onedrive_item.item_id.as_str()])?;
     Ok(())
