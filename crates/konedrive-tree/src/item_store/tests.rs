@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 
-use super::stored::write_item;
+use super::item_row::write_item;
 use super::*;
 use crate::model::{Change, ContentPresence, ContentVersion, DriveId, FileSyncState, ItemKind, ItemPlace, ItemVersion, Kind, OneDriveItemId, Placement, Row};
 

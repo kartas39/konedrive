@@ -721,7 +721,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `item_store.rs` — `ItemStore`: the rows of `items`, one per item by local item id; finding
   an item, its path and whether it is left here; applying a change of its local version,
   each a case; the rules that hold of the rows, and who holds each. `[tests]`
-- `item_store/stored.rs` — a row of `items` in the database: where it is read, written and
+- `item_store/item_row.rs` — a row of `items` in the database: where it is read, written and
   deleted, and where a name is checked. Reachable from `item_store` alone.
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
   the root's), and moved from one item to another (`take_over_binding`, done with the change

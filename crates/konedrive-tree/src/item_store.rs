@@ -25,7 +25,7 @@
 //!   also one the folder does not show, and no operation writes it after the row is made.
 //!   A binding moves only between items of one kind ([`bindings`]).
 //! - *A name is the name of a directory entry.* The code, where a row is written
-//!   ([`stored`]): not empty, not `.` or `..`, with no `/` and no NUL.
+//!   ([`item_row`]): not empty, not `.` or `..`, with no `/` and no NUL.
 //! - *The root is item 1, a directory with no place, and stays.* The schema's checks; the
 //!   code refuses every change of it.
 //! - *An id is never given twice.* The schema: `AUTOINCREMENT`.
@@ -34,7 +34,7 @@
 //! operation could trip is asked by the code before, so that an operation fails as SQLite's
 //! only when SQLite or the disk failed.
 //!
-//! A row is read and written in [`stored`], whose writers ask no rule but the one of names
+//! A row is read and written in [`item_row`], whose writers ask no rule but the one of names
 //! and are reachable from this module and [`bindings`] alone: what is outside changes a row
 //! through an operation.
 //!
@@ -52,12 +52,12 @@ use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
 mod bindings;
-/// A row of `items` as the database keeps it, and its raw writers.
-mod stored;
+/// A row of `items`: its columns, reading it, and its raw writers.
+mod item_row;
 
 pub(crate) use bindings::bind_root;
 
-use stored::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is

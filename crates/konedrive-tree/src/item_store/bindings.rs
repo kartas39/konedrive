@@ -15,7 +15,7 @@
 
 use rusqlite::{params, Connection, Transaction};
 
-use super::stored::{delete_item, find_bound_item, find_item, insert_item, set_binding, write_item};
+use super::item_row::{delete_item, find_bound_item, find_item, insert_item, set_binding, write_item};
 use super::{check_empty, refuse, ItemStore};
 use crate::model::{ContentPresence, DriveId, Item, ItemKind, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::{meta, TreeError};

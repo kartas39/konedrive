@@ -28,7 +28,7 @@ const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, 
      is_name_ignored";
 
 /// Where each column of [`ITEM_COLUMNS`] is; a content's is where its first column is.
-mod at {
+mod column_index {
     use super::ITEM_COLUMNS;
     use crate::model::column;
 
@@ -86,28 +86,28 @@ fn place_from(row: &rusqlite::Row<'_>, parent: usize, name: usize) -> rusqlite::
 
 /// An [`Item`] read from a query that selects [`ITEM_COLUMNS`].
 fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
-    let (drive_id, item_id): (Option<String>, Option<String>) = (row.get(at::ONEDRIVE_DRIVE_ID)?, row.get(at::ONEDRIVE_ITEM_ID)?);
+    let (drive_id, item_id): (Option<String>, Option<String>) = (row.get(column_index::ONEDRIVE_DRIVE_ID)?, row.get(column_index::ONEDRIVE_ITEM_ID)?);
     let onedrive_item = match (drive_id.and_then(DriveId::new), item_id) {
         (Some(drive_id), Some(item_id)) => Some(OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(item_id) }),
         _ => None,
     };
-    let local_item_id = LocalItemId::new(row.get(at::LOCAL_ITEM_ID)?);
+    let local_item_id = LocalItemId::new(row.get(column_index::LOCAL_ITEM_ID)?);
     // The folder shows what has a local place, and the root, which has none.
-    let local = match place_from(row, at::LOCAL_PARENT_ID, at::LOCAL_NAME)? {
-        Some(place) => Some(ItemVersion { place: Some(place), content: content_from(row, at::LOCAL_CONTENT)? }),
+    let local = match place_from(row, column_index::LOCAL_PARENT_ID, column_index::LOCAL_NAME)? {
+        Some(place) => Some(ItemVersion { place: Some(place), content: content_from(row, column_index::LOCAL_CONTENT)? }),
         None if local_item_id == LocalItemId::ROOT => Some(ItemVersion { place: None, content: None }),
         None => None,
     };
     Ok(Item {
         local_item_id,
         onedrive_item,
-        kind: ItemKind::decode(&row.get::<_, String>(at::KIND)?),
+        kind: ItemKind::decode(&row.get::<_, String>(column_index::KIND)?),
         local,
-        synced_place: place_from(row, at::SYNCED_PARENT_ID, at::SYNCED_NAME)?,
-        synced_content: content_from(row, at::SYNCED_CONTENT)?,
-        content_presence: ContentPresence::decode(&row.get::<_, String>(at::CONTENT_PRESENCE)?),
-        content_before_write: content_from(row, at::CONTENT_BEFORE_WRITE)?,
-        is_name_ignored: row.get::<_, i64>(at::IS_NAME_IGNORED)? != 0,
+        synced_place: place_from(row, column_index::SYNCED_PARENT_ID, column_index::SYNCED_NAME)?,
+        synced_content: content_from(row, column_index::SYNCED_CONTENT)?,
+        content_presence: ContentPresence::decode(&row.get::<_, String>(column_index::CONTENT_PRESENCE)?),
+        content_before_write: content_from(row, column_index::CONTENT_BEFORE_WRITE)?,
+        is_name_ignored: row.get::<_, i64>(column_index::IS_NAME_IGNORED)? != 0,
     })
 }
 
