@@ -46,23 +46,26 @@ impl PublishedPlan {
     /// Nothing published: before the first plan. Made by the folder's start and given to
     /// the mount's setup and to the plan's task.
     pub fn new() -> Self {
-        todo!()
+        PublishedPlan { answers: std::sync::RwLock::default() }
     }
 
     /// The answers of the plan made now replace those of the one before. Called by the
     /// plan's task after each plan.
     pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
-        todo!()
+        *crate::panic::write(&self.answers) = answers;
     }
 
     /// The answer for `item`, when the last plan was given it. Called by the queue's
     /// answers per entry and by the mount for the sync mark.
     pub fn find_answer(&self, item: LocalItemId) -> Option<ItemAnswer> {
-        todo!()
+        crate::panic::read(&self.answers).get(&item).cloned()
     }
 
     /// Every answer, by item. Called by the queue's counts and summaries.
     pub fn list_answers(&self) -> BTreeMap<LocalItemId, ItemAnswer> {
-        todo!()
+        crate::panic::read(&self.answers).clone()
     }
 }
+
+#[cfg(test)]
+mod tests;

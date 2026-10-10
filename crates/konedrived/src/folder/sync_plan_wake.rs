@@ -50,19 +50,33 @@ impl SyncPlanWake {
     /// the mount's write operations hold it from their first job (design §9; the map's
     /// 7.1, 4d).
     pub fn new() -> Self {
-        todo!()
+        SyncPlanWake { given: std::sync::Mutex::new(BTreeSet::new()), signal: tokio::sync::Notify::new() }
     }
 
     /// The plan is to be made again, for `cause`. Called from any thread, async or not;
     /// never waits. Called after the row is written, never before: the task reads the
     /// rows when it wakes.
     pub fn wake(&self, cause: WakeCause) {
-        todo!()
+        crate::panic::lock(&self.given).insert(cause);
+        // After the lock is let go. With nobody waiting the signal is kept for the next
+        // wait, which finds the cause either way.
+        self.signal.notify_one();
     }
 
     /// Waits until a cause is given and takes all that were. Called by the plan's task
     /// alone, in a `select` with its timer and its stop (`sync::sync_plan_task`).
     pub async fn wait(&self) -> BTreeSet<WakeCause> {
-        todo!()
+        loop {
+            let given = std::mem::take(&mut *crate::panic::lock(&self.given));
+            if !given.is_empty() {
+                return given;
+            }
+            // A signal kept from a cause that was taken already ends this at once, and the
+            // next round finds nothing and waits again.
+            self.signal.notified().await;
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;
