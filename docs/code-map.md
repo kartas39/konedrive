@@ -819,7 +819,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   `make_sync_plan` says; the steps of one plan can all run at once. No caller in the daemon
   yet. `[tests]`: a test per cell of the three tables (`sync_plan/tests/existence.rs`,
   `place.rs`, `content.rs`), a test per case between items (`item_relations.rs`), and the
-  enumeration of every two related items and every three in a circle (`related_items.rs`).
+  enumeration of every two related items and every three in a circle (`enumeration.rs`).
 - `sync_plan/side_change.rs` — what one side did to one item since the two sides last
   agreed, read off its row (`SideChange`): never was, removed, or is there with its place
   (`PlaceChange`) and its content (`ContentChange`: same, changed, not known without a

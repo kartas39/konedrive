@@ -543,7 +543,7 @@ fn an_item_that_cannot_be_judged_while_no_listing_is_under_way_needs_a_full_list
 /// the plan says it is at fault — or there is nothing to do.
 #[test]
 fn a_plan_in_which_nothing_can_run_says_why() {
-    for (words, given) in related_items::every_enumerated_input() {
+    for (words, given) in enumeration::every_enumerated_input() {
         let plan = make_sync_plan(&given);
         if !plan.steps.is_empty() || !plan.faults.is_empty() {
             continue;

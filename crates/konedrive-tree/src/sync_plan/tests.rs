@@ -17,7 +17,7 @@ mod content;
 mod existence;
 mod place;
 mod item_relations;
-mod related_items;
+mod enumeration;
 
 pub(crate) const ROOT: LocalItemId = LocalItemId::ROOT;
 
