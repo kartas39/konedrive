@@ -22,7 +22,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "15";
+pub const SCHEMA_VERSION: &str = "16";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -88,9 +88,10 @@ pub const SCHEMA_VERSION: &str = "15";
 ///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
 ///   directory). An outbox row may name an item whose row is gone: the
 ///   removal of a file that was never sent leaves the rows that undo what was sent of it.
-/// - `step_memory`, `upload_session_openings`, `abandoned_upload_sessions`: what the steps
-///   remember beyond the versions, and the trigger `step_memory_item_gone` that takes it
-///   with an item's row ([`crate::item_store`]'s `step_memory`, which has their schema).
+/// - `step_memory`, `upload_session_openings`, `upload_session_cancellations`,
+///   `mismatched_item_removals`: what the steps remember beyond the versions, and the
+///   trigger `step_memory_item_gone` that takes it with an item's row
+///   ([`crate::item_store`]'s `step_memory`, whose modules have their schema).
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row

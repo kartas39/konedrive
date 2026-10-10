@@ -39,6 +39,7 @@ use rusqlite::{Connection, Transaction};
 use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::item_row::{clear_onedrive_versions_below, find_bound_item, find_item, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
+use super::step_memory::{carry_content, forget_confirmed_request, ConfirmedRequest};
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
 use crate::sync_plan::ItemVersions;
@@ -314,8 +315,10 @@ pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: I
     }
     let mut row = read_row(tx, id)?;
     row.synced_place = Some(ItemPlace { parent_local_item_id: sent_directory, name: name.to_owned() });
-    agree_on_confirmed_content(&mut row, item.local.as_ref().and_then(|local| local.content.as_ref()), made.content.as_ref());
+    let sent = item.local.as_ref().and_then(|local| local.content.as_ref());
+    agree_on_confirmed_content(&mut row, sent, made.content.as_ref());
     write_item(tx, &row)?;
+    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent })?;
     Ok(StepCommitOutcome::Written)
 }
 
@@ -337,8 +340,10 @@ pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sen
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let mut row = read_row(tx, id)?;
-    agree_on_confirmed_content(&mut row, item.local.as_ref().and_then(|local| local.content.as_ref()), sent.content.as_ref());
+    let sent_content = item.local.as_ref().and_then(|local| local.content.as_ref());
+    agree_on_confirmed_content(&mut row, sent_content, sent.content.as_ref());
     write_item(tx, &row)?;
+    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent: sent_content })?;
     Ok(StepCommitOutcome::Written)
 }
 
@@ -351,8 +356,10 @@ pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let mut row = read_row(tx, id)?;
-    row.synced_place = Some(ItemPlace { parent_local_item_id: sent_directory, name: name.to_owned() });
+    let sent_place = ItemPlace { parent_local_item_id: sent_directory, name: name.to_owned() };
+    row.synced_place = Some(sent_place.clone());
     write_item(tx, &row)?;
+    forget_confirmed_request(tx, id, ConfirmedRequest::Move { to: &sent_place })?;
     Ok(StepCommitOutcome::Written)
 }
 
@@ -375,6 +382,7 @@ pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kin
     clear_onedrive_versions_below(tx, id)?;
     for removed in std::iter::once(item).chain(below) {
         confirm_onedrive_version(tx, removed.local_item_id, &ConfirmedOneDriveVersion::Removed)?;
+        forget_confirmed_request(tx, removed.local_item_id, ConfirmedRequest::Removal)?;
     }
     Ok(StepCommitOutcome::Written)
 }
@@ -562,8 +570,10 @@ pub(crate) fn commit_hash_local_content(tx: &Transaction<'_>, item: &ItemVersion
         return Err(refuse_step(item.local_item_id, "the folder shows no content of it"));
     };
     let (mtime, mtime_nsec) = content.mtime();
-    local.content = Some(ContentVersion::Hashed { size: content.size(), mtime, mtime_nsec, hash: Some(hash.to_owned()), ctag: None });
+    let hashed = ContentVersion::Hashed { size: content.size(), mtime, mtime_nsec, hash: Some(hash.to_owned()), ctag: None };
+    local.content = Some(hashed.clone());
     write_item(tx, &row)?;
+    carry_content(tx, item.local_item_id, &content, &hashed)?;
     Ok(StepCommitOutcome::Written)
 }
 

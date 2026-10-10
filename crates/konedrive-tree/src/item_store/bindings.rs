@@ -243,6 +243,7 @@ pub(super) fn bind_root(conn: &Connection, root: &OneDriveItemReference) -> Resu
         }
         Some(holder) => {
             move_children_of_binding(conn, holder.local_item_id, LocalItemId::ROOT)?;
+            super::step_memory::follow_binding(conn, holder.local_item_id, LocalItemId::ROOT)?;
             delete_item(conn, holder.local_item_id)?;
         }
         None => {}
