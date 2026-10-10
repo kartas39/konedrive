@@ -98,6 +98,7 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             local: Some(ItemVersion { place: None, content: None }),
             onedrive: None,
             onedrive_etag: None,
+            onedrive_mime: None,
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,

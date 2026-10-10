@@ -257,6 +257,7 @@ fn an_item_the_client_did_not_know_gets_a_row_with_what_the_listing_says() {
             local: None,
             onedrive: version(ROOT, "Docs", None),
             onedrive_etag: Some("e-D".to_owned()),
+            onedrive_mime: None,
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
@@ -270,7 +271,7 @@ fn an_item_the_client_did_not_know_gets_a_row_with_what_the_listing_says() {
     let a = listed(&mut store, "A");
     assert_eq!(
         a,
-        Item { local_item_id: a.local_item_id, onedrive_item: Some(reference("A")), kind: ItemKind::File, onedrive: version(docs.local_item_id, "a.txt", Some("1")), onedrive_etag: Some("e-A-1".to_owned()), ..docs.clone() }
+        Item { local_item_id: a.local_item_id, onedrive_item: Some(reference("A")), kind: ItemKind::File, onedrive: version(docs.local_item_id, "a.txt", Some("1")), onedrive_etag: Some("e-A-1".to_owned()), onedrive_mime: Some("text/plain".to_owned()), ..docs.clone() }
     );
     assert_eq!(listed(&mut store, "L").placement, Placement::Skipped(SkipReason::NameTooLong));
 }
@@ -290,6 +291,42 @@ fn a_file_with_no_hash_has_a_content_told_by_its_ctag() {
     a.synced_content = listed_content;
     write_item(&store.conn, &a).unwrap();
     assert_eq!(store.item_store().list_changed_in_onedrive(None, 10).unwrap(), Vec::new(), "the two sides agree on what OneDrive has");
+}
+
+/// The MIME type OneDrive gives for a file's content is written with its version, follows
+/// what a later listing says, also that there is none, and goes with the version of a file
+/// listed gone. A directory has none, whatever the listing says. It is OneDrive's of the
+/// item, and goes with the binding to the row that takes it.
+#[test]
+fn the_mime_type_of_a_files_content_is_written_with_its_version() {
+    let mut store = listed_store();
+    let kept = make_file(&mut store, ROOT, "kept");
+    synced(&mut store, kept, "K");
+    let Change::Upsert(folder) = directory("D", "R", "D") else { unreachable!() };
+    let Change::Upsert(picture) = file("K", "R", "kept", "1") else { unreachable!() };
+    let with_mime = |row: &Row, mime: Option<&str>| Change::Upsert(Row { mime: mime.map(str::to_owned), ..row.clone() });
+    write(&mut store, &[with_mime(&folder, Some("inode/directory")), with_mime(&picture, Some("image/jpeg")), file("A", "D", "a", "1")]);
+    assert_eq!((item(&mut store, kept).onedrive_mime.as_deref(), listed(&mut store, "A").onedrive_mime.as_deref(), listed(&mut store, "D").onedrive_mime), (Some("image/jpeg"), Some("text/plain"), None));
+
+    write(&mut store, &[with_mime(&picture, Some("image/png"))]);
+    assert_eq!(item(&mut store, kept).onedrive_mime.as_deref(), Some("image/png"));
+    let taker = store.item_store().give_up_binding(kept, false).unwrap();
+    assert_eq!((item(&mut store, kept).onedrive_mime, item(&mut store, taker).onedrive_mime.as_deref()), (None, Some("image/png")));
+    write(&mut store, &[with_mime(&picture, None)]);
+    assert_eq!(item(&mut store, taker).onedrive_mime, None);
+
+    let other = make_file(&mut store, ROOT, "other");
+    synced(&mut store, other, "O");
+    write(&mut store, &[file("O", "R", "other", "1")]);
+    write(&mut store, &[gone("O")]);
+    assert_eq!(item(&mut store, other).onedrive_mime, None);
+    for (what, sql) in [
+        ("a MIME type with no binding", "INSERT INTO items (kind, onedrive_mime) VALUES ('file', 'text/plain')"),
+        ("a MIME type of a file OneDrive does not have", "UPDATE items SET onedrive_mime = 'text/plain' WHERE onedrive_item_id = 'O'"),
+        ("a MIME type of a directory", "UPDATE items SET onedrive_mime = 'text/plain' WHERE onedrive_item_id = 'D'"),
+    ] {
+        assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
+    }
 }
 
 /// A parent named before it arrives gets its row at that first mention, with its binding
@@ -327,7 +364,7 @@ fn a_listing_writes_nothing_of_a_row_but_what_onedrive_has() {
     assert!(before.content_before_write.is_some() && before.content_presence == ContentPresence::OnDisk && before.synced_content.is_some());
 
     write(&mut store, &[file("A", "R", "renamed", "22")]);
-    assert_eq!(item(&mut store, report), Item { onedrive: version(ROOT, "renamed", Some("22")), onedrive_etag: Some("e-A-22".to_owned()), ..before.clone() });
+    assert_eq!(item(&mut store, report), Item { onedrive: version(ROOT, "renamed", Some("22")), onedrive_etag: Some("e-A-22".to_owned()), onedrive_mime: Some("text/plain".to_owned()), ..before.clone() });
 
     write(&mut store, &[gone("A")]);
     assert_eq!(item(&mut store, report), before, "gone from OneDrive, and the row stays for the plan");
@@ -380,7 +417,7 @@ fn an_item_listed_gone_has_no_onedrive_version_and_a_row_left_with_its_binding_a
     assert!(bound(&mut store, "U").is_some());
 
     write(&mut store, &[gone("D"), gone("A"), gone("K"), gone("X"), gone("never-known")]);
-    assert_eq!(item(&mut store, kept), Item { onedrive: None, onedrive_etag: None, ..before });
+    assert_eq!(item(&mut store, kept), Item { onedrive: None, onedrive_etag: None, onedrive_mime: None, ..before });
     for id in ["D", "A", "X", "U", "never-known"] {
         assert_eq!(bound(&mut store, id), None, "{id}");
     }

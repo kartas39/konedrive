@@ -37,7 +37,8 @@ pub const SCHEMA_VERSION: &str = "13";
 ///   The OneDrive version is the `onedrive_` columns: OneDrive has the item when its place
 ///   there is set, and the root when the root is bound; `onedrive_etag` is what a request to
 ///   OneDrive is guarded with, and `placement` whether the folder can show the item at all,
-///   as the listing said of the item itself. A parent on that side is named by its local
+///   as the listing said of the item itself; `onedrive_mime` the MIME type OneDrive gives
+///   for a file's content, of a file OneDrive has and of nothing else (a check). A parent on that side is named by its local
 ///   item id like every other. Several rows may have one place there
 ///   (`items_onedrive_place` is no unique index): a listing that has not ended says so of an
 ///   exchange of names.
@@ -149,7 +150,7 @@ fn schema() -> String {
              kind TEXT NOT NULL,
              local_parent_id INTEGER, local_name, local_folded_name, {local_content},
              onedrive_parent_id INTEGER, onedrive_name, onedrive_folded_name, {onedrive_content},
-             onedrive_etag TEXT,
+             onedrive_etag TEXT, onedrive_mime TEXT,
              synced_parent_id INTEGER, synced_name, {synced_content},
              content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
              {content_before_write},
@@ -162,7 +163,8 @@ fn schema() -> String {
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
              CHECK (onedrive_item_id IS NOT NULL OR (synced_parent_id IS NULL AND synced_size IS NULL)),
-             CHECK (onedrive_item_id IS NOT NULL OR (onedrive_parent_id IS NULL AND onedrive_size IS NULL AND onedrive_etag IS NULL)),
+             CHECK (onedrive_item_id IS NOT NULL OR (onedrive_parent_id IS NULL AND onedrive_size IS NULL AND onedrive_etag IS NULL AND onedrive_mime IS NULL)),
+             CHECK (onedrive_mime IS NULL OR onedrive_size IS NOT NULL),
              CHECK (content_presence IN ('{on_disk}', '{not_on_disk}')),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
              CHECK ((onedrive_parent_id IS NULL) = (onedrive_name IS NULL)),

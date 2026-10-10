@@ -15,6 +15,7 @@ fn stamped(confirmed_at_count: u64, onedrive_etag: Option<&str>) -> Item {
         local: None,
         onedrive: onedrive_etag.map(|_| ItemVersion { place: Some(place(ROOT, "a")), content: Some(content) }),
         onedrive_etag: onedrive_etag.map(str::to_owned),
+        onedrive_mime: None,
         synced_place: None,
         synced_content: None,
         content_presence: ContentPresence::NotOnDisk,
@@ -45,6 +46,7 @@ fn listed_file(item_id: &str, parent_id: Option<&str>, etag: &str) -> ListedItem
         name: "a".into(),
         content: Some(ContentVersion::Hashed { size: 1, mtime: 1000, mtime_nsec: 0, hash: None, ctag: None }),
         etag: Some(etag.to_owned()),
+        mime: None,
         placement: Placement::Placed,
     }
 }

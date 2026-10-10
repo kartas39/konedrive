@@ -57,6 +57,8 @@ pub(super) struct ListedItem {
     /// Of a file, and of nothing else.
     pub(super) content: Option<ContentVersion>,
     pub(super) etag: Option<String>,
+    /// The MIME type of a file's content, when the listing gives one.
+    pub(super) mime: Option<String>,
     pub(super) placement: Placement,
 }
 

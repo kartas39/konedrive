@@ -565,6 +565,10 @@ pub struct Item {
     pub onedrive: Option<ItemVersion>,
     /// The eTag OneDrive gave with that version: what a request to OneDrive is guarded with.
     pub onedrive_etag: Option<String>,
+    /// The MIME type OneDrive gives for the content of a file it has (`file.mimeType`), as a
+    /// listing said it: what tells an image or a video, for a thumbnail. `None` for a
+    /// directory, for an item OneDrive does not have, and until a listing said it.
+    pub onedrive_mime: Option<String>,
     /// The place the two sides last agreed on.
     pub synced_place: Option<ItemPlace>,
     /// The content the two sides last agreed on.

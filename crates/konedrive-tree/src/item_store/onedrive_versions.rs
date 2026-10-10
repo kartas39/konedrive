@@ -256,6 +256,7 @@ pub(crate) fn confirm_onedrive_version(tx: &Transaction<'_>, item: LocalItemId, 
             }
             row.onedrive = None;
             row.onedrive_etag = None;
+            row.onedrive_mime = None;
             row.placement = Placement::Placed;
             row.synced_place = None;
             row.synced_content = None;
@@ -330,7 +331,7 @@ fn item_kind_of(kind: Kind) -> ItemKind {
 fn listed_item_of(row: &Row) -> ListedItem {
     let kind = item_kind_of(row.kind);
     let content = (kind == ItemKind::File).then(|| ContentVersion::Hashed { size: row.size, mtime: row.mtime, mtime_nsec: 0, hash: row.quickxor.clone(), ctag: row.ctag.clone() });
-    ListedItem { item_id: row.id.clone(), parent_id: row.parent_id.clone().unwrap_or_default(), kind, name: OsString::from(&row.name), content, etag: row.etag.clone(), placement: row.placement }
+    ListedItem { item_id: row.id.clone(), parent_id: row.parent_id.clone().unwrap_or_default(), kind, name: OsString::from(&row.name), content, etag: row.etag.clone(), mime: row.mime.clone().filter(|_| kind == ItemKind::File), placement: row.placement }
 }
 
 /// The row of `item` says OneDrive has what `listed` says: a change that was decided to be
@@ -349,7 +350,7 @@ fn write_listed_item(tx: &Transaction<'_>, listed: &ListedItem, row: Option<&Ite
         None => make_onedrive_item(tx, &reference(&listed.item_id), listed.kind)?,
     };
     let onedrive = ItemVersion { place: Some(ItemPlace { parent_local_item_id: directory, name: listed.name.clone() }), content: listed.content.clone() };
-    set_onedrive_version(tx, item, &onedrive, listed.etag.as_deref(), listed.placement, seen_in_full_listing)
+    set_onedrive_version(tx, item, &onedrive, listed.etag.as_deref(), listed.mime.as_deref(), listed.placement, seen_in_full_listing)
 }
 
 /// [`ItemStore::write_listed_changes`], inside the caller's transaction, which is dropped

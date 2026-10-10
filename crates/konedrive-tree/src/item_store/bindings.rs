@@ -85,11 +85,12 @@ fn move_children_of_binding(conn: &Connection, from: LocalItemId, to: LocalItemI
 }
 
 /// What is OneDrive's of `from` is `to`'s: the binding, the OneDrive version, its eTag, the
-/// placement and the stamp. `from` keeps none of it.
+/// MIME type of its content, the placement and the stamp. `from` keeps none of it.
 fn move_onedrive_side(from: &mut Item, to: &mut Item) {
     to.onedrive_item = from.onedrive_item.take();
     to.onedrive = from.onedrive.take();
     to.onedrive_etag = from.onedrive_etag.take();
+    to.onedrive_mime = from.onedrive_mime.take();
     to.placement = std::mem::replace(&mut from.placement, Placement::Placed);
     to.confirmed_at_count = std::mem::take(&mut from.confirmed_at_count);
 }
