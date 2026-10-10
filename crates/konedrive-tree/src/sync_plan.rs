@@ -23,6 +23,20 @@ use konedrive_reason::Reason;
 
 use crate::model::{FolderVisibility, Item, LocalItemId};
 
+/// The name of a conflict copy.
+mod conflict_copy_name;
+/// The guard against a mass removal.
+mod mass_removal;
+/// A directory moved here into what OneDrive has in it.
+mod move_cycle;
+/// A name of a directory of OneDrive, and the items that have or want it.
+mod name_contest;
+/// The items that wait for each other's names, and the temporary name one goes through.
+mod name_exchange;
+/// A directory one side removed, and what the other side has in it.
+mod removed_directory;
+/// Where a wait for another item ends.
+mod wait_end;
 /// The rows a plan is made over, as one item asks about another.
 mod plan_items;
 /// The three tables: what the two sides' changes mean for one item by itself.
@@ -34,10 +48,11 @@ mod side_change;
 /// One thing the plan does, with the versions it was planned from.
 mod sync_step;
 
+pub use conflict_copy_name::make_conflict_copy_name;
 pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 
 use plan_items::PlanItems;
-use item_decision::{decide_item, ItemCase, ItemDecision, LocalDirectoryBinding, LocalPlaceAvailability};
+use item_decision::{decide_item, ItemCase, ItemDecision, ItemDecisions, LocalDirectoryBinding, LocalPlaceAvailability};
 use sending_obstacle::SendingConditions;
 
 /// The folder's state of sending.
@@ -93,14 +108,25 @@ pub struct SyncPlanInput {
     /// The largest size of a file OneDrive takes, in bytes.
     pub largest_file_size: u64,
     pub sending_state: SendingState,
+    /// This computer's name, as a conflict copy's name holds it
+    /// ([`make_conflict_copy_name`]).
+    pub computer_name: String,
+    /// How many items the folder shows: what the guard against a mass removal takes a share
+    /// of.
+    pub shown_item_count: u64,
+    /// The items whose removal from OneDrive the user confirmed: a removed directory, for
+    /// all OneDrive has in it.
+    pub items_with_confirmed_removal: BTreeSet<LocalItemId>,
 }
 
 /// Why an item's step cannot run now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaitReason {
-    /// It waits for another item: which. That item's step goes first, or its row was not
-    /// given.
+    /// It waits for another item that was given: which. That item's step goes first.
     AnotherItem(LocalItemId),
+    /// It waits for an item whose row was not given: which. The caller gives that row too,
+    /// and asks again.
+    ItemNotGiven(LocalItemId),
     /// It waits until a time, in Unix seconds, and why.
     Time { until: i64, reason: Reason },
     /// It waits for the user, and why.
@@ -142,6 +168,23 @@ pub enum PlanFault {
     /// The row of this item, or what the plan was given about it, says what no operation
     /// leaves.
     RowAgainstRules(LocalItemId),
+    /// What the rows say of this item in OneDrive cannot be judged, and no listing is under
+    /// way that would say it: a full listing mends the rows.
+    FullListingNeeded(LocalItemId),
+    /// This item waits for another item, and nothing the plan answers ends that wait: no
+    /// step, no time, nothing of the user's, no listing.
+    WaitWithoutEnd(LocalItemId),
+    /// This item is to be renamed here, and none of the names tried for it is free.
+    NoFreeName(LocalItemId),
+}
+
+impl PlanFault {
+    /// The item the fault is about.
+    pub fn local_item_id(&self) -> LocalItemId {
+        match self {
+            PlanFault::RowAgainstRules(item) | PlanFault::FullListingNeeded(item) | PlanFault::WaitWithoutEnd(item) | PlanFault::NoFreeName(item) => *item,
+        }
+    }
 }
 
 /// The answer: the steps that can run now, and for every other item given that the two
@@ -180,8 +223,10 @@ fn find_local_place_availability(items: &PlanItems<'_>, item: &Item) -> LocalPla
     if !is_directory_entry_name(&place.name) {
         return LocalPlaceAvailability::NameUnusable;
     }
-    if !items.find(place.parent_local_item_id).is_some_and(|directory| directory.local.is_some()) {
-        return LocalPlaceAvailability::DirectoryNotShown(place.parent_local_item_id);
+    match items.find(place.parent_local_item_id) {
+        Some(directory) if directory.local.is_some() => {}
+        Some(directory) if directory.synced_place.is_some() => return LocalPlaceAvailability::DirectoryRemovedHere(place.parent_local_item_id),
+        _ => return LocalPlaceAvailability::DirectoryNotShown(place.parent_local_item_id),
     }
     match items.find_shown_at(place) {
         Some(holder) if holder != item.local_item_id => LocalPlaceAvailability::NameTaken(holder),
@@ -189,11 +234,29 @@ fn find_local_place_availability(items: &PlanItems<'_>, item: &Item) -> LocalPla
     }
 }
 
+/// Whether a directory OneDrive has above `item`, at any depth, has a name that cannot be
+/// the name of a directory entry here: the folder then cannot show `item` either.
+fn is_in_directory_the_folder_cannot_name(items: &PlanItems<'_>, item: &Item) -> bool {
+    let place_in_onedrive = |item: &Item| item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone());
+    let mut above = place_in_onedrive(item).and_then(|place| items.find(place.parent_local_item_id));
+    for _ in 0..items.count() {
+        let Some(place) = above.and_then(place_in_onedrive) else { return false };
+        if !is_directory_entry_name(&place.name) {
+            return true;
+        }
+        above = items.find(place.parent_local_item_id);
+    }
+    false
+}
+
 /// `item` as the plan decides on it: its row, with what `input` says of it and what the
 /// other rows of the plan say about it.
 fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Item) -> ItemCase<'a> {
     let id = item.local_item_id;
-    let visibility_of_listed_item = || input.folder_visibility.get(&id).copied().unwrap_or(FolderVisibility::NotKnownYet);
+    let visibility_of_listed_item = || match input.folder_visibility.get(&id).copied().unwrap_or(FolderVisibility::NotKnownYet) {
+        FolderVisibility::CanBeShown if is_in_directory_the_folder_cannot_name(items, item) => FolderVisibility::CannotBeShown,
+        visibility => visibility,
+    };
     ItemCase {
         item,
         folder_visibility: if item.onedrive.is_some() { visibility_of_listed_item() } else { FolderVisibility::NotInOneDrive },
@@ -204,6 +267,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         local_directory: find_local_directory_binding(items, item),
         local_place_availability: find_local_place_availability(items, item),
         first_shown_in_it: items.find_first_shown_in(id),
+        has_items_in_onedrive: !items.list_in_onedrive_in(id).is_empty(),
         sending: SendingConditions {
             is_ignored: input.ignored_items.contains(&id),
             name_refusal: input.name_refusals.get(&id).cloned(),
@@ -218,29 +282,50 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
 }
 
 impl SyncPlan {
-    /// The answer made of what was decided for each item, in the order given: its step, its
-    /// wait, the rule that leaves it out, or its fault; nothing for an item nothing is done
-    /// for.
-    fn of_decisions(decisions: Vec<(LocalItemId, ItemDecision)>) -> Self {
+    /// The answer made of what was decided for each of `items`: its step, its wait, the
+    /// rule that leaves it out, or its fault; nothing for an item nothing is done for. The
+    /// steps of what is unsent come first, the item that was unsent first before the
+    /// others; the steps for what OneDrive changed follow, in the order the items were
+    /// given. Everything else is in the order given.
+    fn of_decisions(items: &[Item], decisions: ItemDecisions) -> Self {
+        let unsent_since: BTreeMap<LocalItemId, u64> = items.iter().filter_map(|item| Some((item.local_item_id, item.unsent_since?))).collect();
         let mut plan = Self::default();
-        for (item, decision) in decisions {
+        for (item, decision) in decisions.into_ordered() {
             match decision {
                 ItemDecision::NothingToDo => {}
                 ItemDecision::Step(step) => plan.steps.push(step),
                 ItemDecision::Wait(reason) => plan.waits.push(ItemWait { item, reason }),
                 ItemDecision::Exclusion(reason) => plan.exclusions.push(ItemExclusion { item, reason }),
-                ItemDecision::Fault => plan.faults.push(PlanFault::RowAgainstRules(item)),
+                ItemDecision::Fault(fault) => plan.faults.push(fault),
             }
         }
+        plan.steps.sort_by_key(|step| unsent_since.get(&step.local_item_id()).map_or((true, 0), |since| (false, *since)));
         plan
     }
 }
 
-/// The plan for what `input` gives: each item decided by itself, in the order given.
+/// The plan for what `input` gives. Each item is decided by itself first, from its row
+/// ([`item_decision`]); then the items are decided for each other, each kind of case by its
+/// own module, in this order:
+///
+/// 1. a directory moved here into what OneDrive has in it ([`move_cycle`]);
+/// 2. the items that have or want one name of a directory of OneDrive ([`name_contest`]);
+/// 3. a directory one side removed, and what the other has in it ([`removed_directory`]);
+/// 4. the items that wait for each other's names ([`name_exchange`]);
+/// 5. the guard against a mass removal ([`mass_removal`]);
+/// 6. where each wait for another item ends ([`wait_end`]).
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
-    let decisions = input.items.iter().map(|item| (item.local_item_id, decide_item(&describe_item(input, &items, item)))).collect();
-    SyncPlan::of_decisions(decisions)
+    let cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, &items, item)).collect();
+    let mut decisions = ItemDecisions::of(cases.iter().map(|case| (case.item.local_item_id, decide_item(case))));
+    move_cycle::take_back_moves_into_own_content(&cases, &items, &mut decisions);
+    let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &mut decisions);
+    removed_directory::send_one_removal_for_each_directory(&cases, &items, &mut decisions);
+    removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &mut decisions);
+    name_exchange::break_circles_of_names(&cases, &items, &sendings_that_wait, &mut decisions);
+    mass_removal::hold_mass_removal(&cases, &items, input.shown_item_count, &input.items_with_confirmed_removal, &mut decisions);
+    wait_end::end_waits_for_other_items(input.is_listing_under_way, &items, &mut decisions);
+    SyncPlan::of_decisions(&input.items, decisions)
 }
 
 #[cfg(test)]

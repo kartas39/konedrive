@@ -46,7 +46,7 @@ fn an_item_onedrive_moved_waits_for_its_directory_and_for_its_name_here() {
     let given = input(vec![
         listed(3, ItemKind::Directory, ROOT, "d"),
         moved_in_onedrive(synced_file(2, ROOT, "a.txt"), id(3), "a.txt"),
-        synced_file(5, ROOT, "taken.txt"),
+        removed_in_onedrive(synced_file(5, ROOT, "taken.txt")),
         moved_in_onedrive(synced_file(4, ROOT, "b.txt"), ROOT, "taken.txt"),
     ]);
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
@@ -88,8 +88,12 @@ fn an_item_both_sides_have_that_cannot_be_judged_yet_waits_for_the_listing_to_en
     let mut given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt"), with_content_here(synced_file(3, ROOT, "c.txt"), written_here())]);
     given.folder_visibility.insert(id(2), FolderVisibility::NotKnownYet);
     given.folder_visibility.insert(id(3), FolderVisibility::NotKnownYet);
+    given.is_listing_under_way = true;
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing));
+    // With no listing under way it is a fault of the rows (the brief's §5, 6).
+    given.is_listing_under_way = false;
+    assert_eq!(answer(&given, 2), Answer::OtherFault(PlanFault::FullListingNeeded(id(2))));
 }
 
 // -- moved here, same in OneDrive

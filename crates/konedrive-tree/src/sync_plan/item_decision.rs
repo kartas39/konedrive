@@ -7,12 +7,14 @@
 //! One step per item: where an item needs more than one (a move and new content), the
 //! place goes first, and the plan made after it decides the rest.
 
+use std::collections::HashMap;
+
 use konedrive_reason::Reason;
 
 use super::sending_obstacle::{find_sending_obstacle, SentPart, SendingConditions, SendingObstacle};
 use super::side_change::{compare_local_content, ContentChange, PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
-use super::{ExclusionReason, WaitReason};
+use super::{ExclusionReason, PlanFault, WaitReason};
 use crate::model::{ContentPresence, FolderVisibility, Item, ItemKind, LocalItemId, OneDriveItemReference};
 
 /// What the plan answers for one item by itself.
@@ -24,8 +26,51 @@ pub(crate) enum ItemDecision {
     Wait(WaitReason),
     /// A rule leaves the item out: nothing is done for it, and it waits for nothing.
     Exclusion(ExclusionReason),
-    /// The row, or what the plan was given about it, says what no operation leaves.
-    Fault,
+    /// What the plan found of the item that must never be.
+    Fault(PlanFault),
+}
+
+/// What the plan answers for each item it was given, while the items are decided for each
+/// other: the answer of every item by its id, and the order the items were given in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ItemDecisions {
+    order: Vec<LocalItemId>,
+    by_item: HashMap<LocalItemId, ItemDecision>,
+}
+
+impl ItemDecisions {
+    pub(crate) fn of(decisions: impl IntoIterator<Item = (LocalItemId, ItemDecision)>) -> Self {
+        let mut all = Self { order: Vec::new(), by_item: HashMap::new() };
+        for (item, decision) in decisions {
+            if all.by_item.insert(item, decision).is_none() {
+                all.order.push(item);
+            }
+        }
+        all
+    }
+
+    /// The answer for `item`; `None` for an item that was not given.
+    pub(crate) fn find(&self, item: LocalItemId) -> Option<&ItemDecision> {
+        self.by_item.get(&item)
+    }
+
+    /// `decision` is the answer for `item` from now on. Nothing for an item that was not
+    /// given.
+    pub(crate) fn replace(&mut self, item: LocalItemId, decision: ItemDecision) {
+        if let Some(answer) = self.by_item.get_mut(&item) {
+            *answer = decision;
+        }
+    }
+
+    /// The items, in the order they were given.
+    pub(crate) fn items(&self) -> &[LocalItemId] {
+        &self.order
+    }
+
+    /// Every item with its answer, in the order the items were given.
+    pub(crate) fn into_ordered(mut self) -> Vec<(LocalItemId, ItemDecision)> {
+        self.order.iter().filter_map(|item| self.by_item.remove(item).map(|decision| (*item, decision))).collect()
+    }
 }
 
 /// The directory the folder shows an item in, as OneDrive knows that directory: where a
@@ -46,8 +91,10 @@ pub(crate) enum LocalDirectoryBinding {
 pub(crate) enum LocalPlaceAvailability {
     /// The folder shows the directory, and nothing but the item itself has the name there.
     Free,
-    /// The folder does not show the directory, or its row was not given: which directory.
+    /// The folder does not show the directory yet, or its row was not given: which directory.
     DirectoryNotShown(LocalItemId),
+    /// The directory was removed here, and the folder will not show it again: which.
+    DirectoryRemovedHere(LocalItemId),
     /// The folder shows another item under that name there: which.
     NameTaken(LocalItemId),
     /// The name is not the name of a directory entry.
@@ -73,12 +120,31 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) local_place_availability: LocalPlaceAvailability,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
+    /// Whether OneDrive has something in the item, a directory, among the rows given.
+    pub(crate) has_items_in_onedrive: bool,
     pub(crate) sending: SendingConditions,
 }
 
 impl ItemCase<'_> {
     fn versions(&self) -> ItemVersions {
         ItemVersions::of(self.item)
+    }
+}
+
+/// The row of the item of `case`, or what the plan was given about it, says what no
+/// operation leaves.
+fn row_fault(case: &ItemCase<'_>) -> ItemDecision {
+    ItemDecision::Fault(PlanFault::RowAgainstRules(case.item.local_item_id))
+}
+
+/// What the rows say of the item of `case` in OneDrive cannot be judged yet: it waits for the
+/// listing that is under way, and with none, the rows are at fault and a full listing mends
+/// them.
+fn wait_for_listing(case: &ItemCase<'_>) -> ItemDecision {
+    if case.is_listing_under_way {
+        ItemDecision::Wait(WaitReason::Listing)
+    } else {
+        ItemDecision::Fault(PlanFault::FullListingNeeded(case.item.local_item_id))
     }
 }
 
@@ -108,7 +174,7 @@ pub(crate) fn decide_item(case: &ItemCase<'_>) -> ItemDecision {
         return ItemDecision::NothingToDo;
     }
     if item.onedrive_item.is_none() && (item.onedrive.is_some() || item.synced_place.is_some() || item.synced_content.is_some()) {
-        return ItemDecision::Fault;
+        return row_fault(case);
     }
     let (here, in_onedrive) = (SideChange::of_local(item), SideChange::of_onedrive(item));
     if (here, in_onedrive) == (SideChange::NeverWas, SideChange::NeverWas) {
@@ -141,7 +207,7 @@ pub(crate) fn decide_existence(case: &ItemCase<'_>, here: SideChange, in_onedriv
         (NeverWas, NeverWas) => ItemDecision::NothingToDo,
         // Both sides are read against one synced version: where one side removed the item
         // something was agreed on, and the other cannot have never had it.
-        (Removed, NeverWas) | (NeverWas, Removed) => ItemDecision::Fault,
+        (Removed, NeverWas) | (NeverWas, Removed) => row_fault(case),
     }
 }
 
@@ -206,12 +272,12 @@ pub(crate) const READ_ONLY_FOLDER: &str = "the folder is read-only";
 /// for the directory while OneDrive does not have it, and for a listing while OneDrive's
 /// root is not known for the root of the folder.
 fn send_into_local_directory(case: &ItemCase<'_>, step: impl FnOnce(OneDriveItemReference, std::ffi::OsString) -> OneDriveStep) -> ItemDecision {
-    let Some(place) = case.item.local.as_ref().and_then(|local| local.place.as_ref()) else { return ItemDecision::Fault };
+    let Some(place) = case.item.local.as_ref().and_then(|local| local.place.as_ref()) else { return row_fault(case) };
     match &case.local_directory {
         LocalDirectoryBinding::Bound(directory) => onedrive_step(step(directory.clone(), place.name.clone())),
-        LocalDirectoryBinding::NotBound(LocalItemId::ROOT) => ItemDecision::Wait(WaitReason::Listing),
+        LocalDirectoryBinding::NotBound(LocalItemId::ROOT) => wait_for_listing(case),
         LocalDirectoryBinding::NotBound(directory) => ItemDecision::Wait(WaitReason::AnotherItem(*directory)),
-        LocalDirectoryBinding::NoLocalPlace => ItemDecision::Fault,
+        LocalDirectoryBinding::NoLocalPlace => row_fault(case),
     }
 }
 
@@ -226,12 +292,17 @@ fn decide_new_here(case: &ItemCase<'_>) -> ItemDecision {
     }
 }
 
-/// Removed here, is there in OneDrive. A file whose content OneDrive changed comes back;
+/// Removed here, is there in OneDrive. A file whose content OneDrive changed comes back,
+/// and where the folder cannot show it, what was agreed on is forgotten, so that its row
+/// is that of an item of OneDrive the folder cannot show;
 /// the removal of any other file is sent, guarded by the eTag, also when OneDrive moved it.
 /// A directory's removal is sent unguarded, and stands.
 fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> ItemDecision {
     match (case.item.kind, onedrive_content) {
-        (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => show_onedrive_item(case),
+        (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => match show_onedrive_item(case) {
+            ItemDecision::Exclusion(ExclusionReason::CannotBeShown) => row_step(RowStep::ForgetSyncedVersion { item: case.versions() }),
+            comes_back => comes_back,
+        },
         (ItemKind::File, ContentChange::Same) => {
             find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendFileRemoval { item: case.versions() }))
         }
@@ -246,16 +317,16 @@ fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> 
 /// is said only once no listing is under way.
 fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
     match case.folder_visibility {
-        FolderVisibility::NotKnownYet => ItemDecision::Wait(WaitReason::Listing),
+        FolderVisibility::NotKnownYet => wait_for_listing(case),
         FolderVisibility::CannotBeShown if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
         FolderVisibility::CannotBeShown => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
-        FolderVisibility::NotInOneDrive => ItemDecision::Fault,
+        FolderVisibility::NotInOneDrive => row_fault(case),
         FolderVisibility::CanBeShown => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::ShowItem { item: case.versions() }),
-            LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::DirectoryNotShown(directory) | LocalPlaceAvailability::DirectoryRemovedHere(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => ItemDecision::Exclusion(ExclusionReason::CannotBeShown),
-            LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
+            LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
         },
     }
 }
@@ -264,10 +335,15 @@ fn show_onedrive_item(case: &ItemCase<'_>) -> ItemDecision {
 /// of a pinned file whose content is not on disk.
 fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentChange), in_onedrive: (PlaceChange, ContentChange)) -> ItemDecision {
     if matches!(case.folder_visibility, FolderVisibility::NotKnownYet) {
-        return ItemDecision::Wait(WaitReason::Listing);
+        return wait_for_listing(case);
+    }
+    if case.item.is_name_ignored {
+        if let Some(removal) = decide_bound_item_whose_name_is_ignored(case) {
+            return removal;
+        }
     }
     if matches!(case.folder_visibility, FolderVisibility::NotInOneDrive) {
-        return ItemDecision::Fault;
+        return row_fault(case);
     }
     let place = decide_place(case, here.0, in_onedrive.0, (here.1, in_onedrive.1));
     if place != ItemDecision::NothingToDo || case.item.kind == ItemKind::Directory {
@@ -278,6 +354,20 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
         return folder_step(FolderStep::DownloadContent { item: case.versions() });
     }
     content
+}
+
+/// OneDrive has an item the folder shows, whose name the upload rules ignore: it got its
+/// binding because its sending was running when it got that name. Its removal is sent, the
+/// folder showing it as before: the commit of the step gives its binding up. `None` for a
+/// directory OneDrive has something in, which stays as it is.
+fn decide_bound_item_whose_name_is_ignored(case: &ItemCase<'_>) -> Option<ItemDecision> {
+    let item = case.versions();
+    let removal = match case.item.kind {
+        ItemKind::File => OneDriveStep::SendFileRemoval { item },
+        ItemKind::Directory if case.has_items_in_onedrive => return None,
+        ItemKind::Directory => OneDriveStep::SendDirectoryRemoval { item, below: Vec::new() },
+    };
+    Some(find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(removal)))
 }
 
 /// The step that sends the item's place here to OneDrive.
@@ -306,8 +396,8 @@ fn decide_item_that_cannot_be_shown(case: &ItemCase<'_>, here_content: ContentCh
 /// - Moved here, same in OneDrive: the move is sent.
 /// - Moved on both sides to one place: agree. To different places: OneDrive's stands and
 ///   the folder follows, where it can; where it cannot (the name is taken here, the name
-///   cannot be held, the folder cannot show the item there), the local place stands and is
-///   sent.
+///   cannot be held, the folder cannot show the item there, OneDrive's directory was
+///   removed here), the local place stands and is sent.
 ///
 /// What was done to the content on each side is asked only where the item cannot be shown.
 pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: PlaceChange, (here_content, onedrive_content): (ContentChange, ContentChange)) -> ItemDecision {
@@ -318,10 +408,10 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
         (PlaceChange::Same, PlaceChange::Same) => ItemDecision::NothingToDo,
         (PlaceChange::Same, PlaceChange::Moved) => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
-            LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::DirectoryNotShown(directory) | LocalPlaceAvailability::DirectoryRemovedHere(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
-            LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
+            LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
         },
         (PlaceChange::Moved, PlaceChange::Same) => send_move(case),
         (PlaceChange::Moved, PlaceChange::Moved) => {
@@ -332,8 +422,8 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
                 _ if !can_be_shown => send_move(case),
                 LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
                 LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
-                LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable => send_move(case),
-                LocalPlaceAvailability::NoOneDrivePlace => ItemDecision::Fault,
+                LocalPlaceAvailability::NameTaken(_) | LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::DirectoryRemovedHere(_) => send_move(case),
+                LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
             }
         }
     }

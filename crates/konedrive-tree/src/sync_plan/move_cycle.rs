@@ -1,0 +1,111 @@
+//! A cycle of moves: a directory moved here into what OneDrive has, or is about to have, in
+//! it. Sending the move would put the directory into itself, so OneDrive's move stands and
+//! the local one is taken back; and a directory OneDrive moved into what the folder shows
+//! in it waits until that is out of it.
+
+use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
+use super::plan_items::PlanItems;
+use super::side_change::{PlaceChange, SideChange};
+use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, SyncStep};
+use super::WaitReason;
+use crate::model::{Item, ItemKind, LocalItemId};
+
+fn directory_here(item: &Item) -> Option<LocalItemId> {
+    item.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| place.parent_local_item_id)
+}
+
+fn directory_in_onedrive(item: &Item) -> Option<LocalItemId> {
+    item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).map(|place| place.parent_local_item_id)
+}
+
+/// Whether `item` was moved here and OneDrive did not move it: its place here is what is to
+/// be sent.
+fn is_moved_here_alone(item: &Item) -> bool {
+    item.onedrive.is_some() && matches!(SideChange::of_local(item), SideChange::IsThere { place: PlaceChange::Moved, .. }) && matches!(SideChange::of_onedrive(item), SideChange::IsThere { place: PlaceChange::Same, .. })
+}
+
+/// The directory `item` is in once the two sides agree, as the plan decides each item by
+/// itself: the directory the folder shows it in when it is new here or was moved here
+/// alone, and the one OneDrive has it in otherwise.
+fn find_directory_to_be(item: &Item) -> Option<LocalItemId> {
+    if item.onedrive.is_none() || is_moved_here_alone(item) {
+        directory_here(item)
+    } else {
+        directory_in_onedrive(item)
+    }
+}
+
+/// Whether sending the move of `item`, a directory moved here, would put it into what is to
+/// be in it: the way up from the directory it was moved into, each directory where it is to
+/// be, passes `item`.
+fn is_moved_into_own_content(items: &PlanItems<'_>, item: &Item) -> bool {
+    let mut above = directory_here(item);
+    for _ in 0..items.count() {
+        match above {
+            Some(directory) if directory == item.local_item_id => return true,
+            Some(directory) => above = items.find(directory).and_then(find_directory_to_be),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// The first directory on the way up from `directory`, as the folder shows them, that is
+/// not where OneDrive has it; `directory` itself when all are.
+fn find_directory_out_of_place(items: &PlanItems<'_>, directory: LocalItemId) -> LocalItemId {
+    let mut at = Some(directory);
+    for _ in 0..items.count() {
+        let Some(row) = at.and_then(|at| items.find(at)) else { break };
+        if row.local.as_ref().map(|local| &local.place) != row.onedrive.as_ref().map(|onedrive| &onedrive.place) {
+            return row.local_item_id;
+        }
+        at = directory_here(row);
+    }
+    directory
+}
+
+/// A move made here is taken back where the folder can take OneDrive's place again; where
+/// it cannot yet, the item waits for what is in the way. `None` when no step takes it back.
+fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
+    match case.local_place_availability {
+        LocalPlaceAvailability::Free => Some(ItemDecision::Step(SyncStep::Folder(FolderStep::TakeMoveBack { item: ItemVersions::of(case.item) }))),
+        LocalPlaceAvailability::DirectoryNotShown(another) | LocalPlaceAvailability::DirectoryRemovedHere(another) | LocalPlaceAvailability::NameTaken(another) => Some(ItemDecision::Wait(WaitReason::AnotherItem(another))),
+        LocalPlaceAvailability::NameUnusable | LocalPlaceAvailability::NoOneDrivePlace => None,
+    }
+}
+
+/// Decides the directories that were moved in a cycle.
+///
+/// - Of the directories moved here whose move would put them into what is to be in them,
+///   the move of the one with the lowest id is taken back, and the others wait for it: the
+///   plan made after it sees whether their moves still close a cycle. This holds also for a
+///   move that is not sent now (a read-only folder, a name OneDrive cannot hold).
+/// - A directory OneDrive moved into what the folder shows in it is not moved here yet: it
+///   waits for the first directory on the way that is out of place.
+pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) {
+    let is_sending = |decision: Option<&ItemDecision>| {
+        matches!(decision, Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. })) | ItemDecision::Wait(WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::AnotherItem(_))))
+    };
+    let mut in_cycle: Vec<&ItemCase<'_>> = cases
+        .iter()
+        .filter(|case| case.item.kind == ItemKind::Directory && is_moved_here_alone(case.item))
+        .filter(|case| is_sending(decisions.find(case.item.local_item_id)) && is_moved_into_own_content(items, case.item))
+        .collect();
+    in_cycle.sort_by_key(|case| case.item.local_item_id);
+    if let Some((first, others)) = in_cycle.split_first() {
+        if let Some(taken_back) = take_move_back(first) {
+            decisions.replace(first.item.local_item_id, taken_back);
+            for other in others {
+                decisions.replace(other.item.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(first.item.local_item_id)));
+            }
+        }
+    }
+    for case in cases {
+        let id = case.item.local_item_id;
+        let is_moved_here = matches!(decisions.find(id), Some(ItemDecision::Step(SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. }))));
+        let Some(directory) = directory_in_onedrive(case.item).filter(|_| is_moved_here && case.item.kind == ItemKind::Directory) else { continue };
+        if directory == id || items.is_shown_in(directory, id) {
+            decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory))));
+        }
+    }
+}

@@ -95,17 +95,20 @@ fn a_directory_moved_here_that_onedrive_removed_goes_here_once_the_folder_shows_
     let given = input(vec![removed_in_onedrive(moved_here(synced_directory(2, ROOT, "d"), ROOT, "e"))]);
     assert_eq!(answer(&given, 2), folder_step(FolderStep::RemoveItem { item: versions(&given, 2) }));
 
+    // Something of the user's own in it: it stays and is sent again, as between items.
     let given = input(vec![removed_in_onedrive(moved_here(synced_directory(2, ROOT, "d"), ROOT, "e")), made_file(3, id(2), "mine.txt")]);
-    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
+    assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::AnotherItem(id(2))));
 }
 
 /// Differs from today: a new item, or a move, into a directory that has a binding and that
 /// OneDrive does not have (it removed it; or no listing told of it yet) is not sent into
 /// that binding. Today the request is sent and answered 404 (`upload/steps/meta.rs:39-42`,
 /// `upload/content.rs:219-222`, the reason `parent-not-in-onedrive`). Here the item waits
-/// for the directory, as for one that has no binding. With a directory OneDrive removed
-/// the two wait for each other: which gives way is decided between items (the directory
-/// gives up its binding when what the folder shows in it is the user's own).
+/// for the directory, as for one that has no binding. A directory OneDrive removed gives up
+/// its binding when all the folder shows in it waits for it so (between items:
+/// `a_directory_onedrive_removed_that_holds_something_of_the_users_own_stays_and_is_sent_again`),
+/// and is then made again.
 #[test]
 fn nothing_is_sent_into_a_directory_onedrive_does_not_have() {
     let mut never_listed = made_directory(6, ROOT, "marked");
@@ -118,7 +121,7 @@ fn nothing_is_sent_into_a_directory_onedrive_does_not_have() {
         never_listed,
         made_file(7, id(6), "b.txt"),
     ]);
-    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::AnotherItem(id(3))));
+    assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
     for sent_into_it in [3, 4, 5] {
         assert_eq!(answer(&given, sent_into_it), Answer::Wait(WaitReason::AnotherItem(id(2))), "item {sent_into_it}");
     }
@@ -178,13 +181,15 @@ fn an_item_made_here_waits_for_its_directory_to_be_in_onedrive() {
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::AnotherItem(id(2))));
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::AnotherItem(id(2))));
 
-    // A directory whose row was not given is waited for by its id all the same.
+    // A directory whose row was not given is said by its id, for the caller to give.
     let given = input(vec![made_file(3, id(2), "new.txt")]);
-    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::AnotherItem(id(2))));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::ItemNotGiven(id(2))));
 
+    // The root itself has no binding while the first listing is under way.
     let mut given = input(vec![made_file(3, ROOT, "new.txt")]);
     given.items[0].onedrive_item = None;
     given.items[0].onedrive = None;
+    given.is_listing_under_way = true;
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing));
 }
 
@@ -247,17 +252,24 @@ fn the_removal_of_a_directory_is_sent_unguarded_and_stands() {
     assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 3), below: vec![] }));
 }
 
-/// Open: the design's cell "removed here, is there in OneDrive" says a file whose content
-/// OneDrive changed comes back, and not what becomes of it where the folder cannot show
-/// it. Reading 1 (here): it is left out as an item the folder cannot show, its removal is
-/// never sent, and the row stays as one that was removed here. Reading 2: what was agreed
-/// on is forgotten, so that the row is that of an item new in OneDrive the folder cannot
-/// show. While a listing is under way it waits, by either reading.
+/// The brief's §5, 2 (stage A's open case, settled): the design's cell "removed here, is
+/// there in OneDrive" says a file whose content OneDrive changed comes back, and not what
+/// becomes of it where the folder cannot show it. What was agreed on is forgotten, a step
+/// of the rows alone, so that the row is that of an item of OneDrive the folder cannot
+/// show, and no row stays unsent for good. While a listing is under way it waits.
 #[test]
-fn open_a_file_removed_here_whose_changed_content_the_folder_cannot_show_is_left_out() {
-    let mut given = input(vec![with_content_in_onedrive(removed_here(synced_file(2, ROOT, "a.txt")), hashed("theirs"))]);
+fn a_file_removed_here_whose_changed_content_the_folder_cannot_show_forgets_what_was_agreed_on() {
+    let mut given = input(vec![with_content_in_onedrive(removed_here(synced_file(2, ROOT, "a.txt")), hashed("theirs")), with_content_in_onedrive(removed_here(synced_file(3, ROOT, "b.txt")), hashed("theirs"))]);
     given.folder_visibility.insert(id(2), FolderVisibility::CannotBeShown);
-    assert_eq!(answer(&given, 2), Answer::Exclusion(ExclusionReason::CannotBeShown));
+    given.items[2].onedrive.as_mut().unwrap().place = Some(place(ROOT, "b/c"));
+    assert_eq!(answer(&given, 2), row_step(RowStep::ForgetSyncedVersion { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), row_step(RowStep::ForgetSyncedVersion { item: versions(&given, 3) }), "a name that is no name of a directory entry");
+    // The row the step leaves is left out, and waits for nothing.
+    let mut forgotten = given.clone();
+    forgotten.items[1].synced_place = None;
+    forgotten.items[1].synced_content = None;
+    forgotten.items[1].unsent_since = None;
+    assert_eq!(answer(&forgotten, 2), Answer::Exclusion(ExclusionReason::CannotBeShown));
     given.is_listing_under_way = true;
     assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
 }

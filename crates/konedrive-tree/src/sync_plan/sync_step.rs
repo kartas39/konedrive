@@ -81,8 +81,8 @@ pub enum OneDriveStep {
     /// OneDrive has it, guarded by the eTag. No name and no directory is sent.
     SendContent { item: ItemVersions },
     /// A move or a rename made here is sent, guarded by the eTag: the item goes into the
-    /// directory `parent` under `name`. The name is the local one, or a temporary name two
-    /// items exchange their names through.
+    /// directory `parent` under `name`. The name is the local one, or a temporary name items
+    /// exchange their names through; of a directory made here and of a new file likewise.
     SendMove { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
     /// The removal of a file here is sent, guarded by the eTag.
     SendFileRemoval { item: ItemVersions },
@@ -127,9 +127,14 @@ pub enum FolderStep {
     /// The user's own item is renamed here to `name`, a conflict copy's name, before it is
     /// sent: another item has, or takes, the name it had.
     RenameToConflictCopy { item: ItemVersions, name: OsString },
-    /// A move made here is taken back: the item is at OneDrive's place again, because the
-    /// move cannot stand beside what OneDrive moved.
+    /// A move made here is taken back: the item is at OneDrive's place (`item.onedrive`)
+    /// again, because sending the move would put a directory into what OneDrive has in it.
     TakeMoveBack { item: ItemVersions },
+    /// The item is renamed here to `name`, a temporary name, in the directory the folder
+    /// shows it in: items OneDrive moved in a circle of names cannot each go to its place
+    /// while another still has it. That name is the place agreed on from then, so that
+    /// nothing of it is sent, and the plan made after it moves the item to OneDrive's place.
+    MoveToTemporaryName { item: ItemVersions, name: OsString },
 }
 
 impl FolderStep {
@@ -142,7 +147,8 @@ impl FolderStep {
             | FolderStep::RemoveItem { item }
             | FolderStep::DownloadContent { item }
             | FolderStep::RenameToConflictCopy { item, .. }
-            | FolderStep::TakeMoveBack { item } => item,
+            | FolderStep::TakeMoveBack { item }
+            | FolderStep::MoveToTemporaryName { item, .. } => item,
         }
     }
 }
@@ -161,6 +167,11 @@ pub enum RowStep {
     /// Both sides removed the item: what they agreed on is forgotten, and the row is left
     /// with its binding alone, for the guard against an outdated listing to delete.
     DropRow { item: ItemVersions },
+    /// The folder does not show the item, and what the two sides agreed on is forgotten:
+    /// the row is that of an item of OneDrive the folder never showed. For a file removed
+    /// here whose content OneDrive changed, where the folder cannot show it: it cannot come
+    /// back, and its removal is not sent.
+    ForgetSyncedVersion { item: ItemVersions },
     /// The local content is hashed, and the hash written into the local content version:
     /// the plan made after it can ask whether the two sides have the same content.
     HashLocalContent { item: ItemVersions },
@@ -179,6 +190,7 @@ impl RowStep {
             RowStep::GiveUpBinding { item }
             | RowStep::MergeItems { local: item, .. }
             | RowStep::DropRow { item }
+            | RowStep::ForgetSyncedVersion { item }
             | RowStep::HashLocalContent { item }
             | RowStep::AgreeOnPlace { item }
             | RowStep::AgreeOnContent { item } => item,

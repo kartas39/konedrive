@@ -16,6 +16,8 @@ use crate::model::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace
 mod content;
 mod existence;
 mod place;
+mod item_relations;
+mod related_items;
 
 pub(crate) const ROOT: LocalItemId = LocalItemId::ROOT;
 
@@ -192,6 +194,9 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         is_onedrive_full: false,
         largest_file_size: 250 << 30,
         sending_state: SendingState::ReadWrite,
+        computer_name: "pc".to_owned(),
+        shown_item_count: 1000,
+        items_with_confirmed_removal: BTreeSet::new(),
     }
 }
 
@@ -202,7 +207,10 @@ pub(crate) enum Answer {
     Step(SyncStep),
     Wait(WaitReason),
     Exclusion(ExclusionReason),
+    /// The row is against the rules of the rows.
     Fault,
+    /// Any other fault.
+    OtherFault(PlanFault),
 }
 
 /// What the plan made from `input` answers for the item `number`: one thing at most.
@@ -212,7 +220,10 @@ pub(crate) fn answer(input: &SyncPlanInput, number: i64) -> Answer {
     answers.extend(plan.steps.into_iter().filter(|step| step.local_item_id() == id(number)).map(Answer::Step));
     answers.extend(plan.waits.into_iter().filter(|wait| wait.item == id(number)).map(|wait| Answer::Wait(wait.reason)));
     answers.extend(plan.exclusions.into_iter().filter(|exclusion| exclusion.item == id(number)).map(|exclusion| Answer::Exclusion(exclusion.reason)));
-    answers.extend(plan.faults.into_iter().filter(|fault| *fault == PlanFault::RowAgainstRules(id(number))).map(|_| Answer::Fault));
+    answers.extend(plan.faults.into_iter().filter(|fault| fault.local_item_id() == id(number)).map(|fault| match fault {
+        PlanFault::RowAgainstRules(_) => Answer::Fault,
+        other => Answer::OtherFault(other),
+    }));
     assert!(answers.len() <= 1, "more than one answer for item {number}: {answers:?}");
     answers.pop().unwrap_or(Answer::Nothing)
 }
@@ -284,14 +295,6 @@ fn a_file_a_program_holds_open_for_writing_is_not_planned() {
 fn an_item_has_one_step_and_its_place_goes_before_its_content() {
     let given = input(vec![with_content_here(moved_here(synced_file(2, ROOT, "a.txt"), ROOT, "b.txt"), written_here())]);
     assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 2), parent: reference("root"), name: "b.txt".into() }));
-}
-
-/// New.
-#[test]
-fn the_steps_are_in_the_order_the_items_were_given() {
-    let given = input(vec![made_file(5, ROOT, "five"), listed(3, ItemKind::File, ROOT, "three"), made_directory(4, ROOT, "four")]);
-    let plan = make_sync_plan(&given);
-    assert_eq!(plan.steps.iter().map(SyncStep::local_item_id).collect::<Vec<_>>(), [id(5), id(3), id(4)]);
 }
 
 /// The design's "what is not sent: an ignored item". Today nothing is recorded for an
