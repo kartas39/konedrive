@@ -41,10 +41,26 @@ pub enum SpaceChange {
     HasSpace { free_space: u64, was_full: bool },
 }
 
+/// Less free space than this is none (a guess: the smallest file still goes, a real one
+/// does not).
+const LEAST_FREE_SPACE: u64 = 1 << 20;
+
+/// While OneDrive is full, or while a file waits as too big, the quota is read again this
+/// often.
+const QUOTA_READ_INTERVAL: i64 = 30 * 60;
+
+/// For how many seconds a read of the quota answers another refusal too: refusals of
+/// steps that run together cost one request.
+const QUOTA_READ_REUSE: i64 = 10;
+
 /// Whether `quota` says OneDrive is full: its state is "exceeded", or less than a
-/// mebibyte is left (`space.rs:62`, `no_space`). Pure.
+/// mebibyte is left (`space.rs:62`, `no_space`). `None` for a quota that says nothing of
+/// the space: neither what is left nor a state. Pure.
 pub fn decide_is_full(quota: &DriveQuota) -> Option<bool> {
-    todo!()
+    if quota.remaining.is_none() && quota.state.is_empty() {
+        return None;
+    }
+    Some(quota.state == "exceeded" || quota.remaining.is_some_and(|free_space| free_space < LEAST_FREE_SPACE))
 }
 
 /// The space of one account's OneDrive, as its folder's sync sees it.
@@ -57,15 +73,37 @@ pub struct OneDriveSpace {
 }
 
 impl OneDriveSpace {
+    /// What `quota`, which says something of the space, changes: whether OneDrive is
+    /// full, and when the quota is read next.
+    fn decide_change(&self, quota: &DriveQuota, is_full: bool, now: i64) -> SpaceChange {
+        let was_full = self.is_full.swap(is_full, std::sync::atomic::Ordering::SeqCst);
+        let mut next_read_at = crate::panic::lock(&self.next_read_at);
+        if is_full || next_read_at.is_some() {
+            *next_read_at = Some(now + QUOTA_READ_INTERVAL);
+        }
+        match (is_full, was_full) {
+            (true, false) => SpaceChange::BecameFull,
+            (true, true) => SpaceChange::StillFull,
+            (false, was_full) => SpaceChange::HasSpace { free_space: quota.remaining.unwrap_or(0), was_full },
+        }
+    }
+
+    /// OneDrive refused content for lack of space and the quota says nothing else, or
+    /// could not be read: it is full until a read says otherwise, and that read comes.
+    fn turn_full(&self, now: i64) {
+        self.is_full.store(true, std::sync::atomic::Ordering::SeqCst);
+        *crate::panic::lock(&self.next_read_at) = Some(now + QUOTA_READ_INTERVAL);
+    }
+
     /// Not full, nothing read yet. Made by the folder's start, with the account's quota.
     pub fn new(quota: Quota) -> Self {
-        todo!()
+        OneDriveSpace { quota, is_full: std::sync::atomic::AtomicBool::new(false), next_read_at: std::sync::Mutex::new(None) }
     }
 
     /// Whether OneDrive is full. Called by the plan's task for `is_onedrive_full`, and by
     /// the queue's answers for `QuotaFull`.
     pub fn is_full(&self) -> bool {
-        todo!()
+        self.is_full.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// A quota was read, by this folder or by the account: what it changed. Called by the
@@ -74,7 +112,9 @@ impl OneDriveSpace {
     /// (`WakeCause::QuotaRead`). Replaces `space.rs:234`, `:247` (`apply_quota`,
     /// `decide_quota`) and `:279` (`release_fitting`).
     pub fn apply_quota(&self, quota: &DriveQuota, now: i64) -> SpaceChange {
-        todo!()
+        let Some(is_full) = decide_is_full(quota) else { return SpaceChange::NotKnown };
+        self.quota.read_at(quota, now);
+        self.decide_change(quota, is_full, now)
     }
 
     /// OneDrive answered 507 to content of `size` bytes: reads the quota at once
@@ -83,12 +123,53 @@ impl OneDriveSpace {
     /// alone is too big (`free_space` given), with none OneDrive is full. Called by the
     /// steps that send content. Replaces `space.rs:201` (`space_refused`).
     pub async fn refuse_for_space(&self, drive: &DriveClient, size: u64, now: i64) -> StepRefusal {
-        todo!()
+        // The account's read of a moment ago, when it says something of the space, was
+        // applied when it was made; a new one is applied here.
+        let reused = self.quota.read_within(QUOTA_READ_REUSE).filter(|quota| decide_is_full(quota).is_some());
+        let quota = match reused {
+            Some(quota) => Some(quota),
+            None => match drive.quota().await {
+                Ok(quota) if decide_is_full(&quota).is_some() => {
+                    self.quota.read_at(&quota, now);
+                    Some(quota)
+                }
+                Ok(_) => {
+                    tracing::warn!("OneDrive gave no quota after it refused {size} bytes for lack of space");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!("cannot read the OneDrive quota after it refused {size} bytes for lack of space: {error}");
+                    None
+                }
+            },
+        };
+        match quota {
+            Some(quota) if decide_is_full(&quota) == Some(false) => {
+                // The file alone is too big: the quota is read again while it waits.
+                self.decide_change(&quota, false, now);
+                *crate::panic::lock(&self.next_read_at) = Some(now + QUOTA_READ_INTERVAL);
+                StepRefusal::NoSpace { free_space: Some(quota.remaining.unwrap_or(0)) }
+            }
+            // No space left, or a quota that cannot be read: OneDrive just said it is full.
+            _ => {
+                self.turn_full(now);
+                StepRefusal::NoSpace { free_space: None }
+            }
+        }
     }
 
     /// When the quota is to be read next by itself, Unix seconds: every 30 minutes while
     /// full or while a file waits as too big. Called by the plan's task for its timer.
+    ///
+    /// Whether a file still waits as too big is the step memory's to say, not known here:
+    /// the time is set by every read while full and by every 507, and kept by a read that
+    /// finds space once it was set, since that space may still be too little for the file
+    /// that waits. It is `None` only for a OneDrive that was never full and refused
+    /// nothing since the folder's start.
     pub fn find_next_read(&self) -> Option<i64> {
-        todo!()
+        *crate::panic::lock(&self.next_read_at)
     }
 }
+
+#[cfg(test)]
+mod tests;

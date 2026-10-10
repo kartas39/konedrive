@@ -28,8 +28,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use konedrive_graph::drive::MAX_RETRY_AFTER;
+
+use super::{BACKOFF_MAX, THROTTLE_FIRST};
 use crate::folder::running_steps::StepClass;
-use crate::folder::sync_plan_wake::SyncPlanWake;
+use crate::folder::sync_plan_wake::{SyncPlanWake, WakeCause};
 
 /// Why nothing is sent to OneDrive now; the first that holds, in this order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,19 +57,73 @@ pub enum SendingHold {
 /// (`Content`, `Metadata`); a download is held by the stop, the sign-out and the pause
 /// alone; a step towards the folder or of the rows by none.
 pub fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
-    todo!()
+    let Some(hold) = hold else { return false };
+    match class {
+        StepClass::Content | StepClass::Metadata => true,
+        StepClass::Download => matches!(hold, SendingHold::Stopping | SendingHold::SignedOut | SendingHold::Paused { .. }),
+        StepClass::Folder | StepClass::Row => false,
+    }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq, Eq)]
 struct Holds {
     is_stopping: bool,
     is_signed_out: bool,
     writes_refusal: Option<String>,
     paused_until: Option<Option<i64>>,
     throttled_until: Option<i64>,
+    /// Whether the end of the throttle is one chosen here: OneDrive named none.
+    is_throttle_end_chosen: bool,
     /// The wait chosen last when OneDrive named none, doubled each time.
     chosen_wait: Option<Duration>,
     has_listing_ended: bool,
+}
+
+impl Holds {
+    /// Every cause that holds at `now`, in the order of the cases.
+    fn list(&self, now: i64) -> Vec<SendingHold> {
+        let paused = self.paused_until.filter(|until| until.is_none_or(|until| until > now));
+        let holds = [
+            self.is_stopping.then_some(SendingHold::Stopping),
+            self.is_signed_out.then_some(SendingHold::SignedOut),
+            self.writes_refusal.clone().map(|reason| SendingHold::WritesNotAllowed { reason }),
+            paused.map(|until| SendingHold::Paused { until }),
+            self.find_throttle_end(now).map(|until| SendingHold::Throttled { until }),
+            (!self.has_listing_ended).then_some(SendingHold::FirstListingNotEnded),
+        ];
+        holds.into_iter().flatten().collect()
+    }
+
+    /// When the throttle ends, while it lasts at `now`.
+    fn find_throttle_end(&self, now: i64) -> Option<i64> {
+        self.throttled_until.filter(|until| *until > now)
+    }
+
+    /// OneDrive refused a request at `now` and asked to wait `retry_after` (at most an
+    /// hour), or named no time. While a wait is under way: a time OneDrive named takes
+    /// the place of a chosen one, even a shorter one; of two named times the later end
+    /// stands; a refusal that names none adds nothing. With no wait under way a refusal
+    /// that names none waits ten seconds, twice the last such wait each time, up to an
+    /// hour.
+    fn throttle(&mut self, retry_after: Option<Duration>, now: i64) {
+        let end_under_way = self.find_throttle_end(now);
+        match retry_after {
+            Some(wait) => {
+                let until = now + wait.min(MAX_RETRY_AFTER).as_secs().max(1) as i64;
+                if self.is_throttle_end_chosen || end_under_way.is_none_or(|end| until > end) {
+                    self.throttled_until = Some(until);
+                }
+                self.is_throttle_end_chosen = false;
+            }
+            None if end_under_way.is_some() => {}
+            None => {
+                let wait = self.chosen_wait.map_or(THROTTLE_FIRST, |last| (last * 2).min(BACKOFF_MAX));
+                self.throttled_until = Some(now + wait.as_secs().max(1) as i64);
+                self.is_throttle_end_chosen = true;
+                self.chosen_wait = Some(wait);
+            }
+        }
+    }
 }
 
 /// What holds one folder's sending.
@@ -76,32 +133,50 @@ pub struct SendingHolds {
 }
 
 impl SendingHolds {
+    /// Makes `change` to what holds, and wakes the plan when it changed something: after
+    /// this part's lock is let go.
+    fn change(&self, change: impl FnOnce(&mut Holds)) {
+        let is_changed = {
+            let mut holds = crate::panic::lock(&self.holds);
+            let before = holds.clone();
+            change(&mut holds);
+            *holds != before
+        };
+        if is_changed {
+            self.sync_plan_wake.wake(WakeCause::SendingHoldChanged);
+        }
+    }
+
     /// Nothing holds but the first listing. Made by the folder's start.
     pub fn new(sync_plan_wake: Arc<SyncPlanWake>) -> Self {
-        todo!()
+        SendingHolds { holds: std::sync::Mutex::default(), sync_plan_wake }
     }
 
     /// The hold that counts now, at the time `now`; `None` when sending may go on. A
     /// throttle or a timed pause whose end passed holds no more. Called by the plan's
     /// task, by an upload between two fragments, and by the bus.
     pub fn find(&self, now: i64) -> Option<SendingHold> {
-        todo!()
+        crate::panic::lock(&self.holds).list(now).into_iter().next()
     }
 
     /// When the hold that counts now ends by itself, Unix seconds; `None` when none does.
     /// For the plan's task's timer.
     pub fn find_end(&self, now: i64) -> Option<i64> {
-        todo!()
+        match self.find(now)? {
+            SendingHold::Paused { until } => until,
+            SendingHold::Throttled { until } => Some(until),
+            SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FirstListingNotEnded => None,
+        }
     }
 
     /// The account's pause began or ended. Called by `sync/pause.rs`.
     pub fn set_paused(&self, paused_until: Option<Option<i64>>) {
-        todo!()
+        self.change(|holds| holds.paused_until = paused_until);
     }
 
     /// A step was answered that the account is signed out; or the account signed in.
     pub fn set_signed_out(&self, is_signed_out: bool) {
-        todo!()
+        self.change(|holds| holds.is_signed_out = is_signed_out);
     }
 
     /// What the write gate says of the account (`sync/mode.rs`, `Gate`): its refusal, or
@@ -109,28 +184,40 @@ impl SendingHolds {
     /// here: a read-only folder sends what was unsent at its switch (design §13 (3); the
     /// map's RISK-7.f).
     pub fn set_writes_refusal(&self, refusal: Option<String>) {
-        todo!()
+        self.change(|holds| holds.writes_refusal = refusal);
     }
 
     /// OneDrive throttled a step, naming `retry_after` or nothing: today's rules
     /// (`engine/state.rs:42`, `Throttle::refused`).
     pub fn throttle(&self, retry_after: Option<Duration>, now: i64) {
-        todo!()
+        self.change(|holds| holds.throttle(retry_after, now));
     }
 
     /// A step towards OneDrive went through: a chosen wait starts from ten seconds again.
     pub fn pass(&self) {
-        todo!()
+        // Nothing that holds changes: the plan is not woken.
+        crate::panic::lock(&self.holds).chosen_wait = None;
     }
 
     /// A listing ended. Called by the plan's task on `WakeCause::ListingEnded`.
     pub fn set_listing_ended(&self) {
-        todo!()
+        self.change(|holds| holds.has_listing_ended = true);
+    }
+
+    /// Whether a step of `class` is held now, at the time `now`: by ANY cause that holds,
+    /// not by the first alone — a pause holds a download also while the hold that is
+    /// shown is one that holds no download. What the plan's task and an upload between
+    /// two fragments ask; [`find`](Self::find) is what is shown.
+    pub fn is_held(&self, class: StepClass, now: i64) -> bool {
+        crate::panic::lock(&self.holds).list(now).iter().any(|hold| decide_is_held(Some(hold), class))
     }
 
     /// The folder's sync is stopping: nothing new is started, uploads stop after their
     /// fragment.
     pub fn set_stopping(&self) {
-        todo!()
+        self.change(|holds| holds.is_stopping = true);
     }
 }
+
+#[cfg(test)]
+mod tests;
