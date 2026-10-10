@@ -8,12 +8,14 @@
 //! goes. Not the rows that are found at another path: those are moved out. A row at a name
 //! the check sets items aside to is decided the same way: no entry has such a name.
 //!
-//! Nothing is decided of a row whose directory could not be read. And while any part of the
+//! Nothing is decided of a row whose directory could not be read, and an entry that carries
+//! the mark of such a row is not taken as that item moved: the item may be where its row
+//! says, and the entry a copy. And while any part of the
 //! backing directory was not read ([`PathFindings::is_read_whole`]), a row that would be
 //! found removed, or to have lost its place, is held back with what is below it: what is
 //! missing may be in the part that was not read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 
@@ -44,6 +46,9 @@ pub(super) struct PathFindings {
     /// The rows that would be found removed, or to have lost their place, and are left as
     /// they are, with what is below them.
     held_back: Vec<LocalItemId>,
+    /// The entries that carry the mark of a row whose own place was not looked at: left,
+    /// and not taken as that row's item.
+    left_as_possible_copies: HashSet<EntryIndex>,
     is_read_whole: bool,
 }
 
@@ -86,12 +91,47 @@ fn is_set_aside_name(name: &OsStr) -> bool {
 impl PathFindings {
     pub(super) fn decide(rows: &ItemRows, contents: &BackingDirectoryContents, identities: &EntryIdentities) -> Self {
         let is_read_whole = !contents.has_unread_directory() && !Self::is_subtree_hidden(rows, contents, identities);
-        let mut findings = PathFindings { entries: Vec::with_capacity(contents.len()), rows: Vec::new(), finding_of_row: HashMap::new(), held_back: Vec::new(), is_read_whole };
+        let mut findings =
+            PathFindings { entries: Vec::with_capacity(contents.len()), rows: Vec::new(), finding_of_row: HashMap::new(), held_back: Vec::new(), left_as_possible_copies: HashSet::new(), is_read_whole };
         for index in 0..contents.len() {
-            findings.entries.push(Self::decide_entry(rows, contents, identities, index));
+            let mut found = Self::decide_entry(rows, contents, identities, index);
+            let is_moved = matches!(found.finding, Ok(DiskFinding::Moved | DiskFinding::MovedOverAnotherItem));
+            let own = match identities.identity(index) {
+                EntryIdentity::Item(item) => rows.find(item),
+                EntryIdentity::NewItem => None,
+            };
+            if is_moved && own.is_some_and(|own| Self::is_place_hidden(rows, contents, identities, own)) {
+                found = EntryFinding { finding: Err(UnresolvedReason::MayBeUnread), content_finding: None };
+                findings.left_as_possible_copies.insert(index);
+            }
+            findings.entries.push(found);
         }
         findings.decide_rows_inside(rows, contents, identities, LocalItemId::ROOT, DirectoryPlace::OnDisk(None));
         findings
+    }
+
+    /// Whether the place the row `row` says could not be looked at: the directory it is in
+    /// was not read, or its name there is one that was not looked into, or the same holds
+    /// of a directory above it that no entry is taken as. The item may be there.
+    fn is_place_hidden(rows: &ItemRows, contents: &BackingDirectoryContents, identities: &EntryIdentities, row: &Item) -> bool {
+        let mut at = row;
+        // One row for each directory above the item.
+        for _ in 0..=konedrive_fs::MAX_DEPTH {
+            let Some(place) = at.local.as_ref().and_then(|local| local.place.as_ref()) else { return false };
+            let directory = match place.parent_local_item_id {
+                LocalItemId::ROOT => None,
+                directory => match (identities.find_entry(directory), rows.find(directory)) {
+                    (Some(entry), _) => Some(entry),
+                    (None, Some(above)) => {
+                        at = above;
+                        continue;
+                    }
+                    (None, None) => return false,
+                },
+            };
+            return contents.is_unread(directory) || contents.has_unknown_name(directory, &place.name);
+        }
+        false
     }
 
     /// Whether a name that was not looked into may hide entries: one that could not be
@@ -165,7 +205,7 @@ impl PathFindings {
     /// rows say is in it is decided here, where the entry is.
     fn decide_rows_inside(&mut self, rows: &ItemRows, contents: &BackingDirectoryContents, identities: &EntryIdentities, directory: LocalItemId, place: DirectoryPlace) {
         for row in rows.list_inside(directory) {
-            if let Some(entry) = identities.find_entry(row.local_item_id) {
+            if let Some(entry) = self.find_entry_taken_as(identities, row.local_item_id) {
                 if row.kind == ItemKind::Directory {
                     self.decide_rows_inside(rows, contents, identities, row.local_item_id, DirectoryPlace::OnDisk(Some(entry)));
                 }
@@ -202,6 +242,11 @@ impl PathFindings {
         }
     }
 
+    /// The entry `item` is taken as: not one that is left because it may be a copy.
+    fn find_entry_taken_as(&self, identities: &EntryIdentities, item: LocalItemId) -> Option<EntryIndex> {
+        identities.find_entry(item).filter(|entry| !self.left_as_possible_copies.contains(entry))
+    }
+
     /// Of what the rows say is below `left`, a row that is left as it is: only what is
     /// found at another path is decided, there. The rest is left with it.
     fn decide_rows_found_below(&mut self, rows: &ItemRows, contents: &BackingDirectoryContents, identities: &EntryIdentities, left: &Item) {
@@ -209,7 +254,7 @@ impl PathFindings {
             return;
         }
         for row in rows.list_inside(left.local_item_id) {
-            match identities.find_entry(row.local_item_id) {
+            match self.find_entry_taken_as(identities, row.local_item_id) {
                 Some(entry) if row.kind == ItemKind::Directory => self.decide_rows_inside(rows, contents, identities, row.local_item_id, DirectoryPlace::OnDisk(Some(entry))),
                 Some(_) => {}
                 None => self.decide_rows_found_below(rows, contents, identities, row),

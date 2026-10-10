@@ -179,6 +179,22 @@ fn a_directory_that_could_not_be_read_and_that_no_row_is_found_for_is_left_and_n
     assert_eq!((decided.rows(), decided.held_back()), (vec![(2, NothingChanged)], vec![id(3)]));
 }
 
+/// Found by the test of convergence. `cp -a docs docs-copy ; chmod 000 docs`: the place the
+/// row of `docs` says could not be looked at, so the item may be there, and the one entry
+/// that is seen with its mark may be a copy. It is not taken as the item moved: it is left,
+/// with what is in it. Where the row's place was looked at and is empty, it is the item.
+#[test]
+fn an_entry_with_the_mark_of_a_row_whose_own_place_was_not_looked_at_is_not_that_item_moved() {
+    let rows = || vec![bound("D", 2, 1, "docs", Directory), bound("A", 3, 2, "a.txt", File), bound("B", 4, 1, "b.txt", File)];
+    let decided = decide(rows(), &[("docs", Listed::Special), ("docs-copy", Listed::Directory(Some("D"))), ("docs-copy/a.txt", Listed::File(Some("A"))), ("b-moved.txt", Listed::File(Some("B")))]);
+    assert_eq!(decided.entry("docs-copy"), Err(UnresolvedReason::MayBeUnread));
+    assert_eq!(decided.entry("b-moved.txt"), Ok(Moved), "its row's place was looked at, and nothing of it is there");
+    // What the rows say is in an unreadable directory, likewise.
+    let rows = vec![own(2, 1, "locked", Directory), bound("A", 3, 2, "a.txt", File)];
+    let decided = decide(rows, &[("locked", Listed::UnreadableDirectory(None)), ("a-copy.txt", Listed::File(Some("A")))]);
+    assert_eq!(decided.entry("a-copy.txt"), Err(UnresolvedReason::MayBeUnread));
+}
+
 /// A name that is neither a file nor a directory hides what the rows say is below it when
 /// it stands where a directory's row is: the rows there are left, and the backing directory
 /// is not read whole. Where a file's row is, or no row, it hides nothing.

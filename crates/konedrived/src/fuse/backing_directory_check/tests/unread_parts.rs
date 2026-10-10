@@ -143,3 +143,27 @@ fn a_new_item_at_the_name_of_a_row_that_may_be_unread_waits_and_what_depends_on_
     assert_eq!(f.rows().len(), before.len() + 1);
     assert!(f.row("a-moved.txt").is_some() && f.row("new.txt").is_some());
 }
+
+/// Found by the test of convergence. `cp -a docs docs-copy ; chmod 000 docs`: the copy is
+/// the one entry that is seen with the mark of `docs`. It is not taken as `docs` moved.
+#[test]
+fn a_copy_of_a_directory_that_cannot_be_read_is_not_taken_as_that_directory_moved() {
+    if is_root() {
+        return;
+    }
+    let mut f = folder_of_each();
+    f.make_directory("docs-copy");
+    f.mark_directory("docs-copy", "D");
+    f.write("docs-copy/a.txt", b"aaa");
+    f.mark_copy("docs-copy/a.txt", "A");
+    let before = f.rows();
+    let findings = check_with_unreadable(&mut f, "docs");
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 3)]);
+    assert_eq!(left(&findings), [(path("docs"), false), (path("docs-copy"), true)]);
+    assert_eq!(f.rows(), before);
+
+    // Readable again: the original is where its row says, and the copy is a new directory.
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::MadeWithStaleMark, 2)]);
+    assert_eq!(f.rows().len(), before.len() + 2);
+    f.assert_settled();
+}

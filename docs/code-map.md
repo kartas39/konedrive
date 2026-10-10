@@ -232,31 +232,42 @@ daemon shows OneDrive.
   placeholders: it is not opened, so no mount is put over it. `[tests]`
 - `backing_directory_check.rs` — `BackingDirectoryCheck`: the check of the backing directory
   at start, which makes the rows of `items` say what the disk has; `DiskFindings`, how many
-  of each finding it wrote and the paths it left (`UnresolvedPath`). No caller yet: the
-  mount does not read the rows. `[tests]`: each finding from a real directory, what is
-  moved by hand, a daemon's death at each operation of the backing directory, convergence
-  under hand edits made at random, and the cost of a run (ignored, run by name).
+  of each finding it wrote, the paths it left (`UnresolvedPath`) and whether it read the
+  whole backing directory (`is_read_whole`). No caller yet: the mount does not read the
+  rows. `[tests]`: each finding from a real directory, what is moved by hand, what is not
+  removed because the person could not see it, what is left while a directory cannot be
+  read, a daemon's death at each operation of the backing directory, convergence under hand
+  edits made at random with a model of what the person saw and did, and the cost of a run
+  (ignored, run by name).
 - `backing_directory_check/disk_finding.rs` — `DiskFinding`, and the one decision
-  (`decide_finding`): what the rows say of a path (`PathRow`) and what the backing directory
-  has there (`PathEntry`, with whose its mark is: `MarkOwner`) answer one finding, or why
-  the path is left (`UnresolvedReason`); whether a file has the content its row has
+  (`decide_finding`): what the rows say of a path (`PathRow`, with where a file's local
+  content came from: `ContentOrigin`) and what the backing directory has there
+  (`PathEntry`, with whose its mark is: `MarkOwner`) answer one finding, or why the path is
+  left (`UnresolvedReason`); whether a file has the content its row has
   (`compare_content`). No disk and no store. `[tests]`
 - `backing_directory_check/backing_directory_contents.rs` — `BackingDirectoryContents`: all
-  the backing directory holds, read once on several threads, each entry with its marks
-  (`BackingDirectoryEntry`), and the entries that carry each OneDrive item id; what was not read is
-  said.
+  the backing directory holds, each entry with its marks (`BackingDirectoryEntry`), and the
+  entries that carry each OneDrive item id; what was not read is said. Put together
+  (`gather`) from whatever reads a level of directories (`DirectoryScan`): the disk, on
+  several threads, or values a test gives. `[tests]`
 - `backing_directory_check/item_rows.rs` — `ItemRows`: all the rows read once, by id, by
-  place and by the OneDrive item id of their binding.
+  place and by their binding, a drive and an item id. `[tests]`
 - `backing_directory_check/entry_identities.rs` — `EntryIdentities`: which item each entry
-  is (`EntryIdentity`), by its mark and by its place in the item its directory is; several
-  entries with one mark.
+  is (`EntryIdentity`): the row at its own place that has its mark's id, else the row of
+  its mark in the drive of its directory, else the row its place has; several entries with
+  one mark. `[tests]`
 - `backing_directory_check/path_findings.rs` — `PathFindings`: the finding of each entry and
-  of each row no entry is taken as; a directory removed here takes all that is in it.
-- `backing_directory_check/write_order.rs` — `WriteOrder`: the findings written through
-  `ItemStore`, a parent before its child, a name freed before it is taken, a removal
+  of each row no entry is taken as; what is in a directory whose row goes is decided as a
+  row whose path is no more; what would leave the folder is held back while part of the
+  backing directory was not read. `[tests]`
+- `backing_directory_check/write_order.rs` — `WriteOrder`: which finding is written before
+  which: a parent before its child, a name freed before it is taken, what leaves the folder
   deepest first; items that wait for each other's places written in one transaction.
+- `backing_directory_check/written_rows.rs` — `WrittenRows`: the store's handle and the
+  place and drive of each item as written so far; what a finding writes, each write one
+  operation of `ItemStore`. `[tests]`
 - `backing_directory_check/local_places.rs` — `LocalPlaces`: which item has each place, as
-  the writes so far leave the rows.
+  the writes so far leave the rows. `[tests]`
 - `stale_mount.rs` — the mount a daemon that died left on a folder, taken off
   (`unmount_stale_mount`).
 - `tidy_step.rs` — what follows the daemon's end (`konedrived --tidy`): a folder's stale mount
@@ -771,6 +782,9 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   the queries that go by an index. Reachable from `item_store` alone.
 - `item_store/content_presence.rs` — whether a file's content is in the backing directory,
   written by itself (`set_content_presence`). `[tests]`
+- `item_store/local_and_synced_version.rs` — an item of OneDrive the folder ceases to show
+  without it being removed here: its local version and what was agreed on are cleared, its
+  binding and what OneDrive has stay (`clear_local_and_synced_version`). `[tests]`
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
   the root's: `bind_root`, and `bind_root_once_known` for today's listing), and moved from
   one item to another (`take_over_binding`, done with the change that says so;

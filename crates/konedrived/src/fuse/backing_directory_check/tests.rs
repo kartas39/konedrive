@@ -238,7 +238,16 @@ impl Folder {
     /// kind, and a file's with its size and time; every row whose content is on disk, and
     /// every item OneDrive does not have, has its entry.
     pub(super) fn assert_rows_say_the_disk(&mut self) {
+        self.assert_rows_say_the_disk_but(&[]);
+    }
+
+    /// [`assert_rows_say_the_disk`](Self::assert_rows_say_the_disk), but for the paths the
+    /// check said it left: what is at those has no row.
+    pub(super) fn assert_rows_say_the_disk_but(&mut self, left: &[PathBuf]) {
         for rel in self.walk_disk() {
+            if left.contains(&rel) {
+                continue;
+            }
             let metadata = fs::symlink_metadata(self.disk(&rel)).unwrap();
             let row = self.row(&rel).unwrap_or_else(|| panic!("{rel:?} is on disk and has no row"));
             let kind = if metadata.is_dir() { ItemKind::Directory } else { ItemKind::File };
@@ -265,11 +274,17 @@ impl Folder {
     /// The check is done: the rows say the disk, and a second run finds nothing changed
     /// anywhere and writes nothing.
     pub(super) fn assert_settled(&mut self) {
-        self.assert_rows_say_the_disk();
+        self.assert_settled_but(&[]);
+    }
+
+    /// [`assert_settled`](Self::assert_settled), but for the paths the check said it left:
+    /// a second run leaves the same.
+    pub(super) fn assert_settled_but(&mut self, left: &[PathBuf]) {
+        self.assert_rows_say_the_disk_but(left);
         let before = self.rows();
         let again = self.check();
         assert!(found(&again).iter().all(|(finding, _)| *finding == DiskFinding::NothingChanged), "a second run found {:?}", found(&again));
-        assert_eq!(again.unresolved(), []);
+        assert_eq!(again.unresolved().iter().map(|left| left.path.clone()).collect::<Vec<_>>(), left);
         assert_eq!(self.rows(), before, "a second run wrote");
     }
 }
