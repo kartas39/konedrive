@@ -227,3 +227,55 @@ impl Disk {
 
 #[cfg(test)]
 mod tests;
+
+// ---- The names of the mount over the rows: no caller until the mount reads the rows. ----
+//
+// Two rules, with two questions, because the two kinds of name need OPPOSITE answers from
+// the check of the backing directory at start. Tested without the rest:
+// test: an_entry_set_aside_is_an_entry_no_row_says_and_a_hidden_name
+// test: a_temporary_name_is_a_hidden_name_and_not_an_entry_no_row_says
+// test: the_holding_directory_and_a_new_folder_are_both
+// test: a_row_the_check_set_aside_is_hidden_and_is_a_rows_place
+// test: the_set_aside_name_of_an_item_is_the_same_at_every_start_and_another_items_is_another
+
+/// How the name begins that an entry of the backing directory is set aside to, in the root,
+/// before it is removed for good (`fuse::place_changes`, `PlaceChange::set_aside`): an
+/// entry NO row says. After it comes the local item id of the item the entry was of.
+#[allow(dead_code)]
+pub const ASIDE_ENTRY_PREFIX: &str = ".konedrive-aside-";
+
+/// How the temporary name of an exchange of names begins
+/// (`konedrive_tree::make_temporary_name`): the place of a ROW, with its file or directory
+/// on disk under that name.
+#[allow(dead_code)]
+pub const TEMPORARY_NAME_PREFIX: &str = ".konedrive-swap-";
+
+/// The name the entry of `item` is set aside to: made of the local item id, which is never
+/// given twice, so that it is the same name at every start and no other item's. One item
+/// has one entry set aside at most (one step per item, under the tree lock); a leftover
+/// of a death is removed before the mount goes up (`PlaceChanges::remove_aside_entries`).
+#[allow(dead_code, unused_variables)]
+pub fn make_aside_entry_name(item: konedrive_tree::LocalItemId) -> std::ffi::OsString {
+    todo!()
+}
+
+/// Whether `name`, in the root of the backing directory, is an entry no row says: the
+/// holding directory, a new folder before it has its name, an entry set aside. What the
+/// check of the backing directory at start SKIPS (it is nothing of the folder), and what
+/// `PlaceChanges::remove_aside_entries` cleans of the last kind. A temporary name and a
+/// row the check set aside are NOT among them: each is a row's place, and skipping it
+/// would make the check find the row's file gone.
+#[allow(dead_code, unused_variables)]
+pub fn is_rowless_entry_name(name: &OsStr) -> bool {
+    todo!()
+}
+
+/// Whether the mount hides `name` and refuses it to programs (lookup `ENOENT`, make and
+/// rename `EPERM`): every entry no row says ([`is_rowless_entry_name`]), a name the check
+/// at start set a row aside to ([`SET_ASIDE_PREFIX`]), and a temporary name of an
+/// exchange. Asked by the mount's lookup, directory readings, make and rename, and by the
+/// queue's answers, which show no such row.
+#[allow(dead_code, unused_variables)]
+pub fn is_hidden_name(name: &OsStr) -> bool {
+    todo!()
+}
