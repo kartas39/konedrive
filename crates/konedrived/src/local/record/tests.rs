@@ -14,7 +14,7 @@ fn store(files: usize) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     let mut changes = vec![Change::Root(row("R", None, "root", Kind::Folder))];
     changes.extend((0..files).map(|i| Change::Upsert(row(&format!("f{i}"), Some("R"), &format!("{i}.txt"), Kind::File))));
-    store.commit_page(&changes, "next").unwrap();
+    store.commit_page(&changes, "next", &[]).unwrap();
     store
 }
 

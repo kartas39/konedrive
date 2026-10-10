@@ -19,7 +19,7 @@ fn store() -> TreeStore {
         Change::Upsert(row("A", Some("R"), "a.txt", Kind::File)),
         Change::Upsert(row("B", Some("R"), "b.txt", Kind::File)),
     ];
-    store.commit_page(&changes, "next").unwrap();
+    store.commit_page(&changes, "next", &[]).unwrap();
     store
 }
 

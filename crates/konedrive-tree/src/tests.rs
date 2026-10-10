@@ -123,7 +123,7 @@ fn committed(changes: &[Change]) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(changes).unwrap();
-    store.commit_staging("link-1").unwrap();
+    store.commit_staging("link-1", &[]).unwrap();
     store
 }
 
@@ -134,7 +134,7 @@ fn staged_rows_are_invisible_until_committed() {
     store.stage(&[root(), file("A", "R", "a")]).unwrap();
     assert!(store.get(Table::OneDriveItems, "A").unwrap().is_none());
     assert!(store.get(Table::Staging, "A").unwrap().is_some());
-    store.commit_staging("link-1").unwrap();
+    store.commit_staging("link-1", &[]).unwrap();
     assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
     assert_eq!(store.staged_rows(), 0, "the staged rows are gone into onedrive_items");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
@@ -148,13 +148,13 @@ fn staged_rows_are_invisible_until_committed() {
 #[test]
 fn a_placed_page_is_committed_with_where_the_listing_goes_on() {
     let mut store = TreeStore::in_memory().unwrap();
-    store.commit_page(&[root(), folder("D", "R", "docs"), file("F", "D", "f")], "next-2").unwrap();
+    store.commit_page(&[root(), folder("D", "R", "docs"), file("F", "D", "f")], "next-2", &[]).unwrap();
     assert!(store.get(Table::OneDriveItems, "F").unwrap().is_some());
     assert_eq!(store.listing_next().unwrap().as_deref(), Some("next-2"));
     assert_eq!(store.root_item_id().unwrap().as_deref(), Some("R"));
     assert_eq!(store.delta_link().unwrap(), None, "the listing has not ended");
 
-    store.commit_page(&[Change::Delete("D".into()), file("G", "R", "g")], "next-3").unwrap();
+    store.commit_page(&[Change::Delete("D".into()), file("G", "R", "g")], "next-3", &[]).unwrap();
     assert!(store.get(Table::OneDriveItems, "D").unwrap().is_none());
     assert!(store.get(Table::OneDriveItems, "F").unwrap().is_none(), "what was inside the deleted folder goes with it");
     assert!(store.get(Table::OneDriveItems, "G").unwrap().is_some());
@@ -168,10 +168,10 @@ fn a_placed_page_is_committed_with_where_the_listing_goes_on() {
 #[test]
 fn an_entry_whose_folder_has_not_come_survives_a_page_commit() {
     let mut store = TreeStore::in_memory().unwrap();
-    store.commit_page(&[root(), file("C", "P", "c")], "next-2").unwrap();
+    store.commit_page(&[root(), file("C", "P", "c")], "next-2", &[]).unwrap();
     assert!(store.get(Table::OneDriveItems, "C").unwrap().is_some(), "kept, though nowhere yet");
     assert_eq!(store.locate(Table::OneDriveItems, "C").unwrap(), None);
-    store.commit_page(&[folder("P", "R", "p")], "next-3").unwrap();
+    store.commit_page(&[folder("P", "R", "p")], "next-3", &[]).unwrap();
     assert_eq!(store.locate(Table::OneDriveItems, "C").unwrap(), Some(Located { rel: "p/c".into(), placed: true, depth: 2 }));
 }
 
@@ -183,7 +183,7 @@ fn a_listing_begun_is_at_the_start_until_its_first_page() {
     let mut store = TreeStore::in_memory().unwrap();
     store.begin_placing().unwrap();
     assert_eq!(store.listing_next().unwrap().as_deref(), Some(""));
-    store.commit_page(&[root()], "next-2").unwrap();
+    store.commit_page(&[root()], "next-2", &[]).unwrap();
     assert_eq!(store.listing_next().unwrap().as_deref(), Some("next-2"));
 }
 
@@ -192,10 +192,10 @@ fn a_listing_begun_is_at_the_start_until_its_first_page() {
 #[test]
 fn the_swap_ends_a_listing_placed_page_by_page() {
     let mut store = TreeStore::in_memory().unwrap();
-    store.commit_page(&[root(), file("A", "R", "a")], "next-2").unwrap();
+    store.commit_page(&[root(), file("A", "R", "a")], "next-2", &[]).unwrap();
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[file("B", "R", "b")]).unwrap();
-    store.commit_staging("link-1").unwrap();
+    store.commit_staging("link-1", &[]).unwrap();
     assert_eq!(store.listing_next().unwrap(), None);
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
     assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
@@ -210,7 +210,7 @@ fn a_table_is_empty_until_a_row_is_in_it() {
     store.stage(&[root()]).unwrap();
     assert!(store.is_empty(Table::OneDriveItems).unwrap(), "a staged row is not in onedrive_items");
     assert!(!store.is_empty(Table::Staging).unwrap());
-    store.commit_staging("link-1").unwrap();
+    store.commit_staging("link-1", &[]).unwrap();
     assert!(!store.is_empty(Table::OneDriveItems).unwrap());
 }
 
@@ -283,7 +283,7 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[long(file("F", "D", "f.txt"), "f-long"), long(file("N", "R", "n"), "n-longer"), Change::Delete("G".into())]).unwrap();
     let whole: Vec<String> = ["F", "N", "G"].map(str::to_owned).to_vec();
-    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1, waits: &[], copies_on_disk: &[] }).unwrap();
     assert_eq!(store.locate(Table::OneDriveItems, "F").unwrap().unwrap(), Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }, "still here");
     assert_eq!(
         store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(),
@@ -295,14 +295,14 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     // The next cycle stages it again, and says what keeps it.
     let staged = store.stage_rw(&[], 0, false).unwrap().unwrap();
     let waits = [("F".to_owned(), WaitsFor::Uploads(2).to_string())];
-    store.commit_staging_deferring("link-3", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &whole, content: &[], fetched_at: 1, waits: &waits }).unwrap();
+    store.commit_staging_deferring("link-3", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &whole, content: &[], fetched_at: 1, waits: &waits, copies_on_disk: &[] }).unwrap();
     assert_eq!(store.skipped().unwrap()[0], Skipped { rel: "docs/f-long".into(), reason: SkipReason::NameTooLong, waits: Some(WaitsFor::Uploads(2)), here: Some("docs/f.txt".into()) });
 
     // A folder that waits covers what waits inside it: one line, one count,
     // and no path made of the folder's name here and the file's in OneDrive.
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[long(folder("D", "R", "docs"), "docs-long")]).unwrap();
-    store.commit_staging_deferring("link-4", &crate::reconcile::Deferrals { consumed: &[], whole: &["D".to_owned()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
+    store.commit_staging_deferring("link-4", &crate::reconcile::Deferrals { consumed: &[], whole: &["D".to_owned()], content: &[], fetched_at: 1, waits: &[], copies_on_disk: &[] }).unwrap();
     let lines: Vec<PathBuf> = store.skipped().unwrap().into_iter().map(|s| s.rel).collect();
     assert_eq!(lines, [PathBuf::from("docs-long"), PathBuf::from("n-longer")]);
     assert_eq!(store.counts().unwrap().skipped, 2);
@@ -347,7 +347,7 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
         let mut store = TreeStore::open(&path).unwrap();
         store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&tree).unwrap();
-        store.commit_staging("link-1").unwrap();
+        store.commit_staging("link-1", &[]).unwrap();
         store.begin_staging(crate::NewTree::Delta).unwrap();
         store.stage(&delta).unwrap();
         assert_eq!(store.staged_rows(), 10, "only the delta's rows are staged");
@@ -363,7 +363,7 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
     assert_eq!(store.staged_rows(), 0, "the next cycle stages afresh");
     store.stage(&delta).unwrap();
     let before = store.conn.total_changes();
-    store.commit_staging("link-2").unwrap();
+    store.commit_staging("link-2", &[]).unwrap();
     let written = store.conn.total_changes() - before;
     assert!(written < 40, "the swap wrote {written} rows");
     assert_eq!(store.get(Table::OneDriveItems, "F7-3").unwrap().unwrap().name, "renamed3");
@@ -383,7 +383,7 @@ fn a_delta_laid_over_items_removes_and_changes_what_it_says() {
     let mut ids = store.changed_ids().unwrap();
     ids.sort();
     assert_eq!(ids, vec!["D".to_owned(), "F".to_owned()], "K is staged as it was");
-    store.commit_staging("link-2").unwrap();
+    store.commit_staging("link-2", &[]).unwrap();
     assert!(store.get(Table::OneDriveItems, "F").unwrap().is_none());
     assert!(store.get(Table::OneDriveItems, "K").unwrap().is_some());
 }
@@ -405,7 +405,7 @@ fn a_store_survives_reopening_and_is_private() {
         let mut store = TreeStore::open(&path).unwrap();
         store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&[root(), file("A", "R", "a")]).unwrap();
-        store.commit_staging("link-1").unwrap();
+        store.commit_staging("link-1", &[]).unwrap();
     }
     let store = TreeStore::open(&path).unwrap();
     assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
@@ -430,7 +430,7 @@ fn a_permission_error_does_not_rebuild_a_good_store() {
         let mut store = TreeStore::open(&path).unwrap();
         store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&[root(), file("A", "R", "a")]).unwrap();
-        store.commit_staging("link-1").unwrap();
+        store.commit_staging("link-1", &[]).unwrap();
     }
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
     assert!(TreeStore::open(&path).is_err(), "a permission failure must be returned, not treated as corruption");

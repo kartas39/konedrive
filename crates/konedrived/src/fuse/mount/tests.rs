@@ -57,7 +57,7 @@ pub(in crate::fuse) fn build_mount_with(more: &[Change], pinned_ids: &[&str]) ->
     let mut written = TreeStore::open(&store_path).unwrap();
     drive(&mut written, Vec::new());
     if !more.is_empty() {
-        written.commit_page(more, "after").unwrap();
+        written.commit_page(more, "after", &[]).unwrap();
     }
     let store = Store::new(written);
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();

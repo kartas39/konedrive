@@ -6,7 +6,7 @@
 //! of its own — a write operation records on the write-operation thread
 //! ([`super::write_operation_thread`]), under the folder's tree lock, and a cycle of the
 //! delta listing records what it kept of the user's own inside its own transaction
-//! ([`OutboxRecorder::record_in`]).
+//! with what its step did to the rows of `items` ([`OutboxRecorder::record_step_in`]).
 //!
 //! Whether the folder takes changes is not its to ask: the write operation that records has
 //! asked the access mode switch already, on the thread the switch to read-only runs on. It knows
@@ -14,10 +14,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use konedrive_tree::{Store, TreeError, TreeStore};
+use konedrive_tree::{LocalItemId, LocalVersionChange, Store, TreeError, TreeStore};
 
 use super::detections::{FolderEvent, OutboxBatch};
-use crate::local::record::{record, Recorded};
+use crate::local::record::{record, record_with_step_changes, Recorded};
 
 /// What wakes the outbox's worker.
 pub(super) type OutboxWaker = Arc<dyn Fn() + Send + Sync>;
@@ -63,9 +63,17 @@ impl OutboxRecorder {
     /// Writes `batch` into the outbox of `store`, dated `now`, inside the call of the store
     /// the caller is in already: the transaction of a cycle of the delta listing, which has
     /// the store for itself. The worker is not woken here: the cycle wakes it once it is
-    /// committed ([`wake_outbox`](Self::wake_outbox)). Nothing for a batch that holds nothing.
-    pub(super) fn record_in(&self, store: &mut TreeStore, batch: OutboxBatch, now: i64) -> Result<Recorded, TreeError> {
-        write_batch(store, batch, now)
+    /// committed ([`wake_outbox`](Self::wake_outbox)). With it, in the same transaction, what
+    /// the cycle's step did to the rows of `items`: `given_up`, the items that give their
+    /// bindings up, each with what the upload rules say of its name, and `changes` of local
+    /// versions; they are written also where the batch holds nothing, as in a read-only
+    /// folder. How many of them the rows refused. Nothing at all for a batch that holds
+    /// nothing and a step that changed no row.
+    pub(super) fn record_step_in(&self, store: &mut TreeStore, batch: OutboxBatch, given_up: &[(LocalItemId, bool)], changes: &[LocalVersionChange], now: i64) -> Result<usize, TreeError> {
+        if given_up.is_empty() && changes.is_empty() {
+            return write_batch(store, batch, now).map(|_| 0);
+        }
+        record_with_step_changes(store, batch.detections, batch.ops, given_up, changes, now).map(|(refused, _)| refused)
     }
 }
 

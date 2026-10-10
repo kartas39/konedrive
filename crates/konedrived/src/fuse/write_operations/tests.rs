@@ -66,7 +66,7 @@ fn folder_recording_into(detections: Vec<Detection>, more: &[Change], open_store
     let mut written = TreeStore::open(&path).unwrap();
     drive(&mut written, detections);
     if !more.is_empty() {
-        written.commit_page(more, "after").unwrap();
+        written.commit_page(more, "after", &[]).unwrap();
     }
     let store = open_store(written, &path);
     let backing_directory = Arc::new(BackingDirectory::open(&disk).unwrap());

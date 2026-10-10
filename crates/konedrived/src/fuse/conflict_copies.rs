@@ -95,6 +95,12 @@ impl ConflictCopies {
         copy_name(name, &self.machine_name, n)
     }
 
+    /// What the upload rules say of the name `name` by itself: written to the row of what
+    /// is kept here under it and is not in OneDrive.
+    pub(super) fn is_name_ignored(&self, name: &str) -> bool {
+        self.upload_rules.is_name_ignored(name)
+    }
+
     /// Something of OneDrive comes to `rel`, in the directory with the OneDrive id
     /// `parent_id`: the local-only entry that is there is renamed to a conflict copy's name
     /// beside it, whatever the folder's access mode — nothing of the user's own is ever

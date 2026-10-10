@@ -7,7 +7,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use konedrive_tree::outbox::{Detection, OutboxApplied, OutboxKind, OutboxOp, OutboxState, Reason};
-use konedrive_tree::{Kind, Table, TreeError, TreeStore};
+use konedrive_tree::{Kind, LocalItemId, LocalVersionChange, Table, TreeError, TreeStore};
 
 use super::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
 
@@ -27,7 +27,25 @@ pub struct Recorded {
 /// trips on something new, every removal not confirmed is held.
 ///
 /// Rows are written freers first ([`ordered`]).
-pub fn record(s: &mut TreeStore, mut detections: Vec<Detection>, ops: Vec<OutboxOp>, now: i64) -> Result<Recorded, TreeError> {
+pub fn record(s: &mut TreeStore, detections: Vec<Detection>, ops: Vec<OutboxOp>, now: i64) -> Result<Recorded, TreeError> {
+    let (all, held) = list_outbox_ops(s, detections, ops)?;
+    Ok(Recorded { applied: s.outbox_apply(&all, now)?, held })
+}
+
+/// [`record`] for a step of a cycle of the delta listing, with what the step did to the
+/// rows of `items` in the same transaction
+/// ([`ItemStore::write_step_changes`](konedrive_tree::ItemStore::write_step_changes)): the
+/// items in `given_up` give their bindings up, and `changes` are written. With how many of
+/// them the rows refused.
+pub fn record_with_step_changes(s: &mut TreeStore, detections: Vec<Detection>, ops: Vec<OutboxOp>, given_up: &[(LocalItemId, bool)], changes: &[LocalVersionChange], now: i64) -> Result<(usize, Recorded), TreeError> {
+    let (all, held) = list_outbox_ops(s, detections, ops)?;
+    let (refused, applied) = s.item_store().write_step_changes(given_up, changes, &all, now)?;
+    Ok((refused, Recorded { applied, held }))
+}
+
+/// What recording `detections`, with `ops` beside them, writes into the outbox, in order,
+/// and how many items the mass-delete guard holds back.
+fn list_outbox_ops(s: &TreeStore, mut detections: Vec<Detection>, ops: Vec<OutboxOp>) -> Result<(Vec<OutboxOp>, u64), TreeError> {
     let mut held = 0;
     let mut holds = Vec::new();
     if detections.iter().any(|d| d.kind.removes() && d.item_id.is_some()) {
@@ -61,7 +79,7 @@ pub fn record(s: &mut TreeStore, mut detections: Vec<Detection>, ops: Vec<Outbox
     all.extend(ordered(detections).into_iter().map(OutboxOp::Record));
     all.extend(rest);
     all.extend(holds);
-    Ok(Recorded { applied: s.outbox_apply(&all, now)?, held })
+    Ok((all, held))
 }
 
 /// Whether a detection takes its item away from its base place.

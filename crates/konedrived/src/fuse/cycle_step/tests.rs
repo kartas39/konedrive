@@ -143,7 +143,7 @@ fn what_a_cycle_leaves_is_done_once_when_it_is_committed() {
     apply(&built, vec![Change::Delete("A".into())], None);
     let cycle_step = built.mount.cycle_step();
     let vanished = Announcement::NameVanished { path: "a.txt".into(), kind: Kind::File, onedrive_id: "A".into(), parent_id: Some("R".into()) };
-    assert_eq!(*crate::panic::lock(&cycle_step.uncommitted_cycle), UncommittedCycle { announcements: vec![vanished], removed_ids: vec!["A".to_owned()] });
+    assert_eq!(*crate::panic::lock(&cycle_step.uncommitted_cycle), UncommittedCycle { announcements: vec![vanished], removed_ids: vec!["A".to_owned()], copies_on_disk: Vec::new() });
     assert_eq!(built.mount.files_interface().count_pins(), 1, "not before the cycle is committed");
     cycle_step.announce_committed_cycle();
     assert_eq!(built.mount.files_interface().count_pins(), 0);

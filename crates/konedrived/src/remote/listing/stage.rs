@@ -16,7 +16,9 @@
 //!   that answer is staged instead, newer than both.
 //! - **What waits is staged again**, before the delta: an item the outbox
 //!   holds keeps its base row, and its change is deferred until the folder
-//!   takes it or an outbox commit supersedes it. Items the outbox committed
+//!   takes it or an outbox commit supersedes it. A read-only folder defers
+//!   nothing, and its first cycle stages what a read-write cycle left waiting
+//!   (`stage_waiting`), so that it passes the cycle step and reaches the folder. Items the outbox committed
 //!   since the last cycle are looked at again too, so the folder follows the
 //!   base.
 
@@ -87,15 +89,11 @@ impl Listing {
             (News::Listed { link }, Mode::ReadOnly) => Ok((Some(Staged { mode: Mode::ReadOnly, commit: swap(link) }), 0)),
             (News::Changes { changes, link }, Mode::ReadOnly) => {
                 let count = changes.len();
-                if count == 0 && !full_requested {
+                // What waits since the folder was read-write is staged before the delta.
+                if !self.on_store(turn, move |s| s.stage_waiting(&changes, full_requested)).await? {
                     self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                     return Ok((None, count));
                 }
-                self.on_store(turn, move |s| {
-                    s.begin_staging(konedrive_tree::NewTree::Delta)?;
-                    s.stage(&changes)
-                })
-                .await?;
                 Ok((Some(Staged { mode: Mode::ReadOnly, commit: swap(link) }), count))
             }
             (News::Listed { link }, Mode::ReadWrite(Since { writes, fetch_seq })) => {

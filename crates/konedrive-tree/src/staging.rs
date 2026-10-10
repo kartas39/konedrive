@@ -4,6 +4,7 @@ use crate::model::{upsert, Change, NewTree, Row, Table, COLUMNS, ROW_COLUMNS};
 use crate::query::descendants_in;
 use crate::meta::{self, DELTA_LINK, LISTING_NEXT, ROOT_ITEM_ID, STAGING_WHOLE};
 use crate::source::Source;
+use crate::item_store::follow_onedrive_items;
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 impl TreeStore {
@@ -38,9 +39,21 @@ impl TreeStore {
     /// every row. The version a cached thumbnail was made for and the last
     /// outbox commit travel along: a row staged without them keeps what
     /// `onedrive_items` has.
-    pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
+    ///
+    /// The commit of a read-only folder's cycle, which staged every change that waited
+    /// since the folder was read-write ([`stage_waiting`](Self::stage_waiting)), or a whole
+    /// listing, newer than any of them: nothing waits after it, and no tombstone of the
+    /// outbox is kept.
+    ///
+    /// The rows of `items` follow in the same transaction
+    /// ([`follow_onedrive_items`](crate::item_store::follow_onedrive_items)), with
+    /// `copies_on_disk`, the files the cycle step found whole in the backing directory.
+    pub fn commit_staging(&mut self, delta_link: &str, copies_on_disk: &[String]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM deferred", [])?;
+        tx.execute("DELETE FROM outbox_gone", [])?;
         swap(&tx, self.whole, delta_link)?;
+        follow_onedrive_items(&tx, copies_on_disk)?;
         tx.commit()?;
         self.whole = false;
         Ok(())
@@ -53,10 +66,12 @@ impl TreeStore {
     /// resumes with every page placed so far and asks for none of them
     /// again. Entries whose folder has not come yet go in too; they are
     /// placed when it comes. A delta staged over `onedrive_items` is done with: the
-    /// new tree is `onedrive_items` again.
-    pub fn commit_page(&mut self, changes: &[Change], next: &str) -> Result<(), TreeError> {
+    /// new tree is `onedrive_items` again. The rows of `items` follow in the same
+    /// transaction, as at [`commit_staging`](Self::commit_staging).
+    pub fn commit_page(&mut self, changes: &[Change], next: &str, copies_on_disk: &[String]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         apply(&tx, Source::OneDriveItems, changes)?;
+        follow_onedrive_items(&tx, copies_on_disk)?;
         if !self.whole {
             tx.execute("DELETE FROM staging", [])?;
             tx.execute("DELETE FROM staging_gone", [])?;

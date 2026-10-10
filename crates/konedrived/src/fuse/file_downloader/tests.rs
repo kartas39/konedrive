@@ -228,7 +228,7 @@ fn a_download_of_a_file_whose_content_changed_in_the_store_meanwhile_lands_nowhe
     let committed = downloads.folder.store.call_blocking(move |store| {
         store.begin_staging(NewTree::Delta)?;
         store.stage(&[another])?;
-        store.commit_staging("after")
+        store.commit_staging("after", &[])
     });
     committed.unwrap();
     drop(held);

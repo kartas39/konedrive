@@ -28,7 +28,7 @@ fn store(items: &[Row]) -> TreeStore {
     changes.extend(items.iter().cloned().map(Change::Upsert));
     s.begin_staging(crate::NewTree::Whole).unwrap();
     s.stage(&changes).unwrap();
-    s.commit_staging("link").unwrap();
+    s.commit_staging("link", &[]).unwrap();
     s
 }
 

@@ -56,6 +56,12 @@ impl UploadRules {
         false
     }
 
+    /// Whether the name `name` itself is on the ignore list, wherever it is: what a row of
+    /// `items` keeps of an item that is not in OneDrive (`is_name_ignored`).
+    pub(super) fn is_name_ignored(&self, name: &str) -> bool {
+        crate::panic::read(&self.ignore).matches(name.as_ref())
+    }
+
     /// Whether what is `name` in the directory `directory` and is not in OneDrive is ignored:
     /// its name is on the ignore list, or it is in a directory that is
     /// ([`Self::is_in_ignored_directory`]).

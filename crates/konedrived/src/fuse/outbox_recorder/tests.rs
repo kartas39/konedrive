@@ -46,8 +46,8 @@ fn a_batch_recorded_inside_a_call_of_the_store_is_in_the_outbox_and_wakes_nothin
     let woken = count_wakes(&outbox_recorder);
     let kept = detection_of(OutboxKind::Create, &file(1, 3), &in_root("kept.txt"), OutboxState::Ready);
     let recording = Arc::clone(&outbox_recorder);
-    let recorded = store.call_blocking(move |s| recording.record_in(s, OutboxBatch { detections: vec![kept], ops: Vec::new() }, 1_000)).unwrap();
-    assert_eq!(recorded.applied.queued.len(), 1);
+    let refused = store.call_blocking(move |s| recording.record_step_in(s, OutboxBatch { detections: vec![kept], ops: Vec::new() }, &[], &[], 1_000)).unwrap();
+    assert_eq!(refused, 0);
     let rows = store.call_blocking(|s| s.outbox_rows()).unwrap();
     assert_eq!(rows.iter().map(|row| row.rel.to_string_lossy().into_owned()).collect::<Vec<_>>(), ["kept.txt"]);
     assert_eq!(woken.load(Ordering::SeqCst), 0);
@@ -56,8 +56,7 @@ fn a_batch_recorded_inside_a_call_of_the_store_is_in_the_outbox_and_wakes_nothin
 #[test]
 fn a_batch_that_holds_nothing_writes_nothing() {
     let (store, outbox_recorder) = outbox_recorder();
-    let recorded = store.call_blocking(move |s| outbox_recorder.record_in(s, OutboxBatch::default(), 1_000)).unwrap();
-    assert!(recorded.applied.queued.is_empty());
+    store.call_blocking(move |s| outbox_recorder.record_step_in(s, OutboxBatch::default(), &[], &[], 1_000)).unwrap();
     assert!(store.call_blocking(|s| s.outbox_rows()).unwrap().is_empty());
 }
 
