@@ -282,8 +282,8 @@ fn a_file_removed_here_whose_changed_content_the_folder_cannot_show_forgets_what
 #[test]
 fn an_item_both_sides_removed_has_its_row_dropped() {
     let given = input(vec![removed_in_onedrive(removed_here(synced_file(2, ROOT, "a.txt"))), removed_in_onedrive(removed_here(synced_directory(3, ROOT, "d")))]);
-    assert_eq!(answer(&given, 2), row_step(RowStep::DropRow { item: versions(&given, 2) }));
-    assert_eq!(answer(&given, 3), row_step(RowStep::DropRow { item: versions(&given, 3) }));
+    assert_eq!(answer(&given, 2), row_step(RowStep::AgreeOnRemoval { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), row_step(RowStep::AgreeOnRemoval { item: versions(&given, 3) }));
 }
 
 // -- never was here, is there in OneDrive

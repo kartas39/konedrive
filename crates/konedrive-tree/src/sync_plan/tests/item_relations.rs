@@ -281,11 +281,12 @@ fn of_two_items_the_rows_say_onedrive_has_under_one_name_the_second_waits_for_th
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing), "one name, as OneDrive compares names");
     assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Listing));
 
-    // With no listing under way the rows say what OneDrive cannot have: a full listing
-    // mends them.
+    // With no listing under way OneDrive has judged of the two names that fold to one:
+    // they are two items (the brief's §7, M3). The very name on two rows is what OneDrive
+    // cannot have: a full listing mends the rows.
     given.is_listing_under_way = false;
     assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveItem { item: versions(&given, 2) }));
-    assert_eq!(answer(&given, 3), Answer::OtherFault(PlanFault::FullListingNeeded(id(3))));
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveItem { item: versions(&given, 3) }));
     assert_eq!(answer(&given, 4), Answer::OtherFault(PlanFault::FullListingNeeded(id(4))));
 }
 
@@ -629,12 +630,215 @@ fn an_item_that_cannot_be_judged_while_no_listing_is_under_way_needs_a_full_list
 /// the plan says it is at fault — or there is nothing to do.
 #[test]
 fn a_plan_in_which_nothing_can_run_says_why() {
-    for (words, given) in enumeration::every_enumerated_input() {
-        let plan = make_sync_plan(&given);
+    enumeration::visit_every_enumerated_input(|words, given| {
+        let plan = make_sync_plan(given);
         if !plan.steps.is_empty() || !plan.faults.is_empty() {
-            continue;
+            return;
         }
         let ends = plan.waits.iter().any(|wait| matches!(wait.reason, WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemNotGiven(_)));
         assert!(ends || plan.waits.is_empty(), "{words}: {:?}", plan.waits);
+    });
+}
+
+// -- the findings of the review of part 3
+
+/// The review's M1, new: a directory removed here that OneDrive has in a directory removed
+/// here sends no removal of its own, whatever is answered for the outer one; what was
+/// moved out of it is sent first, and the outer one's removal is the one removal.
+#[test]
+fn a_directory_removed_here_in_a_removed_directory_sends_no_removal_of_its_own() {
+    let rows = || vec![
+        removed_here(synced_directory(2, ROOT, "a")),
+        removed_here(synced_directory(3, id(2), "b")),
+        moved_here(synced_file(4, id(3), "c.txt"), ROOT, "kept.txt"),
+        removed_here(synced_file(5, id(2), "c.txt")),
+        removed_here(synced_file(6, id(2), "e.txt")),
+    ];
+    // A step is running for the outer directory: its move, sent before it was removed.
+    let mut given = input(rows());
+    given.items_with_running_step = [id(2)].into();
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::RunningStep));
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "kept.txt".into() }));
+    for inside in [3, 5, 6] {
+        assert_eq!(answer(&given, inside), waits_for(2), "item {inside} goes with the outer directory");
     }
+    // No step is running: the outer one waits for what was moved out of the inner one.
+    let given = input(rows());
+    assert_eq!(answer(&given, 2), waits_for(4));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    // Once the move was sent, one removal, of the outer one, for all four.
+    let mut sent = rows();
+    sent[2] = synced_file(4, ROOT, "kept.txt");
+    let given = input(sent);
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendDirectoryRemoval { item: versions(&given, 2), below: vec![versions(&given, 3), versions(&given, 5), versions(&given, 6)] }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+}
+
+/// M1's condition, new: a directory's removal is not sent while a step is running for
+/// anything OneDrive has below it, at any depth, though the folder does not show it.
+#[test]
+fn the_removal_of_a_directory_waits_for_a_step_running_for_what_onedrive_has_below_it() {
+    let mut given = input(vec![removed_here(synced_directory(2, ROOT, "a")), removed_here(synced_directory(3, id(2), "b")), removed_here(synced_file(4, id(3), "c.txt"))]);
+    given.items_with_running_step = [id(4)].into();
+    assert_eq!(answer(&given, 2), waits_for(4));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::RunningStep));
+}
+
+/// The review's S2, new: while a listing is under way the rows are behind OneDrive, and no
+/// directory's removal is sent.
+#[test]
+fn the_removal_of_a_directory_waits_for_a_listing_under_way_to_end() {
+    let mut given = input(vec![removed_here(synced_directory(2, ROOT, "d")), removed_here(synced_file(3, id(2), "f")), removed_here(synced_file(4, ROOT, "g"))]);
+    given.is_listing_under_way = true;
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }), "a file's removal is guarded by its eTag");
+}
+
+fn cannot_be_shown(mut given: SyncPlanInput, numbers: &[i64]) -> SyncPlanInput {
+    given.folder_visibility.extend(numbers.iter().map(|number| (id(*number), FolderVisibility::CannotBeShown)));
+    given
+}
+
+/// The review's M2, the brief's §7: a new item here at the name of an item of OneDrive the
+/// folder cannot show is not merged with it; OneDrive holds the name, so the local one is
+/// renamed to a conflict copy's name, and then sent as new.
+#[test]
+fn a_new_item_at_the_name_of_an_item_the_folder_cannot_show_is_renamed_to_a_conflict_copys_name() {
+    let given = cannot_be_shown(input(vec![listed(2, ItemKind::Directory, ROOT, "shared"), made_directory(3, ROOT, "shared"), made_file(4, id(3), "mine.txt")]), &[2]);
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 3), name: "shared-pc".into() }));
+    assert_eq!(answer(&given, 2), Answer::Exclusion(ExclusionReason::CannotBeShown));
+    // A file of the very content of the one the folder cannot show, likewise.
+    let given = cannot_be_shown(input(vec![listed(2, ItemKind::File, ROOT, "a.txt"), with_content_here(made_file(3, ROOT, "a.txt"), hashed_here("h2"))]), &[2]);
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 3), name: "a-pc.txt".into() }));
+}
+
+/// M2, the brief's §7: what the user made, or moved here, in a directory OneDrive has
+/// where the folder cannot show it is not sent into it and waits for the user; and that
+/// directory does not leave the folder while the folder shows in it something unsent. An
+/// item both sides agreed on there, changed here, has its content sent where OneDrive has
+/// it.
+#[test]
+fn what_the_user_made_in_a_directory_the_folder_cannot_show_waits_for_the_user_and_the_directory_stays() {
+    let given = cannot_be_shown(
+        input(vec![synced_directory(2, ROOT, "d"), synced_file(3, id(2), "f"), made_file(4, id(2), "mine.txt"), moved_here(synced_file(5, ROOT, "g"), id(2), "g"), with_content_here(synced_file(6, id(2), "h"), written_here())]),
+        &[2, 3, 6],
+    );
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::RemoveItem { item: versions(&given, 3) }), "the clean item goes");
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::Parent)));
+    assert_eq!(answer(&given, 5), Answer::Wait(WaitReason::User(Reason::Parent)));
+    assert_eq!(answer(&given, 6), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 6) }));
+    assert_eq!(answer(&given, 2), waits_for(3));
+    // With the clean item gone, the directory waits for what is unsent in it.
+    let given = cannot_be_shown(input(vec![synced_directory(2, ROOT, "d"), made_file(4, id(2), "mine.txt")]), &[2]);
+    assert_eq!(answer(&given, 2), waits_for(4));
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::Parent)));
+    // While a listing is under way a later page may say otherwise of the directory.
+    let mut listing = given.clone();
+    listing.is_listing_under_way = true;
+    assert_eq!(answer(&listing, 4), Answer::Wait(WaitReason::Listing));
+}
+
+/// The review's M3, the brief's §7: two items OneDrive lists in one directory under names
+/// that fold to one and are not the same bytes are two items once no listing is under
+/// way, and both are shown, each under its own name. The same bytes on two rows stay a
+/// fault that a full listing mends.
+#[test]
+fn two_items_onedrive_lists_under_names_that_fold_to_one_are_both_shown() {
+    let mut given = input(vec![listed(2, ItemKind::File, ROOT, "\u{e9}clair"), listed(3, ItemKind::File, ROOT, "e\u{301}clair"), listed(4, ItemKind::File, ROOT, "A.txt"), listed(5, ItemKind::File, ROOT, "a.txt")]);
+    for shown in [2, 3, 4, 5] {
+        assert_eq!(answer(&given, shown), folder_step(FolderStep::ShowItem { item: versions(&given, shown) }));
+    }
+    given.is_listing_under_way = true;
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::ShowItem { item: versions(&given, 2) }));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::Listing), "a page to come may say the first was renamed");
+    let given = input(vec![listed(2, ItemKind::File, ROOT, "a.txt"), listed(3, ItemKind::File, ROOT, "a.txt")]);
+    assert_eq!(answer(&given, 3), Answer::OtherFault(PlanFault::FullListingNeeded(id(3))));
+}
+
+/// The review's S6, new: the guard against a mass removal counts, with the unsent
+/// removals, those that were sent a short time ago: twelve removals in two plans of six
+/// are held like twelve in one.
+#[test]
+fn removals_sent_a_short_time_ago_count_towards_a_mass_removal() {
+    let rows: Vec<Item> = (2..8).map(|number| removed_here(synced_file(number, ROOT, &format!("f{number}")))).collect();
+    let mut given = input(rows);
+    given.shown_item_count = 40;
+    given.unsent_removal_count = 6;
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }), "six of forty are no mass removal");
+    given.sent_removal_count = 6;
+    for held in 2..8 {
+        assert_eq!(answer(&given, held), Answer::Wait(WaitReason::User(Reason::MassDelete)));
+    }
+    given.items_with_confirmed_removal = [id(2)].into();
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 2) }));
+}
+
+/// The review's S7, new: a directory whose answer is made from what is in it, given
+/// without all of it, says so, and is not planned from what was given.
+#[test]
+fn a_directory_given_without_all_that_is_in_it_says_so() {
+    // Removed here: all OneDrive has in it and below it.
+    let mut given = input(vec![removed_here(synced_directory(2, ROOT, "d")), removed_here(synced_file(3, id(2), "f"))]);
+    given.onedrive_item_count_below.insert(id(2), 2);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemsInDirectoryNotGiven(id(2))));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    given.onedrive_item_count_below.remove(&id(2));
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemsInDirectoryNotGiven(id(2))), "no count is no closed set");
+    // One that leaves the folder, OneDrive having removed it or the folder being unable to
+    // show it, and one that gives up its binding: what the folder shows in it.
+    let mut given = input(vec![removed_in_onedrive(synced_directory(2, ROOT, "d"))]);
+    given.shown_item_count_in.insert(id(2), 1);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemsInDirectoryNotGiven(id(2))));
+    let mut given = cannot_be_shown(input(vec![synced_directory(2, ROOT, "d")]), &[2]);
+    given.shown_item_count_in.insert(id(2), 1);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::ItemsInDirectoryNotGiven(id(2))));
+    // A directory both sides have and agree on needs nothing of what is in it.
+    let mut given = input(vec![synced_directory(2, ROOT, "d"), made_file(3, id(2), "new.txt")]);
+    given.shown_item_count_in.clear();
+    given.onedrive_item_count_below.clear();
+    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendNewFile { item: versions(&given, 3), parent: reference("I2"), name: "new.txt".into() }));
+}
+
+/// The review's S8 (stage C's 0.3, reading 2), new: when an item's place waits for the
+/// user, its content is still decided by the content table.
+#[test]
+fn the_content_of_an_item_whose_place_waits_for_the_user_is_still_decided() {
+    let left_here = || {
+        let mut directory = made_directory(2, ROOT, "~left");
+        directory.is_name_ignored = true;
+        directory
+    };
+    // Moved here into a directory that is left here, and changed here: the content is sent.
+    let mut given = input(vec![left_here(), with_content_here(moved_here(synced_file(3, ROOT, "a.txt"), id(2), "a.txt"), written_here())]);
+    given.ignored_items = [id(2)].into();
+    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 3) }));
+    // Changed in OneDrive: the file takes OneDrive's content.
+    let mut given = input(vec![left_here(), with_content_in_onedrive(moved_here(synced_file(3, ROOT, "a.txt"), id(2), "a.txt"), hashed("theirs"))]);
+    given.ignored_items = [id(2)].into();
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 3) }));
+    // Nothing of its content differs: it waits for the user, with the reason of its place.
+    let mut given = input(vec![left_here(), moved_here(synced_file(3, ROOT, "a.txt"), id(2), "a.txt")]);
+    given.ignored_items = [id(2)].into();
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::Parent)));
+    // The wait for the user is that of the directory it was moved into: a name OneDrive
+    // cannot hold.
+    let mut given = input(vec![made_directory(2, ROOT, "a:b"), with_content_here(moved_here(synced_file(3, ROOT, "a.txt"), id(2), "a.txt"), written_here())]);
+    given.name_refusals.insert(id(2), Reason::NameCharacters);
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::NameCharacters)));
+    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendContent { item: versions(&given, 3) }));
+    // A file a program holds open for writing is not planned, its content neither.
+    given.items_open_for_writing = [id(3)].into();
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::User(Reason::OpenForWriting)));
+}
+
+/// The class behind M1 (the review's S9), new: a new item here is not merged with a new
+/// item of OneDrive a step is running for; it waits for that step.
+#[test]
+fn a_new_item_is_not_merged_with_an_item_a_step_is_running_for() {
+    let mut given = input(vec![made_directory(2, ROOT, "d"), listed(3, ItemKind::Directory, ROOT, "d")]);
+    given.items_with_running_step = [id(3)].into();
+    assert_eq!(answer(&given, 2), waits_for(3));
+    assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::RunningStep));
 }

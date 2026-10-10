@@ -136,6 +136,9 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_with_confirmed_removal: confirmed,
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
+        sent_removal_count: 0,
+        onedrive_item_count_below: rows.iter().filter(|row| row.kind == ItemKind::Directory).map(|row| (row.local_item_id, items.list_below_in_onedrive(row.local_item_id).unwrap().len() as u64)).collect(),
+        shown_item_count_in: rows.iter().filter(|row| row.kind == ItemKind::Directory).map(|row| (row.local_item_id, items.list_children(row.local_item_id).unwrap().len() as u64)).collect(),
         items: rows,
     }
 }

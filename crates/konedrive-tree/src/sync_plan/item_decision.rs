@@ -7,7 +7,7 @@
 //! One step per item: where an item needs more than one (a move and new content), the
 //! place goes first, and the plan made after it decides the rest.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use konedrive_reason::Reason;
 
@@ -30,18 +30,44 @@ pub(crate) enum ItemDecision {
     Fault(PlanFault),
 }
 
-/// What the plan answers for each item it was given, while the items are decided for each
-/// other: the answer of every item by its id, and the order the items were given in.
+/// What a decision between items answers for one item, in place of what was answered for it
+/// before.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ItemDecisions {
-    order: Vec<LocalItemId>,
-    by_item: HashMap<LocalItemId, ItemDecision>,
+pub(crate) struct Overruling {
+    pub(crate) item: LocalItemId,
+    pub(crate) decision: ItemDecision,
 }
 
-impl ItemDecisions {
-    pub(crate) fn of(decisions: impl IntoIterator<Item = (LocalItemId, ItemDecision)>) -> Self {
-        let mut all = Self { order: Vec::new(), by_item: HashMap::new() };
-        for (item, decision) in decisions {
+impl Overruling {
+    pub(crate) fn of(item: LocalItemId, decision: ItemDecision) -> Self {
+        Self { item, decision }
+    }
+}
+
+/// What the plan answers for each item it was given: the answer of every item by its id,
+/// and the order the items were given in.
+///
+/// A decision between items reads it and changes nothing of it: it answers its
+/// [`Overruling`]s, and [`make_sync_plan`](super::make_sync_plan) alone puts them in place
+/// ([`overrule`](Self::overrule)). An item that is held back whatever its row and the other
+/// items say — a step is running for it, a program holds it open for writing
+/// ([`find_hold`]) — keeps that answer: no overruling takes its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ItemAnswers {
+    order: Vec<LocalItemId>,
+    by_item: HashMap<LocalItemId, ItemDecision>,
+    held: HashSet<LocalItemId>,
+}
+
+impl ItemAnswers {
+    /// What each of `cases` is answered by itself ([`decide_item`]).
+    pub(crate) fn of(cases: &[ItemCase<'_>]) -> Self {
+        let mut all = Self { order: Vec::new(), by_item: HashMap::new(), held: HashSet::new() };
+        for case in cases {
+            let (item, decision) = (case.item.local_item_id, decide_item(case));
+            if find_hold(case).is_some_and(|hold| decision == ItemDecision::Wait(hold)) {
+                all.held.insert(item);
+            }
             if all.by_item.insert(item, decision).is_none() {
                 all.order.push(item);
             }
@@ -54,12 +80,9 @@ impl ItemDecisions {
         self.by_item.get(&item)
     }
 
-    /// `decision` is the answer for `item` from now on. Nothing for an item that was not
-    /// given.
-    pub(crate) fn replace(&mut self, item: LocalItemId, decision: ItemDecision) {
-        if let Some(answer) = self.by_item.get_mut(&item) {
-            *answer = decision;
-        }
+    /// Whether `item` is held back whatever the other items say: its answer stands.
+    pub(crate) fn is_held(&self, item: LocalItemId) -> bool {
+        self.held.contains(&item)
     }
 
     /// The items, in the order they were given.
@@ -67,9 +90,64 @@ impl ItemDecisions {
         &self.order
     }
 
+    /// Each of `overrulings` is the answer for its item from now on, in their order.
+    /// Nothing for an item that was not given, and nothing for an item that is held back.
+    pub(crate) fn overrule(&mut self, overrulings: Vec<Overruling>) {
+        for Overruling { item, decision } in overrulings {
+            if self.held.contains(&item) {
+                continue;
+            }
+            if let Some(answer) = self.by_item.get_mut(&item) {
+                *answer = decision;
+            }
+        }
+    }
+
     /// Every item with its answer, in the order the items were given.
     pub(crate) fn into_ordered(mut self) -> Vec<(LocalItemId, ItemDecision)> {
         self.order.iter().filter_map(|item| self.by_item.remove(item).map(|decision| (*item, decision))).collect()
+    }
+}
+
+/// The answers as one decision between items has them while it decides: those it was given,
+/// with its own overrulings so far in place. A decision that settles one item after another
+/// reads here what it answered for the earlier ones. Its overrulings are what it answers.
+pub(crate) struct OverruledAnswers<'a> {
+    given: &'a ItemAnswers,
+    overrulings: Vec<Overruling>,
+    overruled: HashMap<LocalItemId, ItemDecision>,
+}
+
+impl<'a> OverruledAnswers<'a> {
+    pub(crate) fn of(given: &'a ItemAnswers) -> Self {
+        Self { given, overrulings: Vec::new(), overruled: HashMap::new() }
+    }
+
+    /// The answer for `item` as it stands now; `None` for an item that was not given.
+    pub(crate) fn find(&self, item: LocalItemId) -> Option<&ItemDecision> {
+        self.overruled.get(&item).or_else(|| self.given.find(item))
+    }
+
+    pub(crate) fn is_held(&self, item: LocalItemId) -> bool {
+        self.given.is_held(item)
+    }
+
+    pub(crate) fn items(&self) -> &[LocalItemId] {
+        self.given.items()
+    }
+
+    /// `decision` is the answer for `item` from now on, as [`ItemAnswers::overrule`] will
+    /// put it: not for an item that was not given, nor for one that is held back.
+    pub(crate) fn overrule(&mut self, item: LocalItemId, decision: ItemDecision) {
+        if self.given.find(item).is_none() || self.given.is_held(item) {
+            return;
+        }
+        self.overruled.insert(item, decision.clone());
+        self.overrulings.push(Overruling::of(item, decision));
+    }
+
+    pub(crate) fn into_overrulings(self) -> Vec<Overruling> {
+        self.overrulings
     }
 }
 
@@ -84,6 +162,11 @@ pub(crate) enum LocalDirectoryBinding {
     NotBound(LocalItemId),
     /// The directory's row was not given: which directory.
     NotGiven(LocalItemId),
+    /// The directory is left here, and so never in OneDrive: which directory.
+    LeftHere(LocalItemId),
+    /// OneDrive has the directory where the folder cannot show it: which directory. What
+    /// the user made is not sent into it.
+    CannotBeShown(LocalItemId),
     /// The folder does not show the item.
     NoLocalPlace,
 }
@@ -123,6 +206,14 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) local_place_availability: LocalPlaceAvailability,
     /// One of the items the folder shows in the item, a directory.
     pub(crate) first_shown_in_it: Option<LocalItemId>,
+    /// The item is no directory whose answer is made from what is in it, or the plan was
+    /// given all of that: for a directory that was removed here, all OneDrive has in it
+    /// and below it; for one that leaves the folder or gives up its binding, all the
+    /// folder shows in it.
+    pub(crate) is_given_with_all_in_it: bool,
+    /// The first directory above the item in OneDrive, on the way up to the root, whose row
+    /// was not given.
+    pub(crate) onedrive_directory_not_given: Option<LocalItemId>,
     pub(crate) sending: SendingConditions,
 }
 
@@ -161,6 +252,19 @@ fn row_step(step: RowStep) -> ItemDecision {
     ItemDecision::Step(SyncStep::Row(step))
 }
 
+/// What holds the item of `case` back whatever its row and the other items say: a step is
+/// running for it, or a program holds it open for writing. Nothing of such an item is
+/// planned, by itself or between items.
+pub(crate) fn find_hold(case: &ItemCase<'_>) -> Option<WaitReason> {
+    if case.has_running_step {
+        Some(WaitReason::RunningStep)
+    } else if case.is_open_for_writing {
+        Some(WaitReason::User(Reason::OpenForWriting))
+    } else {
+        None
+    }
+}
+
 /// What the plan answers for the item of `case`. The first that holds:
 ///
 /// - the root of the folder is never planned, and a row the rules of the rows refuse is a
@@ -168,6 +272,8 @@ fn row_step(step: RowStep) -> ItemDecision {
 /// - a row with no version on either side and nothing agreed on is no item;
 /// - an item with a step running waits for it;
 /// - an item a program holds open for writing is not planned at all;
+/// - a directory whose answer is made from what is in it, given without all of that, says
+///   so;
 /// - otherwise the tables decide ([`decide_existence`]).
 pub(crate) fn decide_item(case: &ItemCase<'_>) -> ItemDecision {
     let item = case.item;
@@ -181,13 +287,34 @@ pub(crate) fn decide_item(case: &ItemCase<'_>) -> ItemDecision {
     if (here, in_onedrive) == (SideChange::NeverWas, SideChange::NeverWas) {
         return ItemDecision::NothingToDo;
     }
-    if case.has_running_step {
-        return ItemDecision::Wait(WaitReason::RunningStep);
+    if let Some(hold) = find_hold(case) {
+        return ItemDecision::Wait(hold);
     }
-    if case.is_open_for_writing {
-        return ItemDecision::Wait(WaitReason::User(Reason::OpenForWriting));
+    if !case.is_given_with_all_in_it {
+        return ItemDecision::Wait(WaitReason::ItemsInDirectoryNotGiven(item.local_item_id));
     }
     decide_existence(case, here, in_onedrive)
+}
+
+/// What the content table answers for the file of `case` while its place waits: its step,
+/// when the table has one. `None` for an item that is held back, for one that is not a file
+/// both sides have where the folder can show it, and when nothing of its content is to do
+/// or what is to do waits itself.
+///
+/// One step per item, the place first: but a place that waits for the user may wait for
+/// good, and the content of the file is OneDrive's and the folder's all the same.
+pub(crate) fn decide_content_while_place_waits(case: &ItemCase<'_>) -> Option<SyncStep> {
+    let item = case.item;
+    if find_hold(case).is_some() || item.kind != ItemKind::File || !matches!(case.folder_visibility, FolderVisibility::CanBeShown) {
+        return None;
+    }
+    match (SideChange::of_local(item), SideChange::of_onedrive(item)) {
+        (SideChange::IsThere { content: here, .. }, SideChange::IsThere { content: in_onedrive, .. }) => match decide_content(case, here, in_onedrive) {
+            ItemDecision::Step(step) => Some(step),
+            ItemDecision::NothingToDo | ItemDecision::Wait(_) | ItemDecision::Exclusion(_) | ItemDecision::Fault(_) => None,
+        },
+        (SideChange::IsThere { .. } | SideChange::Removed | SideChange::NeverWas, _) => None,
+    }
 }
 
 /// The table "whether the item exists": what was done here against what was done in
@@ -203,7 +330,7 @@ pub(crate) fn decide_existence(case: &ItemCase<'_>, here: SideChange, in_onedriv
         (IsThere { .. }, NeverWas) => decide_new_here(case),
         (Removed, IsThere { content, .. }) => decide_removed_here(case, content),
         (Removed, Removed) if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
-        (Removed, Removed) => row_step(RowStep::DropRow { item: case.versions() }),
+        (Removed, Removed) => row_step(RowStep::AgreeOnRemoval { item: case.versions() }),
         (NeverWas, IsThere { .. }) => show_onedrive_item(case),
         (NeverWas, NeverWas) => ItemDecision::NothingToDo,
         // Both sides are read against one synced version: where one side removed the item
@@ -271,13 +398,18 @@ pub(crate) const READ_ONLY_FOLDER: &str = "the folder is read-only";
 /// A step towards OneDrive that sends the item into the directory the folder shows it in,
 /// under its name here: made by `step` from that directory's binding and the name. Waits
 /// for the directory while OneDrive does not have it or its row was not given, and for a
-/// listing while OneDrive's root is not known for the root of the folder.
+/// listing while OneDrive's root is not known for the root of the folder. Waits for the user
+/// where the directory is left here, and where OneDrive has it and the folder cannot show
+/// it: what the user made is not sent into what the folder cannot show; a listing under way
+/// may yet say otherwise of that directory.
 fn send_into_local_directory(case: &ItemCase<'_>, step: impl FnOnce(OneDriveItemReference, std::ffi::OsString) -> OneDriveStep) -> ItemDecision {
     let Some(place) = case.item.local.as_ref().and_then(|local| local.place.as_ref()) else { return row_fault(case) };
     match &case.local_directory {
         LocalDirectoryBinding::Bound(directory) => onedrive_step(step(directory.clone(), place.name.clone())),
         LocalDirectoryBinding::NotBound(LocalItemId::ROOT) => wait_for_listing(case),
         LocalDirectoryBinding::NotBound(directory) | LocalDirectoryBinding::NotGiven(directory) => ItemDecision::Wait(WaitReason::AnotherItem(*directory)),
+        LocalDirectoryBinding::CannotBeShown(_) if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
+        LocalDirectoryBinding::LeftHere(_) | LocalDirectoryBinding::CannotBeShown(_) => ItemDecision::Wait(WaitReason::User(Reason::Parent)),
         LocalDirectoryBinding::NoLocalPlace => row_fault(case),
     }
 }
@@ -297,8 +429,14 @@ fn decide_new_here(case: &ItemCase<'_>) -> ItemDecision {
 /// and where the folder cannot show it, what was agreed on is forgotten, so that its row
 /// is that of an item of OneDrive the folder cannot show;
 /// the removal of any other file is sent, guarded by the eTag, also when OneDrive moved it.
-/// A directory's removal is sent unguarded, and stands.
+/// A directory's removal is sent unguarded, and stands: so it is not sent while a listing
+/// is under way, when the rows are known to be behind OneDrive. No removal is planned for
+/// an item given without the directories above it in OneDrive: one of them may be removed
+/// here too, and then the removal is that one's.
 fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> ItemDecision {
+    if let Some(directory) = case.onedrive_directory_not_given {
+        return ItemDecision::Wait(WaitReason::ItemNotGiven(directory));
+    }
     match (case.item.kind, onedrive_content) {
         (ItemKind::File, ContentChange::Changed | ContentChange::NotKnownWithoutHash) => match show_onedrive_item(case) {
             ItemDecision::Exclusion(ExclusionReason::CannotBeShown) => row_step(RowStep::ForgetSyncedVersion { item: case.versions() }),
@@ -307,6 +445,7 @@ fn decide_removed_here(case: &ItemCase<'_>, onedrive_content: ContentChange) -> 
         (ItemKind::File, ContentChange::Same) => {
             find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendFileRemoval { item: case.versions() }))
         }
+        (ItemKind::Directory, _) if case.is_listing_under_way => ItemDecision::Wait(WaitReason::Listing),
         (ItemKind::Directory, _) => {
             find_decision_not_to_send(case, SentPart::Removal).unwrap_or_else(|| onedrive_step(OneDriveStep::SendDirectoryRemoval { item: case.versions(), below: Vec::new() }))
         }

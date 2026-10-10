@@ -181,6 +181,7 @@ pub(crate) fn with_content_in_onedrive(mut item: Item, content: ContentVersion) 
 /// under way: the folder can show every item OneDrive has, and nothing else is said of any.
 pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
     let items: Vec<Item> = std::iter::once(root()).chain(items).collect();
+    let (onedrive_item_count_below, shown_item_count_in) = count_items_in_directories(&items);
     let folder_visibility = items.iter().filter(|item| item.onedrive.is_some()).map(|item| (item.local_item_id, FolderVisibility::CanBeShown)).collect();
     SyncPlanInput {
         items,
@@ -200,7 +201,18 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         items_with_confirmed_removal: BTreeSet::new(),
         unsent_removal_count: 0,
         places_taken_in_onedrive: BTreeMap::new(),
+        sent_removal_count: 0,
+        onedrive_item_count_below,
+        shown_item_count_in,
     }
+}
+
+/// For every directory of `items`: how many of `items` OneDrive has in it and below it, and
+/// how many the folder shows in it. What a caller that gave all of them says.
+pub(crate) fn count_items_in_directories(items: &[Item]) -> (BTreeMap<LocalItemId, u64>, BTreeMap<LocalItemId, u64>) {
+    let rows = plan_items::PlanItems::of(items);
+    let directories = || items.iter().filter(|item| item.kind == ItemKind::Directory).map(|item| item.local_item_id);
+    (directories().map(|directory| (directory, rows.list_below_in_onedrive(directory).len() as u64)).collect(), directories().map(|directory| (directory, rows.list_shown_in(directory).len() as u64)).collect())
 }
 
 /// What a plan answers for one item.

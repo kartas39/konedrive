@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
+use super::item_decision::{ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, OverruledAnswers, Overruling};
 use super::plan_items::PlanItems;
 use super::side_change::{PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, SyncStep};
@@ -76,6 +76,27 @@ fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
     }
 }
 
+/// Whether the place here of a directory that was moved here alone is to be its place in
+/// OneDrive, by what is answered for it: its move is a step, or waits for what may let it
+/// be sent later. Not so while a step is running for it — nothing of it is planned, and
+/// its move is not taken back under that step — nor while its row cannot be judged.
+fn is_move_to_be_sent(answer: Option<&ItemDecision>) -> bool {
+    match answer {
+        Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => true,
+        Some(ItemDecision::Wait(WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::AnotherItem(_))) => true,
+        Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => false,
+        Some(ItemDecision::Step(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => false,
+    }
+}
+
+/// What was decided of the directories that were moved in a cycle.
+pub(crate) struct MoveCycles {
+    pub(crate) overrulings: Vec<Overruling>,
+    /// The directories whose move here does not stand: the one whose move is taken back
+    /// and those that wait for it.
+    pub(crate) moves_taken_back: BTreeSet<LocalItemId>,
+}
+
 /// Decides the directories that were moved in a cycle.
 ///
 /// - Of the directories moved here whose move would put them into what is to be in them,
@@ -86,27 +107,22 @@ fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
 ///   waits for the first directory on the way that is out of place. Likewise a directory
 ///   moved here into what OneDrive still has in it, whose move closes no cycle, is not
 ///   sent yet: a directory before what is in it.
-///
-/// The directories whose move here does not stand are returned: the one whose move is taken
-/// back and those that wait for it.
-pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) -> BTreeSet<LocalItemId> {
-    let is_sending = |decision: Option<&ItemDecision>| {
-        matches!(decision, Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. })) | ItemDecision::Wait(WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::AnotherItem(_))))
-    };
+pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, answers: &ItemAnswers) -> MoveCycles {
+    let mut answers = OverruledAnswers::of(answers);
     let mut in_cycle: Vec<&ItemCase<'_>> = cases
         .iter()
         .filter(|case| case.item.kind == ItemKind::Directory && is_moved_here_alone(case.item))
-        .filter(|case| is_sending(decisions.find(case.item.local_item_id)) && is_moved_into_own_content(items, case.item))
+        .filter(|case| is_move_to_be_sent(answers.find(case.item.local_item_id)) && is_moved_into_own_content(items, case.item))
         .collect();
     in_cycle.sort_by_key(|case| case.item.local_item_id);
-    let mut not_standing = BTreeSet::new();
+    let mut moves_taken_back = BTreeSet::new();
     if let Some((first, others)) = in_cycle.split_first() {
         if let Some(taken_back) = take_move_back(first) {
-            decisions.replace(first.item.local_item_id, taken_back);
-            not_standing.insert(first.item.local_item_id);
+            answers.overrule(first.item.local_item_id, taken_back);
+            moves_taken_back.insert(first.item.local_item_id);
             for other in others {
-                decisions.replace(other.item.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(first.item.local_item_id)));
-                not_standing.insert(other.item.local_item_id);
+                answers.overrule(other.item.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(first.item.local_item_id)));
+                moves_taken_back.insert(other.item.local_item_id);
             }
         }
     }
@@ -115,21 +131,22 @@ pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &P
         if case.item.kind != ItemKind::Directory {
             continue;
         }
-        match decisions.find(id) {
+        match answers.find(id) {
             Some(ItemDecision::Step(SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. }))) => {
                 let Some(directory) = directory_in_onedrive(case.item) else { continue };
                 if directory == id || items.is_shown_in(directory, id) {
-                    decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_here))));
+                    answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_here))));
                 }
             }
             Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => {
                 let Some(directory) = directory_here(case.item) else { continue };
                 if directory == id || items.is_in_onedrive_in(directory, id) {
-                    decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_in_onedrive))));
+                    answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_in_onedrive))));
                 }
             }
-            _ => {}
+            // No other step moves a directory, and what waits moves nothing now.
+            Some(ItemDecision::Step(_) | ItemDecision::Wait(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => {}
         }
     }
-    not_standing
+    MoveCycles { overrulings: answers.into_overrulings(), moves_taken_back }
 }

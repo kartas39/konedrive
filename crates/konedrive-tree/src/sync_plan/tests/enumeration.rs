@@ -1,12 +1,18 @@
 //! The enumeration of related items: every kind of row the plan answers for by itself
 //! ([`Shape`]), of a file and of a directory, against every kind for another item that has
 //! to do with it ([`Relation`]) — the same directory and the same name as OneDrive compares
-//! names, one in the other, one at the place the other leaves, the two exchanged, and three
-//! in a circle. For each set of rows the rules of the rows allow, the plan must answer
+//! names, one in the other, one at the place the other leaves, the two exchanged, a
+//! directory in a directory with a third item in it or moved out of it, and three in a
+//! circle. What only the caller of a plan knows is no kind of row: it is said of an item
+//! of any shape ([`ItemFact`]) or of the folder ([`FolderFact`]), one at a time for every
+//! relation, and each fact of an item with each fact of the folder where one item is in
+//! another, was moved out of it, or has its name. For each set of rows the rules of the
+//! rows allow, the plan must answer
 //! something that can proceed ([`find_what_cannot_proceed`]): a step for at least one of
 //! the items that wait for each other, or a wait that ends; never two waits for each
 //! other, never nothing for an item the two sides do not agree on, and never a step the
-//! rows it was planned from refuse ([`find_step_the_rows_refuse`]).
+//! rows it was planned from refuse ([`find_step_the_rows_refuse`]) or that what the caller
+//! said rules out ([`find_step_the_callers_facts_refuse`]).
 //!
 //! The cases the plan decides between items are each tested by name in `item_relations`;
 //! this is the gate they were written behind.
@@ -35,13 +41,9 @@ enum Shape {
     RemovedInOneDriveChangedHere,
     RemovedHereChangedInOneDrive,
     Ignored,
-    InQuietTime,
-    NameRefused,
-    OpenForWriting,
-    StepRunning,
 }
 
-const EVERY_SHAPE: [Shape; 20] = [
+const EVERY_SHAPE: [Shape; 16] = [
     Shape::Agreed,
     Shape::MadeHere,
     Shape::NewInOneDrive,
@@ -58,10 +60,6 @@ const EVERY_SHAPE: [Shape; 20] = [
     Shape::RemovedInOneDriveChangedHere,
     Shape::RemovedHereChangedInOneDrive,
     Shape::Ignored,
-    Shape::InQuietTime,
-    Shape::NameRefused,
-    Shape::OpenForWriting,
-    Shape::StepRunning,
 ];
 
 impl Shape {
@@ -69,7 +67,7 @@ impl Shape {
     fn is_of_directory_too(self) -> bool {
         !matches!(
             self,
-            Shape::ChangedHere | Shape::ChangedInOneDrive | Shape::ChangedOnBothSides | Shape::RemovedInOneDriveChangedHere | Shape::RemovedHereChangedInOneDrive | Shape::InQuietTime | Shape::OpenForWriting
+            Shape::ChangedHere | Shape::ChangedInOneDrive | Shape::ChangedOnBothSides | Shape::RemovedInOneDriveChangedHere | Shape::RemovedHereChangedInOneDrive
         )
     }
 
@@ -85,7 +83,7 @@ impl Shape {
         // (local, in OneDrive, the place agreed on, the content agreed on)
         let (local, onedrive, synced_place, synced_content) = match self {
             Shape::Agreed => (version(at, &agreed), version(at, &agreed), Some(at), &agreed),
-            Shape::MadeHere | Shape::Ignored | Shape::InQuietTime | Shape::NameRefused | Shape::StepRunning => (version(at, &mine), None, None, &None),
+            Shape::MadeHere | Shape::Ignored => (version(at, &mine), None, None, &None),
             Shape::NewInOneDrive => (None, version(at, &agreed), None, &None),
             Shape::MovedHere => (version(at, &agreed), version(from, &agreed), Some(from), &agreed),
             Shape::MovedInOneDrive => (version(from, &agreed), version(at, &agreed), Some(from), &agreed),
@@ -94,13 +92,13 @@ impl Shape {
             Shape::RemovedInOneDrive => (version(at, &agreed), None, Some(at), &agreed),
             Shape::RemovedOnBothSides => (None, None, Some(at), &agreed),
             Shape::BoundNeverListed => (version(at, &agreed), None, None, &None),
-            Shape::ChangedHere | Shape::OpenForWriting => (version(at, &mine), version(at, &agreed), Some(at), &agreed),
+            Shape::ChangedHere => (version(at, &mine), version(at, &agreed), Some(at), &agreed),
             Shape::ChangedInOneDrive => (version(at, &agreed), version(at, &theirs), Some(at), &agreed),
             Shape::ChangedOnBothSides => (version(at, &Some(hashed_here(&format!("mine{number}")))), version(at, &theirs), Some(at), &agreed),
             Shape::RemovedInOneDriveChangedHere => (version(at, &mine), None, Some(at), &agreed),
             Shape::RemovedHereChangedInOneDrive => (None, version(at, &theirs), Some(at), &agreed),
         };
-        let is_bound = !matches!(self, Shape::MadeHere | Shape::Ignored | Shape::InQuietTime | Shape::NameRefused | Shape::StepRunning);
+        let is_bound = !matches!(self, Shape::MadeHere | Shape::Ignored);
         let mut item = blank(number, kind);
         item.onedrive_item = is_bound.then(|| reference(&format!("I{number}")));
         item.onedrive_etag = onedrive.is_some().then(|| format!("e{number}"));
@@ -119,15 +117,116 @@ impl Shape {
 
     /// What the plan is told of the item `item` of this shape beside its row.
     fn tell(self, given: &mut SyncPlanInput, item: LocalItemId) {
-        match self {
-            Shape::Ignored => drop(given.ignored_items.insert(item)),
-            Shape::InQuietTime => drop(given.quiet_until.insert(item, 1000)),
-            Shape::NameRefused => drop(given.name_refusals.insert(item, Reason::NameCharacters)),
-            Shape::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
-            Shape::StepRunning => drop(given.items_with_running_step.insert(item)),
-            _ => {}
+        if self == Shape::Ignored {
+            given.ignored_items.insert(item);
         }
     }
+}
+
+/// What only the caller of a plan knows of one item: said of an item of any shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemFact {
+    StepRunning,
+    OpenForWriting,
+    InQuietTime,
+    NameRefused,
+    /// The folder cannot show the item as OneDrive has it, nor what OneDrive has in it.
+    CannotBeShown,
+}
+
+const EVERY_ITEM_FACT: [ItemFact; 5] = [ItemFact::StepRunning, ItemFact::OpenForWriting, ItemFact::InQuietTime, ItemFact::NameRefused, ItemFact::CannotBeShown];
+
+impl ItemFact {
+    /// Whether a caller can say this of `item`: a step runs for any item; a program holds
+    /// open a file the folder shows; the quiet time is of a file whose content was changed
+    /// here; a name here is refused; and OneDrive has what the folder cannot show.
+    fn can_be_said_of(self, item: &Item) -> bool {
+        let content_here = item.local.as_ref().and_then(|local| local.content.as_ref());
+        match self {
+            ItemFact::StepRunning => true,
+            ItemFact::OpenForWriting => item.kind == ItemKind::File && item.local.is_some(),
+            ItemFact::InQuietTime => content_here.is_some() && content_here != item.synced_content.as_ref(),
+            ItemFact::NameRefused => item.local.is_some(),
+            ItemFact::CannotBeShown => item.onedrive.is_some(),
+        }
+    }
+
+    fn tell(self, given: &mut SyncPlanInput, item: LocalItemId) {
+        match self {
+            ItemFact::StepRunning => drop(given.items_with_running_step.insert(item)),
+            ItemFact::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
+            ItemFact::InQuietTime => drop(given.quiet_until.insert(item, 1000)),
+            ItemFact::NameRefused => drop(given.name_refusals.insert(item, Reason::NameCharacters)),
+            ItemFact::CannotBeShown => {
+                // With the item, all OneDrive has in it, as the store answers it.
+                let mut cannot_be_shown = BTreeSet::from([item]);
+                for _ in 0..given.items.len() {
+                    let in_them = given.items.iter().filter(|row| row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).is_some_and(|place| cannot_be_shown.contains(&place.parent_local_item_id)));
+                    let in_them: Vec<LocalItemId> = in_them.map(|row| row.local_item_id).collect();
+                    cannot_be_shown.extend(in_them);
+                }
+                for item in cannot_be_shown {
+                    given.folder_visibility.insert(item, FolderVisibility::CannotBeShown);
+                }
+            }
+        }
+    }
+}
+
+/// What only the caller of a plan knows of the folder as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderFact {
+    ListingUnderWay,
+    /// Switched to read-only when item 2 was the last to have come to be unsent.
+    ReadOnly,
+    OneDriveFull,
+    /// The unsent removals are a mass removal, and the user confirmed none.
+    MassRemovalUnconfirmed,
+}
+
+const EVERY_FOLDER_FACT: [FolderFact; 4] = [FolderFact::ListingUnderWay, FolderFact::ReadOnly, FolderFact::OneDriveFull, FolderFact::MassRemovalUnconfirmed];
+
+/// The last stamp given before the folder of [`FolderFact::ReadOnly`] was switched.
+const LAST_UNSENT_SINCE_AT_SWITCH: u64 = 2;
+
+impl FolderFact {
+    fn tell(self, given: &mut SyncPlanInput) {
+        match self {
+            FolderFact::ListingUnderWay => given.is_listing_under_way = true,
+            FolderFact::ReadOnly => given.sending_state = SendingState::ReadOnly { last_unsent_since: LAST_UNSENT_SINCE_AT_SWITCH },
+            FolderFact::OneDriveFull => given.is_onedrive_full = true,
+            FolderFact::MassRemovalUnconfirmed => given.unsent_removal_count = 600,
+        }
+    }
+}
+
+/// What the caller says beside the rows of one enumerated set: of each item at most one
+/// fact, and of the folder at most one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallerFacts {
+    of_items: Vec<Option<ItemFact>>,
+    of_folder: Option<FolderFact>,
+}
+
+/// The facts a set of `item_count` items is enumerated with. Always: nothing said; each
+/// fact of an item said of one item; each fact of the folder. `is_crossed`: also each fact
+/// of an item with each fact of the folder.
+fn every_caller_facts(item_count: usize, is_crossed: bool) -> Vec<CallerFacts> {
+    let nothing_of_items = vec![None; item_count];
+    let mut of_one_item = vec![nothing_of_items.clone()];
+    for item in 0..item_count {
+        for fact in EVERY_ITEM_FACT {
+            let mut of_items = nothing_of_items.clone();
+            of_items[item] = Some(fact);
+            of_one_item.push(of_items);
+        }
+    }
+    let mut all: Vec<CallerFacts> = of_one_item.iter().map(|of_items| CallerFacts { of_items: of_items.clone(), of_folder: None }).collect();
+    for of_folder in EVERY_FOLDER_FACT {
+        let of_items = if is_crossed { of_one_item.clone() } else { vec![nothing_of_items.clone()] };
+        all.extend(of_items.into_iter().map(|of_items| CallerFacts { of_items, of_folder: Some(of_folder) }));
+    }
+    all
 }
 
 /// One item of an enumerated set: its shape and its kind.
@@ -148,7 +247,7 @@ fn every_member() -> Vec<Member> {
     members
 }
 
-/// What two items, the items 2 and 3, have to do with each other.
+/// What the items of a set, numbered from 2, have to do with each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Relation {
     /// Both at one name of one directory.
@@ -165,29 +264,80 @@ enum Relation {
     Exchanged,
     /// Each, a directory, is moved into the other.
     IntoEachOther,
+    /// The third is in the second, a directory, which is in the first, a directory.
+    InsideNested,
+    /// The third was in the second, a directory in the first, a directory, and is moved out
+    /// of both.
+    MovedOutOfNested,
 }
 
-const EVERY_RELATION: [Relation; 7] = [Relation::SameName, Relation::SameNameByCase, Relation::Inside, Relation::MovedOut, Relation::AtPlaceLeft, Relation::Exchanged, Relation::IntoEachOther];
+const EVERY_RELATION: [Relation; 9] = [
+    Relation::SameName,
+    Relation::SameNameByCase,
+    Relation::Inside,
+    Relation::MovedOut,
+    Relation::AtPlaceLeft,
+    Relation::Exchanged,
+    Relation::IntoEachOther,
+    Relation::InsideNested,
+    Relation::MovedOutOfNested,
+];
 
 impl Relation {
-    /// The places of the items 2 and 3: for each, where it was moved from and where it is.
-    fn places(self) -> [(ItemPlace, ItemPlace); 2] {
+    /// The places of the items, from item 2 on: for each, where it was moved from and where
+    /// it is.
+    fn places(self) -> Vec<(ItemPlace, ItemPlace)> {
         match self {
-            Relation::SameName => [(place(ROOT, "a-was"), place(ROOT, "x")), (place(ROOT, "b-was"), place(ROOT, "x"))],
-            Relation::SameNameByCase => [(place(ROOT, "a-was"), place(ROOT, "x")), (place(ROOT, "b-was"), place(ROOT, "X"))],
-            Relation::Inside => [(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "b-was"), place(id(2), "x"))],
-            Relation::MovedOut => [(place(ROOT, "d-was"), place(ROOT, "d")), (place(id(2), "x"), place(ROOT, "b-now"))],
-            Relation::AtPlaceLeft => [(place(ROOT, "x"), place(ROOT, "a-now")), (place(ROOT, "b-was"), place(ROOT, "x"))],
-            Relation::Exchanged => [(place(ROOT, "x"), place(ROOT, "y")), (place(ROOT, "y"), place(ROOT, "x"))],
-            Relation::IntoEachOther => [(place(ROOT, "a"), place(id(3), "a")), (place(ROOT, "b"), place(id(2), "b"))],
+            Relation::SameName => vec![(place(ROOT, "a-was"), place(ROOT, "x")), (place(ROOT, "b-was"), place(ROOT, "x"))],
+            Relation::SameNameByCase => vec![(place(ROOT, "a-was"), place(ROOT, "x")), (place(ROOT, "b-was"), place(ROOT, "X"))],
+            Relation::Inside => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "b-was"), place(id(2), "x"))],
+            Relation::MovedOut => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(id(2), "x"), place(ROOT, "b-now"))],
+            Relation::AtPlaceLeft => vec![(place(ROOT, "x"), place(ROOT, "a-now")), (place(ROOT, "b-was"), place(ROOT, "x"))],
+            Relation::Exchanged => vec![(place(ROOT, "x"), place(ROOT, "y")), (place(ROOT, "y"), place(ROOT, "x"))],
+            Relation::IntoEachOther => vec![(place(ROOT, "a"), place(id(3), "a")), (place(ROOT, "b"), place(id(2), "b"))],
+            Relation::InsideNested => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "e-was"), place(id(2), "e")), (place(ROOT, "b-was"), place(id(3), "x"))],
+            Relation::MovedOutOfNested => vec![(place(ROOT, "d-was"), place(ROOT, "d")), (place(ROOT, "e-was"), place(id(2), "e")), (place(id(3), "x"), place(ROOT, "b-now"))],
         }
+    }
+
+    /// Whether a pass between items reads the answer or a fact of the other item here: one
+    /// item is in the other, was moved out of it, or has its name. Each fact of an item is
+    /// then enumerated with each fact of the folder.
+    fn is_crossed_with_every_fact(self) -> bool {
+        matches!(self, Relation::SameName | Relation::Inside | Relation::MovedOut | Relation::InsideNested | Relation::MovedOutOfNested)
+    }
+
+    /// The sets of members this relation is enumerated for. Two items: every member with
+    /// every member. A directory in a directory: each of the two agreed on or removed, on
+    /// either side or both, and every member as the third.
+    fn member_sets(self) -> Vec<Vec<Member>> {
+        let members = every_member();
+        let directory = |shape| Member { shape, kind: ItemKind::Directory };
+        let nesting = [Shape::Agreed, Shape::RemovedHere, Shape::RemovedInOneDrive, Shape::RemovedOnBothSides];
+        let mut sets = Vec::new();
+        match self {
+            Relation::InsideNested | Relation::MovedOutOfNested => {
+                for outer in nesting {
+                    for inner in nesting {
+                        sets.extend(members.iter().map(|third| vec![directory(outer), directory(inner), *third]));
+                    }
+                }
+            }
+            _ => {
+                for first in &members {
+                    sets.extend(members.iter().map(|second| vec![*first, *second]));
+                }
+            }
+        }
+        sets
     }
 }
 
 /// Whether `items` are rows the rules of the rows allow (the design's §3): on each side an
 /// item's directory exists there and is a directory, and no item is above itself; the
 /// folder shows one item per name in a directory; OneDrive has one item per name in a
-/// directory, as OneDrive compares names.
+/// directory, the names compared as they were given: of two names that fold to one and are
+/// not the same bytes OneDrive is the judge, and a listing that has ended may name both.
 fn keep_the_rules_of_the_rows(items: &[Item]) -> bool {
     let by_id: BTreeMap<LocalItemId, &Item> = items.iter().map(|item| (item.local_item_id, item)).collect();
     let sides: [fn(&Item) -> Option<&ItemVersion>; 2] = [|item| item.local.as_ref(), |item| item.onedrive.as_ref()];
@@ -206,13 +356,13 @@ fn keep_the_rules_of_the_rows(items: &[Item]) -> bool {
         }
     }
     let local_places: Vec<(LocalItemId, &std::ffi::OsStr)> = items.iter().filter_map(|item| item.local.as_ref()?.place.as_ref()).map(|place| (place.parent_local_item_id, place.name.as_os_str())).collect();
-    let onedrive_places: Vec<(LocalItemId, FoldedName)> = items.iter().filter_map(|item| item.onedrive.as_ref()?.place.as_ref()).map(|place| (place.parent_local_item_id, FoldedName::of(&place.name))).collect();
+    let onedrive_places: Vec<(LocalItemId, &std::ffi::OsStr)> = items.iter().filter_map(|item| item.onedrive.as_ref()?.place.as_ref()).map(|place| (place.parent_local_item_id, place.name.as_os_str())).collect();
     local_places.iter().collect::<BTreeSet<_>>().len() == local_places.len() && onedrive_places.iter().collect::<BTreeSet<_>>().len() == onedrive_places.len()
 }
 
-/// What the plan is given for the items of `members`, numbered from 2, at `places`; `None`
-/// when the rules of the rows do not allow them together. An item made in a directory that
-/// is left here is left here with it.
+/// What the plan is given for the items of `members`, numbered from 2, at `places`, with
+/// nothing said by the caller; `None` when the rules of the rows do not allow them
+/// together. An item made in a directory that is left here is left here with it.
 fn enumerated_input(members: &[Member], places: &[(ItemPlace, ItemPlace)]) -> Option<SyncPlanInput> {
     let rows: Vec<Item> = members.iter().zip(places).enumerate().map(|(index, (member, (from, at)))| member.shape.row(index as i64 + 2, member.kind, from, at)).collect();
     let mut given = input(rows);
@@ -231,6 +381,23 @@ fn enumerated_input(members: &[Member], places: &[(ItemPlace, ItemPlace)]) -> Op
             .map(|item| item.local_item_id)
             .collect();
         given.ignored_items.extend(left_here_too);
+    }
+    Some(given)
+}
+
+/// `given`, with what the caller says in `facts` of its items, numbered from 2, and of the
+/// folder; `None` when one of the facts cannot be said of its item.
+fn tell_callers_facts(mut given: SyncPlanInput, facts: &CallerFacts) -> Option<SyncPlanInput> {
+    for (index, fact) in facts.of_items.iter().enumerate() {
+        let item = id(index as i64 + 2);
+        let Some(fact) = fact else { continue };
+        if !given.items.iter().find(|row| row.local_item_id == item).is_some_and(|row| fact.can_be_said_of(row)) {
+            return None;
+        }
+        fact.tell(&mut given, item);
+    }
+    if let Some(fact) = facts.of_folder {
+        fact.tell(&mut given);
     }
     Some(given)
 }
@@ -354,10 +521,109 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
     None
 }
 
+/// The first step of `plan` that what the caller said in `given` rules out, in words.
+///
+/// - A step of an item a step is running for, or that a program holds open for writing;
+///   a merge with an item a step is running for.
+/// - A removal sent to OneDrive while anything it would take with it has a step running or
+///   is shown by the folder, where it waits to be moved out or is unsent: every row the rows
+///   say OneDrive has below the removed directory, at any depth. And the removal of an item
+///   that OneDrive has in a directory that was removed here, whatever is answered for that
+///   directory: one removal, of the outermost.
+/// - The removal of a directory while a listing is under way; a removal while the unsent
+///   removals are a mass removal the user did not confirm.
+/// - In a read-only folder, a step towards OneDrive of what came to be unsent after the
+///   switch; while OneDrive is full, or within a file's quiet time, a sending of content;
+///   a sending of a name OneDrive cannot hold.
+/// - What the user made sent into a directory the folder cannot show as OneDrive has it,
+///   or merged with an item it cannot show.
+fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<String> {
+    let row_of = |item: LocalItemId| given.items.iter().find(|row| row.local_item_id == item);
+    let directory_in_onedrive = |row: &Item| row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).map(|place| place.parent_local_item_id);
+    let is_removed_here = |row: &Item| row.local.is_none() && row.onedrive.is_some() && row.synced_place.is_some();
+    let cannot_be_shown = |item: LocalItemId| given.folder_visibility.get(&item) == Some(&FolderVisibility::CannotBeShown);
+    for step in &plan.steps {
+        let number = step.local_item_id();
+        let row = row_of(number)?;
+        if given.items_with_running_step.contains(&number) {
+            return Some(format!("item {number} has a step while a step is running for it"));
+        }
+        if given.items_open_for_writing.contains(&number) {
+            return Some(format!("item {number} has a step while a program holds it open for writing"));
+        }
+        let SyncStep::OneDrive(sending) = step else {
+            if let SyncStep::Row(RowStep::MergeItems { onedrive, .. }) = step {
+                if cannot_be_shown(onedrive.local_item_id) {
+                    return Some(format!("item {number} is merged with item {}, which the folder cannot show", onedrive.local_item_id));
+                }
+                if given.items_with_running_step.contains(&onedrive.local_item_id) {
+                    return Some(format!("item {number} is merged with item {}, which a step is running for", onedrive.local_item_id));
+                }
+            }
+            continue;
+        };
+        let is_removal = matches!(sending, OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. });
+        let sends_content = matches!(sending, OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. });
+        if is_removal {
+            let mut above = directory_in_onedrive(row);
+            for _ in 0..given.items.len() {
+                let Some(directory) = above.and_then(row_of) else { break };
+                if is_removed_here(directory) {
+                    return Some(format!("the removal of item {number} is sent while the directory {} above it in OneDrive is still to be removed", directory.local_item_id));
+                }
+                above = directory_in_onedrive(directory);
+            }
+            if given.unsent_removal_count > 500 && !given.items_with_confirmed_removal.contains(&number) {
+                return Some(format!("the removal of item {number} is sent in a mass removal the user did not confirm"));
+            }
+        }
+        if let OneDriveStep::SendDirectoryRemoval { .. } = sending {
+            if given.is_listing_under_way {
+                return Some(format!("the removal of the directory {number} is sent while a listing is under way"));
+            }
+            let mut below = vec![number];
+            for _ in 0..given.items.len() {
+                let deeper: Vec<LocalItemId> = given.items.iter().filter(|row| directory_in_onedrive(row).is_some_and(|directory| below.contains(&directory)) && !below.contains(&row.local_item_id)).map(|row| row.local_item_id).collect();
+                below.extend(deeper);
+            }
+            for taken in below.iter().skip(1).filter_map(|taken| row_of(*taken)) {
+                if given.items_with_running_step.contains(&taken.local_item_id) {
+                    return Some(format!("the removal of the directory {number} takes with it item {}, which a step is running for", taken.local_item_id));
+                }
+                if taken.local.is_some() {
+                    return Some(format!("the removal of the directory {number} takes with it item {}, which the folder shows", taken.local_item_id));
+                }
+            }
+        }
+        if let SendingState::ReadOnly { last_unsent_since } = given.sending_state {
+            if row.unsent_since.is_none_or(|since| since > last_unsent_since) {
+                return Some(format!("item {number} is sent in a read-only folder, and was not unsent when the folder was switched"));
+            }
+        }
+        if sends_content && given.is_onedrive_full {
+            return Some(format!("content of item {number} is sent while OneDrive is full"));
+        }
+        if sends_content && given.quiet_until.contains_key(&number) {
+            return Some(format!("content of item {number} is sent within its quiet time"));
+        }
+        if let OneDriveStep::MakeDirectory { parent, name, .. } | OneDriveStep::SendNewFile { parent, name, .. } | OneDriveStep::SendMove { parent, name, .. } = sending {
+            let name_here = row.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| &place.name);
+            if given.name_refusals.contains_key(&number) && name_here == Some(name) {
+                return Some(format!("item {number} is sent under a name OneDrive cannot hold"));
+            }
+            if let Some(directory) = given.items.iter().find(|row| row.onedrive_item.as_ref() == Some(parent)).filter(|directory| cannot_be_shown(directory.local_item_id)) {
+                return Some(format!("item {number} is sent into the directory {}, which the folder cannot show", directory.local_item_id));
+            }
+        }
+    }
+    None
+}
+
 /// What of `plan`, made from `given`, cannot proceed, in words; `None` when all of it can.
 ///
 /// - The plan says it is at fault.
-/// - The rows refuse one of its steps ([`find_step_the_rows_refuse`]).
+/// - The rows refuse one of its steps ([`find_step_the_rows_refuse`]), or what the caller
+///   said does ([`find_step_the_callers_facts_refuse`]).
 /// - An item the two sides do not agree on has no step, no wait and no rule that leaves it
 ///   out.
 /// - An item waits for a listing, and none is under way.
@@ -369,7 +635,7 @@ fn find_what_cannot_proceed(given: &SyncPlanInput, plan: &SyncPlan) -> Option<St
     if !plan.faults.is_empty() {
         return Some(format!("fault {:?}", plan.faults));
     }
-    if let Some(refused) = find_step_the_rows_refuse(given, plan) {
+    if let Some(refused) = find_step_the_rows_refuse(given, plan).or_else(|| find_step_the_callers_facts_refuse(given, plan)) {
         return Some(refused);
     }
     let stepped: BTreeSet<LocalItemId> = plan.steps.iter().map(SyncStep::local_item_id).collect();
@@ -412,17 +678,23 @@ fn find_what_cannot_proceed(given: &SyncPlanInput, plan: &SyncPlan) -> Option<St
     None
 }
 
-/// Every set of rows of the enumeration that the rules of the rows allow, each with the
-/// words it is reported under.
-pub(crate) fn every_enumerated_input() -> Vec<(String, SyncPlanInput)> {
-    let members = every_member();
-    let mut inputs = Vec::new();
+/// Every set of rows of the enumeration that the rules of the rows allow, with every set
+/// of facts the caller can say of them: `visit` is given each with the words it is reported
+/// under.
+pub(crate) fn visit_every_enumerated_input(mut visit: impl FnMut(&str, &SyncPlanInput)) {
+    let mut visit_with_facts = |words: String, given: SyncPlanInput, item_count: usize, is_crossed: bool| {
+        for facts in every_caller_facts(item_count, is_crossed) {
+            if let Some(given) = tell_callers_facts(given.clone(), &facts) {
+                let said: Vec<String> = facts.of_items.iter().enumerate().filter_map(|(index, fact)| Some(format!("{:?} of item {}", (*fact)?, index + 2))).chain(facts.of_folder.map(|fact| format!("{fact:?}"))).collect();
+                visit(&if said.is_empty() { words.clone() } else { format!("{words} [{}]", said.join(", ")) }, &given);
+            }
+        }
+    };
     for relation in EVERY_RELATION {
-        for first in &members {
-            for second in &members {
-                if let Some(given) = enumerated_input(&[*first, *second], &relation.places()) {
-                    inputs.push((format!("{relation:?}: {:?} {:?} / {:?} {:?}", first.shape, first.kind, second.shape, second.kind), given));
-                }
+        for members in relation.member_sets() {
+            if let Some(given) = enumerated_input(&members, &relation.places()) {
+                let of_members: Vec<String> = members.iter().map(|member| format!("{:?} {:?}", member.shape, member.kind)).collect();
+                visit_with_facts(format!("{relation:?}: {}", of_members.join(" / ")), given, members.len(), relation.is_crossed_with_every_fact());
             }
         }
     }
@@ -437,45 +709,57 @@ pub(crate) fn every_enumerated_input() -> Vec<(String, SyncPlanInput)> {
                 for kind in [ItemKind::File, ItemKind::Directory] {
                     let circle = [first, second, third].map(|shape| Member { shape, kind });
                     if let Some(given) = enumerated_input(&circle, &names) {
-                        inputs.push((format!("CircleOfNames: {first:?} / {second:?} / {third:?} {kind:?}"), given));
+                        visit_with_facts(format!("CircleOfNames: {first:?} / {second:?} / {third:?} {kind:?}"), given, 3, false);
                     }
                 }
                 let circle = [first, second, third].map(|shape| Member { shape, kind: ItemKind::Directory });
                 if let Some(given) = enumerated_input(&circle, &directories) {
-                    inputs.push((format!("CircleOfDirectories: {first:?} / {second:?} / {third:?}"), given));
+                    visit_with_facts(format!("CircleOfDirectories: {first:?} / {second:?} / {third:?}"), given, 3, false);
                 }
             }
         }
     }
-    inputs
 }
 
-/// New: the gate of the decisions between items, written before them. Of its 4529 sets of
-/// rows, 242 could not proceed then: a step sent to a name OneDrive had another item under
-/// (two items of one name as OneDrive compares names, an exchange, a place another item was
-/// leaving), a directory sent or brought into what was in it, items waiting for each other
-/// in a circle, and an item waiting for one a rule leaves out.
+/// The gate of the decisions between items. Written before them, it held 4529 sets of rows,
+/// of which 242 could not proceed then. Before the review's findings were mended it gained
+/// what the caller says as facts of any item and of the folder, a directory in a directory,
+/// and two items of OneDrive under names that fold to one.
 #[test]
-fn every_two_related_items_and_every_three_in_a_circle_have_a_plan_that_can_proceed() {
-    let inputs = every_enumerated_input();
-    assert!(inputs.len() > 3000, "the enumeration lost its cells: {}", inputs.len());
-    let cannot_proceed: Vec<String> = inputs.iter().filter_map(|(words, given)| find_what_cannot_proceed(given, &make_sync_plan(given)).map(|what| format!("{words}: {what}"))).collect();
-    assert!(cannot_proceed.is_empty(), "{} of {} cannot proceed:\n{}", cannot_proceed.len(), inputs.len(), cannot_proceed.join("\n"));
+fn every_set_of_related_items_has_a_plan_that_can_proceed_whatever_the_caller_says() {
+    let mut count = 0;
+    let mut cannot_proceed: Vec<String> = Vec::new();
+    visit_every_enumerated_input(|words, given| {
+        count += 1;
+        cannot_proceed.extend(find_what_cannot_proceed(given, &make_sync_plan(given)).map(|what| format!("{words}: {what}")));
+    });
+    assert!(count > 30_000, "the enumeration lost its cells: {count}");
+    assert!(cannot_proceed.is_empty(), "{} of {count} cannot proceed:\n{}", cannot_proceed.len(), cannot_proceed.join("\n"));
 }
 
 /// The enumeration makes what it says: a set of rows the rules refuse is left out, and
 /// every relation has cells.
 #[test]
 fn the_enumeration_holds_every_relation_and_no_rows_against_the_rules() {
-    let inputs = every_enumerated_input();
+    let mut all_words = Vec::new();
+    visit_every_enumerated_input(|words, _| all_words.push(words.to_owned()));
     for relation in EVERY_RELATION {
-        assert!(inputs.iter().any(|(words, _)| words.starts_with(&format!("{relation:?}:"))), "{relation:?}");
+        assert!(all_words.iter().any(|words| words.starts_with(&format!("{relation:?}:"))), "{relation:?}");
     }
-    assert!(inputs.iter().any(|(words, _)| words.starts_with("CircleOfNames")) && inputs.iter().any(|(words, _)| words.starts_with("CircleOfDirectories")));
+    assert!(all_words.iter().any(|words| words.starts_with("CircleOfNames")) && all_words.iter().any(|words| words.starts_with("CircleOfDirectories")));
+    for fact in EVERY_ITEM_FACT {
+        assert!(all_words.iter().any(|words| words.contains(&format!("{fact:?} of item 3"))), "{fact:?}");
+    }
+    assert!(all_words.iter().any(|words| words.starts_with("MovedOutOfNested: RemovedHere Directory / RemovedHere Directory / MovedHere File [StepRunning of item 2]")));
     // Two items the folder shows at one name are no rows; two that differ by case are.
     let made = Member { shape: Shape::MadeHere, kind: ItemKind::File };
     assert!(enumerated_input(&[made, made], &Relation::SameName.places()).is_none());
     assert!(enumerated_input(&[made, made], &Relation::SameNameByCase.places()).is_some());
+    // Two items OneDrive has at one name are no rows; under two names that fold to one,
+    // they are: OneDrive is the judge.
+    let new_in_onedrive = Member { shape: Shape::NewInOneDrive, kind: ItemKind::File };
+    assert!(enumerated_input(&[new_in_onedrive, new_in_onedrive], &Relation::SameName.places()).is_none());
+    assert!(enumerated_input(&[new_in_onedrive, new_in_onedrive], &Relation::SameNameByCase.places()).is_some());
     // A directory moved here into one that was moved here into it is above itself.
     let moved_here = Member { shape: Shape::MovedHere, kind: ItemKind::Directory };
     let moved_in_onedrive = Member { shape: Shape::MovedInOneDrive, kind: ItemKind::Directory };

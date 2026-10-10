@@ -185,9 +185,10 @@ pub enum RowStep {
     /// A new item here (`local`) and a new item in OneDrive (`onedrive`) are one
     /// ([`ItemStore::merge_items`](crate::ItemStore::merge_items)).
     MergeItems { local: ItemVersions, onedrive: ItemVersions },
-    /// Both sides removed the item: what they agreed on is forgotten, and the row is left
-    /// with its binding alone, for the guard against an outdated listing to delete.
-    DropRow { item: ItemVersions },
+    /// Both sides removed the item: that is agreed on. What they agreed on before is
+    /// forgotten, and the row is left with its binding alone; it goes later, by the guard
+    /// against an outdated listing.
+    AgreeOnRemoval { item: ItemVersions },
     /// The folder does not show the item, and what the two sides agreed on is forgotten:
     /// the row is that of an item of OneDrive the folder never showed. For a file removed
     /// here whose content OneDrive changed, where the folder cannot show it: it cannot come
@@ -210,7 +211,7 @@ impl RowStep {
         match self {
             RowStep::GiveUpBinding { item }
             | RowStep::MergeItems { local: item, .. }
-            | RowStep::DropRow { item }
+            | RowStep::AgreeOnRemoval { item }
             | RowStep::ForgetSyncedVersion { item }
             | RowStep::HashLocalContent { item }
             | RowStep::AgreeOnPlace { item }

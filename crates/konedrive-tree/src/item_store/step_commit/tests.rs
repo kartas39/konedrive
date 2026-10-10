@@ -438,7 +438,7 @@ fn a_row_both_sides_removed_the_item_of_is_left_with_its_binding_alone() {
     let file = show_file(&mut store, "A", "a.txt");
     store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
     write_listing_of_changes(&mut store, &[listed_gone("A")]);
-    commit(&mut store, file, |items, planned_from| items.commit_drop_row(planned_from));
+    commit(&mut store, file, |items, planned_from| items.commit_agree_on_removal(planned_from));
     let dropped = row(&mut store, file);
     assert!(is_binding_alone(&dropped) && dropped.confirmed_at_count == 0 && dropped.unsent_since.is_none(), "{dropped:?}");
 }
@@ -497,7 +497,7 @@ fn a_step_no_plan_asks_for_is_refused() {
     assert!(is_refused(items.commit_send_content(&planned_from, &confirmed("other", "R", "a.txt", Some(confirmed_content(3, "h")), "e"))));
     assert!(is_refused(items.commit_send_file_removal(&planned_from)), "the folder shows it");
     assert!(is_refused(items.commit_show_item(&planned_from, false)), "the folder shows it");
-    assert!(is_refused(items.commit_drop_row(&planned_from)));
+    assert!(is_refused(items.commit_agree_on_removal(&planned_from)));
     assert!(is_refused(items.commit_make_directory(&planned_from, &reference("R"), "a.txt".as_ref(), &confirmed("N", "R", "a.txt", None, "e"))));
     assert!(is_refused(items.commit_agree_on_place(&ItemVersions::of(&items.find_item(ROOT).unwrap().unwrap()))));
 }

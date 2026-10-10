@@ -99,7 +99,7 @@ impl StepStandIn {
                 match step {
                     RowStep::GiveUpBinding { item } => items.commit_give_up_binding(item, is_name_ignored(&local_place(item).name)),
                     RowStep::MergeItems { local, onedrive } => items.commit_merge_items(local, onedrive),
-                    RowStep::DropRow { item } => items.commit_drop_row(item),
+                    RowStep::AgreeOnRemoval { item } => items.commit_agree_on_removal(item),
                     RowStep::ForgetSyncedVersion { item } => items.commit_forget_synced_version(item),
                     RowStep::HashLocalContent { item } => items.commit_hash_local_content(item, &hash_of(item.local.as_ref().and_then(|local| local.content.as_ref()).expect("a file the folder shows"))),
                     RowStep::AgreeOnPlace { item } => items.commit_agree_on_place(item),

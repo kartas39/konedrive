@@ -3,7 +3,7 @@ use crate::model::ItemKind;
 use crate::sync_plan::tests::{hashed_here, id, listed, made_directory, made_file, moved_here, moved_in_onedrive, synced_file, with_content_here, written_here, ROOT};
 
 fn claim<'a>(claimant: &'a Item, holder: Option<NameHolder<'a>>) -> NameClaim<'a> {
-    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_answered_taken: false, is_listing_under_way: false }
+    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_answered_taken: false, holder_cannot_be_shown: false, is_listing_under_way: false }
 }
 
 #[test]
@@ -84,4 +84,24 @@ fn an_item_steps_aside_from_a_name_onedrive_answered_is_taken() {
     let onedrive_directory = listed(3, ItemKind::Directory, ROOT, "d");
     let new_directory = made_directory(2, ROOT, "d");
     assert_eq!(decide_name_contest(&NameClaim { is_answered_taken: true, ..claim(&new_directory, Some(NameHolder::Stays(&onedrive_directory))) }), NameContestOutcome::MergesWith(id(3)));
+}
+
+/// The review's M2, the brief's §7: nothing of the user's is one with an item the folder
+/// cannot show; OneDrive holds the name, so the local item steps aside.
+#[test]
+fn a_new_item_is_not_merged_with_an_item_the_folder_cannot_show() {
+    let onedrive_directory = listed(3, ItemKind::Directory, ROOT, "shared");
+    let new = made_directory(2, ROOT, "shared");
+    let cannot_be_shown = NameClaim { holder_cannot_be_shown: true, ..claim(&new, Some(NameHolder::Stays(&onedrive_directory))) };
+    assert_eq!(decide_name_contest(&cannot_be_shown), NameContestOutcome::StepsAside);
+    assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..cannot_be_shown }), NameContestOutcome::WaitsForListing, "a page to come may say the folder can show it");
+}
+
+/// The class behind the review's M1: a holder a step is running for is waited for, not
+/// merged with and not stepped aside from; the plan made after that step decides.
+#[test]
+fn an_item_waits_for_a_holder_a_step_is_running_for() {
+    let new = made_directory(2, ROOT, "d");
+    assert_eq!(decide_name_contest(&claim(&new, Some(NameHolder::HasRunningStep(id(3))))), NameContestOutcome::WaitsFor(id(3)));
+    assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::HasRunningStep(id(3)))) }), NameContestOutcome::NameIsFree);
 }

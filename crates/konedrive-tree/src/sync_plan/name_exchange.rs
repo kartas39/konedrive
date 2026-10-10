@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 
-use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
+use super::item_decision::{ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, OverruledAnswers, Overruling};
 use super::plan_items::PlanItems;
 use super::side_change::{PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, SyncStep};
@@ -48,7 +48,7 @@ fn find_free_temporary_name(items: &PlanItems<'_>, item: LocalItemId, directory:
 /// The items that wait for one another in a circle that `item` is in: `item`, the item it
 /// waits for, and so on until one waits for `item` again. `None` when the way does not come
 /// back to `item`.
-fn find_circle_of_waits(decisions: &ItemDecisions, item: LocalItemId) -> Option<Vec<LocalItemId>> {
+fn find_circle_of_waits(decisions: &OverruledAnswers<'_>, item: LocalItemId) -> Option<Vec<LocalItemId>> {
     let mut circle = vec![item];
     loop {
         let Some(ItemDecision::Wait(WaitReason::AnotherItem(another))) = decisions.find(*circle.last()?) else { return None };
@@ -121,15 +121,17 @@ fn go_through_temporary_name(case: &ItemCase<'_>, items: &PlanItems<'_>, sending
 /// Breaks every circle of items that wait for one another: of the items of a circle that
 /// can go through a temporary name, the one with the lowest id does. `sendings` are the
 /// steps towards OneDrive that wait for a name another item leaves, by item.
-pub(crate) fn break_circles_of_names(cases: &[ItemCase<'_>], items: &PlanItems<'_>, sendings: &BTreeMap<LocalItemId, OneDriveStep>, decisions: &mut ItemDecisions) {
+pub(crate) fn break_circles_of_names(cases: &[ItemCase<'_>], items: &PlanItems<'_>, sendings: &BTreeMap<LocalItemId, OneDriveStep>, answers: &ItemAnswers) -> Vec<Overruling> {
+    let mut answers = OverruledAnswers::of(answers);
     let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     // Each circle is broken once; no more circles than items.
     for id in case_of.keys() {
-        let Some(circle) = find_circle_of_waits(decisions, *id) else { continue };
-        let members: Vec<(&ItemCase<'_>, Option<&ItemDecision>)> = circle.iter().filter_map(|member| Some((*case_of.get(member)?, decisions.find(*member)))).collect();
+        let Some(circle) = find_circle_of_waits(&answers, *id) else { continue };
+        let members: Vec<(&ItemCase<'_>, Option<&ItemDecision>)> = circle.iter().filter_map(|member| Some((*case_of.get(member)?, answers.find(*member)))).collect();
         let through_temporary_name = members.iter().filter_map(|(member, decision)| Some((member.item.local_item_id, go_through_temporary_name(member, items, sendings.get(&member.item.local_item_id), *decision, &members)?))).min_by_key(|(member, _)| *member);
         if let Some((member, step)) = through_temporary_name {
-            decisions.replace(member, ItemDecision::Step(step));
+            answers.overrule(member, ItemDecision::Step(step));
         }
     }
+    answers.into_overrulings()
 }

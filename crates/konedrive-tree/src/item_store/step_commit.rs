@@ -208,9 +208,9 @@ impl ItemStore<'_> {
         self.write(|tx| commit_merge_items(tx, local, onedrive))
     }
 
-    /// The commit of [`RowStep::DropRow`](crate::RowStep::DropRow): what the two sides
+    /// The commit of [`RowStep::AgreeOnRemoval`](crate::RowStep::AgreeOnRemoval): what the two sides
     /// agreed on of an item both removed is forgotten, and the row is a binding alone.
-    pub fn commit_drop_row(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
+    pub fn commit_agree_on_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_forget_synced_version(tx, item, false))
     }
 
@@ -559,7 +559,7 @@ pub(crate) fn commit_merge_items(tx: &Transaction<'_>, local: &ItemVersions, one
     Ok(StepCommitOutcome::Written)
 }
 
-/// [`ItemStore::commit_drop_row`] and [`ItemStore::commit_forget_synced_version`], inside
+/// [`ItemStore::commit_agree_on_removal`] and [`ItemStore::commit_forget_synced_version`], inside
 /// the caller's transaction, which is dropped on any error. `is_in_onedrive`: whether the
 /// step is for an item OneDrive has.
 pub(crate) fn commit_forget_synced_version(tx: &Transaction<'_>, item: &ItemVersions, is_in_onedrive: bool) -> Result<StepCommitOutcome, TreeError> {

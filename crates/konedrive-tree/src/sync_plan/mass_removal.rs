@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use konedrive_reason::Reason;
 
-use super::item_decision::{ItemDecision, ItemDecisions};
+use super::item_decision::{ItemAnswers, ItemDecision, Overruling};
 use super::sync_step::{OneDriveStep, SyncStep};
 use super::WaitReason;
 use crate::model::LocalItemId;
@@ -23,28 +23,27 @@ pub(crate) fn is_mass_removal(removal_count: u64, shown_item_count: u64) -> bool
     removal_count > MASS_REMOVAL_ITEMS || (removal_count >= MASS_REMOVAL_LEAST && removal_count * 100 > shown_item_count * MASS_REMOVAL_PERCENT)
 }
 
-/// Holds the removals back when the unsent removals are together a mass removal.
+/// Holds the removals back when the removals of a short time are together a mass removal.
 ///
-/// `unsent_removal_count` is how many items the unsent removals take from OneDrive that the
-/// user did not confirm, those of items the plan was not given too: the plan cannot count
-/// what it was not given, so the caller counts
-/// ([`ItemStore::count_unsent_removals`](crate::ItemStore::count_unsent_removals)). When
-/// that is a mass removal, each removal that is a step of this plan waits for the user
-/// instead; the removal of an item the user confirmed is sent.
-pub(crate) fn hold_mass_removal(unsent_removal_count: u64, shown_item_count: u64, confirmed: &BTreeSet<LocalItemId>, decisions: &mut ItemDecisions) {
-    if !is_mass_removal(unsent_removal_count, shown_item_count) {
-        return;
+/// `removal_count` is how many items those removals take from OneDrive that the user did
+/// not confirm: the unsent ones, those of items the plan was not given too, and those that
+/// were sent a short time ago — an `rm -r` arrives as single removals, and a plan made in
+/// the middle of it sees a part. The plan cannot count what it was not given, so the caller
+/// counts ([`SyncPlanInput`](super::SyncPlanInput)). When that is a mass removal, each
+/// removal that is a step of this plan waits for the user instead; the removal of an item
+/// the user confirmed is sent.
+pub(crate) fn hold_mass_removal(removal_count: u64, shown_item_count: u64, confirmed: &BTreeSet<LocalItemId>, answers: &ItemAnswers) -> Vec<Overruling> {
+    if !is_mass_removal(removal_count, shown_item_count) {
+        return Vec::new();
     }
-    let removals: Vec<LocalItemId> = decisions
+    answers
         .items()
         .iter()
         .copied()
-        .filter(|item| matches!(decisions.find(*item), Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. })))))
+        .filter(|item| matches!(answers.find(*item), Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. })))))
         .filter(|item| !confirmed.contains(item))
-        .collect();
-    for item in removals {
-        decisions.replace(item, ItemDecision::Wait(WaitReason::User(Reason::MassDelete)));
-    }
+        .map(|item| Overruling::of(item, ItemDecision::Wait(WaitReason::User(Reason::MassDelete))))
+        .collect()
 }
 
 #[cfg(test)]

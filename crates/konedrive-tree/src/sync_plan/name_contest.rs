@@ -5,16 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use konedrive_reason::Reason;
-
 use super::conflict_copy_name::find_free_conflict_copy_name;
-use super::item_decision::{ItemCase, ItemDecision, ItemDecisions};
+use super::item_decision::{ItemAnswers, ItemCase, ItemDecision, OverruledAnswers, Overruling};
 use super::plan_items::PlanItems;
 use super::side_change::{compare_local_content, ContentChange, PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::{PlanFault, WaitReason};
 use crate::folded_name::FoldedName;
-use crate::model::{Item, ItemKind, ItemPlace, ItemVersion, LocalItemId};
+use crate::model::{FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId};
 
 /// The other item OneDrive has under the name an item is to have there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +21,9 @@ pub(crate) enum NameHolder<'a> {
     Leaves(LocalItemId),
     /// It stays under the name: its row.
     Stays(&'a Item),
+    /// A step is running for it: which item. Whether it leaves the name or stays under it
+    /// is known once that step has ended.
+    HasRunningStep(LocalItemId),
 }
 
 /// An item whose place here is to be its place in OneDrive, and what stands against it.
@@ -37,6 +38,8 @@ pub(crate) struct NameClaim<'a> {
     pub(crate) has_earlier_rival: bool,
     /// OneDrive answered the sending of the claimant to this name that the name is taken.
     pub(crate) is_answered_taken: bool,
+    /// The folder cannot show the holder as OneDrive has it.
+    pub(crate) holder_cannot_be_shown: bool,
     pub(crate) is_listing_under_way: bool,
 }
 
@@ -67,11 +70,14 @@ pub(crate) enum NameContestOutcome {
 ///   bring the item that has the name;
 /// - the holder leaves the name: the claimant waits for it; one that is left here, and so
 ///   never sent, waits for nothing;
+/// - a step is running for the holder: the claimant waits for it, and the plan made after
+///   that step decides;
 /// - the holder stays, and a listing is under way: the claimant waits for the listing;
 /// - the holder stays, and both are new, each on its side, and of one kind: two
 ///   directories are one item, and so are two files of one content; where only hashing the
 ///   local content says whether they are, it is hashed first. An item that is left here is
-///   never one with an item of OneDrive;
+///   never one with an item of OneDrive, and nothing is one with an item the folder cannot
+///   show: what the user made would leave the folder with it;
 /// - otherwise the claimant steps aside.
 pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
     let claimant = claim.claimant;
@@ -83,11 +89,13 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
         None => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(holder)) => return NameContestOutcome::WaitsFor(holder),
+        Some(NameHolder::HasRunningStep(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
+        Some(NameHolder::HasRunningStep(holder)) => return NameContestOutcome::WaitsFor(holder),
         Some(NameHolder::Stays(_)) if claim.is_listing_under_way => return NameContestOutcome::WaitsForListing,
         Some(NameHolder::Stays(holder)) => holder,
     };
     let is_new_in_onedrive = holder.local.is_none() && holder.synced_place.is_none() && holder.synced_content.is_none();
-    if claim.is_left_here || claimant.onedrive_item.is_some() || !is_new_in_onedrive || claimant.kind != holder.kind {
+    if claim.is_left_here || claimant.onedrive_item.is_some() || !is_new_in_onedrive || claim.holder_cannot_be_shown || claimant.kind != holder.kind {
         return NameContestOutcome::StepsAside;
     }
     let content = |version: &'_ Option<ItemVersion>| version.as_ref().and_then(|version| version.content.clone());
@@ -111,52 +119,70 @@ fn claims_its_name(item: &Item, decision: Option<&ItemDecision>) -> bool {
 fn leaves_its_name(holder: &Item, decision: Option<&ItemDecision>, directory: LocalItemId, name: &FoldedName) -> bool {
     let is_elsewhere_here = holder.local.as_ref().and_then(|local| local.place.as_ref()).is_some_and(|place| place.parent_local_item_id != directory || FoldedName::of(&place.name) != *name);
     match decision {
-        Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => is_elsewhere_here,
-        Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. }))) => true,
-        Some(ItemDecision::Wait(reason)) => match SideChange::of_local(holder) {
-            SideChange::Removed => !matches!(reason, WaitReason::AnotherItem(_)),
-            SideChange::IsThere { place: PlaceChange::Moved, .. } => is_elsewhere_here,
-            _ => false,
+        Some(ItemDecision::Step(SyncStep::OneDrive(step))) => match step {
+            OneDriveStep::SendMove { .. } => is_elsewhere_here,
+            OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. } => true,
+            OneDriveStep::MakeDirectory { .. } | OneDriveStep::SendNewFile { .. } | OneDriveStep::SendContent { .. } => false,
         },
-        _ => false,
+        Some(ItemDecision::Wait(reason)) => match SideChange::of_local(holder) {
+            SideChange::Removed => match reason {
+                WaitReason::AnotherItem(_) => false,
+                WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_) => true,
+            },
+            SideChange::IsThere { place: PlaceChange::Moved, .. } => is_elsewhere_here,
+            SideChange::IsThere { place: PlaceChange::Same, .. } | SideChange::NeverWas => false,
+        },
+        // A step towards the folder or of the rows alone sends nothing.
+        Some(ItemDecision::Step(SyncStep::Folder(_) | SyncStep::Row(_)) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => false,
     }
+}
+
+/// What was decided of the names of a directory of OneDrive.
+pub(crate) struct NameContests {
+    pub(crate) overrulings: Vec<Overruling>,
+    /// The steps towards OneDrive that now wait for a name another item leaves, by item:
+    /// what waits in a circle goes through a temporary name
+    /// ([`name_exchange`](super::name_exchange)).
+    pub(crate) sendings_that_wait: BTreeMap<LocalItemId, OneDriveStep>,
 }
 
 /// Decides every item whose place here is to be its place in OneDrive against what else has
 /// or wants that name there ([`decide_name_contest`]), the items by their ids. An item
 /// that is left here is decided too: it steps aside for an item of OneDrive that stays at
-/// its name. An item a step is running for, and a file open for writing, is not decided.
+/// its name. An item that is held back — a step is running for it, a program holds it open
+/// for writing — is not decided, and as a holder it is waited for.
 /// `places_taken_in_onedrive` is what OneDrive answered is taken
 /// ([`SyncPlanInput`](super::SyncPlanInput)). `moves_taken_back` are the items whose move here does not stand
 /// ([`move_cycle`](super::move_cycle)): such a holder stays at its name in OneDrive.
-///
-/// The steps towards OneDrive that now wait for a name another item leaves are returned,
-/// by item: what waits in a circle goes through a temporary name
-/// ([`name_exchange`](super::name_exchange)).
 pub(crate) fn settle_name_contests(
     cases: &[ItemCase<'_>],
     items: &PlanItems<'_>,
+    answers: &ItemAnswers,
     computer_name: &str,
     places_taken_in_onedrive: &BTreeMap<LocalItemId, ItemPlace>,
     moves_taken_back: &BTreeSet<LocalItemId>,
-    decisions: &mut ItemDecisions,
-) -> BTreeMap<LocalItemId, OneDriveStep> {
+) -> NameContests {
+    let mut answers = OverruledAnswers::of(answers);
     let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     let is_left_here = |item: LocalItemId| case_of.get(&item).is_some_and(|case| case.sending.is_ignored);
+    let cannot_be_shown = |item: LocalItemId| case_of.get(&item).is_some_and(|case| case.folder_visibility == FolderVisibility::CannotBeShown);
     let mut sendings_that_wait = BTreeMap::new();
     let mut names_given: BTreeSet<(LocalItemId, FoldedName)> = BTreeSet::new();
     for (id, case) in &case_of {
         let (id, item) = (*id, case.item);
         let Some(place) = item.local.as_ref().and_then(|local| local.place.as_ref()) else { continue };
-        let decision = decisions.find(id).cloned();
-        let is_not_planned = matches!(decision, Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::User(Reason::OpenForWriting))));
-        if is_not_planned || !(is_left_here(id) || claims_its_name(item, decision.as_ref())) {
+        let decision = answers.find(id).cloned();
+        if answers.is_held(id) || !(is_left_here(id) || claims_its_name(item, decision.as_ref())) {
             continue;
         }
         let (directory, name) = (place.parent_local_item_id, FoldedName::of(&place.name));
         let in_onedrive = items.list_in_onedrive_with_name(directory, &name);
-        let holder = in_onedrive.iter().filter(|holder| **holder != id).find_map(|holder| items.find(*holder)).map(|holder| {
-            if !moves_taken_back.contains(&holder.local_item_id) && leaves_its_name(holder, decisions.find(holder.local_item_id), directory, &name) {
+        let holder = in_onedrive.iter().filter(|holder| **holder != id).find_map(|holder| items.find(*holder));
+        let holder_cannot_be_shown = holder.is_some_and(|holder| cannot_be_shown(holder.local_item_id));
+        let holder = holder.map(|holder| {
+            if answers.is_held(holder.local_item_id) {
+                NameHolder::HasRunningStep(holder.local_item_id)
+            } else if !moves_taken_back.contains(&holder.local_item_id) && leaves_its_name(holder, answers.find(holder.local_item_id), directory, &name) {
                 NameHolder::Leaves(holder.local_item_id)
             } else {
                 NameHolder::Stays(holder)
@@ -164,10 +190,18 @@ pub(crate) fn settle_name_contests(
         });
         let is_earlier_rival = |rival: &&Item| {
             let rival_id = rival.local_item_id;
-            rival_id != id && !in_onedrive.contains(&rival_id) && !is_left_here(rival_id) && claims_its_name(rival, decisions.find(rival_id)) && (rival.unsent_since, rival_id) < (item.unsent_since, id)
+            rival_id != id && !in_onedrive.contains(&rival_id) && !is_left_here(rival_id) && claims_its_name(rival, answers.find(rival_id)) && (rival.unsent_since, rival_id) < (item.unsent_since, id)
         };
         let has_earlier_rival = !is_left_here(id) && items.list_shown_with_name(directory, &name).into_iter().filter_map(|rival| items.find(rival)).any(|rival| is_earlier_rival(&rival));
-        let claim = NameClaim { claimant: item, is_left_here: is_left_here(id), holder, has_earlier_rival, is_answered_taken: places_taken_in_onedrive.get(&id) == Some(place), is_listing_under_way: case.is_listing_under_way };
+        let claim = NameClaim {
+            claimant: item,
+            is_left_here: is_left_here(id),
+            holder,
+            has_earlier_rival,
+            is_answered_taken: places_taken_in_onedrive.get(&id) == Some(place),
+            holder_cannot_be_shown,
+            is_listing_under_way: case.is_listing_under_way,
+        };
         let sending = match &decision {
             Some(ItemDecision::Step(SyncStep::OneDrive(step @ (OneDriveStep::MakeDirectory { .. } | OneDriveStep::SendNewFile { .. } | OneDriveStep::SendMove { .. })))) => Some(step.clone()),
             _ => None,
@@ -176,17 +210,17 @@ pub(crate) fn settle_name_contests(
             (NameContestOutcome::NameIsFree, _) | (NameContestOutcome::WaitsFor(_) | NameContestOutcome::WaitsForListing, None) => {}
             (NameContestOutcome::WaitsFor(holder), Some(sending)) => {
                 sendings_that_wait.insert(id, sending);
-                decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(holder)));
+                answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(holder)));
             }
-            (NameContestOutcome::WaitsForListing, Some(_)) => decisions.replace(id, ItemDecision::Wait(WaitReason::Listing)),
+            (NameContestOutcome::WaitsForListing, Some(_)) => answers.overrule(id, ItemDecision::Wait(WaitReason::Listing)),
             (NameContestOutcome::MergesWith(holder), _) => {
                 let Some(onedrive) = items.find(holder) else { continue };
-                decisions.replace(id, ItemDecision::Step(SyncStep::Row(RowStep::MergeItems { local: ItemVersions::of(item), onedrive: ItemVersions::of(onedrive) })));
-                decisions.replace(holder, ItemDecision::Wait(WaitReason::AnotherItem(id)));
+                answers.overrule(id, ItemDecision::Step(SyncStep::Row(RowStep::MergeItems { local: ItemVersions::of(item), onedrive: ItemVersions::of(onedrive) })));
+                answers.overrule(holder, ItemDecision::Wait(WaitReason::AnotherItem(id)));
             }
             (NameContestOutcome::HashesLocalContent, _) => {
                 if !matches!(decision, Some(ItemDecision::Wait(WaitReason::Time { .. }))) {
-                    decisions.replace(id, ItemDecision::Step(SyncStep::Row(RowStep::HashLocalContent { item: ItemVersions::of(item) })));
+                    answers.overrule(id, ItemDecision::Step(SyncStep::Row(RowStep::HashLocalContent { item: ItemVersions::of(item) })));
                 }
             }
             (NameContestOutcome::StepsAside, _) => {
@@ -200,11 +234,11 @@ pub(crate) fn settle_name_contests(
                     }
                     None => ItemDecision::Fault(PlanFault::NoFreeName(id)),
                 };
-                decisions.replace(id, decision);
+                answers.overrule(id, decision);
             }
         }
     }
-    sendings_that_wait
+    NameContests { overrulings: answers.into_overrulings(), sendings_that_wait }
 }
 
 #[cfg(test)]
