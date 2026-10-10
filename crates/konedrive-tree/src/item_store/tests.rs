@@ -104,7 +104,7 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             content_before_write: None,
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
-            confirmed_count: 0,
+            confirmed_at_count: 0,
         }
     );
     assert_eq!(path(&mut store, ROOT), Some(PathBuf::new()));

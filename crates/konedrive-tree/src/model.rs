@@ -466,16 +466,6 @@ impl ItemKind {
     }
 }
 
-/// A listing's folder is a directory, and its file a file.
-impl From<Kind> for ItemKind {
-    fn from(kind: Kind) -> Self {
-        match kind {
-            Kind::File => ItemKind::File,
-            Kind::Folder => ItemKind::Directory,
-        }
-    }
-}
-
 /// The directory an item is in and its name there. The parent is named by the client's own
 /// number on every side, so that places of the two sides can be compared. The name is kept as
 /// it was given, bytes that are not UTF-8 included, and never changed to compare it.
@@ -595,7 +585,7 @@ pub struct Item {
     /// a step of the client; 0 when it never did. The stamp of the guard against an outdated
     /// listing: what a listing fetched before that count says of the item may be older than
     /// what was confirmed.
-    pub confirmed_count: u64,
+    pub confirmed_at_count: u64,
 }
 
 /// How a file the folder shows stands between OneDrive and this computer.

@@ -151,7 +151,7 @@ pub(crate) fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[C
                 // drive's root id never changes. Do not move this.
                 meta::set(tx, ROOT_ITEM_ID, Some(&row.id))?;
                 // The root of the folder is that item, in the drive the store knows.
-                crate::item_store::bind_root(tx)?;
+                crate::item_store::bind_root_once_known(tx)?;
             }
             Change::Upsert(row) => write(tx, source, row)?,
             Change::Delete(id) => match source {

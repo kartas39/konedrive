@@ -28,7 +28,7 @@ const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, 
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
-     placement, is_name_ignored, confirmed_count";
+     placement, is_name_ignored, confirmed_at_count";
 
 /// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
 /// changed, made or removed since the two sides last agreed, and what they never agreed
@@ -67,7 +67,7 @@ mod column_index {
     pub(super) const CONTENT_BEFORE_WRITE: usize = column(ITEM_COLUMNS, "before_write_size");
     pub(super) const PLACEMENT: usize = column(ITEM_COLUMNS, "placement");
     pub(super) const IS_NAME_IGNORED: usize = column(ITEM_COLUMNS, "is_name_ignored");
-    pub(super) const CONFIRMED_COUNT: usize = column(ITEM_COLUMNS, "confirmed_count");
+    pub(super) const CONFIRMED_AT_COUNT: usize = column(ITEM_COLUMNS, "confirmed_at_count");
 }
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
@@ -149,7 +149,7 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         content_before_write: content_from(row, column_index::CONTENT_BEFORE_WRITE)?,
         placement: Placement::decode(&row.get::<_, String>(column_index::PLACEMENT)?),
         is_name_ignored: row.get::<_, i64>(column_index::IS_NAME_IGNORED)? != 0,
-        confirmed_count: row.get::<_, i64>(column_index::CONFIRMED_COUNT)?.max(0) as u64,
+        confirmed_at_count: row.get::<_, i64>(column_index::CONFIRMED_AT_COUNT)?.max(0) as u64,
     })
 }
 
@@ -195,7 +195,7 @@ fn values_of(item: &Item) -> Vec<Value> {
     values.extend(content_values(item.content_before_write.as_ref()));
     values.push(item.placement.encode().into());
     values.push(i64::from(item.is_name_ignored).into());
-    values.push((item.confirmed_count as i64).into());
+    values.push((item.confirmed_at_count as i64).into());
     values
 }
 
@@ -342,8 +342,8 @@ pub(super) fn set_onedrive_etag(conn: &Connection, item: LocalItemId, etag: Opti
 }
 
 /// The stamp of `item` is `count` from now on.
-pub(super) fn set_confirmed_count(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
-    if conn.prepare_cached("UPDATE items SET confirmed_count = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])? == 0 {
+pub(super) fn set_confirmed_at_count(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
+    if conn.prepare_cached("UPDATE items SET confirmed_at_count = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])? == 0 {
         return Err(refuse(format!("item {item} has no row to stamp")));
     }
     Ok(())
@@ -400,9 +400,9 @@ pub(super) fn list_unseen_in_full_listing(conn: &Connection, count: u64) -> Resu
 /// The rows that are a binding and nothing else, that no row names as its parent on any
 /// side, and whose stamp is `stamped_until` at most, go. Found by the index of such rows.
 /// A row that goes names no parent, so none of them holds another.
-pub(super) fn delete_bindings_alone(conn: &Connection, stamped_until: u64) -> Result<(), TreeError> {
+pub(super) fn delete_rows_of_binding_alone(conn: &Connection, stamped_until: u64) -> Result<(), TreeError> {
     let sql = format!(
-        "DELETE FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_count <= ?1
+        "DELETE FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count <= ?1
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.local_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.onedrive_parent_id = items.local_item_id)
             AND NOT EXISTS (SELECT 1 FROM items child WHERE child.synced_parent_id = items.local_item_id)"

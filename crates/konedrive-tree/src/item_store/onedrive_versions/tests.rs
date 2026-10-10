@@ -63,7 +63,7 @@ fn listed_store() -> TreeStore {
 }
 
 fn count(store: &mut TreeStore) -> u64 {
-    store.item_store().confirmed_count().unwrap()
+    store.item_store().confirmation_count().unwrap()
 }
 
 fn ids(read_again: Vec<OneDriveItemId>) -> Vec<String> {
@@ -72,13 +72,13 @@ fn ids(read_again: Vec<OneDriveItemId>) -> Vec<String> {
 
 /// Writes a page fetched now, of a listing that goes on; what is to be read again.
 fn write(store: &mut TreeStore, changes: &[Change]) -> Vec<String> {
-    let fetch_began_at = count(store);
-    ids(store.item_store().write_listed_changes(changes, fetch_began_at, None).unwrap())
+    let fetch_began_at_count = count(store);
+    ids(store.item_store().write_listed_changes(changes, fetch_began_at_count, None).unwrap())
 }
 
-/// Writes a page of a fetch that began at the count `fetch_began_at`.
-fn write_fetched_at(store: &mut TreeStore, changes: &[Change], fetch_began_at: u64, delta_link: Option<&str>) -> Vec<String> {
-    ids(store.item_store().write_listed_changes(changes, fetch_began_at, delta_link).unwrap())
+/// Writes a page of a fetch that began at the count `fetch_began_at_count`.
+fn write_fetched_at(store: &mut TreeStore, changes: &[Change], fetch_began_at_count: u64, delta_link: Option<&str>) -> Vec<String> {
+    ids(store.item_store().write_listed_changes(changes, fetch_began_at_count, delta_link).unwrap())
 }
 
 fn bound(store: &mut TreeStore, onedrive_id: &str) -> Option<Item> {
@@ -154,7 +154,7 @@ fn the_schema_refuses_an_onedrive_version_that_contradicts_its_row() {
         ("a binding gone from a row with an OneDrive version", "UPDATE items SET onedrive_drive_id = NULL, onedrive_item_id = NULL WHERE local_item_id = 5"),
         ("the root with a place", "UPDATE items SET onedrive_parent_id = 5, onedrive_name = 'root' WHERE local_item_id = 1"),
         ("no placement", "UPDATE items SET placement = NULL WHERE local_item_id = 5"),
-        ("no count of the confirmation", "UPDATE items SET confirmed_count = NULL WHERE local_item_id = 5"),
+        ("no count of the confirmation", "UPDATE items SET confirmed_at_count = NULL WHERE local_item_id = 5"),
     ] {
         assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
     }
@@ -236,7 +236,7 @@ fn an_item_the_client_did_not_know_gets_a_row_with_what_the_listing_says() {
             content_before_write: None,
             placement: Placement::Placed,
             is_name_ignored: false,
-            confirmed_count: 0,
+            confirmed_at_count: 0,
         }
     );
     let a = listed(&mut store, "A");
@@ -563,12 +563,12 @@ fn a_confirmation_stamps_its_row_with_the_next_count() {
     assert_eq!(store.item_store().stamp_confirmed(a).unwrap(), 1);
     assert_eq!(store.item_store().stamp_confirmed(b).unwrap(), 2);
     assert_eq!(store.item_store().stamp_confirmed(a).unwrap(), 3);
-    assert_eq!((item(&mut store, a).confirmed_count, item(&mut store, b).confirmed_count, count(&mut store)), (3, 2, 3));
+    assert_eq!((item(&mut store, a).confirmed_at_count, item(&mut store, b).confirmed_at_count, count(&mut store)), (3, 2, 3));
     assert!(is_refused(store.item_store().stamp_confirmed(LocalItemId::new(99))));
     assert_eq!(count(&mut store), 3, "a refused stamp is no confirmation");
 }
 
-fn stamped(confirmed_count: u64, onedrive_etag: Option<&str>) -> Item {
+fn stamped(confirmed_at_count: u64, onedrive_etag: Option<&str>) -> Item {
     Item {
         local_item_id: LocalItemId::new(2),
         onedrive_item: Some(reference("A")),
@@ -582,7 +582,7 @@ fn stamped(confirmed_count: u64, onedrive_etag: Option<&str>) -> Item {
         content_before_write: None,
         placement: Placement::Placed,
         is_name_ignored: false,
-        confirmed_count,
+        confirmed_at_count,
     }
 }
 
@@ -629,18 +629,18 @@ fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() 
     let mut store = listed_store();
     write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")]);
     let a = listed(&mut store, "A").local_item_id;
-    let fetch_began_at = count(&mut store);
+    let fetch_began_at_count = count(&mut store);
     confirm(&mut store, a, version(ROOT, "a", Some("333")), Some("e-A-333"));
     let confirmed = item(&mut store, a);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22"), file("B", "R", "b", "22")], fetch_began_at, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22"), file("B", "R", "b", "22")], fetch_began_at_count, None), ["A"]);
     assert_eq!(item(&mut store, a), confirmed);
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")), "the rest of the page is written");
 
-    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, None), ["A"]);
     assert_eq!(item(&mut store, a), confirmed);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at, None), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at_count, None), Vec::<String>::new());
     assert_eq!(item(&mut store, a), confirmed);
 
     assert_eq!(write(&mut store, &[file("A", "R", "a", "4444")]), Vec::<String>::new());
@@ -656,14 +656,14 @@ fn a_page_fetched_before_a_confirmed_removal_does_not_bring_the_item_back() {
     let mut store = listed_store();
     write(&mut store, &[file("A", "R", "a", "1")]);
     let a = listed(&mut store, "A").local_item_id;
-    let fetch_began_at = count(&mut store);
+    let fetch_began_at_count = count(&mut store);
     confirm(&mut store, a, None, None);
     let removed = item(&mut store, a);
     assert_eq!((removed.local.clone(), removed.onedrive.clone(), removed.synced_place.clone()), (None, None, None));
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "1")], fetch_began_at, None), ["A"]);
-    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at, None), Vec::<String>::new());
-    assert_eq!(write_fetched_at(&mut store, &[], fetch_began_at, Some("link-1")), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "1")], fetch_began_at_count, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, None), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[], fetch_began_at_count, Some("link-1")), Vec::<String>::new());
     assert_eq!(write(&mut store, &[gone("A")]), Vec::<String>::new(), "the item read again, and not found");
     assert_eq!(item(&mut store, a), removed);
 
@@ -679,10 +679,10 @@ fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetc
     let mut store = listed_store();
     write(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "D", "b", "1")]);
     let (d, a) = (listed(&mut store, "D").local_item_id, listed(&mut store, "A").local_item_id);
-    let fetch_began_at = count(&mut store);
+    let fetch_began_at_count = count(&mut store);
     confirm(&mut store, a, version(d, "a", Some("22")), Some("e-A-22"));
 
-    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, None), ["A"]);
     assert_eq!(item(&mut store, a).onedrive, version(d, "a", Some("22")));
     assert_eq!(bound(&mut store, "B"), None);
     assert_eq!(listed(&mut store, "D").onedrive, None, "its row stays while a row names it");
@@ -702,14 +702,14 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     let before = onedrive_side(&mut store);
 
     store.item_store().begin_full_listing().unwrap();
-    let fetch_began_at = count(&mut store);
+    let fetch_began_at_count = count(&mut store);
     confirm(&mut store, u, version(ROOT, "u", Some("22")), Some("e-U-22"));
     let confirmed = onedrive_side(&mut store);
-    assert_eq!(write_fetched_at(&mut store, &[root(), directory("D", "R", "D")], fetch_began_at, None), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[root(), directory("D", "R", "D")], fetch_began_at_count, None), Vec::<String>::new());
     assert_eq!(onedrive_side(&mut store), confirmed, "nothing is taken before the listing ends");
     assert_ne!(confirmed, before);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("B", "R", "b", "22")], fetch_began_at, Some("link-1")), ["U"]);
+    assert_eq!(write_fetched_at(&mut store, &[file("B", "R", "b", "22")], fetch_began_at_count, Some("link-1")), ["U"]);
     assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["B", "D", "K", "R", "U"]);
     assert_eq!(bound(&mut store, "A"), None);
     assert_eq!(listed(&mut store, "K").onedrive, None, "the folder shows it: its row stays");
@@ -887,9 +887,9 @@ fn a_page_costs_the_same_whatever_the_store_holds() {
         println!("{what}: a full listing of 100 000 items in {} pages of 200 took {:?}; a page took {:?} on average over the first fifty and {:?} over the last fifty", listing.len(), listing.iter().sum::<std::time::Duration>(), mean(&listing[..50]), mean(&listing[listing.len() - 50..]));
         let mut took = Vec::new();
         for store in [small, large] {
-            let fetch_began_at = count(store);
+            let fetch_began_at_count = count(store);
             let began = std::time::Instant::now();
-            store.item_store().write_listed_changes(&page, fetch_began_at, Some("link-2")).unwrap();
+            store.item_store().write_listed_changes(&page, fetch_began_at_count, Some("link-2")).unwrap();
             took.push(began.elapsed());
         }
         println!("{what}: a page of {} changes took {:?} over 1 000 rows and {:?} over 100 000", page.len(), took[0], took[1]);

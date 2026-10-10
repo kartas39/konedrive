@@ -25,9 +25,9 @@ const LAST_CHECKED: &str = "last_checked";
 /// writes (the stale-delta guard, `docs/design/writes.md` §9).
 pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
 /// The count of confirmations: how many times OneDrive confirmed something to a step of
-/// the client, which the row it confirmed is stamped with (`items.confirmed_count`). The
+/// the client, which the row it confirmed is stamped with (`items.confirmed_at_count`). The
 /// guard against an outdated listing compares the two.
-pub(crate) const CONFIRMED_COUNT: &str = "confirmed_count";
+pub(crate) const CONFIRMATION_COUNT: &str = "confirmation_count";
 /// The count of full listings begun: what a full listing marks the rows it sees with
 /// (`items.seen_in_full_listing`).
 pub(crate) const FULL_LISTING_COUNT: &str = "full_listing_count";
@@ -116,7 +116,7 @@ impl TreeStore {
     pub fn set_drive_id(&self, drive: &str) -> Result<(), TreeError> {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         set(&tx, DRIVE_ID, Some(drive))?;
-        crate::item_store::bind_root(&tx)?;
+        crate::item_store::bind_root_once_known(&tx)?;
         tx.commit()?;
         Ok(())
     }

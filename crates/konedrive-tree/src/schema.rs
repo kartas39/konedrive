@@ -22,7 +22,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "12";
+pub const SCHEMA_VERSION: &str = "13";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -52,7 +52,7 @@ pub const SCHEMA_VERSION: &str = "12";
 ///   no binding, so that a row is bound before, or in the statement in which, a synced
 ///   place or content is written to it; and no OneDrive version and no eTag either. The same
 ///   checks of a place, of a parent and of a file's content hold of the OneDrive side.
-///   `confirmed_count` is the count of confirmations at which OneDrive last confirmed
+///   `confirmed_at_count` is the count of confirmations at which OneDrive last confirmed
 ///   something of the row (0: never), the stamp of the guard against an outdated listing;
 ///   `seen_in_full_listing` the count of the full listing that last listed the item
 ///   ([`crate::item_store`]'s `onedrive_versions`). `items_changed_in_onedrive` holds the
@@ -136,7 +136,7 @@ fn schema() -> String {
              {content_before_write},
              placement TEXT NOT NULL DEFAULT '{placed}',
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
-             confirmed_count INTEGER NOT NULL DEFAULT 0,
+             confirmed_at_count INTEGER NOT NULL DEFAULT 0,
              seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
@@ -159,7 +159,7 @@ fn schema() -> String {
          CREATE INDEX items_onedrive_place ON items(onedrive_parent_id, onedrive_name) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
          CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
-         CREATE INDEX items_binding_alone ON items(confirmed_count) WHERE {binding_alone};
+         CREATE INDEX items_binding_alone ON items(confirmed_at_count) WHERE {binding_alone};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}

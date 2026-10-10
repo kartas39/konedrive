@@ -97,7 +97,7 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
             content_before_write: None,
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
-            confirmed_count: 0,
+            confirmed_at_count: 0,
         }
     );
     assert_eq!(bound_to(&mut store, "A"), Some(taker));
@@ -337,7 +337,7 @@ fn make_onedrive_item_makes_a_row_with_the_binding_and_the_kind_alone() {
             content_before_write: None,
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
-            confirmed_count: 0,
+            confirmed_at_count: 0,
         }
     );
     let file = store.item_store().make_onedrive_item(&reference("F"), ItemKind::File).unwrap();
@@ -370,7 +370,7 @@ fn with_onedrive_version(store: &mut TreeStore, id: LocalItemId, at: crate::mode
     row.onedrive = Some(crate::model::ItemVersion { place: Some(at), content });
     row.onedrive_etag = Some(etag.to_owned());
     row.placement = crate::model::Placement::Skipped(crate::model::SkipReason::NameTooLong);
-    row.confirmed_count = 7;
+    row.confirmed_at_count = 7;
     write_item(&store.conn, &row).unwrap();
     crate::item_store::item_row::set_seen_in_full_listing(&store.conn, id, 3).unwrap();
     row
@@ -397,7 +397,7 @@ fn an_item_that_takes_a_binding_takes_what_onedrive_has_under_it() {
     store.item_store().merge_items(local, listed).unwrap();
     assert_eq!(
         item(&mut store, local),
-        Item { onedrive_item: Some(reference("P")), onedrive: listed_row.onedrive, onedrive_etag: Some("e-P".to_owned()), placement: listed_row.placement, confirmed_count: 7, ..before }
+        Item { onedrive_item: Some(reference("P")), onedrive: listed_row.onedrive, onedrive_etag: Some("e-P".to_owned()), placement: listed_row.placement, confirmed_at_count: 7, ..before }
     );
     assert_eq!(seen_in_full_listing(&store, local), 3);
     assert_eq!(item(&mut store, child).onedrive.unwrap().place, Some(place(local, "child")), "what OneDrive has in the directory is in the row that has its binding");
@@ -417,10 +417,10 @@ fn give_up_binding_hands_what_onedrive_has_to_the_row_that_takes_the_binding() {
 
     let taker = store.item_store().give_up_binding(directory, false).unwrap();
     let giver = item(&mut store, directory);
-    assert_eq!((giver.onedrive, giver.onedrive_etag, giver.placement, giver.confirmed_count), (None, None, crate::model::Placement::Placed, 0));
+    assert_eq!((giver.onedrive, giver.onedrive_etag, giver.placement, giver.confirmed_at_count), (None, None, crate::model::Placement::Placed, 0));
     assert_eq!(seen_in_full_listing(&store, directory), 0);
     let taker_row = item(&mut store, taker);
-    assert_eq!((taker_row.onedrive, taker_row.onedrive_etag, taker_row.placement, taker_row.confirmed_count), (listed_row.onedrive, Some("e-P".to_owned()), listed_row.placement, 7));
+    assert_eq!((taker_row.onedrive, taker_row.onedrive_etag, taker_row.placement, taker_row.confirmed_at_count), (listed_row.onedrive, Some("e-P".to_owned()), listed_row.placement, 7));
     assert_eq!(seen_in_full_listing(&store, taker), 3);
     assert_eq!(item(&mut store, child).onedrive.unwrap().place, Some(place(taker, "child")));
 }

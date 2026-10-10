@@ -32,8 +32,10 @@ use crate::{meta, TreeError};
 impl ItemStore<'_> {
     /// The item, which the folder shows, keeps its id, its local version and its content,
     /// and is an item OneDrive does not have; a new row of its kind takes the binding and
-    /// nothing else, and is returned: what OneDrive has under that binding is that row's to
-    /// be given. `is_name_ignored` is what the upload rules say of the item's name, written
+    /// all that is OneDrive's of the item — the OneDrive version, its eTag, the placement,
+    /// the stamp of the last confirmation and the full listing that saw it — and what
+    /// OneDrive has in the item, and is returned. Nothing agreed on goes to it: the two
+    /// sides agree on nothing of an item that is a conflict copy now. `is_name_ignored` is what the upload rules say of the item's name, written
     /// here as where an item without a binding gets a name: it is asked of the item from
     /// now on ([`is_ignored`](Self::is_ignored)).
     pub fn give_up_binding(&mut self, item: LocalItemId, is_name_ignored: bool) -> Result<LocalItemId, TreeError> {
@@ -89,7 +91,7 @@ fn move_onedrive_side(from: &mut Item, to: &mut Item) {
     to.onedrive = from.onedrive.take();
     to.onedrive_etag = from.onedrive_etag.take();
     to.placement = std::mem::replace(&mut from.placement, Placement::Placed);
-    to.confirmed_count = std::mem::take(&mut from.confirmed_count);
+    to.confirmed_at_count = std::mem::take(&mut from.confirmed_at_count);
 }
 
 /// The row `from` goes, and `to` has its binding, what is OneDrive's of it, and its synced
@@ -207,9 +209,9 @@ pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveI
     insert_item(tx, kind, Some(onedrive_item), None, ContentPresence::NotOnDisk, false)
 }
 
-/// The root of the folder is bound to the root of the drive, once the store knows both the
-/// drive and its root's item id: called wherever it learns either. Nothing to do before,
-/// and an id that is the empty text is not known.
+/// [`bind_root`] once the store knows both the drive and its root's item id, as its `meta`
+/// keeps them: called wherever it learns either. Nothing is bound before, and an id that is
+/// the empty text is not known.
 ///
 /// The reference is row 1's whatever row was made first: a row that has it already (a page
 /// of a listing named children before the root, and their parent got a row at that first
@@ -219,18 +221,18 @@ pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveI
 /// ([`set_drive_id`](crate::TreeStore::set_drive_id), a staged or committed page of a
 /// listing), which begins its own: on any error that transaction is dropped, never
 /// committed, and none of those calls is made with a transaction open.
-pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
+pub(crate) fn bind_root_once_known(conn: &Connection) -> Result<(), TreeError> {
     let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?.filter(|id| !id.is_empty())) else {
         return Ok(());
     };
-    bind_root_to(conn, &OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) })
+    bind_root(conn, &OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(root_item_id) })
 }
 
 /// The root of the folder is bound to `root`, the root of the drive, whatever row had that
-/// reference: see [`bind_root`]. What OneDrive has in a row that goes is in the root, as
-/// what was agreed to be in it is. Inside the caller's transaction, which is dropped on any
-/// error.
-pub(super) fn bind_root_to(conn: &Connection, root: &OneDriveItemReference) -> Result<(), TreeError> {
+/// reference ([`bind_root_once_known`] says which row may). What OneDrive has in a row that
+/// goes is in the root, as what was agreed to be in it is. Inside the caller's transaction,
+/// which is dropped on any error.
+pub(super) fn bind_root(conn: &Connection, root: &OneDriveItemReference) -> Result<(), TreeError> {
     match find_bound_item(conn, root)? {
         Some(holder) if holder.local_item_id == LocalItemId::ROOT => return Ok(()),
         Some(holder) if holder.local.is_some() || holder.kind != ItemKind::Directory => {

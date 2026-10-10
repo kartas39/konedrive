@@ -31,7 +31,7 @@
 //! away.
 //!
 //! **The guard against an outdated listing.** The store counts confirmations
-//! ([`ItemStore::confirmed_count`]); a step that OneDrive confirmed something to stamps the
+//! ([`ItemStore::confirmation_count`]); a step that OneDrive confirmed something to stamps the
 //! row with the next count ([`stamp_confirmed`]), in the transaction that writes what was
 //! confirmed. A cycle reads the count when its fetch begins and gives it with every page.
 //! What a page says of a row stamped later may be older than what was confirmed: it is
@@ -54,10 +54,10 @@ use std::ffi::OsString;
 
 use rusqlite::{Connection, Transaction};
 
-use super::bindings::{bind_root_to, make_onedrive_item};
-use super::item_row::{clear_onedrive_version, delete_bindings_alone, find_bound_item, find_item, list_below_in_onedrive, list_unseen_in_full_listing, set_confirmed_count, set_onedrive_etag, set_onedrive_version};
+use super::bindings::{bind_root, make_onedrive_item};
+use super::item_row::{clear_onedrive_version, delete_rows_of_binding_alone, find_bound_item, find_item, list_below_in_onedrive, list_unseen_in_full_listing, set_confirmed_at_count, set_onedrive_etag, set_onedrive_version};
 use super::{refuse, ItemStore};
-use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, Kind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::{meta, TreeError};
 
 impl ItemStore<'_> {
@@ -65,7 +65,7 @@ impl ItemStore<'_> {
     /// into the rows, in one transaction: all of it or nothing. See the module for the
     /// order it writes in and for what it refuses for one item.
     ///
-    /// `fetch_began_at` is the count of confirmations ([`confirmed_count`](Self::confirmed_count))
+    /// `fetch_began_at_count` is the count of confirmations ([`confirmation_count`](Self::confirmation_count))
     /// the caller read when the fetch that brought the page began. The answer is the items
     /// the page was not taken for, because something was confirmed of them since: the
     /// caller reads each again from OneDrive and gives what it reads to this entry, with
@@ -76,8 +76,8 @@ impl ItemStore<'_> {
     /// it did not see, and the rows of confirmed removals that it has passed go.
     ///
     /// Refused, with nothing written, in a store that does not know its drive.
-    pub fn write_listed_changes(&mut self, changes: &[Change], fetch_began_at: u64, delta_link: Option<&str>) -> Result<Vec<OneDriveItemId>, TreeError> {
-        self.write(|tx| write_listed_changes(tx, changes, fetch_began_at, delta_link))
+    pub fn write_listed_changes(&mut self, changes: &[Change], fetch_began_at_count: u64, delta_link: Option<&str>) -> Result<Vec<OneDriveItemId>, TreeError> {
+        self.write(|tx| write_listed_changes(tx, changes, fetch_began_at_count, delta_link))
     }
 
     /// A full listing begins: from now until a page carries the link that ends it, what the
@@ -92,8 +92,8 @@ impl ItemStore<'_> {
 
     /// How many times OneDrive confirmed something to a step of the client so far: what a
     /// cycle reads when its fetch begins, and gives with every page of it.
-    pub fn confirmed_count(&self) -> Result<u64, TreeError> {
-        read_count(&self.store.conn, meta::CONFIRMED_COUNT)
+    pub fn confirmation_count(&self) -> Result<u64, TreeError> {
+        read_count(&self.store.conn, meta::CONFIRMATION_COUNT)
     }
 
     /// [`stamp_confirmed`] in a transaction of its own.
@@ -112,9 +112,9 @@ fn read_count(conn: &Connection, key: &str) -> Result<u64, TreeError> {
 /// that writes what was confirmed to the row, so that a listing never finds the one without
 /// the other; on any error the caller drops it. Refused for an id with no row.
 pub(crate) fn stamp_confirmed(tx: &Transaction<'_>, item: LocalItemId) -> Result<u64, TreeError> {
-    let count = read_count(tx, meta::CONFIRMED_COUNT)? + 1;
-    set_confirmed_count(tx, item, count)?;
-    meta::set(tx, meta::CONFIRMED_COUNT, Some(&count.to_string()))?;
+    let count = read_count(tx, meta::CONFIRMATION_COUNT)? + 1;
+    set_confirmed_at_count(tx, item, count)?;
+    meta::set(tx, meta::CONFIRMATION_COUNT, Some(&count.to_string()))?;
     Ok(count)
 }
 
@@ -122,17 +122,17 @@ pub(crate) fn stamp_confirmed(tx: &Transaction<'_>, item: LocalItemId) -> Result
 /// older than what OneDrive confirmed of it: the row was stamped after the page's fetch
 /// began, and the page does not say what was confirmed. It says that when OneDrive was
 /// confirmed to have the item and the page's eTag is the confirmed one.
-fn is_listed_version_outdated(item: &Item, fetch_began_at: u64, listed_etag: Option<&str>) -> bool {
+fn is_listed_version_outdated(item: &Item, fetch_began_at_count: u64, listed_etag: Option<&str>) -> bool {
     let is_what_was_confirmed = item.onedrive.is_some() && listed_etag.is_some() && item.onedrive_etag.as_deref() == listed_etag;
-    item.confirmed_count > fetch_began_at && !is_what_was_confirmed
+    item.confirmed_at_count > fetch_began_at_count && !is_what_was_confirmed
 }
 
 /// Whether the removal a page says of `item`, or means by the removal of a directory above
 /// it or by not listing it in a full listing, may be older than what OneDrive confirmed of
 /// it: the row was stamped after the page's fetch began, and OneDrive was confirmed to
 /// have the item.
-fn is_listed_removal_outdated(item: &Item, fetch_began_at: u64) -> bool {
-    item.confirmed_count > fetch_began_at && item.onedrive.is_some()
+fn is_listed_removal_outdated(item: &Item, fetch_began_at_count: u64) -> bool {
+    item.confirmed_at_count > fetch_began_at_count && item.onedrive.is_some()
 }
 
 /// The count of the full listing under way; `None` when none is.
@@ -161,13 +161,13 @@ fn find_or_make_listed_item(tx: &Transaction<'_>, onedrive_item: &OneDriveItemRe
 /// The listing says OneDrive does not have `item`: neither it nor what the rows say
 /// OneDrive has below it has an OneDrive version from now on. What was confirmed of one of
 /// them after the fetch began is left, and its id is added to `read_again`.
-fn remove_listed_item(tx: &Transaction<'_>, item: &Item, fetch_began_at: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
-    if is_listed_removal_outdated(item, fetch_began_at) {
+fn clear_onedrive_version_with_what_is_below(tx: &Transaction<'_>, item: &Item, fetch_began_at_count: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
+    if is_listed_removal_outdated(item, fetch_began_at_count) {
         read_again.extend(item.onedrive_item.as_ref().map(|reference| reference.item_id.clone()));
         return Ok(());
     }
     for below in list_below_in_onedrive(tx, item.local_item_id)? {
-        remove_onedrive_version(tx, &below, fetch_began_at, read_again)?;
+        clear_onedrive_version_unless_outdated(tx, &below, fetch_began_at_count, read_again)?;
     }
     if item.onedrive.is_some() {
         clear_onedrive_version(tx, item.local_item_id)?;
@@ -178,19 +178,27 @@ fn remove_listed_item(tx: &Transaction<'_>, item: &Item, fetch_began_at: u64, re
 /// `item`, which OneDrive has by its row, has no OneDrive version from now on, unless
 /// something was confirmed of it after the fetch began: then its id is added to
 /// `read_again`.
-fn remove_onedrive_version(tx: &Transaction<'_>, item: &Item, fetch_began_at: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
-    if is_listed_removal_outdated(item, fetch_began_at) {
+fn clear_onedrive_version_unless_outdated(tx: &Transaction<'_>, item: &Item, fetch_began_at_count: u64, read_again: &mut Vec<OneDriveItemId>) -> Result<(), TreeError> {
+    if is_listed_removal_outdated(item, fetch_began_at_count) {
         read_again.extend(item.onedrive_item.as_ref().map(|reference| reference.item_id.clone()));
         return Ok(());
     }
     clear_onedrive_version(tx, item.local_item_id)
 }
 
+/// A listing's folder is a directory, and its file a file.
+fn item_kind_of(kind: Kind) -> ItemKind {
+    match kind {
+        Kind::File => ItemKind::File,
+        Kind::Folder => ItemKind::Directory,
+    }
+}
+
 /// [`ItemStore::write_listed_changes`], inside the caller's transaction, which is dropped
 /// on any error. The only place of the module that holds what a listing hands over
 /// ([`Change`] and its row): each is taken apart here into the item's reference, its kind,
 /// its version, eTag and placement.
-pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fetch_began_at: u64, delta_link: Option<&str>) -> Result<Vec<OneDriveItemId>, TreeError> {
+pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fetch_began_at_count: u64, delta_link: Option<&str>) -> Result<Vec<OneDriveItemId>, TreeError> {
     let Some(drive_id) = meta::get(tx, meta::DRIVE_ID)?.and_then(DriveId::new) else {
         return Err(refuse("the store does not know its drive: a listing is not written".to_owned()));
     };
@@ -207,7 +215,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
 
     for change in counted() {
         let Change::Root(row) = change else { continue };
-        bind_root_to(tx, &reference(&row.id))?;
+        bind_root(tx, &reference(&row.id))?;
         set_onedrive_etag(tx, LocalItemId::ROOT, row.etag.as_deref())?;
     }
 
@@ -218,7 +226,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
             continue;
         };
         let onedrive_item = reference(&row.id);
-        let kind = ItemKind::from(row.kind);
+        let kind = item_kind_of(row.kind);
         // A parent has its row before its child, whichever the page names first.
         let Some(directory) = find_or_make_listed_item(tx, &reference(parent_id), ItemKind::Directory)? else {
             tracing::warn!("the listing puts the item {:?} into {parent_id:?}, which is a file: it is not written", row.id);
@@ -232,7 +240,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
             tracing::warn!("the listing puts the item {:?} into itself, or gives the root a place: it is not written", row.id);
             continue;
         }
-        if is_listed_version_outdated(&item, fetch_began_at, row.etag.as_deref()) {
+        if is_listed_version_outdated(&item, fetch_began_at_count, row.etag.as_deref()) {
             read_again.push(onedrive_item.item_id);
             continue;
         }
@@ -251,7 +259,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
             tracing::warn!("the listing says the root of the drive is gone: it is not written");
             continue;
         }
-        remove_listed_item(tx, &item, fetch_began_at, &mut read_again)?;
+        clear_onedrive_version_with_what_is_below(tx, &item, fetch_began_at_count, &mut read_again)?;
     }
 
     match delta_link {
@@ -260,15 +268,15 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
         Some(delta_link) => {
             if let Some(count) = full_listing {
                 for unseen in list_unseen_in_full_listing(tx, count)? {
-                    remove_onedrive_version(tx, &unseen, fetch_began_at, &mut read_again)?;
+                    clear_onedrive_version_unless_outdated(tx, &unseen, fetch_began_at_count, &mut read_again)?;
                 }
                 meta::set(tx, meta::FULL_LISTING_UNDER_WAY, None)?;
             }
-            delete_bindings_alone(tx, fetch_began_at)?;
+            delete_rows_of_binding_alone(tx, fetch_began_at_count)?;
             meta::set(tx, meta::DELTA_LINK, Some(delta_link))?;
         }
         // The listing goes on: only a row that was never stamped goes.
-        None => delete_bindings_alone(tx, 0)?,
+        None => delete_rows_of_binding_alone(tx, 0)?,
     }
 
     let mut answered = std::collections::HashSet::new();

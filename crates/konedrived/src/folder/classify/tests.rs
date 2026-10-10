@@ -91,17 +91,17 @@ mod listed_into_items {
     /// Lists the fake's drive from `from` to the delta link, each page written as it comes.
     async fn list(graph: &FakeGraph, store: &mut TreeStore, mut from: DeltaFrom) -> String {
         let drive = graph.client();
-        let fetch_began_at = store.item_store().confirmed_count().unwrap();
+        let fetch_began_at_count = store.item_store().confirmation_count().unwrap();
         loop {
             let page = drive.delta(&from).await.unwrap();
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
             match page.next {
                 DeltaNext::Page(next) => {
-                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at, None).unwrap(), Vec::new());
+                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at_count, None).unwrap(), Vec::new());
                     from = DeltaFrom::Link(next);
                 }
                 DeltaNext::Done(link) => {
-                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at, Some(&link)).unwrap(), Vec::new());
+                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at_count, Some(&link)).unwrap(), Vec::new());
                     return link;
                 }
             }
