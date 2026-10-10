@@ -1071,3 +1071,79 @@ fn a_change_and_its_outbox_rows_are_written_in_one_transaction() {
         }
     }
 }
+
+/// The row count of `items`, as a transaction that is not committed sees it.
+fn count_rows(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT count(*) FROM items", [], |row| row.get(0)).unwrap()
+}
+
+/// What a made file may not replace is refused before the made file's row is written, so
+/// that a caller's transaction holds nothing of the refused change: a file the folder still
+/// shows, a file with no binding, a removed directory, and an id with no row.
+#[test]
+fn a_made_file_that_replaces_what_it_may_not_is_refused_before_its_row_is_written() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (shown, local) = (make_file(&mut store, ROOT, "shown"), make_file(&mut store, ROOT, "local"));
+    let directory = make_directory(&mut store, ROOT, "directory");
+    synced(&mut store, shown, "S");
+    synced(&mut store, directory, "D");
+    store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
+
+    let tx = store.conn.transaction().unwrap();
+    let rows = count_rows(&tx);
+    for replaced in [shown, local, directory, LocalItemId::new(99)] {
+        assert!(is_refused(apply_change(&tx, &made_replacing(place(ROOT, "new"), replaced))), "replacing {replaced}");
+        assert_eq!(count_rows(&tx), rows, "replacing {replaced}: no row was made");
+        assert_eq!(find_item_at(&tx, ROOT, OsStr::new("new")).unwrap(), None);
+    }
+}
+
+/// An error inside a caller's transaction may come after a write, and what was written is
+/// in the transaction: here an exchange that SQLite fails after its first step, which
+/// leaves the first item under the name it stepped aside to. The caller drops the
+/// transaction, and the rows are as they were.
+#[test]
+fn an_error_after_a_write_in_a_callers_transaction_is_undone_by_dropping_it() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (first, second) = (make_file(&mut store, ROOT, "first"), make_file(&mut store, ROOT, "second"));
+    let before = [first, second].map(|id| item(&mut store, id));
+    // The failure: the second item's place cannot be written.
+    store.bench_sql(&format!("CREATE TEMP TRIGGER second_fails BEFORE UPDATE ON main.items WHEN OLD.local_item_id = {second} BEGIN SELECT RAISE(ABORT, 'a failure of the test'); END")).unwrap();
+
+    let tx = store.conn.transaction().unwrap();
+    let result = exchange_local_places(&tx, first, second);
+    assert!(matches!(result, Err(TreeError::Sql(_))), "no refusal: {result:?}");
+    assert_eq!(find_item_at(&tx, ROOT, OsStr::new("first")).unwrap(), None, "the first step was written");
+    assert_ne!(find_item(&tx, first).unwrap().as_ref(), Some(&before[0]));
+    drop(tx);
+    assert_eq!([first, second].map(|id| item(&mut store, id)), before);
+    assert_eq!(names(&mut store, ROOT), ["first", "second"]);
+}
+
+/// The store's call that learns the drive's root refuses when a row that is not the root
+/// has that reference and is a file or an item the folder shows; its transaction is
+/// dropped, so the store has learnt nothing and no row changed.
+#[test]
+fn the_root_is_not_bound_to_a_reference_that_a_shown_item_or_a_file_has() {
+    for shown in [true, false] {
+        let mut store = TreeStore::in_memory().unwrap();
+        let holder = make_file(&mut store, ROOT, "holder");
+        // The drive's id is put where `set_drive_id` would, without binding the root.
+        store.set_meta(crate::meta::DRIVE_ID, Some("d1")).unwrap();
+        synced(&mut store, holder, "R");
+        if !shown {
+            store.item_store().apply(&LocalVersionChange::Removed { item: holder }).unwrap();
+        }
+        let before = item(&mut store, holder);
+
+        store.begin_staging(crate::NewTree::Whole).unwrap();
+        assert!(is_refused(store.stage(&[onedrive_root("R")])), "shown: {shown}");
+        assert!(is_refused(store.commit_page(&[onedrive_root("R")], "next")), "shown: {shown}");
+        assert_eq!(store.root_item_id().unwrap(), None, "what the call wrote before it was refused is not kept");
+        assert_eq!((item(&mut store, ROOT).onedrive_item, item(&mut store, holder)), (None, before));
+
+        store.set_meta(crate::meta::ROOT_ITEM_ID, Some("R")).unwrap();
+        assert!(is_refused(store.set_drive_id("d1")), "shown: {shown}");
+        assert_eq!(item(&mut store, ROOT).onedrive_item, None);
+    }
+}

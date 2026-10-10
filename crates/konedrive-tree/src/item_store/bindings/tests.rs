@@ -271,6 +271,26 @@ fn bind_item_merges_the_row_the_folder_does_not_show_that_has_the_reference() {
     assert_eq!(bound_to(&mut store, "N"), Some(uploaded));
 }
 
+/// An item is bound, gives its binding up and is bound to the same reference again: the
+/// row that took the binding, which the folder does not show, is merged back into the item
+/// and goes, with what was agreed on for it since.
+#[test]
+fn an_item_bound_again_after_giving_its_binding_up_takes_the_row_of_the_binding_back() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let directory = make_directory(&mut store, ROOT, "directory");
+    let child = make_file(&mut store, directory, "child");
+    store.item_store().bind_item(directory, &reference("D")).unwrap();
+    synced(&mut store, child, "C");
+    let bound = item(&mut store, directory);
+
+    let taker = store.item_store().give_up_binding(directory, false).unwrap();
+    assert_eq!((bound_to(&mut store, "D"), item(&mut store, child).synced_place), (Some(taker), Some(place(taker, "child"))));
+    store.item_store().bind_item(directory, &reference("D")).unwrap();
+    assert_eq!(item(&mut store, directory), bound);
+    assert_eq!(store.item_store().find_item(taker).unwrap(), None);
+    assert_eq!((bound_to(&mut store, "D"), item(&mut store, child).synced_place), (Some(directory), Some(place(directory, "child"))));
+}
+
 /// What `bind_item` refuses, and never by the index of bindings: a reference that is an
 /// item's the folder shows, a reference of an item of another kind, an item that has a
 /// binding, one the folder does not show, the root, and an id with no row.
