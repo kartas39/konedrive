@@ -393,7 +393,7 @@ pub(super) fn set_onedrive_version(conn: &Connection, item: LocalItemId, onedriv
 /// OneDrive does not have `item` from now on: no version, no eTag, no MIME type, and the
 /// placement of an item it does not have. Nothing else of the row is written.
 pub(super) fn clear_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
-    conn.prepare_cached(&format!("{} WHERE local_item_id = ?1", clear_onedrive_version_sql()))?.execute([item.as_i64()])?;
+    conn.prepare_cached(&format!("{} WHERE local_item_id = ?1", clear_onedrive_version_sql("")))?.execute([item.as_i64()])?;
     Ok(())
 }
 
@@ -445,10 +445,12 @@ pub(super) fn list_below_in_onedrive(conn: &Connection, directory: LocalItemId) 
 }
 
 /// SQL that takes the OneDrive version from the rows it is run for: no version, no eTag,
-/// no MIME type, and the placement of an item OneDrive does not have. Nothing else of a row is written.
-fn clear_onedrive_version_sql() -> String {
+/// no MIME type, and the placement of an item OneDrive does not have. Nothing else of a row
+/// is written. `found_by`: how the statement finds its rows, the empty text or an
+/// `INDEXED BY`, so that a statement an index cannot serve fails and reads no table whole.
+fn clear_onedrive_version_sql(found_by: &str) -> String {
     let sets = onedrive_columns().iter().map(|column| format!("{column} = NULL")).collect::<Vec<_>>().join(", ");
-    format!("UPDATE items SET {sets}, placement = '{PLACED}'")
+    format!("UPDATE items {found_by} SET {sets}, placement = '{PLACED}'")
 }
 
 /// The item ids of OneDrive a query answers, one a row.
@@ -475,7 +477,7 @@ const BELOW_IN_ONEDRIVE: &str = "WITH RECURSIVE below(id) AS (
 pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId, stamped_until: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
     let values = [directory.as_i64(), stamped_until as i64];
     let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count > ?2"), values)?;
-    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count <= ?2", clear_onedrive_version_sql()))?.execute(values)?;
+    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND confirmed_at_count <= ?2", clear_onedrive_version_sql("")))?.execute(values)?;
     Ok(left)
 }
 
@@ -487,7 +489,7 @@ pub(super) fn clear_onedrive_versions_unseen(conn: &Connection, full_listing_cou
     const UNSEEN: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
     let values = [full_listing_count as i64, stamped_until as i64];
     let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items INDEXED BY items_seen_in_full_listing WHERE {UNSEEN} AND confirmed_at_count > ?2"), values)?;
-    conn.prepare_cached(&format!("{} WHERE {UNSEEN} AND confirmed_at_count <= ?2", clear_onedrive_version_sql()))?.execute(values)?;
+    conn.prepare_cached(&format!("{} WHERE {UNSEEN} AND confirmed_at_count <= ?2", clear_onedrive_version_sql("INDEXED BY items_seen_in_full_listing")))?.execute(values)?;
     Ok(left)
 }
 

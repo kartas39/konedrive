@@ -716,28 +716,45 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
 - `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
   written; an item as `items` holds it (`Item` with its kind, its ids, its local and its
-  OneDrive `ItemVersion`, the eTag, the placement, the stamp of a confirmation; `ItemPlace`,
-  `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and `DriveId`.
-  `[tests]`
+  OneDrive `ItemVersion`, the eTag, the MIME type, the placement, the count at which it was
+  last confirmed, the stamp since which it is unsent; `ItemPlace`, `ContentVersion`,
+  `LocalVersionChange`), the sync state it gives a file, whether the folder can show it
+  (`FolderVisibility`), and `DriveId`. `[tests]`
+- `folded_name.rs` — `FoldedName`: a name as OneDrive compares names, by the client's rule
+  (lower case and Unicode's composed form); the one place a name is folded. `[tests]`
 - `item_store.rs` — `ItemStore`: the rows of `items`, one per item by local item id; finding
   an item, its path, whether it is left here, whether the folder can show it as OneDrive
-  has it, and the items OneDrive changed; applying a change of its local version, each a
-  case; the rules that hold of the rows, and who holds each. `[tests]`
+  has it (`find_folder_visibility`, a decision over the rows above it), the items OneDrive
+  changed, the unsent items in the order they came to be unsent, what OneDrive has in a
+  directory and below it, and the items of one folded name in a directory on each side;
+  applying a change of its local version, each a case; the rules that hold of the rows, and
+  who holds each. `[tests]`
 - `item_store/item_row.rs` — a row of `items` in the database: its columns, where it is
   read, written and deleted, and where a name and an item id of OneDrive are checked; the
-  writers of the OneDrive columns alone; the queries that go by an index (what OneDrive
-  changed, what is below a directory in OneDrive, what a full listing did not see, the rows
-  that are a binding alone). Reachable from `item_store` alone.
+  folded name written with each local and OneDrive name; the writers of the OneDrive
+  columns alone, one row or a set (what is below a directory, what a full listing did not
+  see, each but the rows confirmed since); the words of the schema's index and trigger
+  conditions (what OneDrive changed, what is unsent, a binding alone); the queries that go
+  by an index. Reachable from `item_store` alone.
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
-  the root's), and moved from one item to another (`take_over_binding`, done with the change
-  that says so; `give_up_binding`; `merge_items`), with all that is OneDrive's of the item.
-  `[tests]`
-- `item_store/onedrive_versions.rs` — what a listing says of an item, written into its row
-  (`write_listed_changes`, one page or one whole answer in one transaction, in an order of
-  its own): the OneDrive version, the eTag, the placement; the guard against an outdated
-  listing (the count of confirmations, `stamp_confirmed`, the two questions that decide
-  whether a page is taken for a row); a full listing's marks and its sweep
-  (`begin_full_listing`). No caller in the daemon yet. `[tests]`
+  the root's: `bind_root`, and `bind_root_once_known` for today's listing), and moved from
+  one item to another (`take_over_binding`, done with the change that says so;
+  `give_up_binding`; `merge_items`), with all that is OneDrive's of the item. `[tests]`
+- `item_store/onedrive_versions.rs` — what OneDrive has of an item, written into its row.
+  By a listing (`write_listed_changes`: one page with the link that followed it,
+  `ListingLink`, in one transaction, in an order of its own; `ListedPageOutcome` says what
+  became of each change and what is to be read again, and the link is written only when
+  nothing is): the OneDrive version, the eTag, the MIME type, the placement. The listing
+  under way (`begin_full_listing`, `find_listing_under_way`, `ListingUnderWay`): the count
+  it began at, the link to its next page, a full listing's marks and its sweep. By a
+  confirmation (`confirm_onedrive_version`, `ConfirmedOneDriveVersion`): the version, its
+  eTag and the stamp in one statement, and the count of confirmations. No caller in the
+  daemon yet. `[tests]`
+- `item_store/onedrive_versions/listed_change.rs` — what a listing says of one item and
+  what becomes of it (`ListedChangeOutcome`, `ListedChangeRefusal`): the decisions for an
+  item OneDrive has, for one that is gone and for the root, each from what the listing says
+  and the rows it is about, and the two questions of the guard against an outdated listing.
+  Reads and writes no store. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to

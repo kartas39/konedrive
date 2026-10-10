@@ -52,7 +52,8 @@
 //! and the one of an item id of OneDrive, and are reachable from this module and [`bindings`] alone: what is outside changes a row
 //! through an operation.
 //!
-//! The OneDrive version of a row is written by a listing ([`onedrive_versions`]) and by
+//! The OneDrive version of a row is written by a listing and by a confirmation of OneDrive
+//! to a step ([`onedrive_versions`]), moved with the binding ([`bindings`]), and written by
 //! nothing else here. Of that side the schema holds what it holds of the others, per row:
 //! a parent is a directory's row, and no row is its own parent. It does not hold "one item
 //! per name" there, nor "no item is above itself", nor that a parent has an OneDrive version
