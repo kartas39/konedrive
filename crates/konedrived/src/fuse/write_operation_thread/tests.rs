@@ -135,3 +135,12 @@ fn a_thread_that_is_dropped_drops_the_jobs_that_wait() {
     drop(held);
     assert_eq!(told.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Disconnected), "the job never ran");
 }
+
+#[test]
+fn the_thread_tells_the_id_its_jobs_run_under() {
+    let write_operation_thread = WriteOperationThread::start(Arc::default()).unwrap();
+    let job_thread_id = write_operation_thread.run_and_wait(|| std::thread::current().id()).blocking_recv().unwrap();
+    assert_eq!(write_operation_thread.thread_id(), job_thread_id);
+    assert_ne!(write_operation_thread.thread_id(), std::thread::current().id());
+    write_operation_thread.stop();
+}

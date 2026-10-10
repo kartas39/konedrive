@@ -219,8 +219,9 @@ impl FolderSteps {
 
     /// `RemoveItem`: the folder shows the item no more. On record (`SetAside { item, place,
     /// aside_name }`), then `PlaceChange::set_aside` of what it has on disk, then
-    /// `commit_remove_item`, which takes the record; undo: restore, and the record taken
-    /// by itself; after the change ended, `PlaceChanges::discard`.
+    /// `commit_remove_item`, which takes the record; undo: restore (the entry, or the mark
+    /// of a directory that holds what no row says and stays), and the record taken by
+    /// itself; after the change ended, `PlaceChanges::discard`.
     /// Announces the name vanishing; the download states and the ranges of the item are
     /// forgotten.
     fn run_remove_item(&self, item: &ItemVersions) -> StepOutcome {

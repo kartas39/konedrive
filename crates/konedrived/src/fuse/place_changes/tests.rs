@@ -409,12 +409,13 @@ fn a_file_is_opened_to_write_when_asked() {
 fn a_stat_that_no_change_crossed_answers_the_facts_of_the_rows_file() {
     let f = fixture();
     f.write("docs/a", "four");
-    let (facts, row) = f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("docs/a"), 7)))).unwrap().unwrap();
+    let RowPathStat::Facts { facts, row } = f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("docs/a"), 7)))).unwrap() else { panic!("no facts") };
     assert_eq!((facts.kind, facts.size, row), (EntryKind::File, 4, 7));
-    let (facts, ()) = f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("docs"), ())))).unwrap().unwrap();
+    let RowPathStat::Facts { facts, row: () } = f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("docs"), ())))).unwrap() else { panic!("no facts") };
     assert_eq!(facts.kind, EntryKind::Directory);
-    assert!(f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("gone"), ())))).unwrap().is_none(), "nothing on disk: no facts");
-    assert!(f.place_changes.stat_at_row_path(|| Ok(None::<(PathBuf, ())>)).unwrap().is_none());
+    // Each of the other answers is told apart, with the row where one was read.
+    assert_eq!(f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("gone"), 7)))).unwrap(), RowPathStat::NothingOnDisk { row: 7 });
+    assert_eq!(f.place_changes.stat_at_row_path(|| Ok(None::<(PathBuf, i32)>)).unwrap(), RowPathStat::NoRow);
     assert!(f.place_changes.stat_at_row_path(|| Err::<Option<(PathBuf, ())>, _>(TreeError::Refused("no".into()))).is_err());
 }
 
@@ -426,9 +427,9 @@ fn a_stat_that_was_crossed_twice_answers_no_facts_and_does_not_sleep() {
     let crossed = f.place_changes.stat_at_row_path(|| {
         calls.fetch_add(1, Ordering::SeqCst);
         f.change(|_| ());
-        Ok(Some((PathBuf::from("a"), ())))
+        Ok(Some((PathBuf::from("a"), 7)))
     });
-    assert!(crossed.unwrap().is_none(), "no facts");
+    assert_eq!(crossed.unwrap(), RowPathStat::Crossed { row: Some(7) }, "no facts, and the row that was read");
     assert_eq!(calls.load(Ordering::SeqCst), 2, "tried once more, and no further");
     // Crossed once: the second try answers.
     let calls = AtomicU32::new(0);
@@ -438,10 +439,16 @@ fn a_stat_that_was_crossed_twice_answers_no_facts_and_does_not_sleep() {
         }
         Ok(Some((PathBuf::from("a"), ())))
     });
-    assert_eq!(crossed_once.unwrap().unwrap().0.size, 1);
+    assert!(matches!(crossed_once.unwrap(), RowPathStat::Facts { facts, row: () } if facts.size == 1));
     // While a change is under way it answers at once, with the change still open.
     let open = f.hold_change_open(false);
-    assert!(f.place_changes.stat_at_row_path(|| Ok(Some((PathBuf::from("a"), ())))).unwrap().is_none());
+    let calls = AtomicU32::new(0);
+    let under_way = f.place_changes.stat_at_row_path(|| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Some((PathBuf::from("a"), 7)))
+    });
+    assert_eq!(under_way.unwrap(), RowPathStat::Crossed { row: None }, "no row is read while a change is under way");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(f.count() % 2, 1, "the change is still under way: the stat did not wait for it");
     open.end();
 }
@@ -457,22 +464,25 @@ fn a_missing_file_at_a_moment_no_change_crossed_is_told_as_no_file() {
         }
     }
     f.write("file", "x");
-    assert!(matches!(f.open_at("file/below"), Err(OpenAtRowError::Disk(_))), "another error of the disk is not a missing file");
+    match f.open_at("file/below") {
+        Err(OpenAtRowError::Disk { error, path }) => assert_eq!((error.raw_os_error(), path.as_path()), (Some(libc::ENOTDIR), Path::new("file/below")), "another error of the disk is not a missing file, and says where"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
 fn the_errno_and_the_trouble_of_an_open_are_told_per_case() {
     let store = OpenAtRowError::Store(TreeError::Refused("no".into()));
     let no_file = OpenAtRowError::NoFile { path: PathBuf::from("a") };
-    let disk = OpenAtRowError::Disk(std::io::Error::from_raw_os_error(libc::EACCES));
-    let unnumbered = OpenAtRowError::Disk(std::io::Error::other("no number"));
+    let disk = OpenAtRowError::Disk { error: std::io::Error::from_raw_os_error(libc::EACCES), path: PathBuf::from("docs/a") };
+    let unnumbered = OpenAtRowError::Disk { error: std::io::Error::other("no number"), path: PathBuf::from("docs/a") };
     assert_eq!(decide_open_errno(&store), libc::EIO);
     assert_eq!(decide_open_errno(&no_file), libc::ENOENT);
     assert_eq!(decide_open_errno(&disk), libc::EACCES);
     assert_eq!(decide_open_errno(&unnumbered), libc::EIO);
     assert_eq!(decide_open_trouble(&no_file), StepTrouble::Obstacle(StepObstacle::BackingFileMissing));
     assert!(matches!(decide_open_trouble(&store), StepTrouble::Failure(StepFailure::Store { detail }) if detail.contains("no")));
-    assert_eq!(decide_open_trouble(&disk), StepTrouble::Failure(StepFailure::Disk { errno: libc::EACCES, path: PathBuf::new() }));
+    assert_eq!(decide_open_trouble(&disk), StepTrouble::Failure(StepFailure::Disk { errno: libc::EACCES, path: PathBuf::from("docs/a") }));
 }
 
 // ---- A change dropped, a panic, the lock ----
@@ -754,10 +764,21 @@ fn a_directory_that_holds_what_no_row_says_is_left_with_its_mark_off() {
     let f = fixture();
     f.write("docs/by-hand", "the user's");
     f.backing_directory.mark_with_onedrive_id(Path::new("docs"), "D-OLD").unwrap();
-    assert_eq!(f.change(|change| change.set_aside(Path::new("docs"), item(7))), Ok(PlaceUndo::Nothing));
+    let undo = f.change(|change| change.set_aside(Path::new("docs"), item(7))).unwrap();
+    assert_eq!(undo, PlaceUndo::RestoreMark { path: PathBuf::from("docs"), mark: konedrive_tree::OneDriveItemId::new("D-OLD") });
     assert_eq!(f.read("docs/by-hand").as_deref(), Some("the user's"));
     assert_eq!(f.read_mark("docs"), None);
     assert_eq!(f.list_root(), ["docs"]);
+    // The row could not be written: the mark is put back.
+    let put_back = undo.clone();
+    f.change(move |change| change.undo(put_back)).unwrap();
+    assert_eq!(f.read_mark("docs").as_deref(), Some("D-OLD"));
+    // The row was written: the discard removes nothing, and the mark stays off.
+    let undo = f.change(|change| change.set_aside(Path::new("docs"), item(7))).unwrap();
+    f.place_changes.discard(undo);
+    assert_eq!((f.read_mark("docs"), f.read("docs/by-hand").as_deref()), (None, Some("the user's")));
+    // One that carried no mark has nothing to put back.
+    assert_eq!(f.change(|change| change.set_aside(Path::new("docs"), item(7))), Ok(PlaceUndo::Nothing));
 }
 
 #[test]
@@ -776,7 +797,7 @@ fn a_move_over_an_entry_sets_it_aside_and_its_undo_puts_both_back() {
     let f = fixture();
     f.write("a", "moved");
     f.write("b", "displaced");
-    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7))).unwrap();
+    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7), &no_marks())).unwrap();
     assert_eq!(undo, PlaceUndo::MoveBackAndRestore { from: PathBuf::from("a"), to: PathBuf::from("b"), set_aside: aside_path(7) });
     assert_eq!((f.read("b").as_deref(), f.read(".konedrive-aside-7").as_deref()), (Some("moved"), Some("displaced")));
     assert!(!f.is_on_disk("a"));
@@ -785,7 +806,7 @@ fn a_move_over_an_entry_sets_it_aside_and_its_undo_puts_both_back() {
     assert_eq!((f.read("a").as_deref(), f.read("b").as_deref()), (Some("moved"), Some("displaced")));
     assert_eq!(f.list_root(), ["a", "b"]);
     // Done again and kept: the displaced entry goes at the discard.
-    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7))).unwrap();
+    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7), &no_marks())).unwrap();
     f.place_changes.discard(undo);
     assert_eq!(f.list_root(), ["b"]);
     assert_eq!(f.read("b").as_deref(), Some("moved"));
@@ -796,18 +817,25 @@ fn a_move_over_what_is_not_on_disk_or_cannot_be_set_aside() {
     let f = fixture();
     f.write("a", "moved");
     // The displaced item has nothing on disk: a plain move.
-    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7))).unwrap();
+    let undo = f.change(|change| change.move_entry_over(Path::new("a"), Path::new("b"), item(7), &no_marks())).unwrap();
     assert_eq!(undo, PlaceUndo::MoveBack { from: PathBuf::from("a"), to: PathBuf::from("b"), directories_made: Vec::new() });
     assert_eq!(f.read("b").as_deref(), Some("moved"));
+    // The replaced item has nothing on disk, nor has the directory it is in: that one is
+    // made and marked, and the undo removes it again.
+    let undo = f.change(|change| change.move_entry_over(Path::new("b"), Path::new("docs/new/b"), item(7), &marks(&[Some("D-DOCS"), Some("D-NEW")]))).unwrap();
+    assert_eq!(undo, PlaceUndo::MoveBack { from: PathBuf::from("b"), to: PathBuf::from("docs/new/b"), directories_made: vec![PathBuf::from("docs"), PathBuf::from("docs/new")] });
+    assert_eq!((f.read("docs/new/b").as_deref(), f.read_mark("docs").as_deref(), f.read_mark("docs/new").as_deref()), (Some("moved"), Some("D-DOCS"), Some("D-NEW")));
+    f.change(move |change| change.undo(undo)).unwrap();
+    assert!(f.read("b").as_deref() == Some("moved") && !f.is_on_disk("docs"));
     // A directory that holds what no row says is not set aside: the place is held.
     f.make_directory("moved-directory");
     f.write("held/by-hand", "the user's");
     f.backing_directory.mark_with_onedrive_id(Path::new("held"), "D-HELD").unwrap();
-    let refusal = f.change(|change| change.move_entry_over(Path::new("moved-directory"), Path::new("held"), item(8)));
+    let refusal = f.change(|change| change.move_entry_over(Path::new("moved-directory"), Path::new("held"), item(8), &no_marks()));
     assert_eq!(refusal, Err(PlaceRefusal::PlaceHeld { path: PathBuf::from("held") }));
     assert_eq!(f.read_mark("held").as_deref(), Some("D-HELD"), "a refused move takes no mark off");
     // The moved entry is gone: the displaced one is put back, and the disk's errno told.
-    let refusal = f.change(|change| change.move_entry_over(Path::new("gone"), Path::new("b"), item(7)));
+    let refusal = f.change(|change| change.move_entry_over(Path::new("gone"), Path::new("b"), item(7), &no_marks()));
     assert_eq!(refusal, Err(PlaceRefusal::Disk { errno: libc::ENOENT, path: PathBuf::from("gone") }));
     assert_eq!(f.read("b").as_deref(), Some("moved"));
     assert!(!f.is_on_disk(".konedrive-aside-7"));

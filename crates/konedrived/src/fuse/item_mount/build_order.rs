@@ -5,7 +5,8 @@
 //!    `UploadRules::new(ignore)`;
 //! 2. `AccessModeSwitch::new(ReadOnly)`; `MountTakeDown::new(switch, report)`;
 //!    `WriteOperationThread::start(tree_lock)`; `PlaceChanges::new` with that thread's
-//!    id, and `PlaceChanges::remove_aside_entries`: what a death left set aside goes;
+//!    id (`WriteOperationThread::thread_id`), and `PlaceChanges::remove_aside_entries`:
+//!    what a death left set aside goes;
 //! 3. THE CHECK AT START (`start_check::check_backing_directory_at_start`), over the
 //!    writer, before anything else reads the rows;
 //! 4. `ReadConnections::new(store_path)`; `ItemHandles::new`;

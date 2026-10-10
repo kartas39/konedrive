@@ -82,8 +82,10 @@ pub(super) enum RenameDecision {
     /// To a place nothing is at: `PlaceChange::move_entry` (which replaces nothing), then
     /// `LocalVersionChange::Moved`.
     Move { item: LocalItemId, is_name_ignored: bool },
-    /// Over an entry: `PlaceChange::move_entry_over`, which sets the displaced entry aside
-    /// until the row is written, then `LocalVersionChange::SavedOver`.
+    /// Over an entry: `PlaceChange::move_entry_over` with `new_directory_marks` (the
+    /// displaced item may have nothing on disk, and the directory above it neither),
+    /// which sets the displaced entry aside until the row is written, then
+    /// `LocalVersionChange::SavedOver`.
     SaveOver { replacing: LocalItemId, replaced: LocalItemId },
 }
 

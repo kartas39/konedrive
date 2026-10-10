@@ -39,6 +39,8 @@ pub(super) struct WriteOperationThread {
     /// Held by the thread from before it takes a job off the queue until the job has ended:
     /// whoever stops the thread waits for the job in flight here.
     job_in_flight: Arc<Mutex<()>>,
+    /// The id of the thread, kept from its start.
+    thread_id: std::thread::ThreadId,
 }
 
 /// The thread: runs every queued job in the order it came, each under `tree_lock`, until
@@ -73,10 +75,19 @@ impl WriteOperationThread {
     /// Starts the thread, which runs every job it is given in the order it came, each under
     /// `tree_lock`.
     pub(super) fn start(tree_lock: Arc<tokio::sync::Mutex<()>>) -> io::Result<Self> {
-        let write_operation_thread = WriteOperationThread { queued_jobs: Arc::new(Mutex::new(Some(VecDeque::new()))), job_queued: Arc::default(), job_in_flight: Arc::default() };
-        let (queued_jobs, job_queued, job_in_flight) = (Arc::clone(&write_operation_thread.queued_jobs), Arc::clone(&write_operation_thread.job_queued), Arc::clone(&write_operation_thread.job_in_flight));
-        std::thread::Builder::new().name("konedrive-record".into()).spawn(move || run_queued_jobs(&tree_lock, &queued_jobs, &job_queued, &job_in_flight))?;
-        Ok(write_operation_thread)
+        let (queued_jobs, job_queued, job_in_flight) = (Arc::new(Mutex::new(Some(VecDeque::new()))), Arc::<Condvar>::default(), Arc::<Mutex<()>>::default());
+        let thread = {
+            let (queued_jobs, job_queued, job_in_flight) = (Arc::clone(&queued_jobs), Arc::clone(&job_queued), Arc::clone(&job_in_flight));
+            std::thread::Builder::new().name("konedrive-record".into()).spawn(move || run_queued_jobs(&tree_lock, &queued_jobs, &job_queued, &job_in_flight))?
+        };
+        Ok(WriteOperationThread { queued_jobs, job_queued, job_in_flight, thread_id: thread.thread().id() })
+    }
+
+    /// The id of the thread every job runs on: what `PlaceChanges::new` is given, which
+    /// asserts by it that a place change begins on this thread and that no backing file
+    /// is opened by a row's path on it.
+    pub(super) fn thread_id(&self) -> std::thread::ThreadId {
+        self.thread_id
     }
 
     /// Has `job` run on the thread. A thread that is stopped drops it, and with it the reply

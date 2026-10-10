@@ -15,7 +15,7 @@
 //! read transaction; what it then stats in the backing directory it stats through
 //! `PlaceChanges::stat_at_row_path`, a second closure, which never sleeps: a lookup and a
 //! getattr wait for no place change, no listing's page and no step's commit. A stat that a
-//! change crossed twice answers no facts: no blocks for that one answer.
+//! change crossed twice answers `RowPathStat::Crossed`: no blocks for that one answer.
 //!
 //! **Tested without the rest**, over the fixture (`item_fixture`):
 // test: a_name_is_looked_up_by_one_read_of_the_local_place
@@ -149,8 +149,9 @@ impl ItemLookup {
     /// `fstat` of the handle, no path); the blocks of a file whose content is on disk and
     /// the time of a directory, by one `stat` through `PlaceChanges::stat_at_row_path`
     /// with `ItemReader::find_path` (design §4, §15). Nothing is read for a file that is
-    /// not on disk. A file the row says is on disk and the disk has not answers no
-    /// blocks: the open says so, not the attributes.
+    /// not on disk. Each answer of the stat is told apart (`place_changes::RowPathStat`):
+    /// `Crossed` and `NoRow` answer no blocks; so does `NothingOnDisk` — a file the row
+    /// says is on disk and the disk has not: the open says so, not the attributes.
     pub(super) fn read_backing_file_facts(&self, item: &Item) -> BackingFileFacts {
         todo!()
     }

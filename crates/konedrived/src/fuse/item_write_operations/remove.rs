@@ -79,7 +79,8 @@ impl ItemWriteOperations {
     /// (`ItemStore::record_place_change(SetAside { item, place, aside_name })`; none for
     /// `RowAlone`); a place change begun; the entry set aside;
     /// `settle_place_change_record(record, LocalVersion(Removed { item }))` through
-    /// `write_row_or_undo` (undo: `PlaceUndo::Restore`, and then
+    /// `write_row_or_undo` (undo: `PlaceUndo::Restore`, or `RestoreMark` for a directory
+    /// that holds what no row says and stays on disk, and then
     /// `forget_place_change_record`); the change ended; `PlaceChanges::discard`. A writer that still holds
     /// the file keeps its descriptor; its last close finds no shown row and writes
     /// nothing. What the download states keep of the item is forgotten.
