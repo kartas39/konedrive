@@ -218,3 +218,26 @@ fn the_unsent_removals_are_counted_a_removed_directory_with_all_onedrive_has_in_
     assert_eq!(store.item_store().count_unsent_removals(&[directory].into()).unwrap(), 1);
     assert_eq!(store.item_store().count_unsent_removals(&[inner, stays].into()).unwrap(), 3);
 }
+
+/// Found by the convergence test: an item both sides agree on, whose placement a listing
+/// changed, is in neither index a plan reads from, and stayed in the folder for good.
+#[test]
+fn the_shown_items_whose_placement_says_the_folder_cannot_show_them_are_read() {
+    use crate::item_store::tests::listed_drive::{listed_directory, listed_file, not_placed, reference, store_with_listed_root, write_listing_of_changes};
+    let mut store = store_with_listed_root();
+    let listed = [listed_directory("D", "R", "d", "e"), listed_file("A", "D", "a", (1, "h"), "e"), listed_file("B", "R", "b", (1, "h"), "e"), listed_file("C", "R", "c", (1, "h"), "e")];
+    write_listing_of_changes(&mut store, &listed);
+    let [directory, _, file, _] = ["D", "A", "B", "C"].map(|item_id| {
+        let row = store.item_store().find_bound_item(&reference(item_id)).unwrap().unwrap();
+        store.item_store().commit_show_item(&crate::ItemVersions::of(&row), false).unwrap();
+        row.local_item_id
+    });
+    let read = |store: &mut TreeStore, after: Option<LocalItemId>, limit: usize| -> Vec<LocalItemId> { store.item_store().list_shown_items_not_placed(after, limit).unwrap().iter().map(|item| item.local_item_id).collect() };
+    assert_eq!(read(&mut store, None, 10), []);
+    // A new item of OneDrive the folder cannot show was never shown: it is not among them.
+    write_listing_of_changes(&mut store, &[not_placed(listed[0].clone()), not_placed(listed[2].clone()), not_placed(listed_file("N", "R", "n", (1, "h"), "e"))]);
+    assert!(store.item_store().list_unsent(None, 10).unwrap().is_empty() && store.item_store().list_changed_in_onedrive(None, 10).unwrap().iter().all(|item| item.local.is_none()));
+    assert_eq!(read(&mut store, None, 10), [directory, file]);
+    assert_eq!(read(&mut store, None, 1), [directory]);
+    assert_eq!(read(&mut store, Some(directory), 10), [file]);
+}

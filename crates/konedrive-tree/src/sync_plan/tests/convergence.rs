@@ -250,8 +250,20 @@ impl World {
         let listing = self.store.item_store().begin_delta_listing().unwrap();
         let outcome = self.store.item_store().write_listed_changes(listing.id, first, listing.began_at_count, &ListingLink::NextLink("next".into())).unwrap();
         assert!(outcome.is_link_written());
-        // What the plan can do meanwhile, it does; what it cannot judge yet waits.
-        self.run_to_the_end()?;
+        // What the plan can do meanwhile, it does; what it cannot judge yet waits, for the
+        // listing, for the user, or for an item that does.
+        let waiting = self.run_to_the_end()?;
+        let waited_for = |item: LocalItemId| waiting.waits.iter().find(|wait| wait.item == item).map(|wait| &wait.reason);
+        for wait in &waiting.waits {
+            let mut reason = Some(&wait.reason);
+            for _ in 0..waiting.waits.len() {
+                let Some(WaitReason::AnotherItem(another)) = reason else { break };
+                reason = waited_for(*another);
+            }
+            if !matches!(reason, Some(WaitReason::Listing | WaitReason::User(_))) {
+                return Err(format!("while a listing is under way item {} waits for nothing that ends: {:?}, at last {reason:?}", wait.item, wait.reason));
+            }
+        }
         // The second page is fetched now, and says OneDrive as it is now: the steps that ran
         // since the first page changed it, and the other client makes the rest of its
         // changes in what they left, each where OneDrive's rules still let it.

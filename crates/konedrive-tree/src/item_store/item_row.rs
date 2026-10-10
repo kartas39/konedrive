@@ -658,3 +658,13 @@ pub(super) fn list_pinned_files_to_download(conn: &Connection, after: Option<Loc
     let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)
 }
+
+/// The items the folder shows whose own placement says it cannot: at most `limit` of them by
+/// local item id, after the item `after` when one is given. No index holds them: every row
+/// is read until `limit` are found.
+pub(super) fn list_shown_items_not_placed(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id > ?1 AND local_parent_id IS NOT NULL AND placement != '{PLACED}' ORDER BY local_item_id LIMIT ?2");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}

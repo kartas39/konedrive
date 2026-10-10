@@ -150,8 +150,8 @@ pub(crate) struct WideningCount {
 }
 
 /// The plan the caller runs next, and what it was made from. A bounded number of the unsent
-/// items and of those OneDrive changed is read, and the pinned files that are only to be
-/// downloaded; each is given with its relatives; and the plan is made again with every item
+/// items and of those OneDrive changed is read, the pinned files that are only to be
+/// downloaded, and the shown items the folder cannot show any more; each is given with its relatives; and the plan is made again with every item
 /// it answers it was not given. While no step can run and more is unsent or changed than was
 /// read, twice as many are read.
 pub(crate) fn plan_next_steps(store: &mut TreeStore, facts: &CallerFacts, widening: &mut WideningCount) -> (SyncPlanInput, SyncPlan) {
@@ -162,12 +162,11 @@ pub(crate) fn plan_next_steps(store: &mut TreeStore, facts: &CallerFacts, wideni
             let items = store.item_store();
             (items.list_unsent(None, read_at_once).unwrap(), items.list_changed_in_onedrive(None, read_at_once).unwrap(), items.list_pinned_files_to_download(None, read_at_once).unwrap())
         };
-        let is_all_read = unsent.len() < read_at_once && changed.len() < read_at_once && pinned.len() < read_at_once;
-        given.give(unsent.into_iter().chain(changed).chain(pinned));
-        // What no bounded reader of the store gives: an item the folder shows and agrees on,
-        // whose placement a listing changed so that the folder cannot show it any more. It
-        // is in neither index, and is read here from every row.
-        given.give(store.item_store().list_items().unwrap().into_iter().filter(|row| row.local.is_some() && row.placement != crate::Placement::Placed));
+        let not_placed = store.item_store().list_shown_items_not_placed(None, read_at_once).unwrap();
+        let is_all_read = [unsent.len(), changed.len(), pinned.len(), not_placed.len()].iter().all(|read| *read < read_at_once);
+        // The last of these: an item the folder shows and agrees on, whose placement a
+        // listing changed, is in neither of the two indexes.
+        given.give(unsent.into_iter().chain(changed).chain(pinned).chain(not_placed));
         // No more askings than rows: each adds one at least.
         let (input, plan) = loop {
             given.close(store, facts.gives_directories_above);

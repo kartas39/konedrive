@@ -156,6 +156,17 @@ impl ItemStore<'_> {
         list_changed_in_onedrive(&self.store.conn, after, limit)
     }
 
+    /// The items the folder shows whose own placement says the folder cannot show them: a
+    /// listing changed the placement of an item both sides agree on. Such an item is among
+    /// neither the unsent items nor those whose OneDrive version is not the synced one, and
+    /// a plan takes it off the folder only when it is given. At most `limit` of them by
+    /// local item id, after the item `after` when one is given. What the folder shows below
+    /// such a directory is not among them: the caller gives it with the directory. No index
+    /// holds these rows: every row is read until `limit` are found.
+    pub fn list_shown_items_not_placed(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+        item_row::list_shown_items_not_placed(&self.store.conn, after, limit)
+    }
+
     /// The items the folder shows in `directory` under a name that folds to `name`: one
     /// name as OneDrive compares names ([`FoldedName`]). The folder may show several, by
     /// local item id; OneDrive takes one. Found by an index of the folded names.
