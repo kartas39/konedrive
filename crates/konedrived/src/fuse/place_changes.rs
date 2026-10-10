@@ -89,15 +89,20 @@
 // test: an_undo_that_fails_is_answered_as_such_and_asks_nothing_by_itself
 #![allow(dead_code, unused_variables)]
 
+use std::ffi::CString;
 use std::fs::File;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, MutexGuard, PoisonError};
 
 use konedrive_tree::{LocalItemId, OneDriveItemId, TreeError};
+use nix::fcntl::{renameat2, RenameFlags, AT_FDCWD};
 
 use super::backing_directory::{BackingDirectory, DiskMetadata, EntryKind};
-use crate::folder::step_outcome::StepTrouble;
+use crate::folder::disk::{make_aside_entry_name, ASIDE_ENTRY_PREFIX};
+use crate::folder::step_outcome::{StepFailure, StepObstacle, StepTrouble};
 
 /// After how many tries that a change crossed a reader takes `changes` for its next try.
 pub(super) const CROSSED_TRIES: u32 = 3;
@@ -160,13 +165,22 @@ pub(super) enum OpenAtRowError {
 /// `ENOENT` for no file, which the open request first tries to mend
 /// (`ItemFreeUp::mend_missing_copy`). Pure.
 pub(super) fn decide_open_errno(error: &OpenAtRowError) -> i32 {
-    todo!()
+    match error {
+        OpenAtRowError::Store(_) => libc::EIO,
+        OpenAtRowError::NoFile { .. } => libc::ENOENT,
+        OpenAtRowError::Disk(error) => error.raw_os_error().unwrap_or(libc::EIO),
+    }
 }
 
 /// What a step that opens a file by its row answers for `error`: no file is
-/// `StepObstacle::BackingFileMissing`, anything else a failure. Pure.
+/// `StepObstacle::BackingFileMissing`, anything else a failure. Pure. A failure of the
+/// disk is told with no path: the error carries none.
 pub(super) fn decide_open_trouble(error: &OpenAtRowError) -> StepTrouble {
-    todo!()
+    match error {
+        OpenAtRowError::NoFile { .. } => StepTrouble::Obstacle(StepObstacle::BackingFileMissing),
+        OpenAtRowError::Store(error) => StepTrouble::Failure(StepFailure::Store { detail: error.to_string() }),
+        OpenAtRowError::Disk(error) => StepTrouble::Failure(StepFailure::Disk { errno: error.raw_os_error().unwrap_or(libc::EIO), path: PathBuf::new() }),
+    }
 }
 
 /// The place changes of one mount.
@@ -182,6 +196,10 @@ pub(super) struct PlaceChanges {
     ended: std::sync::Condvar,
     /// The write-operation thread's id, for the two debug assertions.
     write_operation_thread_id: std::thread::ThreadId,
+    /// How many readers sleep on `ended` now. Raised and lowered under `changes`, so a
+    /// reader counted here has let `changes` go: nothing decides by it, a test waits for
+    /// it in place of a sleep.
+    sleeper_count: AtomicUsize,
 }
 
 /// One change of the backing directory's names, from before the disk is touched until its
@@ -190,12 +208,25 @@ pub(super) struct PlaceChange<'a> {
     place_changes: &'a PlaceChanges,
 }
 
+/// What is at a path that is to be set aside.
+enum EntryToSetAside {
+    Nothing,
+    /// A file, or a directory with nothing in it: it is moved to its aside name.
+    Movable,
+    /// A directory that holds what no row says: it stays where it is.
+    HeldDirectory,
+}
+
+fn to_refusal(error: &io::Error, path: &Path) -> PlaceRefusal {
+    PlaceRefusal::Disk { errno: error.raw_os_error().unwrap_or(libc::EIO), path: path.to_owned() }
+}
+
 impl PlaceChanges {
     /// The place changes of `backing_directory`; none is under way. Made by the mount's
     /// build, after the write-operation thread, before anything that changes or opens by
     /// path.
     pub(super) fn new(backing_directory: Arc<BackingDirectory>, write_operation_thread_id: std::thread::ThreadId) -> Self {
-        todo!()
+        PlaceChanges { backing_directory, count: AtomicU64::new(0), changes: std::sync::Mutex::new(()), ended: std::sync::Condvar::new(), write_operation_thread_id, sleeper_count: AtomicUsize::new(0) }
     }
 
     /// Removes every entry of the root that was set aside and never discarded
@@ -204,7 +235,15 @@ impl PlaceChanges {
     /// the check at start, which skips such names: nothing of them is ever read as a file
     /// made by hand.
     pub(super) fn remove_aside_entries(&self) -> std::io::Result<usize> {
-        todo!()
+        let mut removed = 0;
+        for entry in self.backing_directory.read_directory(Path::new(""))? {
+            let name = entry?.file_name();
+            if name.as_bytes().starts_with(ASIDE_ENTRY_PREFIX.as_bytes()) {
+                self.remove_aside_entry(Path::new(&name))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// A place change begins: `changes` is taken, the count raised, `changes` let go; the
@@ -213,7 +252,12 @@ impl PlaceChanges {
     /// a content operation that makes a backing file, before its row is written; never
     /// while another is under way.
     pub(super) fn begin(&self) -> PlaceChange<'_> {
-        todo!()
+        debug_assert_eq!(std::thread::current().id(), self.write_operation_thread_id, "a place change begins on the write-operation thread alone");
+        let held = crate::panic::lock(&self.changes);
+        debug_assert_eq!(self.count.load(Ordering::SeqCst) % 2, 0, "a place change begins while none is under way");
+        self.count.fetch_add(1, Ordering::SeqCst);
+        drop(held);
+        PlaceChange { place_changes: self }
     }
 
     /// Opens the backing file at the path `find_path` answers, with what else it answers
@@ -229,16 +273,55 @@ impl PlaceChanges {
     /// Called by every open of a backing file outside the write-operation thread: the open
     /// request's read branch, a read whose content landed since, `ItemContentFiles`.
     /// Never on the write-operation thread (asserted).
-    pub(super) fn open_at_row_path<T>(&self, mode: OpenMode, find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(File, T)>, OpenAtRowError> {
-        todo!()
+    pub(super) fn open_at_row_path<T>(&self, mode: OpenMode, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(File, T)>, OpenAtRowError> {
+        debug_assert_ne!(std::thread::current().id(), self.write_operation_thread_id, "a backing file is opened by a row's path off the write-operation thread, which would sleep on its own change");
+        let mut crossed_tries = 0;
+        loop {
+            // The last try holds `changes` from before its read until after its open: no
+            // change begins under it.
+            let (count, held) = match crossed_tries >= CROSSED_TRIES {
+                true => {
+                    let (count, held) = self.sleep_until_no_change(crate::panic::lock(&self.changes));
+                    (count, Some(held))
+                }
+                false => (self.wait_for_no_change(), None),
+            };
+            let Some((path, row)) = find_path().map_err(OpenAtRowError::Store)? else { return Ok(None) };
+            let opened = self.open(mode, &path);
+            if self.count.load(Ordering::SeqCst) != count {
+                // A change began since the count was read: what was opened may be another
+                // item's file, and a missing one may only have moved.
+                crossed_tries += 1;
+                continue;
+            }
+            drop(held);
+            return match opened {
+                Ok(file) => Ok(Some((file, row))),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Err(OpenAtRowError::NoFile { path }),
+                Err(error) => Err(OpenAtRowError::Disk(error)),
+            };
+        }
     }
 
     /// One `stat` at the path `find_path` answers: the blocks a file takes on disk, a
     /// directory's time. It never sleeps: while a change is under way, or when the count
     /// moved between the read and the stat, it tries once more, and then answers `None` —
     /// no facts, which the attributes are made without.
-    pub(super) fn stat_at_row_path<T>(&self, find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(DiskMetadata, T)>, TreeError> {
-        todo!()
+    pub(super) fn stat_at_row_path<T>(&self, mut find_path: impl FnMut() -> Result<Option<(PathBuf, T)>, TreeError>) -> Result<Option<(DiskMetadata, T)>, TreeError> {
+        for _try in 0..2 {
+            let count = self.count.load(Ordering::SeqCst);
+            if count % 2 == 1 {
+                // A change is under way. Not waited for: the other try comes at once.
+                std::thread::yield_now();
+                continue;
+            }
+            let Some((path, row)) = find_path()? else { return Ok(None) };
+            let facts = self.read_facts(&path);
+            if self.count.load(Ordering::SeqCst) == count {
+                return Ok(facts.map(|facts| (facts, row)));
+            }
+        }
+        Ok(None)
     }
 
     /// The row was written and the change ended: removes for good what `undo` kept set
@@ -246,7 +329,142 @@ impl PlaceChanges {
     /// count for it, and the unlink of a large file holds up no opener. A failure is
     /// logged and left for [`remove_aside_entries`](Self::remove_aside_entries).
     pub(super) fn discard(&self, undo: PlaceUndo) {
-        todo!()
+        let (PlaceUndo::Restore { set_aside, .. } | PlaceUndo::MoveBackAndRestore { set_aside, .. }) = undo else { return };
+        if let Err(error) = self.remove_aside_entry(&set_aside) {
+            tracing::warn!("cannot remove {} from the backing directory, which was set aside: {error}; it goes at the next start", set_aside.display());
+        }
+    }
+
+    /// The count at a moment at which no change is under way: sleeps on `ended` while one
+    /// is. `changes` is taken only to sleep.
+    fn wait_for_no_change(&self) -> u64 {
+        let count = self.count.load(Ordering::SeqCst);
+        if count % 2 == 0 {
+            return count;
+        }
+        self.sleep_until_no_change(crate::panic::lock(&self.changes)).0
+    }
+
+    /// Sleeps on `ended`, under `held`, until no change is under way: the count then, and
+    /// the lock, still held. The count is read under the lock before each wait, and an
+    /// end raises it and notifies under the lock: no wake is lost.
+    fn sleep_until_no_change<'a>(&self, mut held: MutexGuard<'a, ()>) -> (u64, MutexGuard<'a, ()>) {
+        loop {
+            let count = self.count.load(Ordering::SeqCst);
+            if count % 2 == 0 {
+                return (count, held);
+            }
+            self.sleeper_count.fetch_add(1, Ordering::SeqCst);
+            held = self.ended.wait(held).unwrap_or_else(PoisonError::into_inner);
+            self.sleeper_count.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn open(&self, mode: OpenMode, path: &Path) -> io::Result<File> {
+        match mode {
+            OpenMode::Read => self.backing_directory.open_to_read(path),
+            OpenMode::Write => self.backing_directory.open_to_write(path),
+        }
+    }
+
+    /// What the disk says of the file or directory at `path`; `None` when nothing is
+    /// there, and for what is neither.
+    fn read_facts(&self, path: &Path) -> Option<DiskMetadata> {
+        DiskMetadata::from_filesystem(&self.backing_directory.read_metadata(path)?)
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        self.backing_directory.read_metadata(path).is_some_and(|metadata| metadata.is_dir())
+    }
+
+    /// Removes the entry at the aside name `aside`, with what is below it.
+    fn remove_aside_entry(&self, aside: &Path) -> io::Result<()> {
+        match self.is_directory(aside) {
+            true => std::fs::remove_dir_all(self.backing_directory.resolve_path(aside)),
+            false => self.backing_directory.remove_file(aside),
+        }
+    }
+
+    /// Moves the entry at `from` to `to`, never over anything (`RENAME_NOREPLACE`).
+    fn rename_without_replacing(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let (from, to) = (self.backing_directory.resolve_path(from), self.backing_directory.resolve_path(to));
+        renameat2(AT_FDCWD, &from, AT_FDCWD, &to, RenameFlags::RENAME_NOREPLACE).map_err(io::Error::from)
+    }
+
+    /// Makes the directories above `path` that are not on disk, and marks each directory
+    /// above `path` with the id `directory_marks` has for it. The directories it made, the
+    /// outermost first. When it is refused, what it made is removed again.
+    fn make_directories_above(&self, path: &Path, directory_marks: &DirectoryMarks) -> Result<Vec<PathBuf>, PlaceRefusal> {
+        let mut directories_made = Vec::new();
+        let mut directory = PathBuf::new();
+        for (index, name) in path.parent().unwrap_or(Path::new("")).components().enumerate() {
+            directory.push(name);
+            let made = match self.backing_directory.make_directory(&directory) {
+                Ok(()) => {
+                    directories_made.push(directory.clone());
+                    Ok(())
+                }
+                // What is there must be a directory: a file in the way is the user's own.
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => match self.is_directory(&directory) {
+                    true => Ok(()),
+                    false => Err(PlaceRefusal::PlaceHeld { path: directory.clone() }),
+                },
+                Err(error) => Err(to_refusal(&error, &directory)),
+            };
+            if let Err(refusal) = made.and_then(|()| self.mark_directory(&directory, directory_marks.get(index))) {
+                self.remove_directories(&directories_made);
+                return Err(refusal);
+            }
+        }
+        Ok(directories_made)
+    }
+
+    /// Marks the directory at `directory` with `mark`, when it has one and is not marked
+    /// with it already.
+    fn mark_directory(&self, directory: &Path, mark: Option<&Option<OneDriveItemId>>) -> Result<(), PlaceRefusal> {
+        let Some(Some(mark)) = mark else { return Ok(()) };
+        if self.backing_directory.read_onedrive_id(directory).as_deref() == Some(mark.as_str()) {
+            return Ok(());
+        }
+        self.backing_directory.mark_with_onedrive_id(directory, mark.as_str()).map_err(|error| to_refusal(&error, directory))
+    }
+
+    /// Removes `directories`, the innermost first: what a change made above its place,
+    /// after it was refused. What cannot be removed is left and logged.
+    fn remove_directories(&self, directories: &[PathBuf]) {
+        if let Err(error) = self.try_remove_directories(directories) {
+            tracing::warn!("cannot remove a directory made in the backing directory for a change that was refused: {error}");
+        }
+    }
+
+    fn try_remove_directories(&self, directories: &[PathBuf]) -> io::Result<()> {
+        directories.iter().rev().try_for_each(|directory| self.backing_directory.remove_directory(directory))
+    }
+
+    /// Syncs the directory at `directory` (`""` is the backing directory itself): a name
+    /// made in it is on disk for good.
+    fn sync_directory(&self, directory: &Path) -> io::Result<()> {
+        File::open(self.backing_directory.resolve_path(directory))?.sync_all()
+    }
+
+    fn inspect_entry_to_set_aside(&self, path: &Path) -> io::Result<EntryToSetAside> {
+        let Some(metadata) = self.backing_directory.read_metadata(path) else { return Ok(EntryToSetAside::Nothing) };
+        if metadata.is_dir() && self.backing_directory.read_directory(path)?.next().is_some() {
+            return Ok(EntryToSetAside::HeldDirectory);
+        }
+        Ok(EntryToSetAside::Movable)
+    }
+
+    /// Moves the entry at `path` to the aside name `aside`. What a failed discard left
+    /// under that name gives way: one item has one entry set aside at most.
+    fn move_aside(&self, path: &Path, aside: &Path) -> io::Result<()> {
+        match self.rename_without_replacing(path, aside) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                self.remove_aside_entry(aside)?;
+                self.rename_without_replacing(path, aside)
+            }
+            moved => moved,
+        }
     }
 }
 
@@ -255,30 +473,141 @@ impl PlaceChange<'_> {
     /// on disk, each marked. A file is refused when something is at `path`. A directory
     /// that is on disk already — one a removal left there because it still held what no
     /// row says — is taken as the made one and marked again (`PlaceUndo::UnmarkTaken`).
+    ///
+    /// `directory_marks` is read against the names of `path`, the outermost first: its
+    /// first mark is of the first name, and so on. Marks for the directories above `path`
+    /// are enough (`find_path_with_marks` of the directory the entry is made in); a mark
+    /// for the last name, when there is one, is the made directory's own
+    /// (`find_path_with_marks` of the directory that is made), and is nothing to a file.
+    /// A directory above that is on disk already is marked too when it is not.
     pub(super) fn make_entry(&self, path: &Path, kind: EntryKind, directory_marks: &DirectoryMarks) -> Result<(Option<File>, PlaceUndo), PlaceRefusal> {
-        todo!()
+        let place_changes = self.place_changes;
+        let directories_made = place_changes.make_directories_above(path, directory_marks)?;
+        let made = match kind {
+            EntryKind::File => place_changes.backing_directory.make_file(path).map(Some),
+            EntryKind::Directory => place_changes.backing_directory.make_directory(path).map(|()| None),
+        };
+        let own_mark = directory_marks.get(path.components().count().saturating_sub(1));
+        let refusal = match made {
+            Ok(file) => {
+                let undo = PlaceUndo::RemoveMade { path: path.to_owned(), directories_made };
+                match kind {
+                    EntryKind::File => return Ok((file, undo)),
+                    EntryKind::Directory => match place_changes.mark_directory(path, own_mark) {
+                        Ok(()) => return Ok((None, undo)),
+                        Err(refusal) => {
+                            if let Err(error) = self.undo(undo) {
+                                tracing::warn!("cannot remove {} from the backing directory, which could not be marked: {error}", path.display());
+                            }
+                            return Err(refusal);
+                        }
+                    },
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && kind == EntryKind::Directory && place_changes.is_directory(path) => {
+                // It was on disk, so the directories above it were: none was made.
+                place_changes.mark_directory(path, own_mark)?;
+                return Ok((None, PlaceUndo::UnmarkTaken { path: path.to_owned() }));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => PlaceRefusal::PlaceHeld { path: path.to_owned() },
+            Err(error) => to_refusal(&error, path),
+        };
+        place_changes.remove_directories(&directories_made);
+        Err(refusal)
     }
 
     /// Links the unnamed file `file` under `path`, with the directories above it that are
     /// not on disk made and marked, and syncs the directory. Nothing is replaced:
     /// `PlaceRefusal::PlaceHeld` when something is there. Undo: `RemoveMade`. What a
-    /// landing of a download names its file by.
+    /// landing of a download names its file by. The marks are read as
+    /// [`make_entry`](Self::make_entry) reads them; every directory a name was made in is
+    /// synced.
     pub(super) fn link_file(&self, file: &File, path: &Path, directory_marks: &DirectoryMarks) -> Result<PlaceUndo, PlaceRefusal> {
-        todo!()
+        let place_changes = self.place_changes;
+        let directories_made = place_changes.make_directories_above(path, directory_marks)?;
+        let linked = (|| {
+            let unnamed = CString::new(konedrive_fs::proc_path(file).into_os_string().into_encoded_bytes())?;
+            let named = CString::new(place_changes.backing_directory.resolve_path(path).into_os_string().into_encoded_bytes())?;
+            // SAFETY: two paths this function owns.
+            match unsafe { libc::linkat(libc::AT_FDCWD, unnamed.as_ptr(), libc::AT_FDCWD, named.as_ptr(), libc::AT_SYMLINK_FOLLOW) } {
+                0 => Ok(()),
+                _ => Err(io::Error::last_os_error()),
+            }
+        })();
+        let refusal = match linked {
+            Ok(()) => {
+                let undo = PlaceUndo::RemoveMade { path: path.to_owned(), directories_made };
+                let PlaceUndo::RemoveMade { directories_made, .. } = &undo else { unreachable!() };
+                // The directory the name is in, and each one a directory was made in.
+                let synced = directories_made.iter().chain([&path.to_owned()]).try_for_each(|made| place_changes.sync_directory(made.parent().unwrap_or(Path::new(""))));
+                match synced {
+                    Ok(()) => return Ok(undo),
+                    Err(error) => {
+                        let refusal = to_refusal(&error, path);
+                        if let Err(error) = self.undo(undo) {
+                            tracing::warn!("cannot remove {} from the backing directory, whose directory could not be synced: {error}", path.display());
+                        }
+                        return Err(refusal);
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => PlaceRefusal::PlaceHeld { path: path.to_owned() },
+            Err(error) => to_refusal(&error, path),
+        };
+        place_changes.remove_directories(&directories_made);
+        Err(refusal)
     }
 
     /// Moves the entry at `from` to `to`, where the rows say nothing is: with
     /// `RENAME_NOREPLACE`, after making the directories above `to` that are not on disk,
     /// each marked. `PlaceRefusal::PlaceHeld` when the disk holds something there. A
-    /// temporary name of an exchange is a `to` like any other.
+    /// temporary name of an exchange is a `to` like any other. The marks are of the names
+    /// of `to`, read as [`make_entry`](Self::make_entry) reads them; a moved directory is
+    /// not marked again.
     pub(super) fn move_entry(&self, from: &Path, to: &Path, directory_marks: &DirectoryMarks) -> Result<PlaceUndo, PlaceRefusal> {
-        todo!()
+        let place_changes = self.place_changes;
+        let directories_made = place_changes.make_directories_above(to, directory_marks)?;
+        match place_changes.rename_without_replacing(from, to) {
+            Ok(()) => Ok(PlaceUndo::MoveBack { from: from.to_owned(), to: to.to_owned(), directories_made }),
+            Err(error) => {
+                place_changes.remove_directories(&directories_made);
+                Err(self.describe_move_refusal(&error, from, to))
+            }
+        }
     }
 
     /// Moves the entry at `from` over the entry at `to`, which the rows say is there and
     /// is the entry of `replaced`: that one is set aside first.
+    ///
+    /// When nothing is at `to` on disk — the replaced item has no copy there — the move
+    /// is a plain one (`PlaceUndo::MoveBack`); the directory `to` is in must be on disk
+    /// then: with no marks given none is made here, and a caller that knows the replaced
+    /// item has nothing on disk calls [`move_entry`](Self::move_entry) with the marks. A
+    /// directory at `to` that holds what no row says is not set aside: the place is held.
     pub(super) fn move_entry_over(&self, from: &Path, to: &Path, replaced: LocalItemId) -> Result<PlaceUndo, PlaceRefusal> {
-        todo!()
+        let place_changes = self.place_changes;
+        let set_aside = PathBuf::from(make_aside_entry_name(replaced));
+        let is_set_aside = match place_changes.inspect_entry_to_set_aside(to).map_err(|error| to_refusal(&error, to))? {
+            EntryToSetAside::Nothing => false,
+            EntryToSetAside::HeldDirectory => return Err(PlaceRefusal::PlaceHeld { path: to.to_owned() }),
+            EntryToSetAside::Movable => {
+                place_changes.move_aside(to, &set_aside).map_err(|error| to_refusal(&error, to))?;
+                true
+            }
+        };
+        match (place_changes.rename_without_replacing(from, to), is_set_aside) {
+            (Ok(()), true) => Ok(PlaceUndo::MoveBackAndRestore { from: from.to_owned(), to: to.to_owned(), set_aside }),
+            (Ok(()), false) => Ok(PlaceUndo::MoveBack { from: from.to_owned(), to: to.to_owned(), directories_made: Vec::new() }),
+            (Err(error), is_set_aside) => {
+                let refusal = self.describe_move_refusal(&error, from, to);
+                if is_set_aside {
+                    if let Err(error) = place_changes.rename_without_replacing(&set_aside, to) {
+                        tracing::error!("cannot put {} back in the backing directory from {}, where it was set aside for a move that failed: {error}", to.display(), set_aside.display());
+                    }
+                }
+                Err(refusal)
+            }
+        }
     }
 
     /// Sets the entry at `path`, the entry of `item`, aside under
@@ -289,19 +618,78 @@ impl PlaceChange<'_> {
     /// ([`make_entry`](Self::make_entry)), and nothing in it is ever removed by the
     /// daemon.
     pub(super) fn set_aside(&self, path: &Path, item: LocalItemId) -> Result<PlaceUndo, PlaceRefusal> {
-        todo!()
+        let place_changes = self.place_changes;
+        match place_changes.inspect_entry_to_set_aside(path).map_err(|error| to_refusal(&error, path))? {
+            EntryToSetAside::Nothing => Ok(PlaceUndo::Nothing),
+            EntryToSetAside::HeldDirectory => {
+                place_changes.backing_directory.clear_onedrive_id(path);
+                Ok(PlaceUndo::Nothing)
+            }
+            EntryToSetAside::Movable => {
+                let set_aside = PathBuf::from(make_aside_entry_name(item));
+                place_changes.move_aside(path, &set_aside).map_err(|error| to_refusal(&error, path))?;
+                Ok(PlaceUndo::Restore { set_aside, path: path.to_owned() })
+            }
+        }
     }
 
     /// Takes `undo` back. An error is the disk's: the caller asks for the mount's
-    /// take-down (`MountTakeDown::ask`).
+    /// take-down (`MountTakeDown::ask`). Nothing is replaced by a move back either: what
+    /// is in its way fails it.
     pub(super) fn undo(&self, undo: PlaceUndo) -> std::io::Result<()> {
-        todo!()
+        let place_changes = self.place_changes;
+        match undo {
+            PlaceUndo::Nothing => Ok(()),
+            PlaceUndo::RemoveMade { path, directories_made } => {
+                match place_changes.is_directory(&path) {
+                    true => place_changes.backing_directory.remove_directory(&path)?,
+                    false => place_changes.backing_directory.remove_file(&path)?,
+                }
+                place_changes.try_remove_directories(&directories_made)
+            }
+            PlaceUndo::UnmarkTaken { path } => {
+                place_changes.backing_directory.clear_onedrive_id(&path);
+                Ok(())
+            }
+            PlaceUndo::MoveBack { from, to, directories_made } => {
+                place_changes.rename_without_replacing(&to, &from)?;
+                place_changes.try_remove_directories(&directories_made)
+            }
+            PlaceUndo::MoveBackAndRestore { from, to, set_aside } => {
+                place_changes.rename_without_replacing(&to, &from)?;
+                place_changes.rename_without_replacing(&set_aside, &to)
+            }
+            PlaceUndo::Restore { set_aside, path } => place_changes.rename_without_replacing(&set_aside, &path),
+        }
     }
 
     /// The change ended: its row is written and the disk has what the row says, or it was
     /// undone. The count is even again, and who sleeps on `ended` is woken, under
     /// `changes`. The same as dropping it; written out where the end must be seen.
     pub(super) fn end(self) {
-        todo!()
+        drop(self);
+    }
+
+    /// Why a move from `from` to `to` failed with `error`: the place is held, or the
+    /// disk's errno with the path it is about.
+    fn describe_move_refusal(&self, error: &io::Error, from: &Path, to: &Path) -> PlaceRefusal {
+        match error.kind() {
+            io::ErrorKind::AlreadyExists => PlaceRefusal::PlaceHeld { path: to.to_owned() },
+            io::ErrorKind::NotFound if self.place_changes.backing_directory.read_metadata(from).is_none() => to_refusal(error, from),
+            _ => to_refusal(error, to),
+        }
     }
 }
+
+impl Drop for PlaceChange<'_> {
+    /// The end of the change, also when its job returned early or panicked.
+    fn drop(&mut self) {
+        let held = crate::panic::lock(&self.place_changes.changes);
+        self.place_changes.count.fetch_add(1, Ordering::SeqCst);
+        self.place_changes.ended.notify_all();
+        drop(held);
+    }
+}
+
+#[cfg(test)]
+mod tests;
