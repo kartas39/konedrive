@@ -536,6 +536,33 @@ pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalI
     Ok(())
 }
 
+/// OneDrive confirmed the removal of `directory` to a step, as the confirmation of the count
+/// `count`: all the rows say OneDrive has in it and below it has no OneDrive version and
+/// nothing agreed on from now on, and the stamp `count`, so that a page fetched before the
+/// removal does not bring any of it back. One statement, whatever is below.
+pub(super) fn confirm_removal_below(conn: &Connection, directory: LocalItemId, count: u64) -> Result<(), TreeError> {
+    let synced = ["parent_id", "name", "size", "mtime", "mtime_nsec", "hash", "ctag", "change_count"].map(|column| format!("synced_{column} = NULL")).join(", ");
+    let sql = format!("{}, {synced}, confirmed_at_count = ?2 WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})", clear_onedrive_version_sql(""));
+    conn.prepare_cached(&sql)?.execute([directory.as_i64(), count as i64])?;
+    Ok(())
+}
+
+/// Whether the folder shows anything of what the rows say OneDrive has in `directory` and
+/// below it, at any depth: what the removal of the directory would take from OneDrive
+/// though it is in the folder.
+pub(super) fn is_anything_shown_below_in_onedrive(conn: &Connection, directory: LocalItemId) -> Result<bool, TreeError> {
+    let sql = format!("SELECT EXISTS (SELECT 1 FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE}) AND local_parent_id IS NOT NULL)");
+    Ok(conn.prepare_cached(&sql)?.query_row([directory.as_i64()], |row| row.get(0))?)
+}
+
+/// How many rows are a binding alone, stamped after the count `confirmation_count`: found
+/// by the index of such rows.
+pub(super) fn count_removals_confirmed_since(conn: &Connection, confirmation_count: u64) -> Result<u64, TreeError> {
+    let sql = format!("SELECT COUNT(*) FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count > ?1");
+    let count: i64 = conn.prepare_cached(&sql)?.query_row([confirmation_count as i64], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
 /// SQL for "the row has a place in OneDrive, and the full listing of the id `?1` did not
 /// list it": what the index `items_seen_in_full_listing` finds.
 const UNSEEN_IN_FULL_LISTING: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";
@@ -659,11 +686,15 @@ pub(super) fn list_pinned_files_to_download(conn: &Connection, after: Option<Loc
     Ok(items)
 }
 
+/// SQL for "the folder shows the item, and its own placement says the folder cannot show
+/// it". The index `items_shown_against_placement` holds these rows, and a query finds them
+/// by it when it asks in these words.
+pub(crate) const SHOWN_AGAINST_PLACEMENT: &str = "local_parent_id IS NOT NULL AND placement != 'placed'";
+
 /// The items the folder shows whose own placement says it cannot: at most `limit` of them by
-/// local item id, after the item `after` when one is given. No index holds them: every row
-/// is read until `limit` are found.
-pub(super) fn list_shown_items_not_placed(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
-    let sql = format!("SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id > ?1 AND local_parent_id IS NOT NULL AND placement != '{PLACED}' ORDER BY local_item_id LIMIT ?2");
+/// local item id, after the item `after` when one is given. Found by the index of such rows.
+pub(super) fn list_shown_items_that_cannot_be_shown(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_shown_against_placement WHERE {SHOWN_AGAINST_PLACEMENT} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
     let mut statement = conn.prepare_cached(&sql)?;
     let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)

@@ -50,8 +50,9 @@ impl Overruling {
 /// A decision between items reads it and changes nothing of it: it answers its
 /// [`Overruling`]s, and [`make_sync_plan`](super::make_sync_plan) alone puts them in place
 /// ([`overrule`](Self::overrule)). An item that is held back whatever its row and the other
-/// items say — a step is running for it, a program holds it open for writing
-/// ([`find_hold`]) — keeps that answer: no overruling takes its place.
+/// items say — a step is running for it, a program holds it open for writing, the check at
+/// start could not decide it ([`find_hold`]) — keeps that answer: no overruling takes its
+/// place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ItemAnswers {
     order: Vec<LocalItemId>,
@@ -201,6 +202,8 @@ pub(crate) struct ItemCase<'a> {
     pub(crate) is_listing_under_way: bool,
     pub(crate) has_running_step: bool,
     pub(crate) is_open_for_writing: bool,
+    /// The check of the backing directory at start could not decide the item.
+    pub(crate) is_left_by_start_up_check: bool,
     pub(crate) is_pinned: bool,
     pub(crate) local_directory: LocalDirectoryBinding,
     pub(crate) local_place_availability: LocalPlaceAvailability,
@@ -253,13 +256,16 @@ fn row_step(step: RowStep) -> ItemDecision {
 }
 
 /// What holds the item of `case` back whatever its row and the other items say: a step is
-/// running for it, or a program holds it open for writing. Nothing of such an item is
-/// planned, by itself or between items.
+/// running for it, a program holds it open for writing, or the check of the backing
+/// directory at start could not decide it. Nothing of such an item is planned, by itself or
+/// between items: nothing of it is sent, and nothing is taken over for it.
 pub(crate) fn find_hold(case: &ItemCase<'_>) -> Option<WaitReason> {
     if case.has_running_step {
         Some(WaitReason::RunningStep)
     } else if case.is_open_for_writing {
         Some(WaitReason::User(Reason::OpenForWriting))
+    } else if case.is_left_by_start_up_check {
+        Some(WaitReason::StartUpCheck)
     } else {
         None
     }
@@ -388,6 +394,8 @@ fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option
         SendingObstacle::TooLarge => ItemDecision::Wait(WaitReason::User(Reason::TooLarge)),
         SendingObstacle::OneDriveFull => ItemDecision::Wait(WaitReason::User(Reason::WaitingForSpace)),
         SendingObstacle::QuietTime { until } => ItemDecision::Wait(WaitReason::Time { until, reason: Reason::Changed }),
+        SendingObstacle::Refused(reason) => ItemDecision::Wait(WaitReason::User(reason)),
+        SendingObstacle::TriedAgainLater { until, reason } => ItemDecision::Wait(WaitReason::Time { until, reason }),
     })
 }
 

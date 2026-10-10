@@ -197,12 +197,39 @@ pub struct SyncPlanInput {
     /// that come one by one, with a plan made between them, are held like those of one
     /// plan. The caller begins that time anew when the user confirms a mass removal.
     pub sent_removal_count: u64,
+    /// The time now, in Unix seconds: what a time the caller gives is compared with.
+    pub now: i64,
+    /// What the steps remember of a try that failed: for each such item its next try. While
+    /// that is not before a time still to come, the item waits until then
+    /// ([`WaitReason::Time`], with the reason of the failure) in place of any step towards
+    /// OneDrive, and what is behind it waits for it. Steps towards the folder go on.
+    pub next_tries: BTreeMap<LocalItemId, NextTry>,
+    /// What the steps remember of what OneDrive refused: the items it refuses for good as
+    /// they are, and those too big for the space it has, each with the reason. Such an item
+    /// waits for the user ([`WaitReason::User`]) in place of any step towards OneDrive; the
+    /// caller forgets the entry when the item changes or OneDrive has more space.
+    pub sending_refusals: BTreeMap<LocalItemId, Reason>,
+    /// The items the check of the backing directory at start could not decide, and by the
+    /// caller's closing what is below them: nothing of such an item is sent, nothing is
+    /// taken over for it, and no removal takes it from OneDrive
+    /// ([`WaitReason::StartUpCheck`]).
+    pub items_left_by_start_up_check: BTreeSet<LocalItemId>,
     /// For every directory given that was removed here: how many items the rows say
     /// OneDrive has in it and below it, at any depth.
     pub onedrive_item_count_below: BTreeMap<LocalItemId, u64>,
     /// For every directory given that the folder shows and that OneDrive does not have, or
     /// has where the folder cannot show it: how many items the folder shows in it.
     pub shown_item_count_in: BTreeMap<LocalItemId, u64>,
+}
+
+/// The next try of what is sent of an item, after a try that failed: what the steps
+/// remember of it ([`ItemStore::find_item_memory`](crate::ItemStore::find_item_memory)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextTry {
+    /// The time, in Unix seconds, before which nothing of the item is sent again.
+    pub not_before: i64,
+    /// Why the last try failed: what is said of the item while it waits.
+    pub reason: Reason,
 }
 
 /// Why an item's step cannot run now.
@@ -219,6 +246,9 @@ pub enum WaitReason {
     User(Reason),
     /// A step of the item is running.
     RunningStep,
+    /// The check of the backing directory at start could not decide the item: it waits for
+    /// a check that does.
+    StartUpCheck,
     /// It waits for a listing to end: what the rows say of the item in OneDrive cannot be
     /// judged yet.
     Listing,
@@ -282,9 +312,9 @@ impl PlanFault {
 /// is no item.
 ///
 /// When no step can run, something waits for a time, for the user, for a step that is
-/// running, for a listing or for an item that was not given, or the plan says it is at
-/// fault: an item never waits for another item whose own answer does not end the wait
-/// ([`PlanFault::WaitWithoutEnd`]).
+/// running, for a check at start, for a listing or for what was not given, or the plan says
+/// it is at fault: an item never waits for another item whose own answer does not end the
+/// wait ([`PlanFault::WaitWithoutEnd`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncPlan {
     /// The steps that can run now, one per item: those of what is unsent first, the item
@@ -408,6 +438,7 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
         is_pinned: input.pinned_items.contains(&id),
         local_directory: find_local_directory_binding(input, items, item),
         local_place_availability: find_local_place_availability(items, item),
+        is_left_by_start_up_check: input.items_left_by_start_up_check.contains(&id),
         first_shown_in_it: items.find_first_shown_in(id),
         is_given_with_all_in_it: is_given_with_all_in_it(input, items, item, folder_visibility),
         onedrive_directory_not_given: find_onedrive_directory_not_given(items, item),
@@ -420,6 +451,9 @@ fn describe_item<'a>(input: &SyncPlanInput, items: &PlanItems<'_>, item: &'a Ite
             is_onedrive_full: input.is_onedrive_full,
             sending_state: input.sending_state,
             unsent_since: item.unsent_since,
+            refusal: input.sending_refusals.get(&id).cloned(),
+            next_try: input.next_tries.get(&id).cloned(),
+            now: input.now,
         },
     }
 }

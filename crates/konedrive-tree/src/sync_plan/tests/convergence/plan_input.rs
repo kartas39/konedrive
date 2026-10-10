@@ -137,6 +137,10 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
         sent_removal_count: 0,
+        now: 0,
+        next_tries: BTreeMap::new(),
+        sending_refusals: BTreeMap::new(),
+        items_left_by_start_up_check: BTreeSet::new(),
         onedrive_item_count_below: rows.iter().filter(|row| row.kind == ItemKind::Directory).map(|row| (row.local_item_id, items.list_below_in_onedrive(row.local_item_id).unwrap().len() as u64)).collect(),
         shown_item_count_in: rows.iter().filter(|row| row.kind == ItemKind::Directory).map(|row| (row.local_item_id, items.list_children(row.local_item_id).unwrap().len() as u64)).collect(),
         items: rows,
@@ -165,7 +169,7 @@ pub(crate) fn plan_next_steps(store: &mut TreeStore, facts: &CallerFacts, wideni
             let items = store.item_store();
             (items.list_unsent(None, read_at_once).unwrap(), items.list_changed_in_onedrive(None, read_at_once).unwrap(), items.list_pinned_files_to_download(None, read_at_once).unwrap())
         };
-        let not_placed = store.item_store().list_shown_items_not_placed(None, read_at_once).unwrap();
+        let not_placed = store.item_store().list_shown_items_that_cannot_be_shown(None, read_at_once).unwrap();
         let is_all_read = [unsent.len(), changed.len(), pinned.len(), not_placed.len()].iter().all(|read| *read < read_at_once);
         // The last of these: an item the folder shows and agrees on, whose placement a
         // listing changed, is in neither of the two indexes.

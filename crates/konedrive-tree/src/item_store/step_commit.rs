@@ -19,14 +19,27 @@
 //! kind of item it is not for, an answer of OneDrive that is of another item.
 //!
 //! **Which versions are asked.** A step towards the folder and a step of the rows alone
-//! ask all of them ([`ItemVersions::are_those_of`]). A step that made, moved or filled an
-//! item in OneDrive asks all but the local one: while its request ran a program may have
-//! renamed the item or changed its content again, and what OneDrive confirmed is written
-//! all the same, in the part that was confirmed — OneDrive's version as Graph answered it,
+//! ask all of them, and whether the content is on disk as it was
+//! ([`ItemVersions::are_those_of`]). A step that made, moved or filled an item in OneDrive
+//! asks the OneDrive version and what was agreed on
+//! ([`ItemVersions::are_onedrive_and_synced_those_of`]): while its request ran a program
+//! may have renamed the item or changed its content again, and what OneDrive confirmed is
+//! written all the same, in the part that was confirmed — OneDrive's version as Graph answered it,
 //! the place that was sent as the place agreed on, the content that was sent as the content
 //! agreed on — and as the local content only when that is still the one that was sent. What
 //! the program did since then differs from what was agreed on, and the next plan sends it.
 //! The removal of an item asks all of them: the folder does not show what was removed.
+//!
+//! **Which row is written.** What OneDrive confirmed of an item it had is written to the
+//! row that has the item's binding at the commit. That is the row the step was planned
+//! from, unless a file was saved by a rename over it meanwhile and took the binding
+//! ([`take_over_binding`](super::bindings)): the client's own upload is then confirmed of
+//! the replacing file, and is never read as a change OneDrive made.
+//!
+//! **A directory's removal** asks again, in its transaction, what the plan asked: the
+//! folder shows nothing of what the rows say OneDrive has below the directory
+//! ([`ItemStore::can_directory_removal_be_sent`], which a step asks before its request
+//! leaves too). Every row it takes the OneDrive version from is stamped with it.
 //!
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
@@ -46,7 +59,7 @@ use std::ffi::{OsStr, OsString};
 use rusqlite::{Connection, Transaction};
 
 use super::bindings::{bind_item, give_up_binding, merge_items};
-use super::item_row::{clear_onedrive_versions_below, find_bound_item, find_item, write_item};
+use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
 use super::step_memory::{carry_content, forget_confirmed_request, ConfirmedRequest};
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
@@ -126,10 +139,22 @@ impl ItemStore<'_> {
     /// OneDrive removed the directory with all it had in it. The rows of the directory and
     /// of each of `below`, what was removed here with it, are left with their binding
     /// alone, stamped; every other row the rows say OneDrive has in it loses its OneDrive
-    /// version, as a listing would say. Nothing is written unless the versions of the
-    /// directory and of every one of `below` are still their rows'.
+    /// version, as a listing would say, and is stamped too. Nothing is written unless the
+    /// versions of the directory and of every one of `below` are still their rows', and
+    /// the folder shows nothing OneDrive has below the directory
+    /// ([`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent)).
     pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_send_removal(tx, item, ItemKind::Directory, below))
+    }
+
+    /// Whether the removal of the directory of `item`, planned with `below` as what was
+    /// removed here with it, can be sent as the rows are now: the versions of the directory
+    /// and of each of `below` are still their rows', and the folder shows nothing of what
+    /// the rows say OneDrive has in the directory and below it. What the step asks under
+    /// the lock before its request leaves, and what its commit asks again: a directory's
+    /// removal is unguarded in OneDrive and takes all that is in it.
+    pub fn can_directory_removal_be_sent(&self, item: &ItemVersions, below: &[ItemVersions]) -> Result<bool, TreeError> {
+        is_directory_removal_as_planned(&self.store.conn, item, below)
     }
 
     /// The commit of [`FolderStep::ShowItem`](crate::FolderStep::ShowItem): the folder
@@ -208,8 +233,9 @@ impl ItemStore<'_> {
         self.write(|tx| commit_merge_items(tx, local, onedrive))
     }
 
-    /// The commit of [`RowStep::AgreeOnRemoval`](crate::RowStep::AgreeOnRemoval): what the two sides
-    /// agreed on of an item both removed is forgotten, and the row is a binding alone.
+    /// The commit of [`RowStep::AgreeOnRemoval`](crate::RowStep::AgreeOnRemoval): both
+    /// sides removed the item; what they agreed on before is forgotten, and the row is a
+    /// binding alone.
     pub fn commit_agree_on_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_forget_synced_version(tx, item, false))
     }
@@ -247,10 +273,21 @@ fn find_planned(conn: &Connection, planned: &ItemVersions) -> Result<Option<Item
     Ok(find_item(conn, planned.local_item_id)?.filter(|row| planned.are_those_of(row)))
 }
 
-/// The row of the item of `planned`, when every version it was planned from but the local
-/// one is still the row's.
-fn find_planned_but_local_version(conn: &Connection, planned: &ItemVersions) -> Result<Option<Item>, TreeError> {
-    Ok(find_item(conn, planned.local_item_id)?.filter(|row| planned.are_those_of_but_local_version(row)))
+/// The row of the item of `planned`, an item OneDrive does not have yet, when the folder
+/// may show it otherwise than it was planned from and nothing else of it changed.
+fn find_planned_new_item(conn: &Connection, planned: &ItemVersions) -> Result<Option<Item>, TreeError> {
+    Ok(find_item(conn, planned.local_item_id)?.filter(|row| planned.are_onedrive_and_synced_those_of(row)))
+}
+
+/// Whether the removal of the directory of `item` with `below` is still what the rows say
+/// ([`ItemStore::can_directory_removal_be_sent`]).
+fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below: &[ItemVersions]) -> Result<bool, TreeError> {
+    for planned in std::iter::once(item).chain(below) {
+        if find_planned(conn, planned)?.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(!is_anything_shown_below_in_onedrive(conn, item.local_item_id)?)
 }
 
 /// The directory that has the binding `directory`, when a row has it.
@@ -297,9 +334,14 @@ fn confirm_item(tx: &Transaction<'_>, item: LocalItemId, confirmed: &ConfirmedIt
 }
 
 /// The content OneDrive confirmed is the content agreed on of `row`, and its local content
-/// too when that is still `sent`, the one the step was planned from.
+/// too when that is still `sent`, the one the step was planned from. Where a program
+/// opened the file for writing since, `sent` is the content kept from before its first
+/// writer, and what was confirmed is kept there instead: closed unchanged, the file agrees.
 fn agree_on_confirmed_content(row: &mut Item, sent: Option<&ContentVersion>, confirmed: Option<&ContentVersion>) {
     row.synced_content = confirmed.cloned();
+    if row.content_before_write.is_some() && row.content_before_write.as_ref() == sent {
+        row.content_before_write = confirmed.cloned();
+    }
     if let Some(local) = row.local.as_mut().filter(|local| local.content.as_ref() == sent) {
         local.content = confirmed.cloned();
     }
@@ -309,7 +351,7 @@ fn agree_on_confirmed_content(row: &mut Item, sent: Option<&ContentVersion>, con
 /// caller's transaction, which is dropped on any error.
 pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: ItemKind, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
-    let Some(row) = find_planned_but_local_version(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
+    let Some(row) = find_planned_new_item(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
     if row.kind != kind || row.onedrive_item.is_some() || row.local.is_none() {
         return Err(refuse_step(id, "it is of another kind, has a binding, or the folder does not show it"));
     }
@@ -333,21 +375,23 @@ pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: I
     Ok(StepCommitOutcome::Written)
 }
 
-/// The row of the item of `planned`, which OneDrive has and answered a request about as
-/// `confirmed`; `None` when the rows changed. Refused when the answer is of another item.
+/// The row that has now the binding of the item of `planned`, which OneDrive has and
+/// answered a request about as `confirmed`: the row the step was planned from, or the row
+/// of a file saved over it since. `None` when the rows changed: no row has the binding, or
+/// what the row says of OneDrive's side and of what was agreed on is not what the step was
+/// planned from. Refused when the answer is of another item than the step's.
 fn find_planned_item_of_onedrive(conn: &Connection, planned: &ItemVersions, confirmed: &ConfirmedItem) -> Result<Option<Item>, TreeError> {
-    let Some(row) = find_planned_but_local_version(conn, planned)? else { return Ok(None) };
-    if row.onedrive_item.as_ref() != Some(&confirmed.item) {
+    if planned.onedrive_item.as_ref() != Some(&confirmed.item) {
         return Err(refuse(format!("OneDrive's answer is of the item {}, which is not item {}", confirmed.item.item_id.as_str(), planned.local_item_id)));
     }
-    Ok(Some(row))
+    Ok(find_bound_item(conn, &confirmed.item)?.filter(|row| planned.are_onedrive_and_synced_those_of(row)))
 }
 
 /// [`ItemStore::commit_send_content`], inside the caller's transaction, which is dropped on
 /// any error.
 pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sent: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
-    let id = item.local_item_id;
-    if find_planned_item_of_onedrive(tx, item, sent)?.is_none() || !confirm_item(tx, id, sent)? {
+    let Some(id) = find_planned_item_of_onedrive(tx, item, sent)?.map(|row| row.local_item_id) else { return Ok(StepCommitOutcome::RowsChanged) };
+    if !confirm_item(tx, id, sent)? {
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let mut row = read_row(tx, id)?;
@@ -361,9 +405,9 @@ pub(crate) fn commit_send_content(tx: &Transaction<'_>, item: &ItemVersions, sen
 /// [`ItemStore::commit_send_move`], inside the caller's transaction, which is dropped on any
 /// error.
 pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, moved: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
-    let id = item.local_item_id;
     let Some(sent_directory) = find_bound_directory(tx, parent)? else { return Ok(StepCommitOutcome::RowsChanged) };
-    if find_planned_item_of_onedrive(tx, item, moved)?.is_none() || !confirm_item(tx, id, moved)? {
+    let Some(id) = find_planned_item_of_onedrive(tx, item, moved)?.map(|row| row.local_item_id) else { return Ok(StepCommitOutcome::RowsChanged) };
+    if !confirm_item(tx, id, moved)? {
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let mut row = read_row(tx, id)?;
@@ -375,9 +419,9 @@ pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent
 }
 
 /// [`ItemStore::commit_send_file_removal`] and [`ItemStore::commit_send_directory_removal`],
-/// inside the caller's transaction, which is dropped on any error. What OneDrive has in the
-/// directory loses its version first, while the rows still say what is in what; then the
-/// removal is confirmed of the item and of each of `below`.
+/// inside the caller's transaction, which is dropped on any error. The removal is confirmed
+/// of the item; then all the rows say OneDrive has below a directory, those of `below`
+/// among them, lose their OneDrive version and what was agreed on, under the same stamp.
 pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kind: ItemKind, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
@@ -390,9 +434,14 @@ pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kin
             return Err(refuse_step(row.local_item_id, "the folder shows it, or it has no binding: it is not removed with a directory"));
         }
     }
-    clear_onedrive_versions_below(tx, id)?;
+    if kind == ItemKind::Directory && is_anything_shown_below_in_onedrive(tx, id)? {
+        return Ok(StepCommitOutcome::RowsChanged);
+    }
+    let count = confirm_onedrive_version(tx, id, &ConfirmedOneDriveVersion::Removed)?;
+    if kind == ItemKind::Directory {
+        confirm_removal_below(tx, id, count)?;
+    }
     for removed in std::iter::once(item).chain(below) {
-        confirm_onedrive_version(tx, removed.local_item_id, &ConfirmedOneDriveVersion::Removed)?;
         forget_confirmed_request(tx, removed.local_item_id, ConfirmedRequest::Removal)?;
     }
     Ok(StepCommitOutcome::Written)

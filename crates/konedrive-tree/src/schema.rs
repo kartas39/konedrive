@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
+use crate::item_store::{step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -65,7 +65,9 @@ pub const SCHEMA_VERSION: &str = "16";
 ///   rows whose OneDrive place or content is not the synced one, `items_binding_alone` those
 ///   that are a binding and nothing else, by their stamp, and `items_seen_in_full_listing`
 ///   what OneDrive has, by the full listing that saw it: none of the three is found by
-///   reading every row.
+///   reading every row. `items_shown_against_placement` holds the rows the folder shows
+///   whose own placement says it cannot: a listing changed the placement of an item both
+///   sides agree on, which is in neither index of what differs.
 ///   `unsent_since` is a stamp of one counter of the store (`meta` `last_unsent_since`, whose
 ///   row is made here), set while the row's local place or content is not the synced one
 ///   and null while they are the same: three triggers keep it (`items_unsent_since_insert`,
@@ -195,6 +197,7 @@ fn schema() -> String {
          CREATE INDEX items_onedrive_folded_place ON items(onedrive_parent_id, onedrive_folded_name) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
          CREATE INDEX items_binding_alone ON items(confirmed_at_count) WHERE {binding_alone};
+         CREATE INDEX items_shown_against_placement ON items(local_item_id) WHERE {shown_against_placement};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL AND NOT {left_here};
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
@@ -278,6 +281,7 @@ fn schema() -> String {
         placed = PLACED,
         changed_in_onedrive = CHANGED_IN_ONEDRIVE,
         binding_alone = BINDING_ALONE,
+        shown_against_placement = SHOWN_AGAINST_PLACEMENT,
         left_here = LEFT_HERE,
         last_unsent_since = meta::LAST_UNSENT_SINCE,
         new_unsent = unsent("NEW."),

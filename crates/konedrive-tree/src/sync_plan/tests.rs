@@ -202,6 +202,10 @@ pub(crate) fn input(items: Vec<Item>) -> SyncPlanInput {
         unsent_removal_count: 0,
         places_taken_in_onedrive: BTreeMap::new(),
         sent_removal_count: 0,
+        now: 500,
+        next_tries: BTreeMap::new(),
+        sending_refusals: BTreeMap::new(),
+        items_left_by_start_up_check: BTreeSet::new(),
         onedrive_item_count_below,
         shown_item_count_in,
     }

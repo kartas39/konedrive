@@ -232,7 +232,7 @@ fn the_shown_items_whose_placement_says_the_folder_cannot_show_them_are_read() {
         store.item_store().commit_show_item(&crate::ItemVersions::of(&row), false).unwrap();
         row.local_item_id
     });
-    let read = |store: &mut TreeStore, after: Option<LocalItemId>, limit: usize| -> Vec<LocalItemId> { store.item_store().list_shown_items_not_placed(after, limit).unwrap().iter().map(|item| item.local_item_id).collect() };
+    let read = |store: &mut TreeStore, after: Option<LocalItemId>, limit: usize| -> Vec<LocalItemId> { store.item_store().list_shown_items_that_cannot_be_shown(after, limit).unwrap().iter().map(|item| item.local_item_id).collect() };
     assert_eq!(read(&mut store, None, 10), []);
     // A new item of OneDrive the folder cannot show was never shown: it is not among them.
     write_listing_of_changes(&mut store, &[not_placed(listed[0].clone()), not_placed(listed[2].clone()), not_placed(listed_file("N", "R", "n", (1, "h"), "e"))]);

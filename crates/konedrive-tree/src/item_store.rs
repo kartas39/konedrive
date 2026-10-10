@@ -90,7 +90,7 @@ pub(crate) mod step_memory;
 pub(crate) use bindings::bind_root_once_known;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
-pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
+pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 pub use step_memory::{
     is_content_of, EmptyFileSession, FactStanding, FailedTries, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, OpeningTry, OpeningWindow, Refusal, RefusedVersion,
     RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
@@ -169,10 +169,10 @@ impl ItemStore<'_> {
     /// neither the unsent items nor those whose OneDrive version is not the synced one, and
     /// a plan takes it off the folder only when it is given. At most `limit` of them by
     /// local item id, after the item `after` when one is given. What the folder shows below
-    /// such a directory is not among them: the caller gives it with the directory. No index
-    /// holds these rows: every row is read until `limit` are found.
-    pub fn list_shown_items_not_placed(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
-        item_row::list_shown_items_not_placed(&self.store.conn, after, limit)
+    /// such a directory is not among them: the caller gives it with the directory. Found by
+    /// an index of these rows, never by reading every row.
+    pub fn list_shown_items_that_cannot_be_shown(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+        item_row::list_shown_items_that_cannot_be_shown(&self.store.conn, after, limit)
     }
 
     /// The items the folder shows in `directory` under a name that folds to `name`: one
@@ -225,6 +225,23 @@ impl ItemStore<'_> {
     /// unsent items a plan is given. Found from the index of what is unsent.
     pub fn count_unsent_removals(&self, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
         item_row::count_unsent_removals(&self.store.conn, confirmed)
+    }
+
+    /// How many items the removals took from OneDrive that OneDrive confirmed to a step of
+    /// this client since the count of confirmations `confirmation_count`
+    /// ([`confirmation_count`](Self::confirmation_count)): the rows that are a binding
+    /// alone and were stamped after it — a removed file, a removed directory, and each row
+    /// the removal of a directory took the OneDrive version from. What the guard against a
+    /// mass removal counts with the unsent removals
+    /// ([`SyncPlanInput::sent_removal_count`](crate::SyncPlanInput::sent_removal_count)).
+    ///
+    /// The rows themselves keep it, and no longer than they stay: a row of a confirmed
+    /// removal goes when a listing that began after the confirmation has ended, and is not
+    /// counted from then. A row some step stamped earlier, of an item OneDrive removed
+    /// since, is counted too until then: more is held, never less. Found by the index of
+    /// such rows.
+    pub fn count_removals_confirmed_since(&self, confirmation_count: u64) -> Result<u64, TreeError> {
+        item_row::count_removals_confirmed_since(&self.store.conn, confirmation_count)
     }
 
     /// What OneDrive has in `directory`, as the rows say, by name there: the items whose

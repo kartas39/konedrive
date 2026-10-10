@@ -88,7 +88,7 @@ pub(crate) fn list_items_that_wait_for_the_user(answers: &ItemAnswers) -> Vec<Lo
             match answers.find(at) {
                 Some(ItemDecision::Wait(WaitReason::User(_))) => return true,
                 Some(ItemDecision::Wait(WaitReason::AnotherItem(another))) => at = *another,
-                Some(ItemDecision::Wait(WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => return false,
+                Some(ItemDecision::Wait(WaitReason::Time { .. } | WaitReason::RunningStep | WaitReason::StartUpCheck | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => return false,
                 Some(ItemDecision::Step(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => return false,
             }
         }

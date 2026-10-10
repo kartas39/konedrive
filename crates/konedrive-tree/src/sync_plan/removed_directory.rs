@@ -3,7 +3,7 @@
 //! Removed here: its removal is one removal in OneDrive for all OneDrive has in it, and
 //! stands whatever OneDrive changed there. It is the removal of the outermost of the
 //! directories removed in one another, and it is not sent while anything it would take
-//! with it has a step running or is shown by the folder ([`decide_directory_removal`]).
+//! with it is held back or is shown by the folder ([`decide_directory_removal`]).
 //! Whatever is answered for that directory, nothing OneDrive has below it, and the folder
 //! does not show, has a removal or any other step of its own: it waits for the directory.
 //!
@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use super::item_decision::{ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, Overruling};
+use super::item_decision::{find_hold, ItemAnswers, ItemCase, ItemDecision, LocalPlaceAvailability, Overruling};
 use super::plan_items::PlanItems;
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 use super::WaitReason;
@@ -46,8 +46,9 @@ pub(crate) enum ItemBelowRemovedDirectory {
     /// The folder shows it: it was moved out of the directory here, or OneDrive moved it
     /// into the directory, where the folder cannot follow. Its place here is unsent.
     ShownHere(LocalItemId),
-    /// A step is running for it.
-    HasRunningStep(LocalItemId),
+    /// It is held back: a step is running for it, or the check at start could not decide
+    /// it.
+    IsHeldBack(LocalItemId),
     /// It was removed here with the directory: its versions.
     RemovedHere(ItemVersions),
     /// OneDrive made it there, or moved it there, and the folder never showed it.
@@ -65,15 +66,15 @@ pub(crate) enum DirectoryRemovalOutcome {
 }
 
 /// What becomes of the removal of a directory that was removed here, `below` being all the
-/// rows say OneDrive has below it. It waits for the first item the folder shows or a step
-/// is running for: such an item is not removed with the directory, its place here is sent
-/// first, or its step ends first. Otherwise it is sent, and stands for what OneDrive made
+/// rows say OneDrive has below it. It waits for the first item the folder shows or that is
+/// held back: such an item is not removed with the directory, its place here is sent
+/// first, or what holds it ends first. Otherwise it is sent, and stands for what OneDrive made
 /// there since.
 pub(crate) fn decide_directory_removal(below: &[ItemBelowRemovedDirectory]) -> DirectoryRemovalOutcome {
     let mut removed_with_it = Vec::new();
     for item in below {
         match item {
-            ItemBelowRemovedDirectory::ShownHere(kept) | ItemBelowRemovedDirectory::HasRunningStep(kept) => return DirectoryRemovalOutcome::WaitsFor(*kept),
+            ItemBelowRemovedDirectory::ShownHere(kept) | ItemBelowRemovedDirectory::IsHeldBack(kept) => return DirectoryRemovalOutcome::WaitsFor(*kept),
             ItemBelowRemovedDirectory::RemovedHere(versions) => removed_with_it.push(versions.clone()),
             ItemBelowRemovedDirectory::NeverShownHere(_) => {}
         }
@@ -88,8 +89,8 @@ fn list_below_removed_directory(case_of: &HashMap<LocalItemId, &ItemCase<'_>>, i
         let row = items.find(below)?;
         Some(if row.local.is_some() {
             ItemBelowRemovedDirectory::ShownHere(below)
-        } else if case_of.get(&below).is_some_and(|case| case.has_running_step) {
-            ItemBelowRemovedDirectory::HasRunningStep(below)
+        } else if case_of.get(&below).is_some_and(|case| find_hold(case).is_some()) {
+            ItemBelowRemovedDirectory::IsHeldBack(below)
         } else if row.synced_place.is_some() || row.synced_content.is_some() {
             ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
         } else {
@@ -123,7 +124,7 @@ pub(crate) fn decide_removals_of_directories(cases: &[ItemCase<'_>], items: &Pla
         for item in &below {
             match item {
                 ItemBelowRemovedDirectory::ShownHere(_) => {}
-                ItemBelowRemovedDirectory::HasRunningStep(goes_with_it) | ItemBelowRemovedDirectory::NeverShownHere(goes_with_it) => overrulings.push(Overruling::of(*goes_with_it, ItemDecision::Wait(WaitReason::AnotherItem(directory)))),
+                ItemBelowRemovedDirectory::IsHeldBack(goes_with_it) | ItemBelowRemovedDirectory::NeverShownHere(goes_with_it) => overrulings.push(Overruling::of(*goes_with_it, ItemDecision::Wait(WaitReason::AnotherItem(directory)))),
                 ItemBelowRemovedDirectory::RemovedHere(goes_with_it) => overrulings.push(Overruling::of(goes_with_it.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(directory)))),
             }
         }
@@ -151,7 +152,7 @@ fn is_decided_by_what_it_holds(answer: Option<&ItemDecision>) -> bool {
         // Nothing is shown in it, and it goes.
         Some(ItemDecision::Step(SyncStep::Folder(FolderStep::RemoveItem { .. }))) => false,
         // Held back, not judged yet, or not given with all that is in it.
-        Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => false,
+        Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::StartUpCheck | WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => false,
         Some(ItemDecision::Step(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => false,
     }
 }

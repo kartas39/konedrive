@@ -100,8 +100,8 @@ fn a_new_item_is_not_merged_with_an_item_the_folder_cannot_show() {
 /// The class behind the review's M1: a holder a step is running for is waited for, not
 /// merged with and not stepped aside from; the plan made after that step decides.
 #[test]
-fn an_item_waits_for_a_holder_a_step_is_running_for() {
+fn an_item_waits_for_a_holder_that_is_held_back() {
     let new = made_directory(2, ROOT, "d");
-    assert_eq!(decide_name_contest(&claim(&new, Some(NameHolder::HasRunningStep(id(3))))), NameContestOutcome::WaitsFor(id(3)));
-    assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::HasRunningStep(id(3)))) }), NameContestOutcome::NameIsFree);
+    assert_eq!(decide_name_contest(&claim(&new, Some(NameHolder::IsHeldBack(id(3))))), NameContestOutcome::WaitsFor(id(3)));
+    assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::IsHeldBack(id(3)))) }), NameContestOutcome::NameIsFree);
 }

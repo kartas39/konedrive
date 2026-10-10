@@ -635,7 +635,7 @@ fn a_plan_in_which_nothing_can_run_says_why() {
         if !plan.steps.is_empty() || !plan.faults.is_empty() {
             return;
         }
-        let ends = plan.waits.iter().any(|wait| matches!(wait.reason, WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemNotGiven(_)));
+        let ends = plan.waits.iter().any(|wait| matches!(wait.reason, WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::StartUpCheck | WaitReason::Listing | WaitReason::ItemNotGiven(_)));
         assert!(ends || plan.waits.is_empty(), "{words}: {:?}", plan.waits);
     });
 }
@@ -841,4 +841,57 @@ fn a_new_item_is_not_merged_with_an_item_a_step_is_running_for() {
     given.items_with_running_step = [id(3)].into();
     assert_eq!(answer(&given, 2), waits_for(3));
     assert_eq!(answer(&given, 3), Answer::Wait(WaitReason::RunningStep));
+}
+
+// -- what the steps remember, and what the check at start left
+
+/// New, from the review of the callers: what the steps remember of an item is told to the
+/// plan, so that an item held by it answers a wait, and what is behind it waits for it. An
+/// item whose next try is later waits until then, with the reason of its last failure, in
+/// place of any step towards OneDrive; once that time has come it is sent.
+#[test]
+fn an_item_whose_next_try_is_later_waits_until_then() {
+    let mut given = input(vec![made_directory(2, ROOT, "d"), made_file(3, id(2), "a.txt"), removed_here(synced_file(4, ROOT, "b.txt")), with_content_in_onedrive(synced_file(5, ROOT, "c.txt"), hashed("theirs"))]);
+    let later = |reason: Reason| NextTry { not_before: given.now + 60, reason };
+    given.next_tries = [(id(2), later(Reason::Network)), (id(4), later(Reason::WaitingForSpace)), (id(5), later(Reason::Network))].into();
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::Network }));
+    assert_eq!(answer(&given, 3), waits_for(2), "what is behind it waits for it");
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::Time { until: given.now + 60, reason: Reason::WaitingForSpace }));
+    assert_eq!(answer(&given, 5), folder_step(FolderStep::TakeOneDriveContent { item: versions(&given, 5) }), "a step towards the folder is no try of a sending");
+    given.now += 60;
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::MakeDirectory { item: versions(&given, 2), parent: reference("root"), name: "d".into() }));
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendFileRemoval { item: versions(&given, 4) }));
+}
+
+/// New, as above: an item OneDrive refuses for good, or that is too big for the space
+/// OneDrive has, waits for the user with that reason in place of any step towards OneDrive.
+#[test]
+fn an_item_whose_sending_onedrive_refused_waits_for_the_user() {
+    let mut given = input(vec![made_directory(2, ROOT, "d"), made_file(3, id(2), "a.txt"), with_content_here(synced_file(4, ROOT, "b.txt"), written_here()), moved_in_onedrive(synced_file(5, ROOT, "c.txt"), ROOT, "c2.txt")]);
+    given.sending_refusals = [(id(2), Reason::NotAllowed(None)), (id(4), Reason::WaitingForSpace), (id(5), Reason::NotAllowed(None))].into();
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::User(Reason::NotAllowed(None))));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 4), Answer::Wait(WaitReason::User(Reason::WaitingForSpace)));
+    assert_eq!(answer(&given, 5), folder_step(FolderStep::MoveItem { item: versions(&given, 5) }));
+}
+
+/// New, as above: nothing of an item the check of the backing directory at start could not
+/// decide is sent or taken: it waits for a check that decides, and so does what is behind
+/// it. The removal of a directory does not take such an item with it.
+#[test]
+fn an_item_the_check_at_start_left_is_not_planned() {
+    let mut given = input(vec![
+        made_directory(2, ROOT, "d"),
+        made_file(3, id(2), "a.txt"),
+        with_content_in_onedrive(synced_file(4, ROOT, "b.txt"), hashed("theirs")),
+        removed_here(synced_directory(5, ROOT, "e")),
+        removed_here(synced_file(6, id(5), "f")),
+        listed(7, ItemKind::File, ROOT, "new.txt"),
+    ]);
+    given.items_left_by_start_up_check = [id(2), id(4), id(6), id(7)].into();
+    for left in [2, 4, 6, 7] {
+        assert_eq!(answer(&given, left), Answer::Wait(WaitReason::StartUpCheck), "item {left}");
+    }
+    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 5), waits_for(6));
 }

@@ -132,9 +132,23 @@ enum ItemFact {
     NameRefused,
     /// The folder cannot show the item as OneDrive has it, nor what OneDrive has in it.
     CannotBeShown,
+    /// A try of a sending failed, and the next is later.
+    TriedAgainLater,
+    /// OneDrive refused what was sent of it.
+    SendingRefused,
+    LeftByStartUpCheck,
 }
 
-const EVERY_ITEM_FACT: [ItemFact; 5] = [ItemFact::StepRunning, ItemFact::OpenForWriting, ItemFact::InQuietTime, ItemFact::NameRefused, ItemFact::CannotBeShown];
+const EVERY_ITEM_FACT: [ItemFact; 8] = [
+    ItemFact::StepRunning,
+    ItemFact::OpenForWriting,
+    ItemFact::InQuietTime,
+    ItemFact::NameRefused,
+    ItemFact::CannotBeShown,
+    ItemFact::TriedAgainLater,
+    ItemFact::SendingRefused,
+    ItemFact::LeftByStartUpCheck,
+];
 
 impl ItemFact {
     /// Whether a caller can say this of `item`: a step runs for any item; a program holds
@@ -143,7 +157,8 @@ impl ItemFact {
     fn can_be_said_of(self, item: &Item) -> bool {
         let content_here = item.local.as_ref().and_then(|local| local.content.as_ref());
         match self {
-            ItemFact::StepRunning => true,
+            ItemFact::StepRunning | ItemFact::LeftByStartUpCheck => true,
+            ItemFact::TriedAgainLater | ItemFact::SendingRefused => item.unsent_since.is_some(),
             ItemFact::OpenForWriting => item.kind == ItemKind::File && item.local.is_some(),
             ItemFact::InQuietTime => content_here.is_some() && content_here != item.synced_content.as_ref(),
             ItemFact::NameRefused => item.local.is_some(),
@@ -154,6 +169,9 @@ impl ItemFact {
     fn tell(self, given: &mut SyncPlanInput, item: LocalItemId) {
         match self {
             ItemFact::StepRunning => drop(given.items_with_running_step.insert(item)),
+            ItemFact::LeftByStartUpCheck => drop(given.items_left_by_start_up_check.insert(item)),
+            ItemFact::TriedAgainLater => drop(given.next_tries.insert(item, NextTry { not_before: given.now + 60, reason: Reason::Network })),
+            ItemFact::SendingRefused => drop(given.sending_refusals.insert(item, Reason::NotAllowed(None))),
             ItemFact::OpenForWriting => drop(given.items_open_for_writing.insert(item)),
             ItemFact::InQuietTime => drop(given.quiet_until.insert(item, 1000)),
             ItemFact::NameRefused => drop(given.name_refusals.insert(item, Reason::NameCharacters)),
@@ -523,8 +541,9 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
 
 /// The first step of `plan` that what the caller said in `given` rules out, in words.
 ///
-/// - A step of an item a step is running for, or that a program holds open for writing;
-///   a merge with an item a step is running for.
+/// - A step of an item a step is running for, that a program holds open for writing or
+///   that the check at start left; a merge with an item that is held back so. A step
+///   towards OneDrive of an item whose next try is later or that OneDrive refused.
 /// - A removal sent to OneDrive while anything it would take with it has a step running or
 ///   is shown by the folder, where it waits to be moved out or is unsent: every row the rows
 ///   say OneDrive has below the removed directory, at any depth. And the removal of an item
@@ -551,12 +570,18 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
         if given.items_open_for_writing.contains(&number) {
             return Some(format!("item {number} has a step while a program holds it open for writing"));
         }
+        if given.items_left_by_start_up_check.contains(&number) {
+            return Some(format!("item {number} has a step though the check at start left it"));
+        }
+        if matches!(step, SyncStep::OneDrive(_)) && (given.next_tries.contains_key(&number) || given.sending_refusals.contains_key(&number)) {
+            return Some(format!("item {number} is sent though its next try is later or OneDrive refused it"));
+        }
         let SyncStep::OneDrive(sending) = step else {
             if let SyncStep::Row(RowStep::MergeItems { onedrive, .. }) = step {
                 if cannot_be_shown(onedrive.local_item_id) {
                     return Some(format!("item {number} is merged with item {}, which the folder cannot show", onedrive.local_item_id));
                 }
-                if given.items_with_running_step.contains(&onedrive.local_item_id) {
+                if given.items_with_running_step.contains(&onedrive.local_item_id) || given.items_left_by_start_up_check.contains(&onedrive.local_item_id) {
                     return Some(format!("item {number} is merged with item {}, which a step is running for", onedrive.local_item_id));
                 }
             }
@@ -587,8 +612,8 @@ fn find_step_the_callers_facts_refuse(given: &SyncPlanInput, plan: &SyncPlan) ->
                 below.extend(deeper);
             }
             for taken in below.iter().skip(1).filter_map(|taken| row_of(*taken)) {
-                if given.items_with_running_step.contains(&taken.local_item_id) {
-                    return Some(format!("the removal of the directory {number} takes with it item {}, which a step is running for", taken.local_item_id));
+                if given.items_with_running_step.contains(&taken.local_item_id) || given.items_left_by_start_up_check.contains(&taken.local_item_id) {
+                    return Some(format!("the removal of the directory {number} takes with it item {}, which a step is running for or the check at start left", taken.local_item_id));
                 }
                 if taken.local.is_some() {
                     return Some(format!("the removal of the directory {number} takes with it item {}, which the folder shows", taken.local_item_id));
@@ -652,7 +677,7 @@ fn find_what_cannot_proceed(given: &SyncPlanInput, plan: &SyncPlan) -> Option<St
         let mut reason = &wait.reason;
         loop {
             let another = match reason {
-                WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep => break,
+                WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::StartUpCheck => break,
                 WaitReason::Listing if given.is_listing_under_way => break,
                 WaitReason::Listing => return Some(format!("item {} waits for a listing, and none is under way", wait.item)),
                 WaitReason::AnotherItem(another) => *another,

@@ -21,9 +21,9 @@ pub(crate) enum NameHolder<'a> {
     Leaves(LocalItemId),
     /// It stays under the name: its row.
     Stays(&'a Item),
-    /// A step is running for it: which item. Whether it leaves the name or stays under it
-    /// is known once that step has ended.
-    HasRunningStep(LocalItemId),
+    /// It is held back, a step running for it or the check at start not having decided it:
+    /// which item. Whether it leaves the name or stays under it is known once that ended.
+    IsHeldBack(LocalItemId),
 }
 
 /// An item whose place here is to be its place in OneDrive, and what stands against it.
@@ -70,8 +70,8 @@ pub(crate) enum NameContestOutcome {
 ///   bring the item that has the name;
 /// - the holder leaves the name: the claimant waits for it; one that is left here, and so
 ///   never sent, waits for nothing;
-/// - a step is running for the holder: the claimant waits for it, and the plan made after
-///   that step decides;
+/// - the holder is held back: the claimant waits for it, and the plan made once that ended
+///   decides;
 /// - the holder stays, and a listing is under way: the claimant waits for the listing;
 /// - the holder stays, and both are new, each on its side, and of one kind: two
 ///   directories are one item, and so are two files of one content; where only hashing the
@@ -89,8 +89,8 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
         None => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
         Some(NameHolder::Leaves(holder)) => return NameContestOutcome::WaitsFor(holder),
-        Some(NameHolder::HasRunningStep(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
-        Some(NameHolder::HasRunningStep(holder)) => return NameContestOutcome::WaitsFor(holder),
+        Some(NameHolder::IsHeldBack(_)) if claim.is_left_here => return NameContestOutcome::NameIsFree,
+        Some(NameHolder::IsHeldBack(holder)) => return NameContestOutcome::WaitsFor(holder),
         Some(NameHolder::Stays(_)) if claim.is_listing_under_way => return NameContestOutcome::WaitsForListing,
         Some(NameHolder::Stays(holder)) => holder,
     };
@@ -127,7 +127,7 @@ fn leaves_its_name(holder: &Item, decision: Option<&ItemDecision>, directory: Lo
         Some(ItemDecision::Wait(reason)) => match SideChange::of_local(holder) {
             SideChange::Removed => match reason {
                 WaitReason::AnotherItem(_) => false,
-                WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_) => true,
+                WaitReason::ItemNotGiven(_) | WaitReason::Time { .. } | WaitReason::User(_) | WaitReason::RunningStep | WaitReason::StartUpCheck | WaitReason::Listing | WaitReason::ItemsInDirectoryNotGiven(_) => true,
             },
             SideChange::IsThere { place: PlaceChange::Moved, .. } => is_elsewhere_here,
             SideChange::IsThere { place: PlaceChange::Same, .. } | SideChange::NeverWas => false,
@@ -181,7 +181,7 @@ pub(crate) fn settle_name_contests(
         let holder_cannot_be_shown = holder.is_some_and(|holder| cannot_be_shown(holder.local_item_id));
         let holder = holder.map(|holder| {
             if answers.is_held(holder.local_item_id) {
-                NameHolder::HasRunningStep(holder.local_item_id)
+                NameHolder::IsHeldBack(holder.local_item_id)
             } else if !moves_taken_back.contains(&holder.local_item_id) && leaves_its_name(holder, answers.find(holder.local_item_id), directory, &name) {
                 NameHolder::Leaves(holder.local_item_id)
             } else {

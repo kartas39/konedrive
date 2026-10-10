@@ -84,7 +84,7 @@ fn is_move_to_be_sent(answer: Option<&ItemDecision>) -> bool {
     match answer {
         Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => true,
         Some(ItemDecision::Wait(WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::AnotherItem(_))) => true,
-        Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => false,
+        Some(ItemDecision::Wait(WaitReason::RunningStep | WaitReason::StartUpCheck | WaitReason::Listing | WaitReason::ItemNotGiven(_) | WaitReason::ItemsInDirectoryNotGiven(_))) => false,
         Some(ItemDecision::Step(_) | ItemDecision::NothingToDo | ItemDecision::Exclusion(_) | ItemDecision::Fault(_)) | None => false,
     }
 }

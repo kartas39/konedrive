@@ -10,10 +10,10 @@
 
 use std::ffi::OsString;
 
-use crate::model::{ContentVersion, Item, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
+use crate::model::{ContentPresence, ContentVersion, Item, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
 
-/// The binding and the three versions of one item, with the eTag of the OneDrive one, as its
-/// row had them when a step was planned from it.
+/// The binding and the three versions of one item, with the eTag of the OneDrive one and
+/// whether its content is on disk, as its row had them when a step was planned from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemVersions {
     pub local_item_id: LocalItemId,
@@ -24,6 +24,9 @@ pub struct ItemVersions {
     pub onedrive_etag: Option<String>,
     pub synced_place: Option<ItemPlace>,
     pub synced_content: Option<ContentVersion>,
+    /// Whether the whole content of a file was on disk: a step planned from a copy on disk
+    /// is not the step for a file whose copy went.
+    pub content_presence: ContentPresence,
 }
 
 impl ItemVersions {
@@ -37,22 +40,25 @@ impl ItemVersions {
             onedrive_etag: item.onedrive_etag.clone(),
             synced_place: item.synced_place.clone(),
             synced_content: item.synced_content.clone(),
+            content_presence: item.content_presence,
         }
     }
 
     /// Whether `item`, a row read now, is the same item with the same binding, the same
-    /// three versions and the same eTag: what a step asks at its commit.
+    /// three versions and the same eTag, its content on disk or not as it was: what a step
+    /// asks at its commit.
     pub fn are_those_of(&self, item: &Item) -> bool {
         *self == Self::of(item)
     }
 
-    /// Whether `item`, a row read now, is the same item with the same binding, the same
-    /// OneDrive version and eTag and the same place and content agreed on, whatever the
-    /// folder shows of it now: what a step that made, moved or filled the item in OneDrive
-    /// asks at its commit, a program being free to change the item here while the request
-    /// runs.
-    pub fn are_those_of_but_local_version(&self, item: &Item) -> bool {
-        Self { local: None, ..self.clone() } == Self { local: None, ..Self::of(item) }
+    /// Whether `item`, a row read now, has the same binding, the same OneDrive version and
+    /// eTag and the same place and content agreed on, whatever the folder shows of it now
+    /// and whichever item of the folder it is: what a step that made, moved or filled the
+    /// item in OneDrive asks at its commit, of the row that has the binding then. A program
+    /// is free to change the item here while the request runs, and to save another file
+    /// over it, which takes the binding.
+    pub fn are_onedrive_and_synced_those_of(&self, item: &Item) -> bool {
+        (&self.onedrive_item, &self.onedrive, &self.onedrive_etag, &self.synced_place, &self.synced_content) == (&item.onedrive_item, &item.onedrive, &item.onedrive_etag, &item.synced_place, &item.synced_content)
     }
 }
 

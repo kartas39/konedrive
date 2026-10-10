@@ -260,7 +260,7 @@ fn the_removal_of_a_directory_sent_takes_all_onedrive_has_in_it() {
         assert!(is_binding_alone(&removed) && removed.confirmed_at_count > 0, "{removed:?}");
     }
     let made_since = bound(&mut store, "N");
-    assert!(is_binding_alone(&made_since) && made_since.confirmed_at_count == 0, "{made_since:?}");
+    assert!(is_binding_alone(&made_since) && made_since.confirmed_at_count > 0, "what the removal took is stamped: {made_since:?}");
 }
 
 // -- towards the folder
@@ -500,4 +500,171 @@ fn a_step_no_plan_asks_for_is_refused() {
     assert!(is_refused(items.commit_agree_on_removal(&planned_from)));
     assert!(is_refused(items.commit_make_directory(&planned_from, &reference("R"), "a.txt".as_ref(), &confirmed("N", "R", "a.txt", None, "e"))));
     assert!(is_refused(items.commit_agree_on_place(&ItemVersions::of(&items.find_item(ROOT).unwrap().unwrap()))));
+}
+
+// -- the findings of the review of part 3
+
+/// The review's S1, new: a file saved by a rename over the file whose content is being
+/// sent takes that file's binding, and what OneDrive confirmed of the upload is written to
+/// the row that has the binding now. The client's own upload is then not "OneDrive changed
+/// the content": the content agreed on is the one that was sent, and the content saved
+/// since is unsent.
+#[test]
+fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
+    let mut store = store_with_listed_root();
+    let file = show_file(&mut store, "G", "g");
+    write_here(&mut store, file, 7);
+    let planned_from = versions(&mut store, file);
+    // An editor saves again while the upload runs: a temporary file, renamed over the file.
+    let saved = make(&mut store, ItemKind::File, ROOT, "g.tmp");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: saved, replaced: file }).unwrap();
+    assert_eq!((store.item_store().find_item(file).unwrap(), bound(&mut store, "G").local_item_id), (None, saved), "the replacing item has the binding");
+    let saved_content = row(&mut store, saved).local.unwrap().content;
+
+    let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
+    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent).unwrap(), StepCommitOutcome::Written);
+    let now = row(&mut store, saved);
+    assert_eq!(now.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()), Some(confirmed_content(7, "h-sent")));
+    assert_eq!((now.synced_content.clone(), now.onedrive_etag.as_deref()), (Some(confirmed_content(7, "h-sent")), Some("e-sent")));
+    assert_eq!(now.local.as_ref().unwrap().content, saved_content, "what was saved since is the local content still, and unsent");
+    assert!(now.unsent_since.is_some() && now.confirmed_at_count > 0);
+    assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
+
+    // A commit planned from other versions of OneDrive's side than the row has now writes
+    // nothing, whichever row has the binding.
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_content(&planned_from, &sent)));
+}
+
+/// S1, for a move: the place OneDrive confirmed is written to the row that has the binding
+/// now.
+#[test]
+fn a_move_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
+    let mut store = store_with_listed_root();
+    let file = show_file(&mut store, "G", "g");
+    move_here(&mut store, file, ROOT, "g2");
+    let planned_from = versions(&mut store, file);
+    let saved = make(&mut store, ItemKind::File, ROOT, "g2.tmp");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: saved, replaced: file }).unwrap();
+    let moved = confirmed("G", "R", "g2", Some(listed_content(3, "h-G")), "e-moved");
+    assert_eq!(store.item_store().commit_send_move(&planned_from, &reference("R"), "g2".as_ref(), &moved).unwrap(), StepCommitOutcome::Written);
+    let now = row(&mut store, saved);
+    assert_eq!((now.synced_place.clone(), now.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone())), (Some(place(ROOT, "g2")), Some(place(ROOT, "g2"))));
+    assert_eq!(now.local.as_ref().and_then(|local| local.place.clone()), Some(place(ROOT, "g2")));
+}
+
+/// The review's S2, new: the commit of a directory's removal asks again, in its
+/// transaction, what the plan asked: the folder shows nothing of what OneDrive has below
+/// the directory. A listing that moved an item into it meanwhile is answered "the rows
+/// changed", and the store answers the same question to a step before its request leaves.
+#[test]
+fn the_removal_of_a_directory_is_not_written_while_the_folder_shows_what_onedrive_has_below_it() {
+    let mut store = store_with_listed_root();
+    let directory = show_directory(&mut store, "D", "R", "d");
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (3, "h-F"), "e-F")]);
+    let (inside, kept) = (show(&mut store, "F"), show_file(&mut store, "G", "g"));
+    for item in [inside, directory] {
+        store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
+    }
+    let (planned_from, below) = (versions(&mut store, directory), [versions(&mut store, inside)]);
+    assert!(store.item_store().can_directory_removal_be_sent(&planned_from, &below).unwrap());
+
+    // OneDrive moved `g` into the directory: the folder shows it, in the root.
+    write_listing_of_changes(&mut store, &[listed_file("G", "D", "g", (3, "h-G"), "e-G2")]);
+    assert!(!store.item_store().can_directory_removal_be_sent(&planned_from, &below).unwrap());
+    assert!(is_left_unwritten(&mut store, |items| items.commit_send_directory_removal(&planned_from, &below)));
+    assert!(row(&mut store, kept).onedrive.is_some());
+
+    // Versions that are not the rows' any more are no removal to send either.
+    let outdated = ItemVersions { onedrive_etag: Some("e-outdated".to_owned()), ..planned_from.clone() };
+    assert!(!store.item_store().can_directory_removal_be_sent(&outdated, &below).unwrap());
+}
+
+/// The review's S3, new: every row a confirmed removal of a directory took the OneDrive
+/// version from is stamped, also one the plan did not name: a page fetched before the
+/// removal that names such an item does not bring it back.
+#[test]
+fn what_a_directory_removal_took_from_onedrive_is_not_brought_back_by_an_outdated_page() {
+    let mut store = store_with_listed_root();
+    let directory = show_directory(&mut store, "D", "R", "d");
+    // OneDrive made a file in it that the folder never showed.
+    write_listing_of_changes(&mut store, &[listed_file("N", "D", "new.txt", (4, "h-N"), "e-N")]);
+    store.item_store().apply(&LocalVersionChange::Removed { item: directory }).unwrap();
+    let listing = store.item_store().begin_delta_listing().unwrap();
+    let planned_from = versions(&mut store, directory);
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &[]).unwrap(), StepCommitOutcome::Written);
+    let taken = bound(&mut store, "N");
+    assert!(is_binding_alone(&taken) && taken.confirmed_at_count > listing.began_at_count, "{taken:?}");
+
+    // The page was fetched before the removal, and names the file as it was.
+    let page = [listed_file("N", "D", "new.txt", (4, "h-N"), "e-N")];
+    let outcome = store.item_store().write_listed_changes(listing.id, &page, listing.began_at_count, &crate::ListingLink::DeltaLink("link".into())).unwrap();
+    assert_eq!(outcome.changes, [crate::ListedChangeOutcome::Outdated]);
+    assert!(is_binding_alone(&bound(&mut store, "N")));
+}
+
+/// The review's S4, new: a step is conditional on whether the content is on disk too. A
+/// file moved here whose content is on disk gives up its binding when OneDrive removed it,
+/// and is sent again; freed meanwhile, its bytes are nowhere, and the step's commit answers
+/// that the rows changed.
+#[test]
+fn a_step_is_not_written_when_the_content_is_not_on_disk_as_it_was_planned_from() {
+    let mut store = store_with_listed_root();
+    let file = show_file(&mut store, "G", "g");
+    store.item_store().set_content_presence(file, ContentPresence::OnDisk).unwrap();
+    move_here(&mut store, file, ROOT, "g2");
+    write_listing_of_changes(&mut store, &[listed_gone("G")]);
+    let planned_from = versions(&mut store, file);
+    store.item_store().set_content_presence(file, ContentPresence::NotOnDisk).unwrap();
+    assert!(is_left_unwritten(&mut store, |items| items.commit_give_up_binding(&planned_from, false)));
+    assert!(row(&mut store, file).onedrive_item.is_some());
+}
+
+/// The review's S5, new: a file opened for writing while its content is sent, and closed
+/// unchanged, agrees with what was confirmed: the content kept from before the first writer
+/// is the one that was sent, and the confirmation is written there too.
+#[test]
+fn a_file_opened_during_its_upload_and_closed_unchanged_agrees_with_what_was_confirmed() {
+    let mut store = store_with_listed_root();
+    let file = show_file(&mut store, "G", "g");
+    write_here(&mut store, file, 7);
+    let planned_from = versions(&mut store, file);
+    store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: file }).unwrap();
+    let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
+    assert_eq!(store.item_store().commit_send_content(&planned_from, &sent).unwrap(), StepCommitOutcome::Written);
+    store.item_store().apply(&LocalVersionChange::ClosedUnchanged { item: file }).unwrap();
+    let closed = row(&mut store, file);
+    assert!(agrees(&closed), "{closed:?}");
+}
+
+/// The review's S6, new: the removals OneDrive confirmed to a step since a count of
+/// confirmations are counted from the rows they left, a removed directory with all it
+/// took.
+#[test]
+fn the_removals_confirmed_since_a_count_are_counted() {
+    let mut store = store_with_listed_root();
+    let files: Vec<LocalItemId> = ["A", "B", "C"].iter().map(|id| show_file(&mut store, id, &format!("{id}.txt"))).collect();
+    let directory = show_directory(&mut store, "D", "R", "d");
+    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (3, "h-F"), "e-F")]);
+    let inside = show(&mut store, "F");
+    let remove = |store: &mut TreeStore, item: LocalItemId| {
+        store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
+        versions(store, item)
+    };
+    let at_first = store.item_store().confirmation_count().unwrap();
+    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0);
+    for file in &files[..2] {
+        let planned_from = remove(&mut store, *file);
+        assert_eq!(store.item_store().commit_send_file_removal(&planned_from).unwrap(), StepCommitOutcome::Written);
+    }
+    let after_two = store.item_store().confirmation_count().unwrap();
+    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 2);
+    let (below, planned_from) = ([remove(&mut store, inside)], remove(&mut store, directory));
+    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().count_removals_confirmed_since(after_two).unwrap(), 2, "the directory and what it took");
+    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 4);
+    // An item OneDrive removed, which then went here, is no removal of this client's.
+    write_listing_of_changes(&mut store, &[listed_gone("C")]);
+    let planned_from = versions(&mut store, files[2]);
+    assert_eq!(store.item_store().commit_remove_item(&planned_from).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0, "a listing that began after them has ended: their rows are gone");
 }

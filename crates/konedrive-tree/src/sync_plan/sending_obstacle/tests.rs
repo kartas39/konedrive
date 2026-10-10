@@ -1,4 +1,7 @@
+use konedrive_reason::Reason;
+
 use super::*;
+use crate::sync_plan::NextTry;
 
 const EVERY_SENT_PART: [SentPart; 5] = [SentPart::NewDirectory, SentPart::NewFile, SentPart::Content, SentPart::Place, SentPart::Removal];
 
@@ -13,6 +16,9 @@ fn conditions() -> SendingConditions {
         is_onedrive_full: false,
         sending_state: SendingState::ReadWrite,
         unsent_since: Some(5),
+        refusal: None,
+        next_try: None,
+        now: 500,
     }
 }
 
@@ -83,4 +89,18 @@ fn of_several_obstacles_the_one_that_does_not_end_by_itself_is_said_first() {
     assert_eq!(new_file(&all), Some(SendingObstacle::OneDriveFull));
     let all = SendingConditions { is_onedrive_full: false, ..all };
     assert_eq!(new_file(&all), Some(SendingObstacle::QuietTime { until: 77 }));
+}
+
+/// What the steps remember: nothing of an item OneDrive refused is sent, whatever part, and
+/// nothing of one whose next try is later, until that time has come.
+#[test]
+fn what_onedrive_refused_and_what_is_tried_again_later_is_not_sent() {
+    let refused = SendingConditions { refusal: Some(Reason::NotAllowed(None)), ..conditions() };
+    assert_eq!(obstacles(&refused), [(); 5].map(|()| Some(SendingObstacle::Refused(Reason::NotAllowed(None)))));
+    let next_try = Some(NextTry { not_before: 560, reason: Reason::Network });
+    let later = SendingConditions { next_try: next_try.clone(), ..conditions() };
+    assert_eq!(obstacles(&later), [(); 5].map(|()| Some(SendingObstacle::TriedAgainLater { until: 560, reason: Reason::Network })));
+    assert_eq!(obstacles(&SendingConditions { now: 560, ..later.clone() }), [None, None, None, None, None], "the time has come");
+    // What waits for the user is said before what waits for a time.
+    assert_eq!(obstacles(&SendingConditions { refusal: Some(Reason::TooLarge), ..later })[0], Some(SendingObstacle::Refused(Reason::TooLarge)));
 }

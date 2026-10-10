@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync_plan::tests::{id, removed_here, synced_file, ROOT};
+use crate::sync_plan::tests::{id, removed_here, synced_file};
 
 fn removed_with_the_directory(number: i64) -> ItemVersions {
     ItemVersions::of(&removed_here(synced_file(number, id(2), &format!("f{number}"))))
@@ -24,8 +24,7 @@ fn a_removal_waits_for_an_item_the_folder_shows() {
 
 /// The review's M1: one step per item, also when the item goes with another's removal.
 #[test]
-fn a_removal_waits_for_an_item_a_step_is_running_for() {
-    let below = [ItemBelowRemovedDirectory::NeverShownHere(id(3)), ItemBelowRemovedDirectory::HasRunningStep(id(4))];
+fn a_removal_waits_for_an_item_that_is_held_back() {
+    let below = [ItemBelowRemovedDirectory::NeverShownHere(id(3)), ItemBelowRemovedDirectory::IsHeldBack(id(4))];
     assert_eq!(decide_directory_removal(&below), DirectoryRemovalOutcome::WaitsFor(id(4)));
-    let _ = ROOT;
 }
