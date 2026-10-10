@@ -1,12 +1,16 @@
 //! Everything the backing directory holds, read once ([`BackingDirectoryContents`]): each
 //! directory's entries with what the filesystem and their marks say of them
-//! ([`BackingDirectoryEntry`]), and which entries carry each OneDrive item id.
+//! ([`BackingDirectoryEntry`]).
 //!
 //! The disk is read here and nowhere else in the check, a level of directories at a time on
 //! several threads: one look at each entry and its marks. Nothing is decided here. What is
 //! not read is said, never taken for nothing: a directory that cannot be read, one deeper
 //! than the rows go, a name that is neither a file nor a directory. The names the daemon
-//! uses for itself are not the folder's and are left out.
+//! uses for itself are not the folder's and are left out: an entry that was set aside
+//! among them, which is no row's.
+//!
+//! An entry is found by its directory and its name, and by nothing else: there is no way
+//! here from a mark to the entries that carry it.
 //!
 //! The reading of one directory ([`DirectoryScan`]) and the putting together of all of them
 //! ([`BackingDirectoryContents::gather`]) are apart: the contents are made from whatever
@@ -15,6 +19,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::ops::Range;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,8 +27,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use konedrive_tree::ItemKind;
 
 use super::disk_finding::{CopyWholeness, DiskContent, UnresolvedReason};
+use super::mark_change::EntryLinks;
 use super::UnresolvedPath;
-use crate::folder::disk::daemon_owned;
+use crate::folder::disk::{daemon_owned, ASIDE_ENTRY_PREFIX};
 use crate::fuse::backing_directory::{BackingDirectory, DiskMarks};
 
 /// How many threads read the disk at most: the measurement the check is built on found no
@@ -42,7 +48,10 @@ pub(super) struct BackingDirectoryEntry {
     pub(super) kind: ItemKind,
     /// The OneDrive item id the entry is marked with.
     pub(super) onedrive_id: Option<String>,
+    /// Whether it is marked as the whole content of the item of its id mark.
     pub(super) wholeness: CopyWholeness,
+    /// How many names its file has.
+    pub(super) links: EntryLinks,
     /// Of a file. A directory's say nothing.
     pub(super) file: DiskContent,
 }
@@ -60,18 +69,23 @@ pub(super) struct DirectoryScan {
 
 pub(super) struct BackingDirectoryContents {
     entries: Vec<BackingDirectoryEntry>,
-    /// The directory each entry is in: `None` for the backing directory itself.
-    parents: Vec<Option<EntryIndex>>,
     /// The entries in each entry, by name: none in a file, and none in a directory that was
     /// not read.
     inside: Vec<Range<usize>>,
     /// The entries in the backing directory itself.
     inside_root: Range<usize>,
-    by_onedrive_id: HashMap<String, Vec<EntryIndex>>,
     /// The directories whose entries are not known, each with why.
     unread: HashMap<Option<EntryIndex>, UnresolvedReason>,
+    /// The names that are no file and no directory, or that could not be looked at.
     unknown_names: HashMap<(Option<EntryIndex>, OsString), UnresolvedReason>,
     unresolved: Vec<UnresolvedPath>,
+}
+
+/// Whether `name`, in the directory `rel`, is a name the daemon uses for itself: nothing of
+/// the folder. An entry that was set aside is in the root alone.
+// When `folder::disk::is_rowless_entry_name` is filled in, it is this rule for the root.
+fn is_daemons_own_name(rel: &Path, name: &OsStr) -> bool {
+    daemon_owned(name) || (rel.as_os_str().is_empty() && name.as_bytes().starts_with(ASIDE_ENTRY_PREFIX.as_bytes()))
 }
 
 fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
@@ -86,7 +100,7 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
             Err(e) => return DirectoryScan { unreadable: Some(e.to_string()), ..DirectoryScan::default() },
         };
         let name = listed.file_name();
-        if daemon_owned(&name) {
+        if is_daemons_own_name(rel, &name) {
             continue;
         }
         let metadata = match listed.metadata() {
@@ -114,7 +128,9 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
             }
         };
         let onedrive_id = marks.onedrive_id();
-        let wholeness = if onedrive_id.is_none() || marks.is_whole() { CopyWholeness::Whole } else { CopyWholeness::Partial };
+        let wholeness = if marks.is_whole() { CopyWholeness::Whole } else { CopyWholeness::NotWhole };
+        // A directory's count of links is of the directories in it.
+        let links = if kind == ItemKind::File && metadata.nlink() > 1 { EntryLinks::Several } else { EntryLinks::One };
         let ctag = match kind == ItemKind::File && onedrive_id.is_some() {
             true => match backing_directory.try_read_ctag_mark(&rel.join(&name)) {
                 Ok(ctag) => ctag,
@@ -127,7 +143,7 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
             false => None,
         };
         let file = DiskContent { size: metadata.size(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, ctag };
-        read.entries.push(BackingDirectoryEntry { name, kind, onedrive_id, wholeness, file });
+        read.entries.push(BackingDirectoryEntry { name, kind, onedrive_id, wholeness, links, file });
     }
     read.entries.sort_by(|a, b| a.name.cmp(&b.name));
     read
@@ -177,10 +193,8 @@ impl BackingDirectoryContents {
     pub(super) fn gather(mut read_level: impl FnMut(&[PathBuf]) -> Vec<DirectoryScan>) -> Self {
         let mut contents = BackingDirectoryContents {
             entries: Vec::new(),
-            parents: Vec::new(),
             inside: Vec::new(),
             inside_root: 0..0,
-            by_onedrive_id: HashMap::new(),
             unread: HashMap::new(),
             unknown_names: HashMap::new(),
             unresolved: Vec::new(),
@@ -205,9 +219,6 @@ impl BackingDirectoryContents {
                 let first = contents.entries.len();
                 for entry in read.entries {
                     let index = contents.entries.len();
-                    if let Some(id) = &entry.onedrive_id {
-                        contents.by_onedrive_id.entry(id.clone()).or_default().push(index);
-                    }
                     if entry.kind == ItemKind::Directory {
                         // An entry of this directory is one level deeper than it.
                         if depth + 1 < konedrive_fs::MAX_DEPTH {
@@ -218,7 +229,6 @@ impl BackingDirectoryContents {
                         }
                     }
                     contents.entries.push(entry);
-                    contents.parents.push(directory);
                     contents.inside.push(0..0);
                 }
                 let range = first..contents.entries.len();
@@ -233,17 +243,8 @@ impl BackingDirectoryContents {
         contents
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     pub(super) fn entry(&self, index: EntryIndex) -> &BackingDirectoryEntry {
         &self.entries[index]
-    }
-
-    /// The directory the entry is in: `None` for the backing directory itself.
-    pub(super) fn parent(&self, index: EntryIndex) -> Option<EntryIndex> {
-        self.parents[index]
     }
 
     /// The entries in `directory`, by name.
@@ -260,48 +261,21 @@ impl BackingDirectoryContents {
         self.entries[inside.clone()].binary_search_by(|entry| entry.name.as_os_str().cmp(name)).ok().map(|at| inside.start + at)
     }
 
-    /// The entries of `kind` marked with the OneDrive item id `onedrive_id`, in the order
-    /// they were read.
-    pub(super) fn list_marked(&self, onedrive_id: &str, kind: ItemKind) -> impl Iterator<Item = EntryIndex> + '_ {
-        self.by_onedrive_id.get(onedrive_id).into_iter().flatten().copied().filter(move |index| self.entries[*index].kind == kind)
-    }
-
     /// Whether what is in `directory` is not known: it could not be read, or is too deep.
     pub(super) fn is_unread(&self, directory: Option<EntryIndex>) -> bool {
         self.unread.contains_key(&directory)
     }
 
-    /// Why what is in `directory` is not known; `None` when it was read.
-    pub(super) fn find_unread_reason(&self, directory: Option<EntryIndex>) -> Option<&UnresolvedReason> {
-        self.unread.get(&directory)
-    }
-
-    /// Whether some directory was not read: what is missing elsewhere may be in it.
-    pub(super) fn has_unread_directory(&self) -> bool {
-        !self.unread.is_empty()
-    }
-
-    /// The names that are no file and no directory, or that could not be looked at: each
-    /// with the directory it is in and why.
-    pub(super) fn list_unknown_names(&self) -> impl Iterator<Item = (Option<EntryIndex>, &OsStr, &UnresolvedReason)> {
-        self.unknown_names.iter().map(|((directory, name), reason)| (*directory, name.as_os_str(), reason))
+    /// Whether anything of the backing directory was not read: a directory, or a name
+    /// that is no file and no directory or could not be looked at.
+    pub(super) fn has_unread_part(&self) -> bool {
+        !self.unread.is_empty() || !self.unknown_names.is_empty()
     }
 
     /// Whether `directory` holds this name as something that is no file and no directory,
     /// or that could not be looked at.
     pub(super) fn has_unknown_name(&self, directory: Option<EntryIndex>, name: &OsStr) -> bool {
         !self.unknown_names.is_empty() && self.unknown_names.contains_key(&(directory, name.to_owned()))
-    }
-
-    /// The path of the entry, relative to the backing directory.
-    pub(super) fn resolve_path(&self, index: EntryIndex) -> PathBuf {
-        let mut names = vec![self.entries[index].name.as_os_str()];
-        let mut at = self.parents[index];
-        while let Some(directory) = at {
-            names.push(self.entries[directory].name.as_os_str());
-            at = self.parents[directory];
-        }
-        names.iter().rev().collect()
     }
 
     /// The paths that were not read, each with why.
@@ -311,4 +285,4 @@ impl BackingDirectoryContents {
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;

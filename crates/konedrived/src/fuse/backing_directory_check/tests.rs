@@ -1,6 +1,4 @@
-use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -11,18 +9,17 @@ use konedrive_tree::{
 };
 
 use super::{BackingDirectoryCheck, DiskFinding, DiskFindings, UnresolvedReason};
-use crate::folder::disk::HOLDING;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::upload_rules::tests::rules;
 use crate::fuse::upload_rules::UploadRules;
 
 mod convergence;
 mod cost;
-mod daemon_death;
-mod hand_moves;
 mod own_marks;
-mod place_losses;
-mod two_drives;
+mod place_change_deaths;
+mod rebuilt_store;
+mod review_musts;
+mod table_rows;
 mod unread_parts;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
@@ -90,6 +87,32 @@ impl Folder {
         xattr::set(&path, XATTR_CTAG, format!("c-{id}").as_bytes()).unwrap();
     }
 
+    /// A copy of the file at `from` made at `to` as `cp -a` makes it: the bytes, the time
+    /// and the marks.
+    pub(super) fn copy_with_marks(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) {
+        let (from, to) = (self.disk(from), self.disk(to));
+        fs::copy(&from, &to).unwrap();
+        fs::set_permissions(&to, fs::Permissions::from_mode(0o644)).unwrap();
+        for mark in [XATTR_ITEM_ID, XATTR_STATE, XATTR_CTAG] {
+            if let Some(value) = xattr::get(&from, mark).unwrap() {
+                xattr::set(&to, mark, &value).unwrap();
+            }
+        }
+        set_mtime(&to, fs::metadata(&from).unwrap().mtime());
+    }
+
+    /// One more name of the file at `from`, as `ln` makes it.
+    pub(super) fn link(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) {
+        fs::hard_link(self.disk(from), self.disk(to)).unwrap();
+    }
+
+    /// Whether the file is marked whole, and the cTag it is marked with.
+    pub(super) fn copy_marks_of(&self, rel: impl AsRef<Path>) -> (bool, Option<String>) {
+        let path = self.disk(rel);
+        let is_whole = xattr::get(&path, XATTR_STATE).unwrap().as_deref() == Some(State::Hydrated.as_str().as_bytes());
+        (is_whole, xattr::get(&path, XATTR_CTAG).unwrap().map(|ctag| String::from_utf8(ctag).unwrap()))
+    }
+
     pub(super) fn mark_directory(&self, rel: impl AsRef<Path>, id: &str) {
         xattr::set(self.disk(rel), XATTR_ITEM_ID, id.as_bytes()).unwrap();
     }
@@ -122,7 +145,7 @@ impl Folder {
         self.store.item_store().list_items().unwrap()
     }
 
-    fn place(&mut self, rel: &Path) -> ItemPlace {
+    pub(super) fn place(&mut self, rel: &Path) -> ItemPlace {
         let parent = self.id(rel.parent().unwrap());
         ItemPlace { parent_local_item_id: parent, name: rel.file_name().unwrap().to_owned() }
     }
@@ -225,7 +248,10 @@ impl Folder {
     /// OneDrive does not have was moved into it, and its move is not sent.
     pub(super) fn move_through_the_mount(&mut self, from: &str, to: &str) {
         let item = self.id(from);
-        self.rename(from, to);
+        // An item with nothing on disk is moved in its row alone.
+        if self.disk(from).exists() {
+            self.rename(from, to);
+        }
         let place = self.place(Path::new(to));
         let is_name_ignored = self.upload_rules.is_name_ignored(&place.name);
         self.store.item_store().apply(&LocalVersionChange::Moved { item, place, is_name_ignored }).unwrap();
@@ -245,7 +271,8 @@ impl Folder {
         while let Some(directory) = directories.pop() {
             for entry in fs::read_dir(self.disk(&directory)).unwrap() {
                 let entry = entry.unwrap();
-                if crate::folder::disk::daemon_owned(&entry.file_name()) {
+                let is_set_aside = directory.as_os_str().is_empty() && entry.file_name().to_string_lossy().starts_with(crate::folder::disk::ASIDE_ENTRY_PREFIX);
+                if crate::folder::disk::daemon_owned(&entry.file_name()) || is_set_aside {
                     continue;
                 }
                 let rel = directory.join(entry.file_name());
@@ -321,16 +348,16 @@ impl Folder {
     }
 }
 
-fn changed_here(size: u64, change_count: u64) -> Option<ContentVersion> {
+pub(super) fn changed_here(size: u64, change_count: u64) -> Option<ContentVersion> {
     Some(ContentVersion::ChangedHere { size, mtime: MTIME, mtime_nsec: 0, change_count })
 }
 
-fn content(row: &Item) -> Option<ContentVersion> {
+pub(super) fn content(row: &Item) -> Option<ContentVersion> {
     row.local.as_ref().and_then(|local| local.content.clone())
 }
 
 /// A folder with one of each thing the rows can say of a path, each as the disk has it.
-fn folder_of_each() -> Folder {
+pub(super) fn folder_of_each() -> Folder {
     let mut f = folder();
     f.onedrive_directory("docs", "D");
     f.copy("docs/a.txt", b"aaa", "A");
@@ -341,6 +368,40 @@ fn folder_of_each() -> Folder {
     f
 }
 
+/// What the check left, by path.
+pub(super) fn left(findings: &DiskFindings) -> Vec<PathBuf> {
+    let mut left: Vec<PathBuf> = findings.unresolved().iter().map(|left| left.path.clone()).collect();
+    left.dedup();
+    left
+}
+
+/// The rows of the items OneDrive has, each with its binding: what no check may make less.
+pub(super) fn bindings(rows: &[Item]) -> Vec<(LocalItemId, OneDriveItemReference)> {
+    rows.iter().filter_map(|row| Some((row.local_item_id, row.onedrive_item.clone()?))).collect()
+}
+
+/// An item of OneDrive is at most not shown any more: after a check every binding there
+/// was is still its item's, nothing of such an item is to be sent as removed or moved, and
+/// an item that is still shown is where it was.
+pub(super) fn assert_no_item_of_onedrive_is_removed_or_moved(before: &[Item], after: &[Item]) {
+    for row in before.iter().filter(|row| row.onedrive_item.is_some()) {
+        let now = after.iter().find(|now| now.local_item_id == row.local_item_id).unwrap_or_else(|| panic!("the row of an item of OneDrive is gone: {row:?}"));
+        assert_eq!(now.onedrive_item, row.onedrive_item, "a binding changed");
+        assert_eq!(now.onedrive, row.onedrive, "what OneDrive has changed");
+        let place = |row: &Item| row.local.as_ref().and_then(|local| local.place.clone());
+        match &now.local {
+            Some(_) => {
+                assert_eq!(place(now), place(row), "an item of OneDrive was moved: {row:?}");
+                assert_eq!(now.synced_place, row.synced_place, "{row:?}");
+            }
+            // Not shown any more: nothing is agreed on, so nothing is to be sent — unless
+            // it was not shown before either.
+            None if row.local.is_some() => assert_eq!((now.synced_place.clone(), now.synced_content.clone(), now.unsent_since), (None, None, None), "a removal is to be sent: {now:?}"),
+            None => assert_eq!(now, row),
+        }
+    }
+}
+
 #[test]
 fn a_folder_that_agrees_with_its_rows_has_nothing_changed() {
     let mut f = folder_of_each();
@@ -348,353 +409,17 @@ fn a_folder_that_agrees_with_its_rows_has_nothing_changed() {
     let findings = f.check();
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6)]);
     assert_eq!(findings.unresolved(), []);
+    assert_eq!(findings.list_held_items(), []);
+    assert!(!findings.has_unread_part());
     assert_eq!(f.rows(), before);
     f.assert_rows_say_the_disk();
 }
 
 #[test]
-fn a_file_and_a_directory_made_by_hand_are_new_items_with_what_the_rules_say_of_their_names() {
+fn the_names_the_daemon_uses_for_itself_are_nothing_of_the_folder() {
     let mut f = folder_of_each();
-    f.write("docs/new.txt", b"new!");
-    f.make_directory("cache");
-    f.write("cache/in.txt", b"x");
-    f.write("a.tmp", b"t");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::Made, 4)]);
-
-    let new = f.row("docs/new.txt").unwrap();
-    assert_eq!((new.kind, new.onedrive_item.clone(), content(&new)), (ItemKind::File, None, changed_here(4, 1)));
-    assert_eq!((new.content_presence, new.is_name_ignored, new.synced_content.clone()), (ContentPresence::OnDisk, false, None));
-    let cache = f.row("cache").unwrap();
-    assert_eq!((cache.kind, cache.is_name_ignored), (ItemKind::Directory, true));
-    let inside = f.row("cache/in.txt").unwrap();
-    assert!(!inside.is_name_ignored && f.store.item_store().is_ignored(inside.local_item_id).unwrap(), "left here with its directory");
-    assert!(f.row("a.tmp").unwrap().is_name_ignored);
-    f.assert_settled();
-}
-
-/// A file manager copies the extended attributes with the file, and the mode: a downloaded
-/// copy has no write bit.
-#[test]
-fn a_copy_made_by_hand_keeps_the_marks_and_is_a_new_item_without_them() {
-    let mut f = folder_of_each();
-    let original = f.id("docs/a.txt");
-    f.write("docs/a (copy).txt", b"aaa");
-    f.mark_copy("docs/a (copy).txt", "A");
-    fs::set_permissions(f.disk("docs/a (copy).txt"), fs::Permissions::from_mode(0o444)).unwrap();
-    f.make_directory("docs (copy)");
-    f.mark_directory("docs (copy)", "D");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::MadeWithStaleMark, 2)]);
-
-    assert_eq!(f.id("docs/a.txt"), original);
-    assert_eq!(f.row("docs/a.txt").unwrap().onedrive_item, Some(reference("d1", "A")));
-    let copy = f.row("docs/a (copy).txt").unwrap();
-    assert_eq!((copy.onedrive_item.clone(), content(&copy)), (None, changed_here(3, 1)));
-    assert_eq!(f.row("docs (copy)").unwrap().onedrive_item, None);
-    assert_eq!((f.mark_of("docs/a (copy).txt"), f.mark_of("docs (copy)"), f.mark_of("docs/a.txt")), (None, None, Some("A".to_owned())));
-    assert_eq!(xattr::get(f.disk("docs/a (copy).txt"), XATTR_CTAG).unwrap(), None);
-    f.assert_settled();
-}
-
-/// A store that was lost: the marks are all that says which item of OneDrive an entry is.
-#[test]
-fn marked_entries_no_row_knows_are_new_items_bound_to_the_ids_of_their_marks() {
-    let mut f = folder();
-    f.make_directory("docs");
-    f.mark_directory("docs", "D");
-    f.write("docs/a.txt", b"aaa");
-    f.mark_copy("docs/a.txt", "A");
-    f.write("own.txt", b"o");
-    f.write("docs/unversioned.txt", b"uuuu");
-    xattr::set(f.disk("docs/unversioned.txt"), XATTR_ITEM_ID, b"U").unwrap();
-    xattr::set(f.disk("docs/unversioned.txt"), XATTR_STATE, State::Hydrated.as_str().as_bytes()).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::Made, 1), (DiskFinding::MarkedWithoutRow, 3)]);
-
-    assert_eq!(f.row("docs").unwrap().onedrive_item, Some(reference("d1", "D")));
-    let a = f.row("docs/a.txt").unwrap();
-    // The content is told by the cTag of the mark, with no hash: the plan takes the copy as
-    // clean when a listing brings that cTag as OneDrive's.
-    let marked = ContentVersion::Hashed { size: 3, mtime: MTIME, mtime_nsec: 0, hash: None, ctag: Some("c-A".to_owned()) };
-    assert_eq!((a.onedrive_item.clone(), content(&a), a.content_presence), (Some(reference("d1", "A")), Some(marked), ContentPresence::OnDisk));
-    assert_eq!(a.synced_content, None, "nothing is agreed on before a listing brings OneDrive's version");
-    assert_eq!(xattr::get(f.disk("docs/a.txt"), XATTR_CTAG).unwrap().as_deref(), Some(&b"c-A"[..]));
-    // A copy landed before a landing wrote the cTag has no such mark: nothing tells its content but that it is here.
-    assert_eq!(content(&f.row("docs/unversioned.txt").unwrap()), changed_here(4, 1));
-    assert_eq!(f.row("own.txt").unwrap().onedrive_item, None);
-    f.assert_settled();
-}
-
-/// A lost store whose listing came first: the rows of OneDrive's items are there, and the
-/// folder shows none of them. The item on disk is merged with the row that has its id, in
-/// whichever drive that row says: the drive of the directory only tells two rows of one id
-/// apart.
-#[test]
-fn a_marked_entry_is_merged_with_the_row_of_its_id_that_the_folder_does_not_show() {
-    let mut f = folder();
-    let listed = f.store.item_store().make_onedrive_item(&reference("other-drive", "A"), ItemKind::File).unwrap();
-    f.write("a.txt", b"aaa");
-    f.mark_copy("a.txt", "A");
-    assert_eq!(found(&f.check()), [(DiskFinding::MarkedWithoutRow, 1)]);
-    assert_eq!(f.row("a.txt").unwrap().onedrive_item, Some(reference("other-drive", "A")));
-    assert_eq!(f.store.item_store().find_item(listed).unwrap(), None, "the listed row went into the one the folder shows");
-    assert_eq!(f.rows().len(), 2);
-    f.assert_settled();
-}
-
-/// An item's children are of its drive: a shared folder is another drive's.
-#[test]
-fn a_marked_entry_no_row_has_is_bound_in_the_drive_of_the_directory_it_is_in() {
-    let mut f = folder();
-    f.make_directory("shared");
-    let shared = f.make_row("shared", ItemKind::Directory, None);
-    f.store.item_store().bind_item(shared, &reference("other-drive", "S")).unwrap();
-    f.mark_directory("shared", "S");
-    f.write("shared/a.txt", b"aaa");
-    f.mark_copy("shared/a.txt", "A");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 1), (DiskFinding::MarkedWithoutRow, 1)]);
-    assert_eq!(f.row("shared/a.txt").unwrap().onedrive_item, Some(reference("other-drive", "A")));
-}
-
-#[test]
-fn a_file_whose_size_or_time_is_not_the_rows_has_its_content_changed() {
-    let mut f = folder_of_each();
-    f.write("docs/a.txt", b"edited");
-    f.mark_copy("docs/a.txt", "A");
-    set_mtime(&f.disk("top.txt"), MTIME + 60);
-    let before = f.row("docs/a.txt").unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 4), (DiskFinding::ContentChanged, 2)]);
-
-    let a = f.row("docs/a.txt").unwrap();
-    assert_eq!(content(&a), changed_here(6, 1));
-    assert_eq!((a.synced_content.clone(), a.onedrive_item.clone(), a.content_before_write.clone()), (before.synced_content, before.onedrive_item, None));
-    assert_eq!(a.file_sync_state(), Some(FileSyncState::ModifiedHere));
-    let top = f.row("top.txt").unwrap();
-    assert_eq!(content(&top), Some(ContentVersion::ChangedHere { size: 3, mtime: MTIME + 60, mtime_nsec: 0, change_count: 2 }), "its count is raised");
-    f.assert_settled();
-}
-
-/// Without the cTag mark a clean copy of an older version cannot be told from the row's.
-#[test]
-fn a_copy_of_the_rows_size_and_time_marked_with_another_ctag_has_its_content_changed() {
-    let mut f = folder_of_each();
-    xattr::set(f.disk("docs/a.txt"), XATTR_CTAG, b"c-older").unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    assert_eq!(f.row("docs/a.txt").unwrap().file_sync_state(), Some(FileSyncState::ModifiedHere));
-    f.assert_settled();
-}
-
-#[test]
-fn what_is_gone_from_the_disk_is_removed_here_and_a_clean_copy_is_only_not_on_disk() {
-    let mut f = folder_of_each();
-    let changed = f.copy("docs/changed.txt", b"ccc", "C");
-    f.store.item_store().apply(&LocalVersionChange::Truncated { item: changed, size: 3, mtime: MTIME, mtime_nsec: 0 }).unwrap();
-    let (clean, own, mine) = (f.id("docs/a.txt"), f.id("top.txt"), f.id("mine"));
-    let before = f.item(clean);
-    fs::remove_file(f.disk("docs/a.txt")).unwrap();
-    fs::remove_file(f.disk("docs/changed.txt")).unwrap();
-    fs::remove_file(f.disk("top.txt")).unwrap();
-    fs::remove_dir_all(f.disk("mine")).unwrap();
-    let findings = f.check();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 2), (DiskFinding::Removed, 4), (DiskFinding::ContentNoLongerOnDisk, 1)]);
-
-    assert_eq!(f.item(clean), Item { content_presence: ContentPresence::NotOnDisk, ..before }, "not a removal: nothing else of the row changes");
-    let changed = f.item(changed);
-    assert_eq!((changed.local.clone(), changed.onedrive_item.clone()), (None, Some(reference("d1", "C"))), "the removal is to be sent");
-    assert!(changed.synced_place.is_some());
-    assert_eq!(f.store.item_store().find_item(own).unwrap(), None, "an item OneDrive never had loses its row");
-    assert_eq!((f.store.item_store().find_item(mine).unwrap(), f.row("mine/own.txt")), (None, None), "with what was in it");
-    f.assert_settled();
-}
-
-/// A directory of OneDrive needs none on disk; what was downloaded into one that is gone is
-/// each decided by itself.
-#[test]
-fn a_directory_of_onedrive_that_is_gone_stays_and_its_clean_copies_are_not_on_disk() {
-    let mut f = folder_of_each();
-    fs::remove_dir_all(f.disk("docs")).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentNoLongerOnDisk, 1)]);
-    assert_eq!(f.row("docs").unwrap().onedrive_item, Some(reference("d1", "D")));
-    assert_eq!(f.row("docs/a.txt").unwrap().content_presence, ContentPresence::NotOnDisk);
-    f.assert_settled();
-}
-
-/// A directory OneDrive does not have goes, and a row cannot stay in a directory whose row
-/// is gone. What OneDrive has and was in it is not removed with it: a file that was not on
-/// disk was not there to be seen, and a clean copy that is gone is no removal anywhere.
-/// They lose their place, and are OneDrive's alone.
-#[test]
-fn a_directory_onedrive_does_not_have_that_is_gone_does_not_remove_the_items_of_onedrive_in_it() {
-    let mut f = folder();
-    f.own_directory("mine");
-    let clean = f.copy("a.txt", b"aaa", "A");
-    let remote = f.not_downloaded("remote.bin", 9, "R");
-    f.move_through_the_mount("a.txt", "mine/a.txt");
-    let place = ItemPlace { parent_local_item_id: f.id("mine"), name: "remote.bin".into() };
-    f.store.item_store().apply(&LocalVersionChange::Moved { item: remote, place, is_name_ignored: false }).unwrap();
-    fs::remove_dir_all(f.disk("mine")).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::Removed, 1), (DiskFinding::PlaceLost, 2)]);
-    assert_eq!((f.row("mine"), f.item(clean).local, f.item(remote).local), (None, None, None));
-    assert_eq!(f.item(clean).onedrive_item, Some(reference("d1", "A")));
-    assert_eq!((f.item(clean).synced_place, f.item(remote).synced_place, f.item(clean).unsent_since), (None, None, None), "nothing of them is to be sent");
-    f.assert_settled();
-}
-
-#[test]
-fn the_whole_copy_of_a_file_whose_row_says_not_on_disk_is_on_disk() {
-    let mut f = folder_of_each();
-    f.write("docs/remote.bin", b"123456789");
-    f.mark_copy("docs/remote.bin", "R");
-    let before = f.row("docs/remote.bin").unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::CopyLandedBeforeRow, 1)]);
-    assert_eq!(f.row("docs/remote.bin").unwrap(), Item { content_presence: ContentPresence::OnDisk, ..before });
-    assert_eq!(f.row("docs/remote.bin").unwrap().file_sync_state(), Some(FileSyncState::Synced));
-    f.assert_settled();
-}
-
-#[test]
-fn any_other_file_where_a_rows_content_is_not_on_disk_is_content_the_user_put_there() {
-    let mut f = folder_of_each();
-    f.write("docs/remote.bin", b"my own bytes");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    let row = f.row("docs/remote.bin").unwrap();
-    assert_eq!((content(&row), row.content_presence), (changed_here(12, 1), ContentPresence::OnDisk));
-    assert_eq!(row.file_sync_state(), Some(FileSyncState::ModifiedHere));
-    f.assert_settled();
-}
-
-/// A file marked with the row's id and not whole holds nothing of the file.
-#[test]
-fn a_file_that_is_not_whole_where_content_is_not_on_disk_changes_nothing() {
-    let mut f = folder_of_each();
-    fs::write(f.disk("docs/remote.bin"), b"").unwrap();
-    xattr::set(f.disk("docs/remote.bin"), XATTR_ITEM_ID, b"R").unwrap();
-    let before = f.rows();
+    f.make_directory(crate::folder::disk::HOLDING);
+    f.write(format!("{}/in.txt", crate::folder::disk::HOLDING), b"x");
+    f.write(format!("{}9", crate::folder::disk::ASIDE_ENTRY_PREFIX), b"set aside");
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
-    assert_eq!(f.rows(), before);
-}
-
-/// Another file's bytes laid over a file: `cp --preserve=all` onto a name that is there.
-#[test]
-fn a_file_overwritten_with_another_items_copy_has_its_content_changed_and_loses_the_stale_mark() {
-    let mut f = folder_of_each();
-    f.write("top.txt", b"aaa");
-    f.mark_copy("top.txt", "A");
-    let top = f.id("top.txt");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    let row = f.row("top.txt").unwrap();
-    assert_eq!((row.local_item_id, row.onedrive_item.clone(), content(&row)), (top, None, changed_here(3, 2)));
-    assert_eq!(f.mark_of("top.txt"), None);
-    assert_eq!(f.row("docs/a.txt").unwrap().onedrive_item, Some(reference("d1", "A")));
-    f.assert_settled();
-}
-
-/// A file removed here whose removal is not sent, made again by hand: the mount would have
-/// the made file take over its binding, and OneDrive see one item whose content changed.
-#[test]
-fn a_file_made_by_hand_where_one_was_removed_here_takes_over_its_binding() {
-    let mut f = folder();
-    let changed = f.copy("a.txt", b"aaa", "A");
-    f.store.item_store().apply(&LocalVersionChange::Truncated { item: changed, size: 3, mtime: MTIME, mtime_nsec: 0 }).unwrap();
-    fs::remove_file(f.disk("a.txt")).unwrap();
-    assert_eq!(found(&f.check()), [(DiskFinding::Removed, 1)]);
-    let synced_content = f.item(changed).synced_content;
-
-    f.write("a.txt", b"again");
-    assert_eq!(found(&f.check()), [(DiskFinding::Made, 1)]);
-    let row = f.row("a.txt").unwrap();
-    assert_eq!((row.onedrive_item.clone(), content(&row), row.synced_content.clone()), (Some(reference("d1", "A")), changed_here(5, 1), synced_content));
-    assert_eq!(f.store.item_store().find_item(changed).unwrap(), None);
-    f.assert_settled();
-}
-
-#[test]
-fn a_name_that_is_not_utf8_has_its_row() {
-    let mut f = folder_of_each();
-    let name = OsString::from(OsStr::from_bytes(b"caf\xe9.txt"));
-    let moved = f.id("docs/a.txt");
-    f.write(&name, b"latin1");
-    f.make_directory(OsStr::from_bytes(b"\xff\xfe"));
-    f.rename("docs/a.txt", Path::new(OsStr::from_bytes(b"\xff\xfe")).join(OsStr::from_bytes(b"a\xe9")));
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Made, 2), (DiskFinding::Moved, 1)]);
-    assert_eq!(content(&f.row(&name).unwrap()), changed_here(6, 1));
-    let directory = f.id(OsStr::from_bytes(b"\xff\xfe"));
-    let place = f.item(moved).local.unwrap().place.unwrap();
-    assert_eq!((place.parent_local_item_id, place.name.as_bytes()), (directory, &b"a\xe9"[..]));
-    f.assert_settled();
-}
-
-/// The daemon's own names are not the folder's: the mount shows nothing under them.
-#[test]
-fn what_is_under_a_name_the_daemon_uses_for_itself_has_no_row() {
-    let mut f = folder_of_each();
-    f.make_directory(HOLDING);
-    f.write(Path::new(HOLDING).join("kept.txt"), b"k");
-    let before = f.rows();
-    let findings = f.check();
-    assert_eq!((found(&findings), findings.unresolved()), (vec![(DiskFinding::NothingChanged, 6)], &[][..]));
-    assert_eq!(f.rows(), before);
-}
-
-/// The folder shows no symbolic link: it gets no row, the row that was at its name is left
-/// as it is, and the path is said.
-#[test]
-fn what_is_neither_a_file_nor_a_directory_is_left_and_said() {
-    let mut f = folder_of_each();
-    std::os::unix::fs::symlink("/etc/hostname", f.disk("link")).unwrap();
-    fs::remove_file(f.disk("top.txt")).unwrap();
-    std::os::unix::fs::symlink("/etc/hostname", f.disk("top.txt")).unwrap();
-    let before = f.rows();
-    let findings = f.check();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5)]);
-    let unresolved: Vec<_> = findings.unresolved().iter().map(|left| (left.path.clone(), left.reason.clone())).collect();
-    assert_eq!(unresolved, [(PathBuf::from("link"), UnresolvedReason::NotFileOrDirectory), (PathBuf::from("top.txt"), UnresolvedReason::NotFileOrDirectory)]);
-    assert_eq!(f.rows(), before);
-}
-
-/// A directory that cannot be read is not an empty one: nothing below it is removed.
-#[test]
-fn the_rows_below_a_directory_that_cannot_be_read_are_left_and_the_directory_is_said() {
-    // SAFETY: no arguments, no failure.
-    if unsafe { libc::geteuid() } == 0 {
-        return;
-    }
-    let mut f = folder_of_each();
-    fs::set_permissions(f.disk("mine"), fs::Permissions::from_mode(0o000)).unwrap();
-    let before = f.rows();
-    let findings = f.check();
-    fs::set_permissions(f.disk("mine"), fs::Permissions::from_mode(0o755)).unwrap();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4)]);
-    assert!(findings.has_unread_part());
-    assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("mine") && matches!(left.reason, UnresolvedReason::Unreadable(_))), "{:?}", findings.unresolved());
-    assert_eq!(f.rows(), before);
-}
-
-/// A file that holds nothing, marked with an id no row has: a made item's content is on
-/// disk, so no row can say what it is before OneDrive's listing brings the item.
-#[test]
-fn a_file_that_is_not_whole_and_marked_with_an_id_no_row_has_is_left_and_said() {
-    let mut f = folder_of_each();
-    fs::write(f.disk("partial.bin"), b"").unwrap();
-    xattr::set(f.disk("partial.bin"), XATTR_ITEM_ID, b"P").unwrap();
-    let before = f.rows();
-    let findings = f.check();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6)]);
-    assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("partial.bin") && left.reason == UnresolvedReason::PartialCopy));
-    assert_eq!(f.rows(), before);
-}
-
-/// The rows go no deeper than every walk of them does: what is deeper on disk is not read,
-/// and is said.
-#[test]
-fn a_directory_deeper_than_the_rows_go_is_not_read_and_is_said() {
-    let mut f = folder();
-    let mut deepest = PathBuf::new();
-    for _ in 0..konedrive_fs::MAX_DEPTH + 2 {
-        deepest.push("d");
-    }
-    fs::create_dir_all(f.disk(&deepest)).unwrap();
-    let findings = f.check();
-    assert_eq!(found(&findings), [(DiskFinding::Made, konedrive_fs::MAX_DEPTH)]);
-    let last_with_a_row: PathBuf = deepest.components().take(konedrive_fs::MAX_DEPTH).collect();
-    assert!(matches!(findings.unresolved(), [left] if left.path == last_with_a_row && left.reason == UnresolvedReason::TooDeep), "{:?}", findings.unresolved());
-    assert!(f.row(&last_with_a_row).is_some());
 }

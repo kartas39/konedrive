@@ -1,61 +1,37 @@
 //! All the rows of `items`, read once ([`ItemRows`]): each by its local item id, the rows
-//! the folder shows by their place, every row that has a binding by the item id of it, and
-//! the files the folder does not show by the place they were removed from.
+//! the folder shows by their place, and the OneDrive item ids that rows have.
 //!
-//! A binding is a drive and an item id, and a mark on disk holds the item id alone. So a row
-//! is asked for by an item id, and the answer says when rows of two drives have it
-//! ([`BoundRows`]): which of them a mark means is then not known, and nothing here chooses.
+//! A row is found by its id or by its place. Of an item id of OneDrive only one thing is
+//! answered: whether any row has it, shown by the folder or not, of whichever drive
+//! ([`ItemRows::has_onedrive_id`]). A mark on disk holds the item id alone, and nothing
+//! here leads from an id to a row or to a place.
 //!
-//! They are the rows as they were before the check wrote anything; what the check has
-//! written since is [`LocalPlaces`](super::local_places::LocalPlaces)'s to know.
+//! They are the rows as they were before the check wrote anything. The check moves no row,
+//! so the places stay as they were read for every row it has not taken from the folder.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 
-use konedrive_tree::{Item, ItemKind, LocalItemId};
-
-/// The rows whose binding has one OneDrive item id, shown by the folder or not.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum BoundRows<'a> {
-    /// No row has the id.
-    None,
-    /// One row has it.
-    One(&'a Item),
-    /// Rows of two drives have it, or of more: the id alone does not name an item.
-    OfTwoDrives,
-}
+use konedrive_tree::{Item, LocalItemId};
 
 pub(super) struct ItemRows {
     items: HashMap<LocalItemId, Item>,
     /// What the folder shows in each directory, by name.
     shown_inside: HashMap<LocalItemId, HashMap<OsString, LocalItemId>>,
-    /// The rows that have a binding, by the item id of it. One of an id, but where an item
-    /// id is in two drives.
-    bound: HashMap<String, Vec<LocalItemId>>,
-    /// The files of OneDrive the folder does not show, by the place they were agreed to be
-    /// at: removed here, their removal not sent.
-    files_removed_here: HashMap<LocalItemId, HashMap<OsString, LocalItemId>>,
+    /// The OneDrive item ids of the rows that have a binding.
+    onedrive_ids: HashSet<String>,
 }
 
 impl ItemRows {
     pub(super) fn new(items: Vec<Item>) -> Self {
-        let mut rows = ItemRows { items: HashMap::with_capacity(items.len()), shown_inside: HashMap::new(), bound: HashMap::new(), files_removed_here: HashMap::new() };
+        let mut rows = ItemRows { items: HashMap::with_capacity(items.len()), shown_inside: HashMap::new(), onedrive_ids: HashSet::new() };
         for item in items {
             let id = item.local_item_id;
             if let Some(reference) = &item.onedrive_item {
-                rows.bound.entry(reference.item_id.as_str().to_owned()).or_default().push(id);
+                rows.onedrive_ids.insert(reference.item_id.as_str().to_owned());
             }
-            match &item.local {
-                Some(local) => {
-                    if let Some(place) = &local.place {
-                        rows.shown_inside.entry(place.parent_local_item_id).or_default().insert(place.name.clone(), id);
-                    }
-                }
-                None => {
-                    if let (ItemKind::File, Some(_), Some(place)) = (item.kind, &item.onedrive_item, &item.synced_place) {
-                        rows.files_removed_here.entry(place.parent_local_item_id).or_default().entry(place.name.clone()).or_insert(id);
-                    }
-                }
+            if let Some(place) = item.local.as_ref().and_then(|local| local.place.as_ref()) {
+                rows.shown_inside.entry(place.parent_local_item_id).or_default().insert(place.name.clone(), id);
             }
             rows.items.insert(id, item);
         }
@@ -78,26 +54,12 @@ impl ItemRows {
         inside.into_iter().map(|(_, item)| item).collect()
     }
 
-    /// The rows whose binding has the item id `onedrive_id`, whichever drive they are of.
-    pub(super) fn find_bound(&self, onedrive_id: &str) -> BoundRows<'_> {
-        match self.bound.get(onedrive_id).map(Vec::as_slice) {
-            Some([one]) => self.items.get(one).map_or(BoundRows::None, BoundRows::One),
-            Some([_, _, ..]) => BoundRows::OfTwoDrives,
-            Some([]) | None => BoundRows::None,
-        }
-    }
-
-    /// The file of OneDrive that was removed here from `name` in `directory`, its removal
-    /// not sent: what a file made there replaces.
-    pub(super) fn find_file_removed_at(&self, directory: LocalItemId, name: &OsStr) -> Option<LocalItemId> {
-        self.files_removed_here.get(&directory)?.get(name).copied()
-    }
-
-    /// Every item, in no order.
-    pub(super) fn list(&self) -> impl Iterator<Item = &Item> {
-        self.items.values()
+    /// Whether any row has the item id `onedrive_id` in its binding: shown by the folder or
+    /// not, of whichever drive.
+    pub(super) fn has_onedrive_id(&self, onedrive_id: &str) -> bool {
+        self.onedrive_ids.contains(onedrive_id)
     }
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;

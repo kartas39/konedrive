@@ -1,89 +1,75 @@
-//! An entry the check takes as the own entry of an item OneDrive has gets that item's id as
-//! its mark when it carries none, so that a later move by hand is followed: a file saved by
-//! rename, a file put at the name of a file that is not on disk, a directory made at the
-//! name of a directory of OneDrive. The row is written first, the mark second; the mark is
-//! the id alone, never the state of a whole copy and never a cTag. The sequence is the
-//! second review's S1.
+//! What the check writes of marks: the id of its item on the own entry of an item OneDrive
+//! has, and nothing through one name of a file that has several.
 
-use konedrive_fs::placeholder::{XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
-use konedrive_tree::ContentPresence;
+use std::fs;
 
-use super::{changed_here, content, folder_of_each, found, reference, DiskFinding};
+use super::{assert_no_item_of_onedrive_is_removed_or_moved, folder_of_each, found, DiskFinding};
 
-/// S1: docs/a.txt is saved by rename (no marks); start; `mv docs/a.txt docs/b.txt`; start.
 #[test]
-fn a_file_saved_by_rename_gets_its_items_id_as_its_mark_and_is_followed_when_it_is_moved() {
+fn the_own_entry_of_an_item_of_onedrive_gets_the_id_it_lacks() {
     let mut f = folder_of_each();
-    let a = f.id("docs/a.txt");
+    // Saved by rename: the file at the name is a new one, with no marks. And a directory
+    // made again by hand.
     f.write("docs/a.txt", b"saved by rename");
+    xattr::remove(f.disk("docs"), konedrive_fs::placeholder::XATTR_ITEM_ID).unwrap();
+    assert_eq!((f.mark_of("docs/a.txt"), f.mark_of("docs")), (None, None));
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    assert_eq!(f.mark_of("docs/a.txt"), Some("A".to_owned()));
-    let marks = |name: &str| xattr::get(f.disk("docs/a.txt"), name).unwrap();
-    assert_eq!((marks(XATTR_STATE), marks(XATTR_CTAG)), (None, None), "the id alone: the file is no whole copy of what OneDrive has");
-    f.assert_settled();
-
-    f.rename("docs/a.txt", "docs/b.txt");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Moved, 1)]);
-    let row = f.row("docs/b.txt").unwrap();
-    assert_eq!((row.local_item_id, row.onedrive_item.clone(), content(&row)), (a, Some(reference("d1", "A")), changed_here(15, 1)));
+    assert_eq!((f.mark_of("docs/a.txt").as_deref(), f.mark_of("docs").as_deref()), (Some("A"), Some("D")));
+    assert_eq!(f.copy_marks_of("docs/a.txt"), (false, None), "the id alone: it is no whole copy of what OneDrive has");
     f.assert_settled();
 }
 
-/// A file put by hand at the name of a file that is not downloaded is that item's content.
+/// A death between the row and the mark: the next check writes the mark and no row.
 #[test]
-fn a_file_put_at_the_name_of_a_file_that_is_not_on_disk_gets_its_items_id_as_its_mark() {
-    let mut f = folder_of_each();
-    let remote = f.id("docs/remote.bin");
-    f.write("docs/remote.bin", b"my own bytes");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    assert_eq!(f.mark_of("docs/remote.bin"), Some("R".to_owned()));
-    f.assert_settled();
-
-    f.rename("docs/remote.bin", "mine/moved.bin");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Moved, 1)]);
-    assert_eq!((f.id("mine/moved.bin"), f.item(remote).content_presence), (remote, ContentPresence::OnDisk));
-    f.assert_settled();
-}
-
-/// A daemon that died between the row and the mark: the row says the content changed here,
-/// the file carries no mark. The next check finds nothing changed and writes the mark.
-#[test]
-fn a_death_between_the_row_and_the_mark_is_finished_by_the_next_check() {
+fn a_mark_that_was_not_written_is_written_by_the_next_check_which_writes_no_row() {
     let mut f = folder_of_each();
     f.write("docs/a.txt", b"saved by rename");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    xattr::remove(f.disk("docs/a.txt"), XATTR_ITEM_ID).unwrap();
+    f.check();
+    xattr::remove(f.disk("docs/a.txt"), konedrive_fs::placeholder::XATTR_ITEM_ID).unwrap();
     let before = f.rows();
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
-    assert_eq!((f.rows(), f.mark_of("docs/a.txt")), (before, Some("A".to_owned())), "no row is written, and the mark is");
+    assert_eq!(f.rows(), before);
+    assert_eq!(f.mark_of("docs/a.txt").as_deref(), Some("A"));
+}
+
+#[test]
+fn another_items_copy_laid_over_a_file_is_that_files_content_changed_and_carries_its_id_alone() {
+    let mut f = folder_of_each();
+    f.copy("docs/b.txt", b"bbbbb", "B");
+    fs::remove_file(f.disk("docs/a.txt")).unwrap();
+    f.copy_with_marks("docs/b.txt", "docs/a.txt");
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::ContentChanged, 1)]);
+    assert_eq!((f.mark_of("docs/a.txt").as_deref(), f.copy_marks_of("docs/a.txt")), (Some("A"), (false, None)));
+    assert_eq!((f.mark_of("docs/b.txt").as_deref(), f.copy_marks_of("docs/b.txt")), (Some("B"), (true, Some("c-B".to_owned()))));
     f.assert_settled();
 }
 
-/// A directory made by hand where a directory of OneDrive had none on disk is that
-/// directory's own.
 #[test]
-fn a_directory_made_at_the_name_of_a_directory_of_onedrive_gets_its_id_as_its_mark() {
+fn the_entry_of_an_item_onedrive_never_had_keeps_whatever_marks_it_has() {
     let mut f = folder_of_each();
-    let docs = f.id("docs");
-    std::fs::remove_dir_all(f.disk("docs")).unwrap();
-    f.check();
-    f.make_directory("docs");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
-    assert_eq!((f.id("docs"), f.mark_of("docs")), (docs, Some("D".to_owned())));
-    f.rename("docs", "papers");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Moved, 1)]);
-    assert_eq!(f.id("papers"), docs);
-    f.assert_settled();
+    fs::remove_file(f.disk("top.txt")).unwrap();
+    f.copy_with_marks("docs/a.txt", "top.txt");
+    let before = f.rows();
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)], "the same size and time");
+    assert_eq!(f.mark_of("top.txt").as_deref(), Some("A"));
+    assert_eq!(f.rows(), before);
 }
 
-/// An unmarked file is never the copy a download landed: one that stands where a clean copy
-/// was, of its size and time, is content the user put there.
+/// Review 3, M2: the marks are the file's, not the name's.
 #[test]
-fn an_unmarked_file_where_a_clean_copy_was_is_content_the_user_put_there() {
+fn the_marks_of_a_file_with_a_second_name_are_left_and_a_second_check_writes_nothing() {
     let mut f = folder_of_each();
-    let a = f.id("docs/a.txt");
-    f.write("docs/a.txt", b"aaa");
-    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentChanged, 1)]);
-    assert_eq!((content(&f.item(a)), f.mark_of("docs/a.txt")), (changed_here(3, 1), Some("A".to_owned())));
-    f.assert_settled();
+    let before = f.rows();
+    f.link("docs/a.txt", "a-link.txt");
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::Made, 1)]);
+    for name in ["docs/a.txt", "a-link.txt"] {
+        assert_eq!((f.mark_of(name).as_deref(), f.copy_marks_of(name)), (Some("A"), (true, Some("c-A".to_owned()))), "{name}");
+    }
+    assert_eq!(f.row("a-link.txt").unwrap().onedrive_item, None);
+    assert_no_item_of_onedrive_is_removed_or_moved(&before, &f.rows());
+    // Start after start: nothing is written, on disk or in the rows.
+    for _ in 0..3 {
+        f.assert_settled();
+        assert_eq!(f.mark_of("a-link.txt").as_deref(), Some("A"));
+    }
 }

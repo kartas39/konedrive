@@ -1,47 +1,41 @@
 //! The check of the backing directory at start ([`BackingDirectoryCheck`]): before the mount
 //! goes over the folder, the backing directory is compared with the rows of `items`, once,
 //! and the rows are made to say what the disk has. It is the one place where the disk is
-//! read to learn what the folder contains: a file edited, made, moved or removed by hand
-//! while no daemon ran; a daemon that died between a change on disk and its row; a store
-//! that was lost.
+//! read to learn what the folder contains (`docs/tasks/item-versions-design.md`, §10).
+//!
+//! **The check does not guess what a person did while no daemon ran.** It looks at one
+//! place at a time: what the rows say of a place, and what the disk has at that place. A
+//! file moved by hand is a new file at its new place, and the item it was is shown again
+//! at its old one as OneDrive has it; a file removed by hand is shown again. Neither is a
+//! move or a removal in OneDrive: the check has no finding that moves a row, and none that
+//! removes an item OneDrive has.
 //!
 //! [`BackingDirectoryCheck`] holds what a run is given and no state of its own. A run is
-//! five steps, each a part that owns what it gathers:
+//! four steps, each a part that owns what it gathers:
 //!
-//! - [`item_rows`]: all the rows, read whole once, by id, by place and by binding;
-//! - [`backing_directory_contents`]: all the backing directory holds, read once on several
-//!   threads, with the marks of each entry;
-//! - [`entry_identities`]: which item each entry is, or that it cannot be said — the rows
-//!   and the contents matched in memory, a directory before what is in it;
-//! - [`path_findings`]: the finding of each path, by the one decision
-//!   ([`disk_finding`]), which has no disk and no store in it;
-//! - [`write_order`]: which finding is written before which, so that the schema accepts
-//!   each write; what a finding writes is [`row_writer`]'s, through [`ItemStore`] and
-//!   over [`local_places`], the places as the writes so far leave them.
+//! - [`standing_place_changes`]: a change of the daemon's own that a death cut short and
+//!   left on record is finished or undone first, by the one decision of
+//!   [`place_change_settlement`];
+//! - [`item_rows`]: all the rows, read whole once, by id and by place;
+//! - [`backing_directory_contents`]: all the backing directory holds, read once, a level
+//!   of directories at a time on several threads, with the marks of each entry;
+//! - [`place_walk`]: every place, a directory before what is in it, decided by the one
+//!   decision of [`disk_finding`], which has no disk and no store in it, and written
+//!   through [`row_writer`], which writes through [`ItemStore`].
 //!
-//! Four rules stand over all of it (`docs/tasks/item-versions-design.md`, §10).
+//! The marks on disk are read for three things and no more: the whole-copy state and the
+//! cTag of the entry at a row's own place (a clean copy or a changed one; a copy that
+//! landed before its row); the id on an entry no row has, when no row at all has that id
+//! (a store that was rebuilt); and the mark on an entry that becomes a new item, which is
+//! taken off. Nothing is matched by a mark across places. What the check writes of marks
+//! is [`mark_change`]'s decision: the id of its item on the own entry of an item OneDrive
+//! has, and a mark taken off a new item — neither on a file that has several names.
 //!
-//! - What the person could not see is not removed, and was not moved by them: an item of
-//!   OneDrive with nothing of its own on disk loses its place and stays OneDrive's
-//!   ([`DiskFinding::PlaceLost`]), and a file whose content was not on disk is not found
-//!   moved by a mark.
-//! - What may be in a part of the backing directory that was not read is left alone: a row
-//!   whose place is in that part, a row no entry is taken as, and an entry that carries the
-//!   mark of a row whose place could not be looked at are neither removed, nor moved, nor
-//!   made new. They are said ([`UnresolvedReason::MayBeUnread`]), and the rows among them
-//!   are held ([`DiskFindings::list_held_items`]): the folder is not.
-//! - A mark names an item id and no drive, and the check guesses none: an entry is the row
-//!   at its own place when that row has the mark's id, else the one row that has the id;
-//!   when rows of two drives have it, the entry is left with what depends on it
-//!   ([`UnresolvedReason::ItemIdInTwoDrives`]).
-//! - An entry taken as the own entry of an item OneDrive has gets that item's id as its
-//!   mark when it carries none.
+//! A part of the backing directory that cannot be read is left as it is: no row in it or
+//! below it is changed, and they are held ([`DiskFindings::list_held_items`]) and said.
+//! The folder is not held for it, and no other row is.
 //!
-//! It reads the backing directory through [`BackingDirectory`] and writes rows through
-//! [`ItemStore`]. It changes two things on disk, both marks: one that is not the row's own
-//! is taken off the entry that carries it, and the id of its item is written on an entry
-//! that is an item's own and does not carry it. It knows nothing of the outbox, of
-//! `onedrive_items`, of the node table or of the mount.
+//! It knows nothing of the outbox, of `onedrive_items`, of the node table or of the mount.
 
 use std::path::PathBuf;
 
@@ -52,20 +46,20 @@ use super::upload_rules::UploadRules;
 
 mod backing_directory_contents;
 mod disk_finding;
-mod entry_identities;
 mod item_rows;
-mod local_places;
-mod path_findings;
+mod mark_change;
+mod place_change_settlement;
+mod place_walk;
 mod row_writer;
-mod write_order;
+mod standing_place_changes;
 
 pub(in crate::fuse) use disk_finding::{DiskFinding, UnresolvedReason};
 
 use backing_directory_contents::BackingDirectoryContents;
-use entry_identities::EntryIdentities;
 use item_rows::ItemRows;
-use path_findings::PathFindings;
-use write_order::WriteOrder;
+use place_walk::PlaceWalk;
+use row_writer::RowWriter;
+use standing_place_changes::StandingPlaceChanges;
 
 /// A path the check left as it found it, with what is below it, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,18 +92,19 @@ impl DiskFindings {
     }
 
     /// The rows that were left as they were found, though the disk may not have what they
-    /// say: a row whose own place could not be looked at, a row that would have left the
-    /// folder or lost its content while it may be in a part that was not read or be an
-    /// entry that was left, and a row whose write was refused or waits. Nothing of these,
-    /// and of what the rows say is below them, is to be sent before a check decides them;
-    /// every other row is as the disk has it.
+    /// say: the row of a directory that was not read, for all the folder shows in it and
+    /// below it; the row at a name that could not be looked at; a row a place change that
+    /// stands on record names; and a row whose write was refused, or that waits for one.
+    /// Nothing of these, and of what the rows say is below them, is to be sent before a
+    /// check decides them; every other row is as the disk has it.
     pub(in crate::fuse) fn list_held_items(&self) -> &[LocalItemId] {
         &self.held_items
     }
 
-    /// Whether any part of the backing directory was left unread: a directory that could
-    /// not be read or is too deep, an entry whose marks could not be read. It holds
-    /// nothing by itself; it says why rows may be among [`list_held_items`](Self::list_held_items).
+    /// Whether any part of the backing directory was left as it is: a directory that could
+    /// not be read or is too deep, a name that is no file and no directory or whose marks
+    /// could not be read, a place change that stands on record. It holds nothing by
+    /// itself; it says why rows may be among [`list_held_items`](Self::list_held_items).
     pub(in crate::fuse) fn has_unread_part(&self) -> bool {
         self.has_unread_part
     }
@@ -147,7 +142,7 @@ impl DiskFindings {
 /// The check of one folder's backing directory against its rows.
 pub(in crate::fuse) struct BackingDirectoryCheck<'a> {
     backing_directory: &'a BackingDirectory,
-    /// What says of a made or moved item's name whether it is ignored.
+    /// What says of a made item's name whether it is ignored.
     upload_rules: &'a UploadRules,
     /// The drive of the folder: an entry marked with an item id no row has is bound in the
     /// drive of the nearest directory of OneDrive above it, or in this one. No row is looked
@@ -160,16 +155,19 @@ impl<'a> BackingDirectoryCheck<'a> {
         BackingDirectoryCheck { backing_directory, upload_rules, drive_id }
     }
 
-    /// Compares the backing directory with the rows and writes what it finds: afterwards
-    /// the rows say what the disk has, but for the paths the answer names. An error is the
-    /// store's, from reading the rows: nothing was written then. Nothing else may read or
-    /// write the rows or the backing directory meanwhile: no mount lies over the folder.
+    /// Finishes or undoes the place changes left on record, then compares the backing
+    /// directory with the rows and writes what it finds: afterwards the rows say what the
+    /// disk has, but for the paths the answer names. An error is the store's, from
+    /// settling a record or from reading the rows. Nothing else may read or write the rows
+    /// or the backing directory meanwhile: no mount lies over the folder. The entries that
+    /// were set aside are not removed here, and must not be removed before this ran: one
+    /// of them may be what a record puts back.
     pub(in crate::fuse) fn run(&self, item_store: &mut ItemStore<'_>) -> Result<DiskFindings, TreeError> {
+        let standing_place_changes = StandingPlaceChanges::settle(self.backing_directory, self.upload_rules, item_store)?;
         let rows = ItemRows::new(item_store.list_items()?);
         let contents = BackingDirectoryContents::read(self.backing_directory);
-        let identities = EntryIdentities::settle(&rows, &contents);
-        let findings = PathFindings::decide(&rows, &contents, &identities);
-        Ok(WriteOrder::new(item_store, self.backing_directory, self.upload_rules, self.drive_id, &rows, &contents, &identities, &findings).write())
+        let writer = RowWriter::new(item_store, self.upload_rules);
+        Ok(PlaceWalk::new(self.backing_directory, self.drive_id, &rows, &contents, &standing_place_changes, writer).walk())
     }
 }
 

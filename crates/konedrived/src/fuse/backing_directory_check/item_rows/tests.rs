@@ -1,18 +1,13 @@
 use konedrive_tree::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 
-use super::{BoundRows, ItemRows};
+use super::ItemRows;
 
-pub(in crate::fuse::backing_directory_check) fn id(number: i64) -> LocalItemId {
+fn id(number: i64) -> LocalItemId {
     LocalItemId::new(number)
 }
 
-pub(in crate::fuse::backing_directory_check) fn drive(name: &str) -> DriveId {
-    DriveId::new(name).unwrap()
-}
-
-/// The row of an item OneDrive does not have, at `name` in `parent`: a file of 3 bytes last
-/// modified at 100, changed here, its content on disk.
-pub(in crate::fuse::backing_directory_check) fn own(number: i64, parent: i64, name: &str, kind: ItemKind) -> Item {
+/// The row of an item OneDrive does not have, at `name` in `parent`.
+fn own(number: i64, parent: i64, name: &str, kind: ItemKind) -> Item {
     let content = (kind == ItemKind::File).then_some(ContentVersion::ChangedHere { size: 3, mtime: 100, mtime_nsec: 0, change_count: 1 });
     Item {
         local_item_id: id(number),
@@ -33,81 +28,29 @@ pub(in crate::fuse::backing_directory_check) fn own(number: i64, parent: i64, na
     }
 }
 
-/// The row of the item `onedrive_id` of the drive `drive_name`, the two sides agreeing: a
-/// file is a clean copy on disk, of the cTag `c-<onedrive_id>`.
-pub(in crate::fuse::backing_directory_check) fn bound_in(drive_name: &str, onedrive_id: &str, number: i64, parent: i64, name: &str, kind: ItemKind) -> Item {
-    let mut item = own(number, parent, name, kind);
-    let local = item.local.as_mut().unwrap();
-    if kind == ItemKind::File {
-        local.content = Some(ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: Some(format!("h-{onedrive_id}")), ctag: Some(format!("c-{onedrive_id}")) });
-    }
-    item.synced_place = local.place.clone();
-    item.synced_content = local.content.clone();
-    item.onedrive = item.local.clone();
-    item.onedrive_item = Some(OneDriveItemReference { drive_id: drive(drive_name), item_id: OneDriveItemId::new(onedrive_id) });
+fn bound_in(drive: &str, onedrive_id: &str, mut item: Item) -> Item {
+    item.onedrive_item = Some(OneDriveItemReference { drive_id: DriveId::new(drive).unwrap(), item_id: OneDriveItemId::new(onedrive_id) });
     item
 }
 
-/// [`bound_in`] the folder's own drive, `d1`.
-pub(in crate::fuse::backing_directory_check) fn bound(onedrive_id: &str, number: i64, parent: i64, name: &str, kind: ItemKind) -> Item {
-    bound_in("d1", onedrive_id, number, parent, name, kind)
-}
-
-/// The file's content is not on disk.
-pub(in crate::fuse::backing_directory_check) fn not_downloaded(item: Item) -> Item {
-    Item { content_presence: ContentPresence::NotOnDisk, ..item }
-}
-
-/// The file was changed here through the mount, and the change is not sent.
-pub(in crate::fuse::backing_directory_check) fn changed_here(mut item: Item) -> Item {
-    item.local.as_mut().unwrap().content = Some(ContentVersion::ChangedHere { size: 3, mtime: 100, mtime_nsec: 0, change_count: 1 });
-    item
-}
-
-/// The item was removed here, and the removal is not sent.
-pub(in crate::fuse::backing_directory_check) fn removed_here(item: Item) -> Item {
-    Item { local: None, content_presence: ContentPresence::NotOnDisk, ..item }
+#[test]
+fn a_row_is_found_by_its_id_and_by_its_place() {
+    let rows = ItemRows::new(vec![own(2, 1, "docs", ItemKind::Directory), own(3, 2, "b.txt", ItemKind::File), own(4, 2, "a.txt", ItemKind::File), own(5, 1, "a.txt", ItemKind::File)]);
+    assert_eq!(rows.find(id(3)).unwrap().local_item_id, id(3));
+    assert!(rows.find(id(9)).is_none());
+    assert_eq!(rows.find_at(id(2), "a.txt".as_ref()).unwrap().local_item_id, id(4));
+    assert_eq!(rows.find_at(id(1), "a.txt".as_ref()).unwrap().local_item_id, id(5));
+    assert!(rows.find_at(id(1), "b.txt".as_ref()).is_none());
+    assert_eq!(rows.list_inside(id(2)).iter().map(|item| item.local_item_id).collect::<Vec<_>>(), [id(4), id(3)], "by name");
 }
 
 #[test]
-fn a_row_the_folder_shows_is_found_by_its_id_by_its_place_and_among_what_its_directory_holds() {
-    let rows = ItemRows::new(vec![own(2, 1, "docs", ItemKind::Directory), own(3, 2, "b.txt", ItemKind::File), own(4, 2, "a.txt", ItemKind::File), removed_here(bound("X", 5, 2, "gone.txt", ItemKind::File))]);
-    assert_eq!(rows.find(id(3)).map(|row| row.local_item_id), Some(id(3)));
-    assert_eq!(rows.find_at(id(2), "a.txt".as_ref()).map(|row| row.local_item_id), Some(id(4)));
-    assert_eq!(rows.find_at(id(1), "a.txt".as_ref()).map(|row| row.local_item_id), None);
-    assert_eq!(rows.find_at(id(2), "gone.txt".as_ref()).map(|row| row.local_item_id), None, "the folder does not show it");
-    assert_eq!(rows.list_inside(id(2)).iter().map(|row| row.local_item_id).collect::<Vec<_>>(), [id(4), id(3)], "by name");
-    assert_eq!(rows.list().count(), 4);
-}
-
-/// A mark holds an item's id and no drive: a row is asked for by the id alone, shown or
-/// not, and the answer says when rows of two drives have it. Nothing chooses among them.
-#[test]
-fn the_rows_that_have_an_item_id_are_none_one_or_of_two_drives() {
-    let rows = ItemRows::new(vec![
-        bound_in("d1", "X", 2, 1, "one.txt", ItemKind::File),
-        bound_in("d2", "X", 3, 1, "two.txt", ItemKind::File),
-        removed_here(bound_in("d2", "Y", 4, 1, "gone.txt", ItemKind::File)),
-        bound_in("d1", "Z", 5, 1, "z.txt", ItemKind::File),
-        removed_here(bound_in("d2", "Z", 6, 1, "z-gone.txt", ItemKind::File)),
-        bound_in("d2", "S", 7, 1, "shared", ItemKind::Directory),
-        own(8, 1, "own.txt", ItemKind::File),
-    ]);
-    let one = |onedrive_id: &str| match rows.find_bound(onedrive_id) {
-        BoundRows::One(row) => Some(row.local_item_id),
-        other => panic!("{onedrive_id}: {other:?}"),
-    };
-    assert_eq!((one("Y"), one("S")), (Some(id(4)), Some(id(7))), "the one row that has the id, shown or not, whichever drive it is of");
-    assert_eq!(rows.find_bound("X"), BoundRows::OfTwoDrives);
-    assert_eq!(rows.find_bound("Z"), BoundRows::OfTwoDrives, "also when the folder shows one of them only");
-    assert_eq!(rows.find_bound("none"), BoundRows::None);
-}
-
-/// What a file made by hand replaces: a file of OneDrive removed here from that place.
-#[test]
-fn a_file_removed_here_is_found_by_the_place_it_was_agreed_to_be_at() {
-    let rows = ItemRows::new(vec![removed_here(bound("X", 2, 1, "gone.txt", ItemKind::File)), removed_here(bound("D", 3, 1, "gone", ItemKind::Directory))]);
-    assert_eq!(rows.find_file_removed_at(id(1), "gone.txt".as_ref()), Some(id(2)));
-    assert_eq!(rows.find_file_removed_at(id(1), "gone".as_ref()), None, "a directory is made as a new item");
-    assert_eq!(rows.find_file_removed_at(id(2), "gone.txt".as_ref()), None);
+fn an_item_the_folder_does_not_show_has_no_place_and_its_id_of_onedrive_is_had_by_a_row() {
+    let mut unshown = bound_in("d1", "X", own(2, 1, "x.bin", ItemKind::File));
+    unshown.local = None;
+    let rows = ItemRows::new(vec![unshown, bound_in("d2", "Y", own(3, 1, "y.bin", ItemKind::File)), own(4, 1, "own.txt", ItemKind::File)]);
+    assert!(rows.find_at(id(1), "x.bin".as_ref()).is_none());
+    assert!(rows.has_onedrive_id("X"), "a row the folder does not show");
+    assert!(rows.has_onedrive_id("Y"), "a row of another drive");
+    assert!(!rows.has_onedrive_id("Z"));
 }
