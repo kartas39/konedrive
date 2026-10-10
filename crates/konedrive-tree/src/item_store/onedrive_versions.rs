@@ -81,11 +81,14 @@ impl ItemStore<'_> {
     }
 
     /// A full listing begins: from now until a page carries the link that ends it, what the
-    /// pages say is all OneDrive has. One that was under way is given up for this one.
+    /// pages say is all OneDrive has. One that was under way is given up for this one. The
+    /// delta link is forgotten with it: while a full listing is under way the store has
+    /// none.
     pub fn begin_full_listing(&mut self) -> Result<(), TreeError> {
         self.write(|tx| {
             let count = read_count(tx, meta::FULL_LISTING_COUNT)? + 1;
             meta::set(tx, meta::FULL_LISTING_COUNT, Some(&count.to_string()))?;
+            meta::set(tx, meta::DELTA_LINK, None)?;
             meta::set(tx, meta::FULL_LISTING_UNDER_WAY, Some("1"))
         })
     }

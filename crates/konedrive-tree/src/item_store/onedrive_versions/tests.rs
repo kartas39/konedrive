@@ -790,6 +790,18 @@ fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     assert_eq!(onedrive_side(&mut store), after, "the full listing ended: a listing of changes takes nothing it does not name");
 }
 
+/// A full listing that begins forgets the delta link, in its own transaction: while one is
+/// under way the store has no link to ask a listing of changes from, so none can be asked
+/// whose end would take what the full listing has not seen yet.
+#[test]
+fn a_full_listing_that_begins_forgets_the_delta_link() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, Some("link-0"));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"));
+    store.item_store().begin_full_listing().unwrap();
+    assert_eq!(store.delta_link().unwrap(), None);
+}
+
 /// A full listing that is stopped goes on in a store opened again: what it saw before the
 /// stop is seen.
 #[test]
