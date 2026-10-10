@@ -270,6 +270,13 @@ pub(super) fn list_children(conn: &Connection, directory: LocalItemId) -> Result
     Ok(children)
 }
 
+pub(super) fn list_children_in_onedrive(conn: &Connection, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1 ORDER BY onedrive_name");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let children = statement.query_map([directory.as_i64()], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(children)
+}
+
 /// `item` is at `place` in the folder from now on, and `is_name_ignored` is what the upload
 /// rules say of its name there: the two are written together, since the one is said of the
 /// other. The index of local places refuses a place another item has.

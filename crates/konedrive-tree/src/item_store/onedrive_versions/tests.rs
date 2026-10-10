@@ -928,6 +928,26 @@ fn the_items_onedrive_changed_are_those_whose_onedrive_version_is_not_the_synced
     assert_eq!(changed(&mut store), ["G"]);
 }
 
+/// What OneDrive has in a directory, by name, and what it has in it and below it: as the
+/// rows say, whatever the folder shows there.
+#[test]
+fn what_onedrive_has_in_a_directory_and_below_it_is_read_from_the_rows() {
+    let mut store = listed_store();
+    write(&mut store, &[directory("D", "R", "D"), directory("E", "D", "E"), file("B", "D", "b", "1"), file("A", "D", "a", "1"), file("C", "E", "c", "1"), file("O", "R", "outside", "1")]);
+    make_file(&mut store, ROOT, "made-here");
+    let (d, e) = (listed(&mut store, "D").local_item_id, listed(&mut store, "E").local_item_id);
+    let ids = |items: Vec<Item>| -> Vec<String> { items.into_iter().map(|item| item.onedrive_item.unwrap().item_id.as_str().to_owned()).collect() };
+
+    assert_eq!(ids(store.item_store().list_children_in_onedrive(d).unwrap()), ["E", "A", "B"]);
+    assert_eq!(ids(store.item_store().list_children_in_onedrive(ROOT).unwrap()), ["D", "O"]);
+    assert_eq!(ids(store.item_store().list_children_in_onedrive(e).unwrap()), ["C"]);
+    let mut below = ids(store.item_store().list_below_in_onedrive(d).unwrap());
+    below.sort();
+    assert_eq!(below, ["A", "B", "C", "E"]);
+    assert_eq!(store.item_store().list_below_in_onedrive(e).unwrap().len(), 1);
+    assert_eq!(store.item_store().list_below_in_onedrive(LocalItemId::new(999)).unwrap(), Vec::new());
+}
+
 /// Whether the folder can show an item as OneDrive has it, a case each. It can: its own
 /// placement and that of every directory above it say so, up to the root; and the root. It
 /// cannot: its own placement says no, or that of a directory above it, also one whose own

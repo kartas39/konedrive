@@ -75,7 +75,7 @@ pub(crate) use bindings::bind_root_once_known;
 pub use onedrive_versions::ConfirmedOneDriveVersion;
 pub(crate) use item_row::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
-use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_changed_in_onedrive, list_children, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -137,6 +137,19 @@ impl ItemStore<'_> {
     /// not among them.
     pub fn list_changed_in_onedrive(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         list_changed_in_onedrive(&self.store.conn, after, limit)
+    }
+
+    /// What OneDrive has in `directory`, as the rows say, by name there: the items whose
+    /// place in OneDrive is in it. Two of them may have one name while a listing goes on.
+    pub fn list_children_in_onedrive(&self, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
+        list_children_in_onedrive(&self.store.conn, directory)
+    }
+
+    /// What OneDrive has in `directory` and below it, as the rows say, in no order: each
+    /// item once, also when the rows of a listing that has not ended name each other in a
+    /// circle. As many as there are: what is below a directory is not bounded.
+    pub fn list_below_in_onedrive(&self, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
+        list_below_in_onedrive(&self.store.conn, directory)
     }
 
     /// Whether the folder can show `item` as OneDrive has it, a case each
