@@ -396,7 +396,9 @@ impl Listing {
         let id = cancellable(cancel, self.ctx.drive.drive_id()).await?.map_err(drive_error)?;
         let stored = self.on_store(turn, |s| s.drive_id()).await?;
         let kept = self.ctx.drive_record.as_ref().and_then(|r| r.recorded.clone());
-        if let Some(recorded) = stored.clone().or(kept.clone()).filter(|recorded| *recorded != id) {
+        // Compared as drive ids: one drive is the same however its id is spelled.
+        let same_drive = |recorded: &String| crate::config::DriveId::new(recorded.as_str()) == crate::config::DriveId::new(id.as_str());
+        if let Some(recorded) = stored.clone().or(kept.clone()).filter(|recorded| !same_drive(recorded)) {
             // The account learns which drive its token reaches now.
             if let Some(neighbours) = &self.ctx.neighbours {
                 (neighbours.drive_seen)(&id);

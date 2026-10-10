@@ -212,7 +212,8 @@ pub(crate) async fn drive_of(path: &Path, mine: Option<String>) -> DriveOf {
         let theirs = dir.get_xattr(XATTR_DRIVE).ok().flatten().and_then(|raw| String::from_utf8(raw).ok());
         match theirs {
             None => DriveOf::Free,
-            Some(theirs) if theirs.is_empty() || Some(&theirs) == mine.as_ref() => DriveOf::Free,
+            // Compared as drive ids: one drive is the same however its id is spelled.
+            Some(theirs) if theirs.is_empty() || crate::config::DriveId::new(theirs.as_str()) == mine.as_deref().and_then(crate::config::DriveId::new) => DriveOf::Free,
             Some(theirs) => {
                 let empty = std::fs::read_dir(proc_path(&dir)).is_ok_and(|mut entries| entries.next().is_none());
                 if empty { DriveOf::Stale(theirs) } else { DriveOf::Foreign(theirs) }

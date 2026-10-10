@@ -123,3 +123,19 @@ fn a_row_reads_back_as_written_from_every_table() {
     assert_eq!(store.deferred("F").unwrap(), Some(Change::Upsert(changed)));
     assert_eq!(store.deferred("S").unwrap(), Some(Change::Delete("S".into())));
 }
+
+/// One drive's id is one `DriveId` however its letters' case is spelled, where it is made:
+/// in a comparison, as a key, as text, and against a text spelled another way. Nothing but
+/// the case of ASCII letters is changed: a spelling of another length is another id.
+#[test]
+fn a_drive_id_is_the_same_in_either_letter_case() {
+    let (upper, lower) = (DriveId::new("B!AbC9D1E2").unwrap(), DriveId::new("b!abc9d1e2").unwrap());
+    assert_eq!(upper, lower);
+    assert_eq!(upper.as_str(), "b!abc9d1e2");
+    assert_eq!(upper.to_string(), lower.clone().into_string());
+    assert_eq!(std::collections::HashSet::from([upper.clone(), lower.clone()]).len(), 1);
+    assert!(upper == "B!ABC9D1E2" && upper == *"b!abc9d1e2" && upper == "B!AbC9D1E2".to_owned());
+    assert!(upper != "b!abc9d1e3");
+    assert_ne!(DriveId::new("0abc9d1e2"), DriveId::new("abc9d1e2"), "a leading zero is not taken off");
+    assert_eq!(DriveId::new(""), None);
+}

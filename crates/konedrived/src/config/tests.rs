@@ -306,7 +306,8 @@ async fn the_list_refuses_the_read_write_token_export_and_nothing_else() {
     // The empty entry names no drive: it is not kept, and is gone at the next write.
     store.set_label(&fresh, "Newer").unwrap();
     let written = std::fs::read_to_string(store.file()).unwrap();
-    assert!(written.contains("write_test_drive_ids = [\"TEST\"]\n"), "{written}");
+    // Written as the drive id is made: its letters in lower case.
+    assert!(written.contains("write_test_drive_ids = [\"test\"]\n"), "{written}");
     assert!(export_allowed(&store, &test), "the listed drive stays");
 
     std::fs::write(store.file(), &empty).unwrap();

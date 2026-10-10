@@ -322,5 +322,79 @@ pub(crate) fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) ->
         ])
 }
 
+/// The id of a drive in OneDrive: an account's identity, and half of what names an item of
+/// OneDrive ([`OneDriveItemReference`]). Never empty: an account that has no drive yet has
+/// none (`Option<DriveId>`).
+///
+/// Graph does not spell one drive's id the same in every answer, so the id is made the same
+/// here, where it is made ([`new`](Self::new)): its ASCII letters in lower case, and nothing
+/// else changed. Two spellings of one drive are then one `DriveId`, in a comparison, as a key
+/// and in the store. Compared with a text, the text is read the same way.
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(transparent)]
+pub struct DriveId(String);
+
+impl DriveId {
+    /// `text` as a drive id, its ASCII letters in lower case; `None` when it is empty.
+    pub fn new(text: impl Into<String>) -> Option<Self> {
+        let mut text = text.into();
+        text.make_ascii_lowercase();
+        (!text.is_empty()).then_some(Self(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Whether `text` spells this drive's id.
+    fn is_spelled(&self, text: &str) -> bool {
+        self.0.eq_ignore_ascii_case(text)
+    }
+}
+
+/// As the text it is, quoted: what `{:?}` printed while the id was a `String`, which
+/// `Accounts.LastError` and the log say.
+impl std::fmt::Debug for DriveId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::fmt::Display for DriveId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::ops::Deref for DriveId {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for DriveId {
+    fn eq(&self, other: &str) -> bool {
+        self.is_spelled(other)
+    }
+}
+
+impl PartialEq<&str> for DriveId {
+    fn eq(&self, other: &&str) -> bool {
+        self.is_spelled(other)
+    }
+}
+
+impl PartialEq<String> for DriveId {
+    fn eq(&self, other: &String) -> bool {
+        self.is_spelled(other)
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -1144,6 +1144,7 @@ dependencies = [
  "konedrive-reason",
  "libc",
  "rusqlite",
+ "serde",
  "tempfile",
  "thiserror",
  "tokio",

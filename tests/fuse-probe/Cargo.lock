@@ -1042,6 +1042,7 @@ dependencies = [
  "konedrive-fs",
  "konedrive-reason",
  "rusqlite",
+ "serde",
  "thiserror",
  "tokio",
  "tracing",

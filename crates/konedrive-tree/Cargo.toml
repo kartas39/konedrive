@@ -17,6 +17,7 @@ testing = []
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-reason = { path = "../konedrive-reason" }
 rusqlite.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

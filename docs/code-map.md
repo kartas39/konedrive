@@ -84,7 +84,7 @@ The directories are in layer order: a directory uses only the directories before
 
 - `mod.rs` — what the module gives the rest of the daemon. `[tests]`
 - `paths.rs` — where the daemon's files are, and each account's.
-- `ids.rs` — `AccountId` and `DriveId`: the two ids of an account, as types.
+- `ids.rs` — `AccountId`, the id of an account as a type, and how `config.toml` holds a `DriveId` (the tree store's type).
 - `model.rs` — what `config.toml` holds (version 2), and the rules of labels, client ids and held accounts.
 - `store.rs` — `ConfigStore`, the one owner of the file; `WriteStanding`.
 - `atomic.rs` — one file replaced in one step.
