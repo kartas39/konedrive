@@ -3,6 +3,11 @@
 //! on the files are that — so it is rebuilt from a full listing whenever it
 //! cannot be used, and losing it costs one listing, never data.
 //!
+//! `items` has one row per item the folder shows or OneDrive has, keyed by a local item id
+//! that is never given twice: the item's binding to OneDrive, what the folder shows of it,
+//! and what the two sides last agreed on ([`ItemStore`]). Nothing reads it for the folder
+//! yet.
+//!
 //! `onedrive_items` is the tree the folder was last made to match; [`Table::Staging`]
 //! is the tree a cycle is building. The folder is reconciled against the new
 //! tree, and only then does it replace `onedrive_items`, in one transaction, so a
@@ -29,6 +34,7 @@ use rusqlite::Connection;
 
 mod activity;
 mod conflicts;
+mod item_store;
 mod meta;
 mod model;
 pub mod outbox;
@@ -45,6 +51,7 @@ mod thumbs;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
+pub use item_store::ItemStore;
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
     LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,

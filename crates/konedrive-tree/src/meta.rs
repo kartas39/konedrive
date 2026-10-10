@@ -18,7 +18,7 @@ pub(crate) const LISTING_NEXT: &str = "listing_next";
 /// a delta laid over `onedrive_items`.
 pub(crate) const STAGING_WHOLE: &str = "staging_whole";
 /// The drive the tree is a listing of.
-const DRIVE_ID: &str = "drive_id";
+pub(crate) const DRIVE_ID: &str = "drive_id";
 /// When a cycle last ended, unix seconds.
 const LAST_CHECKED: &str = "last_checked";
 /// The count of outbox commits: `onedrive_items.local_seq` of the row a commit
@@ -100,8 +100,14 @@ impl TreeStore {
         self.meta(DRIVE_ID)
     }
 
+    /// The tree is a listing of `drive` from now on; with the drive known, the root of the
+    /// folder is bound to the drive's root as soon as that is known too, in one transaction.
     pub fn set_drive_id(&self, drive: &str) -> Result<(), TreeError> {
-        self.set_meta(DRIVE_ID, Some(drive))
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
+        set(&tx, DRIVE_ID, Some(drive))?;
+        crate::item_store::bind_root(&tx)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// When a cycle last ended, unix seconds; `None` before the first, and

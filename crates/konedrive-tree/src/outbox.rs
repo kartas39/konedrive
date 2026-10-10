@@ -64,7 +64,8 @@ pub use encoded::Snapshot;
 pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
 pub use row::{BadItem, Base, Committed, Detection, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded, SessionUrl};
-use stored::{all_rows, insert, path_from, path_value, remove, rewrite, rows_where, set_snapshot};
+pub(crate) use stored::{path_from, path_value};
+use stored::{all_rows, insert, remove, rewrite, rows_where, set_snapshot};
 pub use sums::{OutboxGroup, SkippedGroup};
 pub use worker::ConflictCopy;
 
