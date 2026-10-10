@@ -6,7 +6,9 @@
 //! `items` has one row per item the folder shows or OneDrive has, keyed by a local item id
 //! that is never given twice: the item's binding to OneDrive, what the folder shows of it,
 //! what OneDrive has of it, and what the two sides last agreed on ([`ItemStore`]). Nothing
-//! reads it for the folder yet, and no cycle writes a listing into it yet.
+//! reads it for the folder yet, and no cycle writes a listing into it yet. What makes the two
+//! sides of the rows agree again is the sync plan ([`make_sync_plan`]), a function of rows
+//! given as values, which nothing calls yet either.
 //!
 //! `onedrive_items` is the tree the folder was last made to match; [`Table::Staging`]
 //! is the tree a cycle is building. The folder is reconciled against the new
@@ -48,6 +50,7 @@ mod schema;
 mod shared;
 mod source;
 mod staging;
+mod sync_plan;
 mod thumbs;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
@@ -63,6 +66,10 @@ pub use query::Skipped;
 pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
 pub use shared::{Store, QUEUE};
+pub use sync_plan::{
+    make_sync_plan, ExclusionReason, FolderStep, ItemExclusion, ItemVersions, ItemWait, OneDriveStep, PlanFault, RowStep, SendingState, SyncPlan, SyncPlanInput, SyncStep,
+    WaitReason,
+};
 pub use thumbs::{Thumbnail, ThumbnailBatch, THUMB_PAGE, THUMB_SCAN};
 
 /// A chain of parents longer than this is a cycle or corruption, not a drive.

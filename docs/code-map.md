@@ -811,6 +811,29 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   item OneDrive has, for one that is gone and for the root, each from what the listing says
   and the rows it is about, and the two questions of the guard against an outdated listing.
   Reads and writes no store. `[tests]`
+- `sync_plan.rs` — the sync plan: `make_sync_plan`, one pure function from rows and a few
+  facts given as values (`SyncPlanInput`, with the folder's `SendingState`) to the steps that
+  can run now and, for every other item, why not (`SyncPlan`: `SyncStep`s, `ItemWait`s with
+  their `WaitReason`, `ItemExclusion`s, `PlanFault`s). Each item is decided by itself; what
+  one item asks about another (its directory, the holder of a name, what is shown in it) is
+  found among the rows given. No caller in the daemon yet. `[tests]`: a test per cell of
+  the three tables, in `sync_plan/tests/` (`existence.rs`, `place.rs`, `content.rs`).
+- `sync_plan/side_change.rs` — what one side did to one item since the two sides last
+  agreed, read off its row (`SideChange`): never was, removed, or is there with its place
+  (`PlaceChange`) and its content (`ContentChange`: same, changed, not known without a
+  hash). `[tests]`
+- `sync_plan/item_decision.rs` — the three tables (whether the item exists, its place, its
+  content), cell by cell: `decide_item` from one item's `ItemCase` to one step, one wait,
+  an exclusion or nothing (`ItemDecision`). Reads no other row.
+- `sync_plan/sending_obstacle.rs` — what is not sent to OneDrive, and why
+  (`find_sending_obstacle`, `SendingObstacle`), by what a step sends of the item
+  (`Sending`). `[tests]`
+- `sync_plan/sync_step.rs` — one thing the plan does: `OneDriveStep` (a request to
+  OneDrive), `FolderStep` (a change of the folder and of the local version), `RowStep` (a
+  change of the rows alone), each case with the versions of the row it was planned from
+  (`ItemVersions`). `[tests]`
+- `sync_plan/plan_items.rs` — the rows a plan is made over (`PlanItems`), found by id, by
+  local place and by the directory the folder shows them in. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to
