@@ -155,16 +155,16 @@ fn the_first_cause_in_the_order_of_the_cases_is_the_one_shown() {
     holds.throttle(secs(30), NOW);
     assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::Throttled { until: NOW + 30 }), Some(NOW + 30)));
     holds.set_paused(Some(Some(NOW + 60)));
-    assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::Paused { until: Some(NOW + 60) }), Some(NOW + 60)));
+    assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::Paused { until: Some(NOW + 60) }), Some(NOW + 30)), "the throttle behind the pause ends first");
     assert_eq!(holds.find(NOW + 60), Some(SendingHold::FirstListingNotEnded), "a pause and a throttle whose end passed hold no more");
     holds.set_paused(Some(None));
-    assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::Paused { until: None }), None), "a pause until resumed ends by nothing");
+    assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::Paused { until: None }), None), "a pause until resumed ends by nothing");
     holds.set_writes_refusal(Some("no writes".into()));
-    assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), None));
+    assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::WritesNotAllowed { reason: "no writes".into() }), None));
     holds.set_signed_out(true);
     assert_eq!(holds.find(NOW), Some(SendingHold::SignedOut));
     holds.set_stopping();
-    assert_eq!((holds.find(NOW), holds.find_end(NOW)), (Some(SendingHold::Stopping), None));
+    assert_eq!((holds.find(NOW), holds.find_end(NOW + 30)), (Some(SendingHold::Stopping), None));
 }
 
 #[test]
@@ -199,6 +199,14 @@ fn a_download_is_held_by_a_pause_that_is_not_the_hold_shown() {
     assert!(holds.is_held(StepClass::Download, NOW), "and holds the download all the same");
     assert!(!holds.is_held(StepClass::Download, NOW + 60), "until its end");
     assert!(!holds.is_held(StepClass::Folder, NOW) && !holds.is_held(StepClass::Row, NOW));
+    // The classes held, as the choice of what starts is given them; and the end the
+    // plan's timer waits for is the pause's, though the hold shown ends by nothing.
+    assert_eq!(holds.list_held_classes(NOW), BTreeSet::from([StepClass::Content, StepClass::Metadata, StepClass::Download]));
+    assert_eq!(holds.list_held_classes(NOW + 60), BTreeSet::from([StepClass::Content, StepClass::Metadata]));
+    assert_eq!(holds.find_end(NOW), Some(NOW + 60), "the soonest end of anything that holds");
+    holds.throttle(secs(30), NOW);
+    assert_eq!(holds.find_end(NOW), Some(NOW + 30));
+    assert_eq!(holds.find_end(NOW + 60), None);
     holds.set_writes_refusal(None);
     assert!(!holds.is_held(StepClass::Content, NOW + 60));
 }

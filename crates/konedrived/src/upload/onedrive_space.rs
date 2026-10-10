@@ -111,6 +111,13 @@ impl OneDriveSpace {
     /// `HasSpace` and makes the plan again
     /// (`WakeCause::QuotaRead`). Replaces `space.rs:234`, `:247` (`apply_quota`,
     /// `decide_quota`) and `:279` (`release_fitting`).
+    ///
+    /// The read is written into the account's quota here, as made at `now`, whoever made
+    /// it: one path for the folder's own reads and the account's. For a read the account
+    /// wrote already this writes the same figures again, and what was uploaded between
+    /// that read and this call comes back onto what is left until the next read. A quota
+    /// that says nothing of the space is written nowhere. `HasSpace.free_space` is 0 when
+    /// Graph gave a state and no `remaining`: nothing that waits is taken to fit.
     pub fn apply_quota(&self, quota: &DriveQuota, now: i64) -> SpaceChange {
         let Some(is_full) = decide_is_full(quota) else { return SpaceChange::NotKnown };
         self.quota.read_at(quota, now);
@@ -122,6 +129,13 @@ impl OneDriveSpace {
     /// than 10 s old is used again) and answers the refusal: with space left the file
     /// alone is too big (`free_space` given), with none OneDrive is full. Called by the
     /// steps that send content. Replaces `space.rs:201` (`space_refused`).
+    ///
+    /// A quota that cannot be read, or that says nothing of the space, counts as full:
+    /// OneDrive just said so, and the read in 30 minutes decides. `size` decides nothing
+    /// here (the caller keeps it with the refusal, in the step memory); it is in the
+    /// journal's line. No lock is held across the request, so two refusals that come at
+    /// the same instant may each ask once; the second of two that come one after the
+    /// other uses the first's read.
     pub async fn refuse_for_space(&self, drive: &DriveClient, size: u64, now: i64) -> StepRefusal {
         // The account's read of a moment ago, when it says something of the space, was
         // applied when it was made; a new one is applied here.

@@ -13,10 +13,11 @@
 // test: the_steps_are_started_in_the_order_the_plan_gave_them
 #![allow(dead_code, unused_variables)]
 
+use std::collections::BTreeSet;
+
 use konedrive_tree::SyncStep;
 
 use crate::folder::running_steps::{RunningStep, StepClass};
-use crate::upload::sending_holds::SendingHold;
 
 /// How many steps of each bounded class run at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +53,9 @@ pub fn describe_running_step(step: &SyncStep) -> RunningStep {
 
 /// The steps of `planned` to start now, in the plan's order: none one of whose rows has a
 /// running step; of each bounded class as many as `limits` leave beside what runs; none
-/// that `hold` holds (`sending_holds::decide_is_held`). Pure.
-pub fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], limits: &StepLimits, hold: Option<&SendingHold>) -> StartChoice {
+/// of a class in `held_classes` (`SendingHolds::list_held_classes`: every cause that
+/// holds, not the one shown alone). Pure.
+pub fn decide_steps_to_start(planned: Vec<SyncStep>, running: &[RunningStep], limits: &StepLimits, held_classes: &BTreeSet<StepClass>) -> StartChoice {
     todo!()
 }
 

@@ -25,6 +25,7 @@
 // test: a_read_only_folder_that_still_sends_what_was_unsent_is_not_held_for_being_read_only
 #![allow(dead_code, unused_variables)]
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,8 +56,10 @@ pub enum SendingHold {
 
 /// Whether `hold` holds a step of `class`. Pure. Every hold holds what is sent
 /// (`Content`, `Metadata`); a download is held by the stop, the sign-out and the pause
-/// alone; a step towards the folder or of the rows by none.
-pub fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
+/// alone; a step towards the folder or of the rows by none. Private: who asks whether a
+/// step is held asks `SendingHolds::is_held` or `list_held_classes`, which ask this of
+/// every hold.
+fn decide_is_held(hold: Option<&SendingHold>, class: StepClass) -> bool {
     let Some(hold) = hold else { return false };
     match class {
         StepClass::Content | StepClass::Metadata => true,
@@ -152,21 +155,26 @@ impl SendingHolds {
         SendingHolds { holds: std::sync::Mutex::default(), sync_plan_wake }
     }
 
-    /// The hold that counts now, at the time `now`; `None` when sending may go on. A
-    /// throttle or a timed pause whose end passed holds no more. Called by the plan's
-    /// task, by an upload between two fragments, and by the bus.
+    /// The hold that is SHOWN now, at the time `now`: the first that holds, in the order
+    /// of the cases; `None` when sending may go on. A throttle or a timed pause whose end
+    /// passed holds no more. For what the bus and the published plan say. Whether a step
+    /// is held is not asked of it ([`is_held`](Self::is_held)): a later cause may hold a
+    /// class the first does not.
     pub fn find(&self, now: i64) -> Option<SendingHold> {
         crate::panic::lock(&self.holds).list(now).into_iter().next()
     }
 
-    /// When the hold that counts now ends by itself, Unix seconds; `None` when none does.
-    /// For the plan's task's timer.
+    /// The soonest time at which something that holds at `now` ends by itself, Unix
+    /// seconds; `None` when nothing that holds does. Of every hold, not of the one shown
+    /// alone: a timed pause behind a hold that ends by nothing still frees the downloads
+    /// at its end. For the plan's task's timer.
     pub fn find_end(&self, now: i64) -> Option<i64> {
-        match self.find(now)? {
+        let ends = crate::panic::lock(&self.holds).list(now).into_iter().filter_map(|hold| match hold {
             SendingHold::Paused { until } => until,
             SendingHold::Throttled { until } => Some(until),
             SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FirstListingNotEnded => None,
-        }
+        });
+        ends.min()
     }
 
     /// The account's pause began or ended. Called by `sync/pause.rs`.
@@ -210,6 +218,15 @@ impl SendingHolds {
     /// two fragments ask; [`find`](Self::find) is what is shown.
     pub fn is_held(&self, class: StepClass, now: i64) -> bool {
         crate::panic::lock(&self.holds).list(now).iter().any(|hold| decide_is_held(Some(hold), class))
+    }
+
+    /// Every class of step that is held at `now`, as [`is_held`](Self::is_held) answers
+    /// each: read once, under one lock, for the pure choice of which steps start
+    /// (`sync::sync_plan_task::step_choice::decide_steps_to_start`).
+    pub fn list_held_classes(&self, now: i64) -> BTreeSet<StepClass> {
+        let holds = crate::panic::lock(&self.holds).list(now);
+        let classes = [StepClass::Content, StepClass::Metadata, StepClass::Download, StepClass::Folder, StepClass::Row];
+        classes.into_iter().filter(|class| holds.iter().any(|hold| decide_is_held(Some(hold), *class))).collect()
     }
 
     /// The folder's sync is stopping: nothing new is started, uploads stop after their

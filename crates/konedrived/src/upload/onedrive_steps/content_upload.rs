@@ -43,7 +43,7 @@ use crate::folder::running_steps::RunningSteps;
 use crate::folder::step_outcome::{StepObstacle, StepOutcome};
 use crate::fuse::LocalContentFile;
 use crate::upload::onedrive_space::OneDriveSpace;
-use crate::upload::sending_holds::{SendingHold, SendingHolds};
+use crate::upload::sending_holds::SendingHolds;
 use crate::upload::Limits;
 
 /// How an upload of a content begins.
@@ -65,10 +65,10 @@ pub fn decide_upload_start(memory: &ItemMemory, size: u64) -> UploadStart {
     todo!()
 }
 
-/// Whether an upload stops before its next fragment, and as what: for anything that
-/// holds what is sent, and for a full OneDrive. Pure. Today's `stop_between_fragments`
-/// (`upload/content/session.rs:57`).
-pub fn decide_stop_between_fragments(hold: Option<&SendingHold>, is_onedrive_full: bool) -> Option<StepObstacle> {
+/// Whether an upload stops before its next fragment, and as what: while content is held
+/// (`SendingHolds::is_held(StepClass::Content, now)`), and for a full OneDrive. Pure.
+/// Today's `stop_between_fragments` (`upload/content/session.rs:57`).
+pub fn decide_stop_between_fragments(is_content_held: bool, is_onedrive_full: bool) -> Option<StepObstacle> {
     todo!()
 }
 
@@ -149,7 +149,7 @@ impl ContentUpload {
     /// `LocalContentFile::read_fragment` off the runtime, each followed by
     /// `StepMemory::advance_upload_session` and the progress told
     /// (`RunningSteps::tell_progress`). Between two fragments:
-    /// [`decide_stop_between_fragments`] with `SendingHolds::find` and
+    /// [`decide_stop_between_fragments`] with `SendingHolds::is_held` of content and
     /// `OneDriveSpace::is_full`. Before the last fragment of an existing item the guard is
     /// asked again (`item`, `G/mod.rs:217`; `Job::guard_broken`, `:381`).
     async fn send_fragments(&self, item: &ItemVersions, target: &UploadTarget<'_>, file: &LocalContentFile, session: UploadSession) -> Result<ConfirmedItem, StepOutcome> {
