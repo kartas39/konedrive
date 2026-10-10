@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{is_listed_removal_outdated, is_listed_version_outdated};
+use super::{ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
 use crate::item_store::item_row::write_item;
 use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_file, place, reference, synced};
 use crate::model::{Change, ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
@@ -48,17 +48,29 @@ fn version(parent: LocalItemId, name: &str, content_version: Option<&str>) -> Op
     Some(ItemVersion { place: Some(place(parent, name)), content: content_version.map(content) })
 }
 
-/// A store that knows its drive, `d1`.
+/// What follows a page of a listing that goes on.
+fn next_link(link: &str) -> ListingLink {
+    ListingLink::NextLink(link.to_owned())
+}
+
+/// What follows the last page of a listing.
+fn delta_link(link: &str) -> ListingLink {
+    ListingLink::DeltaLink(link.to_owned())
+}
+
+/// A store that knows its drive, `d1`, in which a full listing has begun.
 fn store_of_drive() -> TreeStore {
-    let store = TreeStore::in_memory().unwrap();
+    let mut store = TreeStore::in_memory().unwrap();
     store.set_drive_id("d1").unwrap();
+    store.item_store().begin_full_listing().unwrap();
     store
 }
 
-/// A store that knows its drive, whose root, `R`, was listed.
+/// A store that knows its drive, whose root, `R`, was listed by a full listing that ended
+/// with the delta link `link-0`.
 fn listed_store() -> TreeStore {
     let mut store = store_of_drive();
-    write(&mut store, &[root()]);
+    write_fetched_at(&mut store, &[root()], 0, &delta_link("link-0"));
     store
 }
 
@@ -70,15 +82,25 @@ fn ids(read_again: Vec<OneDriveItemId>) -> Vec<String> {
     read_again.iter().map(|id| id.as_str().to_owned()).collect()
 }
 
+/// Writes a page of a fetch that began at the count `fetch_began_at_count`, followed by
+/// `link`: what became of it.
+fn write_page(store: &mut TreeStore, changes: &[Change], fetch_began_at_count: u64, link: &ListingLink) -> ListedPageOutcome {
+    store.item_store().write_listed_changes(changes, fetch_began_at_count, link).unwrap()
+}
+
 /// Writes a page fetched now, of a listing that goes on; what is to be read again.
 fn write(store: &mut TreeStore, changes: &[Change]) -> Vec<String> {
     let fetch_began_at_count = count(store);
-    ids(store.item_store().write_listed_changes(changes, fetch_began_at_count, None).unwrap())
+    write_fetched_at(store, changes, fetch_began_at_count, &next_link("next"))
 }
 
-/// Writes a page of a fetch that began at the count `fetch_began_at_count`.
-fn write_fetched_at(store: &mut TreeStore, changes: &[Change], fetch_began_at_count: u64, delta_link: Option<&str>) -> Vec<String> {
-    ids(store.item_store().write_listed_changes(changes, fetch_began_at_count, delta_link).unwrap())
+/// [`write_page`]; what is to be read again.
+fn write_fetched_at(store: &mut TreeStore, changes: &[Change], fetch_began_at_count: u64, link: &ListingLink) -> Vec<String> {
+    ids(write_page(store, changes, fetch_began_at_count, link).outdated_items)
+}
+
+fn under_way(store: &mut TreeStore) -> Option<ListingUnderWay> {
+    store.item_store().find_listing_under_way().unwrap()
 }
 
 fn bound(store: &mut TreeStore, onedrive_id: &str) -> Option<Item> {
@@ -403,33 +425,67 @@ fn the_last_change_of_an_item_in_a_page_counts() {
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("2")));
 }
 
-/// The kind of a bound item never changes: a listing that says otherwise is refused for
-/// that item, and the rest of the page is written. So is an item whose parent is a file, is
-/// itself or is not said, and one with no id.
+/// What becomes of each change is answered, in the order they were given: written, or
+/// refused with its reason, and the rest of the page is written. The kind of a bound item
+/// never changes: a listing that says otherwise is refused for that item; so is an item
+/// whose parent is a file, is itself or is not said, one with no id, and the root given a
+/// place or listed gone. Of several changes of one item the last counts, and each has its
+/// outcome. No row is made for an item that is refused, nor for its parent.
 #[test]
-fn a_listing_that_changes_the_kind_of_an_item_is_refused_for_that_item() {
+fn each_change_is_answered_written_or_refused_with_its_reason_and_a_refused_one_makes_no_row() {
+    use ListedChangeOutcome::{Refused, Written};
     let mut store = listed_store();
     write(&mut store, &[directory("D", "R", "D"), file("A", "R", "a", "1")]);
     let mut expected = onedrive_side(&mut store);
+    let rows_made_so_far = every_row(&mut store).last().unwrap().local_item_id.as_i64();
     let Change::Upsert(orphan) = file("N", "R", "no-parent", "1") else { unreachable!() };
-    let read_again = write(
+    let now = count(&mut store);
+    let outcome = write_page(
         &mut store,
         &[
             file("D", "R", "D", "1"),
             directory("A", "R", "a"),
             file("X", "A", "in-a-file", "1"),
-            Change::Upsert(Row { parent_id: None, ..orphan }),
+            Change::Upsert(Row { parent_id: None, ..orphan.clone() }),
+            Change::Upsert(Row { parent_id: Some(String::new()), ..orphan }),
             file("S", "S", "in-itself", "1"),
-            directory("T", "T", "in-itself"),
-            file("", "R", "no-id", "1"),
-            file("B", "R", "b", "1"),
+            file("", "NEVER-NAMED", "no-id", "1"),
+            directory("R", "D", "root"),
+            gone("C"),
+            file("C", "R", "c", "1"),
+            gone("C"),
+            gone("never-known"),
+            gone(""),
         ],
+        now,
+        &next_link("next"),
     );
-    assert_eq!(read_again, Vec::<String>::new());
-    let b = listed(&mut store, "B");
-    assert_eq!(b.onedrive, version(ROOT, "b", Some("1")));
-    expected.insert("B".to_owned(), onedrive_side(&mut store)["B"].clone());
+    assert_eq!(
+        outcome.changes,
+        [
+            Refused(ListedChangeRefusal::KindChanged),
+            Refused(ListedChangeRefusal::KindChanged),
+            Refused(ListedChangeRefusal::ParentIsFile),
+            Refused(ListedChangeRefusal::NoParent),
+            Refused(ListedChangeRefusal::NoParent),
+            Refused(ListedChangeRefusal::PlacedInItself),
+            Refused(ListedChangeRefusal::NoItemId),
+            Refused(ListedChangeRefusal::RootGivenPlace),
+            Written,
+            Written,
+            Written,
+            Written,
+            Refused(ListedChangeRefusal::NoItemId),
+        ]
+    );
+    assert_eq!(outcome.outdated_items, Vec::new());
+    assert!(outcome.is_link_written());
     assert_eq!(onedrive_side(&mut store), expected, "the refused items left no row and changed none");
+    assert_eq!(make_file(&mut store, ROOT, "made-next").as_i64(), rows_made_so_far + 1, "the page made no row: none for a refused item, and none for its parent");
+
+    assert_eq!(write_page(&mut store, &[gone("R"), file("B", "R", "b", "1")], now, &next_link("next")).changes, [Refused(ListedChangeRefusal::RootListedGone), Written]);
+    expected.insert("B".to_owned(), onedrive_side(&mut store)["B"].clone());
+    assert_eq!(onedrive_side(&mut store), expected);
 }
 
 /// What a store holds before the pages of [`the_order_of_the_changes_in_a_page_does_not_matter`].
@@ -635,58 +691,6 @@ fn a_confirmation_that_cannot_be_is_refused_and_raises_no_count() {
     assert_eq!(every_row(&mut store), rows);
 }
 
-fn stamped(confirmed_at_count: u64, onedrive_etag: Option<&str>) -> Item {
-    Item {
-        local_item_id: LocalItemId::new(2),
-        onedrive_item: Some(reference("A")),
-        kind: ItemKind::File,
-        local: None,
-        onedrive: onedrive_etag.and_then(|_| version(ROOT, "a", Some("1"))),
-        onedrive_etag: onedrive_etag.map(str::to_owned),
-        synced_place: None,
-        synced_content: None,
-        content_presence: ContentPresence::NotOnDisk,
-        content_before_write: None,
-        placement: Placement::Placed,
-        is_name_ignored: false,
-        confirmed_at_count,
-    }
-}
-
-/// Whether what a page says an item is, is older than what was confirmed of it, a case
-/// each: a row never stamped, or stamped when the fetch began or before, takes the page;
-/// one stamped later takes it only when the page says what was confirmed, by its eTag.
-#[test]
-fn a_listed_version_is_outdated_for_a_row_stamped_later_unless_it_is_what_was_confirmed() {
-    for (what, row, listed_etag, outdated) in [
-        ("never stamped", stamped(0, Some("e-1")), Some("e-0"), false),
-        ("stamped before the fetch began", stamped(4, Some("e-1")), Some("e-0"), false),
-        ("stamped when the fetch began", stamped(5, Some("e-1")), Some("e-0"), false),
-        ("stamped later, and the page says what was confirmed", stamped(6, Some("e-1")), Some("e-1"), false),
-        ("stamped later, and the page says another version", stamped(6, Some("e-1")), Some("e-0"), true),
-        ("stamped later, and the page gives no eTag", stamped(6, Some("e-1")), None, true),
-        ("stamped later as removed", stamped(6, None), Some("e-0"), true),
-        ("stamped later as removed, and the page gives no eTag", stamped(6, None), None, true),
-    ] {
-        assert_eq!(is_listed_version_outdated(&row, 5, listed_etag), outdated, "{what}");
-    }
-}
-
-/// Whether a removal a page says, or means, is older than what was confirmed of the item,
-/// a case each: only for a row stamped after the fetch began that OneDrive was confirmed to
-/// have.
-#[test]
-fn a_listed_removal_is_outdated_for_a_row_stamped_later_that_onedrive_has() {
-    for (what, row, outdated) in [
-        ("never stamped", stamped(0, Some("e-1")), false),
-        ("stamped when the fetch began", stamped(5, Some("e-1")), false),
-        ("stamped later as removed", stamped(6, None), false),
-        ("stamped later with a version", stamped(6, Some("e-1")), true),
-    ] {
-        assert_eq!(is_listed_removal_outdated(&row, 5), outdated, "{what}");
-    }
-}
-
 /// The guard against an outdated listing: a page fetched before a confirmation and written
 /// after it. What it says of the row is not taken, and the item's id is answered for it to
 /// be read again; the same page saying what was confirmed is taken; so is a page of a fetch
@@ -700,14 +704,14 @@ fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() 
     confirm(&mut store, a, version(ROOT, "a", Some("333")), Some("e-A-333"));
     let confirmed = item(&mut store, a);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22"), file("B", "R", "b", "22")], fetch_began_at_count, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22"), file("B", "R", "b", "22")], fetch_began_at_count, &next_link("next")), ["A"]);
     assert_eq!(item(&mut store, a), confirmed);
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")), "the rest of the page is written");
 
-    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, &next_link("next")), ["A"]);
     assert_eq!(item(&mut store, a), confirmed);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at_count, None), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at_count, &next_link("next")), Vec::<String>::new());
     assert_eq!(item(&mut store, a), confirmed);
 
     assert_eq!(write(&mut store, &[file("A", "R", "a", "4444")]), Vec::<String>::new());
@@ -717,7 +721,7 @@ fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() 
 /// The guard for a confirmed removal: a page fetched before it does not bring the item
 /// back, and its removal there is what was confirmed. The row stays, with no version on
 /// either side, while that listing goes on, at its end, and through the item read again;
-/// it goes at the end of a listing whose fetch began after the confirmation.
+/// it goes at the end of a listing that began after the confirmation.
 #[test]
 fn a_page_fetched_before_a_confirmed_removal_does_not_bring_the_item_back() {
     let mut store = listed_store();
@@ -728,15 +732,38 @@ fn a_page_fetched_before_a_confirmed_removal_does_not_bring_the_item_back() {
     let removed = item(&mut store, a);
     assert_eq!((removed.local.clone(), removed.onedrive.clone(), removed.synced_place.clone()), (None, None, None));
 
-    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "1")], fetch_began_at_count, None), ["A"]);
-    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, None), Vec::<String>::new());
-    assert_eq!(write_fetched_at(&mut store, &[], fetch_began_at_count, Some("link-1")), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "1")], fetch_began_at_count, &next_link("next")), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at_count, &next_link("next")), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[], fetch_began_at_count, &delta_link("link-1")), Vec::<String>::new());
+    assert_eq!(under_way(&mut store), None);
     assert_eq!(write(&mut store, &[gone("A")]), Vec::<String>::new(), "the item read again, and not found");
     assert_eq!(item(&mut store, a), removed);
 
     let later = count(&mut store);
-    write_fetched_at(&mut store, &[], later, Some("link-2"));
+    write_fetched_at(&mut store, &[], later, &delta_link("link-2"));
     assert_eq!(store.item_store().find_item(a).unwrap(), None);
+}
+
+/// The row of a confirmed removal is kept by the count the listing began at, not by the
+/// count of the call that ends it: a listing that began before the removal and ends with a
+/// page fetched after it leaves the row, and the next listing takes it.
+#[test]
+fn the_row_of_a_confirmed_removal_stays_until_a_listing_ends_that_began_after_it() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-1"));
+    let a = listed(&mut store, "A").local_item_id;
+    let began_at_count = count(&mut store);
+    write_fetched_at(&mut store, &[file("B", "R", "b", "22")], began_at_count, &next_link("next-1"));
+    confirm(&mut store, a, None, None);
+
+    let later = count(&mut store);
+    assert!(later > began_at_count);
+    write_fetched_at(&mut store, &[], later, &delta_link("link-2"));
+    assert_eq!(under_way(&mut store), None);
+    assert!(bound(&mut store, "A").is_some(), "the listing began before the removal was confirmed");
+
+    write_fetched_at(&mut store, &[], later, &delta_link("link-3"));
+    assert_eq!(bound(&mut store, "A"), None);
 }
 
 /// What a directory listed gone takes with it is guarded too: a file confirmed in it after
@@ -749,7 +776,7 @@ fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetc
     let fetch_began_at_count = count(&mut store);
     confirm(&mut store, a, version(d, "a", Some("22")), Some("e-A-22"));
 
-    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next")), ["A"]);
     assert_eq!(item(&mut store, a).onedrive, version(d, "a", Some("22")));
     assert_eq!(bound(&mut store, "B"), None);
     assert_eq!(listed(&mut store, "D").onedrive, None, "its row stays while a row names it");
@@ -757,37 +784,299 @@ fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetc
 
 /// A full listing in several pages over the rows of an earlier one: it marks what it sees,
 /// and at its end what it did not see has no OneDrive version, as if listed gone. Nothing
-/// is taken before its end. What was confirmed after its fetch began and it did not see is
-/// read again. A listing of changes after it takes nothing it does not name.
+/// is taken before its last page. What was confirmed after it began and it did not see is
+/// answered to be read again, and the listing does not end before that was given: its link
+/// is not written. A listing of changes after it takes nothing it does not name.
 #[test]
 fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
     let mut store = listed_store();
     let kept = make_file(&mut store, ROOT, "kept");
     synced(&mut store, kept, "K");
-    write_fetched_at(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "R", "b", "1"), file("K", "R", "kept", "1"), file("U", "R", "u", "1")], 0, Some("link-0"));
+    write_fetched_at(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "R", "b", "1"), file("K", "R", "kept", "1"), file("U", "R", "u", "1")], 0, &delta_link("link-1"));
     let u = listed(&mut store, "U").local_item_id;
     let before = onedrive_side(&mut store);
 
-    store.item_store().begin_full_listing().unwrap();
-    let fetch_began_at_count = count(&mut store);
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    assert_eq!(began_at_count, count(&mut store));
     confirm(&mut store, u, version(ROOT, "u", Some("22")), Some("e-U-22"));
     let confirmed = onedrive_side(&mut store);
-    assert_eq!(write_fetched_at(&mut store, &[root(), directory("D", "R", "D")], fetch_began_at_count, None), Vec::<String>::new());
-    assert_eq!(onedrive_side(&mut store), confirmed, "nothing is taken before the listing ends");
+    assert_eq!(write_fetched_at(&mut store, &[root(), directory("D", "R", "D")], began_at_count, &next_link("next-1")), Vec::<String>::new());
+    assert_eq!(onedrive_side(&mut store), confirmed, "nothing is taken before the listing's last page");
     assert_ne!(confirmed, before);
 
-    assert_eq!(write_fetched_at(&mut store, &[file("B", "R", "b", "22")], fetch_began_at_count, Some("link-1")), ["U"]);
+    let last_page = write_page(&mut store, &[file("B", "R", "b", "22")], began_at_count, &delta_link("link-2"));
+    assert_eq!((last_page.changes.clone(), ids(last_page.outdated_items.clone()), last_page.is_link_written()), (vec![ListedChangeOutcome::Written], vec!["U".to_owned()], false));
     assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["B", "D", "K", "R", "U"]);
     assert_eq!(bound(&mut store, "A"), None);
     assert_eq!(listed(&mut store, "K").onedrive, None, "the folder shows it: its row stays");
     assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")));
     assert_eq!(listed(&mut store, "U").onedrive, version(ROOT, "u", Some("22")));
-    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+    assert_eq!(store.delta_link().unwrap(), None, "the listing has not ended: U is to be read again");
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+
+    let later = count(&mut store);
+    assert!(write_page(&mut store, &[file("U", "R", "u", "22")], later, &delta_link("link-2")).is_link_written());
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"));
+    assert_eq!(under_way(&mut store), None);
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["B", "D", "K", "R", "U"]);
 
     let after = onedrive_side(&mut store);
-    let later = count(&mut store);
-    write_fetched_at(&mut store, &[], later, Some("link-2"));
+    write_fetched_at(&mut store, &[], later, &delta_link("link-3"));
     assert_eq!(onedrive_side(&mut store), after, "the full listing ended: a listing of changes takes nothing it does not name");
+}
+
+/// M1 of the review, the order the entry promises. A step's upload of X is confirmed; a
+/// listing of changes fetched before that, one page with its link, says another client
+/// changed X since. The call leaves X to be read again, and so writes no link and ends no
+/// listing. The reading of X fails and the daemon stops: the store still has the old link,
+/// the listing asked from it again names X again, and the row then says what OneDrive has.
+#[test]
+fn a_page_that_leaves_an_item_to_read_again_writes_no_link_so_that_a_failed_reading_loses_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tree.sqlite");
+    let mut store = TreeStore::open(&path).unwrap();
+    store.set_drive_id("d1").unwrap();
+    store.item_store().begin_full_listing().unwrap();
+    write_fetched_at(&mut store, &[root(), file("X", "R", "x", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-0"));
+    let x = listed(&mut store, "X").local_item_id;
+    let fetch_began_at_count = count(&mut store);
+    confirm(&mut store, x, version(ROOT, "x", Some("22")), Some("e-X-22"));
+    let confirmed = item(&mut store, x);
+
+    let page = [file("X", "R", "x", "333"), file("B", "R", "b", "22")];
+    let outcome = write_page(&mut store, &page, fetch_began_at_count, &delta_link("link-1"));
+    assert_eq!(outcome.changes, [ListedChangeOutcome::Outdated, ListedChangeOutcome::Written]);
+    assert_eq!((ids(outcome.outdated_items.clone()), outcome.is_link_written()), (vec!["X".to_owned()], false));
+    assert_eq!(item(&mut store, x), confirmed);
+    assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")), "the rest of the page is written");
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"), "the link of a page that left something to read again is not written");
+    let not_ended = Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: fetch_began_at_count, next_link: None });
+    assert_eq!(under_way(&mut store), not_ended);
+    drop(store);
+
+    let mut store = TreeStore::open(&path).unwrap();
+    assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-0"), not_ended));
+    let later = count(&mut store);
+    let outcome = write_page(&mut store, &page, later, &delta_link("link-1"));
+    assert_eq!((outcome.changes.clone(), outcome.is_link_written()), (vec![ListedChangeOutcome::Written; 2], true));
+    let row = listed(&mut store, "X");
+    assert_eq!((row.onedrive, row.onedrive_etag.as_deref()), (version(ROOT, "x", Some("333")), Some("e-X-333")));
+    assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-1"), None));
+}
+
+/// The other end of the same order: what the caller read again is given with the link of
+/// the page that left it, and that call, which leaves nothing, writes the link. So for an
+/// item a page says is gone, and for a page a listing goes on after.
+#[test]
+fn what_was_read_again_is_given_with_the_same_link_which_is_then_written() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("X", "R", "x", "1")], 0, &delta_link("link-1"));
+    let x = listed(&mut store, "X").local_item_id;
+    let fetch_began_at_count = count(&mut store);
+    confirm(&mut store, x, version(ROOT, "x", Some("22")), Some("e-X-22"));
+
+    let outcome = write_page(&mut store, &[gone("X")], fetch_began_at_count, &delta_link("link-2"));
+    assert_eq!((outcome.changes.clone(), ids(outcome.outdated_items.clone())), (vec![ListedChangeOutcome::Outdated], vec!["X".to_owned()]));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+    let later = count(&mut store);
+    assert!(write_page(&mut store, &[file("X", "R", "x", "333")], later, &delta_link("link-2")).is_link_written());
+    assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-2"), None));
+    assert_eq!(listed(&mut store, "X").onedrive, version(ROOT, "x", Some("333")));
+
+    confirm(&mut store, x, version(ROOT, "x", Some("4444")), Some("e-X-4444"));
+    assert!(!write_page(&mut store, &[file("X", "R", "x", "333")], later, &next_link("next-1")).is_link_written());
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: later, next_link: None }));
+    let read_at = count(&mut store);
+    assert!(write_page(&mut store, &[file("X", "R", "x", "4444")], read_at, &next_link("next-1")).is_link_written());
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: later, next_link: Some("next-1".to_owned()) }));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"), "a link to the next page ends no listing");
+}
+
+/// S3 of the review: a full listing is resumed after a stop, and its remaining pages come
+/// with a later count. A new file a step sent, confirmed after the listing had passed its
+/// place, was not seen and is not taken: the sweep is bounded by the count the listing
+/// began at, which the store kept, and the file is read again.
+#[test]
+fn a_full_listing_resumed_with_a_later_count_does_not_take_what_was_confirmed_since_it_began() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, &delta_link("link-1"));
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], began_at_count, &next_link("next-1"));
+    let sent = make_file(&mut store, ROOT, "n");
+    store.item_store().bind_item(sent, &reference("N")).unwrap();
+    confirm(&mut store, sent, version(ROOT, "n", Some("1")), Some("e-N-1"));
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+
+    let later = count(&mut store);
+    assert!(later > began_at_count);
+    let outcome = write_page(&mut store, &[], later, &delta_link("link-2"));
+    assert_eq!((ids(outcome.outdated_items.clone()), outcome.is_link_written()), (vec!["N".to_owned()], false));
+    assert_eq!(item(&mut store, sent).onedrive, version(ROOT, "n", Some("1")));
+    assert_eq!(store.delta_link().unwrap(), None);
+
+    assert!(write_page(&mut store, &[file("N", "R", "n", "1")], later, &delta_link("link-2")).is_link_written());
+    assert_eq!(item(&mut store, sent).onedrive, version(ROOT, "n", Some("1")));
+    assert_eq!((store.delta_link().unwrap().as_deref(), under_way(&mut store)), (Some("link-2"), None));
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "N", "R"]);
+}
+
+/// Whether a listing is under way, a case each: none in a new store; a full one from its
+/// beginning, with the count it began at; with the link to its next page once a page gave
+/// one; none after the page with the delta link; and a listing of changes between its
+/// pages.
+#[test]
+fn the_store_says_whether_a_listing_is_under_way_and_where_it_goes_on() {
+    let mut store = TreeStore::in_memory().unwrap();
+    store.set_drive_id("d1").unwrap();
+    assert_eq!(under_way(&mut store), None);
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: None }));
+    write_fetched_at(&mut store, &[root()], 0, &next_link("next-1"));
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    write_fetched_at(&mut store, &[], 0, &delta_link("link-0"));
+    assert_eq!(under_way(&mut store), None);
+
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, &next_link("next-2"));
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Delta, began_at_count: 0, next_link: Some("next-2".to_owned()) }));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"));
+    write_fetched_at(&mut store, &[], 0, &delta_link("link-1"));
+    assert_eq!((under_way(&mut store), store.delta_link().unwrap().as_deref()), (None, Some("link-1")));
+}
+
+/// One listing at a time is the caller's rule, and the entry holds what it can of it: a
+/// page is refused whole, with nothing written, in a store that does not know its drive;
+/// when no listing is under way and the store has no delta link, so that what is listed
+/// can only be a full listing that was not begun; when its fetch is said to have begun at a
+/// count the store has not reached; and when its fetch began before the listing under way
+/// did, as a page of an older listing has.
+#[test]
+fn a_page_the_entry_cannot_write_rightly_is_refused_whole() {
+    let page = [root(), file("A", "R", "a", "1")];
+    let mut no_drive = TreeStore::in_memory().unwrap();
+    assert!(is_refused(no_drive.item_store().write_listed_changes(&page, 0, &delta_link("link-1"))));
+    assert_eq!((no_drive.delta_link().unwrap(), every_row(&mut no_drive).len()), (None, 1));
+
+    let mut not_begun = TreeStore::in_memory().unwrap();
+    not_begun.set_drive_id("d1").unwrap();
+    assert!(is_refused(not_begun.item_store().write_listed_changes(&page, 0, &next_link("next-1"))));
+    assert_eq!((under_way(&mut not_begun), every_row(&mut not_begun).len()), (None, 1));
+
+    let mut store = listed_store();
+    assert!(is_refused(store.item_store().write_listed_changes(&page, 1, &next_link("next-1"))), "the store counted no confirmation yet");
+    write(&mut store, &[file("B", "R", "b", "1")]);
+    let b = listed(&mut store, "B").local_item_id;
+    let older = count(&mut store);
+    confirm(&mut store, b, version(ROOT, "b", Some("22")), Some("e-B-22"));
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    let begun = under_way(&mut store);
+    assert!(older < began_at_count);
+    assert!(is_refused(store.item_store().write_listed_changes(&page, older, &delta_link("link-1"))), "a page fetched before the listing under way began");
+    assert_eq!((under_way(&mut store), store.delta_link().unwrap(), bound(&mut store, "A")), (begun, None, None));
+}
+
+/// A second full listing gives up the first: what only the first saw is not seen, its link
+/// to a next page is forgotten, and the count the listing began at is the second's.
+#[test]
+fn a_second_full_listing_gives_up_the_first() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-1"));
+    let a = listed(&mut store, "A").local_item_id;
+    store.item_store().begin_full_listing().unwrap();
+    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], 0, &next_link("next-1"));
+    confirm(&mut store, a, version(ROOT, "a", Some("1")), Some("e-A-1"));
+
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: None }));
+    assert_eq!(began_at_count, 1);
+    write_fetched_at(&mut store, &[root(), file("B", "R", "b", "1")], began_at_count, &delta_link("link-2"));
+    assert_eq!(item(&mut store, a).onedrive, None, "A was seen by the listing that was given up, and not by this one");
+    assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("1")));
+}
+
+/// While a full listing is under way every page is its page, also one that brings what was
+/// read again, with a later count: what it says OneDrive has is seen by the listing and is
+/// not taken at its end. The store has no delta link then, so that no listing of changes
+/// can be asked beside it.
+#[test]
+fn what_is_read_again_while_a_full_listing_is_under_way_is_seen_by_it() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-1"));
+    let a = listed(&mut store, "A").local_item_id;
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    confirm(&mut store, a, version(ROOT, "a", Some("22")), Some("e-A-22"));
+    assert_eq!(write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], began_at_count, &next_link("next-1")), ["A"]);
+    assert_eq!(store.delta_link().unwrap(), None);
+
+    let later = count(&mut store);
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22")], later, &next_link("next-1")), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[], later, &delta_link("link-2")), Vec::<String>::new());
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "B", "R"]);
+    assert_eq!(listed(&mut store, "A").onedrive, version(ROOT, "a", Some("22")));
+}
+
+/// A directory is listed gone on one page, and a later page of the same listing says a
+/// file that was in it is at the root: between the two the rows say OneDrive does not have
+/// the file, and the store says a listing is under way; after the second they say where it
+/// is. A file the folder shows is the same item throughout.
+#[test]
+fn a_child_moved_out_of_a_directory_listed_gone_has_its_version_again_on_a_later_page() {
+    let mut store = listed_store();
+    let kept = make_file(&mut store, ROOT, "kept");
+    synced(&mut store, kept, "K");
+    write_fetched_at(&mut store, &[directory("D", "R", "D"), file("X", "D", "x", "1"), file("K", "D", "kept", "1")], 0, &delta_link("link-1"));
+
+    assert_eq!(write_fetched_at(&mut store, &[gone("D")], 0, &next_link("next-1")), Vec::<String>::new());
+    assert_eq!((bound(&mut store, "X"), item(&mut store, kept).onedrive), (None, None));
+    assert!(under_way(&mut store).is_some(), "what the rows say is gone may be on a page still to come");
+
+    write_fetched_at(&mut store, &[file("X", "R", "x", "1"), file("K", "R", "kept", "1")], 0, &delta_link("link-2"));
+    assert_eq!(under_way(&mut store), None);
+    assert_eq!(onedrive_place(&mut store, "X"), Some(place(ROOT, "x")));
+    assert_eq!(listed(&mut store, "K").local_item_id, kept);
+    assert_eq!(item(&mut store, kept).onedrive, version(ROOT, "kept", Some("1")));
+}
+
+/// A full listing that begins forgets the delta link, in its own transaction: while one is
+/// under way the store has no link to ask a listing of changes from, so none can be asked
+/// whose end would take what the full listing has not seen yet.
+#[test]
+fn a_full_listing_that_begins_forgets_the_delta_link() {
+    let mut store = listed_store();
+    write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, &delta_link("link-1"));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+    store.item_store().begin_full_listing().unwrap();
+    assert_eq!(store.delta_link().unwrap(), None);
+}
+
+/// A full listing that is stopped goes on in a store opened again, from the link to its
+/// next page: what it saw before the stop is seen.
+#[test]
+fn a_full_listing_goes_on_in_a_store_opened_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tree.sqlite");
+    let mut store = TreeStore::open(&path).unwrap();
+    store.set_drive_id("d1").unwrap();
+    store.item_store().begin_full_listing().unwrap();
+    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, &delta_link("link-0"));
+    let began_at_count = store.item_store().begin_full_listing().unwrap();
+    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1")], 0, &next_link("next-1"));
+    drop(store);
+
+    let mut store = TreeStore::open(&path).unwrap();
+    assert_eq!(under_way(&mut store), Some(ListingUnderWay { kind: ListingKind::Full, began_at_count, next_link: Some("next-1".to_owned()) }));
+    write_fetched_at(&mut store, &[], 0, &delta_link("link-1"));
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "R"]);
+}
+
+/// The link the next listing is asked from is written with the answer that gave it, in
+/// one transaction; a link to a next page leaves it as it was.
+#[test]
+fn the_delta_link_is_written_with_the_answer_that_gave_it() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1")]);
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"));
+    write_fetched_at(&mut store, &[file("B", "R", "b", "1")], 0, &delta_link("link-1"));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
 }
 
 /// A directory `D` with a hundred directories in it and 9 900 files in those, as a listing
@@ -811,7 +1100,7 @@ fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_but_what_w
     confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
 
     let began = std::time::Instant::now();
-    let read_again = write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, None);
+    let read_again = write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next"));
     println!("a directory with ten thousand items below it listed gone: the page took {:?}", began.elapsed());
     assert_eq!(read_again, ["F5050"]);
     assert_eq!(item(&mut store, guarded).onedrive, version(its_directory, "f5050", Some("22")));
@@ -825,66 +1114,18 @@ fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_but_what_w
 #[test]
 fn a_full_listing_that_did_not_see_ten_thousand_items_takes_all_but_what_was_confirmed_since() {
     let mut store = listed_store();
-    write_fetched_at(&mut store, &ten_thousand_below(), 0, Some("link-0"));
+    write_fetched_at(&mut store, &ten_thousand_below(), 0, &delta_link("link-0"));
     let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
-    store.item_store().begin_full_listing().unwrap();
-    let fetch_began_at_count = count(&mut store);
+    let fetch_began_at_count = store.item_store().begin_full_listing().unwrap();
     confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
 
     let began = std::time::Instant::now();
-    let read_again = write_fetched_at(&mut store, &[root()], fetch_began_at_count, Some("link-1"));
+    let read_again = write_fetched_at(&mut store, &[root()], fetch_began_at_count, &delta_link("link-1"));
     println!("a full listing that did not see ten thousand items: its last page took {:?}", began.elapsed());
     assert_eq!(read_again, ["F5050"]);
     let left: Vec<String> = every_row(&mut store).into_iter().filter_map(|row| row.onedrive_item).map(|reference| reference.item_id.as_str().to_owned()).collect();
     assert_eq!(left, ["R", "S50", "F5050"]);
     assert_eq!(item(&mut store, guarded).onedrive, version(its_directory, "f5050", Some("22")));
-}
-
-/// A full listing that begins forgets the delta link, in its own transaction: while one is
-/// under way the store has no link to ask a listing of changes from, so none can be asked
-/// whose end would take what the full listing has not seen yet.
-#[test]
-fn a_full_listing_that_begins_forgets_the_delta_link() {
-    let mut store = listed_store();
-    write_fetched_at(&mut store, &[file("A", "R", "a", "1")], 0, Some("link-0"));
-    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-0"));
-    store.item_store().begin_full_listing().unwrap();
-    assert_eq!(store.delta_link().unwrap(), None);
-}
-
-/// A full listing that is stopped goes on in a store opened again: what it saw before the
-/// stop is seen.
-#[test]
-fn a_full_listing_goes_on_in_a_store_opened_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    let mut store = TreeStore::open(&path).unwrap();
-    store.set_drive_id("d1").unwrap();
-    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, Some("link-0"));
-    store.item_store().begin_full_listing().unwrap();
-    write(&mut store, &[root(), file("A", "R", "a", "1")]);
-    drop(store);
-
-    let mut store = TreeStore::open(&path).unwrap();
-    write_fetched_at(&mut store, &[], 0, Some("link-1"));
-    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "R"]);
-}
-
-/// The link the next listing is asked from is written with the answer that gave it, in
-/// one transaction, and only when the caller gives one. A page that cannot be written, in
-/// a store that does not know its drive, writes nothing, the link included.
-#[test]
-fn the_delta_link_is_written_with_the_answer_that_gave_it() {
-    let mut store = listed_store();
-    write(&mut store, &[file("A", "R", "a", "1")]);
-    assert_eq!(store.delta_link().unwrap(), None);
-    write_fetched_at(&mut store, &[file("B", "R", "b", "1")], 0, Some("link-1"));
-    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
-
-    let mut no_drive = TreeStore::in_memory().unwrap();
-    assert!(is_refused(no_drive.item_store().write_listed_changes(&[root(), file("A", "R", "a", "1")], 0, Some("link-1"))));
-    assert_eq!(no_drive.delta_link().unwrap(), None);
-    assert_eq!(every_row(&mut no_drive).len(), 1);
 }
 
 /// The two sides agree on what OneDrive has of the item of OneDrive `onedrive_id`.
@@ -1020,9 +1261,9 @@ fn list_in_full(store: &mut TreeStore, count: usize) -> Vec<std::time::Duration>
     let pages: Vec<&[Change]> = items.chunks(200).collect();
     let mut took = Vec::new();
     for (at, page) in pages.iter().enumerate() {
-        let delta_link = (at + 1 == pages.len()).then_some("link");
+        let link = if at + 1 == pages.len() { delta_link("link") } else { next_link("next") };
         let began = std::time::Instant::now();
-        store.item_store().write_listed_changes(page, 0, delta_link).unwrap();
+        store.item_store().write_listed_changes(page, 0, &link).unwrap();
         took.push(began.elapsed());
     }
     took
@@ -1058,7 +1299,7 @@ fn a_page_costs_the_same_whatever_the_store_holds() {
         for store in [small, large] {
             let fetch_began_at_count = count(store);
             let began = std::time::Instant::now();
-            store.item_store().write_listed_changes(&page, fetch_began_at_count, Some("link-2")).unwrap();
+            store.item_store().write_listed_changes(&page, fetch_began_at_count, &delta_link("link-2")).unwrap();
             took.push(began.elapsed());
         }
         println!("{what}: a page of {} changes took {:?} over 1 000 rows and {:?} over 100 000", page.len(), took[0], took[1]);

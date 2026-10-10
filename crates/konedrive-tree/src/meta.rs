@@ -31,8 +31,14 @@ pub(crate) const CONFIRMATION_COUNT: &str = "confirmation_count";
 /// The count of full listings begun: what a full listing marks the rows it sees with
 /// (`items.seen_in_full_listing`).
 pub(crate) const FULL_LISTING_COUNT: &str = "full_listing_count";
-/// Set while the full listing of that count is under way: begun, and not ended yet.
+/// The count of confirmations at which the listing under way began; set from the beginning
+/// of a listing written into `items` to its end, and so what says one is under way.
+pub(crate) const LISTING_BEGAN_AT_COUNT: &str = "listing_began_at_count";
+/// Set while the listing under way is a full one, of the count [`FULL_LISTING_COUNT`].
 pub(crate) const FULL_LISTING_UNDER_WAY: &str = "full_listing_under_way";
+/// The link the next page of the listing under way is asked from. Not [`LISTING_NEXT`],
+/// which is the resume point of today's first listing into `onedrive_items`.
+pub(crate) const LISTING_NEXT_LINK: &str = "listing_next_link";
 /// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 

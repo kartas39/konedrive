@@ -75,7 +75,7 @@ mod listed_into_items {
     //! with the delta link; nothing of today's staging is in between.
 
     use konedrive_graph::drive::{DeltaFrom, DeltaNext};
-    use konedrive_tree::{Change, ContentVersion, DriveId, FolderVisibility, ItemKind, OneDriveItemId, OneDriveItemReference, TreeStore};
+    use konedrive_tree::{Change, ContentVersion, DriveId, FolderVisibility, ItemKind, ListedChangeOutcome, ListingLink, OneDriveItemId, OneDriveItemReference, TreeStore};
 
     use super::classify;
     use crate::fake_onedrive::{FakeGraph, FakeItem, ROOT};
@@ -88,22 +88,25 @@ mod listed_into_items {
         FakeItem { id: id.into(), parent: Some(parent.into()), name: name.into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: format!("e-{id}"), ctag: format!("c-{id}"), mtime: 0 }
     }
 
-    /// Lists the fake's drive from `from` to the delta link, each page written as it comes.
+    /// Lists the fake's drive from `from` to the delta link, each page written as it comes
+    /// with the link that followed it. Nothing was confirmed meanwhile, so every change is
+    /// written and nothing is to be read again.
     async fn list(graph: &FakeGraph, store: &mut TreeStore, mut from: DeltaFrom) -> String {
         let drive = graph.client();
         let fetch_began_at_count = store.item_store().confirmation_count().unwrap();
         loop {
             let page = drive.delta(&from).await.unwrap();
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
+            let link = match &page.next {
+                DeltaNext::Page(next) => ListingLink::NextLink(next.clone()),
+                DeltaNext::Done(link) => ListingLink::DeltaLink(link.clone()),
+            };
+            let outcome = store.item_store().write_listed_changes(&changes, fetch_began_at_count, &link).unwrap();
+            assert_eq!(outcome.changes, vec![ListedChangeOutcome::Written; changes.len()]);
+            assert!(outcome.is_link_written());
             match page.next {
-                DeltaNext::Page(next) => {
-                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at_count, None).unwrap(), Vec::new());
-                    from = DeltaFrom::Link(next);
-                }
-                DeltaNext::Done(link) => {
-                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at_count, Some(&link)).unwrap(), Vec::new());
-                    return link;
-                }
+                DeltaNext::Page(next) => from = DeltaFrom::Link(next),
+                DeltaNext::Done(link) => return link,
             }
         }
     }
@@ -155,6 +158,7 @@ mod listed_into_items {
             store.item_store().begin_full_listing().unwrap();
             let link = list(&graph, &mut store, DeltaFrom::Start).await;
             assert_eq!(store.delta_link().unwrap().as_deref(), Some(link.as_str()));
+            assert_eq!(store.item_store().find_listing_under_way().unwrap(), None);
             let root = store.item_store().find_bound_item(&reference(ROOT)).unwrap().unwrap();
             assert_eq!(root.local_item_id, konedrive_tree::LocalItemId::ROOT);
             assert_rows_say_what_the_fake_has(&graph, &mut store, &["DOCS", "OLD", "A", "B", "C"]);
