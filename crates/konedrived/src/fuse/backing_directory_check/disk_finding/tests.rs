@@ -5,7 +5,7 @@ use super::ContentComparison::{Different, Same};
 use super::CopyWholeness::{Partial, Whole};
 use super::ItemBinding::{Bound, Unbound};
 use super::MarkOwner::{CopiedItem, MovedItem, SameItem, UnknownItem, Unmarked};
-use super::{compare_content, decide_finding, ContentAgreement, ContentComparison, CopyWholeness, DiskFinding, FileFacts, ItemBinding, MarkOwner, PathEntry, PathRow, UnresolvedReason};
+use super::{compare_content, decide_finding, ContentAgreement, ContentComparison, CopyWholeness, DiskFinding, DiskContent, ItemBinding, MarkOwner, PathEntry, PathRow, UnresolvedReason};
 use konedrive_tree::ContentPresence::{NotOnDisk, OnDisk};
 
 fn file_row(binding: ItemBinding, content_presence: ContentPresence, agreement: ContentAgreement) -> PathRow {
@@ -231,8 +231,8 @@ fn a_path_with_no_row_and_nothing_on_disk_is_unchanged() {
 
 // The comparison of a file with its row.
 
-fn on_disk(size: u64, mtime: i64, mtime_nsec: u32, ctag: Option<&str>) -> FileFacts {
-    FileFacts { size, mtime, mtime_nsec, ctag: ctag.map(str::to_owned) }
+fn on_disk(size: u64, mtime: i64, mtime_nsec: u32, ctag: Option<&str>) -> DiskContent {
+    DiskContent { size, mtime, mtime_nsec, ctag: ctag.map(str::to_owned) }
 }
 
 fn hashed(ctag: Option<&str>) -> ContentVersion {

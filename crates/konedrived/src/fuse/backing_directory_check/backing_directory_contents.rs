@@ -1,6 +1,6 @@
 //! Everything the backing directory holds, read once ([`BackingDirectoryContents`]): each
 //! directory's entries with what the filesystem and their marks say of them
-//! ([`EntryFacts`]), and which entries carry each OneDrive item id.
+//! ([`BackingDirectoryEntry`]), and which entries carry each OneDrive item id.
 //!
 //! The disk is read here and nowhere else in the check, a level of directories at a time on
 //! several threads: one look at each entry and its marks. Nothing is decided here. What is
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use konedrive_tree::ItemKind;
 
-use super::disk_finding::{CopyWholeness, FileFacts, UnresolvedReason};
+use super::disk_finding::{CopyWholeness, DiskContent, UnresolvedReason};
 use super::UnresolvedPath;
 use crate::folder::disk::daemon_owned;
 use crate::fuse::backing_directory::{BackingDirectory, DiskMarks};
@@ -33,20 +33,20 @@ pub(super) type EntryIndex = usize;
 /// What the disk says of one directory entry: its name, its kind, the marks it carries, and
 /// for a file what tells its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntryFacts {
+pub(super) struct BackingDirectoryEntry {
     pub(super) name: OsString,
     pub(super) kind: ItemKind,
     /// The OneDrive item id the entry is marked with.
     pub(super) onedrive_id: Option<String>,
     pub(super) wholeness: CopyWholeness,
     /// Of a file. A directory's say nothing.
-    pub(super) file: FileFacts,
+    pub(super) file: DiskContent,
 }
 
 /// One directory as it was read.
 #[derive(Default)]
-struct DirectoryReading {
-    entries: Vec<EntryFacts>,
+struct DirectoryScan {
+    entries: Vec<BackingDirectoryEntry>,
     /// The names that are no file and no directory, or that could not be looked at.
     unknown_names: Vec<(OsString, UnresolvedReason)>,
     /// Why the directory could not be read to its end.
@@ -54,7 +54,7 @@ struct DirectoryReading {
 }
 
 pub(super) struct BackingDirectoryContents {
-    entries: Vec<EntryFacts>,
+    entries: Vec<BackingDirectoryEntry>,
     /// The directory each entry is in: `None` for the backing directory itself.
     parents: Vec<Option<EntryIndex>>,
     /// The entries in each entry, by name: none in a file, and none in a directory that was
@@ -69,16 +69,16 @@ pub(super) struct BackingDirectoryContents {
     unresolved: Vec<UnresolvedPath>,
 }
 
-fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryReading {
-    let mut read = DirectoryReading::default();
+fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
+    let mut read = DirectoryScan::default();
     let listed = match backing_directory.read_directory(rel) {
         Ok(listed) => listed,
-        Err(e) => return DirectoryReading { unreadable: Some(e.to_string()), ..read },
+        Err(e) => return DirectoryScan { unreadable: Some(e.to_string()), ..read },
     };
     for listed in listed {
         let listed = match listed {
             Ok(listed) => listed,
-            Err(e) => return DirectoryReading { unreadable: Some(e.to_string()), ..DirectoryReading::default() },
+            Err(e) => return DirectoryScan { unreadable: Some(e.to_string()), ..DirectoryScan::default() },
         };
         let name = listed.file_name();
         if daemon_owned(&name) {
@@ -103,8 +103,8 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryReadin
         let onedrive_id = marks.onedrive_id();
         let wholeness = if onedrive_id.is_none() || marks.is_whole() { CopyWholeness::Whole } else { CopyWholeness::Partial };
         let ctag = if kind == ItemKind::File && onedrive_id.is_some() { backing_directory.read_ctag_mark(&rel.join(&name)) } else { None };
-        let file = FileFacts { size: metadata.size(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, ctag };
-        read.entries.push(EntryFacts { name, kind, onedrive_id, wholeness, file });
+        let file = DiskContent { size: metadata.size(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, ctag };
+        read.entries.push(BackingDirectoryEntry { name, kind, onedrive_id, wholeness, file });
     }
     read.entries.sort_by(|a, b| a.name.cmp(&b.name));
     read
@@ -112,13 +112,13 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryReadin
 
 /// The directories of one level, each read: on several threads when there are enough of
 /// them to be worth it.
-fn read_level(backing_directory: &BackingDirectory, level: &[PathBuf]) -> Vec<DirectoryReading> {
+fn read_level(backing_directory: &BackingDirectory, level: &[PathBuf]) -> Vec<DirectoryScan> {
     let threads = std::thread::available_parallelism().map_or(1, usize::from).min(MOST_THREADS).min(level.len() / 4);
     if threads < 2 {
         return level.iter().map(|rel| read_one(backing_directory, rel)).collect();
     }
     let next = AtomicUsize::new(0);
-    let mut read: Vec<Option<DirectoryReading>> = level.iter().map(|_| None).collect();
+    let mut read: Vec<Option<DirectoryScan>> = level.iter().map(|_| None).collect();
     std::thread::scope(|scope| {
         let readers: Vec<_> = (0..threads)
             .map(|_| {
@@ -140,7 +140,7 @@ fn read_level(backing_directory: &BackingDirectory, level: &[PathBuf]) -> Vec<Di
             }
         }
     });
-    read.into_iter().map(|directory| directory.unwrap_or_else(|| DirectoryReading { unreadable: Some("its reader failed".to_owned()), ..DirectoryReading::default() })).collect()
+    read.into_iter().map(|directory| directory.unwrap_or_else(|| DirectoryScan { unreadable: Some("its reader failed".to_owned()), ..DirectoryScan::default() })).collect()
 }
 
 impl BackingDirectoryContents {
@@ -207,7 +207,7 @@ impl BackingDirectoryContents {
         self.entries.len()
     }
 
-    pub(super) fn entry(&self, index: EntryIndex) -> &EntryFacts {
+    pub(super) fn entry(&self, index: EntryIndex) -> &BackingDirectoryEntry {
         &self.entries[index]
     }
 

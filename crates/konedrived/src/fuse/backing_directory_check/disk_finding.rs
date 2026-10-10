@@ -152,7 +152,7 @@ pub(in crate::fuse) enum UnresolvedReason {
 
 /// What of a file on disk tells its content from another.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FileFacts {
+pub(super) struct DiskContent {
     pub(super) size: u64,
     /// Whole Unix seconds, and the nanoseconds beyond them.
     pub(super) mtime: i64,
@@ -165,7 +165,7 @@ pub(super) struct FileFacts {
 /// seconds are the row's, and its cTag mark is the row's cTag where both have one. A row
 /// whose content was changed here has no cTag, and the mark, which is of the copy the change
 /// began from, is not asked.
-pub(super) fn compare_content(row: &ContentVersion, file: &FileFacts) -> ContentComparison {
+pub(super) fn compare_content(row: &ContentVersion, file: &DiskContent) -> ContentComparison {
     let row_ctag = match row {
         ContentVersion::Hashed { ctag, .. } => ctag.as_deref(),
         ContentVersion::ChangedHere { .. } => None,

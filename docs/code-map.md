@@ -243,7 +243,7 @@ daemon shows OneDrive.
   (`compare_content`). No disk and no store. `[tests]`
 - `backing_directory_check/backing_directory_contents.rs` — `BackingDirectoryContents`: all
   the backing directory holds, read once on several threads, each entry with its marks
-  (`EntryFacts`), and the entries that carry each OneDrive item id; what was not read is
+  (`BackingDirectoryEntry`), and the entries that carry each OneDrive item id; what was not read is
   said.
 - `backing_directory_check/item_rows.rs` — `ItemRows`: all the rows read once, by id, by
   place and by the OneDrive item id of their binding.

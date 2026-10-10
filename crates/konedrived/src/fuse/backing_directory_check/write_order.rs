@@ -19,7 +19,7 @@ use std::ffi::{OsStr, OsString};
 use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, ItemStore, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, TreeError};
 
 use super::backing_directory_contents::{BackingDirectoryContents, EntryIndex};
-use super::disk_finding::{DiskFinding, FileFacts, MarkOwner, UnresolvedReason};
+use super::disk_finding::{DiskFinding, DiskContent, MarkOwner, UnresolvedReason};
 use super::entry_identities::{EntryIdentities, EntryIdentity};
 use super::item_rows::ItemRows;
 use super::local_places::LocalPlaces;
@@ -46,7 +46,7 @@ enum UnwrittenEntry {
     /// It is left as it was found.
     Left,
     /// The directory it is in is being written further up.
-    NotYet,
+    DirectoryUnwritten,
 }
 
 /// What the writes are found from, gathered before the first of them: the rows and the
@@ -74,6 +74,9 @@ pub(super) struct WriteOrder<'a, 'store> {
     moving: Vec<LocalItemId>,
     /// The directories being removed now.
     removing: HashSet<LocalItemId>,
+    /// The items that were set aside by a write of their own, each with the name it was
+    /// given in the root of the folder.
+    set_aside: Vec<(LocalItemId, OsString)>,
     written: DiskFindings,
 }
 
@@ -87,7 +90,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         let drives = inputs.rows.list().filter_map(|item| Some((item.local_item_id, item.onedrive_item.as_ref()?.drive_id.clone()))).collect();
         let progress = vec![EntryProgress::Waiting; inputs.contents.len()];
         let written = DiskFindings { unresolved: inputs.contents.list_unresolved().to_vec(), ..DiskFindings::default() };
-        WriteOrder { item_store, backing_directory, upload_rules, drive_id, inputs, places, drives, progress, moving: Vec::new(), removing: HashSet::new(), written }
+        WriteOrder { item_store, backing_directory, upload_rules, drive_id, inputs, places, drives, progress, moving: Vec::new(), removing: HashSet::new(), set_aside: Vec::new(), written }
     }
 
     /// Writes every finding, and answers how many of each were written and what was left.
@@ -111,6 +114,13 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
                 self.written.unresolved.push(UnresolvedPath { path, reason });
             }
         }
+        // An item that was set aside and could not be moved on has a row at a name the disk
+        // does not have: it is said, and a next check finds the item by its mark.
+        for (item, name) in &self.set_aside {
+            if self.places.is_at(*item, LocalItemId::ROOT, name) {
+                self.written.unresolved.push(UnresolvedPath { path: name.into(), reason: UnresolvedReason::Blocked });
+            }
+        }
         self.written.unresolved.sort_by(|a, b| a.path.cmp(&b.path));
         self.written
     }
@@ -123,7 +133,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         match self.progress[index] {
             EntryProgress::Written(item) => return Ok(item),
             EntryProgress::Left => return Err(UnwrittenEntry::Left),
-            EntryProgress::Begun => return Err(UnwrittenEntry::NotYet),
+            EntryProgress::Begun => return Err(UnwrittenEntry::DirectoryUnwritten),
             EntryProgress::Waiting => {}
         }
         self.progress[index] = EntryProgress::Begun;
@@ -134,9 +144,9 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         let written = match directory {
             Ok(directory) => self.write_entry_in(index, directory).map_err(Some),
             // Its directory is being made further up: its turn comes again.
-            Err(UnwrittenEntry::NotYet) => {
+            Err(UnwrittenEntry::DirectoryUnwritten) => {
                 self.progress[index] = EntryProgress::Waiting;
-                return Err(UnwrittenEntry::NotYet);
+                return Err(UnwrittenEntry::DirectoryUnwritten);
             }
             Err(UnwrittenEntry::Left) => Err(None),
         };
@@ -235,7 +245,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
     }
 
     /// What a finding of a file's content writes to the row of `item`.
-    fn write_content(&mut self, item: LocalItemId, finding: DiskFinding, file: &FileFacts) -> Result<(), UnresolvedReason> {
+    fn write_content(&mut self, item: LocalItemId, finding: DiskFinding, file: &DiskContent) -> Result<(), UnresolvedReason> {
         let row = self.inputs.rows.find(item);
         let was_open_for_writing = row.is_some_and(|row| row.content_before_write.is_some());
         match finding {
@@ -308,7 +318,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
                 Ok(_) => Ok(()),
                 // The directory it is to be in is not made yet, and waits for this: it is
                 // set aside, and moved into the directory when its turn comes.
-                Err(UnwrittenEntry::NotYet) => self.set_aside(item),
+                Err(UnwrittenEntry::DirectoryUnwritten) => self.set_aside(item),
                 Err(UnwrittenEntry::Left) => Err(UnresolvedReason::Blocked),
             },
             None if self.inputs.findings.is_removed(item) => self.remove(item),
@@ -390,6 +400,7 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         self.item_store.apply(&aside).map_err(refuse)?;
         if let LocalVersionChange::Moved { place, .. } = aside {
             self.places.set(item, LocalItemId::ROOT, &place.name);
+            self.set_aside.push((item, place.name));
         }
         Ok(())
     }
