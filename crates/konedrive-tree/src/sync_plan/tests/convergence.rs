@@ -639,11 +639,12 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
 
 const RUN_KINDS: [RunKind; 6] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn, RunKind::RequestsInFlight];
 
-/// The design's §12, "convergence": new. A few seeds of each kind of run.
+/// The design's §12, "convergence": new. A few seeds of each kind of run; more of the one
+/// with requests in flight, whose cases are rarer.
 #[test]
 fn changes_made_at_random_on_both_sides_converge_and_nothing_is_lost() {
     for kind in RUN_KINDS {
-        for seed in 1..=8 {
+        for seed in 1..=if kind == RunKind::RequestsInFlight { 12 } else { 8 } {
             run(seed, kind, 4, 6).unwrap_or_else(|failure| panic!("{failure}"));
         }
     }

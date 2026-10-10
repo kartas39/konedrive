@@ -312,6 +312,18 @@ fn what_was_agreed_to_be_in_a_directory_that_gives_up_its_binding_waits_for_it()
     assert_eq!(answer(&given, 6), waits_for(2), "it leaves the folder after");
 }
 
+/// Found by the convergence run in which OneDrive is a state of its own (seed 157): a new
+/// directory here and a new one in OneDrive are one item, and the merge moves the binding
+/// to the row of the folder's — with it, what OneDrive has in the directory is in that row.
+/// A step of such an item would find its row changed beside the merge: it waits for it.
+#[test]
+fn what_onedrive_has_in_a_directory_that_is_merged_waits_for_the_merge() {
+    let given = input(vec![made_directory(2, ROOT, "d"), listed(3, ItemKind::Directory, ROOT, "d"), moved_in_onedrive(removed_here(synced_file(4, ROOT, "b.txt")), id(3), "e.txt")]);
+    assert_eq!(answer(&given, 2), row_step(RowStep::MergeItems { local: versions(&given, 2), onedrive: versions(&given, 3) }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+    assert_eq!(answer(&given, 4), waits_for(2), "its removal is sent once its row says where OneDrive has it");
+}
+
 /// B3: no rule today (Graph's answer to such a move is not measured). The design: OneDrive's
 /// move stands and the local one is taken back.
 #[test]

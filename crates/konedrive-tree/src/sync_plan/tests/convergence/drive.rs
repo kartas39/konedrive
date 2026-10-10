@@ -188,9 +188,18 @@ impl OneDriveChanges {
         })
     }
 
-    /// What was changed since the listing before: the page a listing fetched now says.
+    /// What was changed since the listing before, as the page of a listing fetched now
+    /// says it: each item that changed once, as it is now — one that changed and then went
+    /// with a directory above it is named gone, as a delta of OneDrive names it; one that
+    /// went with a directory and did not change before is not named.
     pub(crate) fn fetch_changes(&mut self) -> Vec<Change> {
-        std::mem::take(&mut self.listed)
+        let mut changed: Vec<String> = Vec::new();
+        for change in std::mem::take(&mut self.listed).iter().rev() {
+            if !changed.iter().any(|id| id == change.id()) {
+                changed.push(change.id().to_owned());
+            }
+        }
+        changed.iter().rev().map(|id| self.read(id)).collect()
     }
 
     /// The item `id` as OneDrive answers a request about it.

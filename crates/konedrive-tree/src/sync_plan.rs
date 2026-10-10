@@ -19,8 +19,8 @@
 //! - the items the rows say OneDrive has under one name ([`onedrive_name_holders`]);
 //! - a directory one side removed, and what the other side has in it
 //!   ([`removed_directory`]);
-//! - a directory that gives up its binding, and what was agreed to be in it
-//!   ([`directory_binding`]);
+//! - a directory whose binding moves to another row — it gives it up, or is merged —, and
+//!   what was agreed to be in it ([`directory_binding`]);
 //! - the items that wait for each other's names, and the temporary name one of them goes
 //!   through ([`name_exchange`]);
 //! - the guard against a mass removal ([`mass_removal`]);
@@ -43,7 +43,7 @@ use crate::model::{FolderVisibility, Item, ItemKind, ItemPlace, LocalItemId};
 
 /// The name of a conflict copy.
 mod conflict_copy_name;
-/// The binding of a directory that gives it up, and what was agreed to be in it.
+/// The binding of a directory that moves to another row, and what was agreed to be in it.
 mod directory_binding;
 /// The guard against a mass removal.
 mod mass_removal;
@@ -565,8 +565,8 @@ impl SyncPlan {
 /// 3. the items the rows say OneDrive has under one name (`onedrive_name_holders`);
 /// 4. what OneDrive has below a directory that was removed here, while that directory's
 ///    removal is still to be sent, and a directory OneDrive removed that holds the user's
-///    own (`removed_directory`); then a directory that gives up its binding, and what was
-///    agreed to be in it (`directory_binding`);
+///    own (`removed_directory`); then a directory whose binding moves to another row, and
+///    what was agreed to be in it (`directory_binding`);
 /// 5. the items that wait for each other's names (`name_exchange`);
 /// 6. the guard against a mass removal (`mass_removal`);
 /// 7. where each wait for another item ends (`wait_chain`); and, for a file whose wait

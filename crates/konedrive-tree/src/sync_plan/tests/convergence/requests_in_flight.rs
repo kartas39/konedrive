@@ -42,7 +42,25 @@ pub(super) struct RequestsInFlight {
     read_again: Vec<String>,
 }
 
+/// A step in a few words: its kind, its item, and where it sends it.
+fn name_step(step: &OneDriveStep) -> String {
+    let kind = format!("{step:?}");
+    let kind = kind.split([' ', '{']).next().unwrap_or_default();
+    let binding = step.item().onedrive_item.as_ref().map_or("-", |item| item.item_id.as_str());
+    match step {
+        OneDriveStep::MakeDirectory { parent, name, .. } | OneDriveStep::SendNewFile { parent, name, .. } | OneDriveStep::SendMove { parent, name, .. } => {
+            format!("{kind} of {} ({binding}) into {}/{}", step.item().local_item_id, parent.item_id.as_str(), name.to_string_lossy())
+        }
+        _ => format!("{kind} of {} ({binding})", step.item().local_item_id),
+    }
+}
+
 impl World {
+    /// What a failure is read by says this too, among the changes.
+    fn tell(&mut self, what: String) {
+        self.changes.said.push(format!("  step: {what}"));
+    }
+
     fn drive(&mut self) -> &mut OneDriveChanges {
         self.drive.as_mut().expect("OneDrive is a state of its own in this run")
     }
@@ -91,6 +109,7 @@ impl World {
                 outcome
             }
         };
+        self.tell(format!("{} ends {outcome:?}", name_step(step)));
         self.check_rules_of_rows(&format!("{step:?}"))?;
         Ok(outcome)
     }
@@ -116,6 +135,12 @@ impl World {
                 let answer = self.drive().request(sending);
                 self.end_step(sending, answer)
             }
+            (SyncStep::Folder(_) | SyncStep::Row(_), true) => {
+                let outcome = self.stand_in.run(&mut self.store, step);
+                let kind = format!("{step:?}");
+                self.tell(format!("{} of {} ends {outcome:?}", kind.split([' ', '{']).next().unwrap_or_default(), step.local_item_id()));
+                Ok(outcome)
+            }
             (SyncStep::OneDrive(OneDriveStep::SendDirectoryRemoval { item, .. }), false) => {
                 let against_the_rows = find_what_a_directory_removal_must_not_take(&mut self.store, item.local_item_id, &BTreeSet::new());
                 match (self.stand_in.run(&mut self.store, step), against_the_rows) {
@@ -133,13 +158,18 @@ impl World {
         self.check_request_can_leave(step)?;
         let rounds_left = self.what_facts_are_drawn_with.below(2);
         match self.what_facts_are_drawn_with.below(3) {
-            0 => self.requests.in_flight.push(RequestInFlight { step: step.clone(), answer: None, rounds_left }),
+            0 => {
+                self.tell(format!("{} leaves, and is slow", name_step(step)));
+                self.requests.in_flight.push(RequestInFlight { step: step.clone(), answer: None, rounds_left });
+            }
             1 => {
-                let answer = Some(self.drive().request(step));
-                self.requests.in_flight.push(RequestInFlight { step: step.clone(), answer, rounds_left });
+                let answer = self.drive().request(step);
+                self.tell(format!("{} is done by OneDrive, and its answer is slow: {answer:?}", name_step(step)).chars().take(160).collect());
+                self.requests.in_flight.push(RequestInFlight { step: step.clone(), answer: Some(answer), rounds_left });
             }
             _ => {
                 let answer = self.drive().request(step);
+                self.tell(format!("{} is done by OneDrive, and its answer is lost: {answer:?}", name_step(step)).chars().take(160).collect());
                 self.drive().forget_what_was_sent(&answer);
                 self.requests.lost.push(step.clone());
             }
@@ -169,6 +199,8 @@ impl World {
     fn write_page(&mut self, listing: ListingId, mut page: Vec<Change>, mut fetched_at: u64) -> Result<(), Failure> {
         for _ in 0..10 {
             let outcome = self.store.item_store().write_listed_changes(listing, &page, fetched_at, &ListingLink::DeltaLink("link".into())).map_err(|error| format!("a page is refused: {error}"))?;
+            let named: Vec<String> = page.iter().map(|change| if let Change::Delete(id) = change { format!("-{id}") } else { change.id().to_owned() }).collect();
+            self.tell(format!("a page fetched at {fetched_at} is written: {}; to read again: {:?}", named.join(" "), outcome.outdated_items.iter().map(|item| item.as_str()).collect::<Vec<_>>()));
             self.check_rules_of_rows(&format!("the page {page:?}, which answered {outcome:?}"))?;
             if let Some(refused) = outcome.changes.iter().find(|change| matches!(change, ListedChangeOutcome::Refused(_))) {
                 return Err(format!("a change of the page {page:?} is refused: {refused:?}"));
