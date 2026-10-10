@@ -19,7 +19,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::folder::disk::daemon_owned;
+use crate::folder::disk::is_hidden_name;
 use crate::local::SharedIgnore;
 
 /// What the upload rules decide of what is not in OneDrive at a place.
@@ -83,9 +83,9 @@ impl UploadRules {
     }
 
     /// Whether `name` is one the daemon uses for itself in the folder: no program makes it
-    /// or renames anything to it.
+    /// or renames anything to it (`folder::disk::is_hidden_name`).
     pub(super) fn is_daemon_owned(&self, name: &str) -> bool {
-        daemon_owned(name.as_ref())
+        is_hidden_name(name.as_ref())
     }
 
     /// Whether `name`, in the folder itself, is a file manager's trash directory. None is
