@@ -42,7 +42,9 @@ pub(super) struct ItemRangeFetcher {
 }
 
 impl ItemRangeFetcher {
-    /// Made by the mount's build.
+    /// Made by the mount's build. `new` and `forget_ranges` are filled first, with the
+    /// daemon's leaves (the steps towards the folder call `forget_ranges`); `fetch_range`
+    /// with the reading requests.
     pub(super) fn new(range_readers: Arc<RangeReaders>, source: Arc<dyn ContentSource>) -> Self {
         todo!()
     }

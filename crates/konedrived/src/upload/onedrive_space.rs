@@ -13,7 +13,8 @@
 //! **Answers for:** the plan's `is_onedrive_full`; design §6, "what is not sent: content,
 //! while OneDrive is full (moves and removals go on)"; `UploadQueue.QuotaFull`.
 //!
-//! **Tested without the rest:**
+//! **Tested without the rest** (`refuse_for_space` over wiremock directly, as today's
+//! `upload/space` tests; no fixture):
 // test: a_quota_that_says_exceeded_or_less_than_a_mebibyte_left_is_full
 // test: a_quota_that_says_nothing_of_the_space_changes_nothing
 // test: a_507_with_space_left_is_the_files_own_refusal_and_not_a_full_onedrive

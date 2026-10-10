@@ -10,7 +10,7 @@
 //!    writer, before anything else reads the rows;
 //! 4. `ReadConnections::new(store_path)`; `ItemHandles::new`;
 //!    `ItemDownloadStates::new(download_after)`;
-//! 5. `ItemInotifyBridge::new`; `RangeReaders` and `ItemRangeFetcher::new`;
+//! 5. `ItemInotifyBridge::new` (its queue; its thread starts when the mount is served); `RangeReaders` and `ItemRangeFetcher::new`;
 //!    `ItemDownloadLanding::new`; `ItemDownloader::new`;
 //! 6. `ItemFreeUp::new`; `ItemContentFiles::new`; `ItemLookup::new`;
 //!    `ItemWriteOperations::new`; `FolderSteps::new`; `ItemFilesInterface::new`;

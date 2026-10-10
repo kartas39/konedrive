@@ -18,7 +18,8 @@
 // each directory above it, and a first listing announces one name per item. Written as
 // announcing everything; a filter is a measurement first.
 //!
-//! **Tested without the rest**, with the mount replaced by a directory the test watches:
+//! **Tested without the rest**: the queue by itself (the last three); the thread with the
+//! mount replaced by a directory the test watches (the first):
 // test: an_appearing_is_a_name_created_and_a_vanishing_a_name_removed_by_path
 // test: the_announcement_being_performed_is_what_the_bridges_own_lookup_is_answered_from
 // test: announcements_are_performed_in_the_order_they_were_queued
@@ -35,7 +36,8 @@ use super::read_connections::ReadConnections;
 pub(super) struct ItemInotifyBridge {
     /// The folder's path, which is the mount.
     folder: PathBuf,
-    read_connections: Arc<ReadConnections>,
+    /// Given at the thread's start: the queue needs none.
+    read_connections: std::sync::OnceLock<Arc<ReadConnections>>,
     queued: std::sync::Mutex<std::collections::VecDeque<Vec<ItemAnnouncement>>>,
     in_progress: std::sync::Mutex<Option<ItemAnnouncement>>,
     is_queued: std::sync::Condvar,
@@ -44,13 +46,18 @@ pub(super) struct ItemInotifyBridge {
 }
 
 impl ItemInotifyBridge {
-    /// Made by the mount's build; its thread is started once the mount is over the folder.
-    pub(super) fn new(folder: PathBuf, read_connections: Arc<ReadConnections>) -> Self {
+    /// The bridge's queue, with no thread: made by the mount's build. The queue (`new`,
+    /// `announce`, `find_in_progress`, `is_own_thread`, `stop`) is filled first, with the
+    /// daemon's leaves, since every runner of steps and the downloader announce through
+    /// it; the thread (`start`, and the performing by path) with the reading requests.
+    pub(super) fn new(folder: PathBuf) -> Self {
         todo!()
     }
 
-    /// Starts the bridge's thread. Called by the mount once it is over the folder.
-    pub(super) fn start(self: &Arc<Self>) -> std::io::Result<()> {
+    /// Starts the bridge's thread, which reads the paths of what it announces through a
+    /// reading connection of its own. Called by the mount once it is over the folder
+    /// (`ItemMount::serve`).
+    pub(super) fn start(self: &Arc<Self>, read_connections: Arc<ReadConnections>) -> std::io::Result<()> {
         todo!()
     }
 
