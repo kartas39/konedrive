@@ -91,6 +91,7 @@
 mod access_mode_switch;
 mod attributes;
 mod backing_directory;
+mod backing_directory_check;
 mod conflict_copies;
 mod cycle_step;
 mod detections;
