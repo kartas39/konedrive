@@ -318,16 +318,18 @@ pub(crate) fn commit_new_item(tx: &Transaction<'_>, item: &ItemVersions, kind: I
     if find_bound_item(tx, &made.item)?.is_some_and(|holder| holder.local.is_some()) {
         return Ok(StepCommitOutcome::RowsChanged);
     }
+    // Before the binding is given: when a row a listing made is merged into this one, a
+    // binding moves, and a session still kept then is taken for one to cancel.
+    let sent = item.local.as_ref().and_then(|local| local.content.as_ref());
+    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent })?;
     bind_item(tx, id, &made.item)?;
     if !confirm_item(tx, id, made)? {
         return Err(refuse(format!("the directory OneDrive has item {id} in lost its row within one transaction")));
     }
     let mut row = read_row(tx, id)?;
     row.synced_place = Some(ItemPlace { parent_local_item_id: sent_directory, name: name.to_owned() });
-    let sent = item.local.as_ref().and_then(|local| local.content.as_ref());
     agree_on_confirmed_content(&mut row, sent, made.content.as_ref());
     write_item(tx, &row)?;
-    forget_confirmed_request(tx, id, ConfirmedRequest::Upload { sent })?;
     Ok(StepCommitOutcome::Written)
 }
 

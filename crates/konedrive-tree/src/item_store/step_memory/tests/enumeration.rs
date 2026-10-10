@@ -135,6 +135,7 @@ enum Operation {
     DirectoryAboveGaveUpBinding,
     // The commits of the steps.
     CommitSendNewFile,
+    CommitSendNewFileAndMerged,
     CommitSendContent,
     CommitSendMove,
     CommitMoveItem,
@@ -169,7 +170,7 @@ enum Operation {
 
 use Operation::*;
 
-const OPERATIONS_ON_A_SHOWN_FILE: [Operation; 39] = [
+const OPERATIONS_ON_A_SHOWN_FILE: [Operation; 40] = [
     Renamed,
     MovedToAnotherDirectory,
     SavedOverABoundFile,
@@ -193,6 +194,7 @@ const OPERATIONS_ON_A_SHOWN_FILE: [Operation; 39] = [
     DirectoryOfBoundFileGaveUpBinding,
     DirectoryAboveGaveUpBinding,
     CommitSendNewFile,
+    CommitSendNewFileAndMerged,
     CommitSendContent,
     CommitSendMove,
     CommitMoveItem,
@@ -231,7 +233,7 @@ fn shape_for(operation: Operation) -> ItemShape {
     match operation {
         Renamed | MovedToAnotherDirectory | SavedOverABoundFile | SavedOverANewFile | ANewFileSavedOverTheNewFile | RemovedNeverInOneDrive | OpenedForWriting | ClosedChanged
         | ClosedUnchanged | Truncated | ExchangedPlaces | Merged | BoundFirst | BoundAndMerged | DirectoryOfNewFileGaveUpBinding | DirectoryAboveGaveUpBinding | CommitSendNewFile
-        | CommitRenameToConflictCopy | CommitMergeItems | CommitHashLocalContent | RowDeleted => ItemShape::NewFile,
+        | CommitSendNewFileAndMerged | CommitRenameToConflictCopy | CommitMergeItems | CommitHashLocalContent | RowDeleted => ItemShape::NewFile,
         ANewFileSavedOverTheBoundFile | ABoundFileSavedOverTheBoundFile | Removed | RemovedAndMadeAgain | GaveUpBinding | DirectoryOfBoundFileGaveUpBinding | CommitSendContent
         | CommitSendMove | CommitMoveItem | CommitTakeMoveBack | CommitTakeOneDriveContent | CommitAgreeOnContent | CommitRemoveItem | CommitDownloadContent
         | CommitMoveToTemporaryName | CommitGiveUpBinding | CommitAgreeOnPlace | CeasedToBeShown => ItemShape::BoundFile,
@@ -289,6 +291,10 @@ fn fates_of_a_shown_file(operation: Operation) -> [Cell; 8] {
         // forgotten; and the local content is the one OneDrive confirmed, so that what was
         // refused of the former is not said any more.
         CommitSendNewFile | CommitSendContent => [Gone, OF_THE_PLACE, LEFT_IN_ONEDRIVE, IN_ONEDRIVE, Gone, Gone, Gone, VERSION],
+        // The same, and a listing had brought the item OneDrive made before the commit: the
+        // row it made is merged into the file's, a binding that moves. The session ended
+        // all the same, and no cancel is left for it.
+        CommitSendNewFileAndMerged => [Gone, OF_THE_PLACE, LEFT_IN_ONEDRIVE, Gone, Gone, Gone, Gone, VERSION],
         // OneDrive confirmed the move to the place the temporary name led to: the exchange
         // is done, and the tries of the request that went through are forgotten. Nothing
         // the folder shows changed.
@@ -395,7 +401,7 @@ fn prepare(scene: &mut Scene, operation: Operation) {
             scene.other = Some(show(store, "O"));
         }
         SavedOverANewFile | ANewFileSavedOverTheNewFile | ANewFileSavedOverTheBoundFile | ExchangedPlaces => scene.other = Some(make_file(store, directory, "other")),
-        Merged | BoundAndMerged | CommitMergeItems => {
+        Merged | BoundAndMerged | CommitMergeItems | CommitSendNewFileAndMerged => {
             write_listing_of_changes(store, &[listed_file("N", "D", "report", (5, "h-N"), "e-N")]);
             scene.other = Some(store.item_store().find_bound_item(&reference("N")).unwrap().expect("listed").local_item_id);
         }
@@ -470,6 +476,10 @@ fn act(scene: &mut Scene, operation: Operation) {
         }
         CommitSendNewFile => {
             let made = confirmed("NEW", "report", ContentVersion::Hashed { size: 0, mtime: 200, mtime_nsec: 0, hash: Some("h-new".to_owned()), ctag: Some("c-new".to_owned()) });
+            is_written(store.item_store().commit_send_new_file(&planned_from(), &reference("D"), OsStr::new("report"), &made));
+        }
+        CommitSendNewFileAndMerged => {
+            let made = confirmed("N", "report", listed_content(5, "h-N"));
             is_written(store.item_store().commit_send_new_file(&planned_from(), &reference("D"), OsStr::new("report"), &made));
         }
         CommitSendContent => is_written(store.item_store().commit_send_content(&planned_from(), &confirmed("X", "report", listed_content(77, "h-sent")))),

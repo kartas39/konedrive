@@ -753,7 +753,8 @@ fn change_kept_memory(conn: &Connection, item: LocalItemId, change: impl FnOnce(
 }
 
 /// OneDrive confirmed `request` of `item`: called by the commit of the step in its
-/// transaction, after it wrote the rows. What was kept for the request is forgotten
+/// transaction, once nothing can make it answer that the rows changed, and before it gives
+/// or moves a binding. What was kept for the request is forgotten
 /// ([`ItemMemory::forget_confirmed_request`]) — the upload session that sent the content
 /// ended, and is not cancelled —, and then what the row does not say any more is taken
 /// away, as by every write for the item.
