@@ -10,7 +10,7 @@
 //!
 //! | Outcome | Step memory | Else |
 //! |---|---|---|
-//! | `Written`, towards OneDrive | — (its commit forgot the tries, the session, the temporary name) | the events; a throttle's chosen wait reset |
+//! | `Written`, towards OneDrive | — (its commit forgot the tries, the session it was told ended, the temporary name) | the events; a throttle's chosen wait reset |
 //! | `Written`, towards the folder or of the rows | `forget_fact(FailedTries)` | the events |
 //! | `RowsChanged(Nothing)` | — | — (the next plan decides) |
 //! | `RowsChanged(CycleWanted \| MadeItemLeft)` | — | a cycle asked for |
@@ -44,16 +44,22 @@ use konedrive_tree::{Reason, FullListingCause, LocalItemId, Refusal, SpaceRefusa
 use crate::folder::step_outcome::{StepEvent, StepOutcome};
 use crate::upload::sending_holds::SendingHold;
 
-/// One write of the step memory, as its operations are named.
+/// One write of the step memory, as its operations are named. A fact of a local change
+/// that is not sent — a failed try, a refusal, a refusal for lack of space, a taken name —
+/// is written with the stamp of the versions the step was planned from
+/// (`ItemVersions::unsent_since`, read off the step by `write_step_settlements`), and the
+/// store keeps it only for a row that still has that stamp: nothing is kept of a step
+/// planned from a row with nothing unsent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryWrite {
-    /// `StepMemory::remember_failed_try`.
+    /// `StepMemory::remember_failed_try(item, unsent_since, reason, next_try_at)`.
     FailedTry { reason: Reason, next_try_at: Option<i64> },
-    /// `StepMemory::remember_refusal`.
+    /// `StepMemory::remember_refusal(item, unsent_since, refusal)`; a refusal of a removal is
+    /// `RefusedVersion::Removal`, which holds no stamp of its own.
     Refusal(Refusal),
-    /// `StepMemory::remember_space_refusal`.
+    /// `StepMemory::remember_space_refusal(item, unsent_since, space_refusal)`.
     SpaceRefusal(SpaceRefusal),
-    /// `StepMemory::remember_taken_name`.
+    /// `StepMemory::remember_taken_name(item, unsent_since, taken_name)`.
     TakenName(TakenName),
     /// `StepMemory::forget_fact`.
     Forget(StepFact),

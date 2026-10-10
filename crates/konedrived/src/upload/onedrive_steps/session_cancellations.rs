@@ -50,10 +50,12 @@ impl SessionCancellations {
     }
 
     /// Removes up to `limit` items of `ItemReader::list_mismatched_item_removals` in
-    /// OneDrive, each only while it is unchanged since the upload that left it
+    /// OneDrive, each in the drive it is listed with (`MismatchedItem::item`), and each
+    /// only while it is unchanged since the upload that left it
     /// (`MismatchedItem::is_unchanged_since_upload`, read by `item`, `G/mod.rs:217`;
     /// `delete_item`, `G/write.rs:140`), and forgets each
-    /// (`StepMemory::forget_mismatched_item_removal`). Called as
+    /// (`StepMemory::forget_mismatched_item`). The list never holds an item the folder has.
+    /// Called as
     /// [`cancel_sessions`](Self::cancel_sessions) is.
     pub async fn remove_mismatched_items(&self, limit: usize) -> usize {
         todo!()

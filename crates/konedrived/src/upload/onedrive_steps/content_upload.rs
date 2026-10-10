@@ -181,7 +181,7 @@ impl ContentUpload {
     /// content is removed when it is unchanged since that upload
     /// (`MismatchedItem::is_unchanged_since_upload`, read by `item`, `G/mod.rs:217`),
     /// adopted when it holds the content after all, and forgotten either way
-    /// (`forget_fact(MismatchedItem)`). Today `Job::clear_bad_item`
+    /// (`StepMemory::forget_mismatched_item`, by the item's reference, drive and id). Today `Job::clear_bad_item`
     /// (`upload/content.rs:165`).
     pub async fn remove_mismatched_item(&self, item: &ItemVersions, memory: &ItemMemory) -> Result<Option<ConfirmedItem>, StepOutcome> {
         todo!()

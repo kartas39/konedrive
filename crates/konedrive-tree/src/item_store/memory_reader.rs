@@ -15,10 +15,10 @@
 #![allow(dead_code, unused_variables)]
 
 use super::ItemReader;
-use crate::model::{ItemPlace, LocalItemId};
+use crate::model::{ItemPlace, LocalItemId, OneDriveItemReference};
 use konedrive_reason::Reason;
 
-use crate::{EmptyFileSession, ItemMemory, ItemRefusalReason, ItemTakenName, MismatchedItem, OpeningWindow, TimedWait, TreeError, UploadSessionAddress};
+use crate::{EmptyFileSession, ItemMemory, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemUpload, OpeningWindow, TimedWait, TreeError, UploadSessionAddress};
 
 impl ItemReader<'_> {
     /// As `StepMemory::find_item_memory`: everything remembered of `item` that its row
@@ -80,8 +80,16 @@ impl ItemReader<'_> {
     }
 
     /// As `StepMemory::list_mismatched_item_removals`: the items uploads left with other
-    /// content whose removal is still to be asked.
+    /// content whose removal is still to be asked, each with its drive; never an item the
+    /// folder has.
     pub fn list_mismatched_item_removals(&self, limit: usize) -> Result<Vec<MismatchedItem>, TreeError> {
+        todo!()
+    }
+
+    /// As `StepMemory::find_mismatched_item`: whether the item `onedrive_item` of OneDrive
+    /// is one an upload of this folder left with other content, and of which file. What the
+    /// plan's input is built with for an item a listing brought.
+    pub fn find_mismatched_item(&self, onedrive_item: &OneDriveItemReference) -> Result<Option<MismatchedItemUpload>, TreeError> {
         todo!()
     }
 }
