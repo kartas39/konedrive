@@ -47,6 +47,12 @@ pub(crate) const LISTING_NEXT_LINK: &str = "listing_next_link";
 /// counter of the store, raised by the schema's triggers and never lowered. Its row is made
 /// with the schema.
 pub(crate) const LAST_UNSENT_SINCE: &str = "last_unsent_since";
+/// How many items the removals took from OneDrive that this client sent since the window
+/// of "a short time ago" began. Read and written, as the key after it, by the owner of
+/// that window alone (`item_store::sent_removal_window`).
+pub(crate) const SENT_REMOVAL_COUNT: &str = "sent_removal_count";
+/// The count of confirmations at which that window began.
+pub(crate) const SENT_REMOVAL_WINDOW_BEGAN_AT_COUNT: &str = "sent_removal_window_began_at_count";
 /// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 

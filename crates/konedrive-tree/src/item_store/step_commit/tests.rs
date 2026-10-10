@@ -660,39 +660,6 @@ fn a_file_opened_during_its_upload_and_closed_unchanged_agrees_with_what_was_con
     assert!(agrees(&closed), "{closed:?}");
 }
 
-/// The review's S6, new: the removals OneDrive confirmed to a step since a count of
-/// confirmations are counted from the rows they left, a removed directory with all it
-/// took.
-#[test]
-fn the_removals_confirmed_since_a_count_are_counted() {
-    let mut store = store_with_listed_root();
-    let files: Vec<LocalItemId> = ["A", "B", "C"].iter().map(|id| show_file(&mut store, id, &format!("{id}.txt"))).collect();
-    let directory = show_directory(&mut store, "D", "R", "d");
-    write_listing_of_changes(&mut store, &[listed_file("F", "D", "f", (3, "h-F"), "e-F")]);
-    let inside = show(&mut store, "F");
-    let remove = |store: &mut TreeStore, item: LocalItemId| {
-        store.item_store().apply(&LocalVersionChange::Removed { item }).unwrap();
-        versions(store, item)
-    };
-    let at_first = store.item_store().confirmation_count().unwrap();
-    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0);
-    for file in &files[..2] {
-        let planned_from = remove(&mut store, *file);
-        assert_eq!(store.item_store().commit_send_file_removal(&planned_from).unwrap(), StepCommitOutcome::Written);
-    }
-    let after_two = store.item_store().confirmation_count().unwrap();
-    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 2);
-    let (below, planned_from) = ([remove(&mut store, inside)], remove(&mut store, directory));
-    assert_eq!(store.item_store().commit_send_directory_removal(&planned_from, &below).unwrap(), StepCommitOutcome::Written);
-    assert_eq!(store.item_store().count_removals_confirmed_since(after_two).unwrap(), 2, "the directory and what it took");
-    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 4);
-    // An item OneDrive removed, which then went here, is no removal of this client's.
-    write_listing_of_changes(&mut store, &[listed_gone("C")]);
-    let planned_from = versions(&mut store, files[2]);
-    assert_eq!(store.item_store().commit_remove_item(&planned_from, None).unwrap(), StepCommitOutcome::Written);
-    assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0, "a listing that began after them has ended: their rows are gone");
-}
-
 /// Found by the larger convergence run: a move whose commit arrives after the directory it
 /// was sent into was removed from OneDrive writes nothing: the rows would say OneDrive has
 /// the item in a directory it does not have. The next listing says what became of it.
@@ -710,3 +677,8 @@ fn a_move_into_a_directory_onedrive_does_not_have_any_more_is_not_written() {
     let moved = confirmed("G", "D", "g", Some(listed_content(3, "h-G")), "e-moved");
     assert!(is_left_unwritten(&mut store, |items| items.commit_send_move(&planned_from, &reference("D"), "g".as_ref(), &moved)));
 }
+
+/// The removals sent a short time ago, counted since their window began.
+mod sent_removal_window;
+/// The commit of a removal that was sent.
+mod removal;

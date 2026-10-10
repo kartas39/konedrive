@@ -75,6 +75,7 @@ use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
+use super::sent_removal_window::add_sent_removals;
 use super::step_memory::{
     carry_content, forget_confirmed_request, forget_ended_upload_session, forget_temporary_names_of_items_onedrive_lacks, forget_tries_of_onedrive_version, ConfirmedRequest, UploadSessionAddress,
 };
@@ -150,10 +151,13 @@ impl ItemStore<'_> {
     }
 
     /// The commit of [`OneDriveStep::SendFileRemoval`](crate::OneDriveStep::SendFileRemoval):
-    /// OneDrive removed the file. Its row is left with its binding alone, stamped, for the
-    /// guard against an outdated listing.
+    /// OneDrive removed the file. The row that has its binding is left with the binding
+    /// alone, stamped, for the guard against an outdated listing. That is the row the step
+    /// was planned from, unless a file was made at its place meanwhile and took the
+    /// binding: that file then gives the binding up to such a row, and is an item OneDrive
+    /// does not have, which the next plan sends as a new one.
     pub fn commit_send_file_removal(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_removal(tx, item, ItemKind::File, &[]))
+        self.write(|tx| commit_send_file_removal(tx, item))
     }
 
     /// The commit of
@@ -166,7 +170,7 @@ impl ItemStore<'_> {
     /// the folder shows nothing OneDrive has below the directory
     /// ([`can_directory_removal_be_sent`](Self::can_directory_removal_be_sent)).
     pub fn commit_send_directory_removal(&mut self, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| commit_send_removal(tx, item, ItemKind::Directory, below))
+        self.write(|tx| commit_send_directory_removal(tx, item, below))
     }
 
     /// Whether the removal of the directory of `item`, planned with `below` as what was
@@ -479,14 +483,35 @@ pub(crate) fn commit_send_move(tx: &Transaction<'_>, item: &ItemVersions, parent
     Ok(StepCommitOutcome::Written)
 }
 
-/// [`ItemStore::commit_send_file_removal`] and [`ItemStore::commit_send_directory_removal`],
-/// inside the caller's transaction, which is dropped on any error. The removal is confirmed
-/// of the item; then all the rows say OneDrive has below a directory, those of `below`
-/// among them, lose their OneDrive version and what was agreed on, under the same stamp.
-pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kind: ItemKind, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
+/// [`ItemStore::commit_send_file_removal`], inside the caller's transaction, which is
+/// dropped on any error.
+pub(crate) fn commit_send_file_removal(tx: &Transaction<'_>, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
+    let id = item.local_item_id;
+    let (Some(binding), None) = (&item.onedrive_item, &item.local) else { return Err(refuse_step(id, "it has no binding, or the folder showed it when the step was planned")) };
+    let Some(row) = find_bound_item(tx, binding)?.filter(|row| item.are_onedrive_and_synced_those_of(row)) else { return Ok(StepCommitOutcome::RowsChanged) };
+    if row.kind != ItemKind::File {
+        return Err(refuse_step(id, "it is no file"));
+    }
+    // A file made at the removed one's place has the binding: it is the user's own from
+    // now on, and the row that takes the binding from it is the removed item's.
+    let removed = match row.local {
+        Some(_) => give_up_binding(tx, row.local_item_id, row.is_name_ignored)?,
+        None => row.local_item_id,
+    };
+    confirm_onedrive_version(tx, removed, &ConfirmedOneDriveVersion::Removed)?;
+    add_sent_removals(tx, 1)?;
+    forget_temporary_names_of_items_onedrive_lacks(tx)?;
+    Ok(StepCommitOutcome::Written)
+}
+
+/// [`ItemStore::commit_send_directory_removal`], inside the caller's transaction, which is
+/// dropped on any error. The removal is confirmed of the directory; then all the rows say
+/// OneDrive has below it, those of `below` among them, lose their OneDrive version and what
+/// was agreed on, under the same stamp.
+pub(crate) fn commit_send_directory_removal(tx: &Transaction<'_>, item: &ItemVersions, below: &[ItemVersions]) -> Result<StepCommitOutcome, TreeError> {
     let id = item.local_item_id;
     let Some(row) = find_planned(tx, item)? else { return Ok(StepCommitOutcome::RowsChanged) };
-    if row.kind != kind || row.local.is_some() || row.onedrive_item.is_none() {
+    if row.kind != ItemKind::Directory || row.local.is_some() || row.onedrive_item.is_none() {
         return Err(refuse_step(id, "it is of another kind, the folder shows it, or it has no binding"));
     }
     for removed_with_it in below {
@@ -495,13 +520,12 @@ pub(crate) fn commit_send_removal(tx: &Transaction<'_>, item: &ItemVersions, kin
             return Err(refuse_step(row.local_item_id, "the folder shows it, or it has no binding: it is not removed with a directory"));
         }
     }
-    if kind == ItemKind::Directory && is_anything_shown_below_in_onedrive(tx, id)? {
+    if is_anything_shown_below_in_onedrive(tx, id)? {
         return Ok(StepCommitOutcome::RowsChanged);
     }
     let count = confirm_onedrive_version(tx, id, &ConfirmedOneDriveVersion::Removed)?;
-    if kind == ItemKind::Directory {
-        confirm_removal_below(tx, id, count)?;
-    }
+    confirm_removal_below(tx, id, count)?;
+    add_sent_removals(tx, 1 + below.len() as u64)?;
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
     Ok(StepCommitOutcome::Written)
 }

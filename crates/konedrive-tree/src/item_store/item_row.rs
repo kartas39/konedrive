@@ -555,14 +555,6 @@ pub(super) fn is_anything_shown_below_in_onedrive(conn: &Connection, directory: 
     Ok(conn.prepare_cached(&sql)?.query_row([directory.as_i64()], |row| row.get(0))?)
 }
 
-/// How many rows are a binding alone, stamped after the count `confirmation_count`: found
-/// by the index of such rows.
-pub(super) fn count_removals_confirmed_since(conn: &Connection, confirmation_count: u64) -> Result<u64, TreeError> {
-    let sql = format!("SELECT COUNT(*) FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_at_count > ?1");
-    let count: i64 = conn.prepare_cached(&sql)?.query_row([confirmation_count as i64], |row| row.get(0))?;
-    Ok(count.max(0) as u64)
-}
-
 /// SQL for "the row has a place in OneDrive, and the full listing of the id `?1` did not
 /// list it": what the index `items_seen_in_full_listing` finds.
 const UNSEEN_IN_FULL_LISTING: &str = "onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1";

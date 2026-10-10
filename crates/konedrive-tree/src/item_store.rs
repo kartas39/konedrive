@@ -86,6 +86,8 @@ mod pinned_items;
 mod place_change_records;
 /// What a step of the sync plan writes into the rows once it is done.
 mod step_commit;
+/// The removals this client sent a short time ago, counted since their window began.
+mod sent_removal_window;
 /// What a step remembers of an item beyond the versions.
 pub(crate) mod step_memory;
 /// A full listing that was asked for and has not begun.
@@ -113,6 +115,7 @@ mod thumbnail_marks;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
+pub use sent_removal_window::SentRemovalWindow;
 pub use full_listing_request::FullListingCause;
 pub use item_pins::PinChange;
 pub use own_upload_content::OwnUploadContent;
@@ -256,23 +259,6 @@ impl ItemStore<'_> {
     /// unsent items a plan is given. Found from the index of what is unsent.
     pub fn count_unsent_removals(&self, confirmed: &std::collections::BTreeSet<LocalItemId>) -> Result<u64, TreeError> {
         item_row::count_unsent_removals(&self.store.conn, confirmed)
-    }
-
-    /// How many items the removals took from OneDrive that OneDrive confirmed to a step of
-    /// this client since the count of confirmations `confirmation_count`
-    /// ([`confirmation_count`](Self::confirmation_count)): the rows that are a binding
-    /// alone and were stamped after it — a removed file, a removed directory, and each row
-    /// the removal of a directory took the OneDrive version from. What the guard against a
-    /// mass removal counts with the unsent removals
-    /// ([`SyncPlanInput::sent_removal_count`](crate::SyncPlanInput::sent_removal_count)).
-    ///
-    /// The rows themselves keep it, and no longer than they stay: a row of a confirmed
-    /// removal goes when a listing that began after the confirmation has ended, and is not
-    /// counted from then. A row some step stamped earlier, of an item OneDrive removed
-    /// since, is counted too until then: more is held, never less. Found by the index of
-    /// such rows.
-    pub fn count_removals_confirmed_since(&self, confirmation_count: u64) -> Result<u64, TreeError> {
-        item_row::count_removals_confirmed_since(&self.store.conn, confirmation_count)
     }
 
     /// What OneDrive has in `directory`, as the rows say, by name there: the items whose

@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 use super::ItemReader;
 use crate::model::{Item, LocalItemId};
-use crate::{FoldedName, TreeError};
+use crate::{FoldedName, SentRemovalWindow, TreeError};
 
 impl ItemReader<'_> {
     /// As `ItemStore::list_changed_in_onedrive`: the items whose OneDrive version is not
@@ -63,9 +63,10 @@ impl ItemReader<'_> {
         todo!()
     }
 
-    /// As `ItemStore::count_removals_confirmed_since`: the plan's `sent_removal_count`,
-    /// from the count of confirmations at which the user confirmed a mass removal.
-    pub fn count_removals_confirmed_since(&self, confirmation_count: u64) -> Result<u64, TreeError> {
+    /// As `ItemStore::find_sent_removal_window`: its `removal_count` is the plan's
+    /// `sent_removal_count`. The store keeps the window; the plan's task begins it anew
+    /// through the writer (`ItemStore::begin_sent_removal_window`).
+    pub fn find_sent_removal_window(&self) -> Result<SentRemovalWindow, TreeError> {
         todo!()
     }
 

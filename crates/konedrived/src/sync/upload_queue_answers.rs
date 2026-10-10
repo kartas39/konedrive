@@ -258,13 +258,13 @@ pub fn read_kept_back_entries(items: &ItemReader<'_>, published_plan: &Published
 /// `ConfirmDeletes()`: the user confirms the removals a mass removal holds. Reads every
 /// unsent removal (`ItemReader::list_unsent_removals`), builds `UnsentRemoval::of` each —
 /// the rows as the user was asked — and writes their confirmation
-/// (`StepMemory::remember_removals_confirmed`), in one job of the store's writer; how
-/// many, with the count of confirmations read in the same job
-/// (`ItemStore::confirmation_count`): the caller begins the plan's window of sent
-/// removals with it (`SyncTasks::begin_removal_window`) and wakes the plan
+/// (`StepMemory::remember_removals_confirmed`), and begins the store's window of sent
+/// removals anew (`ItemStore::begin_sent_removal_window`: the plan's `sent_removal_count`
+/// is counted from then, and kept by the store across a listing's end and a stop), in one
+/// job of the store's writer; how many. The caller wakes the plan
 /// (`WakeCause::UserAnswered`). A removal made later has
 /// another stamp and is asked about again (the map's F17). MISSING-1.k.
-pub fn confirm_removals(store: &mut TreeStore) -> Result<(usize, u64), TreeError> {
+pub fn confirm_removals(store: &mut TreeStore) -> Result<usize, TreeError> {
     todo!()
 }
 

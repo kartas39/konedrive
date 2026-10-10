@@ -64,12 +64,6 @@ impl SyncTasks {
         todo!()
     }
 
-    /// The user confirmed a mass removal at this count of confirmations
-    /// (`SyncPlanTask::begin_removal_window`).
-    pub fn begin_removal_window(&self, confirmation_count: u64) {
-        todo!()
-    }
-
     /// Wakes the plan: after the user's answer, a change of the ignore list, a pin.
     pub fn sync_plan_wake(&self) -> &Arc<SyncPlanWake> {
         todo!()

@@ -34,7 +34,7 @@ pub enum ConfirmedOneDriveVersion {
 }
 
 /// The count of confirmations; 0 before the first.
-pub(super) fn read_confirmation_count(conn: &Connection) -> Result<u64, TreeError> {
+pub(in crate::item_store) fn read_confirmation_count(conn: &Connection) -> Result<u64, TreeError> {
     Ok(meta::get(conn, meta::CONFIRMATION_COUNT)?.and_then(|count| count.parse().ok()).unwrap_or(0))
 }
 

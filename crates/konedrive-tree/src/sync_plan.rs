@@ -195,12 +195,14 @@ pub struct SyncPlanInput {
     /// own rule for comparing names says.
     pub places_taken_in_onedrive: BTreeMap<LocalItemId, ItemPlace>,
     /// How many items the removals took from OneDrive that this client sent a short time
-    /// ago and the user did not confirm: the rows whose removal OneDrive confirmed to a step
-    /// since the count of confirmations the caller noted when that time began
-    /// ([`ItemStore::count_removals_confirmed_since`](crate::ItemStore::count_removals_confirmed_since)).
-    /// The guard against a mass removal counts them with the unsent ones, so that removals
-    /// that come one by one, with a plan made between them, are held like those of one
-    /// plan. The caller begins that time anew when the user confirms a mass removal.
+    /// ago: what the store counted since the window of that time began
+    /// ([`ItemStore::find_sent_removal_window`](crate::ItemStore::find_sent_removal_window)),
+    /// whatever listing ended meanwhile. The guard against a mass removal counts them
+    /// with the unsent ones, so that removals that come one by one, with a plan made
+    /// between them, are held like those of one plan. The caller begins the window anew
+    /// ([`ItemStore::begin_sent_removal_window`](crate::ItemStore::begin_sent_removal_window))
+    /// when that time has passed with no removal sent, and when the removals of a mass
+    /// removal the user confirmed have been sent.
     pub sent_removal_count: u64,
     /// The time now, in Unix seconds: what a time the caller gives is compared with.
     pub now: i64,

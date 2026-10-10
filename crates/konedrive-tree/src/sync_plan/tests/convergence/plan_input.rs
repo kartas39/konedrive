@@ -153,7 +153,7 @@ fn describe(store: &mut TreeStore, facts: &CallerFacts, rows: Vec<Item>) -> Sync
         items_with_confirmed_removal: confirmed,
         unsent_removal_count: items.count_unsent_removals(&all_confirmed).unwrap(),
         places_taken_in_onedrive: facts.places_taken_in_onedrive.clone(),
-        sent_removal_count: if facts.confirms_removals { 0 } else { items.count_removals_confirmed_since(0).unwrap() },
+        sent_removal_count: if facts.confirms_removals { 0 } else { items.find_sent_removal_window().unwrap().removal_count },
         now: 0,
         next_tries: BTreeMap::new(),
         sending_refusals: BTreeMap::new(),

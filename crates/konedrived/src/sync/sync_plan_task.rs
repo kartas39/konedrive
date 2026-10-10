@@ -142,9 +142,6 @@ pub struct SyncPlanTask {
     /// what `step_settlement::decide_events_to_log` caps by. Set to 0 at
     /// `WakeCause::ListingEnded`.
     logged_since_listing_ended: AtomicUsize,
-    /// The count of confirmations at which the user last confirmed a mass removal; 0 for
-    /// none in this run. Set by [`SyncPlanTask::begin_removal_window`].
-    removal_window_began_at: std::sync::atomic::AtomicU64,
 }
 
 /// What a round does.
@@ -178,13 +175,6 @@ pub fn decide_next_wake(plan: &SyncPlan, hold_end: Option<i64>, next_quota_read:
 impl SyncPlanTask {
     /// Made by the folder's start (`sync_tasks::start_order::start_sync_tasks`).
     pub fn new(parts: SyncPlanTaskParts) -> Arc<Self> {
-        todo!()
-    }
-
-    /// The user confirmed a mass removal when the store's count of confirmations was
-    /// `confirmation_count`: the plan's `sent_removal_count` is counted from it from now
-    /// on. Called through `SyncTasks::begin_removal_window` by `ConfirmDeletes`.
-    pub fn begin_removal_window(&self, confirmation_count: u64) {
         todo!()
     }
 

@@ -69,11 +69,6 @@ pub struct DaemonFacts {
     /// The rows the check at start left (`StartCheckFindings::held_items`): the plan's
     /// `items_left_by_start_up_check`, those of them that are given.
     pub left_by_start_up_check: BTreeSet<LocalItemId>,
-    /// The count of confirmations at which the user last confirmed a mass removal: the
-    /// plan's `sent_removal_count` is counted from it
-    /// (`ItemReader::count_removals_confirmed_since`). `None`: nothing was confirmed in
-    /// this run of the sync, and the count is 0.
-    pub removal_window_began_at: Option<u64>,
     /// Whether this plan reads the pinned files to download: the one reader that scans.
     /// Asked after a listing's page and the user's answer, which alone change what it
     /// answers.
