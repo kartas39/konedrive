@@ -5,8 +5,8 @@
 //!
 //! `items` has one row per item the folder shows or OneDrive has, keyed by a local item id
 //! that is never given twice: the item's binding to OneDrive, what the folder shows of it,
-//! and what the two sides last agreed on ([`ItemStore`]). Nothing reads it for the folder
-//! yet.
+//! what OneDrive has of it, and what the two sides last agreed on ([`ItemStore`]). Nothing
+//! reads it for the folder yet, and no cycle writes a listing into it yet.
 //!
 //! `onedrive_items` is the tree the folder was last made to match; [`Table::Staging`]
 //! is the tree a cycle is building. The folder is reconciled against the new

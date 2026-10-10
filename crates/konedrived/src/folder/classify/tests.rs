@@ -66,3 +66,112 @@ fn an_id_that_cannot_be_a_file_name_is_not_placed() {
     let Change::Upsert(fine) = classify(&item(json!({"id": "8F6C!101", "name": "ok.txt", "file": {}, "parentReference": {"id": "R"}}))) else { panic!() };
     assert_eq!(fine.placement, Placement::Placed);
 }
+
+mod listed_into_items {
+    //! The changes `classify` makes of the pages the drive client fetches, given to the
+    //! entry that writes a listing into the rows of `items`
+    //! (`ItemStore::write_listed_changes`): the rows then say what the fake OneDrive has.
+    //! The pages are asked for as a cycle asks for them, one after the other until the one
+    //! with the delta link; nothing of today's staging is in between.
+
+    use konedrive_graph::drive::{DeltaFrom, DeltaNext};
+    use konedrive_tree::{Change, ContentVersion, DriveId, ItemKind, OneDriveItemId, OneDriveItemReference, TreeStore};
+
+    use super::classify;
+    use crate::fake_onedrive::{FakeGraph, FakeItem, ROOT};
+
+    fn reference(id: &str) -> OneDriveItemReference {
+        OneDriveItemReference { drive_id: DriveId::new("D").unwrap(), item_id: OneDriveItemId::new(id) }
+    }
+
+    fn folder(id: &str, parent: &str, name: &str) -> FakeItem {
+        FakeItem { id: id.into(), parent: Some(parent.into()), name: name.into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: format!("e-{id}"), ctag: format!("c-{id}"), mtime: 0 }
+    }
+
+    /// Lists the fake's drive from `from` to the delta link, each page written as it comes.
+    async fn list(graph: &FakeGraph, store: &mut TreeStore, mut from: DeltaFrom) -> String {
+        let drive = graph.client();
+        let fetch_began_at = store.item_store().confirmed_count().unwrap();
+        loop {
+            let page = drive.delta(&from).await.unwrap();
+            let changes: Vec<Change> = page.items.iter().map(classify).collect();
+            match page.next {
+                DeltaNext::Page(next) => {
+                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at, None).unwrap(), Vec::new());
+                    from = DeltaFrom::Link(next);
+                }
+                DeltaNext::Done(link) => {
+                    assert_eq!(store.item_store().write_listed_changes(&changes, fetch_began_at, Some(&link)).unwrap(), Vec::new());
+                    return link;
+                }
+            }
+        }
+    }
+
+    /// Each of `ids` has in its row what the fake has of it: its kind, its directory, its
+    /// name, for a file its content, and its eTag. And the rows hold nothing of OneDrive's
+    /// beside them.
+    fn assert_rows_say_what_the_fake_has(graph: &FakeGraph, store: &mut TreeStore, ids: &[&str]) {
+        for id in ids {
+            let fake = graph.with(|cloud| cloud.item(id).cloned()).unwrap_or_else(|| panic!("the fake has no item {id}"));
+            let row = store.item_store().find_bound_item(&reference(id)).unwrap().unwrap_or_else(|| panic!("the item {id} has no row"));
+            let onedrive = row.onedrive.clone().unwrap_or_else(|| panic!("the row of {id} has no OneDrive version"));
+            let place = onedrive.place.unwrap();
+            let directory = store.item_store().find_item(place.parent_local_item_id).unwrap().unwrap();
+            assert_eq!(directory.onedrive_item, Some(reference(fake.parent.as_deref().unwrap())), "the directory of {id}");
+            assert_eq!(place.name.to_str(), Some(fake.name.as_str()), "the name of {id}");
+            assert_eq!(row.kind, if fake.folder { ItemKind::Directory } else { ItemKind::File }, "the kind of {id}");
+            let content = (!fake.folder).then(|| ContentVersion::Hashed { size: fake.size, mtime: fake.mtime, mtime_nsec: 0, hash: fake.hash.clone(), ctag: Some(fake.ctag.clone()) });
+            assert_eq!(onedrive.content, content, "the content of {id}");
+            assert_eq!(row.onedrive_etag.as_deref(), Some(fake.etag.as_str()), "the eTag of {id}");
+            assert!(store.item_store().can_be_shown(row.local_item_id).unwrap(), "{id} can be shown");
+        }
+        // Nothing is agreed on yet, so every item OneDrive has is one that it changed.
+        let listed = store.item_store().list_changed_in_onedrive(None, 1000).unwrap();
+        let mut listed: Vec<String> = listed.into_iter().filter(|item| item.onedrive.is_some()).map(|item| item.onedrive_item.unwrap().item_id.as_str().to_owned()).collect();
+        listed.sort();
+        let mut expected: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        expected.sort();
+        assert_eq!(listed, expected);
+    }
+
+    /// A drive listed in full, and then its changes: a file moved and renamed, another
+    /// edited, a folder deleted with what is in it, a file and a folder made.
+    #[test]
+    fn the_rows_of_items_say_what_the_fake_onedrive_has_after_a_full_listing_and_after_its_changes() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let graph = FakeGraph::start().await;
+            graph.with(|cloud| {
+                cloud.add(folder("DOCS", ROOT, "Docs"));
+                cloud.add(folder("OLD", "DOCS", "Old"));
+                cloud.add_file("A", "DOCS", "a.txt", b"alpha");
+                cloud.add_file("B", ROOT, "b.txt", b"beta");
+                cloud.add_file("C", "OLD", "c.txt", b"gamma");
+            });
+            let mut store = TreeStore::in_memory().unwrap();
+            store.set_drive_id("D").unwrap();
+
+            store.item_store().begin_full_listing().unwrap();
+            let link = list(&graph, &mut store, DeltaFrom::Start).await;
+            assert_eq!(store.delta_link().unwrap().as_deref(), Some(link.as_str()));
+            let root = store.item_store().find_bound_item(&reference(ROOT)).unwrap().unwrap();
+            assert_eq!(root.local_item_id, konedrive_tree::LocalItemId::ROOT);
+            assert_rows_say_what_the_fake_has(&graph, &mut store, &["DOCS", "OLD", "A", "B", "C"]);
+
+            graph.with(|cloud| {
+                cloud.rename("A", ROOT, "moved.txt");
+                cloud.edit("B", b"another content");
+                cloud.trash("OLD");
+                cloud.add(folder("NEW", ROOT, "New"));
+                cloud.add_file("N", "NEW", "n.txt", b"new");
+            });
+            let next_link = list(&graph, &mut store, DeltaFrom::Link(link.clone())).await;
+            assert_ne!(next_link, link);
+            assert_rows_say_what_the_fake_has(&graph, &mut store, &["DOCS", "A", "B", "NEW", "N"]);
+            for gone in ["OLD", "C"] {
+                assert_eq!(store.item_store().find_bound_item(&reference(gone)).unwrap(), None, "{gone} is gone from OneDrive, and nothing here kept its row");
+            }
+        });
+    }
+}

@@ -715,18 +715,29 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 
 - `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
 - `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
-  written; an item as `items` holds it (`Item` with its kind, its ids, `ItemVersion`,
-  `ItemPlace`, `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and
-  `DriveId`. `[tests]`
+  written; an item as `items` holds it (`Item` with its kind, its ids, its local and its
+  OneDrive `ItemVersion`, the eTag, the placement, the stamp of a confirmation; `ItemPlace`,
+  `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and `DriveId`.
+  `[tests]`
 - `item_store.rs` — `ItemStore`: the rows of `items`, one per item by local item id; finding
-  an item, its path and whether it is left here; applying a change of its local version,
-  each a case; the rules that hold of the rows, and who holds each. `[tests]`
+  an item, its path, whether it is left here, whether the folder can show it as OneDrive
+  has it, and the items OneDrive changed; applying a change of its local version, each a
+  case; the rules that hold of the rows, and who holds each. `[tests]`
 - `item_store/item_row.rs` — a row of `items` in the database: its columns, where it is
-  read, written and deleted, and where a name and an item id of OneDrive are checked.
-  Reachable from `item_store` alone.
+  read, written and deleted, and where a name and an item id of OneDrive are checked; the
+  writers of the OneDrive columns alone; the queries that go by an index (what OneDrive
+  changed, what is below a directory in OneDrive, what a full listing did not see, the rows
+  that are a binding alone). Reachable from `item_store` alone.
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
   the root's), and moved from one item to another (`take_over_binding`, done with the change
-  that says so; `give_up_binding`; `merge_items`). `[tests]`
+  that says so; `give_up_binding`; `merge_items`), with all that is OneDrive's of the item.
+  `[tests]`
+- `item_store/onedrive_versions.rs` — what a listing says of an item, written into its row
+  (`write_listed_changes`, one page or one whole answer in one transaction, in an order of
+  its own): the OneDrive version, the eTag, the placement; the guard against an outdated
+  listing (the count of confirmations, `stamp_confirmed`, the two questions that decide
+  whether a page is taken for a row); a full listing's marks and its sweep
+  (`begin_full_listing`). No caller in the daemon yet. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to

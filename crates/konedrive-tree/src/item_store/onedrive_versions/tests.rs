@@ -833,3 +833,71 @@ fn the_folder_can_show_an_item_that_is_placed_with_every_directory_above_it() {
     assert!(!store.item_store().can_be_shown(here).unwrap(), "OneDrive does not have it");
     assert!(is_refused(store.item_store().can_be_shown(LocalItemId::new(999))));
 }
+
+/// A full listing of `count` items in pages of 200 into `store`: a directory for every
+/// hundred files, the files of a directory after it. How long each page took to write.
+fn list_in_full(store: &mut TreeStore, count: usize) -> Vec<std::time::Duration> {
+    let mut items = Vec::with_capacity(count + 1);
+    items.push(root());
+    for n in 0..count {
+        let directory_id = format!("D{}", n / 100);
+        if n % 100 == 0 {
+            items.push(directory(&directory_id, "R", &directory_id));
+        } else {
+            items.push(file(&format!("F{n}"), &directory_id, &format!("f{n}"), "1"));
+        }
+    }
+    store.item_store().begin_full_listing().unwrap();
+    let pages: Vec<&[Change]> = items.chunks(200).collect();
+    let mut took = Vec::new();
+    for (at, page) in pages.iter().enumerate() {
+        let delta_link = (at + 1 == pages.len()).then_some("link");
+        let began = std::time::Instant::now();
+        store.item_store().write_listed_changes(page, 0, delta_link).unwrap();
+        took.push(began.elapsed());
+    }
+    took
+}
+
+/// A page of 200 changes over what [`list_in_full`] listed: a hundred files moved to
+/// another directory with another content, fifty gone, fifty new in a new directory.
+fn page_of_changes() -> Vec<Change> {
+    let mut page = vec![directory("NEW", "R", "new")];
+    page.extend((0..100).map(|n| file(&format!("F{}", n * 7 + 1), "D3", &format!("f{}", n * 7 + 1), "22")));
+    page.extend((0..50).map(|n| gone(&format!("F{}", n * 7 + 2))));
+    page.extend((0..49).map(|n| file(&format!("G{n}"), "NEW", &format!("g{n}"), "1")));
+    page
+}
+
+/// The cost of a page, measured in the build the tests run in and printed: a full listing
+/// of 100 000 items in pages of 200, and a page of 200 changes over 1 000 rows and over
+/// 100 000, in memory and in a store on disk. Run by hand, once:
+/// `cargo test -p konedrive-tree a_page_costs -- --ignored --nocapture`.
+/// What it holds: a page over a hundred times the rows does not cost ten times as much.
+#[test]
+#[ignore = "a measurement: it lists 100 000 items three times"]
+fn a_page_costs_the_same_whatever_the_store_holds() {
+    let mean = |took: &[std::time::Duration]| took.iter().sum::<std::time::Duration>() / took.len() as u32;
+    let page = page_of_changes();
+    let measure = |what: &str, small: &mut TreeStore, large: &mut TreeStore| {
+        small.set_drive_id("d1").unwrap();
+        large.set_drive_id("d1").unwrap();
+        list_in_full(small, 1_000);
+        let listing = list_in_full(large, 100_000);
+        println!("{what}: a full listing of 100 000 items in {} pages of 200 took {:?}; a page took {:?} on average over the first fifty and {:?} over the last fifty", listing.len(), listing.iter().sum::<std::time::Duration>(), mean(&listing[..50]), mean(&listing[listing.len() - 50..]));
+        let mut took = Vec::new();
+        for store in [small, large] {
+            let fetch_began_at = count(store);
+            let began = std::time::Instant::now();
+            store.item_store().write_listed_changes(&page, fetch_began_at, Some("link-2")).unwrap();
+            took.push(began.elapsed());
+        }
+        println!("{what}: a page of {} changes took {:?} over 1 000 rows and {:?} over 100 000", page.len(), took[0], took[1]);
+        assert!(took[1] < took[0] * 10, "{what}: the cost of a page grew with the rows of the store");
+        assert!(mean(&listing[listing.len() - 50..]) < mean(&listing[..50]) * 10, "{what}: the pages of a full listing grew dearer as the store filled");
+    };
+    measure("in memory", &mut TreeStore::in_memory().unwrap(), &mut TreeStore::in_memory().unwrap());
+    // On disk, below the build's own directory.
+    let dir = tempfile::tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")).unwrap();
+    measure("on disk", &mut TreeStore::open(&dir.path().join("small.sqlite")).unwrap(), &mut TreeStore::open(&dir.path().join("large.sqlite")).unwrap());
+}
