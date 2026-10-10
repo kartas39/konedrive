@@ -482,13 +482,12 @@ fn a_file_saved_over_a_bound_file_takes_over_its_binding() {
     assert_eq!(names(&mut store, ROOT), ["report"]);
 }
 
-/// The other cases of one item renamed over another. Over an item OneDrive never had: its
-/// row goes. A bound item over a bound one: each binding stays with its item, and the
-/// replaced one is removed here. The replacing item has the replaced one's name, and what
-/// the upload rules say of that name; what is below a directory is left here or not by the
-/// name the directory has now.
+/// An item renamed over one OneDrive never had: that row goes, whatever the replacing item
+/// is. The replacing item has the replaced one's name, and what the upload rules say of
+/// that name; what is below a directory is left here or not by the name the directory has
+/// now.
 #[test]
-fn an_item_renamed_over_another_takes_its_place() {
+fn an_item_renamed_over_one_that_is_not_in_onedrive_takes_its_place_and_its_row_goes() {
     let mut store = TreeStore::in_memory().unwrap();
     let new = make_file(&mut store, ROOT, "new");
     let never_sent = make_named(&mut store, ItemKind::File, ROOT, "never-sent", true);
@@ -497,13 +496,13 @@ fn an_item_renamed_over_another_takes_its_place() {
     let row = item(&mut store, new);
     assert_eq!((row.local.unwrap().place, row.onedrive_item, row.is_name_ignored), (Some(place(ROOT, "never-sent")), None, true));
 
-    let (a, b) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"));
-    synced(&mut store, a, "A");
-    let b_row = synced(&mut store, b, "B");
-    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: a, replaced: b }).unwrap();
-    let a_row = item(&mut store, a);
-    assert_eq!((a_row.onedrive_item, a_row.local.unwrap().place, a_row.synced_place), (Some(reference("A")), Some(place(ROOT, "b")), Some(place(ROOT, "a"))));
-    assert_eq!(item(&mut store, b), Item { local: None, content_presence: ContentPresence::NotOnDisk, ..b_row }, "removed here, to be removed in OneDrive");
+    let bound = make_file(&mut store, ROOT, "bound");
+    synced(&mut store, bound, "B");
+    let local = make_file(&mut store, ROOT, "local");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: bound, replaced: local }).unwrap();
+    assert_eq!(store.item_store().find_item(local).unwrap(), None);
+    let row = item(&mut store, bound);
+    assert_eq!((row.local.unwrap().place, row.onedrive_item, row.synced_place), (Some(place(ROOT, "local")), Some(reference("B")), Some(place(ROOT, "bound"))));
 
     let (empty, full) = (make_directory(&mut store, ROOT, "empty"), make_named(&mut store, ItemKind::Directory, ROOT, ".full", true));
     let inside = make_file(&mut store, full, "inside");
@@ -514,9 +513,73 @@ fn an_item_renamed_over_another_takes_its_place() {
     assert_eq!(store.item_store().find_item(empty).unwrap(), None);
 }
 
+/// A file of OneDrive renamed over another file of OneDrive, as today's rename records it
+/// (the one is moved in OneDrive, the other removed there): each keeps its binding. The
+/// replacing file is at the new place with its synced place where OneDrive still has it;
+/// the replaced one is a row the folder does not show, with what was agreed on. The same
+/// for two directories of OneDrive.
+#[test]
+fn a_file_of_onedrive_renamed_over_another_file_of_onedrive_is_moved_and_the_other_is_removed_here() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (a, b) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"));
+    synced(&mut store, a, "A");
+    let b_row = synced(&mut store, b, "B");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: a, replaced: b }).unwrap();
+    let a_row = item(&mut store, a);
+    assert_eq!((a_row.onedrive_item.clone(), a_row.local.clone().unwrap().place, a_row.synced_place.clone()), (Some(reference("A")), Some(place(ROOT, "b")), Some(place(ROOT, "a"))));
+    assert_eq!(a_row.file_sync_state(), Some(FileSyncState::Synced), "moved, and its content is the one agreed on");
+    assert_eq!(item(&mut store, b), Item { local: None, content_presence: ContentPresence::NotOnDisk, ..b_row }, "removed here, to be removed in OneDrive");
+    assert_eq!(names(&mut store, ROOT), ["b"]);
+
+    let (c, d) = (make_directory(&mut store, ROOT, "c"), make_directory(&mut store, ROOT, "d"));
+    let inside = make_file(&mut store, c, "inside");
+    synced(&mut store, c, "C");
+    let d_row = synced(&mut store, d, "D");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: c, replaced: d }).unwrap();
+    assert_eq!(item(&mut store, c).onedrive_item, Some(reference("C")));
+    assert_eq!(item(&mut store, d), Item { local: None, ..d_row });
+    assert_eq!(path(&mut store, inside), Some(PathBuf::from("d/inside")));
+}
+
+/// A directory OneDrive does not have, renamed over an empty directory it has: a directory
+/// takes no binding over. The replacing one is a new directory at that name, and the
+/// replaced one is removed here with its binding kept, to be removed in OneDrive.
+#[test]
+fn a_directory_that_is_not_in_onedrive_renamed_over_one_that_is_takes_no_binding_over() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (new, old) = (make_directory(&mut store, ROOT, "new"), make_directory(&mut store, ROOT, "old"));
+    let old_row = synced(&mut store, old, "D");
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: new, replaced: old }).unwrap();
+    let row = item(&mut store, new);
+    assert_eq!((row.onedrive_item, row.synced_place, row.local.unwrap().place), (None, None, Some(place(ROOT, "old"))));
+    assert_eq!(item(&mut store, old), Item { local: None, ..old_row });
+}
+
+/// A file saved over a file a program holds open for writing: the replaced file's content
+/// before its writer goes with its row, the replacing file keeps its own, and the writer's
+/// close of the replaced file is nothing.
+#[test]
+fn a_file_saved_over_a_file_open_for_writing_takes_over_its_binding() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let original = make_file(&mut store, ROOT, "report");
+    synced(&mut store, original, "A");
+    store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: original }).unwrap();
+    let temporary = make_file(&mut store, ROOT, "report.tmp");
+    store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: temporary }).unwrap();
+    let before = item(&mut store, temporary);
+
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: temporary, replaced: original }).unwrap();
+    let saved = item(&mut store, temporary);
+    assert_eq!(saved, Item { onedrive_item: Some(reference("A")), synced_place: Some(place(ROOT, "report")), synced_content: Some(hashed("A")), local: Some(ItemVersion { place: Some(place(ROOT, "report")), ..before.local.clone().unwrap() }), ..before });
+    assert_eq!(saved.content_before_write, Some(made_here()), "what the replacing file had before its own writer");
+    assert_eq!(store.item_store().apply(&LocalVersionChange::ClosedChanged { item: original, size: 5, mtime: 9, mtime_nsec: 0 }).unwrap(), original);
+    assert_eq!(store.item_store().find_item(original).unwrap(), None);
+    assert_eq!(item(&mut store, temporary), saved, "the close of the replaced file changed no row");
+}
+
 /// What is refused of one item renamed over another: over itself, a file over a directory
-/// or the other way, over a directory that holds something, and an item the folder does
-/// not show on either side.
+/// or the other way, over a directory that holds something, a directory over an empty
+/// directory below itself, and an item the folder does not show on either side.
 #[test]
 fn an_item_is_renamed_only_over_one_of_its_kind_that_holds_nothing() {
     let mut store = TreeStore::in_memory().unwrap();
@@ -527,8 +590,9 @@ fn an_item_is_renamed_only_over_one_of_its_kind_that_holds_nothing() {
     let gone = make_file(&mut store, ROOT, "gone");
     synced(&mut store, gone, "G");
     store.item_store().apply(&LocalVersionChange::Removed { item: gone }).unwrap();
+    let below = make_directory(&mut store, dir, "below");
     let mut items = store.item_store();
-    for (replacing, replaced) in [(file, file), (file, dir), (dir, file), (dir, full), (file, gone), (gone, file), (file, LocalItemId::new(99))] {
+    for (replacing, replaced) in [(file, file), (file, dir), (dir, file), (dir, full), (dir, below), (file, gone), (gone, file), (file, LocalItemId::new(99))] {
         assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing, replaced })), "{replacing} over {replaced}");
     }
     assert_eq!(names(&mut store, ROOT), ["dir", "file", "full"]);

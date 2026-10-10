@@ -293,9 +293,19 @@ fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_name
     set_local_place(tx, item, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
 }
 
-/// `replacing` has the place of `replaced`, which leaves the folder. A file OneDrive does
-/// not have, over a file it has, takes over the binding; otherwise each binding stays with
-/// its item, and the replaced one is removed here like any other.
+/// `replacing` has the place of `replaced`, which leaves the folder. What becomes of the
+/// two bindings is a case of what the two items are, as today's rename records it:
+///
+/// - *The replaced item is not in OneDrive*: its row goes, and nothing of it is left.
+/// - *A file that is not in OneDrive over a file that is*: a program saved the file by a
+///   rename. The replacing file takes over the binding: OneDrive sees the replaced file
+///   with new content.
+/// - *An item of OneDrive over an item of OneDrive*, files or directories: each keeps its
+///   binding. The replacing one is moved in OneDrive, and the replaced one is removed
+///   there: its row stays as one the folder does not show, with what was agreed on.
+/// - *A directory that is not in OneDrive over a directory that is*: the replacing one is
+///   a new directory at that name, and the replaced one is removed in OneDrive as above. A
+///   directory takes no binding over.
 fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId) -> Result<(), TreeError> {
     if replacing == replaced {
         return Err(refuse(format!("item {replacing} is not saved over itself")));
@@ -307,14 +317,19 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
     }
     check_empty(tx, replaced)?;
     check_not_below(tx, place.parent_local_item_id, replacing)?;
-    let takes_over = replacing_item.kind == ItemKind::File && replacing_item.onedrive_item.is_none() && replaced_item.onedrive_item.is_some();
     // The replacing item has the replaced one's name, and what the rules say of that name.
     let is_name_ignored = replaced_item.is_name_ignored;
-    // The replaced item leaves the folder first: a binding is taken over from an item
-    // the folder does not show.
-    remove_local_version(tx, replaced_item)?;
-    if takes_over {
-        bindings::take_over_binding(tx, replacing, replaced)?;
+    match (replacing_item.kind, &replacing_item.onedrive_item, &replaced_item.onedrive_item) {
+        // Never in OneDrive: the row goes.
+        (_, _, None) => remove_local_version(tx, replaced_item)?,
+        // Saved by a rename. The replaced file leaves the folder first: a binding is taken
+        // over from a file the folder does not show.
+        (ItemKind::File, None, Some(_)) => {
+            remove_local_version(tx, replaced_item)?;
+            bindings::take_over_binding(tx, replacing, replaced)?;
+        }
+        // Removed here, to be removed in OneDrive; the replacing item is its own.
+        (_, Some(_), Some(_)) | (ItemKind::Directory, None, Some(_)) => remove_local_version(tx, replaced_item)?,
     }
     set_local_place(tx, replacing, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
 }
