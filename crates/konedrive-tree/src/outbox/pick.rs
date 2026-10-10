@@ -225,13 +225,13 @@ fn rule_two_three(
     if row.kind.removes() {
         if let Some(id) = &row.item_id {
             let folder: Option<String> =
-                conn.prepare_cached("SELECT kind FROM items WHERE id = ?1")?.query_map([id], |r| r.get(0))?.next().transpose()?;
+                conn.prepare_cached("SELECT kind FROM onedrive_items WHERE id = ?1")?.query_map([id], |r| r.get(0))?.next().transpose()?;
             if folder.as_deref() == Some(Kind::Folder.as_str()) {
                 let sql = format!(
                     "WITH RECURSIVE below(id, depth) AS (
-                         SELECT id, 1 FROM items WHERE parent_id = ?1
+                         SELECT id, 1 FROM onedrive_items WHERE parent_id = ?1
                          UNION ALL
-                         SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+                         SELECT c.id, b.depth + 1 FROM onedrive_items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
                      SELECT o.seq FROM below b JOIN outbox o ON o.item_id = b.id WHERE o.seq != ?2"
                 );
                 let mut statement = conn.prepare_cached(&sql)?;

@@ -136,12 +136,12 @@ fn staged_rows_are_invisible_until_committed() {
     assert!(store.get(Table::Staging, "A").unwrap().is_some());
     store.commit_staging("link-1").unwrap();
     assert!(store.get(Table::Items, "A").unwrap().is_some());
-    assert_eq!(store.staged_rows(), 0, "the staged rows are gone into items");
+    assert_eq!(store.staged_rows(), 0, "the staged rows are gone into onedrive_items");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
     assert_eq!(store.root_item_id().unwrap().as_deref(), Some("R"));
 }
 
-/// A page of a first listing goes into `items` as it was placed,
+/// A page of a first listing goes into `onedrive_items` as it was placed,
 /// with the link to the page after it, in one transaction. `staging` is
 /// not written, and a deletion takes what is inside the folder, as it
 /// does in `staging`.
@@ -208,7 +208,7 @@ fn a_table_is_empty_until_a_row_is_in_it() {
     assert!(store.is_empty(Table::Items).unwrap());
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root()]).unwrap();
-    assert!(store.is_empty(Table::Items).unwrap(), "a staged row is not in items");
+    assert!(store.is_empty(Table::Items).unwrap(), "a staged row is not in onedrive_items");
     assert!(!store.is_empty(Table::Staging).unwrap());
     store.commit_staging("link-1").unwrap();
     assert!(!store.is_empty(Table::Items).unwrap());
@@ -311,7 +311,7 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     // An outbox commit made after the change of `F` was deferred supersedes
     // it: OneDrive no longer has the item under that name, and it is off the
     // list before the next cycle drops what waited.
-    store.conn.execute("UPDATE items SET local_seq = 2 WHERE id = 'F'", []).unwrap();
+    store.conn.execute("UPDATE onedrive_items SET local_seq = 2 WHERE id = 'F'", []).unwrap();
     assert_eq!(store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(), vec![(PathBuf::from("n-longer"), SkipReason::NameTooLong)]);
     assert_eq!(store.counts().unwrap(), Counts { listed: 4, placed: 3, skipped: 1 });
 }
@@ -330,7 +330,7 @@ fn the_changed_ids_are_what_staging_differs_from_items_by() {
 }
 
 /// A delta changing 10 of 100 000 items stages those 10 and
-/// the swap writes those 10 — not the whole tree; until the swap `items`
+/// the swap writes those 10 — not the whole tree; until the swap `onedrive_items`
 /// is the old tree, also after a crash (the store dropped and opened
 /// again), and the next cycle stages afresh over it.
 #[test]

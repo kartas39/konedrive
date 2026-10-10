@@ -136,7 +136,7 @@ impl TreeStore {
     /// `local_seq` is newer, and tombstones.
     pub fn committed_since(&self, seq: i64) -> Result<HashMap<String, Committed>, TreeError> {
         let mut out = HashMap::new();
-        let mut statement = self.conn.prepare("SELECT id, etag FROM items WHERE local_seq > ?1")?;
+        let mut statement = self.conn.prepare("SELECT id, etag FROM onedrive_items WHERE local_seq > ?1")?;
         for row in statement.query_map([seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))? {
             let (id, etag) = row?;
             out.insert(id, Committed { etag, gone: false });
@@ -154,7 +154,7 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         tx.execute(
             "DELETE FROM deferred
-              WHERE seq < COALESCE((SELECT i.local_seq FROM items i WHERE i.id = deferred.id), 0)
+              WHERE seq < COALESCE((SELECT i.local_seq FROM onedrive_items i WHERE i.id = deferred.id), 0)
                  OR seq < COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = deferred.id), 0)",
             [],
         )?;
@@ -203,7 +203,7 @@ impl TreeStore {
     /// cycle looks at them again, so that the disk follows what the outbox
     /// committed (a move adopted with a newer cTag).
     pub(crate) fn committed_items_since(&self, seq: i64) -> Result<Vec<String>, TreeError> {
-        let mut statement = self.conn.prepare_cached("SELECT id FROM items WHERE local_seq > ?1")?;
+        let mut statement = self.conn.prepare_cached("SELECT id FROM onedrive_items WHERE local_seq > ?1")?;
         let ids = statement.query_map([seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
@@ -212,7 +212,7 @@ impl TreeStore {
     /// one transaction with its deferrals ([`Deferrals`]): the deferred
     /// changes staged at the start of the cycle are done with; each id left
     /// alone whole has what `staging` holds for it kept as deferred, and
-    /// `staging` takes back what `items` has, so the base keeps the version
+    /// `staging` takes back what `onedrive_items` has, so the base keeps the version
     /// the disk holds; each id whose content is left alone likewise, but for
     /// its place, which the disk took.
     /// A deferral is dated the fetch's start, or the item's last
@@ -233,7 +233,7 @@ impl TreeStore {
             for (id, all) in defer.iter().map(|id| (id, true)).chain(content.iter().map(|id| (id, false))) {
                 // The item's last commit, a delete's tombstone included.
                 let committed: i64 = tx.query_row(
-                    "SELECT MAX(COALESCE((SELECT local_seq FROM items WHERE id = ?1), 0),
+                    "SELECT MAX(COALESCE((SELECT local_seq FROM onedrive_items WHERE id = ?1), 0),
                                 COALESCE((SELECT local_seq FROM outbox_gone WHERE id = ?1), 0))",
                     [id],
                     |r| r.get(0),
@@ -242,17 +242,17 @@ impl TreeStore {
                 let waits = waits.iter().find(|(waiting, _)| waiting == id).map(|(_, what)| what.as_str());
                 wait(&tx, id, get_row(&tx, source, id)?.as_ref(), seq, waits)?;
                 if all && source == Source::Overlay {
-                    // Staged over `items`: what it has shows through again.
+                    // Staged over `onedrive_items`: what it has shows through again.
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute("DELETE FROM staging_gone WHERE id = ?1", [id])?;
                 } else if all {
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
-                    tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"), [id])?;
+                    tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM onedrive_items WHERE id = ?1"), [id])?;
                 } else {
                     tx.execute(
                         "UPDATE staging SET (size, mtime, etag, ctag, quickxor, mime) =
-                           (SELECT i.size, i.mtime, i.etag, i.ctag, i.quickxor, i.mime FROM items i WHERE i.id = staging.id)
-                          WHERE id = ?1 AND EXISTS (SELECT 1 FROM items i WHERE i.id = staging.id)",
+                           (SELECT i.size, i.mtime, i.etag, i.ctag, i.quickxor, i.mime FROM onedrive_items i WHERE i.id = staging.id)
+                          WHERE id = ?1 AND EXISTS (SELECT 1 FROM onedrive_items i WHERE i.id = staging.id)",
                         [id],
                     )?;
                 }
@@ -287,7 +287,7 @@ impl TreeStore {
     /// reconcile is asked for.
     ///
     /// An idle cycle reads nothing whole: the deferred changes, the outbox
-    /// by item id and `items` by `local_seq`, each through an index.
+    /// by item id and `onedrive_items` by `local_seq`, each through an index.
     pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<RwStaged>, TreeError> {
         let deferred = self.live_deferred()?;
         let waiting = {

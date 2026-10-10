@@ -89,11 +89,11 @@ impl TreeStore {
     /// Every item but the root: what is listed, counted without a walk.
     pub fn listed_count(&self) -> Result<u64, TreeError> {
         let root = self.root_item_id()?.unwrap_or_default();
-        let listed: i64 = self.conn.query_row("SELECT count(*) FROM items WHERE id != ?1", [&root], |row| row.get(0))?;
+        let listed: i64 = self.conn.query_row("SELECT count(*) FROM onedrive_items WHERE id != ?1", [&root], |row| row.get(0))?;
         Ok(listed as u64)
     }
 
-    /// What is listed and placed in `items`, and what [`skipped`](Self::skipped)
+    /// What is listed and placed in `onedrive_items`, and what [`skipped`](Self::skipped)
     /// lists: a walk of the whole tree, asked for once per cycle that
     /// changed it.
     pub fn counts(&self) -> Result<Counts, TreeError> {
@@ -106,7 +106,7 @@ impl TreeStore {
                 "WITH RECURSIVE placed(id, depth) AS (
                      SELECT ?1, 0
                      UNION ALL
-                     SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
+                     SELECT c.id, p.depth + 1 FROM onedrive_items c JOIN placed p ON c.parent_id = p.id
                       WHERE {own} AND p.depth < {MAX_CHAIN})
                  SELECT count(*) - 1 FROM placed",
                 own = placed("c.placement"),
@@ -140,7 +140,7 @@ impl TreeStore {
             &format!(
                 "SELECT c.path, c.start_placement, w.id, w.waits, c.start FROM chain c LEFT JOIN ({waiting}) w ON w.id = c.start
                   WHERE c.parent_id = ?1 AND c.above",
-                waiting = waiting("d.id, d.waits", &format!("EXISTS (SELECT 1 FROM items i WHERE i.id = d.id AND {})", placed("i.placement")))
+                waiting = waiting("d.id, d.waits", &format!("EXISTS (SELECT 1 FROM onedrive_items i WHERE i.id = d.id AND {})", placed("i.placement")))
             ),
         );
         let mut statement = self.conn.prepare_cached(&sql)?;
@@ -265,7 +265,7 @@ fn waiting(columns: &str, such: &str) -> String {
     format!(
         "SELECT {columns} FROM deferred d
           WHERE d.gone = 0 AND {such}
-            AND d.seq >= COALESCE((SELECT i.local_seq FROM items i WHERE i.id = d.id), 0)
+            AND d.seq >= COALESCE((SELECT i.local_seq FROM onedrive_items i WHERE i.id = d.id), 0)
             AND d.seq >= COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = d.id), 0)"
     )
 }
@@ -277,7 +277,7 @@ fn not_in_the_folder(columns: &str) -> String {
     format!(
         "{waiting}
          UNION ALL
-         SELECT {columns} FROM items
+         SELECT {columns} FROM onedrive_items
           WHERE {out} AND id NOT IN ({waiting_ids})",
         waiting = waiting(&columns.split(", ").map(|c| format!("d.{c}")).collect::<Vec<_>>().join(", "), &skipped("d.placement")),
         waiting_ids = waiting("d.id", &skipped("d.placement")),

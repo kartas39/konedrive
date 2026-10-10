@@ -1,4 +1,4 @@
-//! What the tree holds: a row of `items` and `staging`, a delta entry, the
+//! What the tree holds: a row of `onedrive_items` and `staging`, a delta entry, the
 //! words the store keeps for a kind and a placement, and the one place a
 //! row is read from SQLite and written to it.
 
@@ -29,7 +29,7 @@ pub(crate) fn skipped(column: &str) -> String {
 pub(crate) const FILE: &str = "file";
 const FOLDER: &str = "folder";
 
-/// Every column, for copies between `items` and `staging`: the local ones
+/// Every column, for copies between `onedrive_items` and `staging`: the local ones
 /// (`thumb_key`, `local_seq`) travel with the row.
 pub(crate) const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key, local_seq";
 /// The columns of a [`Row`], in the order [`row_from`] reads them and
@@ -111,7 +111,7 @@ pub enum Table {
 impl Table {
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Table::Items => "items",
+            Table::Items => "onedrive_items",
             Table::Staging => "staging",
         }
     }
@@ -121,7 +121,7 @@ impl Table {
 /// ([`TreeStore::begin_staging`](crate::TreeStore::begin_staging)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewTree {
-    /// A delta's: only what it changes is staged, laid over `items`.
+    /// A delta's: only what it changes is staged, laid over `onedrive_items`.
     Delta,
     /// A full listing's: staged whole, from nothing.
     Whole,
@@ -274,7 +274,7 @@ pub fn usable_id(id: &str) -> bool {
 }
 
 /// A [`Row`] read from a query whose first columns are [`ROW_COLUMNS`]:
-/// a row of `items`, of `staging`, or of `deferred`, which keeps the same
+/// a row of `onedrive_items`, of `staging`, or of `deferred`, which keeps the same
 /// columns under the same names.
 pub(crate) fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
     let kind: String = row.get(at::KIND)?;

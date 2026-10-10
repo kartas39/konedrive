@@ -3,18 +3,18 @@
 use crate::model::{placed, COLUMNS};
 use crate::MAX_CHAIN;
 
-/// An `items` row `p` the delta laid over it leaves as it is.
+/// An `onedrive_items` row `p` the delta laid over it leaves as it is.
 pub(crate) const UNTOUCHED: &str =
     "NOT EXISTS (SELECT 1 FROM staging s WHERE s.id = p.id) AND NOT EXISTS (SELECT 1 FROM staging_gone g WHERE g.id = p.id)";
 
 /// Where the rows of a tree are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Source {
-    /// `items`.
+    /// `onedrive_items`.
     Items,
     /// `staging` alone: a full listing staged whole.
     Whole,
-    /// `staging` over `items`, less `staging_gone`: a delta staged.
+    /// `staging` over `onedrive_items`, less `staging_gone`: a delta staged.
     Overlay,
 }
 
@@ -24,10 +24,10 @@ impl Source {
     /// recursion, which would read it whole; see [`Source::step`].
     pub(crate) fn rows(self) -> String {
         match self {
-            Source::Items => "items".into(),
+            Source::Items => "onedrive_items".into(),
             Source::Whole => "staging".into(),
             Source::Overlay => {
-                format!("(SELECT {COLUMNS} FROM staging UNION ALL SELECT {COLUMNS} FROM items p WHERE {UNTOUCHED})")
+                format!("(SELECT {COLUMNS} FROM staging UNION ALL SELECT {COLUMNS} FROM onedrive_items p WHERE {UNTOUCHED})")
             }
         }
     }
@@ -37,13 +37,13 @@ impl Source {
     pub(crate) fn step(self, select: &str, cte: &str, on: &str, filter: &str) -> String {
         match self {
             Source::Items | Source::Whole => {
-                let t = if self == Source::Items { "items" } else { "staging" };
+                let t = if self == Source::Items { "onedrive_items" } else { "staging" };
                 format!("SELECT {select} FROM {cte} c JOIN {t} p ON {on} WHERE {filter}")
             }
             Source::Overlay => format!(
                 "SELECT {select} FROM {cte} c JOIN staging p ON {on} WHERE {filter}
                  UNION ALL
-                 SELECT {select} FROM {cte} c JOIN items p ON {on} WHERE {filter} AND {UNTOUCHED}"
+                 SELECT {select} FROM {cte} c JOIN onedrive_items p ON {on} WHERE {filter} AND {UNTOUCHED}"
             ),
         }
     }

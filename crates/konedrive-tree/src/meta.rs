@@ -15,13 +15,13 @@ pub(crate) const ROOT_ITEM_ID: &str = "root_item_id";
 /// A first listing's resume point.
 pub(crate) const LISTING_NEXT: &str = "listing_next";
 /// Set while `staging` holds a whole new tree (a full listing) rather than
-/// a delta laid over `items`.
+/// a delta laid over `onedrive_items`.
 pub(crate) const STAGING_WHOLE: &str = "staging_whole";
 /// The drive the tree is a listing of.
 const DRIVE_ID: &str = "drive_id";
 /// When a cycle last ended, unix seconds.
 const LAST_CHECKED: &str = "last_checked";
-/// The count of outbox commits: `items.local_seq` of the row a commit
+/// The count of outbox commits: `onedrive_items.local_seq` of the row a commit
 /// writes (the stale-delta guard, `docs/design/writes.md` §9).
 pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
 /// A pause's end, unix seconds; `0` until resumed (§11).

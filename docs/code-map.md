@@ -21,7 +21,7 @@ A change that adds, moves or removes a file changes its line here.
 | `crates/konedrived` | The user's daemon: sign-in, the sync, the folder as a FUSE mount, the D-Bus API |
 | `crates/konedrivectl` | The command line: everything the window can do |
 | `crates/konedrive-graph` | Sign-in with Microsoft and everything that talks to Microsoft Graph |
-| `crates/konedrive-tree` | The tree store (SQLite): items, staging, the outbox |
+| `crates/konedrive-tree` | The tree store (SQLite): the items as OneDrive has them, staging, the outbox |
 | `crates/konedrive-fs` | A folder's files on the local filesystem: konedrive's extended attributes and modes, leases, handles, the feature probe |
 | `crates/konedrive-reason` | Why a change is kept back: the reasons of outbox rows and local skips, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
@@ -726,7 +726,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `placing.rs` — whether the base places a row: itself, and every folder above it.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
-- `staging.rs` — the new tree a cycle builds, and its swap into `items`.
+- `staging.rs` — the new tree a cycle builds, and its swap into `onedrive_items`.
 - `reconcile.rs` — what a read-write folder's cycle keeps from one cycle to the next.
   `[tests]`
 - `activity.rs` — the activity log, as the store keeps it; `ActivityKind`, what an event records.

@@ -16,7 +16,7 @@
 //! stop between steps.
 //!
 //! A folder's first listing is shown page by page: each page is
-//! committed into `items` as it comes, with the link to the next page, so
+//! committed into `onedrive_items` as it comes, with the link to the next page, so
 //! that the folder fills as the drive is listed and a listing stopped
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 

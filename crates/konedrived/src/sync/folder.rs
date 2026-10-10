@@ -83,7 +83,7 @@ pub(super) struct Kept {
     /// first needs it, and the one connection to it from then on.
     pub store: Option<Store>,
     /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
-    /// across each commit that touches `items`, the mount's recorder across each change it
+    /// across each commit that touches `onedrive_items`, the mount's recorder across each change it
     /// records, and a cycle must hold it from staging to swap, or the swap reverts the
     /// commit. One for as long as the folder is recorded, so that what took it before a
     /// sync was started again still keeps the new sync's cycle out.

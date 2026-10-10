@@ -8,7 +8,7 @@
 //!
 //! - **The tree lock** is taken before `staging` is written and goes on to
 //!   the reconcile, which holds it until the swap: `commit_staging` replaces
-//!   `items` with `staging`, so an outbox commit made in between would be
+//!   `onedrive_items` with `staging`, so an outbox commit made in between would be
 //!   reverted.
 //! - **The stale-delta guard.** An entry for an item the outbox committed
 //!   after the fetch began — or deleted, by its tombstone — may be older than

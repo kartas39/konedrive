@@ -70,17 +70,17 @@ impl Listing {
     }
 
     /// A first listing shown page by page, from the start or from
-    /// where a stopped one got to (`from`, the link `items` was last
-    /// committed with). Each page is staged, then committed into `items`
+    /// where a stopped one got to (`from`, the link `onedrive_items` was last
+    /// committed with). Each page is staged, then committed into `onedrive_items`
     /// together with the link to the page after it — under the folder's
     /// lock, which is let go while Graph is asked for the next page, so that
     /// a Forget waits for one page at most — and the mount shows its names
-    /// from then on. An entry whose folder has not come yet waits in `items`
+    /// from then on. An entry whose folder has not come yet waits in `onedrive_items`
     /// (and so in `staging`) and is shown when its folder is. The
     /// last page swaps `staging` in with the delta link, which ends the
     /// listing, and says the one `listed` event.
     ///
-    /// Between pages `staging` is `items`.
+    /// Between pages `staging` is `onedrive_items`.
     ///
     /// A resume link Graph refuses — the one a stopped listing left, asked
     /// for first in this cycle — lists the drive again from the start,
@@ -92,7 +92,7 @@ impl Listing {
         self.ctx.state.update(|s| s.cycle.listing = true);
         // However the listing ends — also when its future is dropped.
         let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.cycle.listing = false)));
-        // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
+        // Read-write mode: the outbox's commit count when `staging` was last made from `onedrive_items`.
         let (seq, counts) = self
             .on_store(turn, |s| {
                 s.begin_staging(konedrive_tree::NewTree::Delta)?;
@@ -131,8 +131,8 @@ impl Listing {
             listed += changes.iter().filter(|c| matches!(c, Change::Upsert(_))).count() as u64;
             let staged = changes.clone();
             // Read-write mode: the tree lock from this page's staging to its commit,
-            // and `staging` made again from `items` under it when an outbox commit wrote
-            // `items` since the last page — between pages the two are the same otherwise,
+            // and `staging` made again from `onedrive_items` under it when an outbox commit wrote
+            // `onedrive_items` since the last page — between pages the two are the same otherwise,
             // and the swap would revert that commit. Only then: a copy per page
             // would grow with the square of a large listing.
             let tree = match mode {

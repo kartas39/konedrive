@@ -57,7 +57,7 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
         ])
         .unwrap();
     store.commit_staging("link").unwrap();
-    store.bench_sql("UPDATE items SET placement = 'plbced' WHERE id = 'D'; UPDATE items SET placement = 'skipped:nonsense', kind = 'nonsense' WHERE id = 'S'").unwrap();
+    store.bench_sql("UPDATE onedrive_items SET placement = 'plbced' WHERE id = 'D'; UPDATE onedrive_items SET placement = 'skipped:nonsense', kind = 'nonsense' WHERE id = 'S'").unwrap();
 
     assert_eq!(store.get(Table::Items, "D").unwrap().unwrap().placement, Placement::Placed);
     assert!(store.locate(Table::Items, "D").unwrap().unwrap().placed);
@@ -70,7 +70,7 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
 
     // `INDEXED BY` fails to prepare when the query does not imply the
     // index's own condition.
-    store.conn.prepare(&format!("SELECT id FROM items INDEXED BY items_skipped WHERE {}", skipped("placement"))).unwrap();
+    store.conn.prepare(&format!("SELECT id FROM onedrive_items INDEXED BY onedrive_items_skipped WHERE {}", skipped("placement"))).unwrap();
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn a_column_is_found_by_its_name_in_the_list() {
 }
 
 /// Every row comes back as it went in, through the one decoder: from
-/// `items`, from `staging`, and from `deferred`.
+/// `onedrive_items`, from `staging`, and from `deferred`.
 #[test]
 fn a_row_reads_back_as_written_from_every_table() {
     let row = |id: &str, kind, placement| Row {

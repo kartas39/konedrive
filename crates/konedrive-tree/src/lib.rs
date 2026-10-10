@@ -3,22 +3,22 @@
 //! on the files are that — so it is rebuilt from a full listing whenever it
 //! cannot be used, and losing it costs one listing, never data.
 //!
-//! `items` is the tree the folder was last made to match; [`Table::Staging`]
+//! `onedrive_items` is the tree the folder was last made to match; [`Table::Staging`]
 //! is the tree a cycle is building. The folder is reconciled against the new
-//! tree, and only then does it replace `items`, in one transaction, so a
-//! crash in between leaves `items` and the delta link as they were and the
+//! tree, and only then does it replace `onedrive_items`, in one transaction, so a
+//! crash in between leaves `onedrive_items` and the delta link as they were and the
 //! next cycle asks for the same changes again.
 //!
-//! A delta's new tree is `items` with the delta laid over it:
+//! A delta's new tree is `onedrive_items` with the delta laid over it:
 //! the table `staging` holds only the rows the delta writes, each a whole
 //! row, and `staging_gone` the ids it removes. Reading the new tree reads
-//! `staging` first and `items` for the rest; the swap writes those rows and
+//! `staging` first and `onedrive_items` for the rest; the swap writes those rows and
 //! removes those ids, nothing else. A full listing, which may leave out
 //! anything, is staged whole instead: `staging` is then the new tree by
 //! itself (`meta` `staging_whole`), and the swap replaces every row.
 //!
 //! A folder's first listing is the one exception: each page goes
-//! into `items` as soon as it is placed, with the link to the next page
+//! into `onedrive_items` as soon as it is placed, with the link to the next page
 //! (`listing_next`) in the same transaction, so that a listing stopped
 //! part-way resumes where it stopped. `commit_staging` ends it as it ends
 //! every listing.

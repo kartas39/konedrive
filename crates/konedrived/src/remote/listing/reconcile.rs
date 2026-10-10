@@ -8,7 +8,7 @@
 //!    shows the store; the folder under the mount follows what changed
 //!    ([`CycleStep::apply_staged_cycle`], the mount's);
 //! 2. [`commit_cycle`]: `staging` swapped in with its link, or a first
-//!    listing's page put into `items`. In read-write mode it decides what
+//!    listing's page put into `onedrive_items`. In read-write mode it decides what
 //!    waits: the changes of what the outbox holds keep their base row;
 //! 3. [`Reconcile::after_commit`]: the mount told ([`CycleStep::announce_committed_cycle`]),
 //!    removals of items already gone dropped from the outbox, the activity
@@ -77,7 +77,7 @@ pub(crate) enum Commit {
     /// `listing`: the last page of a first listing shown page by page,
     /// which the one `listed` event stands for.
     Swap { link: String, listing: bool },
-    /// One page of a first listing: its entries into `items`, with
+    /// One page of a first listing: its entries into `onedrive_items`, with
     /// `next`, the link to the page after it.
     Page { changes: Vec<Change>, next: String },
 }
@@ -151,7 +151,7 @@ pub(crate) struct Reconcile {
 impl Listing {
     /// Makes the folder follow `staging` and commits it: swaps
     /// `staging` in with its link, or puts a first listing's page into
-    /// `items` with the link to the next one. Under the folder's
+    /// `onedrive_items` with the link to the next one. Under the folder's
     /// lease and its tree lock, on a blocking thread. Everything before this
     /// wrote only `staging` and `meta`, and needed no lock but, in read-write
     /// mode, the tree lock `mode` brings; a read-only folder's is taken here,
@@ -270,7 +270,7 @@ impl Reconcile {
         self.hand_over(&applied.on_disk);
     }
 
-    /// `items` just took this cycle's answer: a held or pending
+    /// `onedrive_items` just took this cycle's answer: a held or pending
     /// `delete` row whose item is not in it any more has
     /// nothing left to send.
     fn drop_removed(&self, writing: &Writing) {
@@ -309,7 +309,7 @@ impl Reconcile {
 }
 
 /// A commit before the drive's root has come. Nothing on a page has a place
-/// yet: it waits in `items` like any entry whose folder has not come.
+/// yet: it waits in `onedrive_items` like any entry whose folder has not come.
 fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleError> {
     match commit {
         Commit::Page { changes, next } => {
@@ -321,7 +321,7 @@ fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleErr
 }
 
 /// Step 2: the commit. `staging` is swapped in with its link, or a page
-/// goes into `items` with the link to the next one.
+/// goes into `onedrive_items` with the link to the next one.
 ///
 /// With a plan (read-write mode) the swap keeps the base row of what the
 /// outbox holds, and its change waits (the read-write reconcile

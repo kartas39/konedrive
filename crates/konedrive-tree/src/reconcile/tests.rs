@@ -37,7 +37,7 @@ fn a_deferred_change_waits_and_a_later_commit_supersedes_it() {
     assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(file("X", "R", "x", "c2"))]);
 
     // A commit at 6 (after the fetch at 5): the deferred change is older.
-    s.conn.execute("UPDATE items SET local_seq = 6 WHERE id = 'X'", []).unwrap();
+    s.conn.execute("UPDATE onedrive_items SET local_seq = 6 WHERE id = 'X'", []).unwrap();
     assert!(s.live_deferred().unwrap().is_empty());
     assert!(s.deferred_ids().unwrap().is_empty(), "dropped for good");
 }
@@ -82,7 +82,7 @@ fn a_swap_that_fails_keeps_the_deferred_changes_it_consumed() {
     // fails (a full disk, a crash) once the deferrals are written.
     let RwStaged { ids, consumed } = s.stage_rw(&[], 0, true).unwrap().unwrap();
     assert_eq!((ids, consumed.clone()), (vec!["X".to_owned()], vec!["X".to_owned()]));
-    s.conn.execute_batch("CREATE TEMP TRIGGER fail_swap BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    s.conn.execute_batch("CREATE TEMP TRIGGER fail_swap BEFORE INSERT ON onedrive_items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
     assert!(s.commit_staging_deferring("L3", &Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 1, waits: &[] }).is_err());
     s.conn.execute_batch("DROP TRIGGER fail_swap;").unwrap();
     assert_eq!(s.delta_link().unwrap().as_deref(), Some("L2"), "the link stays");

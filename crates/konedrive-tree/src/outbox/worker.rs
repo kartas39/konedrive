@@ -157,7 +157,7 @@ impl TreeStore {
                 answer.parent_id.clone()
             }
         };
-        tx.execute("UPDATE items SET local_seq = ?2 WHERE id = ?1", params![answer.id, local_seq])?;
+        tx.execute("UPDATE onedrive_items SET local_seq = ?2 WHERE id = ?1", params![answer.id, local_seq])?;
         let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent, name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
         if let Some(object) = &committed.object {
@@ -448,7 +448,7 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         let swapping = format!("{SWAP_PREFIX}%");
         let dropped = "WHERE NOT (COALESCE(target_name, '') LIKE ?1 \
-                       OR COALESCE(item_id, '') IN (SELECT id FROM items WHERE name LIKE ?1))";
+                       OR COALESCE(item_id, '') IN (SELECT id FROM onedrive_items WHERE name LIKE ?1))";
         let rows = rows_where(&tx, dropped, [&swapping])?;
         for row in &rows {
             remove(&tx, row.seq)?;
@@ -498,7 +498,7 @@ impl TreeStore {
     /// Every item of the base, for tests that seed a fake OneDrive from it.
     #[cfg(any(test, feature = "testing"))]
     pub fn all_items(&self) -> Result<Vec<Row>, TreeError> {
-        let sql = format!("SELECT {} FROM items ORDER BY id", crate::model::ROW_COLUMNS);
+        let sql = format!("SELECT {} FROM onedrive_items ORDER BY id", crate::model::ROW_COLUMNS);
         let mut statement = self.conn.prepare(&sql)?;
         let rows = statement.query_map([], crate::model::row_from)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)

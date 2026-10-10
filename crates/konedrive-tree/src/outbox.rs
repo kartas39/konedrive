@@ -179,11 +179,11 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
     path != dir && path.starts_with(dir)
 }
 
-/// Whether `items` (the base) has no row for `id` any more. A query that
+/// Whether `onedrive_items` (the base) has no row for `id` any more. A query that
 /// fails counts as not gone: the row is kept rather than dropped on an
 /// ambiguous answer.
 fn item_gone(tx: &rusqlite::Transaction<'_>, id: &str) -> bool {
-    tx.query_row("SELECT 1 FROM items WHERE id = ?1", [id], |_| Ok(())).optional().map(|found| found.is_none()).unwrap_or(false)
+    tx.query_row("SELECT 1 FROM onedrive_items WHERE id = ?1", [id], |_| Ok(())).optional().map(|found| found.is_none()).unwrap_or(false)
 }
 
 /// The live rows of an item, or of a local object with no item id yet,
@@ -256,7 +256,7 @@ pub(super) fn local_place(committed: &OutboxRow, base: &Row) -> (Option<String>,
     (parent, name)
 }
 
-/// Whether the base would place `row`, written into `items`: its own
+/// Whether the base would place `row`, written into `onedrive_items`: its own
 /// placement, and the folder it names placed up to the root.
 pub(super) fn would_place(tx: &rusqlite::Transaction<'_>, row: &Row) -> Result<bool, TreeError> {
     if row.placement != Placement::Placed {
@@ -401,7 +401,7 @@ impl TreeStore {
     }
 
     /// A held or pending `delete` row whose item the delta or
-    /// a Full reconcile just found gone from OneDrive — `items` (already
+    /// a Full reconcile just found gone from OneDrive — `onedrive_items` (already
     /// swapped in for this cycle) holds no row for it — has nothing left to
     /// send: dropped without a request. Not a `running` row: its own commit
     /// meets the `404` itself and drops it there ([`Committed::Gone`]).
@@ -475,7 +475,7 @@ impl TreeStore {
                         upsert(&tx, Table::Items, row)?;
                     }
                 }
-                tx.execute("UPDATE items SET local_seq = ?2 WHERE id = ?1", params![row.id, local_seq])?;
+                tx.execute("UPDATE onedrive_items SET local_seq = ?2 WHERE id = ?1", params![row.id, local_seq])?;
                 // The follow-up behind it was detected against what this
                 // commit made: that is its base now — and, behind a create,
                 // its item id.

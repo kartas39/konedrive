@@ -9,7 +9,7 @@ use crate::meta::{self, ROOT_ITEM_ID};
 use crate::model::Placement;
 use crate::{TreeError, MAX_CHAIN};
 
-/// Whether the base places rows of `items`: the row itself and every folder
+/// Whether the base places rows of `onedrive_items`: the row itself and every folder
 /// above it, up to the drive's root. A point lookup for each folder on the
 /// way up, asked once however many rows share it.
 pub(crate) struct Placing {
@@ -22,9 +22,9 @@ impl Placing {
         Ok(meta::get(tx, ROOT_ITEM_ID)?.map(|root| Self { known: HashMap::from([(root, true)]) }))
     }
 
-    /// Whether the base places row `id`; `None` when `items` has no such row.
+    /// Whether the base places row `id`; `None` when `onedrive_items` has no such row.
     pub(crate) fn of(&mut self, tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option<bool>, TreeError> {
-        let mut row_of = tx.prepare_cached("SELECT parent_id, placement FROM items WHERE id = ?1")?;
+        let mut row_of = tx.prepare_cached("SELECT parent_id, placement FROM onedrive_items WHERE id = ?1")?;
         let mut chain: Vec<String> = Vec::new();
         let mut at = id.to_owned();
         let placed = loop {
@@ -52,7 +52,7 @@ impl Placing {
     }
 }
 
-/// Whether the base places row `id`, as `items` is now.
+/// Whether the base places row `id`, as `onedrive_items` is now.
 pub(crate) fn base_places(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<bool, TreeError> {
     let Some(mut placing) = Placing::new(tx)? else { return Ok(false) };
     Ok(placing.of(tx, id)?.unwrap_or(false))

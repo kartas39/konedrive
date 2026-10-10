@@ -29,7 +29,7 @@ pub struct ThumbnailBatch {
     pub next: Option<String>,
 }
 
-/// SQL for what a thumbnail is made for (`items.thumb_key`): the version
+/// SQL for what a thumbnail is made for (`onedrive_items.thumb_key`): the version
 /// `ctag`, the path `path` (its cache name) and the mtime `mtime` (which
 /// KIO checks), each an SQL expression. Any of them changing needs a new
 /// one. The one place the key is put together: the candidates are compared
@@ -50,7 +50,7 @@ impl TreeStore {
             return Ok(ThumbnailBatch { wanted: Vec::new(), next: Some(after.to_owned()) });
         }
         let page = format!(
-            "SELECT id, parent_id, name, placement FROM items
+            "SELECT id, parent_id, name, placement FROM onedrive_items
               WHERE kind = '{FILE}' AND {placed} AND ctag IS NOT NULL
                 AND (mime LIKE 'image/%' OR mime LIKE 'video/%') AND id > ?2
               ORDER BY id LIMIT ?3",
@@ -58,7 +58,7 @@ impl TreeStore {
         );
         let Some(root) = self.root_item_id()? else { return Ok(ThumbnailBatch::default()) };
         let not_made = format!(
-            "SELECT {}, c.path FROM chain c JOIN items i ON i.id = c.start
+            "SELECT {}, c.path FROM chain c JOIN onedrive_items i ON i.id = c.start
               WHERE c.parent_id = ?1 AND c.above AND c.own
                 AND (i.thumb_key IS NULL OR i.thumb_key != {key})
               ORDER BY i.id",
@@ -101,8 +101,8 @@ impl TreeStore {
     /// that place: the next cycle does not make it again while its version,
     /// path and mtime stay.
     pub fn thumbnail_made(&self, made: &Thumbnail) -> Result<(), TreeError> {
-        // The row and the place it was made for, not what `items` has now.
-        let sql = format!("UPDATE items SET thumb_key = {} WHERE id = ?1", thumb_key_sql("?2", "?3", "?4"));
+        // The row and the place it was made for, not what `onedrive_items` has now.
+        let sql = format!("UPDATE onedrive_items SET thumb_key = {} WHERE id = ?1", thumb_key_sql("?2", "?3", "?4"));
         let rel = made.rel.to_string_lossy();
         self.conn.execute(&sql, params![made.row.id, made.row.ctag.as_deref().unwrap_or(""), rel, made.row.mtime])?;
         Ok(())

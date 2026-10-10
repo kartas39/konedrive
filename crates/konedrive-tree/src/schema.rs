@@ -20,12 +20,12 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "10";
+pub const SCHEMA_VERSION: &str = "11";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
 ///
-/// - `items`, `staging`: the tree and the tree a cycle builds. `local_seq`
+/// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
 ///   while it is staged.
@@ -51,7 +51,7 @@ pub const SCHEMA_VERSION: &str = "10";
 ///   whose outcome is not known); the URL replaces it. `upload_openings_left`: a record
 ///   whose row left, or moved to another place, kept until a
 ///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
-/// - `items_skipped` asks whether a row is placed as every query and the
+/// - `onedrive_items_skipped` asks whether a row is placed as every query and the
 ///   decoder do ([`skipped`]), so that a query uses it.
 /// - The indexes keep a cycle and the outbox's lookups from reading a whole
 ///   table.
@@ -68,11 +68,11 @@ fn schema() -> String {
         )
     };
     format!(
-        "{items}
+        "{onedrive_items}
          {staging}
          CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
-         CREATE INDEX items_seq ON items(local_seq);
-         CREATE INDEX items_skipped ON items(id) WHERE {skipped};
+         CREATE INDEX onedrive_items_seq ON onedrive_items(local_seq);
+         CREATE INDEX onedrive_items_skipped ON onedrive_items(id) WHERE {skipped};
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
@@ -113,7 +113,7 @@ fn schema() -> String {
          CREATE INDEX upload_openings_parent ON upload_openings(parent);
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
-        items = tree("items"),
+        onedrive_items = tree("onedrive_items"),
         staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),
         frees = outbox::FREES,
