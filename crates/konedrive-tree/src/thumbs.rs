@@ -65,7 +65,7 @@ impl TreeStore {
             ROW_COLUMNS.split(", ").map(|c| format!("i.{c}")).collect::<Vec<_>>().join(", "),
             key = thumb_key_sql("i.ctag", "c.path", "i.mtime")
         );
-        let sql = chains_then(Source::Items, &page, &not_made);
+        let sql = chains_then(Source::OneDriveItems, &page, &not_made);
         let mut wanted = Vec::new();
         let mut from = after.to_owned();
         let mut scanned = 0;

@@ -176,7 +176,7 @@ impl TreeStore {
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
         let changes = self.live_deferred()?;
         let tx = self.conn.transaction()?;
-        apply(&tx, Source::Items, &changes)?;
+        apply(&tx, Source::OneDriveItems, &changes)?;
         tx.execute("DELETE FROM deferred", [])?;
         tx.execute("DELETE FROM outbox_gone", [])?;
         tx.commit()?;

@@ -104,7 +104,7 @@ pub(super) trait StoreFacts {
 
 impl StoreFacts for TreeStore {
     fn base_row(&self, id: &str) -> Result<Option<Row>, TreeError> {
-        self.get(Table::Items, id)
+        self.get(Table::OneDriveItems, id)
     }
 
     fn outbox_rows_of(&self, handle: &FileHandle) -> Result<Vec<OutboxRow>, TreeError> {

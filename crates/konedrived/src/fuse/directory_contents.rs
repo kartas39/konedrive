@@ -83,7 +83,7 @@ impl DirectoryContents {
     /// The path the store has the OneDrive id `id` at: where OneDrive has it, without the
     /// unsent changes ([`find_path`](Self::find_path) is where the mount shows it).
     pub(super) fn find_stored_path(&self, id: &str) -> Option<PathBuf> {
-        self.ask_store(|s| s.locate(Table::Items, id)).flatten().map(|at| at.rel)
+        self.ask_store(|s| s.locate(Table::OneDriveItems, id)).flatten().map(|at| at.rel)
     }
 
     /// The row of the OneDrive file the user removed from `rel` and whose removal is not sent
@@ -96,7 +96,7 @@ impl DirectoryContents {
 
     /// The row of the OneDrive id `id`, as the store has it.
     pub(super) fn find_row(&self, id: &str) -> Option<Row> {
-        self.ask_store(|s| s.get(Table::Items, id)).flatten()
+        self.ask_store(|s| s.get(Table::OneDriveItems, id)).flatten()
     }
 
     /// The row of the directory `row` is in, as the store has it.
@@ -144,7 +144,7 @@ impl DirectoryContents {
     pub(super) fn list_files_below(&self, row: &Row) -> Vec<(FileSyncState, PathBuf)> {
         // One question at a time: the mount's requests read through the same connection, and
         // none waits for a whole walk.
-        let mut ids = self.ask_store(|s| s.descendants(Table::Items, &row.id)).unwrap_or_default();
+        let mut ids = self.ask_store(|s| s.descendants(Table::OneDriveItems, &row.id)).unwrap_or_default();
         ids.push(row.id.clone());
         let files: Vec<Row> = ids.iter().filter_map(|id| self.find_row(id).filter(|r| r.kind == Kind::File)).collect();
         let placed: Vec<(Row, PathBuf)> = files.into_iter().filter_map(|file| self.find_path(&file.id).map(|at| (file, at))).collect();

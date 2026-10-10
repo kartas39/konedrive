@@ -37,8 +37,8 @@ pub fn record(s: &mut TreeStore, mut detections: Vec<Detection>, ops: Vec<Outbox
         let new = || detections.iter().filter(|d| d.kind.removes()).filter_map(|d| d.item_id.as_deref()).filter(|id| !confirmed.contains(id));
         let mut removed: HashSet<String> = HashSet::new();
         for id in new().chain(waiting().filter_map(|r| r.item_id.as_deref())) {
-            if removed.insert(id.to_owned()) && s.get(Table::Items, id)?.is_some_and(|base| base.kind == Kind::Folder) {
-                removed.extend(s.descendants(Table::Items, id)?);
+            if removed.insert(id.to_owned()) && s.get(Table::OneDriveItems, id)?.is_some_and(|base| base.kind == Kind::Folder) {
+                removed.extend(s.descendants(Table::OneDriveItems, id)?);
             }
         }
         let n = removed.len() as u64;

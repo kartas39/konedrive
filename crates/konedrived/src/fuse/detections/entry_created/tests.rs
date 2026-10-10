@@ -41,7 +41,7 @@ fn a_name_onedrive_refuses_or_a_file_too_large_waits_for_the_user() {
 #[test]
 fn a_file_replacing_a_removed_onedrive_file_is_that_files_new_content() {
     let store = store(vec![of(OutboxKind::Delete, "A", "a.txt", "a.txt", (None, None))]);
-    let base = store.get(konedrive_tree::Table::Items, "A").unwrap().unwrap();
+    let base = store.get(konedrive_tree::Table::OneDriveItems, "A").unwrap().unwrap();
     let again = file(1, 5);
     let batch = detect(EntryCreated::ReplacingRemovedFile { place: in_root("a.txt"), file: again.clone(), write_state: WriteState::NotOpen, base: base.clone() }, &store);
     let update = &batch.detections[0];

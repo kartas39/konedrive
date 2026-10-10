@@ -215,7 +215,7 @@ impl World {
         let rows = self.rows();
         names.extend(rows.iter().filter(|r| r.item_id.is_some() && r.kind != OutboxKind::Delete && r.rel.parent() == Some(rel)).map(|r| World::name_of(&r.rel).to_string_lossy().into_owned()));
         if let Some(id) = in_onedrive.filter(|row| row.kind == Kind::Folder).map(|row| row.id.clone()) {
-            let listed = self.store.call_blocking(move |s| s.children(Table::Items, &id)).unwrap();
+            let listed = self.store.call_blocking(move |s| s.children(Table::OneDriveItems, &id)).unwrap();
             names.extend(listed.into_iter().filter(|child| !rows.iter().any(|r| r.item_id.as_deref() == Some(child.id.as_str()))).map(|child| child.name));
         }
         names

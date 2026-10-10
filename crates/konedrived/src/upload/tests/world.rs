@@ -105,12 +105,12 @@ impl World {
     /// Where the base places the item `id`, relative to the folder.
     pub fn place_of(&self, id: &str) -> Option<PathBuf> {
         let id = id.to_owned();
-        self.store.call_blocking(move |s| s.locate(Table::Items, &id)).unwrap().map(|located| located.rel)
+        self.store.call_blocking(move |s| s.locate(Table::OneDriveItems, &id)).unwrap().map(|located| located.rel)
     }
 
     pub fn base(&self, id: &str) -> Option<Row> {
         let id = id.to_owned();
-        self.store.call_blocking(move |s| s.get(Table::Items, &id)).unwrap()
+        self.store.call_blocking(move |s| s.get(Table::OneDriveItems, &id)).unwrap()
     }
 
     /// The item the base has at `rel`.
@@ -118,10 +118,10 @@ impl World {
         let names: Vec<String> = rel.components().map(|name| name.as_os_str().to_string_lossy().into_owned()).collect();
         self.store
             .call_blocking(move |s| {
-                let mut at = s.get(Table::Items, "R")?;
+                let mut at = s.get(Table::OneDriveItems, "R")?;
                 for name in &names {
                     let Some(parent) = at else { return Ok(None) };
-                    at = s.child(Table::Items, &parent.id, name)?;
+                    at = s.child(Table::OneDriveItems, &parent.id, name)?;
                 }
                 Ok(at)
             })

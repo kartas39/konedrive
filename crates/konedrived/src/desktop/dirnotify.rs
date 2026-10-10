@@ -38,7 +38,7 @@ pub async fn read_folder_again(store: Store, folder: PathBuf) {
             let Some(root) = s.root_item_id()? else { return Ok(vec![folder]) };
             let (mut directories, mut next) = (vec![folder.clone()], vec![(root, folder)]);
             while let Some((id, path)) = next.pop() {
-                for row in s.children(Table::Items, &id)? {
+                for row in s.children(Table::OneDriveItems, &id)? {
                     if row.kind == Kind::Folder && directories.len() < MOST {
                         let below = path.join(&row.name);
                         directories.push(below.clone());

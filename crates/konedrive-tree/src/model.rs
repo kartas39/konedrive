@@ -111,14 +111,14 @@ pub(crate) mod at {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Table {
-    Items,
+    OneDriveItems,
     Staging,
 }
 
 impl Table {
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Table::Items => "onedrive_items",
+            Table::OneDriveItems => "onedrive_items",
             Table::Staging => "staging",
         }
     }

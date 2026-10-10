@@ -458,7 +458,7 @@ impl TreeStore {
                 // waits as its deferred change, for the reconcile to take
                 // it off the disk once nothing in it waits. Dated this
                 // commit, which therefore does not supersede it.
-                let stays = match get_row(&tx, Source::Items, &row.id)? {
+                let stays = match get_row(&tx, Source::OneDriveItems, &row.id)? {
                     Some(base) if base_places(&tx, &row.id)? && !would_place(&tx, row)? => Some(base),
                     _ => None,
                 };
@@ -476,11 +476,11 @@ impl TreeStore {
                 };
                 match stays {
                     Some(base) => {
-                        upsert(&tx, Table::Items, &Row { parent_id: place.0.clone(), name: place.1.clone(), placement: base.placement, ..row.clone() })?;
+                        upsert(&tx, Table::OneDriveItems, &Row { parent_id: place.0.clone(), name: place.1.clone(), placement: base.placement, ..row.clone() })?;
                         wait(&tx, &row.id, Some(row), local_seq, None)?;
                     }
                     None => {
-                        upsert(&tx, Table::Items, row)?;
+                        upsert(&tx, Table::OneDriveItems, row)?;
                     }
                 }
                 tx.execute("UPDATE onedrive_items SET local_seq = ?2 WHERE id = ?1", params![row.id, local_seq])?;
@@ -498,7 +498,7 @@ impl TreeStore {
                 }
             }
             Committed::Gone { item_id } => {
-                apply(&tx, Source::Items, &[Change::Delete(item_id.to_owned())])?;
+                apply(&tx, Source::OneDriveItems, &[Change::Delete(item_id.to_owned())])?;
                 // A delta fetched before this delete must not bring it back.
                 crate::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }

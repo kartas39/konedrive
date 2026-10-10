@@ -132,10 +132,10 @@ fn staged_rows_are_invisible_until_committed() {
     let mut store = TreeStore::in_memory().unwrap();
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root(), file("A", "R", "a")]).unwrap();
-    assert!(store.get(Table::Items, "A").unwrap().is_none());
+    assert!(store.get(Table::OneDriveItems, "A").unwrap().is_none());
     assert!(store.get(Table::Staging, "A").unwrap().is_some());
     store.commit_staging("link-1").unwrap();
-    assert!(store.get(Table::Items, "A").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
     assert_eq!(store.staged_rows(), 0, "the staged rows are gone into onedrive_items");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
     assert_eq!(store.root_item_id().unwrap().as_deref(), Some("R"));
@@ -149,15 +149,15 @@ fn staged_rows_are_invisible_until_committed() {
 fn a_placed_page_is_committed_with_where_the_listing_goes_on() {
     let mut store = TreeStore::in_memory().unwrap();
     store.commit_page(&[root(), folder("D", "R", "docs"), file("F", "D", "f")], "next-2").unwrap();
-    assert!(store.get(Table::Items, "F").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "F").unwrap().is_some());
     assert_eq!(store.listing_next().unwrap().as_deref(), Some("next-2"));
     assert_eq!(store.root_item_id().unwrap().as_deref(), Some("R"));
     assert_eq!(store.delta_link().unwrap(), None, "the listing has not ended");
 
     store.commit_page(&[Change::Delete("D".into()), file("G", "R", "g")], "next-3").unwrap();
-    assert!(store.get(Table::Items, "D").unwrap().is_none());
-    assert!(store.get(Table::Items, "F").unwrap().is_none(), "what was inside the deleted folder goes with it");
-    assert!(store.get(Table::Items, "G").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "D").unwrap().is_none());
+    assert!(store.get(Table::OneDriveItems, "F").unwrap().is_none(), "what was inside the deleted folder goes with it");
+    assert!(store.get(Table::OneDriveItems, "G").unwrap().is_some());
     assert_eq!(store.listing_next().unwrap().as_deref(), Some("next-3"));
     assert_eq!(store.staged_rows(), 0, "staging is not written");
 }
@@ -169,10 +169,10 @@ fn a_placed_page_is_committed_with_where_the_listing_goes_on() {
 fn an_entry_whose_folder_has_not_come_survives_a_page_commit() {
     let mut store = TreeStore::in_memory().unwrap();
     store.commit_page(&[root(), file("C", "P", "c")], "next-2").unwrap();
-    assert!(store.get(Table::Items, "C").unwrap().is_some(), "kept, though nowhere yet");
-    assert_eq!(store.locate(Table::Items, "C").unwrap(), None);
+    assert!(store.get(Table::OneDriveItems, "C").unwrap().is_some(), "kept, though nowhere yet");
+    assert_eq!(store.locate(Table::OneDriveItems, "C").unwrap(), None);
     store.commit_page(&[folder("P", "R", "p")], "next-3").unwrap();
-    assert_eq!(store.locate(Table::Items, "C").unwrap(), Some(Located { rel: "p/c".into(), placed: true, depth: 2 }));
+    assert_eq!(store.locate(Table::OneDriveItems, "C").unwrap(), Some(Located { rel: "p/c".into(), placed: true, depth: 2 }));
 }
 
 /// A first listing placed page by page is under way from the moment it
@@ -198,20 +198,20 @@ fn the_swap_ends_a_listing_placed_page_by_page() {
     store.commit_staging("link-1").unwrap();
     assert_eq!(store.listing_next().unwrap(), None);
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
-    assert!(store.get(Table::Items, "A").unwrap().is_some());
-    assert!(store.get(Table::Items, "B").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "B").unwrap().is_some());
 }
 
 #[test]
 fn a_table_is_empty_until_a_row_is_in_it() {
     let mut store = TreeStore::in_memory().unwrap();
-    assert!(store.is_empty(Table::Items).unwrap());
+    assert!(store.is_empty(Table::OneDriveItems).unwrap());
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root()]).unwrap();
-    assert!(store.is_empty(Table::Items).unwrap(), "a staged row is not in onedrive_items");
+    assert!(store.is_empty(Table::OneDriveItems).unwrap(), "a staged row is not in onedrive_items");
     assert!(!store.is_empty(Table::Staging).unwrap());
     store.commit_staging("link-1").unwrap();
-    assert!(!store.is_empty(Table::Items).unwrap());
+    assert!(!store.is_empty(Table::OneDriveItems).unwrap());
 }
 
 #[test]
@@ -224,10 +224,10 @@ fn a_path_is_the_chain_of_names_and_placed_only_if_every_link_is() {
         file("G", "L", "g.txt"),
         file("O", "missing-parent", "o.txt"),
     ]);
-    assert_eq!(store.locate(Table::Items, "F").unwrap(), Some(Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }));
-    assert_eq!(store.locate(Table::Items, "R").unwrap(), Some(Located { rel: "".into(), placed: true, depth: 0 }));
-    assert!(!store.locate(Table::Items, "G").unwrap().unwrap().placed, "inside a skipped folder");
-    assert_eq!(store.locate(Table::Items, "O").unwrap(), None, "an orphan is nowhere");
+    assert_eq!(store.locate(Table::OneDriveItems, "F").unwrap(), Some(Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }));
+    assert_eq!(store.locate(Table::OneDriveItems, "R").unwrap(), Some(Located { rel: "".into(), placed: true, depth: 0 }));
+    assert!(!store.locate(Table::OneDriveItems, "G").unwrap().unwrap().placed, "inside a skipped folder");
+    assert_eq!(store.locate(Table::OneDriveItems, "O").unwrap(), None, "an orphan is nowhere");
 }
 
 #[test]
@@ -284,7 +284,7 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     store.stage(&[long(file("F", "D", "f.txt"), "f-long"), long(file("N", "R", "n"), "n-longer"), Change::Delete("G".into())]).unwrap();
     let whole: Vec<String> = ["F", "N", "G"].map(str::to_owned).to_vec();
     store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1, waits: &[] }).unwrap();
-    assert_eq!(store.locate(Table::Items, "F").unwrap().unwrap(), Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }, "still here");
+    assert_eq!(store.locate(Table::OneDriveItems, "F").unwrap().unwrap(), Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }, "still here");
     assert_eq!(
         store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(),
         vec![(PathBuf::from("docs/f-long"), SkipReason::NameTooLong), (PathBuf::from("n-longer"), SkipReason::NameTooLong)]
@@ -353,12 +353,12 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
         assert_eq!(store.staged_rows(), 10, "only the delta's rows are staged");
         assert_eq!(store.changed_ids().unwrap().len(), 10);
         assert_eq!(store.locate(Table::Staging, "F7-3").unwrap().unwrap().rel, PathBuf::from("d7/renamed3"));
-        assert_eq!(store.locate(Table::Items, "F7-3").unwrap().unwrap().rel, PathBuf::from("d7/f3"));
+        assert_eq!(store.locate(Table::OneDriveItems, "F7-3").unwrap().unwrap().rel, PathBuf::from("d7/f3"));
         // The daemon dies here.
     }
     let mut store = TreeStore::open(&path).unwrap();
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
-    assert_eq!(store.get(Table::Items, "F7-3").unwrap().unwrap().name, "f3", "the old tree");
+    assert_eq!(store.get(Table::OneDriveItems, "F7-3").unwrap().unwrap().name, "f3", "the old tree");
     store.begin_staging(crate::NewTree::Delta).unwrap();
     assert_eq!(store.staged_rows(), 0, "the next cycle stages afresh");
     store.stage(&delta).unwrap();
@@ -366,8 +366,8 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
     store.commit_staging("link-2").unwrap();
     let written = store.conn.total_changes() - before;
     assert!(written < 40, "the swap wrote {written} rows");
-    assert_eq!(store.get(Table::Items, "F7-3").unwrap().unwrap().name, "renamed3");
-    assert_eq!(store.get(Table::Items, "F7-99").unwrap().unwrap().name, "f99");
+    assert_eq!(store.get(Table::OneDriveItems, "F7-3").unwrap().unwrap().name, "renamed3");
+    assert_eq!(store.get(Table::OneDriveItems, "F7-99").unwrap().unwrap().name, "f99");
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"));
 }
 
@@ -384,14 +384,14 @@ fn a_delta_laid_over_items_removes_and_changes_what_it_says() {
     ids.sort();
     assert_eq!(ids, vec!["D".to_owned(), "F".to_owned()], "K is staged as it was");
     store.commit_staging("link-2").unwrap();
-    assert!(store.get(Table::Items, "F").unwrap().is_none());
-    assert!(store.get(Table::Items, "K").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "F").unwrap().is_none());
+    assert!(store.get(Table::OneDriveItems, "K").unwrap().is_some());
 }
 
 #[test]
 fn descendants_are_every_level_below() {
     let store = committed(&[root(), folder("D", "R", "d"), folder("E", "D", "e"), file("F", "E", "f")]);
-    let mut below = store.descendants(Table::Items, "D").unwrap();
+    let mut below = store.descendants(Table::OneDriveItems, "D").unwrap();
     below.sort();
     assert_eq!(below, vec!["E".to_owned(), "F".to_owned()]);
 }
@@ -408,7 +408,7 @@ fn a_store_survives_reopening_and_is_private() {
         store.commit_staging("link-1").unwrap();
     }
     let store = TreeStore::open(&path).unwrap();
-    assert!(store.get(Table::Items, "A").unwrap().is_some());
+    assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some());
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
@@ -436,7 +436,7 @@ fn a_permission_error_does_not_rebuild_a_good_store() {
     assert!(TreeStore::open(&path).is_err(), "a permission failure must be returned, not treated as corruption");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let store = TreeStore::open(&path).unwrap();
-    assert!(store.get(Table::Items, "A").unwrap().is_some(), "the good store must survive a transient open failure");
+    assert!(store.get(Table::OneDriveItems, "A").unwrap().is_some(), "the good store must survive a transient open failure");
 }
 
 /// The last 200 events are kept; the oldest go.

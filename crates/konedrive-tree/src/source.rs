@@ -11,7 +11,7 @@ pub(crate) const UNTOUCHED: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Source {
     /// `onedrive_items`.
-    Items,
+    OneDriveItems,
     /// `staging` alone: a full listing staged whole.
     Whole,
     /// `staging` over `onedrive_items`, less `staging_gone`: a delta staged.
@@ -24,7 +24,7 @@ impl Source {
     /// recursion, which would read it whole; see [`Source::step`].
     pub(crate) fn rows(self) -> String {
         match self {
-            Source::Items => "onedrive_items".into(),
+            Source::OneDriveItems => "onedrive_items".into(),
             Source::Whole => "staging".into(),
             Source::Overlay => {
                 format!("(SELECT {COLUMNS} FROM staging UNION ALL SELECT {COLUMNS} FROM onedrive_items p WHERE {UNTOUCHED})")
@@ -36,8 +36,8 @@ impl Source {
     /// tree's row, and `c`, the CTE's, joined `on`, where `filter` holds.
     pub(crate) fn step(self, select: &str, cte: &str, on: &str, filter: &str) -> String {
         match self {
-            Source::Items | Source::Whole => {
-                let t = if self == Source::Items { "onedrive_items" } else { "staging" };
+            Source::OneDriveItems | Source::Whole => {
+                let t = if self == Source::OneDriveItems { "onedrive_items" } else { "staging" };
                 format!("SELECT {select} FROM {cte} c JOIN {t} p ON {on} WHERE {filter}")
             }
             Source::Overlay => format!(

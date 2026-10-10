@@ -56,7 +56,7 @@ impl TreeStore {
     /// new tree is `onedrive_items` again.
     pub fn commit_page(&mut self, changes: &[Change], next: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, Source::Items, changes)?;
+        apply(&tx, Source::OneDriveItems, changes)?;
         if !self.whole {
             tx.execute("DELETE FROM staging", [])?;
             tx.execute("DELETE FROM staging_gone", [])?;
@@ -155,8 +155,8 @@ pub(crate) fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[C
             }
             Change::Upsert(row) => write(tx, source, row)?,
             Change::Delete(id) => match source {
-                Source::Items | Source::Whole => {
-                    let t = if source == Source::Items { "onedrive_items" } else { "staging" };
+                Source::OneDriveItems | Source::Whole => {
+                    let t = if source == Source::OneDriveItems { "onedrive_items" } else { "staging" };
                     tx.execute(
                         &format!(
                             "WITH RECURSIVE below(id, depth) AS (
@@ -189,7 +189,7 @@ pub(crate) fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[C
 /// `row` written into the tree `source` (see [`apply`]).
 fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<(), TreeError> {
     match source {
-        Source::Items => drop(upsert(tx, Table::Items, row)?),
+        Source::OneDriveItems => drop(upsert(tx, Table::OneDriveItems, row)?),
         Source::Whole => drop(upsert(tx, Table::Staging, row)?),
         Source::Overlay => {
             tx.prepare_cached(&format!("INSERT OR IGNORE INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM onedrive_items WHERE id = ?1"))?

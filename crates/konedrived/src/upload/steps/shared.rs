@@ -92,10 +92,10 @@ async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<Strin
     let own = e
         .store()
         .call(move |s| {
-            if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
+            if !s.get(Table::OneDriveItems, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
                 return Ok(false);
             }
-            let base_place = s.locate(Table::Items, &asked)?.filter(|l| l.placed).map(|l| l.rel);
+            let base_place = s.locate(Table::OneDriveItems, &asked)?.filter(|l| l.placed).map(|l| l.rel);
             Ok(is_marked_folder(&at, handle.as_ref(), base_place.as_deref(), &s.outbox_for_item(&asked)?))
         })
         .await?;
@@ -307,7 +307,7 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
     }
     if holder.file.is_some() && holder.size == Some(0) {
         let id = holder.id.clone();
-        let known = e.store().call(move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
+        let known = e.store().call(move |s| Ok(s.get(Table::OneDriveItems, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
         if !known {
             return Ok(Taken::Held);
         }
@@ -320,7 +320,7 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
 /// and its own copy there when it is downloaded.
 pub(in crate::upload) async fn in_folder(e: &Engine, id: &str) -> Result<bool, Fail> {
     let id = id.to_owned();
-    Ok(e.store().call(move |s| Ok(s.locate(Table::Items, &id)?.is_some_and(|l| l.placed))).await?)
+    Ok(e.store().call(move |s| Ok(s.locate(Table::OneDriveItems, &id)?.is_some_and(|l| l.placed))).await?)
 }
 
 /// [`Taken::Held`]: the row waits for the name, with the usual backoff.
@@ -453,7 +453,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
 /// lock, as in [`copy`].
 async fn move_to_copy_name(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, parent: &str) -> Result<Outcome, Fail> {
     let folder = match row.item_id.clone() {
-        Some(id) => e.store().call(move |s| s.get(Table::Items, &id)).await?.is_some_and(|item| item.kind == Kind::Folder),
+        Some(id) => e.store().call(move |s| s.get(Table::OneDriveItems, &id)).await?.is_some_and(|item| item.kind == Kind::Folder),
         None => false,
     };
     let tree = tree(e).await;
@@ -512,7 +512,7 @@ pub(in crate::upload) async fn holds(e: &Engine, remote: &DriveItem) -> Result<b
     if !matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed) {
         return Ok(false);
     }
-    Ok(e.store().call(move |s| s.locate(Table::Items, &parent)).await?.is_some_and(|at| at.placed))
+    Ok(e.store().call(move |s| s.locate(Table::OneDriveItems, &parent)).await?.is_some_and(|at| at.placed))
 }
 
 /// The base of a row that met a `412`, read again: the item's fresh tag,
@@ -550,7 +550,7 @@ pub(in crate::upload) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: 
     if reserved(OsStr::new(&name)) || names::refused(OsStr::new(&name)).is_some() {
         return Ok(None);
     }
-    let Some(dir_rel) = e.store().call(move |s| s.locate(Table::Items, &parent)).await?.filter(|l| l.placed).map(|l| l.rel) else {
+    let Some(dir_rel) = e.store().call(move |s| s.locate(Table::OneDriveItems, &parent)).await?.filter(|l| l.placed).map(|l| l.rel) else {
         return Ok(None);
     };
     let rel = found.map_or(row.rel.clone(), |found| found.rel.clone());

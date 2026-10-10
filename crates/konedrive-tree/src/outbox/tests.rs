@@ -272,7 +272,7 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
     let mut s = store(std::slice::from_ref(&x));
     let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
     let at = s.outbox_commit(seq, Committed::Item(&answer), None).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, ..x.clone() }, "the version, at the base's place");
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, ..x.clone() }, "the version, at the base's place");
     assert_eq!(s.committed_since(at - 1).unwrap().get("X").map(|c| c.etag.clone()), Some(Some("e2".into())), "a commit as any other");
     assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(answer.clone())], "the answer waits, and the commit leaves it");
     assert!(s.outbox_rows().unwrap().is_empty());
@@ -281,14 +281,14 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
     let staged = s.stage_rw(&[], at, false).unwrap().unwrap();
     assert!(staged.ids.contains(&"X".to_owned()));
     s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at, waits: &[] }).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), answer);
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), answer);
 
     // Not placed by the base already: it has no place to keep, and the
     // answer is its row.
     let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&answer), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
     let again = Row { ctag: Some("c3".into()), ..answer.clone() };
     s.outbox_commit(seq, Committed::Item(&again), None).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), again);
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), again);
     assert!(s.deferred_ids().unwrap().is_empty());
 }
 
@@ -310,14 +310,14 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&x), Some(object(7)), "x", Some("R"))).unwrap() else { panic!() };
     let answer = Row { parent_id: Some("V".into()), ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() };
     s.outbox_commit(seq, Committed::Item(&answer), None).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() });
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), ..x.clone() });
     assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(answer)]);
     let follower = s.outbox_row(behind).unwrap().unwrap();
     assert_eq!(follower.base, Some(Base { etag: Some("e2".into()), ctag: Some("c2".into()), parent: Some("R".into()), name: Some("x".into()) }));
 
     let moved = Row { parent_id: Some("D".into()), ..x.clone() };
     s.outbox_commit(behind, Committed::Item(&moved), None).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), moved, "a folder the base places is a place");
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), moved, "a folder the base places is a place");
     assert!(s.live_deferred().unwrap().is_empty(), "and the commit supersedes what waited");
 
     // A rename the user made, sent as a name alone while OneDrive has the
@@ -329,7 +329,7 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&moved), Some(object(7)), "d/y", Some("D"))).unwrap() else { panic!() };
     let renamed = Row { parent_id: Some("V".into()), name: "y".into(), etag: Some("e3".into()), ..x.clone() };
     s.outbox_commit(rename, Committed::Item(&renamed), None).unwrap();
-    let kept = s.get(Table::Items, "X").unwrap().unwrap();
+    let kept = s.get(Table::OneDriveItems, "X").unwrap().unwrap();
     assert_eq!((kept.parent_id.as_deref(), kept.name.as_str()), (Some("D"), "y"));
     assert_eq!(s.outbox_row(behind).unwrap().unwrap().base.map(|base| (base.parent, base.name)), Some((Some("D".into()), Some("y".into()))));
     assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(renamed)]);
@@ -338,11 +338,11 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     // A temporary step is a commit like any other in this: the item is
     // under its temporary name in the folder the object stands in, and the
     // move that follows is made against that — it sends a name, no folder.
-    let y = s.get(Table::Items, "X").unwrap().unwrap();
+    let y = s.get(Table::OneDriveItems, "X").unwrap().unwrap();
     let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&y), Some(object(7)), "d/z", Some("D"))).unwrap() else { panic!() };
     let swapped = Row { parent_id: Some("V".into()), name: format!("{SWAP_PREFIX}X"), ..x.clone() };
     s.outbox_commit_temporary(swap, &swapped, "D", "z", None).unwrap();
-    let kept = s.get(Table::Items, "X").unwrap().unwrap();
+    let kept = s.get(Table::OneDriveItems, "X").unwrap().unwrap();
     assert_eq!((kept.parent_id.as_deref(), kept.name.as_str()), (Some("D"), swapped.name.as_str()));
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.len(), 1);

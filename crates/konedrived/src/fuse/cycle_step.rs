@@ -232,7 +232,7 @@ impl CycleStep {
     /// A copy that could not be moved stays at its path, unmarked: the user's own, which no
     /// download replaces.
     fn keep_written_copy(&self, store: &TreeStore, path: &Path, onedrive_id: &str, access_mode: AccessMode, recorded_at: i64, conflicts: &mut CycleConflicts) {
-        let parent_id = store.get(Table::Items, onedrive_id).ok().flatten().and_then(|row| row.parent_id);
+        let parent_id = store.get(Table::OneDriveItems, onedrive_id).ok().flatten().and_then(|row| row.parent_id);
         let handle = self.backing_directory.find_file_handle(path);
         let outcome = self.conflict_copies.move_written_copy_aside(path, onedrive_id, parent_id.as_deref(), access_mode, recorded_at, conflicts);
         let copy_name = conflicts.moved_aside.last().and_then(|moved_aside| moved_aside.copy.file_name()).and_then(|name| name.to_str());
@@ -271,7 +271,7 @@ fn list_changes(store: &TreeStore, changed_ids: Vec<String>) -> Vec<OneDriveChan
         let at = store.locate(table, id).ok().flatten()?;
         at.placed.then_some((row, at.rel))
     };
-    changed_ids.into_iter().filter_map(|id| OneDriveChange::of(id.clone(), placed(Table::Items, &id), placed(Table::Staging, &id))).collect()
+    changed_ids.into_iter().filter_map(|id| OneDriveChange::of(id.clone(), placed(Table::OneDriveItems, &id), placed(Table::Staging, &id))).collect()
 }
 
 #[cfg(test)]

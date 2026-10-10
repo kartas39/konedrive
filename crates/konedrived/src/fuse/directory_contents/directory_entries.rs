@@ -131,7 +131,7 @@ impl DirectoryContents {
     /// The row of what OneDrive has, or the user moved, under `name` in `directory`.
     pub(super) fn find_row_at(&self, directory: &DirectoryReference, name: &str) -> Option<Row> {
         let unsent_changes = self.read_unsent_changes();
-        let stored = directory.onedrive_id.as_deref().and_then(|id| self.ask_store(|s| s.child(Table::Items, id, name)).flatten());
+        let stored = directory.onedrive_id.as_deref().and_then(|id| self.ask_store(|s| s.child(Table::OneDriveItems, id, name)).flatten());
         // What the user moved to this name is what the name is: what OneDrive has there too
         // is shown once the move is sent, or refused.
         let moved = unsent_changes.moved_ids.iter().find(|(_, (to, as_))| directory.matches(to) && as_ == name);
@@ -154,7 +154,7 @@ impl DirectoryContents {
     /// directory is read only for what the store does not have, the local-only entries.
     pub(in crate::fuse) fn list_names(&self, directory: &DirectoryReference) -> Vec<ListedName> {
         let unsent_changes = self.read_unsent_changes();
-        let stored = directory.onedrive_id.as_deref().and_then(|id| self.ask_store(|s| s.children(Table::Items, id))).unwrap_or_default();
+        let stored = directory.onedrive_id.as_deref().and_then(|id| self.ask_store(|s| s.children(Table::OneDriveItems, id))).unwrap_or_default();
         let mut rows: Vec<Row> = unsent_changes.moved_ids.iter().filter(|(_, (to, _))| directory.matches(to)).filter_map(|(id, (_, name))| self.find_placed_row(id, name)).collect();
         let moved_here: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
         rows.extend(stored.into_iter().filter(|row| stays(row, &unsent_changes) && !moved_here.contains(&row.name)));

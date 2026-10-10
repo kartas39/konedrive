@@ -33,7 +33,7 @@ impl Rw {
         let mut rw = Rw::default();
         for row in s.outbox_rows()? {
             let Some(id) = row.item_id.clone() else { continue };
-            let folder = s.get(Table::Items, &id)?.is_some_and(|r| r.kind == Kind::Folder);
+            let folder = s.get(Table::OneDriveItems, &id)?.is_some_and(|r| r.kind == Kind::Folder);
             if folder {
                 // What the base has below the folder goes with the row; what
                 // OneDrive moved in from elsewhere since is not the folder's:
@@ -54,12 +54,12 @@ impl Rw {
     /// moves in from elsewhere in the base is held where the base has it, its
     /// move waiting; one new to the base goes with the row too.
     fn extend_below(&mut self, s: &TreeStore, id: &str, removing: bool) -> Result<(), TreeError> {
-        let base: HashSet<String> = s.descendants(Table::Items, id)?.into_iter().collect();
+        let base: HashSet<String> = s.descendants(Table::OneDriveItems, id)?.into_iter().collect();
         for staged in s.descendants(Table::Staging, id)? {
             if base.contains(&staged) {
                 continue;
             }
-            if s.get(Table::Items, &staged)?.is_some() {
+            if s.get(Table::OneDriveItems, &staged)?.is_some() {
                 self.held.insert(staged);
             } else if removing {
                 self.removing.insert(staged);

@@ -293,7 +293,7 @@ impl Job<'_> {
         let Some(created) = holder.created_date_time.as_deref().and_then(parse_graph_time) else { return Ok(None) };
         let empty = holder.file.is_some() && holder.size == Some(0);
         let id = holder.id.clone();
-        let listed = self.e.store().call(move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
+        let listed = self.e.store().call(move |s| Ok(s.get(Table::OneDriveItems, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
         let within = windows.iter().any(|(at, last)| at - CLOCK_SLACK <= created && created <= last + CLOCK_SLACK);
         if listed || !empty || !within {
             self.resolved().await?;
@@ -453,7 +453,7 @@ impl Job<'_> {
     /// between the row's place and OneDrive's was made in OneDrive.
     async fn unmoved_here(&self, id: &str) -> Result<bool, Fail> {
         let id = id.to_owned();
-        let base = self.e.store().call(move |s| s.get(Table::Items, &id)).await?;
+        let base = self.e.store().call(move |s| s.get(Table::OneDriveItems, &id)).await?;
         Ok(base.is_some_and(|base| base.parent_id.as_deref() == Some(self.parent) && base.name == self.name))
     }
 

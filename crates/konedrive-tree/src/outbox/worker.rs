@@ -138,7 +138,7 @@ impl TreeStore {
         // As [`TreeStore::outbox_commit`]: an answer in a folder the base
         // does not place takes no placed item's place away.
         let placed = Row { placement: Placement::Placed, ..answer.clone() };
-        let stays = match get_row(&tx, Source::Items, &answer.id)? {
+        let stays = match get_row(&tx, Source::OneDriveItems, &answer.id)? {
             Some(base) if base_places(&tx, &answer.id)? && !super::would_place(&tx, &placed)? => Some(base),
             _ => None,
         };
@@ -148,12 +148,12 @@ impl TreeStore {
         // the final name and no folder.
         let parent = match stays {
             Some(base) => {
-                upsert(&tx, Table::Items, &Row { parent_id: Some(final_parent.to_owned()), placement: base.placement, ..answer.clone() })?;
+                upsert(&tx, Table::OneDriveItems, &Row { parent_id: Some(final_parent.to_owned()), placement: base.placement, ..answer.clone() })?;
                 crate::reconcile::wait(&tx, &answer.id, Some(answer), local_seq, None)?;
                 Some(final_parent.to_owned())
             }
             None => {
-                upsert(&tx, Table::Items, &placed)?;
+                upsert(&tx, Table::OneDriveItems, &placed)?;
                 answer.parent_id.clone()
             }
         };
@@ -411,7 +411,7 @@ impl TreeStore {
     /// mkdir that uploads the local object as new — in one transaction.
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, Source::Items, &[Change::Delete(id.to_owned())])?;
+        apply(&tx, Source::OneDriveItems, &[Change::Delete(id.to_owned())])?;
         let local_seq = next_outbox_seq(&tx)?;
         crate::reconcile::tombstone(&tx, &[id], local_seq)?;
         amend_in(&tx, seq, amend)?;

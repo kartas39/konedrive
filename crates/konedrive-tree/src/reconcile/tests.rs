@@ -33,7 +33,7 @@ fn a_deferred_change_waits_and_a_later_commit_supersedes_it() {
     s.begin_staging(crate::NewTree::Delta).unwrap();
     s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
     s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &["X".to_owned()], content: &[], fetched_at: 5, waits: &[] }).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base keeps the disk's version");
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base keeps the disk's version");
     assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(file("X", "R", "x", "c2"))]);
 
     // A commit at 6 (after the fetch at 5): the deferred change is older.
@@ -86,11 +86,11 @@ fn a_swap_that_fails_keeps_the_deferred_changes_it_consumed() {
     assert!(s.commit_staging_deferring("L3", &Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 1, waits: &[] }).is_err());
     s.conn.execute_batch("DROP TRIGGER fail_swap;").unwrap();
     assert_eq!(s.delta_link().unwrap().as_deref(), Some("L2"), "the link stays");
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base stays");
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base stays");
     assert_eq!(s.deferred_ids().unwrap(), vec!["X".to_owned()], "what the failed swap consumed still waits");
 
     // The cycle after it: the same link answers with nothing new.
     let RwStaged { consumed, .. } = s.stage_rw(&[], 0, true).unwrap().unwrap();
     s.commit_staging_deferring("L3", &Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 1, waits: &[] }).unwrap();
-    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"), "the base has the version OneDrive has");
+    assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"), "the base has the version OneDrive has");
 }

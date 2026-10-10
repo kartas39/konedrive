@@ -59,12 +59,12 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
     store.commit_staging("link").unwrap();
     store.bench_sql("UPDATE onedrive_items SET placement = 'plbced' WHERE id = 'D'; UPDATE onedrive_items SET placement = 'skipped:nonsense', kind = 'nonsense' WHERE id = 'S'").unwrap();
 
-    assert_eq!(store.get(Table::Items, "D").unwrap().unwrap().placement, Placement::Placed);
-    assert!(store.locate(Table::Items, "D").unwrap().unwrap().placed);
-    assert!(store.locate(Table::Items, "F").unwrap().unwrap().placed, "what is inside it is in the folder too");
+    assert_eq!(store.get(Table::OneDriveItems, "D").unwrap().unwrap().placement, Placement::Placed);
+    assert!(store.locate(Table::OneDriveItems, "D").unwrap().unwrap().placed);
+    assert!(store.locate(Table::OneDriveItems, "F").unwrap().unwrap().placed, "what is inside it is in the folder too");
     assert_eq!(store.counts().unwrap(), Counts { listed: 3, placed: 2, skipped: 1 });
 
-    let unknown = store.get(Table::Items, "S").unwrap().unwrap();
+    let unknown = store.get(Table::OneDriveItems, "S").unwrap().unwrap();
     assert_eq!((unknown.placement, unknown.kind), (Placement::Skipped(SkipReason::Unsupported), Kind::File));
     assert_eq!(store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(), [(std::path::PathBuf::from("n-S"), SkipReason::Unsupported)]);
 
@@ -112,9 +112,9 @@ fn a_row_reads_back_as_written_from_every_table() {
     store.stage(&[Change::Root(root), Change::Upsert(file.clone()), Change::Upsert(skipped.clone())]).unwrap();
     assert_eq!(store.get(Table::Staging, "F").unwrap(), Some(file.clone()));
     store.commit_staging("link").unwrap();
-    assert_eq!(store.get(Table::Items, "F").unwrap(), Some(file.clone()));
-    assert_eq!(store.get(Table::Items, "S").unwrap(), Some(skipped.clone()));
-    assert_eq!(store.children(Table::Items, "R").unwrap(), vec![file.clone(), skipped]);
+    assert_eq!(store.get(Table::OneDriveItems, "F").unwrap(), Some(file.clone()));
+    assert_eq!(store.get(Table::OneDriveItems, "S").unwrap(), Some(skipped.clone()));
+    assert_eq!(store.children(Table::OneDriveItems, "R").unwrap(), vec![file.clone(), skipped]);
 
     let changed = Row { ctag: Some("c2".into()), size: 9, ..file };
     store.begin_staging(crate::NewTree::Delta).unwrap();

@@ -143,7 +143,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
     let was = match &row.item_id {
         Some(id) => {
             let id = id.clone();
-            e.store().call(move |s| s.locate(Table::Items, &id)).await?
+            e.store().call(move |s| s.locate(Table::OneDriveItems, &id)).await?
         }.map(|l| l.rel.display().to_string()).unwrap_or_default(),
         None => String::new(),
     };
@@ -203,7 +203,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
     };
     let base = row.base.clone().unwrap_or_default();
     let asked = id.clone();
-    let folder = e.store().call(move |s| s.get(Table::Items, &asked)).await?.is_some_and(|item| item.kind == Kind::Folder);
+    let folder = e.store().call(move |s| s.get(Table::OneDriveItems, &asked)).await?.is_some_and(|item| item.kind == Kind::Folder);
     if folder {
         return delete_folder(e, &row, &id).await;
     }

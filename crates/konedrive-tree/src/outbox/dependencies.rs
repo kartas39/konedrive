@@ -56,11 +56,11 @@ impl TreeStore {
         // made at the same path is not the folder's.
         for folder in rows.iter().filter(|row| row.kind.removes()) {
             let Some(id) = &folder.item_id else { continue };
-            let Some(item) = self.get(Table::Items, id)? else { continue };
+            let Some(item) = self.get(Table::OneDriveItems, id)? else { continue };
             if item.kind != Kind::Folder {
                 continue;
             }
-            let inside: HashSet<String> = self.descendants(Table::Items, id)?.into_iter().collect();
+            let inside: HashSet<String> = self.descendants(Table::OneDriveItems, id)?.into_iter().collect();
             let waits: Vec<i64> = rows
                 .iter()
                 .filter(|row| row.seq != folder.seq && row.item_id.as_ref().is_some_and(|i| inside.contains(i)))

@@ -16,7 +16,7 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
     let newer = w.cloud(|c| c.item("A").cloned().unwrap());
     w.store
         .call_blocking(move |s| {
-            let mut base = s.get(Table::Items, "A")?.unwrap();
+            let mut base = s.get(Table::OneDriveItems, "A")?.unwrap();
             base.etag = Some(newer.etag.clone());
             base.ctag = Some(newer.ctag.clone());
             base.quickxor = newer.hash.clone();

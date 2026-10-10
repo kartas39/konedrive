@@ -14,7 +14,7 @@ impl TreeStore {
     /// Where `table`'s rows are.
     pub(crate) fn source(&self, table: Table) -> Source {
         match (table, self.whole) {
-            (Table::Items, _) => Source::Items,
+            (Table::OneDriveItems, _) => Source::OneDriveItems,
             (Table::Staging, true) => Source::Whole,
             (Table::Staging, false) => Source::Overlay,
         }
@@ -135,7 +135,7 @@ impl TreeStore {
             return Ok(Vec::new());
         };
         let sql = chains_then(
-            Source::Items,
+            Source::OneDriveItems,
             &not_in_the_folder("id, parent_id, name, placement"),
             &format!(
                 "SELECT c.path, c.start_placement, w.id, w.waits, c.start FROM chain c LEFT JOIN ({waiting}) w ON w.id = c.start
@@ -160,7 +160,7 @@ impl TreeStore {
                 // yet: an outbox commit deferred it, and no cycle has looked
                 // at it since.
                 let at = match &here {
-                    Some(id) => self.locate_below(Some(&root), Table::Items, id)?.map(|at| at.rel),
+                    Some(id) => self.locate_below(Some(&root), Table::OneDriveItems, id)?.map(|at| at.rel),
                     None => None,
                 };
                 let waits = here.map(|_| waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored)));
@@ -189,14 +189,14 @@ impl TreeStore {
             return Ok(inside);
         }
         for id in &waiting {
-            let mut at = self.get(Table::Items, id)?.and_then(|row| row.parent_id);
+            let mut at = self.get(Table::OneDriveItems, id)?.and_then(|row| row.parent_id);
             for _ in 0..MAX_CHAIN {
                 let Some(folder) = at.take() else { break };
                 if waiting.contains(&folder) {
                     inside.insert(id.clone());
                     break;
                 }
-                at = self.get(Table::Items, &folder)?.and_then(|row| row.parent_id);
+                at = self.get(Table::OneDriveItems, &folder)?.and_then(|row| row.parent_id);
             }
         }
         Ok(inside)
@@ -217,7 +217,7 @@ impl TreeStore {
         };
         let mut out = Vec::new();
         for (id, parent, name, waits) in moved {
-            let Some(here) = self.locate_below(Some(root), Table::Items, &id)?.filter(|at| at.placed).map(|at| at.rel) else { continue };
+            let Some(here) = self.locate_below(Some(root), Table::OneDriveItems, &id)?.filter(|at| at.placed).map(|at| at.rel) else { continue };
             let mut names = vec![name];
             let mut reason = None;
             let mut at = parent;
@@ -228,7 +228,7 @@ impl TreeStore {
                     reached = true;
                     break;
                 }
-                let Some(row) = self.get(Table::Items, &folder)? else { break };
+                let Some(row) = self.get(Table::OneDriveItems, &folder)? else { break };
                 if let (None, Placement::Skipped(why)) = (&reason, &row.placement) {
                     reason = Some(*why);
                 }

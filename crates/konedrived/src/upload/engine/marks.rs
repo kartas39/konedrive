@@ -92,7 +92,7 @@ impl Engine {
             // A move taken back (the file went back to its base place): the
             // mark is on the file there.
             if let Some(id) = mark.item {
-                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(konedrive_tree::Table::Items, &id)) {
+                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(konedrive_tree::Table::OneDriveItems, &id)) {
                     if !at.rel.as_os_str().is_empty() {
                         local::mark(disk, &at.rel, None);
                         cleared.insert(at.rel);
