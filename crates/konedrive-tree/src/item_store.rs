@@ -76,6 +76,8 @@ mod bindings;
 mod content_presence;
 /// A row of `items`: its columns, reading it, and its raw writers.
 mod item_row;
+/// An item of OneDrive the folder ceases to show without it being removed here.
+mod local_and_synced_version;
 /// What a listing of OneDrive says of an item, written into its row.
 mod onedrive_versions;
 
