@@ -117,8 +117,11 @@ impl ItemStore<'_> {
     /// OneDrive made the directory, sent into `parent` under `name`, as `made`. The item has
     /// that binding, OneDrive's version is what was answered, and the place that was sent is
     /// the place agreed on. A row a listing made for the new item meanwhile is merged into
-    /// this one. When the rows changed, nothing is written, and the directory OneDrive made
-    /// is the step's to remove where the item's row is gone.
+    /// this one; where that listing said another eTag than the answer's, another client
+    /// changed the item since it was made, and OneDrive's version stays what the listing
+    /// said: the plan made next takes that change over. When the rows changed, nothing is
+    /// written, and the directory OneDrive made is the step's to remove where the item's
+    /// row is gone.
     pub fn commit_make_directory(&mut self, item: &ItemVersions, parent: &OneDriveItemReference, name: &OsStr, made: &ConfirmedItem) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_new_item(tx, item, ItemKind::Directory, parent, name, made, None))
     }
@@ -447,18 +450,23 @@ pub(crate) fn commit_new_item(
     }
     let (Some(sent_directory), Some(_)) = (find_bound_directory(tx, parent)?, find_bound_directory(tx, &made.parent)?) else { return Ok(StepCommitOutcome::RowsChanged) };
     // A listing brought the new item, and the folder shows it as an item of its own.
-    if find_bound_item(tx, &made.item)?.is_some_and(|holder| holder.local.is_some()) {
+    let listed = find_bound_item(tx, &made.item)?;
+    if listed.as_ref().is_some_and(|holder| holder.local.is_some()) {
         return Ok(StepCommitOutcome::RowsChanged);
     }
+    // A listing brought it under another eTag than the answer's: another client changed
+    // it since OneDrive made it, and what the listing said is the later version.
+    let is_listed_changed = listed.is_some_and(|holder| holder.onedrive.is_some() && holder.onedrive_etag.as_deref() != Some(made.etag.as_str()));
     // Before the binding is given: the item gets a binding, and a session still kept then
     // is taken for one to cancel. All else the steps learnt of the item as one OneDrive did
-    // not have goes with that.
+    // not have goes with that. The upload ended whichever version of OneDrive's the row
+    // keeps: its session is forgotten also where the listing's stays.
     if let Some(address) = ended_session {
         forget_ended_upload_session(tx, id, address)?;
     }
     let sent = item.local.as_ref().and_then(|local| local.content.as_ref());
     bind_item(tx, id, &made.item)?;
-    if !confirm_item(tx, id, made)? {
+    if !is_listed_changed && !confirm_item(tx, id, made)? {
         return Err(refuse(format!("the directory OneDrive has item {id} in lost its row within one transaction")));
     }
     let mut row = read_row(tx, id)?;

@@ -7,11 +7,10 @@
 //! beside that: exchanges of two names, saves over a file, a directory removed with what is
 //! in it, moves of directories into one another.
 
-use std::collections::BTreeMap;
+use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, Kind, LocalItemId, LocalVersionChange};
+use crate::{TreeError, TreeStore};
 
-use crate::model::{Change, ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, Kind, LocalItemId, LocalVersionChange, Placement, Row};
-use crate::{FoldedName, TreeError, TreeStore};
-
+use super::drive::{DriveItem, OneDriveChanges, ROOT_ID};
 use super::step_stand_in::is_name_ignored;
 
 /// A random source: xorshift64*, from a seed.
@@ -186,6 +185,109 @@ impl RandomChanges {
         self.say_unless_refused(said, applied);
     }
 
+    /// A program saves the file `file` by a rename of a temporary file over it; nothing
+    /// where the folder does not show it.
+    pub(crate) fn save_over(&mut self, store: &mut TreeStore, file: LocalItemId) {
+        let Some(directory) = store.item_store().find_item(file).unwrap().and_then(|row| row.local.and_then(|local| local.place)).map(|place| place.parent_local_item_id) else { return };
+        let number = self.next_number();
+        let content = Some(ContentVersion::ChangedHere { size: 100 + number, mtime: 5000 + number as i64, mtime_nsec: 5, change_count: 1 });
+        let temporary = ItemPlace { parent_local_item_id: directory, name: format!("save{number}").into() };
+        let saved = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: temporary, content, is_name_ignored: false, replaced: None }).unwrap();
+        let applied = store.item_store().apply(&LocalVersionChange::SavedOver { replacing: saved, replaced: file }).map(|_| ());
+        self.say_unless_refused(format!("saves over {file} as {saved}, on purpose"), applied);
+    }
+
+    /// The user removes the directory `directory` with all the folder shows in it.
+    pub(crate) fn remove_with_all_in_it(&mut self, store: &mut TreeStore, directory: LocalItemId) {
+        let rows = store.item_store().list_items().unwrap();
+        if !rows.iter().any(|row| row.local_item_id == directory && row.local.is_some()) {
+            return;
+        }
+        let mut removed = vec![directory];
+        let mut at = 0;
+        while at < removed.len() {
+            let above = removed[at];
+            removed.extend(rows.iter().filter(|row| row.local.as_ref().and_then(|local| local.place.as_ref()).is_some_and(|place| place.parent_local_item_id == above)).map(|row| row.local_item_id));
+            at += 1;
+        }
+        let changes: Vec<LocalVersionChange> = removed.into_iter().rev().map(|item| LocalVersionChange::Removed { item }).collect();
+        let applied = store.item_store().apply_all(&changes).map(|_| ());
+        self.say_unless_refused(format!("removes {directory} with all in it, on purpose"), applied);
+    }
+
+    /// The user moves `item` to the root, where the folder shows it in `directory`, and
+    /// removes `directory` with all that is left in it.
+    pub(crate) fn move_to_root_and_remove(&mut self, store: &mut TreeStore, item: LocalItemId, directory: LocalItemId) {
+        let number = self.next_number();
+        let is_in_it = store.item_store().find_item(item).unwrap().and_then(|row| row.local.and_then(|local| local.place)).is_some_and(|place| place.parent_local_item_id == directory);
+        if is_in_it {
+            let moved = store.item_store().apply(&LocalVersionChange::Moved { item, place: ItemPlace { parent_local_item_id: LocalItemId::ROOT, name: format!("back{number}").into() }, is_name_ignored: false }).map(|_| ());
+            self.say_unless_refused(format!("moves {item} out of {directory} again, on purpose"), moved);
+        }
+        self.remove_with_all_in_it(store, directory);
+    }
+
+    /// One of the cases a rule of the plan is there for, made on purpose on both sides,
+    /// every other time; nothing where the rows have no item for it.
+    ///
+    /// - A directory comes to be one the folder cannot show while the user makes a file in
+    ///   it; and one that is so already, and still in the folder for the user's own, is
+    ///   removed here with all in it, or renamed here.
+    /// - The user makes a directory with a file in it at the name of a directory another
+    ///   client makes, which the folder cannot show.
+    /// - Another client removes a directory in which the user makes a file, and out of
+    ///   which the user moves one.
+    pub(crate) fn make_case_on_purpose(&mut self, store: &mut TreeStore, drive: &mut OneDriveChanges) {
+        let (case, number) = (self.random.below(8), self.next_number());
+        let rows = store.item_store().list_items().unwrap();
+        let in_onedrive = |row: &Item| row.onedrive_item.as_ref().map(|item| item.item_id.as_str().to_owned()).filter(|id| drive.items.contains_key(id));
+        let shown_directories: Vec<(LocalItemId, String)> = rows.iter().filter(|row| row.kind == ItemKind::Directory && row.local.is_some() && row.local_item_id != LocalItemId::ROOT).filter_map(|row| Some((row.local_item_id, in_onedrive(row)?))).collect();
+        let make_file = |store: &mut TreeStore, directory: LocalItemId, name: String| {
+            let content = Some(ContentVersion::ChangedHere { size: 100 + number, mtime: 5000 + number as i64, mtime_nsec: 5, change_count: 1 });
+            store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: ItemPlace { parent_local_item_id: directory, name: name.into() }, content, is_name_ignored: false, replaced: None }).map(|_| ())
+        };
+        match (case, self.random.pick(&shown_directories).cloned()) {
+            (0, Some((directory, id))) if self.makes_items_the_folder_cannot_show => {
+                let cannot_be_shown = store.item_store().find_folder_visibility(directory).unwrap() == crate::FolderVisibility::CannotBeShown;
+                if !cannot_be_shown {
+                    let made = make_file(store, directory, format!("own{number}"));
+                    self.say_unless_refused(format!("makes the file {directory}/own{number}, on purpose"), made);
+                    let own = drive.items[&id].clone();
+                    drive.put(&id, DriveItem { is_placed: false, ..own });
+                    self.said.push(format!("OneDrive: {id} is an item the folder cannot show, on purpose"));
+                } else if self.random.below(2) == 0 {
+                    self.remove_with_all_in_it(store, directory);
+                } else {
+                    let moved = store.item_store().apply(&LocalVersionChange::Moved { item: directory, place: ItemPlace { parent_local_item_id: LocalItemId::ROOT, name: format!("renamed{number}").into() }, is_name_ignored: false }).map(|_| ());
+                    self.say_unless_refused(format!("renames {directory}, which the folder cannot show, on purpose"), moved);
+                }
+            }
+            (1, _) if self.makes_items_the_folder_cannot_show => {
+                let name = format!("s{number}");
+                if drive.put(&format!("X{number}"), DriveItem { is_placed: false, ..DriveItem::new(ROOT_ID, &name, Kind::Folder, None) }) {
+                    self.said.push(format!("OneDrive: makes the directory X{number} at {name}, which the folder cannot show, on purpose"));
+                    let made = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::Directory, place: ItemPlace { parent_local_item_id: LocalItemId::ROOT, name: name.clone().into() }, content: None, is_name_ignored: false, replaced: None });
+                    if let Ok(directory) = made {
+                        let inside = make_file(store, directory, format!("own{number}"));
+                        self.say_unless_refused(format!("makes the directory {name} with a file in it, on purpose"), inside);
+                    }
+                }
+            }
+            (2, Some((directory, id))) => {
+                let moved_out = rows.iter().find(|row| row.kind == ItemKind::File && row.onedrive.is_some() && row.local.as_ref().and_then(|local| local.place.as_ref()).is_some_and(|place| place.parent_local_item_id == directory));
+                let made = make_file(store, directory, format!("own{number}"));
+                self.say_unless_refused(format!("makes the file {directory}/own{number}, on purpose"), made);
+                if let Some(moved_out) = moved_out {
+                    let moved = store.item_store().apply(&LocalVersionChange::Moved { item: moved_out.local_item_id, place: ItemPlace { parent_local_item_id: LocalItemId::ROOT, name: format!("out{number}").into() }, is_name_ignored: false }).map(|_| ());
+                    self.say_unless_refused(format!("moves {} out of {directory}, on purpose", moved_out.local_item_id), moved);
+                }
+                self.said.push(format!("OneDrive: removes {id} with all in it, on purpose"));
+                drive.remove(&id);
+            }
+            _ => {}
+        }
+    }
+
     fn say_unless_refused(&mut self, said: String, applied: Result<(), TreeError>) {
         match applied {
             Ok(()) => self.said.push(format!("here: {said}")),
@@ -210,13 +312,13 @@ impl RandomChanges {
         match (self.random.below(100), self.random.pick(&ids).cloned(), self.random.pick(&files).cloned()) {
             (0..20, _, _) => {
                 let id = format!("X{}", self.next_number());
-                if drive.put(&id, DriveItem { parent: directory.clone(), name: name.clone(), kind: Kind::File, content: Some((size, mtime)), is_placed: true }) {
+                if drive.put(&id, DriveItem::new(&directory, &name, Kind::File, Some((size, mtime)))) {
                     self.said.push(format!("OneDrive: makes the file {id} at {directory}/{name} of {size} bytes at {mtime}"));
                 }
             }
             (20..32, _, _) => {
                 let id = format!("X{}", self.next_number());
-                if drive.put(&id, DriveItem { parent: directory.clone(), name: name.clone(), kind: Kind::Folder, content: None, is_placed: true }) {
+                if drive.put(&id, DriveItem::new(&directory, &name, Kind::Folder, None)) {
                     self.said.push(format!("OneDrive: makes the directory {id} at {directory}/{name}"));
                 }
             }
@@ -231,7 +333,7 @@ impl RandomChanges {
                 drive.remove(&id);
             }
             (67..85, _, Some(id)) => {
-                let changed = DriveItem { content: Some((size, mtime)), ..drive.items[&id].clone() };
+                let changed = DriveItem { content: Some((size, mtime)), sent_content: None, ..drive.items[&id].clone() };
                 drive.put(&id, changed);
                 self.said.push(format!("OneDrive: writes {size} bytes at {mtime} into {id}"));
             }
@@ -255,138 +357,5 @@ impl RandomChanges {
             }
             _ => {}
         }
-    }
-}
-
-/// The id of the drive's root in these tests.
-const ROOT_ID: &str = "R";
-
-/// An item as OneDrive has it: where, and a file's content as `(size, mtime)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DriveItem {
-    pub(crate) parent: String,
-    pub(crate) name: String,
-    pub(crate) kind: Kind,
-    pub(crate) content: Option<(u64, i64)>,
-    /// Whether the folder can show it, by its own placement.
-    pub(crate) is_placed: bool,
-}
-
-/// What OneDrive has, read off the rows, and the changes another client makes there: each
-/// keeps OneDrive's own rules (one item per name in a directory, as OneDrive compares
-/// names; no directory in itself), and is said by the listing that follows.
-pub(crate) struct OneDriveChanges {
-    pub(crate) items: BTreeMap<String, DriveItem>,
-    pub(crate) listed: Vec<Change>,
-    etag_count: u64,
-}
-
-impl OneDriveChanges {
-    /// What the rows say OneDrive has. `etag_count`: a number no eTag was made of yet.
-    pub(crate) fn of(rows: &[Item], etag_count: u64) -> Self {
-        let item_id = |row: &Item| row.onedrive_item.as_ref().map(|reference| reference.item_id.as_str().to_owned());
-        let id_of: BTreeMap<LocalItemId, String> = rows.iter().filter_map(|row| Some((row.local_item_id, item_id(row)?))).collect();
-        let mut items = BTreeMap::new();
-        for row in rows {
-            let (Some(id), Some(onedrive)) = (item_id(row), &row.onedrive) else { continue };
-            let Some(place) = &onedrive.place else { continue };
-            let content = onedrive.content.as_ref().map(|content| (content.size(), content.mtime().0));
-            let kind = if row.kind == ItemKind::File { Kind::File } else { Kind::Folder };
-            items.insert(id, DriveItem { parent: id_of[&place.parent_local_item_id].clone(), name: place.name.to_string_lossy().into_owned(), kind, content, is_placed: row.placement == Placement::Placed });
-        }
-        Self { items, listed: Vec::new(), etag_count }
-    }
-
-    fn is_in(&self, id: &str, directory: &str) -> bool {
-        let mut at = id.to_owned();
-        for _ in 0..=self.items.len() {
-            if at == directory {
-                return true;
-            }
-            match self.items.get(&at) {
-                Some(item) => at = item.parent.clone(),
-                None => return false,
-            }
-        }
-        true
-    }
-
-    fn is_name_free(&self, id: &str, parent: &str, name: &str) -> bool {
-        let folded = FoldedName::of(name.as_ref());
-        !self.items.iter().any(|(other, item)| other != id && item.parent == parent && FoldedName::of(item.name.as_ref()) == folded)
-    }
-
-    /// `id` is `item` from now on, where OneDrive's rules let it be; whether it is.
-    fn put(&mut self, id: &str, item: DriveItem) -> bool {
-        let is_in_directory = item.parent == ROOT_ID || self.items.get(&item.parent).is_some_and(|parent| parent.kind == Kind::Folder);
-        if !is_in_directory || !self.is_name_free(id, &item.parent, &item.name) || self.is_in(&item.parent, id) {
-            return false;
-        }
-        self.items.insert(id.to_owned(), item);
-        self.list(id);
-        true
-    }
-
-    /// The two items have each the other's place.
-    fn exchange(&mut self, first: &str, second: &str) -> bool {
-        let (one, other) = (self.items[first].clone(), self.items[second].clone());
-        if self.is_in(&one.parent, second) || self.is_in(&other.parent, first) {
-            return false;
-        }
-        self.items.insert(first.to_owned(), DriveItem { parent: other.parent.clone(), name: other.name.clone(), ..one.clone() });
-        self.items.insert(second.to_owned(), DriveItem { parent: one.parent, name: one.name, ..other });
-        self.list(first);
-        self.list(second);
-        true
-    }
-
-    /// `id` goes, with all OneDrive has in it; the listing names the item alone.
-    fn remove(&mut self, id: &str) {
-        let below: Vec<String> = self.items.keys().filter(|other| self.is_in(other, id)).cloned().collect();
-        for gone in below {
-            self.items.remove(&gone);
-        }
-        self.listed.push(Change::Delete(id.to_owned()));
-    }
-
-    /// The other client makes `change`, which it was to make before, in OneDrive as it is
-    /// now, where OneDrive's rules still let it: what a later page of a listing says after
-    /// the steps of this client ran in between.
-    pub(crate) fn make_again(&mut self, change: &Change) {
-        match change {
-            Change::Upsert(row) => {
-                let content = (row.kind == Kind::File).then_some((row.size, row.mtime));
-                let item = DriveItem { parent: row.parent_id.clone().unwrap_or_default(), name: row.name.clone(), kind: row.kind, content, is_placed: row.placement == Placement::Placed };
-                // Where OneDrive's rules do not let it be so any more, the other client
-                // gives it a name nothing has, in the root: it does not stay where an
-                // earlier page left it, which may be under another item's name.
-                self.etag_count += 1;
-                let elsewhere = DriveItem { parent: ROOT_ID.to_owned(), name: format!("elsewhere-{}", self.etag_count), ..item.clone() };
-                let _ = self.put(&row.id, item) || self.put(&row.id, elsewhere);
-            }
-            Change::Delete(id) if self.items.contains_key(id) => self.remove(id),
-            Change::Delete(_) | Change::Root(_) => {}
-        }
-    }
-
-    /// The listing says `id` as it is now, with a new eTag.
-    fn list(&mut self, id: &str) {
-        self.etag_count += 1;
-        let item = &self.items[id];
-        let (size, mtime) = item.content.unwrap_or((0, 500));
-        let hash = item.content.map(|(size, mtime)| format!("h{size}-{mtime}"));
-        self.listed.push(Change::Upsert(Row {
-            id: id.to_owned(),
-            parent_id: Some(item.parent.clone()),
-            name: item.name.clone(),
-            kind: item.kind,
-            size,
-            mtime,
-            etag: Some(format!("l-{}", self.etag_count)),
-            ctag: hash.as_ref().map(|hash| format!("c-{hash}")),
-            quickxor: hash,
-            mime: None,
-            placement: if item.is_placed { Placement::Placed } else { Placement::Skipped(crate::model::SkipReason::Unsupported) },
-        }));
     }
 }

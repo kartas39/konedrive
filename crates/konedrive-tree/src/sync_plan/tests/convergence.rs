@@ -33,11 +33,18 @@ use konedrive_reason::Reason;
 use super::*;
 use crate::item_store::tests::listed_drive::{listed_directory, listed_file, reference as onedrive_reference, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::row_rules::find_broken_rule;
-use crate::model::{Change, ContentPresence, LocalVersionChange};
+use crate::model::{Change, ContentPresence, Kind, LocalVersionChange};
 use crate::{ListingLink, TreeStore};
 
+/// OneDrive in these tests: what it has, and what changes it.
+mod drive;
 /// The caller of the plan in miniature: what it reads and gives.
 mod plan_input;
+/// Requests that are answered late or never, and pages written after what they are older
+/// than.
+mod requests_in_flight;
+/// What a step must never be, said apart from the code that plans and commits it.
+mod step_rules;
 /// Changes made at random on both sides, from a seed.
 mod random_changes;
 /// The stand-in for OneDrive and the folder: the commits of the steps.
@@ -46,7 +53,9 @@ mod step_stand_in;
 mod review_sequences;
 
 use plan_input::{describe_every_item, plan_next_steps, CallerFacts, WideningCount};
-use random_changes::{OneDriveChanges, RandomChanges, RandomSource};
+use drive::OneDriveChanges;
+use random_changes::{RandomChanges, RandomSource};
+use requests_in_flight::RequestsInFlight;
 use step_stand_in::{hash_of, StepOutcome, StepStandIn};
 
 /// More rounds than any run needs: a run that does not end within them does not end.
@@ -72,6 +81,11 @@ struct World {
     what_facts_are_drawn_with: RandomSource,
     /// What must be on both sides, read after the folder was last changed while steps ran.
     expected_since_steps_ran: Option<ExpectedEnd>,
+    /// OneDrive as a state of its own ([`RunKind::RequestsInFlight`]): the requests of the
+    /// steps change it whatever becomes of their commits, and a listing reads it. `None`
+    /// where OneDrive is what the rows say it has.
+    drive: Option<OneDriveChanges>,
+    requests: RequestsInFlight,
 }
 
 type Failure = String;
@@ -120,6 +134,8 @@ impl World {
             running_steps: Vec::new(),
             what_facts_are_drawn_with: RandomSource::new(seed ^ 0xFAC7),
             expected_since_steps_ran: None,
+            drive: None,
+            requests: RequestsInFlight::default(),
         };
         let file = |id: &str, parent: &str, name: &str, size: u64| listed_file(id, parent, name, (size, &format!("h{size}-1000")), "e");
         let tree = [
@@ -157,7 +173,7 @@ impl World {
         let (ended, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.running_steps).into_iter().partition(|(_, rounds_left)| *rounds_left == 0);
         self.running_steps = running.into_iter().map(|(step, rounds_left)| (step, rounds_left - 1)).collect();
         for (step, _) in ended {
-            self.stand_in.run(&mut self.store, &step);
+            self.run_step(&step)?;
             self.facts.items_with_running_step.remove(&step.local_item_id());
             self.facts.destinations_of_running_steps = self.running_steps.iter().filter_map(|(step, _)| Self::destination_of(&mut self.store, step)).collect();
             if let Some(rule) = find_broken_rule(&rows(&mut self.store), self.store.item_store().find_listing_under_way().unwrap().is_some()) {
@@ -206,8 +222,11 @@ impl World {
             }
             let mut steps = plan.steps.clone();
             self.step_order.shuffle(&mut steps);
-            let mut is_left_running = false;
+            let (mut is_left_running, mut is_refused) = (false, false);
             for step in &steps {
+                if let Some(refused) = step_rules::find_step_that_must_not_leave(&mut self.store, &self.facts, self.drive.as_ref(), step) {
+                    return Err(format!("{refused}\n  the plan's steps: {:?}", plan.steps));
+                }
                 if leaves_steps_running && !matches!(step, SyncStep::Row(_)) && self.what_facts_are_drawn_with.below(3) == 0 {
                     self.running_steps.push((step.clone(), self.what_facts_are_drawn_with.below(2)));
                     self.facts.items_with_running_step.insert(step.local_item_id());
@@ -216,8 +235,12 @@ impl World {
                     is_left_running = true;
                     continue;
                 }
-                match self.stand_in.run(&mut self.store, step) {
+                match self.run_step(step)? {
                     StepOutcome::Written => {}
+                    // OneDrive is a state of its own, and has not what the rows say: the
+                    // items the request named are read again before the next plan.
+                    StepOutcome::NotDone if self.drive.is_some() => is_refused = true,
+                    StepOutcome::NotDone => return Err(format!("OneDrive refused a step of one plan: {step:?}")),
                     StepOutcome::RowsChanged => return Err(format!("the rows changed under a step of one plan: {step:?}\n  the plan's steps: {:?}\n  given: {given:?}\n  waits: {:?}", plan.steps, plan.waits)),
                     StepOutcome::NameTaken if !self.stand_in.places_taken_in_onedrive.is_empty() && self.expected_since_steps_ran.is_some() => {}
                     StepOutcome::NameTaken => return Err(format!("OneDrive answers that the name is taken, which the plan did not foresee: {step:?}")),
@@ -226,6 +249,9 @@ impl World {
                 if let Some(rule) = find_broken_rule(&rows(&mut self.store), is_listing_under_way) {
                     return Err(format!("after {step:?}: {rule}"));
                 }
+            }
+            if is_refused {
+                self.list_drive_changes()?;
             }
             if is_left_running {
                 // The user goes on working while the steps run.
@@ -312,6 +338,7 @@ impl World {
         }
         self.listing_count += 1;
         let mut drive = OneDriveChanges::of(&rows(&mut self.store), self.listing_count * 1_000_000);
+        self.changes.make_case_on_purpose(&mut self.store, &mut drive);
         for _ in 0..in_onedrive {
             self.changes.change_onedrive(&mut drive);
         }
@@ -572,6 +599,10 @@ enum RunKind {
     /// writing, files in their quiet time, OneDrive full, removals not confirmed — and
     /// steps are left running for a round or two while the folder is changed again.
     CallerFactsDrawn,
+    /// OneDrive is a state of its own ([`requests_in_flight`]): requests are answered late
+    /// or never, pages are fetched before a confirmation and written after it, and both
+    /// sides go on changing what the requests are about.
+    RequestsInFlight,
 }
 
 /// One run: a store from `seed`, changed and converged `times` times, `changes` changes on
@@ -586,6 +617,9 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
         world.facts.items_read_at_once = 2;
         world.facts.gives_directories_above = false;
     }
+    if kind == RunKind::RequestsInFlight {
+        world.drive = Some(OneDriveChanges::of(&rows(&mut world.store), 1_000_000_000));
+    }
     for time in 0..times {
         let said_before = world.changes.said.len();
         world.fact_rounds_left = if kind == RunKind::CallerFactsDrawn { 4 } else { 0 };
@@ -593,6 +627,7 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
             RunKind::Plain | RunKind::FewItemsGiven | RunKind::CallerFactsDrawn => world.change_and_converge(changes, changes),
             RunKind::ListingOfTwoPages => world.change_and_converge_through_a_listing_of_two_pages(changes, changes),
             RunKind::ReadOnlyFolder => world.change_and_converge_through_a_read_only_folder(changes, changes),
+            RunKind::RequestsInFlight => world.change_and_converge_with_requests_in_flight(changes, changes),
         };
         if let Err(failure) = converged {
             let said = world.changes.said[said_before..].join("\n  ");
@@ -602,7 +637,7 @@ fn run(seed: u64, kind: RunKind, times: usize, changes: usize) -> Result<World, 
     Ok(world)
 }
 
-const RUN_KINDS: [RunKind; 5] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn];
+const RUN_KINDS: [RunKind; 6] = [RunKind::Plain, RunKind::ListingOfTwoPages, RunKind::ReadOnlyFolder, RunKind::FewItemsGiven, RunKind::CallerFactsDrawn, RunKind::RequestsInFlight];
 
 /// The design's §12, "convergence": new. A few seeds of each kind of run.
 #[test]
@@ -615,7 +650,7 @@ fn changes_made_at_random_on_both_sides_converge_and_nothing_is_lost() {
 }
 
 /// One run by hand, to read a failure of the larger run:
-/// `CONVERGENCE_RUN=<seed>,<kind 0 to 4>,<changes> cargo test -p konedrive-tree one_run_by_hand -- --ignored --nocapture`.
+/// `CONVERGENCE_RUN=<seed>,<kind 0 to 5>,<changes> cargo test -p konedrive-tree one_run_by_hand -- --ignored --nocapture`.
 #[test]
 #[ignore = "one run of the convergence test, named by the environment"]
 fn one_run_by_hand() {

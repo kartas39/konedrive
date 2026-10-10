@@ -32,6 +32,9 @@ pub(crate) enum StepOutcome {
     RowsChanged,
     /// OneDrive answered that the name is taken; the stand-in remembers the place.
     NameTaken,
+    /// OneDrive refused the request for another cause — the item is gone or changed —, or
+    /// the step did not send it: nothing was done, and nothing is written.
+    NotDone,
 }
 
 pub(crate) struct StepStandIn {
@@ -107,6 +110,31 @@ impl StepStandIn {
                     RowStep::AgreeOnContent { item } => items.commit_agree_on_content(item),
                 }
             }
+        };
+        match outcome.unwrap_or_else(|error| panic!("the commit of {step:?} failed: {error}")) {
+            StepCommitOutcome::Written => StepOutcome::Written,
+            StepCommitOutcome::RowsChanged => StepOutcome::RowsChanged,
+        }
+    }
+
+    /// OneDrive answered the request of `step` that the name is taken: the step remembers
+    /// the place.
+    pub(crate) fn remember_name_taken(&mut self, step: &OneDriveStep) {
+        self.places_taken_in_onedrive.insert(step.item().local_item_id, local_place(step.item()));
+    }
+
+    /// The commit of `step`, whose request OneDrive confirmed with `confirmed`: the item as
+    /// it has it now, or nothing for a removal.
+    pub(crate) fn commit_confirmed(&mut self, store: &mut TreeStore, step: &OneDriveStep, confirmed: Option<&ConfirmedItem>) -> StepOutcome {
+        let mut items = store.item_store();
+        let outcome = match (step, confirmed) {
+            (OneDriveStep::MakeDirectory { item, parent, name }, Some(made)) => items.commit_make_directory(item, parent, name, made),
+            (OneDriveStep::SendNewFile { item, parent, name }, Some(made)) => items.commit_send_new_file(item, parent, name, made, None),
+            (OneDriveStep::SendContent { item }, Some(sent)) => items.commit_send_content(item, sent, None),
+            (OneDriveStep::SendMove { item, parent, name }, Some(moved)) => items.commit_send_move(item, parent, name, moved),
+            (OneDriveStep::SendFileRemoval { item }, _) => items.commit_send_file_removal(item),
+            (OneDriveStep::SendDirectoryRemoval { item, below }, _) => items.commit_send_directory_removal(item, below),
+            (_, None) => panic!("OneDrive confirmed {step:?} with no item"),
         };
         match outcome.unwrap_or_else(|error| panic!("the commit of {step:?} failed: {error}")) {
             StepCommitOutcome::Written => StepOutcome::Written,
