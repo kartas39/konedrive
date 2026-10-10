@@ -162,24 +162,24 @@ fn the_schema_refuses_an_onedrive_version_that_contradicts_its_row() {
     let store = TreeStore::in_memory().unwrap();
     store
         .bench_sql(
-            "INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name) VALUES (5, 'directory', 'd1', 'D', 1, 'dir');
-             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_size) VALUES (6, 'file', 'd1', 'F', 5, 'file', 3);
-             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (7, 'file', 1, 'made-here', 0);
+            "INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_folded_name) VALUES (5, 'directory', 'd1', 'D', 1, 'dir', 'dir');
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_folded_name, onedrive_size) VALUES (6, 'file', 'd1', 'F', 5, 'file', 'file', 3);
+             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name, local_size) VALUES (7, 'file', 1, 'made-here', 'made-here', 0);
              INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id) VALUES (8, 'file', 'd1', 'G');",
         )
         .unwrap();
     for (what, sql) in [
         ("a parent and no name", "UPDATE items SET onedrive_name = NULL WHERE local_item_id = 5"),
-        ("a name and no parent", "UPDATE items SET onedrive_name = 'gone' WHERE local_item_id = 8"),
+        ("a name and no parent", "UPDATE items SET onedrive_name = 'gone', onedrive_folded_name = 'gone' WHERE local_item_id = 8"),
         ("its own parent", "UPDATE items SET onedrive_parent_id = 5 WHERE local_item_id = 5"),
         ("a directory with a content", "UPDATE items SET onedrive_size = 1 WHERE local_item_id = 5"),
         ("a file OneDrive has with no content", "UPDATE items SET onedrive_size = NULL WHERE local_item_id = 6"),
         ("a file OneDrive does not have with a content", "UPDATE items SET onedrive_size = 1 WHERE local_item_id = 8"),
         ("a content of OneDrive told by a change count", "UPDATE items SET onedrive_change_count = 1 WHERE local_item_id = 6"),
-        ("a place with no binding", "UPDATE items SET onedrive_parent_id = 1, onedrive_name = 'made-here' WHERE local_item_id = 7"),
+        ("a place with no binding", "UPDATE items SET onedrive_parent_id = 1, onedrive_name = 'made-here', onedrive_folded_name = 'made-here' WHERE local_item_id = 7"),
         ("an eTag with no binding", "UPDATE items SET onedrive_etag = 'e' WHERE local_item_id = 7"),
         ("a binding gone from a row with an OneDrive version", "UPDATE items SET onedrive_drive_id = NULL, onedrive_item_id = NULL WHERE local_item_id = 5"),
-        ("the root with a place", "UPDATE items SET onedrive_parent_id = 5, onedrive_name = 'root' WHERE local_item_id = 1"),
+        ("the root with a place", "UPDATE items SET onedrive_parent_id = 5, onedrive_name = 'root', onedrive_folded_name = 'root' WHERE local_item_id = 1"),
         ("no placement", "UPDATE items SET placement = NULL WHERE local_item_id = 5"),
         ("no count of the confirmation", "UPDATE items SET confirmed_at_count = NULL WHERE local_item_id = 5"),
     ] {
@@ -196,12 +196,12 @@ fn the_schema_refuses_an_onedrive_parent_that_has_no_row_or_is_a_file_and_keeps_
     store
         .bench_sql(
             "INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id) VALUES (5, 'directory', 'd1', 'D');
-             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_size) VALUES (6, 'file', 'd1', 'F', 5, 'file', 3);",
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_folded_name, onedrive_size) VALUES (6, 'file', 'd1', 'F', 5, 'file', 'file', 3);",
         )
         .unwrap();
     for (what, sql) in [
-        ("made in a directory that has no row", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name) VALUES ('directory', 'd1', 'B', 99, 'x')"),
-        ("made in a file", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name) VALUES ('directory', 'd1', 'B', 6, 'x')"),
+        ("made in a directory that has no row", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_folded_name) VALUES ('directory', 'd1', 'B', 99, 'x', 'x')"),
+        ("made in a file", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, onedrive_parent_id, onedrive_name, onedrive_folded_name) VALUES ('directory', 'd1', 'B', 6, 'x', 'x')"),
         ("moved into a directory that has no row", "UPDATE items SET onedrive_parent_id = 99 WHERE local_item_id = 6"),
         ("moved into a file", "UPDATE items SET onedrive_parent_id = 6 WHERE local_item_id = 5"),
         ("a parent deleted from over its child", "DELETE FROM items WHERE local_item_id = 5"),
@@ -1193,6 +1193,26 @@ fn the_items_onedrive_changed_are_those_whose_onedrive_version_is_not_the_synced
         agree(&mut store, id);
     }
     assert_eq!(changed(&mut store), ["G"]);
+}
+
+/// The items OneDrive has in a directory under one name as OneDrive compares names: those
+/// whose names fold to the same. The folded name is written with the name a listing gives,
+/// follows a listed rename, and goes with the version of an item listed gone.
+#[test]
+fn the_items_of_one_folded_name_in_a_directory_of_onedrive_are_found() {
+    let mut store = listed_store();
+    write(&mut store, &[directory("D", "R", "Docs"), file("A", "D", "Report.TXT", "1"), file("B", "D", "report.txt", "1"), file("C", "R", "REPORT.txt", "1"), file("E", "D", "other", "1")]);
+    let d = listed(&mut store, "D").local_item_id;
+    let found = |store: &mut TreeStore, directory: LocalItemId, name: &str| -> Vec<String> {
+        let items = store.item_store().list_children_in_onedrive_with_folded_name(directory, &crate::FoldedName::of(std::ffi::OsStr::new(name))).unwrap();
+        items.into_iter().map(|item| item.onedrive_item.unwrap().item_id.as_str().to_owned()).collect()
+    };
+    assert_eq!(found(&mut store, d, "REPORT.TXT"), ["A", "B"]);
+    assert_eq!(found(&mut store, ROOT, "report.txt"), ["C"]);
+    assert_eq!(found(&mut store, ROOT, "DOCS"), ["D"]);
+
+    write(&mut store, &[file("A", "D", "E\u{301}t\u{e9}", "1"), gone("B")]);
+    assert_eq!((found(&mut store, d, "report.txt"), found(&mut store, d, "\u{c9}TE\u{301}")), (Vec::<String>::new(), vec!["A".to_owned()]));
 }
 
 /// What OneDrive has in a directory, by name, and what it has in it and below it: as the

@@ -41,6 +41,11 @@ pub const SCHEMA_VERSION: &str = "13";
 ///   item id like every other. Several rows may have one place there
 ///   (`items_onedrive_place` is no unique index): a listing that has not ended says so of an
 ///   exchange of names.
+///   Beside a local and an OneDrive name the row has the name folded as OneDrive compares
+///   names (`local_folded_name`, `onedrive_folded_name`: [`crate::FoldedName`]), written
+///   in the statement that writes the name and there exactly when the name is (a check);
+///   `items_local_folded_place` and `items_onedrive_folded_place` find the rows of one
+///   folded name in a directory on each side, and neither is unique.
 ///   The synced place and content are the `synced_` ones, the content before the first
 ///   writer the `before_write_` ones; a content is six columns, `change_count` null for a
 ///   hashed one, and always for one OneDrive gave. No two rows have one local place (`items_local_place`). The checks hold
@@ -142,8 +147,8 @@ fn schema() -> String {
              local_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
              onedrive_drive_id TEXT, onedrive_item_id TEXT,
              kind TEXT NOT NULL,
-             local_parent_id INTEGER, local_name, {local_content},
-             onedrive_parent_id INTEGER, onedrive_name, {onedrive_content},
+             local_parent_id INTEGER, local_name, local_folded_name, {local_content},
+             onedrive_parent_id INTEGER, onedrive_name, onedrive_folded_name, {onedrive_content},
              onedrive_etag TEXT,
              synced_parent_id INTEGER, synced_name, {synced_content},
              content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
@@ -162,6 +167,7 @@ fn schema() -> String {
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
              CHECK ((onedrive_parent_id IS NULL) = (onedrive_name IS NULL)),
              CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
+             CHECK ((local_name IS NULL) = (local_folded_name IS NULL) AND (onedrive_name IS NULL) = (onedrive_folded_name IS NULL)),
              CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND onedrive_parent_id IS NULL AND synced_parent_id IS NULL)),
              CHECK (local_parent_id IS NOT local_item_id AND onedrive_parent_id IS NOT local_item_id AND synced_parent_id IS NOT local_item_id),
              CHECK ((kind = '{file}' AND local_parent_id IS NOT NULL) = (local_size IS NOT NULL)),
@@ -173,6 +179,8 @@ fn schema() -> String {
          CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
          CREATE INDEX items_onedrive_place ON items(onedrive_parent_id, onedrive_name) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
+         CREATE INDEX items_local_folded_place ON items(local_parent_id, local_folded_name) WHERE local_parent_id IS NOT NULL;
+         CREATE INDEX items_onedrive_folded_place ON items(onedrive_parent_id, onedrive_folded_name) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
          CREATE INDEX items_binding_alone ON items(confirmed_at_count) WHERE {binding_alone};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;

@@ -1140,6 +1140,7 @@ dependencies = [
 name = "konedrive-tree"
 version = "0.1.2"
 dependencies = [
+ "icu_normalizer",
  "konedrive-fs",
  "konedrive-reason",
  "libc",

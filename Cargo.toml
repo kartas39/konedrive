@@ -28,6 +28,8 @@ getrandom = "0.2"
 http-body-util = "0.1"
 hyper = "1"
 hyper-util = "0.1"
+# Unicode's composed form (NFC), for a name as OneDrive compares names. In the build already, under `url`.
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 md-5 = "0.10"

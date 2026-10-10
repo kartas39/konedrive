@@ -204,7 +204,7 @@ fn a_directory_has_one_item_per_name() {
     assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::File))));
     assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::Directory))));
     assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: b, place: place(ROOT, "a"), is_name_ignored: false })));
-    assert!(is_refused_by_schema(items.store.bench_sql("UPDATE items SET local_name = 'a' WHERE local_name = 'b'")), "whoever writes the rows");
+    assert!(is_refused_by_schema(items.store.bench_sql("UPDATE items SET local_name = 'a', local_folded_name = 'a' WHERE local_name = 'b'")), "whoever writes the rows");
     items.apply(&made(place(dir, "a"), ItemKind::File)).unwrap();
     items.apply(&made(place(ROOT, "A"), ItemKind::File)).unwrap();
     assert_eq!(names(&mut store, ROOT), ["A", "a", "b", "dir"]);
@@ -765,14 +765,14 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
     let store = TreeStore::in_memory().unwrap();
     store
         .bench_sql(
-            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5, 'directory', 1, 'dir');
-             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (6, 'file', 1, 'file', 0);
+            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name) VALUES (5, 'directory', 1, 'dir', 'dir');
+             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name, local_size) VALUES (6, 'file', 1, 'file', 'file', 0);
              INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name, synced_size) VALUES (7, 'file', 'd1', 'G', 1, 'gone', 3);
-             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name) VALUES (8, 'directory', 'd1', 'D', 1, 'sent-dir');",
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_folded_name) VALUES (8, 'directory', 'd1', 'D', 1, 'sent-dir', 'sent-dir');",
         )
         .unwrap();
     for (what, sql) in [
-        ("no kind", "INSERT INTO items (local_parent_id, local_name) VALUES (1, 'x')"),
+        ("no kind", "INSERT INTO items (local_parent_id, local_name, local_folded_name) VALUES (1, 'x', 'x')"),
         ("a kind that is neither", "UPDATE items SET kind = 'folder' WHERE local_item_id = 5"),
         ("its own parent", "UPDATE items SET local_parent_id = 5 WHERE local_item_id = 5"),
         ("its own synced parent", "UPDATE items SET synced_parent_id = 8, synced_name = 'dir' WHERE local_item_id = 8"),
@@ -795,7 +795,7 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
         ("a content agreed on with no binding", "UPDATE items SET synced_size = 0 WHERE local_item_id = 6"),
         ("a binding gone from a row with something agreed on", "UPDATE items SET onedrive_drive_id = NULL, onedrive_item_id = NULL WHERE local_item_id = 7"),
         ("a presence that is neither word", "UPDATE items SET content_presence = 'elsewhere' WHERE local_item_id = 6"),
-        ("the root with a place", "UPDATE items SET local_parent_id = 5, local_name = 'root' WHERE local_item_id = 1"),
+        ("the root with a place", "UPDATE items SET local_parent_id = 5, local_name = 'root', local_folded_name = 'root' WHERE local_item_id = 1"),
         ("the root with a synced place", "UPDATE items SET synced_parent_id = 5, synced_name = 'root' WHERE local_item_id = 1"),
         ("the root as a file", "UPDATE items SET kind = 'file' WHERE local_item_id = 1"),
     ] {
@@ -884,7 +884,7 @@ fn a_path_is_none_for_an_item_that_is_not_shown_and_refused_for_rows_that_are_to
 
     let chain = make_chain(&mut store, "d", crate::MAX_CHAIN);
     let deepest = *chain.last().unwrap();
-    store.bench_sql(&format!("INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5000, 'directory', {deepest}, 'below')")).unwrap();
+    store.bench_sql(&format!("INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name) VALUES (5000, 'directory', {deepest}, 'below', 'below')")).unwrap();
     assert!(refusal(store.item_store().find_path(LocalItemId::new(5000))).contains("do not end at the root"));
     assert!(refusal(store.item_store().is_ignored(LocalItemId::new(5000))).contains("do not end at the root"));
 }
@@ -956,15 +956,15 @@ fn the_schema_refuses_a_parent_that_has_no_row_or_is_a_file() {
     let store = TreeStore::in_memory().unwrap();
     store
         .bench_sql(
-            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5, 'directory', 1, 'dir');
-             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (6, 'file', 1, 'file', 0);
-             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_size, synced_parent_id, synced_name, synced_size)
-                 VALUES (7, 'file', 'd1', 'A', 1, 'sent', 3, 1, 'sent', 3);",
+            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name) VALUES (5, 'directory', 1, 'dir', 'dir');
+             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name, local_size) VALUES (6, 'file', 1, 'file', 'file', 0);
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_folded_name, local_size, synced_parent_id, synced_name, synced_size)
+                 VALUES (7, 'file', 'd1', 'A', 1, 'sent', 'sent', 3, 1, 'sent', 3);",
         )
         .unwrap();
     for (what, sql) in [
-        ("made in a directory that has no row", "INSERT INTO items (kind, local_parent_id, local_name) VALUES ('directory', 99, 'x')"),
-        ("made in a file", "INSERT INTO items (kind, local_parent_id, local_name) VALUES ('directory', 6, 'x')"),
+        ("made in a directory that has no row", "INSERT INTO items (kind, local_parent_id, local_name, local_folded_name) VALUES ('directory', 99, 'x', 'x')"),
+        ("made in a file", "INSERT INTO items (kind, local_parent_id, local_name, local_folded_name) VALUES ('directory', 6, 'x', 'x')"),
         ("moved into a directory that has no row", "UPDATE items SET local_parent_id = 99 WHERE local_item_id = 7"),
         ("moved into a file", "UPDATE items SET local_parent_id = 6 WHERE local_item_id = 7"),
         ("made as agreed to be in a directory that has no row", "INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 99, 'x')"),
@@ -978,7 +978,7 @@ fn the_schema_refuses_a_parent_that_has_no_row_or_is_a_file() {
     store
         .bench_sql(
             "UPDATE items SET local_parent_id = 5, synced_parent_id = 5 WHERE local_item_id = 7;
-             INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 5, 'x', 5, 'x');",
+             INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_folded_name, synced_parent_id, synced_name) VALUES ('directory', 'd1', 'B', 5, 'x', 'x', 5, 'x');",
         )
         .unwrap();
 }
@@ -1309,4 +1309,58 @@ fn the_unsent_items_are_read_in_the_order_they_came_to_be_unsent() {
     assert_eq!(ids(store.item_store().list_unsent(after, 2).unwrap()), [third]);
     apply(&mut store, LocalVersionChange::ClosedUnchanged { item: second });
     assert_eq!(ids(store.item_store().list_unsent(None, 10).unwrap()), [first, third]);
+}
+
+fn fold(name: &str) -> crate::FoldedName {
+    crate::FoldedName::of(OsStr::new(name))
+}
+
+/// The items the folder shows in a directory under one name as OneDrive compares names:
+/// those whose names fold to the same, several where the folder has two names that differ
+/// by case, and none of another directory. The folded name follows the name through a
+/// rename, an exchange and a rename over another item; a name that is not UTF-8 is found by
+/// itself alone.
+#[test]
+fn the_items_of_one_folded_name_in_a_directory_of_the_folder_are_found() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let dir = make_directory(&mut store, ROOT, "dir");
+    let (lower, upper, other) = (make_file(&mut store, dir, "report.txt"), make_file(&mut store, dir, "REPORT.TXT"), make_file(&mut store, dir, "other"));
+    let elsewhere = make_file(&mut store, ROOT, "Report.txt");
+    let found = |store: &mut TreeStore, directory: LocalItemId, name: &str| -> Vec<LocalItemId> {
+        store.item_store().list_children_with_folded_name(directory, &fold(name)).unwrap().into_iter().map(|item| item.local_item_id).collect()
+    };
+    assert_eq!(found(&mut store, dir, "Report.Txt"), [lower, upper]);
+    assert_eq!(found(&mut store, ROOT, "REPORT.TXT"), [elsewhere]);
+    assert_eq!(found(&mut store, dir, "report"), Vec::new());
+
+    apply(&mut store, LocalVersionChange::Moved { item: upper, place: place(dir, "Caf\u{e9}"), is_name_ignored: false });
+    assert_eq!((found(&mut store, dir, "report.txt"), found(&mut store, dir, "CAFE\u{301}")), (vec![lower], vec![upper]));
+    store.item_store().exchange_local_places(upper, other).unwrap();
+    assert_eq!((found(&mut store, dir, "caf\u{e9}"), found(&mut store, dir, "OTHER")), (vec![other], vec![upper]));
+    apply(&mut store, LocalVersionChange::SavedOver { replacing: elsewhere, replaced: lower });
+    assert_eq!((found(&mut store, dir, "REPORT.txt"), found(&mut store, ROOT, "report.txt")), (vec![elsewhere], Vec::new()));
+    apply(&mut store, LocalVersionChange::Removed { item: elsewhere });
+    assert_eq!(found(&mut store, dir, "report.txt"), Vec::new());
+
+    let odd = OsString::from_vec(vec![b'O', 0xff, b'D']);
+    let odd_file = store.item_store().apply(&made(ItemPlace { parent_local_item_id: dir, name: odd.clone() }, ItemKind::File)).unwrap();
+    let found_odd = |store: &mut TreeStore, name: Vec<u8>| store.item_store().list_children_with_folded_name(dir, &crate::FoldedName::of(&OsString::from_vec(name))).unwrap().len();
+    assert_eq!((found_odd(&mut store, vec![b'O', 0xff, b'D']), found_odd(&mut store, vec![b'o', 0xff, b'd'])), (1, 0));
+    assert_eq!(item(&mut store, odd_file).local.unwrap().place.unwrap().name, odd);
+}
+
+/// A row has a folded name on a side exactly when it has a name there: the schema refuses
+/// the one without the other.
+#[test]
+fn the_schema_refuses_a_name_without_its_folded_name() {
+    let store = TreeStore::in_memory().unwrap();
+    store.bench_sql("INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, local_parent_id, local_name, local_folded_name, local_size) VALUES (5, 'file', 'd1', 'F', 1, 'File', 'file', 0)").unwrap();
+    for (what, sql) in [
+        ("a local name with no folded name", "UPDATE items SET local_folded_name = NULL WHERE local_item_id = 5"),
+        ("a row made with a local name and no folded name", "INSERT INTO items (kind, local_parent_id, local_name, local_size) VALUES ('file', 1, 'x', 0)"),
+        ("an OneDrive name with no folded name", "UPDATE items SET onedrive_parent_id = 1, onedrive_name = 'File', onedrive_size = 0 WHERE local_item_id = 5"),
+        ("a folded name with no OneDrive name", "UPDATE items SET onedrive_folded_name = 'file' WHERE local_item_id = 5"),
+    ] {
+        assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
+    }
 }

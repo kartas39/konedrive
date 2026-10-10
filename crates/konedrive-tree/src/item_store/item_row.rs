@@ -15,6 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::refuse;
 use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, PLACED};
 use crate::outbox::{path_from, path_value};
+use crate::FoldedName;
 use crate::TreeError;
 
 /// The columns of a content, after the word that says whose it is.
@@ -22,8 +23,8 @@ const CONTENT_COLUMNS: [&str; 6] = ["size", "mtime", "mtime_nsec", "hash", "ctag
 
 /// The columns of an [`Item`], in the order [`item_from`] reads them and [`values_of`] gives them.
 const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, kind, \
-     local_parent_id, local_name, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
-     onedrive_parent_id, onedrive_name, onedrive_size, onedrive_mtime, onedrive_mtime_nsec, onedrive_hash, onedrive_ctag, onedrive_change_count, \
+     local_parent_id, local_name, local_folded_name, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
+     onedrive_parent_id, onedrive_name, onedrive_folded_name, onedrive_size, onedrive_mtime, onedrive_mtime_nsec, onedrive_hash, onedrive_ctag, onedrive_change_count, \
      onedrive_etag, \
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
@@ -197,9 +198,16 @@ fn place_values(place: Option<&ItemPlace>) -> [Value; 2] {
     }
 }
 
+/// The values of a local or an OneDrive place: the parent, the name, and the name folded as
+/// OneDrive compares names, which is written wherever the name is.
+fn folded_place_values(place: Option<&ItemPlace>) -> [Value; 3] {
+    let [parent, name] = place_values(place);
+    [parent, name, place.map_or(Value::Null, |place| name_value(FoldedName::of(&place.name).as_os_str()))]
+}
+
 /// The values of the `onedrive_` columns, in their order: the place, the content, the eTag.
 fn onedrive_values(onedrive: Option<&ItemVersion>, etag: Option<&str>) -> Vec<Value> {
-    let mut values: Vec<Value> = place_values(onedrive.and_then(|onedrive| onedrive.place.as_ref())).into();
+    let mut values: Vec<Value> = folded_place_values(onedrive.and_then(|onedrive| onedrive.place.as_ref())).into();
     values.extend(content_values(onedrive.and_then(|onedrive| onedrive.content.as_ref())));
     values.push(etag.map(str::to_owned).into());
     values
@@ -211,7 +219,7 @@ fn values_of(item: &Item) -> Vec<Value> {
     let local = item.local.as_ref();
     let mut values: Vec<Value> = vec![binding.map(|b| b.drive_id.as_str().to_owned()).into(), binding.map(|b| b.item_id.as_str().to_owned()).into()];
     values.push(item.kind.as_str().to_owned().into());
-    values.extend(place_values(local.and_then(|local| local.place.as_ref())));
+    values.extend(folded_place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
     values.extend(onedrive_values(item.onedrive.as_ref(), item.onedrive_etag.as_deref()));
     values.extend(place_values(item.synced_place.as_ref()));
@@ -243,13 +251,13 @@ pub(super) fn insert_item(
     check_names(local, None)?;
     check_onedrive_item_id(onedrive_item)?;
     let mut values: Vec<Value> = vec![onedrive_item.map(|b| b.drive_id.as_str().to_owned()).into(), onedrive_item.map(|b| b.item_id.as_str().to_owned()).into(), kind.as_str().to_owned().into()];
-    values.extend(place_values(local.and_then(|local| local.place.as_ref())));
+    values.extend(folded_place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
     values.push(content_presence.as_str().to_owned().into());
     values.push(i64::from(is_name_ignored).into());
     let content = CONTENT_COLUMNS.map(|column| format!("local_{column}")).join(", ");
     let places = (1..=values.len()).map(|n| format!("?{n}")).collect::<Vec<_>>().join(", ");
-    let sql = format!("INSERT INTO items (onedrive_drive_id, onedrive_item_id, kind, local_parent_id, local_name, {content}, content_presence, is_name_ignored) VALUES ({places})");
+    let sql = format!("INSERT INTO items (onedrive_drive_id, onedrive_item_id, kind, local_parent_id, local_name, local_folded_name, {content}, content_presence, is_name_ignored) VALUES ({places})");
     conn.prepare_cached(&sql)?.execute(rusqlite::params_from_iter(values))?;
     Ok(LocalItemId::new(conn.last_insert_rowid()))
 }
@@ -303,25 +311,43 @@ pub(super) fn list_children_in_onedrive(conn: &Connection, directory: LocalItemI
     Ok(children)
 }
 
+/// The rows of one folded name in `directory` on the side `side` (`local` or `onedrive`),
+/// by local item id: found by that side's index of folded names.
+fn list_children_of_side_with_folded_name(conn: &Connection, side: &str, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_{side}_folded_place WHERE {side}_parent_id = ?1 AND {side}_folded_name = ?2 ORDER BY local_item_id");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let children = statement.query_map(params![directory.as_i64(), name_value(name.as_os_str())], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(children)
+}
+
+pub(super) fn list_children_with_folded_name(conn: &Connection, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+    list_children_of_side_with_folded_name(conn, "local", directory, name)
+}
+
+pub(super) fn list_children_in_onedrive_with_folded_name(conn: &Connection, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+    list_children_of_side_with_folded_name(conn, "onedrive", directory, name)
+}
+
 /// `item` is at `place` in the folder from now on, and `is_name_ignored` is what the upload
 /// rules say of its name there: the two are written together, since the one is said of the
 /// other. The index of local places refuses a place another item has.
 pub(super) fn set_local_place(conn: &Connection, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
     check_name(&place.name)?;
-    write_local_place(conn, item, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
+    write_local_place(conn, item, place.parent_local_item_id, name_value(&place.name), name_value(FoldedName::of(&place.name).as_os_str()), is_name_ignored)
 }
 
 /// `item` steps aside in the directory it is in, to a name no file can have (it holds a NUL
 /// and a `/`, which [`check_name`] lets no stored name hold) and no other item has (it
 /// holds the item's id), so that another item can take its place before it takes its next
-/// one. The name must not outlive the transaction.
+/// one. The name must not outlive the transaction. It is no text, and folds to itself.
 pub(super) fn set_local_place_aside(conn: &Connection, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
-    write_local_place(conn, item, place.parent_local_item_id, Value::Blob(format!("\0/{item}").into_bytes()), is_name_ignored)
+    let aside = Value::Blob(format!("\0/{item}").into_bytes());
+    write_local_place(conn, item, place.parent_local_item_id, aside.clone(), aside, is_name_ignored)
 }
 
-fn write_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
-    conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3, is_name_ignored = ?4 WHERE local_item_id = ?1")?
-        .execute(params![item.as_i64(), parent.as_i64(), name, is_name_ignored])?;
+fn write_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, folded_name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3, local_folded_name = ?4, is_name_ignored = ?5 WHERE local_item_id = ?1")?
+        .execute(params![item.as_i64(), parent.as_i64(), name, folded_name, is_name_ignored])?;
     Ok(())
 }
 
@@ -335,7 +361,7 @@ pub(super) fn set_binding(conn: &Connection, item: LocalItemId, onedrive_item: &
 
 /// The names of the `onedrive_` columns, in the order [`onedrive_values`] gives them.
 fn onedrive_columns() -> Vec<String> {
-    let mut columns = vec!["onedrive_parent_id".to_owned(), "onedrive_name".to_owned()];
+    let mut columns = vec!["onedrive_parent_id".to_owned(), "onedrive_name".to_owned(), "onedrive_folded_name".to_owned()];
     columns.extend(CONTENT_COLUMNS.map(|column| format!("onedrive_{column}")));
     columns.push("onedrive_etag".to_owned());
     columns

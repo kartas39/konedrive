@@ -67,7 +67,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::model::{ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference, Placement};
-use crate::{TreeError, TreeStore, MAX_CHAIN};
+use crate::{FoldedName, TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
 mod bindings;
@@ -80,7 +80,7 @@ pub(crate) use bindings::bind_root_once_known;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
-use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_unsent, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -142,6 +142,20 @@ impl ItemStore<'_> {
     /// not among them.
     pub fn list_changed_in_onedrive(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         list_changed_in_onedrive(&self.store.conn, after, limit)
+    }
+
+    /// The items the folder shows in `directory` under a name that folds to `name`: one
+    /// name as OneDrive compares names ([`FoldedName`]). The folder may show several, by
+    /// local item id; OneDrive takes one. Found by an index of the folded names.
+    pub fn list_children_with_folded_name(&self, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+        list_children_with_folded_name(&self.store.conn, directory, name)
+    }
+
+    /// The items OneDrive has in `directory`, as the rows say, under a name that folds to
+    /// `name`, by local item id. More than one while a listing goes on, or where the
+    /// client's rule folds what OneDrive does not. Found by an index of the folded names.
+    pub fn list_children_in_onedrive_with_folded_name(&self, directory: LocalItemId, name: &FoldedName) -> Result<Vec<Item>, TreeError> {
+        list_children_in_onedrive_with_folded_name(&self.store.conn, directory, name)
     }
 
     /// The unsent items: those whose local version is not what the two sides last agreed

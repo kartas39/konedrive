@@ -34,6 +34,7 @@ use rusqlite::Connection;
 
 mod activity;
 mod conflicts;
+mod folded_name;
 mod item_store;
 mod meta;
 mod model;
@@ -51,6 +52,7 @@ mod thumbs;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
+pub use folded_name::FoldedName;
 pub use item_store::{ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
