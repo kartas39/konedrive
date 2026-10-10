@@ -83,7 +83,7 @@ pub(crate) use bindings::bind_root_once_known;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 
-use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_is_left_here, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -131,8 +131,10 @@ impl ItemStore<'_> {
 
     /// Whether `item` is left here, and so never sent: it has no binding, and its own name is
     /// ignored or that of a directory above it that has no binding. An item OneDrive has is
-    /// never left here, also below an ignored directory that OneDrive does not have. Derived
-    /// from the rows at each call, never stored. Refused for an id with no row.
+    /// never left here, also below an ignored directory that OneDrive does not have. Read
+    /// from the item's own row: what the directories above say of it is kept there by every
+    /// write of a place, of what the rules say of a name, and of a binding. Refused for an
+    /// id with no row.
     pub fn is_ignored(&self, item: LocalItemId) -> Result<bool, TreeError> {
         is_ignored(&self.store.conn, item)
     }
@@ -265,23 +267,7 @@ fn read_shown(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVersion),
 }
 
 fn is_ignored(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
-    let item = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
-    if item.onedrive_item.is_some() {
-        return Ok(false);
-    }
-    if item.is_name_ignored {
-        return Ok(true);
-    }
-    let mut above = item.local.and_then(|local| local.place).map(|place| place.parent_local_item_id);
-    // One row for each directory above the item.
-    for _ in 0..=MAX_CHAIN {
-        let Some(directory) = above.and_then(|directory| find_item(conn, directory).transpose()).transpose()? else { return Ok(false) };
-        if directory.is_name_ignored && directory.onedrive_item.is_none() {
-            return Ok(true);
-        }
-        above = directory.local.and_then(|local| local.place).map(|place| place.parent_local_item_id);
-    }
-    Err(refuse(format!("the directories above item {id} do not end at the root")))
+    find_is_left_here(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))
 }
 
 /// The row of `id` and of each directory above it in OneDrive, from the item up: as far

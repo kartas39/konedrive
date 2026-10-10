@@ -911,7 +911,7 @@ fn a_path_is_none_for_an_item_that_is_not_shown_and_refused_for_rows_that_are_to
     let deepest = *chain.last().unwrap();
     store.bench_sql(&format!("INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_folded_name) VALUES (5000, 'directory', {deepest}, 'below', 'below')")).unwrap();
     assert!(refusal(store.item_store().find_path(LocalItemId::new(5000))).contains("do not end at the root"));
-    assert!(refusal(store.item_store().is_ignored(LocalItemId::new(5000))).contains("do not end at the root"));
+    assert!(!store.item_store().is_ignored(LocalItemId::new(5000)).unwrap(), "read from the item's own row, with no walk");
 }
 
 /// A name is checked where it enters the rows: the empty name, `.`, `..`, a name with a

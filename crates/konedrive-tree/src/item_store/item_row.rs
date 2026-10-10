@@ -54,10 +54,43 @@ pub(crate) fn unsent_columns() -> String {
     [of("local"), of("synced")].concat().join(", ")
 }
 
-/// SQL for "the row's item is left here by its own name": it has no binding, and the upload
-/// rules ignore its name. The index `items_unsent` leaves these rows out, and a query finds
-/// the others by it when it asks in these words.
-pub(crate) const LEFT_HERE: &str = "(onedrive_item_id IS NULL AND is_name_ignored != 0)";
+/// SQL for "the row's item is left here, and so never sent": it has no binding, and the
+/// upload rules ignore its own name or that of a directory above it that has no binding
+/// (`is_below_ignored_directory`). The index `items_unsent` leaves these rows out, and a
+/// query finds the others by it when it asks in these words.
+pub(crate) const LEFT_HERE: &str = "(onedrive_item_id IS NULL AND (is_name_ignored != 0 OR is_below_ignored_directory != 0))";
+
+/// SQL for "what is in the row `parent` is below an ignored directory": the row is below
+/// one itself, or is one — its own name is ignored and it has no binding.
+const HOLDS_BELOW_IGNORED_DIRECTORY: &str = "(parent.is_below_ignored_directory != 0 OR (parent.onedrive_item_id IS NULL AND parent.is_name_ignored != 0))";
+
+/// The row of `item` says whether a directory above it in the folder has an ignored name
+/// and no binding (`is_below_ignored_directory`), and so does every row the folder shows
+/// below it of which that changed. Called by each writer of what it is derived from — a
+/// local place, what the rules say of a name, a binding — after its statement, so that the
+/// column is right of every row whoever wrote. One statement: from `item` down, as far as
+/// rows change, since what does not change of a directory changes nothing below it.
+fn write_is_below_ignored_directory(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
+    let sql = format!(
+        "UPDATE items SET is_below_ignored_directory = NOT is_below_ignored_directory WHERE local_item_id IN (
+             WITH RECURSIVE written(id, is_below, is_changed) AS (
+                 SELECT item.local_item_id, is_below, item.is_below_ignored_directory IS NOT is_below
+                     FROM items item, (SELECT COALESCE((SELECT {HOLDS_BELOW_IGNORED_DIRECTORY} FROM items parent WHERE parent.local_item_id = (SELECT local_parent_id FROM items WHERE local_item_id = ?1)), 0) AS is_below)
+                     WHERE item.local_item_id = ?1
+                 UNION ALL
+                 SELECT child.local_item_id, (written.is_below OR (parent.onedrive_item_id IS NULL AND parent.is_name_ignored != 0)), 1
+                     FROM written JOIN items parent ON parent.local_item_id = written.id JOIN items child INDEXED BY items_local_place ON child.local_parent_id = written.id
+                     WHERE child.is_below_ignored_directory IS NOT (written.is_below OR (parent.onedrive_item_id IS NULL AND parent.is_name_ignored != 0)))
+             SELECT id FROM written WHERE is_changed)"
+    );
+    conn.prepare_cached(&sql)?.execute([item.as_i64()])?;
+    Ok(())
+}
+
+/// Whether `item` is left here ([`LEFT_HERE`]); `None` for an id with no row.
+pub(super) fn find_is_left_here(conn: &Connection, item: LocalItemId) -> Result<Option<bool>, TreeError> {
+    Ok(conn.prepare_cached(&format!("SELECT {LEFT_HERE} FROM items WHERE local_item_id = ?1"))?.query_row([item.as_i64()], |row| row.get(0)).optional()?)
+}
 
 /// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
 /// changed, made or removed since the two sides last agreed, and what they never agreed
@@ -268,7 +301,9 @@ pub(super) fn insert_item(
     let places = (1..=values.len()).map(|n| format!("?{n}")).collect::<Vec<_>>().join(", ");
     let sql = format!("INSERT INTO items (onedrive_drive_id, onedrive_item_id, kind, local_parent_id, local_name, local_folded_name, {content}, content_presence, is_name_ignored) VALUES ({places})");
     conn.prepare_cached(&sql)?.execute(rusqlite::params_from_iter(values))?;
-    Ok(LocalItemId::new(conn.last_insert_rowid()))
+    let made = LocalItemId::new(conn.last_insert_rowid());
+    write_is_below_ignored_directory(conn, made)?;
+    Ok(made)
 }
 
 /// The row of `item.local_item_id` is `item` from now on.
@@ -282,7 +317,7 @@ pub(super) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError
     if conn.prepare_cached(&sql)?.execute(rusqlite::params_from_iter(values))? == 0 {
         return Err(refuse(format!("item {} has no row to write", item.local_item_id)));
     }
-    Ok(())
+    write_is_below_ignored_directory(conn, item.local_item_id)
 }
 
 /// The row of `item` goes. Its id is not given again.
@@ -357,7 +392,7 @@ pub(super) fn set_local_place_aside(conn: &Connection, item: LocalItemId, place:
 fn write_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, folded_name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
     conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3, local_folded_name = ?4, is_name_ignored = ?5 WHERE local_item_id = ?1")?
         .execute(params![item.as_i64(), parent.as_i64(), name, folded_name, is_name_ignored])?;
-    Ok(())
+    write_is_below_ignored_directory(conn, item)
 }
 
 /// The binding of `item` is `onedrive_item` from now on, whatever it was.
@@ -365,7 +400,7 @@ pub(super) fn set_binding(conn: &Connection, item: LocalItemId, onedrive_item: &
     check_onedrive_item_id(Some(onedrive_item))?;
     conn.prepare_cached("UPDATE items SET onedrive_drive_id = ?2, onedrive_item_id = ?3 WHERE local_item_id = ?1")?
         .execute(params![item.as_i64(), onedrive_item.drive_id.as_str(), onedrive_item.item_id.as_str()])?;
-    Ok(())
+    write_is_below_ignored_directory(conn, item)
 }
 
 /// The names of the `onedrive_` columns, in the order [`onedrive_values`] gives them.

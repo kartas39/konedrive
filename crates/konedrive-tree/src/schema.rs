@@ -76,7 +76,11 @@ pub const SCHEMA_VERSION: &str = "14";
 ///   by their stamp, but those of items left here, which are never sent: a bounded read
 ///   of what is unsent reads none of them.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
-///   below it. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
+///   below it. `is_below_ignored_directory` says that a directory above the item in the
+///   folder has an ignored name and no binding: it is derived from the rows above, and kept
+///   by the writers of a local place, of `is_name_ignored` and of a binding
+///   ([`crate::item_store`]'s `item_row`), so that the index of what is unsent can leave out
+///   what is left here without a walk up from each row. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
 ///   `items_parent_directory_update`, asked per row, at one read by the key for each side:
 ///   a directory's row is written before what is in it). A row is not deleted while another
@@ -157,6 +161,7 @@ fn schema() -> String {
              {content_before_write},
              placement TEXT NOT NULL DEFAULT '{placed}',
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
+             is_below_ignored_directory INTEGER NOT NULL DEFAULT 0,
              confirmed_at_count INTEGER NOT NULL DEFAULT 0,
              seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
              unsent_since INTEGER,
