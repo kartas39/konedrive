@@ -31,9 +31,9 @@
 //! away.
 //!
 //! **The guard against an outdated listing.** The store counts confirmations
-//! ([`ItemStore::confirmation_count`]); a step that OneDrive confirmed something to stamps the
-//! row with the next count ([`stamp_confirmed`]), in the transaction that writes what was
-//! confirmed. A cycle reads the count when its fetch begins and gives it with every page.
+//! ([`ItemStore::confirmation_count`]); a step that OneDrive confirmed something to writes
+//! what was confirmed, with its eTag, and the row is stamped with the next count, in one
+//! statement ([`confirm_onedrive_version`]). A cycle reads the count when its fetch begins and gives it with every page.
 //! What a page says of a row stamped later may be older than what was confirmed: it is
 //! taken only when it is what was confirmed ([`is_listed_version_outdated`],
 //! [`is_listed_removal_outdated`]), and otherwise the row is left and the item's id is
@@ -55,9 +55,9 @@ use std::ffi::OsString;
 use rusqlite::{Connection, Transaction};
 
 use super::bindings::{bind_root, make_onedrive_item};
-use super::item_row::{clear_onedrive_version, delete_rows_of_binding_alone, find_bound_item, find_item, list_below_in_onedrive, list_unseen_in_full_listing, set_confirmed_at_count, set_onedrive_etag, set_onedrive_version};
+use super::item_row::{clear_onedrive_version, delete_rows_of_binding_alone, find_bound_item, find_item, list_below_in_onedrive, list_unseen_in_full_listing, set_onedrive_etag, set_onedrive_version, write_item};
 use super::{refuse, ItemStore};
-use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, Kind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, Kind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 use crate::{meta, TreeError};
 
 impl ItemStore<'_> {
@@ -96,10 +96,21 @@ impl ItemStore<'_> {
         read_count(&self.store.conn, meta::CONFIRMATION_COUNT)
     }
 
-    /// [`stamp_confirmed`] in a transaction of its own.
-    pub fn stamp_confirmed(&mut self, item: LocalItemId) -> Result<u64, TreeError> {
-        self.write(|tx| stamp_confirmed(tx, item))
+    /// [`confirm_onedrive_version`] in a transaction of its own.
+    pub fn confirm_onedrive_version(&mut self, item: LocalItemId, confirmed: &ConfirmedOneDriveVersion) -> Result<u64, TreeError> {
+        self.write(|tx| confirm_onedrive_version(tx, item, confirmed))
     }
+}
+
+/// What OneDrive confirmed of an item to a step of the client, as Graph answered the step's
+/// request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmedOneDriveVersion {
+    /// OneDrive has the item, as this version, under this eTag: the answer to an upload, a
+    /// move or a rename.
+    Present { version: ItemVersion, etag: String },
+    /// OneDrive does not have the item any more: the answer to a removal.
+    Removed,
 }
 
 /// A count the store keeps one of; 0 before it was first raised.
@@ -107,15 +118,71 @@ fn read_count(conn: &Connection, key: &str) -> Result<u64, TreeError> {
     Ok(meta::get(conn, key)?.and_then(|count| count.parse().ok()).unwrap_or(0))
 }
 
-/// OneDrive confirmed something of `item` to a step of the client: the count of
-/// confirmations is raised and the row stamped with it. The count. Inside the transaction
-/// that writes what was confirmed to the row, so that a listing never finds the one without
-/// the other; on any error the caller drops it. Refused for an id with no row.
-pub(crate) fn stamp_confirmed(tx: &Transaction<'_>, item: LocalItemId) -> Result<u64, TreeError> {
+/// OneDrive confirmed something of `item` to a step of the client: the row has what was
+/// confirmed as its OneDrive version, with the eTag of that answer, and is stamped with the
+/// count of confirmations, which is raised. The count. One statement writes the three, so
+/// that no row is stamped that does not hold what was confirmed: a page fetched before the
+/// confirmation is then told from one that says it ([`is_listed_version_outdated`]).
+///
+/// What the two sides agree on from then is the step's to write, in the same transaction,
+/// in the part that was confirmed (the place of a move, the content of an upload). A
+/// confirmed removal is whole: the row is left with its binding alone, stamped, and stays
+/// until a listing that began after it has ended, so that a page fetched before the removal
+/// finds the binding taken and does not make the item again.
+///
+/// Inside the caller's transaction; on any error the caller drops it. Refused, with nothing
+/// written and no count raised, for what OneDrive cannot have confirmed: of an id with no
+/// row or an item with no binding; a removal of the root or of an item the folder shows; a
+/// version that is not one of the item's kind, has a content OneDrive did not give, or a
+/// place that is not in the row of a directory.
+pub(crate) fn confirm_onedrive_version(tx: &Transaction<'_>, item: LocalItemId, confirmed: &ConfirmedOneDriveVersion) -> Result<u64, TreeError> {
+    let mut row = find_item(tx, item)?.ok_or_else(|| refuse(format!("item {item} has no row: nothing is confirmed of it")))?;
+    if row.onedrive_item.is_none() {
+        return Err(refuse(format!("item {item} has no binding: OneDrive confirms nothing of it")));
+    }
+    match confirmed {
+        ConfirmedOneDriveVersion::Present { version, etag } => {
+            check_confirmed_version(tx, &row, version)?;
+            row.onedrive = Some(version.clone());
+            row.onedrive_etag = Some(etag.clone());
+        }
+        ConfirmedOneDriveVersion::Removed => {
+            if item == LocalItemId::ROOT || row.local.is_some() {
+                return Err(refuse(format!("item {item} is the root or an item the folder shows: its removal is not confirmed")));
+            }
+            row.onedrive = None;
+            row.onedrive_etag = None;
+            row.placement = Placement::Placed;
+            row.synced_place = None;
+            row.synced_content = None;
+        }
+    }
     let count = read_count(tx, meta::CONFIRMATION_COUNT)? + 1;
-    set_confirmed_at_count(tx, item, count)?;
+    row.confirmed_at_count = count;
+    write_item(tx, &row)?;
     meta::set(tx, meta::CONFIRMATION_COUNT, Some(&count.to_string()))?;
     Ok(count)
+}
+
+/// `version` can be what OneDrive has of `row`: the root has no place and every other item
+/// has one, in the row of a directory that is not its own; a file has a content, told as
+/// OneDrive tells one, and a directory has none.
+fn check_confirmed_version(conn: &Connection, row: &Item, version: &ItemVersion) -> Result<(), TreeError> {
+    let item = row.local_item_id;
+    match &version.place {
+        None if item == LocalItemId::ROOT => {}
+        Some(place) if item != LocalItemId::ROOT && place.parent_local_item_id != item => {
+            let is_in_directory = find_item(conn, place.parent_local_item_id)?.is_some_and(|parent| parent.kind == ItemKind::Directory);
+            if !is_in_directory {
+                return Err(refuse(format!("item {} is no directory with a row: item {item} is not confirmed to be in it", place.parent_local_item_id)));
+            }
+        }
+        _ => return Err(refuse(format!("the root has no place and every other item has one outside itself: not so for item {item}"))),
+    }
+    match (&version.content, row.kind) {
+        (None, ItemKind::Directory) | (Some(ContentVersion::Hashed { .. }), ItemKind::File) => Ok(()),
+        _ => Err(refuse(format!("a file has a content as OneDrive tells one and a directory has none: not so for item {item}"))),
+    }
 }
 
 /// Whether what a page says `item` is — a version with the eTag `listed_etag` — may be

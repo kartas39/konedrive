@@ -341,14 +341,6 @@ pub(super) fn set_onedrive_etag(conn: &Connection, item: LocalItemId, etag: Opti
     Ok(())
 }
 
-/// The stamp of `item` is `count` from now on.
-pub(super) fn set_confirmed_at_count(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
-    if conn.prepare_cached("UPDATE items SET confirmed_at_count = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])? == 0 {
-        return Err(refuse(format!("item {item} has no row to stamp")));
-    }
-    Ok(())
-}
-
 /// The count of the full listing that last listed `item`; 0 when none did, and for an id
 /// with no row.
 pub(super) fn find_seen_in_full_listing(conn: &Connection, item: LocalItemId) -> Result<u64, TreeError> {
