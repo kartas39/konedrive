@@ -16,7 +16,8 @@ mod migrations;
 /// The schema this daemon reads and writes, kept in `meta` as
 /// `schema_version`. A store of a version a step starts from is brought to
 /// it in place, one numbered step at a time ([`migrations`]); one of any
-/// other version — a newer daemon's — is rebuilt from a full listing.
+/// other version — a newer daemon's, or an earlier one no step starts from, as
+/// every version before this one — is rebuilt from a full listing.
 ///
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store

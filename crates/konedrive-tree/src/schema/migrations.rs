@@ -7,7 +7,8 @@
 //! not the constants the rest of the crate uses today, so that a later
 //! change of the schema is a new step and never a different old one.
 //!
-//! There is none yet: the schema has had one version.
+//! There is none yet: no version before today's is brought to it, and a store of one is
+//! rebuilt from a full listing.
 
 use rusqlite::Connection;
 
