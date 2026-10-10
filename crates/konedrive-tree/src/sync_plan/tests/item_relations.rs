@@ -629,6 +629,27 @@ fn a_plan_in_which_nothing_can_run_says_why() {
 
 // -- the findings of the review of part 3
 
+/// The second review's S1: between two items OneDrive lists, OneDrive has judged — also
+/// where one of them is renamed here. Two files OneDrive has in one directory under names
+/// that fold to one; one is renamed here within that fold, to the other's name in another
+/// letter case, or only to another case of its own. Its move is sent: it has a name of
+/// that fold in OneDrive already, beside the other. A refusal would be OneDrive's to say.
+#[test]
+fn an_item_renamed_within_the_names_onedrive_keeps_apart_is_sent() {
+    for name in ["E\u{301}CLAIR", "\u{c9}CLAIR"] {
+        let given = input(vec![moved_here(synced_file(2, ROOT, "\u{e9}clair"), ROOT, name), synced_file(3, ROOT, "e\u{301}clair")]);
+        assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 2), parent: reference("root"), name: name.into() }), "{name}");
+        assert_eq!(answer(&given, 3), Answer::Nothing);
+    }
+    // While a listing is under way it may yet say one of the two is elsewhere.
+    let mut given = input(vec![moved_here(synced_file(2, ROOT, "\u{e9}clair"), ROOT, "\u{c9}CLAIR"), synced_file(3, ROOT, "e\u{301}clair")]);
+    given.is_listing_under_way = true;
+    assert_eq!(answer(&given, 2), Answer::Wait(WaitReason::Listing));
+    // An item that comes to the name from elsewhere steps aside, as before.
+    let given = input(vec![moved_here(synced_file(2, ROOT, "other"), ROOT, "\u{c9}CLAIR"), synced_file(3, ROOT, "e\u{301}clair")]);
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 2), name: "\u{c9}CLAIR-pc".into() }));
+}
+
 /// The review's M1, new: a directory removed here that OneDrive has in a directory removed
 /// here sends no removal of its own, whatever is answered for the outer one; what was
 /// moved out of it is sent first, and the outer one's removal is the one removal.

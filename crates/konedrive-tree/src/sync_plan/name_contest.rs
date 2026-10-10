@@ -40,6 +40,9 @@ pub(crate) struct NameClaim<'a> {
     pub(crate) is_answered_taken: bool,
     /// The folder cannot show the holder as OneDrive has it.
     pub(crate) holder_cannot_be_shown: bool,
+    /// OneDrive has the claimant in that directory already, under a name that is this one
+    /// as the plan compares names: the claimant is renamed here within that fold.
+    pub(crate) has_the_name_in_onedrive: bool,
     pub(crate) is_listing_under_way: bool,
 }
 
@@ -64,6 +67,10 @@ pub(crate) enum NameContestOutcome {
 ///
 /// - another item of the folder is to have the name too, and was unsent earlier: the
 ///   claimant steps aside;
+/// - OneDrive has the claimant and the holder in that directory already, each under a name
+///   of this fold: OneDrive has judged, and keeps the two apart. The name is free, once no
+///   listing is under way that may yet say one of the two is elsewhere; should OneDrive
+///   refuse the move, that answer is kept, and decides the next plan;
 /// - nothing in OneDrive has the name, by the plan's rule for comparing names: it is free,
 ///   unless OneDrive answered the claimant's sending that the name is taken. OneDrive is
 ///   the judge: the claimant then steps aside, once no listing is under way that may yet
@@ -83,6 +90,9 @@ pub(crate) fn decide_name_contest(claim: &NameClaim<'_>) -> NameContestOutcome {
     let claimant = claim.claimant;
     if claim.has_earlier_rival {
         return NameContestOutcome::StepsAside;
+    }
+    if claim.has_the_name_in_onedrive && claim.holder.is_some() && !claim.is_answered_taken {
+        return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::NameIsFree };
     }
     let holder = match claim.holder {
         None if claim.is_answered_taken && !claim.is_left_here => return if claim.is_listing_under_way { NameContestOutcome::WaitsForListing } else { NameContestOutcome::StepsAside },
@@ -200,6 +210,7 @@ pub(crate) fn settle_name_contests(
             has_earlier_rival,
             is_answered_taken: places_taken_in_onedrive.get(&id) == Some(place),
             holder_cannot_be_shown,
+            has_the_name_in_onedrive: in_onedrive.contains(&id),
             is_listing_under_way: case.is_listing_under_way,
         };
         let sending = match &decision {

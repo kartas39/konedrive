@@ -3,7 +3,7 @@ use crate::model::ItemKind;
 use crate::sync_plan::tests::{hashed_here, id, listed, made_directory, made_file, moved_here, moved_in_onedrive, synced_file, with_content_here, written_here, ROOT};
 
 fn claim<'a>(claimant: &'a Item, holder: Option<NameHolder<'a>>) -> NameClaim<'a> {
-    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_answered_taken: false, holder_cannot_be_shown: false, is_listing_under_way: false }
+    NameClaim { claimant, is_left_here: false, holder, has_earlier_rival: false, is_answered_taken: false, holder_cannot_be_shown: false, has_the_name_in_onedrive: false, is_listing_under_way: false }
 }
 
 #[test]
@@ -104,4 +104,21 @@ fn an_item_waits_for_a_holder_that_is_held_back() {
     let new = made_directory(2, ROOT, "d");
     assert_eq!(decide_name_contest(&claim(&new, Some(NameHolder::IsHeldBack(id(3))))), NameContestOutcome::WaitsFor(id(3)));
     assert_eq!(decide_name_contest(&NameClaim { is_left_here: true, ..claim(&new, Some(NameHolder::IsHeldBack(id(3)))) }), NameContestOutcome::NameIsFree);
+}
+
+/// The second review's S1: OneDrive has the claimant under a name of this fold already,
+/// beside the holder. It has judged: the two are kept apart, whatever the plan's rule for
+/// comparing names says, once no listing is under way. An answer of OneDrive that the name
+/// is taken overrules that, as it overrules the rule.
+#[test]
+fn a_name_onedrive_keeps_apart_from_the_holders_is_free() {
+    let renamed = moved_here(synced_file(2, ROOT, "\u{e9}clair"), ROOT, "\u{c9}CLAIR");
+    let beside = synced_file(3, ROOT, "e\u{301}clair");
+    let within_the_fold = NameClaim { has_the_name_in_onedrive: true, ..claim(&renamed, Some(NameHolder::Stays(&beside))) };
+    assert_eq!(decide_name_contest(&within_the_fold), NameContestOutcome::NameIsFree);
+    assert_eq!(decide_name_contest(&NameClaim { holder: Some(NameHolder::Leaves(id(3))), ..within_the_fold }), NameContestOutcome::NameIsFree);
+    assert_eq!(decide_name_contest(&NameClaim { is_listing_under_way: true, ..within_the_fold }), NameContestOutcome::WaitsForListing);
+    assert_eq!(decide_name_contest(&NameClaim { is_answered_taken: true, ..within_the_fold }), NameContestOutcome::StepsAside);
+    assert_eq!(decide_name_contest(&NameClaim { has_earlier_rival: true, ..within_the_fold }), NameContestOutcome::StepsAside);
+    assert_eq!(decide_name_contest(&NameClaim { has_the_name_in_onedrive: false, ..within_the_fold }), NameContestOutcome::StepsAside, "it comes to the name from elsewhere");
 }

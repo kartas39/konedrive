@@ -501,7 +501,10 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
             _ => None,
         };
         if let Some(sent) = &sent {
-            if given.items.iter().any(|item| item.local_item_id != number && onedrive_place(item).is_some_and(|place| folded(&place) == folded(sent))) {
+            // Unless OneDrive has the item itself under a name of that fold there: it keeps
+            // the two apart already.
+            let has_the_name_already = onedrive_place(row).is_some_and(|place| folded(&place) == folded(sent));
+            if !has_the_name_already && given.items.iter().any(|item| item.local_item_id != number && onedrive_place(item).is_some_and(|place| folded(&place) == folded(sent))) {
                 return Some(format!("the step of item {number} sends it to a name OneDrive has another item under"));
             }
             if !sent_to.insert(folded(sent)) {
