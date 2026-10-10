@@ -17,19 +17,26 @@
 //! - *In the folder, one item per name in a directory.* The schema: the unique index
 //!   `items_local_place`.
 //! - *A binding belongs to one item.* The schema: the unique index `items_onedrive_item`.
-//!   The binding is changed by the three operations of [`bindings`] and by nothing else,
-//!   but for the root's, which is written where the store learns the drive's root
-//!   ([`bindings::bind_root`]), and but for the binding an item is given first.
-//!
-//! A row is read and written in [`stored`], whose writers ask no rule and are reachable
-//! from this module and [`bindings`] alone: what is outside changes a row through an
-//! operation.
+//!   A binding is given first and moved in [`bindings`] and nowhere else: to an item of the
+//!   folder OneDrive confirmed, with a row made for an item of OneDrive, to the root where
+//!   the store learns the drive's root, and from one item to another by its three
+//!   operations.
 //! - *An item is a file or a directory all its life.* The schema: `kind` is on every row,
 //!   also one the folder does not show, and no operation writes it after the row is made.
 //!   A binding moves only between items of one kind ([`bindings`]).
+//! - *A name is the name of a directory entry.* The code, where a row is written
+//!   ([`stored`]): not empty, not `.` or `..`, with no `/` and no NUL.
 //! - *The root is item 1, a directory with no place, and stays.* The schema's checks; the
 //!   code refuses every change of it.
 //! - *An id is never given twice.* The schema: `AUTOINCREMENT`.
+//!
+//! What the code refuses is [`TreeError::Refused`], and a rule of the schema that an
+//! operation could trip is asked by the code before, so that an operation fails as SQLite's
+//! only when SQLite or the disk failed.
+//!
+//! A row is read and written in [`stored`], whose writers ask no rule but the one of names
+//! and are reachable from this module and [`bindings`] alone: what is outside changes a row
+//! through an operation.
 //!
 //! The OneDrive version is not in the rows yet (`onedrive_items` holds it), so the rules of
 //! that side are not held here. A synced place names its directory by local item id; the

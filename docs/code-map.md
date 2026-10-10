@@ -715,12 +715,17 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 
 - `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
 - `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
-  written; an item as `items` holds it (`Item`, its ids, `ItemVersion`, `ItemPlace`,
-  `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and `DriveId`. `[tests]`
+  written; an item as `items` holds it (`Item` with its kind, its ids, `ItemVersion`,
+  `ItemPlace`, `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and
+  `DriveId`. `[tests]`
 - `item_store.rs` — `ItemStore`: the rows of `items`, one per item by local item id; finding
-  an item, applying a change of its local version, and the rules that hold of the rows. `[tests]`
-- `item_store/bindings.rs` — the three operations that move a binding from one item to
-  another: `take_over_binding`, `give_up_binding`, `merge_items`. `[tests]`
+  an item, its path and whether it is left here; applying a change of its local version,
+  each a case; the rules that hold of the rows, and who holds each. `[tests]`
+- `item_store/stored.rs` — a row of `items` in the database: where it is read, written and
+  deleted, and where a name is checked. Reachable from `item_store` alone.
+- `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
+  the root's), and moved from one item to another (`take_over_binding`, done with the change
+  that says so; `give_up_binding`; `merge_items`). `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to

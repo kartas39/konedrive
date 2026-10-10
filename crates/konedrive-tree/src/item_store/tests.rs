@@ -756,6 +756,25 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
     }
 }
 
+/// A name that is not UTF-8 is kept as its bytes through a move, an exchange and a rename
+/// over another item, and is found by them again.
+#[test]
+fn a_name_that_is_not_utf8_is_kept_through_a_move_an_exchange_and_a_rename_over() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let odd = |last: u8| OsString::from_vec(vec![b'o', 0xff, last]);
+    let at = |name: OsString| ItemPlace { parent_local_item_id: ROOT, name };
+    let file = make_file(&mut store, ROOT, "file");
+    let other = store.item_store().apply(&made(at(odd(b'1')), ItemKind::File)).unwrap();
+    store.item_store().apply(&LocalVersionChange::Moved { item: file, place: at(odd(b'2')), is_name_ignored: false }).unwrap();
+    assert_eq!(store.item_store().find_item_at(ROOT, &odd(b'2')).unwrap().map(|i| i.local_item_id), Some(file));
+    store.item_store().exchange_local_places(file, other).unwrap();
+    assert_eq!([odd(b'1'), odd(b'2')].map(|name| store.item_store().find_item_at(ROOT, &name).unwrap().map(|i| i.local_item_id)), [Some(file), Some(other)]);
+    assert_eq!(path(&mut store, other), Some(PathBuf::from(odd(b'2'))));
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: file, replaced: other }).unwrap();
+    assert_eq!(item(&mut store, file).local.unwrap().place, Some(at(odd(b'2'))));
+    assert_eq!(store.item_store().list_children(ROOT).unwrap().len(), 1);
+}
+
 /// A chain of `count` directories named `name`, the first in the root and each other in
 /// the one before: their ids.
 fn make_chain(store: &mut TreeStore, name: &str, count: usize) -> Vec<LocalItemId> {

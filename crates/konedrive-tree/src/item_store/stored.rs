@@ -1,7 +1,8 @@
 //! A row of `items` in the database: the one place it is read from SQLite, written to it
 //! and removed from it. What is here writes a row as it is told, with no rule of the rows
-//! asked: only [`ItemStore`](super::ItemStore)'s operations and the operations on bindings
-//! call it, and nothing outside `item_store` can.
+//! asked but the one of names, which is asked wherever a name is written: only
+//! [`ItemStore`](super::ItemStore)'s operations and the operations on bindings call it, and
+//! nothing outside `item_store` can.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
