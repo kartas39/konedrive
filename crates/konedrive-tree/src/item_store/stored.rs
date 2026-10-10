@@ -4,6 +4,7 @@
 //! call it, and nothing outside `item_store` can.
 
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use rusqlite::types::Value;
@@ -47,8 +48,23 @@ mod at {
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
 /// keeps a path, so that one name always has one form and is found by equality.
-pub(super) fn name_value(name: &OsStr) -> Value {
+fn name_value(name: &OsStr) -> Value {
     path_value(Path::new(name))
+}
+
+/// The one check of every name a row is written with, local or synced: the name of a
+/// directory entry is not empty, not `.` or `..`, and holds no `/` and no NUL. An item's
+/// path is made of the stored names, and the disk is touched by it.
+fn check_name(name: &OsStr) -> Result<(), TreeError> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') || bytes.contains(&0) {
+        return Err(refuse(format!("{name:?} is no name of a directory entry")));
+    }
+    Ok(())
+}
+
+fn check_names(item_local: Option<&ItemVersion>, synced_place: Option<&ItemPlace>) -> Result<(), TreeError> {
+    item_local.and_then(|local| local.place.as_ref()).into_iter().chain(synced_place).try_for_each(|place| check_name(&place.name))
 }
 
 fn content_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Option<ContentVersion>> {
@@ -144,6 +160,7 @@ pub(super) fn insert_item(
     content_presence: ContentPresence,
     is_name_ignored: bool,
 ) -> Result<LocalItemId, TreeError> {
+    check_names(local, None)?;
     let mut values: Vec<Value> = vec![onedrive_item.map(|b| b.drive_id.as_str().to_owned()).into(), onedrive_item.map(|b| b.item_id.as_str().to_owned()).into(), kind.as_str().to_owned().into()];
     values.extend(place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
@@ -158,6 +175,7 @@ pub(super) fn insert_item(
 
 /// The row of `item.local_item_id` is `item` from now on.
 pub(super) fn write_item(conn: &Connection, item: &Item) -> Result<(), TreeError> {
+    check_names(item.local.as_ref(), item.synced_place.as_ref())?;
     let sets = written_columns().enumerate().map(|(n, column)| format!("{column} = ?{}", n + 1)).collect::<Vec<_>>().join(", ");
     let mut values = values_of(item);
     values.push(item.local_item_id.as_i64().into());
@@ -196,10 +214,23 @@ pub(super) fn list_children(conn: &Connection, directory: LocalItemId) -> Result
     Ok(children)
 }
 
-/// `item` has the name `name` in the directory `parent` from now on, and `is_name_ignored`
-/// is what the upload rules say of that name: the two are written together, since the one
-/// is said of the other. The index of local places refuses a place another item has.
-pub(super) fn set_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
+/// `item` is at `place` in the folder from now on, and `is_name_ignored` is what the upload
+/// rules say of its name there: the two are written together, since the one is said of the
+/// other. The index of local places refuses a place another item has.
+pub(super) fn set_local_place(conn: &Connection, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
+    check_name(&place.name)?;
+    write_local_place(conn, item, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
+}
+
+/// `item` steps aside in the directory it is in, to a name no file can have (it holds a NUL
+/// and a `/`, which [`check_name`] lets no stored name hold) and no other item has (it
+/// holds the item's id), so that another item can take its place before it takes its next
+/// one. The name must not outlive the transaction.
+pub(super) fn set_local_place_aside(conn: &Connection, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
+    write_local_place(conn, item, place.parent_local_item_id, Value::Blob(format!("\0/{item}").into_bytes()), is_name_ignored)
+}
+
+fn write_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
     conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3, is_name_ignored = ?4 WHERE local_item_id = ?1")?
         .execute(params![item.as_i64(), parent.as_i64(), name, is_name_ignored])?;
     Ok(())

@@ -35,7 +35,6 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference};
@@ -48,7 +47,7 @@ mod stored;
 
 pub(crate) use bindings::bind_root;
 
-use stored::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, name_value, set_local_place, write_item};
+use stored::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -299,7 +298,7 @@ fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_name
     check_directory(tx, place.parent_local_item_id)?;
     check_not_below(tx, place.parent_local_item_id, item)?;
     check_place_is_free(tx, place)?;
-    set_local_place(tx, item, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
+    set_local_place(tx, item, place, is_name_ignored)
 }
 
 /// `replacing` has the place of `replaced`, which leaves the folder. What becomes of the
@@ -340,7 +339,7 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
         // Removed here, to be removed in OneDrive; the replacing item is its own.
         (_, Some(_), Some(_)) | (ItemKind::Directory, None, Some(_)) => remove_local_version(tx, replaced_item)?,
     }
-    set_local_place(tx, replacing, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
+    set_local_place(tx, replacing, &place, is_name_ignored)
 }
 
 fn remove(tx: &Transaction<'_>, id: LocalItemId) -> Result<(), TreeError> {
@@ -399,9 +398,9 @@ pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) ->
 /// [`ItemStore::exchange_local_places`], inside the caller's transaction.
 ///
 /// The index of local places is checked at each statement, so the two rows cannot take
-/// each other's place in one: the first steps aside to a name no file can have (it holds a
-/// NUL and a `/`), the second takes the first's place, and the first the second's. Nobody
-/// reads the name in between: it does not outlive the transaction.
+/// each other's place in one: the first steps aside to a name no file can have, the second
+/// takes the first's place, and the first the second's. Nobody reads the name in between:
+/// it does not outlive the transaction.
 pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, second: LocalItemId) -> Result<(), TreeError> {
     if first == second {
         return Err(refuse(format!("item {first} does not exchange places with itself")));
@@ -410,10 +409,9 @@ pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, se
     let (second_item, _, second_place) = read_shown_below_root(tx, second)?;
     check_not_below(tx, second_place.parent_local_item_id, first)?;
     check_not_below(tx, first_place.parent_local_item_id, second)?;
-    let aside = Value::Blob(format!("\0/{first}").into_bytes());
-    set_local_place(tx, first, first_place.parent_local_item_id, aside, first_item.is_name_ignored)?;
-    set_local_place(tx, second, first_place.parent_local_item_id, name_value(&first_place.name), first_item.is_name_ignored)?;
-    set_local_place(tx, first, second_place.parent_local_item_id, name_value(&second_place.name), second_item.is_name_ignored)
+    set_local_place_aside(tx, first, &first_place, first_item.is_name_ignored)?;
+    set_local_place(tx, second, &first_place, first_item.is_name_ignored)?;
+    set_local_place(tx, first, &second_place, second_item.is_name_ignored)
 }
 
 #[cfg(test)]

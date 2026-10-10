@@ -756,6 +756,39 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
     }
 }
 
+/// A name is checked where it enters the rows: the empty name, `.`, `..`, a name with a
+/// `/` and a name with a NUL are no names of a directory entry, and a path built from them
+/// would be another item's or outside the folder. Refused when an item is made, when it is
+/// moved, and when a row is written with such a name as its synced one.
+#[test]
+fn a_name_that_is_no_name_of_a_directory_entry_is_refused() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let dir = make_directory(&mut store, ROOT, "dir");
+    let file = make_file(&mut store, dir, "file");
+    let row = synced(&mut store, file, "F");
+    for name in ["", ".", "..", "a/b", "/x", "a\0b"] {
+        let mut items = store.item_store();
+        assert!(is_refused(items.apply(&made(place(dir, name), ItemKind::File))), "made as {name:?}");
+        assert!(is_refused(items.apply(&made(place(dir, name), ItemKind::Directory))), "a directory made as {name:?}");
+        assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: file, place: place(dir, name), is_name_ignored: false })), "moved to {name:?}");
+        assert!(is_refused(write_item(&store.conn, &Item { synced_place: Some(place(dir, name)), ..row.clone() })), "agreed on as {name:?}");
+    }
+    assert_eq!(names(&mut store, dir), ["file"]);
+    assert_eq!(path(&mut store, file), Some(PathBuf::from("dir/file")));
+    for name in ["...", ".hidden", "a\\b", " "] {
+        store.item_store().apply(&made(place(dir, name), ItemKind::File)).unwrap();
+    }
+}
+
+/// A drive id is never the empty text, in a row as in a `DriveId`: a row that says so would
+/// read as one with no binding while the index of bindings counts it as one.
+#[test]
+fn the_schema_refuses_a_binding_with_an_empty_drive_id() {
+    let store = TreeStore::in_memory().unwrap();
+    assert!(is_refused_by_schema(store.bench_sql("INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id) VALUES ('file', '', 'A')")));
+    store.bench_sql("INSERT INTO items (kind, onedrive_drive_id, onedrive_item_id) VALUES ('file', 'd1', 'A')").unwrap();
+}
+
 /// A child's parent exists, whoever deletes a row: the schema refuses to delete a row that
 /// another names as its parent in the folder, or as the directory the two sides agreed it
 /// is in. With nothing in it on either side, the row goes.

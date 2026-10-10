@@ -28,8 +28,8 @@ pub const SCHEMA_VERSION: &str = "11";
 /// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
 ///   that is gone never names another. The root of the folder is row 1, made here. The
-///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, and no two rows
-///   have the same (`items_onedrive_item`). `kind` is the item's, a file or a directory, on
+///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, the drive's
+///   never the empty text, and no two rows have the same (`items_onedrive_item`). `kind` is the item's, a file or a directory, on
 ///   every row, also one the folder does not show. The local version is the `local_`
 ///   columns: the folder shows the item when its local place is set, and the root always.
 ///   The synced place and content are the `synced_` ones, the content before the first
@@ -101,6 +101,7 @@ fn schema() -> String {
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
+             CHECK (onedrive_drive_id != ''),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
              CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
              CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
