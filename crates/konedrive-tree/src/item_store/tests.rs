@@ -27,7 +27,7 @@ pub(super) fn reference(id: &str) -> OneDriveItemReference {
 
 pub(super) fn made(place: ItemPlace, kind: ItemKind) -> LocalVersionChange {
     let content = (kind == ItemKind::File).then(made_here);
-    LocalVersionChange::Made { version: ItemVersion { place: Some(place), kind, content }, is_ignored: false }
+    LocalVersionChange::Made { kind, place, content, is_ignored: false }
 }
 
 pub(super) fn make_file(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
@@ -47,7 +47,7 @@ pub(super) fn item(store: &mut TreeStore, id: LocalItemId) -> Item {
 pub(super) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) -> Item {
     let mut row = item(store, id);
     let local = row.local.as_mut().expect("shown in the folder");
-    if local.kind == ItemKind::File {
+    if row.kind == ItemKind::File {
         local.content = Some(hashed(onedrive_id));
     }
     row.synced_place = local.place.clone();
@@ -88,7 +88,8 @@ fn the_root_is_item_1_a_directory_with_no_place() {
         Item {
             local_item_id: ROOT,
             onedrive_item: None,
-            local: Some(ItemVersion { place: None, kind: ItemKind::Directory, content: None }),
+            kind: ItemKind::Directory,
+            local: Some(ItemVersion { place: None, content: None }),
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
@@ -100,8 +101,8 @@ fn the_root_is_item_1_a_directory_with_no_place() {
     assert_eq!(make_file(&mut store, ROOT, "first").as_i64(), 2, "the first item made is the one after the root");
 }
 
-/// The root stays what it is: it is not removed, not moved, not saved over, and nothing is
-/// made without a place.
+/// The root stays what it is: it is not removed, not moved and not saved over. Nothing is
+/// made without a place: a made item's place is not optional.
 #[test]
 fn the_root_is_not_removed_or_given_a_place() {
     let mut store = TreeStore::in_memory().unwrap();
@@ -110,7 +111,6 @@ fn the_root_is_not_removed_or_given_a_place() {
     assert!(is_refused(items.apply(&LocalVersionChange::Removed { item: ROOT })));
     assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: ROOT, place: place(dir, "root"), is_ignored: false })));
     assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing: dir, replaced: ROOT, is_ignored: false })));
-    assert!(is_refused(items.apply(&LocalVersionChange::Made { version: ItemVersion { place: None, kind: ItemKind::Directory, content: None }, is_ignored: false })));
     assert!(is_refused(items.exchange_local_places(ROOT, dir, false, false)));
 }
 
@@ -127,7 +127,7 @@ fn a_made_item_is_found_by_its_id_its_place_and_in_its_directory() {
     let odd_file = store.item_store().apply(&made(odd_place.clone(), ItemKind::File)).unwrap();
 
     let found = item(&mut store, file);
-    assert_eq!(found.local, Some(ItemVersion { place: Some(place(dir, "File.txt")), kind: ItemKind::File, content: Some(made_here()) }));
+    assert_eq!((found.kind, found.local.clone()), (ItemKind::File, Some(ItemVersion { place: Some(place(dir, "File.txt")), content: Some(made_here()) })));
     assert_eq!((found.onedrive_item.clone(), found.content_presence, found.is_ignored), (None, ContentPresence::OnDisk, false), "a file made here is on disk");
     assert_eq!(item(&mut store, dir).content_presence, ContentPresence::NotOnDisk, "a directory has no content");
     assert_eq!(store.item_store().find_item_at(dir, OsStr::new("File.txt")).unwrap(), Some(found.clone()));
@@ -173,7 +173,7 @@ fn an_item_is_made_and_moved_only_into_a_directory_the_folder_shows() {
 fn a_file_is_made_with_a_content_and_a_directory_without() {
     let mut store = TreeStore::in_memory().unwrap();
     let mut items = store.item_store();
-    let version = |kind, content| LocalVersionChange::Made { version: ItemVersion { place: Some(place(ROOT, "x")), kind, content }, is_ignored: false };
+    let version = |kind, content| LocalVersionChange::Made { kind, place: place(ROOT, "x"), content, is_ignored: false };
     assert!(is_refused(items.apply(&version(ItemKind::File, None))));
     assert!(is_refused(items.apply(&version(ItemKind::Directory, Some(made_here())))));
     assert_eq!(names(&mut store, ROOT), Vec::<String>::new());
@@ -234,7 +234,7 @@ fn a_move_changes_the_path_and_what_is_ignored_of_all_below() {
     assert_eq!([dir, inner, file, beside].map(|id| item(&mut store, id).is_ignored), [true, true, true, false]);
     store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, "dir"), is_ignored: false }).unwrap();
     assert_eq!([dir, inner, file].map(|id| item(&mut store, id).is_ignored), [false, false, false]);
-    let ignored = store.item_store().apply(&LocalVersionChange::Made { version: ItemVersion { place: Some(place(ROOT, "x.tmp")), kind: ItemKind::File, content: Some(made_here()) }, is_ignored: true }).unwrap();
+    let ignored = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "x.tmp"), content: Some(made_here()), is_ignored: true }).unwrap();
     assert!(item(&mut store, ignored).is_ignored);
 }
 
@@ -300,8 +300,9 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
     assert_eq!(
         item(&mut store, file),
         Item { local: None, content_presence: ContentPresence::NotOnDisk, content_before_write: None, ..before },
-        "the binding and the synced place and content stay"
+        "the binding, the kind and the synced place and content stay"
     );
+    assert_eq!(item(&mut store, file).kind, ItemKind::File, "a row the folder does not show says what it is");
     assert_eq!(names(&mut store, dir), Vec::<String>::new());
     assert_eq!(path(&mut store, file), None, "an item the folder does not show has no path");
     store.item_store().apply(&LocalVersionChange::Removed { item: dir }).unwrap();
@@ -352,6 +353,7 @@ fn only_a_file_at_a_removed_files_synced_place_takes_a_binding_over() {
     let mentioned = Item {
         local_item_id: LocalItemId::new(50),
         onedrive_item: Some(reference("P")),
+        kind: ItemKind::Directory,
         local: None,
         synced_place: None,
         synced_content: None,
@@ -540,30 +542,44 @@ fn a_change_of_the_content_of_a_file_that_is_gone_is_nothing() {
     assert_eq!(store.item_store().find_item(no_row).unwrap(), None);
 }
 
-/// What one row can say by itself is the schema's to hold, whoever writes it: a row is not
-/// its own parent; a place is a parent and a name; only the root is shown without a place;
-/// a file has a local content and a directory none; only a file the folder shows has
-/// content on disk; a binding is a drive and an item id; and the root is a directory.
+/// What one row can say by itself is the schema's to hold, whoever writes it: an item is a
+/// file or a directory; a row is not its own parent; a place is a parent and a name; a file
+/// the folder shows has a local content, and nothing else has one; a directory has no
+/// content on any side, none on disk and none before a write; an item the folder does not
+/// show has none on disk and none before a write; a binding is a drive and an item id; and
+/// the root is a directory with no place.
 #[test]
 fn the_schema_refuses_a_row_that_contradicts_itself() {
     let store = TreeStore::in_memory().unwrap();
-    store.bench_sql("INSERT INTO items (local_item_id, local_parent_id, local_name, local_kind) VALUES (5, 1, 'dir', 'directory')").unwrap();
+    store
+        .bench_sql(
+            "INSERT INTO items (local_item_id, kind, local_parent_id, local_name) VALUES (5, 'directory', 1, 'dir');
+             INSERT INTO items (local_item_id, kind, local_parent_id, local_name, local_size) VALUES (6, 'file', 1, 'file', 0);
+             INSERT INTO items (local_item_id, kind, onedrive_drive_id, onedrive_item_id, synced_parent_id, synced_name, synced_size) VALUES (7, 'file', 'd1', 'G', 1, 'gone', 3);",
+        )
+        .unwrap();
     for (what, sql) in [
+        ("no kind", "INSERT INTO items (local_parent_id, local_name) VALUES (1, 'x')"),
+        ("a kind that is neither", "UPDATE items SET kind = 'folder' WHERE local_item_id = 5"),
         ("its own parent", "UPDATE items SET local_parent_id = 5 WHERE local_item_id = 5"),
         ("its own synced parent", "UPDATE items SET synced_parent_id = 5, synced_name = 'dir' WHERE local_item_id = 5"),
         ("a parent and no name", "UPDATE items SET local_name = NULL WHERE local_item_id = 5"),
         ("a synced name and no parent", "UPDATE items SET synced_name = 'dir' WHERE local_item_id = 5"),
-        ("shown with no place", "UPDATE items SET local_parent_id = NULL, local_name = NULL WHERE local_item_id = 5"),
-        ("a place and not shown", "UPDATE items SET local_kind = NULL WHERE local_item_id = 5"),
-        ("a directory with a content", "UPDATE items SET local_size = 1 WHERE local_item_id = 5"),
-        ("a file with no content", "UPDATE items SET local_kind = 'file' WHERE local_item_id = 5"),
+        ("a directory with a local content", "UPDATE items SET local_size = 1 WHERE local_item_id = 5"),
+        ("a directory with a synced content", "UPDATE items SET synced_size = 1 WHERE local_item_id = 5"),
         ("a directory on disk", "UPDATE items SET content_presence = 'on-disk' WHERE local_item_id = 5"),
         ("a directory with a content before a write", "UPDATE items SET before_write_size = 1 WHERE local_item_id = 5"),
+        ("a shown file made a directory", "UPDATE items SET kind = 'directory' WHERE local_item_id = 6"),
+        ("a shown file with no content", "UPDATE items SET local_size = NULL WHERE local_item_id = 6"),
+        ("a file not shown with a local content", "UPDATE items SET local_size = 1 WHERE local_item_id = 7"),
+        ("a file not shown on disk", "UPDATE items SET content_presence = 'on-disk' WHERE local_item_id = 7"),
+        ("a file not shown with a content before a write", "UPDATE items SET before_write_size = 1 WHERE local_item_id = 7"),
+        ("a removed file made a directory", "UPDATE items SET kind = 'directory' WHERE local_item_id = 7"),
         ("an item id and no drive", "UPDATE items SET onedrive_item_id = 'A' WHERE local_item_id = 5"),
         ("a drive and no item id", "UPDATE items SET onedrive_drive_id = 'd1' WHERE local_item_id = 5"),
         ("the root with a place", "UPDATE items SET local_parent_id = 5, local_name = 'root' WHERE local_item_id = 1"),
-        ("the root as a file", "UPDATE items SET local_kind = 'file', local_size = 0 WHERE local_item_id = 1"),
-        ("the root not shown", "UPDATE items SET local_kind = NULL WHERE local_item_id = 1"),
+        ("the root with a synced place", "UPDATE items SET synced_parent_id = 5, synced_name = 'root' WHERE local_item_id = 1"),
+        ("the root as a file", "UPDATE items SET kind = 'file' WHERE local_item_id = 1"),
     ] {
         assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
     }

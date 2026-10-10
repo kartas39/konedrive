@@ -1,6 +1,6 @@
 use crate::item_store::tests::{hashed, is_refused, is_refused_by_schema, item, make_directory, make_file, place, reference, synced};
 use crate::item_store::write_item;
-use crate::model::{ContentPresence, FileSyncState, Item, LocalItemId, LocalVersionChange};
+use crate::model::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, LocalVersionChange};
 use crate::TreeStore;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
@@ -81,6 +81,7 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
         Item {
             local_item_id: taker,
             onedrive_item: Some(reference("A")),
+            kind: ItemKind::File,
             local: None,
             synced_place: None,
             synced_content: None,
@@ -170,6 +171,30 @@ fn merge_items_refuses_two_items_that_are_not_one() {
         assert!(is_refused(items.merge_items(first, second)), "{first} with {second}");
     }
     assert_eq!([bound_to(&mut store, "S"), bound_to(&mut store, "B"), bound_to(&mut store, "G")], [Some(shown), Some(bound), Some(gone)]);
+}
+
+/// A binding stays with an item of its kind: a directory does not take over a file's, a
+/// file's is not merged into a directory, and the new row of a binding given up is of the
+/// giver's kind. An id of OneDrive never changes its kind.
+#[test]
+fn a_binding_does_not_move_between_a_file_and_a_directory() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (file, directory) = (make_file(&mut store, ROOT, "file"), make_directory(&mut store, ROOT, "directory"));
+    synced(&mut store, file, "F");
+    synced(&mut store, directory, "D");
+    remove(&mut store, file);
+    remove(&mut store, directory);
+    let (new_file, new_directory) = (make_file(&mut store, ROOT, "new-file"), make_directory(&mut store, ROOT, "new-directory"));
+    let mut items = store.item_store();
+    assert!(is_refused(items.take_over_binding(new_directory, file)), "a directory over a file");
+    assert!(is_refused(items.take_over_binding(new_file, directory)), "a file over a directory");
+    assert!(is_refused(items.merge_items(new_file, directory)), "a file with a directory");
+    assert!(is_refused(items.merge_items(new_directory, file)), "a directory with a file");
+    assert_eq!([bound_to(&mut store, "F"), bound_to(&mut store, "D")], [Some(file), Some(directory)]);
+
+    store.item_store().merge_items(new_directory, directory).unwrap();
+    let taker = store.item_store().give_up_binding(new_directory).unwrap();
+    assert_eq!(item(&mut store, taker).kind, ItemKind::Directory, "the row that took the binding is what the giver is");
 }
 
 /// A binding is one item's, whoever writes the rows: the schema's unique index refuses a

@@ -15,6 +15,9 @@
 //!   The binding is changed by the three operations of [`bindings`] and by nothing else,
 //!   but for the root's, which is written where the store learns the drive's root
 //!   ([`bind_root`]).
+//! - *An item is a file or a directory all its life.* The schema: `kind` is on every row,
+//!   also one the folder does not show, and no operation writes it after the row is made.
+//!   A binding moves only between items of one kind ([`bindings`]).
 //! - *The root is item 1, a directory with no place, and stays.* The schema's checks; the
 //!   code refuses every change of it.
 //! - *An id is never given twice.* The schema: `AUTOINCREMENT`.
@@ -44,8 +47,8 @@ mod bindings;
 const CONTENT_COLUMNS: [&str; 6] = ["size", "mtime", "mtime_nsec", "hash", "ctag", "change_count"];
 
 /// The columns of an [`Item`], in the order [`item_from`] reads them and [`values_of`] gives them.
-const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, \
-     local_parent_id, local_name, local_kind, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
+const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, kind, \
+     local_parent_id, local_name, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
@@ -58,9 +61,9 @@ mod at {
     pub(super) const LOCAL_ITEM_ID: usize = column(ITEM_COLUMNS, "local_item_id");
     pub(super) const ONEDRIVE_DRIVE_ID: usize = column(ITEM_COLUMNS, "onedrive_drive_id");
     pub(super) const ONEDRIVE_ITEM_ID: usize = column(ITEM_COLUMNS, "onedrive_item_id");
+    pub(super) const KIND: usize = column(ITEM_COLUMNS, "kind");
     pub(super) const LOCAL_PARENT_ID: usize = column(ITEM_COLUMNS, "local_parent_id");
     pub(super) const LOCAL_NAME: usize = column(ITEM_COLUMNS, "local_name");
-    pub(super) const LOCAL_KIND: usize = column(ITEM_COLUMNS, "local_kind");
     pub(super) const LOCAL_CONTENT: usize = column(ITEM_COLUMNS, "local_size");
     pub(super) const SYNCED_PARENT_ID: usize = column(ITEM_COLUMNS, "synced_parent_id");
     pub(super) const SYNCED_NAME: usize = column(ITEM_COLUMNS, "synced_name");
@@ -173,17 +176,17 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         (Some(drive_id), Some(item_id)) => Some(OneDriveItemReference { drive_id, item_id: OneDriveItemId::new(item_id) }),
         _ => None,
     };
-    let local = match row.get::<_, Option<String>>(at::LOCAL_KIND)? {
-        Some(kind) => Some(ItemVersion {
-            place: place_from(row, at::LOCAL_PARENT_ID, at::LOCAL_NAME)?,
-            kind: ItemKind::decode(&kind),
-            content: content_from(row, at::LOCAL_CONTENT)?,
-        }),
+    let local_item_id = LocalItemId::new(row.get(at::LOCAL_ITEM_ID)?);
+    // The folder shows what has a local place, and the root, which has none.
+    let local = match place_from(row, at::LOCAL_PARENT_ID, at::LOCAL_NAME)? {
+        Some(place) => Some(ItemVersion { place: Some(place), content: content_from(row, at::LOCAL_CONTENT)? }),
+        None if local_item_id == LocalItemId::ROOT => Some(ItemVersion { place: None, content: None }),
         None => None,
     };
     Ok(Item {
-        local_item_id: LocalItemId::new(row.get(at::LOCAL_ITEM_ID)?),
+        local_item_id,
         onedrive_item,
+        kind: ItemKind::decode(&row.get::<_, String>(at::KIND)?),
         local,
         synced_place: place_from(row, at::SYNCED_PARENT_ID, at::SYNCED_NAME)?,
         synced_content: content_from(row, at::SYNCED_CONTENT)?,
@@ -217,8 +220,8 @@ fn values_of(item: &Item) -> Vec<Value> {
     let binding = item.onedrive_item.as_ref();
     let local = item.local.as_ref();
     let mut values: Vec<Value> = vec![binding.map(|b| b.drive_id.as_str().to_owned()).into(), binding.map(|b| b.item_id.as_str().to_owned()).into()];
+    values.push(item.kind.as_str().to_owned().into());
     values.extend(place_values(local.and_then(|local| local.place.as_ref())));
-    values.push(local.map(|local| local.kind.as_str().to_owned()).into());
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
     values.extend(place_values(item.synced_place.as_ref()));
     values.extend(content_values(item.synced_content.as_ref()));
@@ -322,7 +325,7 @@ fn find_shown_file(conn: &Connection, id: LocalItemId) -> Result<Option<(Item, I
     let Some(item) = find_item(conn, id)? else { return Ok(None) };
     let Some(local) = item.local.clone() else { return Ok(None) };
     match local.content.clone() {
-        Some(content) if local.kind == ItemKind::File => Ok(Some((item, local, content))),
+        Some(content) if item.kind == ItemKind::File => Ok(Some((item, local, content))),
         _ => Err(refuse(format!("item {id} is no file: it has no content to change"))),
     }
 }
@@ -330,8 +333,9 @@ fn find_shown_file(conn: &Connection, id: LocalItemId) -> Result<Option<(Item, I
 /// The rule "an item's parent exists and is a directory": refused unless `id` is a
 /// directory the folder shows.
 fn check_directory(conn: &Connection, id: LocalItemId) -> Result<(), TreeError> {
-    match find_item(conn, id)?.and_then(|item| item.local) {
-        Some(local) if local.kind == ItemKind::Directory => Ok(()),
+    match find_item(conn, id)? {
+        Some(item) if item.local.is_none() => Err(refuse(format!("the folder does not show item {id}: nothing is placed in it"))),
+        Some(item) if item.kind == ItemKind::Directory => Ok(()),
         Some(_) => Err(refuse(format!("item {id} is no directory: nothing is placed in it"))),
         None => Err(refuse(format!("the folder shows no directory {id} to place something in"))),
     }
@@ -404,13 +408,12 @@ fn remove_local_version(conn: &Connection, mut item: Item) -> Result<(), TreeErr
 }
 
 /// The file removed here whose removal is not sent yet and that OneDrive has at `place`: a
-/// bound row the folder does not show, whose synced place is `place` and that has a synced
-/// content, which a directory has not.
+/// bound row of a file the folder does not show, whose synced place is `place`.
 fn find_removed_file_at(conn: &Connection, place: &ItemPlace) -> Result<Option<LocalItemId>, TreeError> {
     let id: Option<i64> = conn
         .prepare_cached(
             "SELECT local_item_id FROM items
-              WHERE synced_parent_id = ?1 AND synced_name = ?2 AND onedrive_item_id IS NOT NULL AND local_kind IS NULL AND synced_size IS NOT NULL
+              WHERE synced_parent_id = ?1 AND synced_name = ?2 AND onedrive_item_id IS NOT NULL AND local_parent_id IS NULL AND kind = 'file'
               ORDER BY local_item_id LIMIT 1",
         )?
         .query_row(params![place.parent_local_item_id.as_i64(), name_value(&place.name)], |row| row.get(0))
@@ -418,24 +421,24 @@ fn find_removed_file_at(conn: &Connection, place: &ItemPlace) -> Result<Option<L
     Ok(id.map(LocalItemId::new))
 }
 
-fn make(tx: &Transaction<'_>, version: &ItemVersion, is_ignored: bool) -> Result<LocalItemId, TreeError> {
-    let place = version.place.as_ref().ok_or_else(|| refuse("an item is made at a place: only the root has none".to_owned()))?;
-    if (version.kind == ItemKind::File) != version.content.is_some() {
+fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option<&ContentVersion>, is_ignored: bool) -> Result<LocalItemId, TreeError> {
+    if (kind == ItemKind::File) != content.is_some() {
         return Err(refuse("a file is made with a content and a directory without".to_owned()));
     }
     check_directory(tx, place.parent_local_item_id)?;
     check_place_is_free(tx, place)?;
-    let removed = if version.kind == ItemKind::File { find_removed_file_at(tx, place)? } else { None };
+    let removed = if kind == ItemKind::File { find_removed_file_at(tx, place)? } else { None };
     let made = insert_item(
         tx,
         &Item {
             local_item_id: LocalItemId::ROOT,
             onedrive_item: None,
-            local: Some(version.clone()),
+            kind,
+            local: Some(ItemVersion { place: Some(place.clone()), content: content.cloned() }),
             synced_place: None,
             synced_content: None,
             // What a program makes is in the backing directory.
-            content_presence: if version.kind == ItemKind::File { ContentPresence::OnDisk } else { ContentPresence::NotOnDisk },
+            content_presence: if kind == ItemKind::File { ContentPresence::OnDisk } else { ContentPresence::NotOnDisk },
             content_before_write: None,
             is_ignored,
         },
@@ -462,14 +465,14 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
     if replacing == replaced {
         return Err(refuse(format!("item {replacing} is not saved over itself")));
     }
-    let (replacing_item, replacing_version, _) = shown_below_root(tx, replacing)?;
-    let (replaced_item, replaced_version, place) = shown_below_root(tx, replaced)?;
-    if replacing_version.kind != replaced_version.kind {
+    let (replacing_item, _, _) = shown_below_root(tx, replacing)?;
+    let (replaced_item, _, place) = shown_below_root(tx, replaced)?;
+    if replacing_item.kind != replaced_item.kind {
         return Err(refuse(format!("item {replacing} and item {replaced} are not of one kind")));
     }
     check_empty(tx, replaced)?;
     check_not_below(tx, place.parent_local_item_id, replacing)?;
-    let takes_over = replacing_version.kind == ItemKind::File && replacing_item.onedrive_item.is_none() && replaced_item.onedrive_item.is_some();
+    let takes_over = replacing_item.kind == ItemKind::File && replacing_item.onedrive_item.is_none() && replaced_item.onedrive_item.is_some();
     if takes_over {
         bindings::take_over_binding(tx, replacing, replaced)?;
     } else {
@@ -498,7 +501,7 @@ fn set_local_content(tx: &Transaction<'_>, mut item: Item, mut local: ItemVersio
 /// with other rows of the store in one.
 pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
     match change {
-        LocalVersionChange::Made { version, is_ignored } => make(tx, version, *is_ignored),
+        LocalVersionChange::Made { kind, place, content, is_ignored } => make(tx, *kind, place, content.as_ref(), *is_ignored),
         LocalVersionChange::Moved { item, place, is_ignored } => move_item(tx, *item, place, *is_ignored).map(|()| *item),
         LocalVersionChange::SavedOver { replacing, replaced, is_ignored } => save_over(tx, *replacing, *replaced, *is_ignored).map(|()| *replacing),
         LocalVersionChange::Removed { item } => remove(tx, *item).map(|()| *item),

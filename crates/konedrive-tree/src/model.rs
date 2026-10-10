@@ -519,13 +519,12 @@ impl ContentVersion {
     }
 }
 
-/// What an item is on one side: its place, its kind, and for a file its content. The root of
-/// the folder has no place; every other item has one. A file has a content and a directory
-/// has none.
+/// What an item is on one side: its place, and for a file its content. The root of the
+/// folder has no place; every other item has one. A file has a content and a directory has
+/// none. What kind the item is, is the item's ([`Item::kind`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemVersion {
     pub place: Option<ItemPlace>,
-    pub kind: ItemKind,
     pub content: Option<ContentVersion>,
 }
 
@@ -566,6 +565,9 @@ pub struct Item {
     pub local_item_id: LocalItemId,
     /// The binding: which item of OneDrive this is. No other item has the same.
     pub onedrive_item: Option<OneDriveItemReference>,
+    /// A file or a directory: known when the row is made, and never changed. A file replaced
+    /// by a directory is another item.
+    pub kind: ItemKind,
     /// What the folder shows of the item; `None` when it does not show it.
     pub local: Option<ItemVersion>,
     /// The place the two sides last agreed on.
@@ -598,7 +600,7 @@ impl Item {
     /// binding, content not on disk, local content that is not the synced one, and synced.
     /// `None` for an item the folder does not show as a file.
     pub fn file_sync_state(&self) -> Option<FileSyncState> {
-        let local = self.local.as_ref().filter(|local| local.kind == ItemKind::File)?;
+        let local = self.local.as_ref().filter(|_| self.kind == ItemKind::File)?;
         Some(if self.onedrive_item.is_none() {
             FileSyncState::LocalOnly
         } else if self.content_presence == ContentPresence::NotOnDisk {
@@ -615,9 +617,10 @@ impl Item {
 /// store ([`ItemStore::apply`](crate::ItemStore::apply)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalVersionChange {
-    /// A file or directory was made, as `version`. A file made at the place of a file removed
-    /// here whose removal is not sent yet takes over that item's binding.
-    Made { version: ItemVersion, is_ignored: bool },
+    /// A file or directory was made at `place`: a file with `content`, a directory with none.
+    /// A file made at the place of a file removed here whose removal is not sent yet takes
+    /// over that item's binding.
+    Made { kind: ItemKind, place: ItemPlace, content: Option<ContentVersion>, is_ignored: bool },
     /// `item` was renamed or moved to `place`, where nothing is. `is_ignored` is what the
     /// upload rules say of it there, for it and all below it.
     Moved { item: LocalItemId, place: ItemPlace, is_ignored: bool },

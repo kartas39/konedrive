@@ -53,6 +53,9 @@ fn move_synced_children(conn: &Connection, from: LocalItemId, to: LocalItemId) -
 
 /// The row `from` goes, and `to` has its binding and its synced place and content.
 fn hand_over(conn: &Connection, from: Item, mut to: Item) -> Result<(), TreeError> {
+    if from.kind != to.kind {
+        return Err(refuse(format!("item {} and item {} are not of one kind: an item of OneDrive never changes its kind", from.local_item_id, to.local_item_id)));
+    }
     check_empty(conn, from.local_item_id)?;
     move_synced_children(conn, from.local_item_id, to.local_item_id)?;
     // The row that has the binding goes before another takes it.
@@ -93,6 +96,7 @@ pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId) -> Result
         &Item {
             local_item_id: item,
             onedrive_item: Some(onedrive_item),
+            kind: giver.kind,
             local: None,
             synced_place: None,
             synced_content: None,

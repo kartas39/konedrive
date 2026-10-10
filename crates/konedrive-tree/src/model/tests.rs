@@ -146,7 +146,8 @@ fn file_item(onedrive_item: bool, presence: ContentPresence, local: &str, synced
     Item {
         local_item_id: LocalItemId::new(2),
         onedrive_item: onedrive_item.then(|| OneDriveItemReference { drive_id: DriveId::new("d1").unwrap(), item_id: OneDriveItemId::new("A") }),
-        local: Some(ItemVersion { place: Some(place.clone()), kind: ItemKind::File, content: Some(content(local)) }),
+        kind: ItemKind::File,
+        local: Some(ItemVersion { place: Some(place.clone()), content: Some(content(local)) }),
         synced_place: synced.map(|_| place),
         synced_content: synced.map(content),
         content_presence: presence,
@@ -184,7 +185,8 @@ fn the_sync_state_of_a_file_is_the_first_case_that_holds() {
 #[test]
 fn only_a_file_the_folder_shows_has_a_file_sync_state() {
     let mut directory = file_item(true, ContentPresence::NotOnDisk, "x", None);
-    directory.local = Some(ItemVersion { place: directory.local.unwrap().place, kind: ItemKind::Directory, content: None });
+    directory.kind = ItemKind::Directory;
+    directory.local = Some(ItemVersion { place: directory.local.unwrap().place, content: None });
     assert_eq!(directory.file_sync_state(), None);
     assert_eq!(Item { local: None, ..file_item(true, ContentPresence::NotOnDisk, "x", Some("x")) }.file_sync_state(), None);
 }

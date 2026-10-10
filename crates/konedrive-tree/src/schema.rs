@@ -29,14 +29,16 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
 ///   that is gone never names another. The root of the folder is row 1, made here. The
 ///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, and no two rows
-///   have the same (`items_onedrive_item`). The local version is the `local_` columns
-///   (`local_kind` is null when the folder does not show the item), the synced place and
-///   content the `synced_` ones, the content before the first writer the `before_write_`
-///   ones; a content is six columns, `change_count` null for a hashed one. No two rows have
-///   one local place (`items_local_place`). The checks hold what one row can say by itself:
-///   a place is a parent and a name; only the root is shown without a place, and it is a
-///   directory; no row is its own parent; a file has a local content and a directory none;
-///   only a file the folder shows has content on disk or a content before a write.
+///   have the same (`items_onedrive_item`). `kind` is the item's, a file or a directory, on
+///   every row, also one the folder does not show. The local version is the `local_`
+///   columns: the folder shows the item when its local place is set, and the root always.
+///   The synced place and content are the `synced_` ones, the content before the first
+///   writer the `before_write_` ones; a content is six columns, `change_count` null for a
+///   hashed one. No two rows have one local place (`items_local_place`). The checks hold
+///   what one row can say by itself: a place is a parent and a name; the root is a
+///   directory with no place; no row is its own parent; a file the folder shows has a local
+///   content and nothing else has one; a directory has no content on any side, none on disk
+///   and none before a write; neither has an item the folder does not show.
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
@@ -86,23 +88,25 @@ fn schema() -> String {
         "CREATE TABLE items (
              local_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
              onedrive_drive_id TEXT, onedrive_item_id TEXT,
-             local_parent_id INTEGER, local_name, local_kind TEXT, {local_content},
+             kind TEXT NOT NULL,
+             local_parent_id INTEGER, local_name, {local_content},
              synced_parent_id INTEGER, synced_name, {synced_content},
              content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
              {content_before_write},
              is_ignored INTEGER NOT NULL DEFAULT 0,
+             CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
              CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
-             CHECK (local_item_id = {root} OR (local_kind IS NULL) = (local_parent_id IS NULL)),
-             CHECK (local_item_id != {root} OR (local_kind IS '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
+             CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
              CHECK (local_parent_id IS NOT local_item_id AND synced_parent_id IS NOT local_item_id),
-             CHECK ((local_kind IS '{file}') = (local_size IS NOT NULL)),
-             CHECK (local_kind IS '{file}' OR (content_presence = '{not_on_disk}' AND before_write_size IS NULL)));
+             CHECK ((kind = '{file}' AND local_parent_id IS NOT NULL) = (local_size IS NOT NULL)),
+             CHECK (kind = '{file}' OR (synced_size IS NULL AND content_presence = '{not_on_disk}' AND before_write_size IS NULL)),
+             CHECK (local_parent_id IS NOT NULL OR (content_presence = '{not_on_disk}' AND before_write_size IS NULL)));
          CREATE UNIQUE INDEX items_onedrive_item ON items(onedrive_drive_id, onedrive_item_id) WHERE onedrive_item_id IS NOT NULL;
          CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
-         INSERT INTO items (local_item_id, local_kind) VALUES ({root}, '{directory}');
+         INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}
          {staging}
