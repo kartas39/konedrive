@@ -520,9 +520,13 @@ fn content_sent_is_confirmed_of_the_row_that_has_the_binding_now() {
     store.item_store().apply(&LocalVersionChange::SavedOver { replacing: saved, replaced: file }).unwrap();
     assert_eq!((store.item_store().find_item(file).unwrap(), bound(&mut store, "G").local_item_id), (None, saved), "the replacing item has the binding");
     let saved_content = row(&mut store, saved).local.unwrap().content;
+    // A try of the running upload failed and is remembered of the row that has the binding.
+    store.step_memory().remember_failed_try(saved, &konedrive_reason::Reason::Network, Some(900)).unwrap();
 
     let sent = confirmed("G", "R", "g", Some(confirmed_content(7, "h-sent")), "e-sent");
     assert_eq!(store.item_store().commit_send_content(&planned_from, &sent).unwrap(), StepCommitOutcome::Written);
+    // What the confirmed request ends is forgotten of the row it was confirmed of.
+    assert_eq!(store.step_memory().find_item_memory(saved).unwrap().failed_tries, None);
     let now = row(&mut store, saved);
     assert_eq!(now.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone()), Some(confirmed_content(7, "h-sent")));
     assert_eq!((now.synced_content.clone(), now.onedrive_etag.as_deref()), (Some(confirmed_content(7, "h-sent")), Some("e-sent")));

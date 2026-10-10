@@ -163,7 +163,7 @@ enum Operation {
     CommitSendFileRemoval,
     CommitSendDirectoryRemoval,
     CommitForgetSyncedVersion,
-    CommitDropRow,
+    CommitAgreeOnRemoval,
     DirectoryOfRemovedFileGaveUpBinding,
     RowOfRemovedFileDeleted,
 }
@@ -223,7 +223,7 @@ const OPERATIONS_ON_A_REMOVED_FILE: [Operation; 12] = [
     CommitSendFileRemoval,
     CommitSendDirectoryRemoval,
     CommitForgetSyncedVersion,
-    CommitDropRow,
+    CommitAgreeOnRemoval,
     DirectoryOfRemovedFileGaveUpBinding,
     RowOfRemovedFileDeleted,
 ];
@@ -238,7 +238,7 @@ fn shape_for(operation: Operation) -> ItemShape {
         | CommitSendMove | CommitMoveItem | CommitTakeMoveBack | CommitTakeOneDriveContent | CommitAgreeOnContent | CommitRemoveItem | CommitDownloadContent
         | CommitMoveToTemporaryName | CommitGiveUpBinding | CommitAgreeOnPlace | CeasedToBeShown => ItemShape::BoundFile,
         ShownAgain | ShownAgainAndRemovedAgain | MadeAgain | MadeAgainAndRemovedAgain | ShownAgainAndGaveUpBinding | ShownAgainAndCeasedToBeShown | CommitSendFileRemoval
-        | CommitSendDirectoryRemoval | CommitForgetSyncedVersion | CommitDropRow | DirectoryOfRemovedFileGaveUpBinding | RowOfRemovedFileDeleted => ItemShape::RemovedFile,
+        | CommitSendDirectoryRemoval | CommitForgetSyncedVersion | CommitAgreeOnRemoval | DirectoryOfRemovedFileGaveUpBinding | RowOfRemovedFileDeleted => ItemShape::RemovedFile,
     }
 }
 
@@ -323,7 +323,7 @@ fn fates_of_a_removed_file(operation: Operation) -> [Cell; 4] {
         // request that went through are forgotten.
         CommitSendFileRemoval | CommitSendDirectoryRemoval => [Gone, Gone, Gone, LEFT_IN_ONEDRIVE],
         // The row is no removal any more: nothing is unsent of it.
-        CommitForgetSyncedVersion | CommitDropRow => [Gone, Gone, NO_VERSION, LEFT_IN_ONEDRIVE],
+        CommitForgetSyncedVersion | CommitAgreeOnRemoval => [Gone, Gone, NO_VERSION, LEFT_IN_ONEDRIVE],
         DirectoryOfRemovedFileGaveUpBinding => [SAME_REMOVAL, SAME_REMOVAL, NO_VERSION, LEFT_IN_ONEDRIVE],
         _ => panic!("{operation:?} is no operation on a file removed here"),
     }
@@ -411,7 +411,7 @@ fn prepare(scene: &mut Scene, operation: Operation) {
         CommitTakeOneDriveContent | CommitAgreeOnContent | ShownAgain | ShownAgainAndRemovedAgain | ShownAgainAndGaveUpBinding | ShownAgainAndCeasedToBeShown => {
             write_listing_of_changes(store, &[listed_file("X", "D", "report", (9, "h-X2"), "e-X2")]);
         }
-        CommitRemoveItem | CommitDropRow => write_listing_of_changes(store, &[listed_gone("X")]),
+        CommitRemoveItem | CommitAgreeOnRemoval => write_listing_of_changes(store, &[listed_gone("X")]),
         CommitAgreeOnPlace => {
             move_to(store, file, place(directory, "same"));
             write_listing_of_changes(store, &[listed_file("X", "D", "same", (3, "h-X"), "e-X2")]);
@@ -529,7 +529,7 @@ fn act(scene: &mut Scene, operation: Operation) {
             is_written(store.item_store().commit_send_directory_removal(&removed_directory, &[planned_from()]));
         }
         CommitForgetSyncedVersion => is_written(store.item_store().commit_forget_synced_version(&planned_from())),
-        CommitDropRow => is_written(store.item_store().commit_drop_row(&planned_from())),
+        CommitAgreeOnRemoval => is_written(store.item_store().commit_agree_on_removal(&planned_from())),
     }
 }
 
