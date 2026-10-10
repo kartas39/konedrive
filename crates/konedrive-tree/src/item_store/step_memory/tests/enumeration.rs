@@ -800,14 +800,14 @@ fn act(scene: &mut Scene, operation: Operation) {
             scene.happening.is_request_confirmed = true;
             scene.happening.confirmed_move = Some(place(directory, &name));
         }
-        CommitMoveItem => scene.step(|store| is_written(store.item_store().commit_move_item(&planned_from, false))),
-        CommitTakeMoveBack => scene.step(|store| is_written(store.item_store().commit_take_move_back(&planned_from, false))),
-        CommitTakeOneDriveContent => scene.step(|store| is_written(store.item_store().commit_take_onedrive_content(&planned_from))),
+        CommitMoveItem => scene.step(|store| is_written(store.item_store().commit_move_item(&planned_from, false, None))),
+        CommitTakeMoveBack => scene.step(|store| is_written(store.item_store().commit_take_move_back(&planned_from, false, None))),
+        CommitTakeOneDriveContent => scene.step(|store| is_written(store.item_store().commit_take_onedrive_content(&planned_from, None))),
         CommitAgreeOnContent => scene.step(|store| is_written(store.item_store().commit_agree_on_content(&planned_from))),
-        CommitRemoveItem => scene.step(|store| is_written(store.item_store().commit_remove_item(&planned_from))),
-        CommitDownloadContent => scene.step(|store| is_written(store.item_store().commit_download_content(&planned_from))),
+        CommitRemoveItem => scene.step(|store| is_written(store.item_store().commit_remove_item(&planned_from, None))),
+        CommitDownloadContent => scene.step(|store| is_written(store.item_store().commit_download_content(&planned_from, None))),
         CommitRenameToConflictCopy => scene.step(|store| is_written(store.item_store().commit_rename_to_conflict_copy(&planned_from, OsStr::new("report (conflict)"), false))),
-        CommitMoveToTemporaryName => scene.step(|store| is_written(store.item_store().commit_move_to_temporary_name(&planned_from, &place(directory, ".report.swap"), false))),
+        CommitMoveToTemporaryName => scene.step(|store| is_written(store.item_store().commit_move_to_temporary_name(&planned_from, &place(directory, ".report.swap"), false, None))),
         CommitGiveUpBinding => scene.step(|store| is_written(store.item_store().commit_give_up_binding(&planned_from, false))),
         CommitMergeItems => scene.step(|store| {
             let onedrive = bound_row(store, "N");

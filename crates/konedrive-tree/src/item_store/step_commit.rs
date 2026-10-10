@@ -74,6 +74,7 @@ use rusqlite::{Connection, Transaction};
 use super::bindings::{bind_item, give_up_binding, merge_items};
 use super::item_row::{confirm_removal_below, find_bound_item, find_item, is_anything_shown_below_in_onedrive, write_item};
 use super::onedrive_versions::confirm_onedrive_version;
+use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
 use super::step_memory::{
     carry_content, forget_confirmed_request, forget_ended_upload_session, forget_temporary_names_of_items_onedrive_lacks, forget_tries_of_onedrive_version, ConfirmedRequest, UploadSessionAddress,
 };
@@ -189,16 +190,22 @@ impl ItemStore<'_> {
     /// The commit of [`FolderStep::MoveItem`](crate::FolderStep::MoveItem): the folder
     /// shows the item at OneDrive's place, which is the place agreed on. `is_name_ignored`
     /// is what the upload rules say of its name there.
-    pub fn commit_move_item(&mut self, item: &ItemVersions, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_move_item(&mut self, item: &ItemVersions, is_name_ignored: bool, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?)?))
     }
 
     /// The commit of
     /// [`FolderStep::TakeOneDriveContent`](crate::FolderStep::TakeOneDriveContent): the
     /// file shows OneDrive's content, which is the content agreed on, and its content is
     /// not on disk. The row is written before the copy on disk goes.
-    pub fn commit_take_onedrive_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_take_onedrive_content(tx, item)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_take_onedrive_content(&mut self, item: &ItemVersions, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_take_onedrive_content(tx, item)?)?))
     }
 
     /// The commit of [`FolderStep::RemoveItem`](crate::FolderStep::RemoveItem): the folder
@@ -207,14 +214,20 @@ impl ItemStore<'_> {
     /// folder cannot show it is that of an item of OneDrive the folder never showed, so that
     /// nothing reads as removed here and no removal is sent. The rows changed while the
     /// folder shows something in the item, a directory.
-    pub fn commit_remove_item(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_remove_item(tx, item)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_remove_item(&mut self, item: &ItemVersions, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_remove_item(tx, item)?)?))
     }
 
     /// The commit of [`FolderStep::DownloadContent`](crate::FolderStep::DownloadContent):
     /// the whole content of the file is on disk.
-    pub fn commit_download_content(&mut self, item: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_download_content(tx, item)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_download_content(&mut self, item: &ItemVersions, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_download_content(tx, item)?)?))
     }
 
     /// The commit of
@@ -228,16 +241,22 @@ impl ItemStore<'_> {
     /// The commit of [`FolderStep::TakeMoveBack`](crate::FolderStep::TakeMoveBack): the
     /// folder shows the item at OneDrive's place again, which is the place agreed on.
     /// `is_name_ignored` is what the upload rules say of its name there.
-    pub fn commit_take_move_back(&mut self, item: &ItemVersions, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_take_move_back(&mut self, item: &ItemVersions, is_name_ignored: bool, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_move_to_onedrive_place(tx, item, is_name_ignored)?)?))
     }
 
     /// The commit of
     /// [`FolderStep::MoveToTemporaryName`](crate::FolderStep::MoveToTemporaryName): the
     /// folder shows the item at `place`, which is the place agreed on from now.
     /// `is_name_ignored` is what the upload rules say of its name there.
-    pub fn commit_move_to_temporary_name(&mut self, item: &ItemVersions, place: &ItemPlace, is_name_ignored: bool) -> Result<StepCommitOutcome, TreeError> {
-        self.write(|tx| forget_tries_when_written(tx, item, commit_move_to_temporary_name(tx, item, place, is_name_ignored)?))
+    /// `record` is the record of the step's change of the backing directory's names, when
+    /// it made one: it goes in this transaction when the commit is written, and stands
+    /// when the rows changed, for the caller to take after its undo.
+    pub fn commit_move_to_temporary_name(&mut self, item: &ItemVersions, place: &ItemPlace, is_name_ignored: bool, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
+        self.write(|tx| forget_place_change_record_when_written(tx, record, forget_tries_when_written(tx, item, commit_move_to_temporary_name(tx, item, place, is_name_ignored)?)?))
     }
 
     /// The commit of [`RowStep::GiveUpBinding`](crate::RowStep::GiveUpBinding)

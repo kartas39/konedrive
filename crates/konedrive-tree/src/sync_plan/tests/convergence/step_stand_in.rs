@@ -86,13 +86,13 @@ impl StepStandIn {
                 let mut items = store.item_store();
                 match step {
                     FolderStep::ShowItem { item } => items.commit_show_item(item, is_name_ignored(&item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has it").name)),
-                    FolderStep::MoveItem { item } => items.commit_move_item(item, is_name_ignored(&item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has it").name)),
-                    FolderStep::TakeMoveBack { item } => items.commit_take_move_back(item, is_name_ignored(&item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has it").name)),
-                    FolderStep::TakeOneDriveContent { item } => items.commit_take_onedrive_content(item),
-                    FolderStep::RemoveItem { item } => items.commit_remove_item(item),
-                    FolderStep::DownloadContent { item } => items.commit_download_content(item),
+                    FolderStep::MoveItem { item } => items.commit_move_item(item, is_name_ignored(&item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has it").name), None),
+                    FolderStep::TakeMoveBack { item } => items.commit_take_move_back(item, is_name_ignored(&item.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone()).expect("OneDrive has it").name), None),
+                    FolderStep::TakeOneDriveContent { item } => items.commit_take_onedrive_content(item, None),
+                    FolderStep::RemoveItem { item } => items.commit_remove_item(item, None),
+                    FolderStep::DownloadContent { item } => items.commit_download_content(item, None),
                     FolderStep::RenameToConflictCopy { item, name } => items.commit_rename_to_conflict_copy(item, name, is_name_ignored(name)),
-                    FolderStep::MoveToTemporaryName { item, place } => items.commit_move_to_temporary_name(item, place, is_name_ignored(&place.name)),
+                    FolderStep::MoveToTemporaryName { item, place } => items.commit_move_to_temporary_name(item, place, is_name_ignored(&place.name), None),
                 }
             }
             SyncStep::Row(step) => {

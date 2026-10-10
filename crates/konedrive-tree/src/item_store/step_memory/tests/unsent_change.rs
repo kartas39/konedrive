@@ -196,6 +196,6 @@ fn the_tries_of_a_step_for_an_item_nothing_is_unsent_of_are_of_onedrives_version
     assert_eq!(remember_try_of(&mut store, &planned_from, Some(300)), None, "the step was planned from the version before");
     let planned_from = versions(&mut store, file);
     assert_eq!(remember_try_of(&mut store, &planned_from, Some(300)), Some(1), "counted from one");
-    assert_eq!(store.item_store().commit_take_onedrive_content(&planned_from).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_take_onedrive_content(&planned_from, None).unwrap(), StepCommitOutcome::Written);
     assert_eq!((store.step_memory().list_timed_waits(10).unwrap(), kept(&store, file)), (vec![], ItemMemory::default()), "the step went through");
 }

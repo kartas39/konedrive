@@ -17,7 +17,9 @@
 //! **On record before the link:** `PlaceChangeRecord::LinkFile { item, place, content }`,
 //! `content` the content version that was downloaded, written
 //! (`ItemStore::record_place_change`) after the row and its path were read and before the
-//! place change is begun. The commit takes the record in its transaction; on `RowsChanged`
+//! place change is begun. The commit takes the record in its transaction
+//! (`commit_landed_content(item, downloaded, record)`, `commit_download_content(item,
+//! record)`); on `RowsChanged`
 //! the named file is removed again and the record taken by itself. A death between the
 //! link and the commit: the check at start says `OnDisk` when the row still has the
 //! recorded content (`PlaceChangeRowWrite::ContentOnDisk`), and removes the file when the

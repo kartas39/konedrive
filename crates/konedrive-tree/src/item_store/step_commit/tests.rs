@@ -6,6 +6,7 @@
 use super::*;
 use crate::item_store::tests::listed_drive::{listed_directory, listed_file, listed_gone, not_placed, reference, store_with_listed_root, write_listing_of_changes};
 use crate::item_store::tests::row_rules::find_broken_rule;
+use crate::item_store::{PlaceChangeRecord, PlaceChangeRecordId};
 use crate::model::{ItemKind, LocalVersionChange, Placement};
 use crate::TreeStore;
 
@@ -57,6 +58,24 @@ fn commit(store: &mut TreeStore, id: LocalItemId, commit_step: impl Fn(&mut Item
     assert_eq!(commit_step(&mut store.item_store(), &outdated).unwrap(), StepCommitOutcome::RowsChanged);
     assert_eq!(written(store), before, "a commit that answers that the rows changed writes nothing");
     assert_eq!(commit_step(&mut store.item_store(), &planned_from).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
+}
+
+/// [`commit`] for a step that changed a name in the backing directory and wrote a record of
+/// it before: the commit that answers that the rows changed leaves the record standing,
+/// for the caller to take after its undo; the one that is written takes it in its
+/// transaction.
+fn commit_taking_record(store: &mut TreeStore, id: LocalItemId, commit_step: impl Fn(&mut ItemStore<'_>, &ItemVersions, Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError>) {
+    let place = row(store, id).local.and_then(|local| local.place).expect("the folder shows it");
+    let record = store.item_store().record_place_change(&PlaceChangeRecord::SetAside { item: id, place, aside_name: ".konedrive-aside".into() }).unwrap();
+    let standing = |store: &mut TreeStore| store.item_store().list_place_change_records().unwrap().len();
+    let planned_from = versions(store, id);
+    let before = written(store);
+    let outdated = ItemVersions { onedrive_etag: Some("e-outdated".to_owned()), ..planned_from.clone() };
+    assert_eq!(commit_step(&mut store.item_store(), &outdated, Some(record)).unwrap(), StepCommitOutcome::RowsChanged);
+    assert_eq!((written(store), standing(store)), (before, 1), "a commit that answers that the rows changed writes nothing and leaves the record");
+    assert_eq!(commit_step(&mut store.item_store(), &planned_from, Some(record)).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(standing(store), 0, "a commit that is written takes the record of its place change");
     assert_eq!(find_broken_rule(&store.item_store().list_items().unwrap(), false), None);
 }
 
@@ -293,7 +312,7 @@ fn an_item_moved_here_is_at_onedrives_place_which_is_the_place_agreed_on() {
     let directory = show_directory(&mut store, "D", "R", "d");
     let file = show_file(&mut store, "A", "a.txt");
     write_listing_of_changes(&mut store, &[listed_file("A", "D", "b.txt", (3, "h-A"), "e-A-2")]);
-    commit(&mut store, file, |items, planned_from| items.commit_move_item(planned_from, false));
+    commit_taking_record(&mut store, file, |items, planned_from, record| items.commit_move_item(planned_from, false, record));
     let moved = row(&mut store, file);
     assert!(agrees(&moved), "{moved:?}");
     assert_eq!(moved.synced_place, Some(place(directory, "b.txt")));
@@ -303,7 +322,7 @@ fn an_item_moved_here_is_at_onedrives_place_which_is_the_place_agreed_on() {
     write_listing_of_changes(&mut store, &[listed_directory("D", "E", "d", "e-D-2")]);
     let _ = inner;
     let planned_from = versions(&mut store, directory);
-    assert!(is_left_unwritten(&mut store, |items| items.commit_move_item(&planned_from, false)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_move_item(&planned_from, false, None)));
 }
 
 #[test]
@@ -312,7 +331,7 @@ fn a_file_that_takes_onedrives_content_shows_it_not_on_disk() {
     let file = show_file(&mut store, "A", "a.txt");
     store.item_store().set_content_presence(file, ContentPresence::OnDisk).unwrap();
     write_listing_of_changes(&mut store, &[listed_file("A", "R", "a.txt", (8, "h-new"), "e-A-2")]);
-    commit(&mut store, file, |items, planned_from| items.commit_take_onedrive_content(planned_from));
+    commit_taking_record(&mut store, file, |items, planned_from, record| items.commit_take_onedrive_content(planned_from, record));
     let taken = row(&mut store, file);
     assert!(agrees(&taken), "{taken:?}");
     assert_eq!((taken.synced_content, taken.content_presence), (Some(listed_content(8, "h-new")), ContentPresence::NotOnDisk));
@@ -324,14 +343,14 @@ fn an_item_that_leaves_the_folder_has_nothing_agreed_on_any_more() {
     let mut store = store_with_listed_root();
     let file = show_file(&mut store, "A", "a.txt");
     write_listing_of_changes(&mut store, &[listed_gone("A")]);
-    commit(&mut store, file, |items, planned_from| items.commit_remove_item(planned_from));
+    commit_taking_record(&mut store, file, |items, planned_from, record| items.commit_remove_item(planned_from, record));
     assert!(is_binding_alone(&row(&mut store, file)));
 
     // OneDrive has it where the folder cannot show it: the row is that of an item of
     // OneDrive the folder never showed, and nothing reads as removed here.
     let unplaced = show_file(&mut store, "B", "b.txt");
     write_listing_of_changes(&mut store, &[not_placed(listed_file("B", "R", "b.txt", (3, "h-B"), "e-B"))]);
-    commit(&mut store, unplaced, |items, planned_from| items.commit_remove_item(planned_from));
+    commit(&mut store, unplaced, |items, planned_from| items.commit_remove_item(planned_from, None));
     let left = row(&mut store, unplaced);
     assert_eq!((left.local, left.synced_place, left.synced_content, left.unsent_since), (None, None, None, None));
     assert!(left.onedrive.is_some() && left.placement != Placement::Placed);
@@ -341,7 +360,7 @@ fn an_item_that_leaves_the_folder_has_nothing_agreed_on_any_more() {
     make(&mut store, ItemKind::File, directory, "mine.txt");
     write_listing_of_changes(&mut store, &[listed_gone("D")]);
     let planned_from = versions(&mut store, directory);
-    assert!(is_left_unwritten(&mut store, |items| items.commit_remove_item(&planned_from)));
+    assert!(is_left_unwritten(&mut store, |items| items.commit_remove_item(&planned_from, None)));
 }
 
 #[test]
@@ -349,7 +368,7 @@ fn a_downloaded_content_is_on_disk() {
     let mut store = store_with_listed_root();
     let file = show_file(&mut store, "A", "a.txt");
     let before = row(&mut store, file);
-    commit(&mut store, file, |items, planned_from| items.commit_download_content(planned_from));
+    commit_taking_record(&mut store, file, |items, planned_from, record| items.commit_download_content(planned_from, record));
     assert_eq!(row(&mut store, file), Item { content_presence: ContentPresence::OnDisk, ..before });
 }
 
@@ -383,7 +402,7 @@ fn a_move_taken_back_puts_the_item_at_onedrives_place_again() {
     let directory = show_directory(&mut store, "D", "R", "d");
     let other = show_directory(&mut store, "E", "R", "e");
     move_here(&mut store, directory, other, "d");
-    commit(&mut store, directory, |items, planned_from| items.commit_take_move_back(planned_from, false));
+    commit_taking_record(&mut store, directory, |items, planned_from, record| items.commit_take_move_back(planned_from, false, record));
     assert!(agrees(&row(&mut store, directory)));
 }
 
@@ -393,7 +412,7 @@ fn an_item_moved_to_a_temporary_name_has_that_place_here_and_as_the_place_agreed
     let file = show_file(&mut store, "A", "a.txt");
     write_listing_of_changes(&mut store, &[listed_file("A", "R", "b.txt", (3, "h-A"), "e-A-2")]);
     let temporary = place(ROOT, ".konedrive-swap-2");
-    commit(&mut store, file, |items, planned_from| items.commit_move_to_temporary_name(planned_from, &temporary, false));
+    commit_taking_record(&mut store, file, |items, planned_from, record| items.commit_move_to_temporary_name(planned_from, &temporary, false, record));
     let moved = row(&mut store, file);
     assert_eq!((moved.local.unwrap().place, moved.synced_place, moved.onedrive.unwrap().place, moved.unsent_since), (Some(temporary.clone()), Some(temporary), Some(place(ROOT, "b.txt")), None));
 }
@@ -670,7 +689,7 @@ fn the_removals_confirmed_since_a_count_are_counted() {
     // An item OneDrive removed, which then went here, is no removal of this client's.
     write_listing_of_changes(&mut store, &[listed_gone("C")]);
     let planned_from = versions(&mut store, files[2]);
-    assert_eq!(store.item_store().commit_remove_item(&planned_from).unwrap(), StepCommitOutcome::Written);
+    assert_eq!(store.item_store().commit_remove_item(&planned_from, None).unwrap(), StepCommitOutcome::Written);
     assert_eq!(store.item_store().count_removals_confirmed_since(at_first).unwrap(), 0, "a listing that began after them has ended: their rows are gone");
 }
 

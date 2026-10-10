@@ -26,7 +26,7 @@
 // test: a_copy_that_was_changed_since_it_was_asked_about_is_not_freed
 #![allow(dead_code, unused_variables)]
 
-use super::{ItemStore, StepCommitOutcome};
+use super::{ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::model::{ContentVersion, ItemPlace, LocalItemId, LocalVersionChange};
 use crate::sync_plan::ItemVersions;
 use crate::TreeError;
@@ -69,7 +69,11 @@ impl ItemStore<'_> {
     /// write-operation thread, after the file was synced, named and its directory synced
     /// (design §8). A download the plan asked for commits through
     /// `commit_download_content` instead, which asks every version it was planned from.
-    pub fn commit_landed_content(&mut self, item: LocalItemId, downloaded: &ContentVersion) -> Result<StepCommitOutcome, TreeError> {
+    /// `record` is the record of the place change this commit ends, when one was written:
+    /// it goes in this transaction when the commit is written
+    /// (`place_change_records::forget_place_change_record_when_written`, or
+    /// `forget_place_change_record` for a write that has no outcome), and stands otherwise.
+    pub fn commit_landed_content(&mut self, item: LocalItemId, downloaded: &ContentVersion, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
         todo!()
     }
 
@@ -92,7 +96,11 @@ impl ItemStore<'_> {
     /// Called by `fuse`'s `make` for `MadeKind::FileOpenedForWriting`, after the file was
     /// made on disk. `apply_all` cannot do it: it maps each change by itself, and the
     /// second needs the first one's id (the review's S14).
-    pub fn apply_made_open_for_writing(&mut self, place: &ItemPlace, content: &ContentVersion, is_name_ignored: bool, replaced: Option<LocalItemId>) -> Result<LocalItemId, TreeError> {
+    /// `record` is the record of the place change this commit ends, when one was written:
+    /// it goes in this transaction when the commit is written
+    /// (`place_change_records::forget_place_change_record_when_written`, or
+    /// `forget_place_change_record` for a write that has no outcome), and stands otherwise.
+    pub fn apply_made_open_for_writing(&mut self, place: &ItemPlace, content: &ContentVersion, is_name_ignored: bool, replaced: Option<LocalItemId>, record: Option<PlaceChangeRecordId>) -> Result<LocalItemId, TreeError> {
         todo!()
     }
 

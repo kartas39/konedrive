@@ -22,10 +22,10 @@
 //!    `PlaceChanges::begin`, then the backing directory changed through the place
 //!    change, which keeps the undo and replaces nothing the rows do not say;
 //! 4. its commit of `step_commit`, with whether the item's new name is ignored
-//!    (`UploadRules::is_name_ignored`) where the commit asks, and with the record's id:
-//!    a commit that writes takes the record in its own transaction (the store's
-//!    `forget_place_change_record` over that transaction); one that answers `RowsChanged`
-//!    leaves it;
+//!    (`UploadRules::is_name_ignored`) where the commit asks, and with the record's id
+//!    as its last argument (`record: Option<PlaceChangeRecordId>`, `None` for a step that
+//!    wrote none): a commit that writes takes the record in its own transaction; one that
+//!    answers `RowsChanged` leaves it;
 //! 5. on `RowsChanged` the undo, then the record taken by itself
 //!    (`ItemStore::forget_place_change_record`), and `StepOutcome::RowsChanged(Nothing)`;
 //!    an undo that fails asks for the mount's take-down, and the record stands for the
@@ -182,7 +182,7 @@ impl FolderSteps {
     }
 
     /// `MoveItem`: the item is moved here to OneDrive's place. `move_on_disk`, then
-    /// `commit_move_item(item, is_name_ignored)`. Announces the former name vanishing and
+    /// `commit_move_item(item, is_name_ignored, record)`. Announces the former name vanishing and
     /// the new one appearing. Replaces the cycle step's rename (`cycle_step.rs:210`) and
     /// the upload worker's `follow_cloud` (`upload/steps/shared.rs:547`).
     fn run_move_item(&self, item: &ItemVersions) -> StepOutcome {
@@ -198,7 +198,7 @@ impl FolderSteps {
 
     /// `MoveToTemporaryName`: the item is moved here to `place`, a temporary name. As
     /// [`run_move_item`](Self::run_move_item) to `place`, with
-    /// `commit_move_to_temporary_name(item, place, is_name_ignored)`: a temporary name
+    /// `commit_move_to_temporary_name(item, place, is_name_ignored, record)`: a temporary name
     /// (`.konedrive-swap-<id>`) is the row's place, with its file under that name on
     /// disk; the mount hides it (`folder::disk::is_hidden_name`), and the check at start
     /// reads it as that row's — it is no entry set aside.
@@ -208,7 +208,7 @@ impl FolderSteps {
 
     /// `RenameToConflictCopy`: the user's own item is renamed here to `name` in the
     /// directory it is in. `move_on_disk`, then
-    /// `commit_rename_to_conflict_copy_on_record(item, name, is_name_ignored, conflict)`
+    /// `commit_rename_to_conflict_copy_on_record(item, name, is_name_ignored, conflict, record)`
     /// with the two full paths. Replaces `upload/steps/shared.rs:389` (`copy`), `:454`
     /// (`move_to_copy_name`) and `conflict_copies.rs:106` (`move_aside`). The name was
     /// chosen free on both sides by the plan; one that is held on disk by what no row

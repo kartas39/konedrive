@@ -31,7 +31,7 @@ use rusqlite::types::Value;
 use rusqlite::{params_from_iter, Connection};
 
 use super::item_row::{check_name, content_from, content_values, find_item, name_value, set_content_presence};
-use super::{apply_change, refuse, ItemStore};
+use super::{apply_change, refuse, ItemStore, StepCommitOutcome};
 use crate::model::{ContentPresence, ContentVersion, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
 use crate::outbox::path_from;
 use crate::TreeError;
@@ -250,6 +250,16 @@ impl ItemStore<'_> {
 /// stood.
 pub(crate) fn forget_place_change_record(conn: &Connection, record: PlaceChangeRecordId) -> Result<bool, TreeError> {
     Ok(conn.prepare_cached("DELETE FROM place_change_records WHERE record_id = ?1")?.execute([record.0])? > 0)
+}
+
+/// What a step's commit ends with: `record`, the record of the step's place change when
+/// it made one, goes in the commit's transaction when the commit was written, and stands
+/// when the rows changed. The commit's outcome, as it was given.
+pub(crate) fn forget_place_change_record_when_written(conn: &Connection, record: Option<PlaceChangeRecordId>, outcome: StepCommitOutcome) -> Result<StepCommitOutcome, TreeError> {
+    if let (StepCommitOutcome::Written, Some(record)) = (outcome, record) {
+        forget_place_change_record(conn, record)?;
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]

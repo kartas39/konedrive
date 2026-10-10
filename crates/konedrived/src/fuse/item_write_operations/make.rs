@@ -10,7 +10,8 @@
 //! **On record before the disk:** `PlaceChangeRecord::MakeEntry { kind, place, owner:
 //! MadeEntryOwner::NewItem { replaced } }`, with the `replaced` the decision answered. The
 //! row takes it: `settle_place_change_record` with the `Made`, and for a created file the
-//! record's id given to `apply_made_open_for_writing`, which takes it in its transaction.
+//! record's id given to `apply_made_open_for_writing` as its last argument, which takes it
+//! in its transaction.
 //! A death between the entry and the row: the check at start makes the row from the record
 //! (the entry is there, no row has its place), taking the binding of `replaced` over.
 //!

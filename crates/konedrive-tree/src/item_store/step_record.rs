@@ -19,7 +19,7 @@ use std::ffi::OsStr;
 
 use rusqlite::Transaction;
 
-use super::{ItemStore, StepCommitOutcome};
+use super::{ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::conflicts::ConflictRow;
 use crate::sync_plan::ItemVersions;
 use crate::TreeError;
@@ -37,7 +37,11 @@ impl ItemStore<'_> {
     ///
     /// Called by the runner of `FolderStep::RenameToConflictCopy`
     /// (`fuse::folder_steps`), under the tree lock, after the rename on disk.
-    pub fn commit_rename_to_conflict_copy_on_record(&mut self, item: &ItemVersions, name: &OsStr, is_name_ignored: bool, conflict: &ConflictRow) -> Result<StepCommitOutcome, TreeError> {
+    /// `record` is the record of the place change this commit ends, when one was written:
+    /// it goes in this transaction when the commit is written
+    /// (`place_change_records::forget_place_change_record_when_written`, or
+    /// `forget_place_change_record` for a write that has no outcome), and stands otherwise.
+    pub fn commit_rename_to_conflict_copy_on_record(&mut self, item: &ItemVersions, name: &OsStr, is_name_ignored: bool, conflict: &ConflictRow, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
         todo!()
     }
 }
