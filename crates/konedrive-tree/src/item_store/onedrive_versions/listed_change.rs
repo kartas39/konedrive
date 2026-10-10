@@ -17,7 +17,9 @@ pub enum ListedChangeOutcome {
     Written,
     /// Something was confirmed of the item after the fetch that brought the change began,
     /// and the change does not say what was confirmed: the row is left, and the item is to
-    /// be read again from OneDrive.
+    /// be read again from OneDrive. Also when the removal of the directory the change says
+    /// the item is in was confirmed after that fetch began: nothing is written of the item,
+    /// and it is read again with the directory.
     Outdated,
     /// No row can say what the listing said of the item: nothing was written of it, and
     /// nothing is to be read again.
@@ -81,11 +83,22 @@ pub(super) fn is_listed_removal_outdated(item: &Item, fetch_began_at_count: u64)
     item.confirmed_at_count > fetch_began_at_count && item.onedrive.is_some()
 }
 
+/// Whether a page that says an item is in the directory of `parent` may be older than what
+/// OneDrive confirmed of that directory: its row was stamped after the page's fetch began,
+/// and OneDrive was confirmed not to have it — its removal was confirmed to a step, by
+/// itself or with a directory above it, which stamps every row it takes the OneDrive
+/// version from. A page fetched before that names what the removal took.
+pub(super) fn is_listed_parent_outdated(parent: &Item, fetch_began_at_count: u64) -> bool {
+    parent.confirmed_at_count > fetch_began_at_count && parent.onedrive.is_none()
+}
+
 /// What becomes of a listing's statement that OneDrive has `listed`, given the row that has
 /// its item id and the row that has its parent's, each when there is one. The first that
 /// holds: an item with no id, with no parent, or in itself; the root given a place; a
 /// parent that is a file; a kind that is not the row's; a statement that may be older than
-/// what was confirmed. `Written` otherwise: the rows it needs are then made and written.
+/// what was confirmed, of the item or of the directory it is said to be in
+/// ([`is_listed_parent_outdated`]). `Written` otherwise: the rows it needs are then made
+/// and written.
 pub(super) fn decide_listed_item(listed: &ListedItem, row: Option<&Item>, parent_row: Option<&Item>, fetch_began_at_count: u64) -> ListedChangeOutcome {
     use ListedChangeOutcome::{Outdated, Refused, Written};
     if listed.item_id.is_empty() {
@@ -107,6 +120,9 @@ pub(super) fn decide_listed_item(listed: &ListedItem, row: Option<&Item>, parent
         return Refused(ListedChangeRefusal::KindChanged);
     }
     if row.is_some_and(|row| is_listed_version_outdated(row, fetch_began_at_count, listed.etag.as_deref())) {
+        return Outdated;
+    }
+    if parent_row.is_some_and(|parent| is_listed_parent_outdated(parent, fetch_began_at_count)) {
         return Outdated;
     }
     Written

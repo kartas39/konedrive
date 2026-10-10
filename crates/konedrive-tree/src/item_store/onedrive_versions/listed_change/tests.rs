@@ -33,6 +33,12 @@ fn directory_row() -> Item {
     Item { local_item_id: LocalItemId::new(3), onedrive_item: Some(reference("D")), kind: ItemKind::Directory, onedrive: Some(ItemVersion { place: Some(place(ROOT, "D")), content: None }), ..stamped(0, Some("e-D")) }
 }
 
+/// The row of the directory `D` with no OneDrive version, stamped at `confirmed_at_count`:
+/// its removal was confirmed then, or, never stamped, it was only named as a parent.
+fn removed_directory_row(confirmed_at_count: u64) -> Item {
+    Item { onedrive: None, onedrive_etag: None, confirmed_at_count, ..directory_row() }
+}
+
 /// The row of the root, bound to `R`.
 fn root_row() -> Item {
     Item { local_item_id: ROOT, onedrive_item: Some(reference("R")), kind: ItemKind::Directory, local: Some(ItemVersion { place: None, content: None }), onedrive: Some(ItemVersion { place: None, content: None }), ..stamped(0, Some("e-R")) }
@@ -110,6 +116,11 @@ fn a_listed_item_is_written_outdated_or_refused_by_what_it_says_and_the_rows_it_
         ("stamped when the fetch began", listed_file("A", Some("D"), "e-0"), Some(&stamped(5, Some("e-1"))), Some(&directory), Written),
         ("stamped later as removed, and listed", listed_file("A", Some("D"), "e-0"), Some(&stamped(6, None)), Some(&directory), Outdated),
         ("of another kind and stamped later: the refusal comes first", a_directory, Some(&stamped(6, Some("e-1"))), Some(&directory), Refused(KindChanged)),
+        ("in a directory whose removal was confirmed after the fetch began", listed_file("A", Some("D"), "e-2"), None, Some(&removed_directory_row(6)), Outdated),
+        ("moved into such a directory", listed_file("A", Some("D"), "e-2"), Some(&file), Some(&removed_directory_row(6)), Outdated),
+        ("in a directory whose removal was confirmed when the fetch began", listed_file("A", Some("D"), "e-2"), None, Some(&removed_directory_row(5)), Written),
+        ("in a directory that was first mentioned, and never stamped", listed_file("A", Some("D"), "e-2"), None, Some(&removed_directory_row(0)), Written),
+        ("in a directory stamped later that OneDrive has", listed_file("A", Some("D"), "e-2"), None, Some(&Item { confirmed_at_count: 6, ..directory_row() }), Written),
     ] {
         assert_eq!(decide_listed_item(&listed, row, parent_row, 5), outcome, "{what}");
     }

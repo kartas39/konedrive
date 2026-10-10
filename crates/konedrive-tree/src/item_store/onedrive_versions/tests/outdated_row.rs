@@ -388,3 +388,31 @@ fn the_row_of_the_removed_directory_stays_while_a_place_agreed_on_names_it() {
     agree(&mut store, "X");
     assert_eq!(give(&mut store, &[], 1, &delta_link("link-3")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-3")));
 }
+
+/// M3 of the second review of the plan. The removal of the directory `S`, with the file in
+/// it, was confirmed to a step after the fetch began; the page, fetched before, names a file
+/// OneDrive made in `S` and says the file `C` was moved into it. Each is outdated for that
+/// change: no row is made in, or moved into, a directory OneDrive was confirmed not to
+/// have, and the directory is answered with them, to be read again. Read again — both
+/// gone with the directory, or `C` where it is — the page is written and the listing ends.
+#[test]
+fn a_page_names_items_into_a_directory_whose_removal_was_confirmed_after_the_fetch_began() {
+    const REMOVED: &str = "C=X/c D=G/D F=- G=R/G K=X/kept S=- X=D/x";
+    let mut store = store_of_tree(false);
+    let (f, s) = (listed(&mut store, "F").local_item_id, listed(&mut store, "S").local_item_id);
+    assert_eq!((confirm(&mut store, f, None, None), confirm(&mut store, s, None, None)), (1, 2));
+    let page = [file("N", "S", "new", "1"), file("C", "S", "c", "1")];
+    assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["N", "S", "C"], REMOVED, Some("link-1")));
+    assert!(bound(&mut store, "N").is_none(), "no row is made for an item in a directory OneDrive does not have");
+    assert_eq!(give(&mut store, &[gone("N"), gone("S"), file("C", "X", "c", "1")], 2, &delta_link("link-2")), left(&[], REMOVED, Some("link-2")), "read again");
+}
+
+/// A page fetched after a removal was confirmed is not older than it: what it says OneDrive
+/// has beside the removed item, in the directory that item was in, is written.
+#[test]
+fn a_page_fetched_after_a_confirmed_removal_is_written_as_it_says() {
+    let mut store = store_of_tree(false);
+    let c = listed(&mut store, "C").local_item_id;
+    assert_eq!(confirm(&mut store, c, None, None), 1);
+    assert_eq!(give(&mut store, &[file("C2", "X", "c", "1")], 1, &delta_link("link-2")), left(&[], "C2=X/c C=- D=G/D F=S/f G=R/G K=X/kept S=X/s X=D/x", Some("link-2")));
+}

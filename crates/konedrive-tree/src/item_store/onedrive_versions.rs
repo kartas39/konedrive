@@ -59,7 +59,10 @@
 //! otherwise the row is left and the item is answered, to be read again from OneDrive. A
 //! row whose removal was confirmed has no version on either side; it stays until a listing
 //! ends that began at its stamp or after, so that no page fetched before the removal finds
-//! the binding free and makes the item again.
+//! the binding free and makes the item again. Nor does such a page put an item into a
+//! directory whose removal was confirmed since its fetch began: what it says of an item in
+//! that directory is left too, no row is made for it, and the item and the directory are
+//! both answered.
 //!
 //! **A call takes nothing through a row it leaves to be read again.** What a page says of
 //! the items below a directory stops at a row stamped later, at any depth.
@@ -116,7 +119,7 @@ mod listing_under_way;
 pub use confirmed_onedrive_version::ConfirmedOneDriveVersion;
 pub(super) use confirmed_onedrive_version::confirm_onedrive_version;
 pub use listed_change::{ListedChangeOutcome, ListedChangeRefusal};
-use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, ListedItem};
+use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, is_listed_parent_outdated, ListedItem};
 pub use listing_under_way::{ListingId, ListingKind, ListingLink, ListingUnderWay};
 use listing_under_way::{decide_page_end, LeftToReadAgain, PageEnd, PageProgress};
 
@@ -172,8 +175,9 @@ pub struct ListedPageOutcome {
     /// The items to read again from OneDrive: those of the changes that are
     /// [`Outdated`](ListedChangeOutcome::Outdated) — among them a removal that was not
     /// written because its walk met a row stamped later — and the items no change names:
-    /// the rows such a walk met, and those a full listing that ends did not see though
-    /// something was confirmed of them since it began.
+    /// the rows such a walk met, the directory a change names its item into when that
+    /// directory's removal was confirmed after the fetch began, and those a full listing
+    /// that ends did not see though something was confirmed of them since it began.
     pub outdated_items: Vec<OneDriveItemId>,
 }
 
@@ -275,7 +279,14 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
         outcomes[at] = decide_listed_item(&listed, row.as_ref(), parent_row.as_ref(), fetch_began_at_count);
         match outcomes[at] {
             ListedChangeOutcome::Written => write_listed_item(tx, &listed, row.as_ref(), parent_row.as_ref(), &drive_id, full_listing)?,
-            ListedChangeOutcome::Outdated => outdated_items.push(OneDriveItemId::new(&listed.item_id)),
+            ListedChangeOutcome::Outdated => {
+                outdated_items.push(OneDriveItemId::new(&listed.item_id));
+                // The directory it is said to be in, when that is what the page is older
+                // than: read again, it is given back as gone, or as where OneDrive has it.
+                if parent_row.as_ref().is_some_and(|parent| is_listed_parent_outdated(parent, fetch_began_at_count)) {
+                    outdated_items.push(OneDriveItemId::new(&listed.parent_id));
+                }
+            }
             ListedChangeOutcome::Refused(refusal) => tracing::warn!("what the listing says of the item {:?} is not written: {refusal:?}", listed.item_id),
         }
     }
