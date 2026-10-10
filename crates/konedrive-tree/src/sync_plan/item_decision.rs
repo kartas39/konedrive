@@ -357,10 +357,14 @@ fn decide_item_on_both_sides(case: &ItemCase<'_>, here: (PlaceChange, ContentCha
     content
 }
 
-/// OneDrive has an item the folder shows, whose name the upload rules ignore: it got its
+/// OneDrive has an item the folder shows, whose row says its name is ignored: it got its
 /// binding because its sending was running when it got that name. Its removal is sent, the
 /// folder showing it as before: the commit of the step gives its binding up. `None` for a
 /// directory OneDrive has something in, which stays as it is.
+///
+/// This reads [`Item::is_name_ignored`] of a row that has a binding as written only while
+/// the item had none. A writer that sets it for an item of OneDrive (a rename here to an
+/// ignored name, an item shown under one) would have that item removed from OneDrive.
 fn decide_bound_item_whose_name_is_ignored(case: &ItemCase<'_>) -> Option<ItemDecision> {
     let item = case.versions();
     let removal = match case.item.kind {

@@ -231,13 +231,30 @@ fn open_an_item_that_is_left_here_at_the_name_of_an_item_of_onedrive_is_renamed_
 /// `fuse/detections/entry_renamed/tests.rs`). The folder goes on showing the item: the
 /// step's commit gives its binding up and confirms the removal of the row that took it.
 ///
-/// Open for a directory OneDrive has something in: the design says "its removal is sent",
-/// which would remove from OneDrive what was sent into it since.
+/// Open, twice.
+///
+/// What the row can say. The plan reads "got its binding while it was sent, and its name
+/// is ignored now" as: the row has a binding, both sides have the item, and
+/// `is_name_ignored` is set. That is the case only if the flag is written as the design's
+/// §3 says, "where an item without a binding gets a name". `ItemStore` writes it with every
+/// local place (`LocalVersionChange::Moved`), also of an item OneDrive has, and the
+/// design's §4 names "a step towards the folder" among its writers: a row written so says
+/// the same of an item of OneDrive that was renamed here to an ignored name, or shown
+/// under one, and its removal would be sent.
+///
+/// - Reading 1 (implemented, the design's §3): the flag on a row that has a binding is
+///   written by nothing but the race; the removal is sent.
+/// - Reading 2: the rows cannot tell the race from a rename, and the plan sends no removal
+///   on the flag; the step whose sending was running decides at its commit, or the plan is
+///   given the fact.
+///
+/// A directory OneDrive has something in. The design says "its removal is sent", which
+/// would remove from OneDrive what was sent into it since.
 ///
 /// - Reading 1 (implemented): such a directory stays as it is, in OneDrive too.
 /// - Reading 2: its removal is sent with all OneDrive has in it.
 #[test]
-fn an_item_that_got_its_binding_while_it_was_sent_and_whose_name_is_ignored_now_has_its_removal_sent() {
+fn open_an_item_that_got_its_binding_while_it_was_sent_and_whose_name_is_ignored_now_has_its_removal_sent() {
     let ignored = |mut item: Item| {
         item.is_name_ignored = true;
         item
