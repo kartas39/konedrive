@@ -331,7 +331,7 @@ fn check_replaced_by_made_file(conn: &Connection, kind: ItemKind, replaced: Loca
     }
 }
 
-fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option<&ContentVersion>, is_ignored: bool, replaced: Option<LocalItemId>) -> Result<LocalItemId, TreeError> {
+fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option<&ContentVersion>, is_name_ignored: bool, replaced: Option<LocalItemId>) -> Result<LocalItemId, TreeError> {
     if (kind == ItemKind::File) != content.is_some() {
         return Err(refuse("a file is made with a content and a directory without".to_owned()));
     }
@@ -343,7 +343,7 @@ fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option
     }
     // What a program makes is in the backing directory.
     let content_presence = if kind == ItemKind::File { ContentPresence::OnDisk } else { ContentPresence::NotOnDisk };
-    let made = insert_item(tx, kind, None, Some(&ItemVersion { place: Some(place.clone()), content: content.cloned() }), content_presence, is_ignored)?;
+    let made = insert_item(tx, kind, None, Some(&ItemVersion { place: Some(place.clone()), content: content.cloned() }), content_presence, is_name_ignored)?;
     if let Some(replaced) = replaced {
         bindings::take_over_binding(tx, made, replaced)?;
     }
