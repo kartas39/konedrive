@@ -75,3 +75,14 @@ fn two_entries_are_exchanged_in_one_step() {
     assert!(dir.path().join("empty/a.txt").is_file() && fs::read_dir(dir.path().join("docs")).unwrap().next().is_none());
     assert_eq!(backing_directory.exchange(Path::new("none"), Path::new("b.txt")).unwrap_err().kind(), ErrorKind::NotFound);
 }
+
+#[test]
+fn a_directory_is_read_or_said_to_be_unreadable() {
+    let (dir, backing_directory) = empty_backing_directory();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    fs::write(dir.path().join("docs/a.txt"), b"a").unwrap();
+    let names: Vec<_> = backing_directory.read_directory(Path::new("docs")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(names, ["a.txt"]);
+    assert_eq!(backing_directory.read_directory(Path::new("")).unwrap().count(), 1);
+    assert_eq!(backing_directory.read_directory(Path::new("none")).err().map(|e| e.kind()), Some(ErrorKind::NotFound));
+}

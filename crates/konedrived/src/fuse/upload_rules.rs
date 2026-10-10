@@ -16,6 +16,7 @@
 //! - which names a program may not make: the daemon's own ([`UploadRules::is_daemon_owned`])
 //!   and a file manager's trash ([`UploadRules::is_trash`]).
 
+use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::folder::disk::daemon_owned;
@@ -62,6 +63,14 @@ impl UploadRules {
     pub(super) fn is_ignored(&self, directory: &Path, name: &str, in_onedrive: impl Fn(&Path) -> bool) -> bool {
         let ignored = crate::panic::read(&self.ignore).matches(name.as_ref());
         ignored || self.is_in_ignored_directory(directory, in_onedrive)
+    }
+
+    /// Whether the name itself is on the ignore list, whatever directory it is in: what a
+    /// row of `items` keeps of its item's name (`is_name_ignored`). The directories above
+    /// are the rows' to ask. A name that is not UTF-8 is matched as the list matches it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn is_name_ignored(&self, name: &OsStr) -> bool {
+        crate::panic::read(&self.ignore).matches(name)
     }
 
     /// Whether what is `name` in the directory `directory` and is not in OneDrive is uploaded from

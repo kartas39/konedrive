@@ -21,6 +21,13 @@ impl BackingDirectory {
         fs::read_dir(self.resolve_path(rel)).into_iter().flatten().flatten()
     }
 
+    /// The names in the directory `rel`, or why it cannot be read: for what must not take
+    /// a directory it could not read for an empty one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn read_directory(&self, rel: &Path) -> io::Result<fs::ReadDir> {
+        fs::read_dir(self.resolve_path(rel))
+    }
+
     pub(in crate::fuse) fn make_directory(&self, rel: &Path) -> io::Result<()> {
         fs::create_dir(self.resolve_path(rel))
     }

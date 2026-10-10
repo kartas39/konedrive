@@ -11,7 +11,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_STATE};
+use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
 
 use super::{BackingDirectory, DiskMetadata};
 
@@ -30,8 +30,14 @@ impl DiskMarks {
         DiskMarks { onedrive_id: xattr::get(path, XATTR_ITEM_ID).ok().flatten(), state: xattr::get(path, XATTR_STATE).ok().flatten() }
     }
 
+    /// The OneDrive id it is marked with.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn onedrive_id(&self) -> Option<String> {
+        self.onedrive_id.as_deref().map(|id| String::from_utf8_lossy(id).into_owned())
+    }
+
     /// Whether it is marked whole.
-    fn is_whole(&self) -> bool {
+    pub(in crate::fuse) fn is_whole(&self) -> bool {
         self.state.as_deref() == Some(State::Hydrated.as_str().as_bytes())
     }
 
@@ -124,6 +130,32 @@ impl BackingDirectory {
         }
         let bytes = file.metadata().map_or(0, |m| m.blocks() * 512);
         fs::remove_file(path).ok().map(|()| bytes)
+    }
+
+    /// The cTag the file at `rel` is marked with: the version of the OneDrive file its
+    /// downloaded copy holds.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn read_ctag_mark(&self, rel: &Path) -> Option<String> {
+        self.read_attribute(rel, XATTR_CTAG)
+    }
+
+    /// Takes off the entry at `rel` the marks that say which item of OneDrive it is and
+    /// which content of it: the OneDrive id first, then the state and the cTag. It is the
+    /// user's own from here on. What else konedrive keeps on it stays, its pin among it.
+    /// Also off a downloaded copy, which has no write bit: the bit is lifted for the call.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn remove_onedrive_marks(&self, rel: &Path) -> io::Result<()> {
+        let entry = File::open(self.resolve_path(rel))?;
+        placeholder::with_owner_write(&entry, || {
+            for mark in [XATTR_ITEM_ID, XATTR_STATE, XATTR_CTAG] {
+                match xattr::FileExt::remove_xattr(&entry, mark) {
+                    Ok(()) => {}
+                    Err(e) if e.raw_os_error() == Some(libc::ENODATA) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        })
     }
 }
 

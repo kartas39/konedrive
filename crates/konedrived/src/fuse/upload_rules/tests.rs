@@ -69,3 +69,14 @@ fn the_daemons_names_and_a_trash_directory_are_told() {
     assert!(rules.is_daemon_owned(HOLDING) && !rules.is_daemon_owned("docs"));
     assert!(rules.is_trash(".Trash-1000") && rules.is_trash(".Trash") && !rules.is_trash("Trash"));
 }
+
+/// What a row of `items` keeps: the list's answer for the name alone.
+#[test]
+fn a_name_is_asked_by_itself_also_when_it_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    let rules = rules();
+    assert!(rules.is_name_ignored("a.tmp".as_ref()));
+    assert!(rules.is_name_ignored("cache".as_ref()));
+    assert!(!rules.is_name_ignored("a.txt".as_ref()));
+    assert!(rules.is_name_ignored(std::ffi::OsStr::from_bytes(b"\xff.tmp")));
+}

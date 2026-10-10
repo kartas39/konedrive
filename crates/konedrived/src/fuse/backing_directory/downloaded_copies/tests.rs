@@ -132,3 +132,42 @@ fn a_partial_file_is_made_where_nothing_is_or_taken_as_it_is() {
         assert_eq!(fs::read(dir.path().join(AT)).unwrap(), b"abc");
     }
 }
+
+/// The check of the backing directory reads what each entry is marked with, as it is.
+#[test]
+fn the_marks_of_an_entry_say_its_onedrive_id_whether_it_is_whole_and_its_ctag() {
+    let (dir, backing_directory) = empty_backing_directory();
+    file(dir.path(), Some("A"), Some(State::Hydrated));
+    xattr::set(dir.path().join(AT), konedrive_fs::placeholder::XATTR_CTAG, b"c1").unwrap();
+    let marks = DiskMarks::read(&dir.path().join(AT));
+    assert_eq!((marks.onedrive_id().as_deref(), marks.is_whole()), (Some("A"), true));
+    assert_eq!(backing_directory.read_ctag_mark(Path::new(AT)).as_deref(), Some("c1"));
+    file(dir.path(), None, None);
+    let marks = DiskMarks::read(&dir.path().join(AT));
+    assert_eq!((marks.onedrive_id(), marks.is_whole()), (None, false));
+    assert_eq!(backing_directory.read_ctag_mark(Path::new(AT)), None);
+}
+
+/// A copy made by hand keeps the marks of the file it was copied from, and its mode: a
+/// downloaded copy has no write bit, and an attribute is not removed without one.
+#[test]
+fn the_onedrive_marks_are_taken_off_a_copy_without_a_write_bit_and_its_pin_stays() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, backing_directory) = empty_backing_directory();
+    let path = dir.path().join(AT);
+    file(dir.path(), Some("A"), Some(State::Hydrated));
+    xattr::set(&path, konedrive_fs::placeholder::XATTR_CTAG, b"c1").unwrap();
+    xattr::set(&path, konedrive_fs::placeholder::XATTR_PIN, b"1").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+
+    backing_directory.remove_onedrive_marks(Path::new(AT)).unwrap();
+    let left: Vec<_> = xattr::list(&path).unwrap().filter(|name| name.as_encoded_bytes().starts_with(b"user.konedrive.")).collect();
+    assert_eq!(left, [konedrive_fs::placeholder::XATTR_PIN]);
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444, "the mode is put back");
+
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    xattr::set(dir.path().join("docs"), XATTR_ITEM_ID, b"D").unwrap();
+    backing_directory.remove_onedrive_marks(Path::new("docs")).unwrap();
+    assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
+    backing_directory.remove_onedrive_marks(Path::new("docs")).unwrap();
+}
