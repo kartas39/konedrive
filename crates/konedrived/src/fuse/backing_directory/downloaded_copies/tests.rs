@@ -171,3 +171,32 @@ fn the_onedrive_marks_are_taken_off_a_copy_without_a_write_bit_and_its_pin_stays
     assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")), None);
     backing_directory.remove_onedrive_marks(Path::new("docs")).unwrap();
 }
+
+/// Only an attribute that is not there is no mark: whatever else the filesystem answers to
+/// the reading of a mark says nothing of the entry.
+#[test]
+fn marks_that_could_not_be_read_are_not_known_and_are_not_taken_for_no_marks() {
+    let (dir, backing_directory) = empty_backing_directory();
+    file(dir.path(), None, None);
+    assert_eq!(DiskMarks::try_read(&dir.path().join(AT)).unwrap().onedrive_id(), None, "no such attribute: no mark");
+    assert_eq!(backing_directory.try_read_ctag_mark(Path::new(AT)).unwrap(), None);
+    // Not a denial: the entry the marks are asked of is not there.
+    assert!(DiskMarks::try_read(&dir.path().join("gone.txt")).is_err());
+    assert!(backing_directory.try_read_ctag_mark(Path::new("gone.txt")).is_err());
+}
+
+/// The id alone, also on a file without a write bit, whose mode stays.
+#[test]
+fn an_entry_is_marked_with_an_id_and_nothing_else() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, backing_directory) = empty_backing_directory();
+    file(dir.path(), None, None);
+    fs::set_permissions(dir.path().join(AT), fs::Permissions::from_mode(0o444)).unwrap();
+    fs::create_dir(dir.path().join("docs")).unwrap();
+    backing_directory.write_onedrive_id_mark(Path::new(AT), "A").unwrap();
+    backing_directory.write_onedrive_id_mark(Path::new("docs"), "D").unwrap();
+    let marks = DiskMarks::try_read(&dir.path().join(AT)).unwrap();
+    assert_eq!((marks.onedrive_id().as_deref(), marks.is_whole()), (Some("A"), false));
+    assert_eq!(fs::metadata(dir.path().join(AT)).unwrap().permissions().mode() & 0o777, 0o444);
+    assert_eq!(backing_directory.read_onedrive_id(Path::new("docs")).as_deref(), Some("D"));
+}

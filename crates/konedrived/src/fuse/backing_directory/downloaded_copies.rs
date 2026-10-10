@@ -30,16 +30,13 @@ impl DiskMarks {
         DiskMarks { onedrive_id: xattr::get(path, XATTR_ITEM_ID).ok().flatten(), state: xattr::get(path, XATTR_STATE).ok().flatten() }
     }
 
-    /// [`read`](Self::read), which says so when the filesystem denies the reading of the
-    /// marks, as it does of what the user may not read: such an entry is not unmarked, its
-    /// marks are not known.
+    /// [`read`](Self::read), which says so when the marks could not be read: only an
+    /// attribute that is not there is no mark. Whatever else the filesystem answers — it
+    /// denies the reading, as it does of what the user may not read, or fails at it — says
+    /// nothing of the entry: it is not unmarked, its marks are not known.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::fuse) fn try_read(path: &Path) -> std::io::Result<Self> {
-        let get = |name: &str| match xattr::get(path, name) {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(e),
-            got => Ok(got.ok().flatten()),
-        };
-        Ok(DiskMarks { onedrive_id: get(XATTR_ITEM_ID)?, state: get(XATTR_STATE)? })
+        Ok(DiskMarks { onedrive_id: xattr::get(path, XATTR_ITEM_ID)?, state: xattr::get(path, XATTR_STATE)? })
     }
 
     /// The OneDrive id it is marked with.
@@ -151,6 +148,13 @@ impl BackingDirectory {
         self.read_attribute(rel, XATTR_CTAG)
     }
 
+    /// [`read_ctag_mark`](Self::read_ctag_mark), which says so when the mark could not be
+    /// read: only an attribute that is not there is no mark.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn try_read_ctag_mark(&self, rel: &Path) -> io::Result<Option<String>> {
+        Ok(xattr::get(self.resolve_path(rel), XATTR_CTAG)?.map(|ctag| String::from_utf8_lossy(&ctag).into_owned()))
+    }
+
     /// Takes off the entry at `rel` the marks that say which item of OneDrive it is and
     /// which content of it: the OneDrive id first, then the state and the cTag. It is the
     /// user's own from here on. What else konedrive keeps on it stays, its pin among it.
@@ -168,6 +172,15 @@ impl BackingDirectory {
             }
             Ok(())
         })
+    }
+
+    /// Marks the entry at `rel` with the OneDrive id `id` and nothing else: it is the own
+    /// entry of that item of OneDrive from here on, and no whole copy of what OneDrive has
+    /// of it. Also a file that has no write bit: the bit is lifted for the call.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(in crate::fuse) fn write_onedrive_id_mark(&self, rel: &Path, id: &str) -> io::Result<()> {
+        let entry = File::open(self.resolve_path(rel))?;
+        placeholder::with_owner_write(&entry, || xattr::FileExt::set_xattr(&entry, XATTR_ITEM_ID, id.as_bytes()))
     }
 }
 
