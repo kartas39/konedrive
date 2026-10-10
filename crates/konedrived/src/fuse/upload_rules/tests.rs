@@ -21,14 +21,6 @@ fn a_name_on_the_ignore_list_is_ignored() {
     assert!(!rules.is_ignored(Path::new("docs"), "a.txt", none));
 }
 
-/// What a row of `items` keeps is the answer for the name alone, wherever it is.
-#[test]
-fn a_name_by_itself_is_ignored_or_not_whatever_it_is_in() {
-    let rules = rules();
-    assert!(rules.is_name_ignored("a.tmp") && rules.is_name_ignored("cache"));
-    assert!(!rules.is_name_ignored("a.txt"));
-}
-
 #[test]
 fn what_is_below_an_ignored_directory_that_is_not_in_onedrive_stays_with_it() {
     let rules = rules();

@@ -70,11 +70,11 @@ impl SyncService {
         self.show_pause();
     }
 
-    /// Makes the folder ready for a sync: the tree store open, the folder mounted, and the
-    /// activity log kept in the store. Why not, when the sync cannot start. What a
-    /// read-write cycle deferred is staged by the first cycle of a read-only folder, which
-    /// runs once no change waits to upload.
+    /// Makes the folder ready for a sync: the tree store open, the folder mounted, what a
+    /// read-write cycle deferred applied in a read-only folder, and the activity log kept in
+    /// the store. Why not, when the sync cannot start.
     async fn prepare(&self, stopped: &mut Stopped<'_>, reg: &Record) -> Result<Prepared, String> {
+        let wanted = stopped.folder().wanted;
         let Some(crate::sync::OneDrive { drive, paths }) = self.wiring.onedrive.clone() else {
             return Err(format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display()));
         };
@@ -113,6 +113,19 @@ impl SyncService {
                 mount
             }
         };
+        // A read-only folder that still holds changes waiting to upload (a switch nobody
+        // forced) runs no cycle while they wait: what a read-write cycle
+        // deferred stays deferred for the read-write cycle that sends them.
+        let rows_wait = wanted != Mode::ReadWrite && store.call(|s| s.outbox_len()).await.map_or(true, |n| n > 0);
+        if wanted != Mode::ReadWrite && !rows_wait {
+            // Changes a read-write cycle deferred are the base's now: a read-only cycle knows
+            // none. Nothing at all for a folder that never was read-write.
+            match store.call(|s| s.apply_deferred()).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("{n} change(s) from OneDrive that waited for local changes are applied now"),
+                Err(e) => tracing::warn!("cannot apply the changes from OneDrive that waited: {e}"),
+            }
+        }
         // The activity log and the conflicts are kept in this
         // store from now on, and `LastChecked` is where the last run left it.
         // Every caller is inside a change of the folder's state, so no other start can

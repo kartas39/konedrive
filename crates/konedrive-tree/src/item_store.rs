@@ -53,23 +53,19 @@
 //! that has that directory's binding.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference};
-use crate::outbox::{apply_outbox_ops, OutboxApplied, OutboxOp};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
 mod bindings;
-/// What a cycle's commit does to the rows.
-mod cycle_commit;
 /// A row of `items`: its columns, reading it, and its raw writers.
 mod item_row;
 
 pub(crate) use bindings::bind_root;
-pub(crate) use cycle_commit::follow_onedrive_items;
 
 use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
 
@@ -123,60 +119,6 @@ impl ItemStore<'_> {
     /// from the rows at each call, never stored. Refused for an id with no row.
     pub fn is_ignored(&self, item: LocalItemId) -> Result<bool, TreeError> {
         is_ignored(&self.store.conn, item)
-    }
-
-    /// The item the folder shows at `path`, relative to the root, found name by name from
-    /// the root; the root for the empty path.
-    pub fn find_item_by_path(&self, path: &Path) -> Result<Option<Item>, TreeError> {
-        let mut found = find_item(&self.store.conn, LocalItemId::ROOT)?;
-        for name in path.components() {
-            let Some(directory) = found else { return Ok(None) };
-            found = find_item_at(&self.store.conn, directory.local_item_id, name.as_os_str())?;
-        }
-        Ok(found)
-    }
-
-    /// The whole content of the file `item` is in the backing directory from now on, or is
-    /// not. Nothing for an item the folder does not show as a file, or whose row went.
-    pub fn set_content_presence(&mut self, item: LocalItemId, content_presence: ContentPresence) -> Result<(), TreeError> {
-        self.write(|tx| {
-            let Some(mut row) = find_item(tx, item)?.filter(|row| row.kind == ItemKind::File && row.local.is_some()) else { return Ok(()) };
-            row.content_presence = content_presence;
-            write_item(tx, &row)
-        })
-    }
-
-    /// What a step of a cycle did in the folder that `onedrive_items` does not say, with
-    /// the outbox rows of it, in one transaction: each of `given_up`, an item with what the
-    /// upload rules say of its name, gives its binding up
-    /// ([`give_up_binding`](Self::give_up_binding)); then each of `changes` is written, in
-    /// order; then `ops` are applied to the outbox, dated `now`.
-    ///
-    /// A change the rows refuse is left out, and counted: the rows were not as the step
-    /// read them, or the step runs a second time after a commit that failed, and the rest
-    /// is written all the same. A refused change wrote nothing (each of them asks its rules
-    /// before its first write), which is what lets the transaction go on after one; any
-    /// other error drops it. How many were refused, with what the outbox did.
-    pub fn write_step_changes(&mut self, given_up: &[(LocalItemId, bool)], changes: &[LocalVersionChange], ops: &[OutboxOp], now: i64) -> Result<(usize, OutboxApplied), TreeError> {
-        let tx = self.store.conn.transaction()?;
-        let mut refused = 0;
-        let mut count_refused = |written: Result<LocalItemId, TreeError>| match written {
-            Ok(_) => Ok(()),
-            Err(TreeError::Refused(_)) => {
-                refused += 1;
-                Ok(())
-            }
-            Err(e) => Err(e),
-        };
-        for (item, is_name_ignored) in given_up {
-            count_refused(bindings::give_up_binding(&tx, *item, *is_name_ignored))?;
-        }
-        for change in changes {
-            count_refused(apply_change(&tx, change))?;
-        }
-        let applied = apply_outbox_ops(&tx, ops, now)?;
-        tx.commit()?;
-        Ok((refused, applied))
     }
 
     /// Writes one change of an item's local version, in one transaction: all of it or
@@ -486,11 +428,9 @@ fn set_local_content(tx: &Transaction<'_>, mut item: Item, mut local: ItemVersio
 }
 
 /// [`ItemStore::apply`], inside the caller's transaction: for a change that is written
-/// with other rows of the store in one. A refusal comes before the change wrote anything,
-/// so a caller that knows what it leaves out may go on in its transaction after one
-/// ([`ItemStore::write_step_changes`] does); on any other error the caller drops its
-/// transaction and never commits it: a failure of SQLite, of the disk or of a rule of the
-/// schema may come after a part of the change was written.
+/// with other rows of the store in one. On any error the caller drops its transaction and
+/// never commits it: a refusal comes before the change wrote anything, but a failure of
+/// SQLite, of the disk or of a rule of the schema may come after a part of it was written.
 pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
     match change {
         LocalVersionChange::Made { kind, place, content, is_name_ignored, replaced } => make(tx, *kind, place, content.as_ref(), *is_name_ignored, *replaced),

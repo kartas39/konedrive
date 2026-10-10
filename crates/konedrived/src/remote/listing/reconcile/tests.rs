@@ -64,5 +64,4 @@ fn a_cycle_of_a_read_only_folder_changes_nothing_beside_a_job_of_the_write_opera
     assert_eq!(in_flight.blocking_recv(), Ok(true), "the cycle removed the copy while a job ran on the write-operation thread");
     runtime.block_on(cycle).unwrap().unwrap();
     assert!(!built.disk.join("a.txt").exists(), "the cycle made the folder follow OneDrive once the job had ended");
-    built.check_rows_agree();
 }

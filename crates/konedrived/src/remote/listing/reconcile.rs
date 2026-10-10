@@ -198,9 +198,7 @@ impl Reconcile {
             Mode::ReadWrite(writing) => Mode::ReadWrite(Plan { rw: Arc::new(self.store.call_blocking(|s| Rw::read(s))?), waiting: writing.waiting.clone() }),
         };
         let done = self.follow_mount(plan.as_ref().map(|plan| Arc::clone(&plan.rw)))?;
-        // What the step found on disk goes into the rows with the commit.
-        let copies_on_disk = self.mount.cycle_step().list_copies_on_disk();
-        match commit_cycle(&self.store, plan.as_ref(), commit, copies_on_disk) {
+        match commit_cycle(&self.store, plan.as_ref(), commit) {
             Ok(said) => {
                 self.mount.cycle_step().announce_committed_cycle();
                 self.after_commit(&done.applied, said);
@@ -315,7 +313,7 @@ impl Reconcile {
 fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleError> {
     match commit {
         Commit::Page { changes, next } => {
-            store.call_blocking(move |s| s.commit_page(&changes, &next, &[]))?;
+            store.call_blocking(move |s| s.commit_page(&changes, &next))?;
             Ok(Reconciled::default())
         }
         Commit::Swap { .. } => Err(CycleError::Apply("the drive's listing has no root".into())),
@@ -328,19 +326,16 @@ fn before_the_root(store: &Store, commit: Commit) -> Result<Reconciled, CycleErr
 /// With a plan (read-write mode) the swap keeps the base row of what the
 /// outbox holds, and its change waits (the read-write reconcile
 /// must, items 3 and 4). Never what is being removed.
-///
-/// The rows of `items` follow in the same transaction; `copies_on_disk` is what the cycle
-/// step found in the backing directory for them: the files whose whole copy is there.
-pub(crate) fn commit_cycle(store: &Store, plan: Mode<&Plan>, commit: Commit, copies_on_disk: Vec<String>) -> Result<Said, CycleError> {
+pub(crate) fn commit_cycle(store: &Store, plan: Mode<&Plan>, commit: Commit) -> Result<Said, CycleError> {
     let (link, listing) = match commit {
         Commit::Page { changes, next } => {
-            store.call_blocking(move |s| s.commit_page(&changes, &next, &copies_on_disk))?;
+            store.call_blocking(move |s| s.commit_page(&changes, &next))?;
             return Ok(Said::Nothing);
         }
         Commit::Swap { link, listing } => (link, listing),
     };
     match plan {
-        Mode::ReadOnly => store.call_blocking(move |s| s.commit_staging(&link, &copies_on_disk))?,
+        Mode::ReadOnly => store.call_blocking(move |s| s.commit_staging(&link))?,
         Mode::ReadWrite(Plan { rw, waiting }) => {
             let changed = store.call_blocking(move |s| s.changed_ids())?;
             let defer: Vec<String> = changed.into_iter().filter(|id| !rw.removing.contains(id) && rw.held.contains(id)).collect();
@@ -348,7 +343,7 @@ pub(crate) fn commit_cycle(store: &Store, plan: Mode<&Plan>, commit: Commit, cop
                 tracing::debug!("{} change(s) wait for the folder to take them", defer.len());
             }
             let (consumed, fetched_at) = (waiting.consumed.clone(), waiting.fetch_seq);
-            store.call_blocking(move |s| s.commit_staging_deferring(&link, &Deferrals { consumed: &consumed, whole: &defer, content: &[], fetched_at, waits: &[], copies_on_disk: &copies_on_disk }))?;
+            store.call_blocking(move |s| s.commit_staging_deferring(&link, &Deferrals { consumed: &consumed, whole: &defer, content: &[], fetched_at, waits: &[] }))?;
         }
     }
     Ok(if listing { Said::Listed } else { Said::EachChange })

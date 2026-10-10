@@ -56,7 +56,7 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
             Change::Upsert(row("S", Some("R"), Kind::File)),
         ])
         .unwrap();
-    store.commit_staging("link", &[]).unwrap();
+    store.commit_staging("link").unwrap();
     store.bench_sql("UPDATE onedrive_items SET placement = 'plbced' WHERE id = 'D'; UPDATE onedrive_items SET placement = 'skipped:nonsense', kind = 'nonsense' WHERE id = 'S'").unwrap();
 
     assert_eq!(store.get(Table::OneDriveItems, "D").unwrap().unwrap().placement, Placement::Placed);
@@ -111,7 +111,7 @@ fn a_row_reads_back_as_written_from_every_table() {
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[Change::Root(root), Change::Upsert(file.clone()), Change::Upsert(skipped.clone())]).unwrap();
     assert_eq!(store.get(Table::Staging, "F").unwrap(), Some(file.clone()));
-    store.commit_staging("link", &[]).unwrap();
+    store.commit_staging("link").unwrap();
     assert_eq!(store.get(Table::OneDriveItems, "F").unwrap(), Some(file.clone()));
     assert_eq!(store.get(Table::OneDriveItems, "S").unwrap(), Some(skipped.clone()));
     assert_eq!(store.children(Table::OneDriveItems, "R").unwrap(), vec![file.clone(), skipped]);
@@ -119,7 +119,7 @@ fn a_row_reads_back_as_written_from_every_table() {
     let changed = Row { ctag: Some("c2".into()), size: 9, ..file };
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[Change::Upsert(changed.clone()), Change::Delete("S".into())]).unwrap();
-    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &["F".into(), "S".into()], content: &[], fetched_at: 1, waits: &[], copies_on_disk: &[] }).unwrap();
+    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &["F".into(), "S".into()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
     assert_eq!(store.deferred("F").unwrap(), Some(Change::Upsert(changed)));
     assert_eq!(store.deferred("S").unwrap(), Some(Change::Delete("S".into())));
 }

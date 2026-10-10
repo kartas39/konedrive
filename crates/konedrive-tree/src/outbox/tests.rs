@@ -26,7 +26,7 @@ fn store(rows: &[Row]) -> TreeStore {
     changes.extend(rows.iter().cloned().map(Change::Upsert));
     store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&changes).unwrap();
-    store.commit_staging("link", &[]).unwrap();
+    store.commit_staging("link").unwrap();
     store
 }
 
@@ -280,7 +280,7 @@ fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
     // The next cycle stages what waits, and takes it: nothing is placed here.
     let staged = s.stage_rw(&[], at, false).unwrap().unwrap();
     assert!(staged.ids.contains(&"X".to_owned()));
-    s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at, waits: &[], copies_on_disk: &[] }).unwrap();
+    s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at, waits: &[] }).unwrap();
     assert_eq!(s.get(Table::OneDriveItems, "X").unwrap().unwrap(), answer);
 
     // Not placed by the base already: it has no place to keep, and the

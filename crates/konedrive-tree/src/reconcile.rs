@@ -60,9 +60,6 @@ pub struct Deferrals<'a> {
     /// Of the ids left alone whole, those that wait to leave the folder,
     /// each with what it waits for ([`konedrive_reason::WaitsFor`], as stored).
     pub waits: &'a [(String, String)],
-    /// The files the cycle step found whole in the backing directory, for the rows of
-    /// `items` ([`follow_onedrive_items`](crate::item_store::follow_onedrive_items)).
-    pub copies_on_disk: &'a [String],
 }
 
 /// What the outbox committed for an item after some commit count: Graph's
@@ -170,23 +167,20 @@ impl TreeStore {
         Ok(changes)
     }
 
-    /// A read-only cycle's delta, staged: every change that waits since the folder was
-    /// read-write is staged before `changes`, as a read-write cycle stages it
-    /// ([`stage_rw`](Self::stage_rw)), so that it passes the cycle step and reaches the
-    /// folder; the cycle's commit is done with all of them
-    /// ([`commit_staging`](Self::commit_staging)). Whether anything was staged: nothing is
-    /// when nothing waits, `changes` holds nothing and no `full` reconcile is asked for.
-    /// A read-only folder runs no cycle while its outbox holds a row, so nothing that waits
-    /// is held by one.
-    pub fn stage_waiting(&mut self, changes: &[Change], full: bool) -> Result<bool, TreeError> {
-        let deferred = self.live_deferred()?;
-        if !full && changes.is_empty() && deferred.is_empty() {
-            return Ok(false);
-        }
-        self.begin_staging(NewTree::Delta)?;
-        self.stage(&deferred)?;
-        self.stage(changes)?;
-        Ok(true)
+    /// A folder that is read-only now (a switch back, or a daemon that
+    /// starts so): what waits is the base's at once — the read phase's cycle
+    /// knows no deferred change, and the delta cursor will not send it again.
+    /// The first cycle, a Full reconcile, makes the folder match: it takes
+    /// what waited to leave off the disk as the read phase does. Nothing to
+    /// do, and nothing done, for a folder that never was read-write.
+    pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
+        let changes = self.live_deferred()?;
+        let tx = self.conn.transaction()?;
+        apply(&tx, Source::OneDriveItems, &changes)?;
+        tx.execute("DELETE FROM deferred", [])?;
+        tx.execute("DELETE FROM outbox_gone", [])?;
+        tx.commit()?;
+        Ok(changes.len())
     }
 
     /// The ids of every deferred change, whatever its age.
@@ -214,7 +208,7 @@ impl TreeStore {
         Ok(ids)
     }
 
-    /// The swap of [`commit_staging`](Self::commit_staging) for a read-write folder, in
+    /// [`commit_staging`](Self::commit_staging) for a read-write folder, in
     /// one transaction with its deferrals ([`Deferrals`]): the deferred
     /// changes staged at the start of the cycle are done with; each id left
     /// alone whole has what `staging` holds for it kept as deferred, and
@@ -228,7 +222,7 @@ impl TreeStore {
     /// Tombstones up to the fetch's start are dropped: a fetch that started after
     /// them already carries the deletes.
     pub fn commit_staging_deferring(&mut self, delta_link: &str, deferrals: &Deferrals<'_>) -> Result<(), TreeError> {
-        let Deferrals { consumed, whole: defer, content, fetched_at: seq, waits, copies_on_disk } = *deferrals;
+        let Deferrals { consumed, whole: defer, content, fetched_at: seq, waits } = *deferrals;
         let source = self.source(Table::Staging);
         let whole = self.whole;
         {
@@ -267,7 +261,6 @@ impl TreeStore {
             // The swap in the same transaction (TR1): a swap that fails
             // leaves the deferrals, and the tombstones, as they were.
             swap(&tx, whole, delta_link)?;
-            crate::item_store::follow_onedrive_items(&tx, copies_on_disk)?;
             tx.commit()?;
         }
         self.whole = false;

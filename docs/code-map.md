@@ -175,8 +175,7 @@ each change (`fuse/`); here is what the recording goes by. Design: `writes.md` �
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
 - `record.rs` — a local change recorded in the outbox: the mass-delete guard, the order of
-  the rows, the one transaction; for a cycle's step, with what the step did to the rows of
-  `items` in that transaction (`record_with_step_changes`). `[tests]`
+  the rows, the one transaction. `[tests]`
 - `held.rs` — `Rw`: what the outbox's rows hold of the folder while they wait — the items a
   cycle of the listing leaves as they are, and the ones being removed.
 
@@ -193,10 +192,7 @@ daemon shows OneDrive.
   and waited for. It answers for no part: the access mode switch, the cycle step, the
   `Files` interface and the backing directory are handed out (`access_mode_switch()`,
   `cycle_step()`, `files_interface()`, `backing_directory()`), and a cycle and the folder's
-  sync ask them. `[tests]` (`mount/tests.rs` is also the fixture of the mount's parts built
-  without a mount, with the agreement check — what the rows of `items` say against what
-  the mount derives today — and the rows of what a test puts into the backing directory
-  by hand)
+  sync ask them. `[tests]`
 - `mount/build_order.rs` — `Mount::build`: a stale mount taken off the folder, then the parts
   built in the order they depend on each other, each given only what stands before it;
   nothing is mounted.
@@ -400,8 +396,7 @@ daemon shows OneDrive.
   flight, drops the jobs that wait, and never waits for the tree lock. `[tests]`
 - `outbox_recorder.rs` — `OutboxRecorder`: the one writer of detections; it owns the store's
   writer and what wakes the outbox's worker (`OutboxWaker`), records an event in one
-  transaction, and a cycle's batch inside the cycle's own, with what its step did to the
-  rows of `items`; it does not ask the access mode.
+  transaction, and a cycle's batch inside the cycle's own; it does not ask the access mode.
   `[tests]`
 - `conflict_copies.rs` — `ConflictCopies`: the user's own moved aside, to a conflict copy's
   name, where something of OneDrive comes — and the downloaded copy a program writes when a
@@ -444,18 +439,14 @@ daemon shows OneDrive.
   once it is. A cycle's changes are read, decided on and performed (`CycleOutcome`) — a copy
   a program holds open for writing is never removed, and is moved aside instead — what it
   kept of the user's own is recorded through the outbox recorder, and once committed it is
-  announced. What it did in the folder is written to the rows of `items` with that record,
-  the disk first: an item of the user's own moved aside, a written copy and a kept
-  directory giving their bindings up, what is gone removed. `[tests]` (the step's tests
-  commit their cycle and run the agreement check of `mount/tests.rs`)
+  announced. `[tests]`
 - `cycle_step/onedrive_change.rs` — `OneDriveChange`: what happened to a name of OneDrive in
   the folder (`Appeared`, `Vanished`, `Moved`, `Stayed`). `[tests]`
 - `cycle_step/cycle_actions.rs` — `list_cycle_actions`: what one change does to the backing
   directory (`CycleAction`), from the change and what the disk holds at its paths
   (`BackingDirectoryFacts`); the directories gone from OneDrive, deepest first. `[tests]`
 - `cycle_step/uncommitted_cycle.rs` — `UncommittedCycle`: the announcements and the removed
-  ids a cycle leaves until it is committed, and the files whose whole copy the step found on
-  disk, which the commit writes into the rows of `items`.
+  ids a cycle leaves until it is committed.
 - `inotify_bridge.rs` — `InotifyBridge`: a change from OneDrive (`Announcement`) brought to
   whoever watches the folder, made by path through the mount on the bridge's own thread; the
   announcement in progress, and what its name was before the change
@@ -505,8 +496,7 @@ reconcile in read-write mode).
 - `listing/poller.rs` — when a cycle runs.
 - `listing/reconcile.rs` — the reconcile of one cycle, in either mode, under the folder's
   lease and its tree lock: the folder's mount follows the new tree (`follow_mount`),
-  `commit_cycle` (what waits; the rows of `items` follow in the commit, with the copies
-  the step found on disk), `after_commit`. `[tests]`
+  `commit_cycle` (what waits), `after_commit`. `[tests]`
 - `listing/rw.rs` — `Writes`: what a read-write folder's cycle shares with its outbox worker.
 - `listing/stage.rs` — `stage`: what was fetched put into `staging`, and the reconcile it asks
   for (commit, mode); a read-write folder's tree lock, stale-delta guard and what is
@@ -730,18 +720,13 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   `DriveId`. `[tests]`
 - `item_store.rs` — `ItemStore`: the rows of `items`, one per item by local item id; finding
   an item, its path and whether it is left here; applying a change of its local version,
-  each a case; the rules that hold of the rows, and who holds each; whether a file's
-  content is on disk (`set_content_presence`); what a cycle's step did in the folder,
-  written with its outbox rows in one transaction (`write_step_changes`). `[tests]`
+  each a case; the rules that hold of the rows, and who holds each. `[tests]`
 - `item_store/item_row.rs` — a row of `items` in the database: its columns, where it is
   read, written and deleted, and where a name and an item id of OneDrive are checked.
   Reachable from `item_store` alone.
 - `item_store/bindings.rs` — the binding: given first (`bind_item`, `make_onedrive_item`,
   the root's), and moved from one item to another (`take_over_binding`, done with the change
   that says so; `give_up_binding`; `merge_items`). `[tests]`
-- `item_store/cycle_commit.rs` — what a cycle's commit does to the rows of `items`, inside
-  the commit's transaction (`follow_onedrive_items`): a rule over all rows, in SQL, of what
-  `onedrive_items` places; its statements and their order. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to
@@ -752,10 +737,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `placing.rs` — whether the base places a row: itself, and every folder above it.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
-- `staging.rs` — the new tree a cycle builds, and its swap into `onedrive_items`; the rows
-  of `items` follow in the swap's and in a page's transaction.
-- `reconcile.rs` — what a read-write folder's cycle keeps from one cycle to the next, and
-  how a read-only folder's cycle stages what was left waiting (`stage_waiting`).
+- `staging.rs` — the new tree a cycle builds, and its swap into `onedrive_items`.
+- `reconcile.rs` — what a read-write folder's cycle keeps from one cycle to the next.
   `[tests]`
 - `activity.rs` — the activity log, as the store keeps it; `ActivityKind`, what an event records.
 - `conflicts.rs` — the local versions kept, on record.

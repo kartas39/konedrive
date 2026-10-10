@@ -80,7 +80,7 @@ impl World {
             .call_blocking(move |s| {
                 s.begin_staging(NewTree::Whole)?;
                 s.stage(&all)?;
-                s.commit_staging("link-1", &[])
+                s.commit_staging("link-1")
             })
             .unwrap();
         let locks = InodeLocks::new();

@@ -12,10 +12,6 @@ pub(in crate::fuse) struct UncommittedCycle {
     /// The OneDrive ids gone from the folder: one that is gone keeps nothing on this device,
     /// so its pin is taken off.
     pub(in crate::fuse) removed_ids: Vec<String>,
-    /// The OneDrive ids of the files the cycle shows anew, moved or gave another content
-    /// whose whole copy the backing directory holds at the file's place once the step is
-    /// done: what the cycle's commit writes as on disk in the rows of `items`.
-    pub(in crate::fuse) copies_on_disk: Vec<String>,
 }
 
 /// The OneDrive ids `changes` took out of the folder.

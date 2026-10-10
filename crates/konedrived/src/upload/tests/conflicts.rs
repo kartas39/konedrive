@@ -23,7 +23,7 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
             base.size = newer.size;
             s.begin_staging(konedrive_tree::NewTree::Delta)?;
             s.stage(&[Change::Upsert(base)])?;
-            s.commit_staging("link-2", &[])
+            s.commit_staging("link-2")
         })
         .unwrap();
     w.overwrite("a.txt", b"mine, from the old one");
@@ -248,7 +248,7 @@ fn delete_commits_wait_for_the_cycles_swap() {
     }
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(w.rows().len(), 1, "the drop waits for the cycle");
-    w.store.call_blocking(move |s| s.commit_staging("link-2", &[])).unwrap();
+    w.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
     drop(lock);
     w.h.runtime.block_on(task).unwrap();
     assert!(w.rows().is_empty(), "{:?}", w.summary());

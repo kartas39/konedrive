@@ -2,34 +2,19 @@
 //! store on disk, over a folder that holds nothing, with a source whose files hold nothing.
 //! What is built is driven from the test's own thread, which is no thread of the runtime the
 //! parts wait and sweep on.
-//!
-//! **The agreement check** ([`BuiltMount::check_rows_agree`]) is here too: what the rows of
-//! `items` say the folder shows, against what the mount derives today from `onedrive_items`,
-//! the outbox and the backing directory. Nothing reads the rows yet, so while the two agree
-//! the rows are proven against the code that works. A cycle writes the rows of what OneDrive
-//! has; the write operations, the landing of a download and the free-up do not write theirs
-//! yet, so a test that puts a file of the user's own or a downloaded copy into the backing
-//! directory by hand has its row written here, as that operation will write it
-//! ([`BuiltMount::make_own_file`], [`BuiltMount::download`]).
 
-use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_graph::pool::TransferPool;
-use konedrive_tree::{Change, ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, Store, TreeStore};
+use konedrive_tree::{Change, Store, TreeStore};
 
 use super::{Mount, MountSetup, WriteSetup};
 use crate::folder::root::SyncRoot;
 use crate::fuse::directory_contents::tests::drive;
-use crate::fuse::directory_contents::{DirectoryContents, EntryState, FileSyncState};
-use crate::fuse::local_only_entry::decide_upload;
-use crate::fuse::upload_rules::tests::rules;
-use crate::fuse::upload_rules::UploadDecision;
 use crate::fuse::files_interface::FilesRefusal;
 use crate::fuse::kernel_requests::KernelRequests;
 use crate::fuse::node_table::NodeId;
@@ -72,7 +57,7 @@ pub(in crate::fuse) fn build_mount_with(more: &[Change], pinned_ids: &[&str]) ->
     let mut written = TreeStore::open(&store_path).unwrap();
     drive(&mut written, Vec::new());
     if !more.is_empty() {
-        written.commit_page(more, "after", &[]).unwrap();
+        written.commit_page(more, "after").unwrap();
     }
     let store = Store::new(written);
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
@@ -99,108 +84,12 @@ pub(crate) fn build_mount() -> BuiltMount {
 
 impl BuiltMount {
     /// The whole downloaded copy of the OneDrive file `id`, with `content`, at `rel` in the
-    /// backing directory, whose directory is there already. The row of the file says its
-    /// content is on disk, as the landing of a download will write it.
+    /// backing directory, whose directory is there already.
     pub(crate) fn download(&self, rel: &str, id: &str, content: &[u8]) {
         let path = self.disk.join(rel);
         fs::write(&path, content).unwrap();
         xattr::set(&path, XATTR_ITEM_ID, id.as_bytes()).unwrap();
         xattr::set(&path, XATTR_STATE, State::Hydrated.as_str().as_bytes()).unwrap();
-        let onedrive_item = OneDriveItemReference { drive_id: DriveId::new("D").unwrap(), item_id: OneDriveItemId::new(id) };
-        let landed = self.store.call_blocking(move |store| {
-            let Some(row) = store.item_store().find_bound_item(&onedrive_item)? else { return Ok(()) };
-            store.item_store().set_content_presence(row.local_item_id, ContentPresence::OnDisk)
-        });
-        landed.unwrap();
-    }
-
-    /// A file of the user's own with `content` at `rel` in the backing directory, whose
-    /// directory is there already and is shown by the rows: put there by hand, with the row
-    /// a write operation that makes a file will write for it. Its local item id.
-    pub(in crate::fuse) fn make_own_file(&self, rel: &str, content: &[u8]) -> LocalItemId {
-        fs::write(self.disk.join(rel), content).unwrap();
-        self.make_own_row(rel, ItemKind::File)
-    }
-
-    /// The row of the file or directory of the user's own that the backing directory holds
-    /// at `rel`, as the write operation that makes one will write it.
-    pub(in crate::fuse) fn make_own_row(&self, rel: &str, kind: ItemKind) -> LocalItemId {
-        let (rel, metadata) = (PathBuf::from(rel), fs::metadata(self.disk.join(rel)).unwrap());
-        let name = rel.file_name().unwrap().to_owned();
-        let is_name_ignored = rules().is_name_ignored(name.to_str().unwrap());
-        let content = (kind == ItemKind::File).then(|| ContentVersion::ChangedHere { size: metadata.len(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, change_count: 1 });
-        let made = self.store.call_blocking(move |store| {
-            let directory = store.item_store().find_item_by_path(rel.parent().unwrap())?.expect("the rows show the directory the file is made in");
-            let place = ItemPlace { parent_local_item_id: directory.local_item_id, name };
-            store.item_store().apply(&LocalVersionChange::Made { kind, place, content, is_name_ignored, replaced: None })
-        });
-        made.unwrap()
-    }
-
-    /// The agreement check: what the rows of `items` say the folder shows is what the mount
-    /// derives today, for every directory: the names, each one's kind and path, a file's
-    /// sync state, and whether the item is left here by the upload rules.
-    pub(crate) fn check_rows_agree(&self) {
-        self.check_rows_agree_except(&[]);
-    }
-
-    /// [`check_rows_agree`](Self::check_rows_agree) for everything but the paths `except`,
-    /// where the test says why the two cannot agree.
-    pub(crate) fn check_rows_agree_except(&self, except: &[&str]) {
-        let derived = self.list_derived_entries();
-        let rows = self.store.call_blocking(|store| {
-            let mut shown = BTreeMap::new();
-            let mut directories = vec![LocalItemId::ROOT];
-            while let Some(directory) = directories.pop() {
-                for item in store.item_store().list_children(directory)? {
-                    let path = store.item_store().find_path(item.local_item_id)?.expect("an item a directory lists has a path");
-                    let left_here = if store.item_store().is_ignored(item.local_item_id)? { ", left here" } else { "" };
-                    let said = match item.file_sync_state() {
-                        Some(konedrive_tree::FileSyncState::LocalOnly) => "file, local only",
-                        Some(konedrive_tree::FileSyncState::RemoteOnly) => "file, remote only",
-                        Some(konedrive_tree::FileSyncState::ModifiedHere) => "file, modified here",
-                        Some(konedrive_tree::FileSyncState::Synced) => "file, synced",
-                        None => {
-                            directories.push(item.local_item_id);
-                            "directory"
-                        }
-                    };
-                    shown.insert(path, format!("{said}{left_here}"));
-                }
-            }
-            Ok(shown)
-        });
-        let leave_out = |mut entries: BTreeMap<PathBuf, String>| {
-            entries.retain(|path, _| !except.iter().any(|left_out| path == Path::new(left_out)));
-            entries
-        };
-        assert_eq!(leave_out(rows.unwrap()), leave_out(derived), "the rows of items (left) do not say what the mount derives (right)");
-    }
-
-    /// What the mount derives today of every directory of the folder, by path: a directory,
-    /// or a file with its sync state, and whether the upload rules leave it here. Read
-    /// through a connection of its own to the store, as the mount's reader is.
-    fn list_derived_entries(&self) -> BTreeMap<PathBuf, String> {
-        let backing_directory = Arc::clone(&self.mount.backing_directory);
-        let contents = DirectoryContents::new(TreeStore::open_read_only(&self._tmp.path().join("tree.db")).unwrap(), Arc::clone(&backing_directory));
-        let (rules, mut shown, mut directories) = (rules(), BTreeMap::new(), vec![contents.find_root_directory()]);
-        while let Some(directory) = directories.pop() {
-            for listed_name in contents.list_names(&directory) {
-                let entry = contents.describe_listed_name(&listed_name, &directory);
-                let path = directory.path.join(&entry.name);
-                let left_here = entry.local_only().is_some() && decide_upload(&backing_directory, &rules, &directory.path, &entry.name) == UploadDecision::Ignore;
-                let said = match &entry.state {
-                    EntryState::File(FileSyncState::LocalOnly(_)) => "file, local only",
-                    EntryState::File(FileSyncState::RemoteOnly(_)) => "file, remote only",
-                    EntryState::File(FileSyncState::ModifiedHere(..)) => "file, modified here",
-                    EntryState::File(FileSyncState::Synced(..)) => "file, synced",
-                    EntryState::Directory(_) => "directory",
-                };
-                shown.insert(path.clone(), format!("{said}{}", if left_here { ", left here" } else { "" }));
-                directories.extend(entry.to_directory_reference(path));
-            }
-        }
-        shown
     }
 
     /// A directory at `rel` in the backing directory, marked with the OneDrive id `id`.

@@ -119,9 +119,8 @@ pub(crate) fn take_over_binding(tx: &Transaction<'_>, replacing: LocalItemId, re
     hand_over(tx, giver, taker)
 }
 
-/// [`ItemStore::give_up_binding`], inside the caller's transaction. A refusal comes before
-/// anything is written; on any other error the caller drops its transaction and never
-/// commits it.
+/// [`ItemStore::give_up_binding`], inside the caller's transaction. On any error the
+/// caller drops its transaction and never commits it.
 pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_ignored: bool) -> Result<LocalItemId, TreeError> {
     let mut giver = read_below_root(tx, item)?;
     if giver.local.is_none() {

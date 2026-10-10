@@ -1001,7 +1001,7 @@ fn the_root_is_bound_once_the_drive_and_its_root_are_known() {
     assert_eq!(store.item_store().find_bound_item(&root_of("Drive", "R")).unwrap().map(|i| i.local_item_id), Some(ROOT));
 
     let mut store = TreeStore::in_memory().unwrap();
-    store.commit_page(&[onedrive_root("R")], "next", &[]).unwrap();
+    store.commit_page(&[onedrive_root("R")], "next").unwrap();
     assert_eq!(item(&mut store, ROOT).onedrive_item, None, "the root's id alone names no drive");
     store.set_drive_id("d9").unwrap();
     assert_eq!(item(&mut store, ROOT).onedrive_item, Some(root_of("d9", "R")));
@@ -1138,7 +1138,7 @@ fn the_root_is_not_bound_to_a_reference_that_a_shown_item_or_a_file_has() {
 
         store.begin_staging(crate::NewTree::Whole).unwrap();
         assert!(is_refused(store.stage(&[onedrive_root("R")])), "shown: {shown}");
-        assert!(is_refused(store.commit_page(&[onedrive_root("R")], "next", &[])), "shown: {shown}");
+        assert!(is_refused(store.commit_page(&[onedrive_root("R")], "next")), "shown: {shown}");
         assert_eq!(store.root_item_id().unwrap(), None, "what the call wrote before it was refused is not kept");
         assert_eq!((item(&mut store, ROOT).onedrive_item, item(&mut store, holder)), (None, before));
 
@@ -1146,61 +1146,4 @@ fn the_root_is_not_bound_to_a_reference_that_a_shown_item_or_a_file_has() {
         assert!(is_refused(store.set_drive_id("d1")), "shown: {shown}");
         assert_eq!(item(&mut store, ROOT).onedrive_item, None);
     }
-}
-
-/// An item is found by its path, name by name from the root; the empty path is the root, and
-/// a path through a file, or through a name nothing has, is nothing.
-#[test]
-fn an_item_is_found_by_its_path() {
-    let mut store = TreeStore::in_memory().unwrap();
-    let docs = make_directory(&mut store, ROOT, "docs");
-    let file = make_file(&mut store, docs, "a.txt");
-    let found = |store: &mut TreeStore, path: &str| store.item_store().find_item_by_path(path.as_ref()).unwrap().map(|item| item.local_item_id);
-    assert_eq!((found(&mut store, ""), found(&mut store, "docs"), found(&mut store, "docs/a.txt")), (Some(ROOT), Some(docs), Some(file)));
-    assert_eq!((found(&mut store, "docs/none"), found(&mut store, "docs/a.txt/below"), found(&mut store, "none/a.txt")), (None, None, None));
-}
-
-/// Whether a file's content is on disk is written for a file the folder shows, and is
-/// nothing for a directory, for an item the folder does not show and for an id with no row.
-#[test]
-fn the_content_presence_is_written_for_a_file_the_folder_shows() {
-    let mut store = TreeStore::in_memory().unwrap();
-    store.set_drive_id("d1").unwrap();
-    let (file, directory) = (make_file(&mut store, ROOT, "a.txt"), make_directory(&mut store, ROOT, "docs"));
-    synced(&mut store, file, "A");
-    store.item_store().set_content_presence(file, ContentPresence::NotOnDisk).unwrap();
-    assert_eq!(item(&mut store, file).file_sync_state(), Some(FileSyncState::RemoteOnly));
-    store.item_store().set_content_presence(file, ContentPresence::OnDisk).unwrap();
-    assert_eq!(item(&mut store, file).file_sync_state(), Some(FileSyncState::Synced));
-    store.item_store().set_content_presence(directory, ContentPresence::OnDisk).unwrap();
-    assert_eq!(item(&mut store, directory).content_presence, ContentPresence::NotOnDisk);
-    store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
-    store.item_store().set_content_presence(file, ContentPresence::OnDisk).unwrap();
-    assert_eq!(item(&mut store, file).content_presence, ContentPresence::NotOnDisk);
-    store.item_store().set_content_presence(LocalItemId::new(99), ContentPresence::OnDisk).unwrap();
-}
-
-/// What a step of a cycle did in the folder is written in one transaction, the bindings
-/// given up first: a change the rows refuse is left out and counted, and the rest is
-/// written. Written a second time, every change is refused and the rows stay.
-#[test]
-fn the_changes_of_a_cycles_step_are_written_together_and_a_refused_one_is_left_out() {
-    let mut store = TreeStore::in_memory().unwrap();
-    store.set_drive_id("d1").unwrap();
-    let (written, gone, own) = (make_file(&mut store, ROOT, "a.txt"), make_file(&mut store, ROOT, "gone.txt"), make_file(&mut store, ROOT, "new.txt"));
-    synced(&mut store, written, "A");
-    synced(&mut store, gone, "G");
-    let moved = |item, name: &str| LocalVersionChange::Moved { item, place: place(ROOT, name), is_name_ignored: name.ends_with(".tmp") };
-    let changes = [moved(written, "a-copy.tmp"), LocalVersionChange::Removed { item: gone }, LocalVersionChange::Removed { item: LocalItemId::new(99) }, moved(own, "new-copy.txt")];
-    let (refused, _) = store.item_store().write_step_changes(&[(written, false)], &changes, &[], 0).unwrap();
-    assert_eq!(refused, 1, "the removal of an item that has no row");
-    assert_eq!(names(&mut store, ROOT), ["a-copy.tmp", "new-copy.txt"]);
-    let copy = item(&mut store, written);
-    assert_eq!((copy.onedrive_item, copy.is_name_ignored), (None, true));
-    assert!(store.item_store().find_bound_item(&reference("A")).unwrap().is_some_and(|taker| taker.local.is_none()));
-
-    let before = (item(&mut store, written), item(&mut store, own), item(&mut store, gone));
-    let (refused, _) = store.item_store().write_step_changes(&[(written, false)], &changes, &[], 0).unwrap();
-    assert_eq!(refused, 5);
-    assert_eq!((item(&mut store, written), item(&mut store, own), item(&mut store, gone)), before);
 }
