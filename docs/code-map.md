@@ -814,26 +814,55 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `sync_plan.rs` — the sync plan: `make_sync_plan`, one pure function from rows and a few
   facts given as values (`SyncPlanInput`, with the folder's `SendingState`) to the steps that
   can run now and, for every other item, why not (`SyncPlan`: `SyncStep`s, `ItemWait`s with
-  their `WaitReason`, `ItemExclusion`s, `PlanFault`s). Each item is decided by itself; what
-  one item asks about another (its directory, the holder of a name, what is shown in it) is
-  found among the rows given. No caller in the daemon yet. `[tests]`: a test per cell of
-  the three tables, in `sync_plan/tests/` (`existence.rs`, `place.rs`, `content.rs`).
+  their `WaitReason`, `ItemExclusion`s, `PlanFault`s). Each item is decided by itself, then
+  the items for each other, each kind of case by its own module, in the order
+  `make_sync_plan` says; the steps of one plan can all run at once. No caller in the daemon
+  yet. `[tests]`: a test per cell of the three tables (`sync_plan/tests/existence.rs`,
+  `place.rs`, `content.rs`), a test per case between items (`item_relations.rs`), and the
+  enumeration of every two related items and every three in a circle (`related_items.rs`).
 - `sync_plan/side_change.rs` — what one side did to one item since the two sides last
   agreed, read off its row (`SideChange`): never was, removed, or is there with its place
   (`PlaceChange`) and its content (`ContentChange`: same, changed, not known without a
   hash). `[tests]`
 - `sync_plan/item_decision.rs` — the three tables (whether the item exists, its place, its
   content), cell by cell: `decide_item` from one item's `ItemCase` to one step, one wait,
-  an exclusion or nothing (`ItemDecision`). Reads no other row.
+  an exclusion, a fault or nothing (`ItemDecision`). Reads no other row. And what is
+  answered for each item while the items are decided for each other (`ItemDecisions`).
 - `sync_plan/sending_obstacle.rs` — what is not sent to OneDrive, and why
   (`find_sending_obstacle`, `SendingObstacle`), by what a step sends of the item
   (`SentPart`). `[tests]`
+- `sync_plan/move_cycle.rs` — a cycle of moves: a directory moved here into what OneDrive
+  has in it has its move taken back, and directories moved into one another on one side go
+  the outer one first (`take_back_moves_into_own_content`).
+- `sync_plan/name_contest.rs` — a name of a directory an item of the folder is to have in
+  OneDrive, against what has or wants it there as OneDrive compares names
+  (`decide_name_contest` over a `NameClaim` and its `NameHolder`, to a
+  `NameContestOutcome`): it waits for what leaves the name, is merged with a new item of
+  OneDrive, has its content hashed first, or steps aside; `settle_name_contests` finds the
+  claims among the rows. `[tests]`
+- `sync_plan/conflict_copy_name.rs` — the name of a conflict copy
+  (`make_conflict_copy_name`), and the first that is free (`find_free_conflict_copy_name`).
+  `[tests]`
+- `sync_plan/removed_directory.rs` — a directory one side removed: removed here, one
+  removal for all OneDrive has in it, which waits for what the folder still shows of it
+  (`send_one_removal_for_each_directory`); not in OneDrive and holding the user's own, it
+  gives up its binding once nothing agreed on in it is left
+  (`keep_directories_that_hold_the_users_own`).
+- `sync_plan/name_exchange.rs` — items that wait for each other in a circle: one goes
+  through a temporary name (`make_temporary_name`), towards OneDrive or in the folder
+  (`break_circles_of_names`).
+- `sync_plan/mass_removal.rs` — the guard against a mass removal: the limits
+  (`is_mass_removal`), and the removals of one plan held until the user confirms
+  (`hold_mass_removal`). `[tests]`
+- `sync_plan/wait_end.rs` — where a wait for another item ends: an item that was not
+  given is said, and a wait nothing ends is a fault (`end_waits_for_other_items`).
 - `sync_plan/sync_step.rs` — one thing the plan does: `OneDriveStep` (a request to
   OneDrive), `FolderStep` (a change of the folder and of the local version), `RowStep` (a
   change of the rows alone), each case with the versions of the row it was planned from
   (`ItemVersions`). `[tests]`
 - `sync_plan/plan_items.rs` — the rows a plan is made over (`PlanItems`), found by id, by
-  local place and by the directory the folder shows them in. `[tests]`
+  local place, by the directory each side has them in, by a name as OneDrive compares
+  names, and by what is in a directory at any depth. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to

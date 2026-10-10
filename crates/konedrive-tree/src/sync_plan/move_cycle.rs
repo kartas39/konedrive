@@ -3,6 +3,8 @@
 //! the local one is taken back; and a directory OneDrive moved into what the folder shows
 //! in it waits until that is out of it.
 
+use std::collections::BTreeSet;
+
 use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
 use super::plan_items::PlanItems;
 use super::side_change::{PlaceChange, SideChange};
@@ -50,16 +52,16 @@ fn is_moved_into_own_content(items: &PlanItems<'_>, item: &Item) -> bool {
     false
 }
 
-/// The first directory on the way up from `directory`, as the folder shows them, that is
-/// not where OneDrive has it; `directory` itself when all are.
-fn find_directory_out_of_place(items: &PlanItems<'_>, directory: LocalItemId) -> LocalItemId {
+/// The first directory on the way up from `directory`, each directory in the one `directory_of`
+/// gives for it, that is not at one place on the two sides; `directory` itself when all are.
+fn find_directory_out_of_place(items: &PlanItems<'_>, directory: LocalItemId, directory_of: fn(&Item) -> Option<LocalItemId>) -> LocalItemId {
     let mut at = Some(directory);
     for _ in 0..items.count() {
         let Some(row) = at.and_then(|at| items.find(at)) else { break };
         if row.local.as_ref().map(|local| &local.place) != row.onedrive.as_ref().map(|onedrive| &onedrive.place) {
             return row.local_item_id;
         }
-        at = directory_here(row);
+        at = directory_of(row);
     }
     directory
 }
@@ -81,8 +83,13 @@ fn take_move_back(case: &ItemCase<'_>) -> Option<ItemDecision> {
 ///   plan made after it sees whether their moves still close a cycle. This holds also for a
 ///   move that is not sent now (a read-only folder, a name OneDrive cannot hold).
 /// - A directory OneDrive moved into what the folder shows in it is not moved here yet: it
-///   waits for the first directory on the way that is out of place.
-pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) {
+///   waits for the first directory on the way that is out of place. Likewise a directory
+///   moved here into what OneDrive still has in it, whose move closes no cycle, is not
+///   sent yet: a directory before what is in it.
+///
+/// The directories whose move here does not stand are returned: the one whose move is taken
+/// back and those that wait for it.
+pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) -> BTreeSet<LocalItemId> {
     let is_sending = |decision: Option<&ItemDecision>| {
         matches!(decision, Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. })) | ItemDecision::Wait(WaitReason::User(_) | WaitReason::Time { .. } | WaitReason::AnotherItem(_))))
     };
@@ -92,20 +99,37 @@ pub(crate) fn take_back_moves_into_own_content(cases: &[ItemCase<'_>], items: &P
         .filter(|case| is_sending(decisions.find(case.item.local_item_id)) && is_moved_into_own_content(items, case.item))
         .collect();
     in_cycle.sort_by_key(|case| case.item.local_item_id);
+    let mut not_standing = BTreeSet::new();
     if let Some((first, others)) = in_cycle.split_first() {
         if let Some(taken_back) = take_move_back(first) {
             decisions.replace(first.item.local_item_id, taken_back);
+            not_standing.insert(first.item.local_item_id);
             for other in others {
                 decisions.replace(other.item.local_item_id, ItemDecision::Wait(WaitReason::AnotherItem(first.item.local_item_id)));
+                not_standing.insert(other.item.local_item_id);
             }
         }
     }
     for case in cases {
         let id = case.item.local_item_id;
-        let is_moved_here = matches!(decisions.find(id), Some(ItemDecision::Step(SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. }))));
-        let Some(directory) = directory_in_onedrive(case.item).filter(|_| is_moved_here && case.item.kind == ItemKind::Directory) else { continue };
-        if directory == id || items.is_shown_in(directory, id) {
-            decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory))));
+        if case.item.kind != ItemKind::Directory {
+            continue;
+        }
+        match decisions.find(id) {
+            Some(ItemDecision::Step(SyncStep::Folder(FolderStep::MoveItem { .. } | FolderStep::TakeMoveBack { .. }))) => {
+                let Some(directory) = directory_in_onedrive(case.item) else { continue };
+                if directory == id || items.is_shown_in(directory, id) {
+                    decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_here))));
+                }
+            }
+            Some(ItemDecision::Step(SyncStep::OneDrive(OneDriveStep::SendMove { .. }))) => {
+                let Some(directory) = directory_here(case.item) else { continue };
+                if directory == id || items.is_in_onedrive_in(directory, id) {
+                    decisions.replace(id, ItemDecision::Wait(WaitReason::AnotherItem(find_directory_out_of_place(items, directory, directory_in_onedrive))));
+                }
+            }
+            _ => {}
         }
     }
+    not_standing
 }

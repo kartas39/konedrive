@@ -77,7 +77,7 @@ fn items_that_exchange_names_here_go_through_a_temporary_name_in_onedrive() {
 #[test]
 fn items_onedrive_exchanged_the_names_of_go_through_a_temporary_name_in_the_folder() {
     let given = input(vec![moved_in_onedrive(synced_file(2, ROOT, "x"), ROOT, "y"), moved_in_onedrive(synced_directory(3, ROOT, "y"), ROOT, "x")]);
-    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 2), name: temporary_name(2) }));
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 2), place: place(ROOT, ".konedrive-swap-2") }));
     assert_eq!(answer(&given, 3), waits_for(2));
 
     // Once the folder shows the first under the temporary name, which is then the place
@@ -88,6 +88,41 @@ fn items_onedrive_exchanged_the_names_of_go_through_a_temporary_name_in_the_fold
     let given = input(vec![first, moved_in_onedrive(synced_directory(3, ROOT, "y"), ROOT, "x")]);
     assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveItem { item: versions(&given, 3) }));
     assert_eq!(answer(&given, 2), waits_for(3));
+}
+
+/// New: an item OneDrive moved that is in the way of another, and cannot go to its place
+/// yet, goes through a temporary name too — in the directory OneDrive has it in where the
+/// folder can bring it there, and where it is otherwise.
+#[test]
+fn an_item_onedrive_moved_that_is_in_the_way_of_another_goes_through_a_temporary_name_here() {
+    // OneDrive made a directory at the name of one it moved into the new one.
+    let given = input(vec![moved_in_onedrive(synced_directory(2, ROOT, "x"), id(3), "in"), listed(3, ItemKind::Directory, ROOT, "x")]);
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 2), place: place(ROOT, ".konedrive-swap-2") }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+
+    // OneDrive moved 2 out of 3 to the name of 3, and 3 into 2: the folder brings 2 to its
+    // directory, where the name is still taken.
+    let given = input(vec![moved_in_onedrive(synced_directory(2, id(3), "z"), ROOT, "x"), moved_in_onedrive(synced_directory(3, ROOT, "x"), id(2), "X")]);
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 2), place: place(ROOT, ".konedrive-swap-2") }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+
+    // OneDrive removed a directory and moved a file out of it to the directory's name.
+    let given = input(vec![moved_in_onedrive(synced_file(2, id(3), "a"), ROOT, "z"), removed_in_onedrive(synced_directory(3, ROOT, "z"))]);
+    assert_eq!(answer(&given, 2), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 2), place: place(ROOT, ".konedrive-swap-2") }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+
+    // OneDrive removed a directory, made another at its name and moved a file from the one
+    // into the other: the directory that goes is in the way, and steps aside where it is.
+    let given = input(vec![listed(2, ItemKind::Directory, ROOT, "d"), removed_in_onedrive(synced_directory(3, ROOT, "d")), moved_in_onedrive(synced_file(4, id(3), "a.txt"), id(2), "a.txt")]);
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::MoveToTemporaryName { item: versions(&given, 3), place: place(ROOT, ".konedrive-swap-3") }));
+    assert_eq!((answer(&given, 2), answer(&given, 4)), (waits_for(3), waits_for(2)));
+
+    // An item that is under its temporary name there already goes through no other: what a
+    // temporary name did not break is a fault the plan says.
+    let mut at_temporary_name = moved_in_onedrive(synced_directory(2, ROOT, ".konedrive-swap-2"), id(3), "in");
+    at_temporary_name.onedrive_etag = Some("e".to_owned());
+    let given = input(vec![at_temporary_name, listed(3, ItemKind::Directory, ROOT, ".konedrive-swap-2")]);
+    assert_eq!(answer(&given, 2), Answer::OtherFault(PlanFault::WaitWithoutEnd(id(2))));
 }
 
 /// New (today: 409 and then a temporary name, as B2a): a directory made at the name of an
@@ -230,6 +265,27 @@ fn a_directory_moved_here_into_one_that_onedrive_moved_into_it_is_taken_back() {
     assert_eq!(answer(&given, 3), waits_for(2));
 }
 
+/// New: "a directory before what is in it", for two moves made here. A directory moved here
+/// into one that OneDrive still has in it closes no cycle when that one was moved out of it
+/// here; its move is sent after the other's.
+#[test]
+fn a_directory_moved_here_into_one_onedrive_still_has_in_it_is_sent_after_that_one_left_it() {
+    let given = input(vec![moved_here(synced_directory(2, id(3), "in"), ROOT, "out"), moved_here(synced_directory(3, ROOT, "d"), id(2), "d")]);
+    assert_eq!(answer(&given, 2), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 2), parent: reference("root"), name: "out".into() }));
+    assert_eq!(answer(&given, 3), waits_for(2));
+}
+
+/// New: the name a directory comes back to when its move is taken back. OneDrive has the
+/// directory under that name, and it stays there, so the user's own item at that name here
+/// steps aside; it does not wait for a move that is never sent.
+#[test]
+fn the_users_own_at_the_name_a_move_is_taken_back_to_steps_aside() {
+    let given = input(vec![moved_in_onedrive(synced_directory(2, ROOT, "a"), id(3), "a"), moved_here(synced_directory(3, ROOT, "b"), id(2), "b"), made_file(4, ROOT, "b")]);
+    assert_eq!(answer(&given, 4), folder_step(FolderStep::RenameToConflictCopy { item: versions(&given, 4), name: "b-pc".into() }));
+    assert_eq!(answer(&given, 3), waits_for(4), "its move is taken back once the name is free here");
+    assert_eq!(answer(&given, 2), waits_for(3));
+}
+
 /// B7: differs from today, where a removal is sent for each entry, deepest first
 /// (`a_removed_directory_tree_is_removed_entry_by_entry`, `upload/tests/row_kinds.rs`).
 #[test]
@@ -272,6 +328,30 @@ fn the_removal_of_a_directory_stands_whatever_onedrive_changed_in_it() {
     assert_eq!(answer(&given, 4), waits_for(2), "it does not come back");
 }
 
+/// Open: an item the folder shows that OneDrive moved into a directory that was removed
+/// here. The design says the removal "is sent and stands" whatever OneDrive changed below
+/// the directory, and that the folder follows OneDrive's move; it cannot do both.
+///
+/// - Reading 1 (implemented): the folder cannot follow, so the item's place here stands
+///   and is sent, as where OneDrive's place cannot be taken (the map's P10); the removal
+///   waits for it, as for an item moved out of the directory here. Nothing the folder
+///   shows is removed by a removal of something else.
+/// - Reading 2: the item goes with the removal, in OneDrive and then here.
+#[test]
+fn open_an_item_onedrive_moved_into_a_directory_removed_here_keeps_its_place_here() {
+    let moved_on_both_sides = moved_in_onedrive(moved_here(synced_file(4, ROOT, "b.txt"), ROOT, "c.txt"), id(5), "b.txt");
+    let given = input(vec![
+        removed_here(synced_directory(2, ROOT, "d")),
+        moved_in_onedrive(synced_file(3, ROOT, "a.txt"), id(2), "a.txt"),
+        moved_on_both_sides,
+        listed(5, ItemKind::Directory, id(2), "new"),
+    ]);
+    assert_eq!(answer(&given, 3), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 3), parent: reference("root"), name: "a.txt".into() }));
+    assert_eq!(answer(&given, 4), onedrive_step(OneDriveStep::SendMove { item: versions(&given, 4), parent: reference("root"), name: "c.txt".into() }), "in a directory OneDrive made in the removed one");
+    assert_eq!(answer(&given, 2), waits_for(3));
+    assert_eq!(answer(&given, 5), waits_for(2));
+}
+
 /// B4a and B4b, and the brief's §5, 4. Today:
 /// `a_removed_directory_that_holds_a_local_only_entry_stays_and_is_made_again`
 /// (`fuse/conflict_copies/tests.rs`); B4b has no test of the whole. Stage A left the
@@ -311,6 +391,31 @@ fn the_clean_items_of_a_directory_onedrive_removed_go_before_it_gives_up_its_bin
     assert_eq!(answer(&given, 2), waits_for(4));
     assert_eq!(answer(&given, 3), waits_for(2));
     assert_eq!(answer(&given, 4), folder_step(FolderStep::RemoveItem { item: versions(&given, 4) }));
+}
+
+/// New: which items stay in a directory OneDrive does not have, when it gives up its
+/// binding, is read off their rows: one the two sides agreed on in it goes first, unless
+/// its place here is to be sent into the directory again.
+#[test]
+fn a_directory_gives_up_its_binding_once_nothing_in_it_was_agreed_on_there() {
+    // A directory no listing told of (the map's E-rows have none; stage A's open case 1).
+    let never_listed = |number: i64, name: &str| {
+        let mut directory = made_directory(number, ROOT, name);
+        directory.onedrive_item = Some(reference(&format!("I{number}")));
+        directory
+    };
+    let given = input(vec![never_listed(2, "d"), removed_in_onedrive(synced_file(3, id(2), "clean.txt")), made_file(4, id(2), "mine.txt")]);
+    assert_eq!(answer(&given, 2), waits_for(3));
+    assert_eq!(answer(&given, 3), folder_step(FolderStep::RemoveItem { item: versions(&given, 3) }));
+    let given = input(vec![never_listed(2, "d"), made_file(4, id(2), "mine.txt")]);
+    assert_eq!(answer(&given, 2), row_step(RowStep::GiveUpBinding { item: versions(&given, 2) }));
+
+    // OneDrive removed the directory 3 and moved the file 4 out of it into the directory 2,
+    // which was removed here: the file's place here stands, it is sent into 3 again, and 3
+    // is made again for it.
+    let given = input(vec![removed_here(synced_directory(2, ROOT, "gone")), removed_in_onedrive(synced_directory(3, ROOT, "d")), moved_in_onedrive(synced_file(4, id(3), "a.txt"), id(2), "a.txt")]);
+    assert_eq!(answer(&given, 3), row_step(RowStep::GiveUpBinding { item: versions(&given, 3) }));
+    assert_eq!((answer(&given, 4), answer(&given, 2)), (waits_for(3), waits_for(4)));
 }
 
 /// Open: an item OneDrive has that was moved here into a directory that is left here. The

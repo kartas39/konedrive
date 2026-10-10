@@ -74,21 +74,34 @@ impl SyncStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OneDriveStep {
     /// A directory made here is made in OneDrive, in the directory `parent` under `name`.
+    /// `name` is the name here, or a temporary name; what the confirmation writes as
+    /// OneDrive's place and as the place agreed on is the place that was sent.
     MakeDirectory { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
-    /// A file made here is sent, with its content, into the directory `parent` under `name`.
+    /// A file made here is sent, with its content, into the directory `parent` under `name`;
+    /// the name as for a directory.
     SendNewFile { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
     /// The content of a file OneDrive has, changed here, is sent into that item where
     /// OneDrive has it, guarded by the eTag. No name and no directory is sent.
     SendContent { item: ItemVersions },
     /// A move or a rename made here is sent, guarded by the eTag: the item goes into the
     /// directory `parent` under `name`. The name is the local one, or a temporary name items
-    /// exchange their names through; of a directory made here and of a new file likewise.
+    /// exchange their names through: what the confirmation writes as OneDrive's place and
+    /// as the place agreed on is the place that was sent, so that an item sent to a
+    /// temporary name is still moved here, and its move is sent again once its name is free.
     SendMove { item: ItemVersions, parent: OneDriveItemReference, name: OsString },
-    /// The removal of a file here is sent, guarded by the eTag.
+    /// The removal of a file is sent, guarded by the eTag: of a file that was removed here;
+    /// and of one the folder shows, whose name is ignored now and which got its binding
+    /// while it was sent. For that one the commit gives the binding up first
+    /// ([`ItemStore::give_up_binding`](crate::ItemStore::give_up_binding), its name
+    /// ignored), and the removal is confirmed of the row that took it.
     SendFileRemoval { item: ItemVersions },
-    /// The removal of a directory here is sent, with no guard: it stands whatever OneDrive
-    /// changed below it. `below` is what was removed here with it and goes with its
-    /// confirmation: one removal in OneDrive for all of it.
+    /// The removal of a directory is sent, with no guard: it stands whatever OneDrive
+    /// changed below it, and removes all OneDrive has in the directory. `below` is what
+    /// was removed here with it: those rows are left with their binding alone by its
+    /// confirmation, as the directory's is. Every other row OneDrive has in it (what
+    /// OneDrive made there since) loses its OneDrive version with the confirmation, as a
+    /// listing would say. Of a directory the folder shows, whose name is ignored now, as
+    /// for a file ([`SendFileRemoval`](Self::SendFileRemoval)).
     SendDirectoryRemoval { item: ItemVersions, below: Vec<ItemVersions> },
 }
 
@@ -124,17 +137,21 @@ pub enum FolderStep {
     RemoveItem { item: ItemVersions },
     /// The content of a pinned file that is not on disk is downloaded.
     DownloadContent { item: ItemVersions },
-    /// The user's own item is renamed here to `name`, a conflict copy's name, before it is
-    /// sent: another item has, or takes, the name it had.
+    /// The user's own item is renamed here to `name`, a conflict copy's name, in the
+    /// directory the folder shows it in: OneDrive has another item under the name it had,
+    /// as OneDrive compares names, or an item of the folder that was unsent earlier is to
+    /// have it there. Whether the new name is ignored is asked at the commit. Nothing agreed
+    /// on changes: the plan made after it sends the item under its new name.
     RenameToConflictCopy { item: ItemVersions, name: OsString },
     /// A move made here is taken back: the item is at OneDrive's place (`item.onedrive`)
     /// again, because sending the move would put a directory into what OneDrive has in it.
     TakeMoveBack { item: ItemVersions },
-    /// The item is renamed here to `name`, a temporary name, in the directory the folder
-    /// shows it in: items OneDrive moved in a circle of names cannot each go to its place
-    /// while another still has it. That name is the place agreed on from then, so that
-    /// nothing of it is sent, and the plan made after it moves the item to OneDrive's place.
-    MoveToTemporaryName { item: ItemVersions, name: OsString },
+    /// The item is moved here to `place`, a temporary name in the directory OneDrive has it
+    /// in, or, while the folder cannot bring it there, in the directory the folder shows it
+    /// in: items OneDrive moved in a circle cannot each go to its place while another is in
+    /// the way. That place is the place agreed on from then, so that nothing of it is sent,
+    /// and the plan made after it moves the item to OneDrive's place.
+    MoveToTemporaryName { item: ItemVersions, place: ItemPlace },
 }
 
 impl FolderStep {

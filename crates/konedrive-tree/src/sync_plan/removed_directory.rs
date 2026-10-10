@@ -8,11 +8,13 @@
 //! holds is the user's own, it stays, gives up its binding and is sent again. A directory
 //! that has a binding and that no listing told of gives its binding up in the same order.
 
-use super::item_decision::{ItemCase, ItemDecision, ItemDecisions};
+use std::collections::HashMap;
+
+use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
 use super::plan_items::PlanItems;
 use super::sync_step::{ItemVersions, OneDriveStep, RowStep, SyncStep};
-use super::{ExclusionReason, WaitReason};
-use crate::model::{Item, ItemKind, LocalItemId};
+use super::WaitReason;
+use crate::model::{Item, ItemKind, ItemPlace, LocalItemId};
 
 /// Whether `item` is a directory that was removed here and that OneDrive has.
 fn is_directory_removed_here(item: &Item) -> bool {
@@ -36,12 +38,14 @@ pub(crate) fn is_in_directory_removed_here(items: &PlanItems<'_>, item: &Item) -
 /// Makes the removal of each directory removed here, the outermost of those removed in one
 /// another, one removal for all OneDrive has in it.
 ///
-/// - An item OneDrive has in it that was moved out of it here: the removal waits for that
-///   item, and likewise for one a step is running for.
+/// - An item OneDrive has in it that the folder shows is not removed with it: it was moved
+///   out of the directory here, or OneDrive moved it into the directory, where the folder
+///   cannot follow. Its place here is sent first, and the removal waits for it; likewise
+///   for an item a step is running for.
 /// - Every other item OneDrive has in it goes with the removal, and waits for the
-///   directory: what was removed here with it, what OneDrive made in it or moved into it
-///   since, and a file removed here whose content OneDrive changed, which does not come
-///   back. The step names those of them that were removed here.
+///   directory: what was removed here with it, what OneDrive made in it since, and a file
+///   removed here whose content OneDrive changed, which does not come back. The step names
+///   those of them that were removed here.
 pub(crate) fn send_one_removal_for_each_directory(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) {
     for case in cases {
         let directory = case.item.local_item_id;
@@ -57,8 +61,7 @@ pub(crate) fn send_one_removal_for_each_directory(cases: &[ItemCase<'_>], items:
         let mut removed_with_it = Vec::new();
         for below in items.list_below_in_onedrive(directory) {
             let Some(row) = items.find(below) else { continue };
-            let was_moved_out_here = row.local.is_some() && row.local.as_ref().map(|local| &local.place) != Some(&row.synced_place);
-            if was_moved_out_here || matches!(decisions.find(below), Some(ItemDecision::Wait(WaitReason::RunningStep))) {
+            if row.local.is_some() || matches!(decisions.find(below), Some(ItemDecision::Wait(WaitReason::RunningStep))) {
                 kept.get_or_insert(below);
                 continue;
             }
@@ -83,8 +86,9 @@ pub(crate) fn send_one_removal_for_each_directory(cases: &[ItemCase<'_>], items:
 /// has a binding — OneDrive removed it, or no listing told of it — and in which the folder
 /// still shows something.
 ///
-/// - An item in it that waits for the directory to be in OneDrive (made in it, or moved
-///   into it here), and one that is left here, is the user's own and stays.
+/// - An item in it that the two sides never agreed on in it (made in it, or moved into it
+///   here) is the user's own and stays; and so does one they agreed on there whose place
+///   here is to be sent, and waits for the directory to be in OneDrive.
 /// - While the folder shows anything else in it, the directory waits for that item: the
 ///   clean items go first, and an item whose content was changed here gives up its binding
 ///   first. A directory that gave up its binding before them would have them read as moved
@@ -92,6 +96,7 @@ pub(crate) fn send_one_removal_for_each_directory(cases: &[ItemCase<'_>], items:
 /// - Once all the folder shows in it stays, the directory gives up its binding; the plan
 ///   made after it sends it as a new one, and then what is in it.
 pub(crate) fn keep_directories_that_hold_the_users_own(cases: &[ItemCase<'_>], items: &PlanItems<'_>, decisions: &mut ItemDecisions) {
+    let case_of: HashMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     for case in cases {
         let (item, directory) = (case.item, case.item.local_item_id);
         let is_not_in_onedrive = item.kind == ItemKind::Directory && item.local.is_some() && item.onedrive.is_none() && item.onedrive_item.is_some();
@@ -99,10 +104,16 @@ pub(crate) fn keep_directories_that_hold_the_users_own(cases: &[ItemCase<'_>], i
         if !is_not_in_onedrive || !is_decided_here {
             continue;
         }
-        let stays = |shown: &LocalItemId| match decisions.find(*shown) {
-            Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for))) => *waited_for == directory,
-            Some(ItemDecision::Exclusion(ExclusionReason::NameIgnored)) => true,
-            _ => false,
+        // Nothing of an item goes with the binding when neither side had it in the directory
+        // when they last agreed and OneDrive does not have it there now. An item that was
+        // agreed on there stays only when it is sent into the directory again.
+        let is_in_it = |place: Option<&ItemPlace>| place.is_some_and(|place| place.parent_local_item_id == directory);
+        let waits_to_be_sent_into_it = |shown: LocalItemId| {
+            matches!(decisions.find(shown), Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for))) if *waited_for == directory)
+                && case_of.get(&shown).is_some_and(|case| case.local_place_availability != LocalPlaceAvailability::NameTaken(directory))
+        };
+        let stays = |shown: &LocalItemId| {
+            items.find(*shown).is_some_and(|row| (!is_in_it(row.synced_place.as_ref()) && !is_in_it(row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()))) || waits_to_be_sent_into_it(*shown))
         };
         let shown = items.list_shown_in(directory);
         let decision = match shown.iter().find(|shown| !stays(shown)) {

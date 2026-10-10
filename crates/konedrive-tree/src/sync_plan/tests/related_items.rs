@@ -8,7 +8,7 @@
 //! other, never nothing for an item the two sides do not agree on, and never a step the
 //! rows it was planned from refuse ([`find_step_the_rows_refuse`]).
 //!
-//! The cases the plan decides between items are each tested by name in `between_items`;
+//! The cases the plan decides between items are each tested by name in `item_relations`;
 //! this is the gate they were written behind.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -255,7 +255,8 @@ fn is_to_be_planned(item: &Item) -> bool {
 /// - A conflict copy's name that is taken on either side, as OneDrive compares names.
 /// - Two steps for one item; the removal of a directory that would remove an item moved out
 ///   of it here, or beside the removal of what OneDrive has in it; a directory that gives
-///   up its binding while an item in it has a step; a merge with an item that has a step.
+///   up its binding while the folder shows in it what the two sides agreed on there, unless
+///   that item waits to be sent into it again; a merge with an item that has a step.
 fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<String> {
     let folded = |place: &ItemPlace| (place.parent_local_item_id, FoldedName::of(&place.name));
     let local_place = |item: &Item| item.local.as_ref().and_then(|local| local.place.clone());
@@ -287,7 +288,8 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
         let brought = match step {
             SyncStep::Folder(FolderStep::ShowItem { .. } | FolderStep::MoveItem { .. }) => onedrive_place(row),
             SyncStep::Folder(FolderStep::TakeMoveBack { .. }) => row.synced_place.clone(),
-            SyncStep::Folder(FolderStep::RenameToConflictCopy { name, .. } | FolderStep::MoveToTemporaryName { name, .. }) => local_place(row).map(|place| ItemPlace { name: name.clone(), ..place }),
+            SyncStep::Folder(FolderStep::RenameToConflictCopy { name, .. }) => local_place(row).map(|place| ItemPlace { name: name.clone(), ..place }),
+            SyncStep::Folder(FolderStep::MoveToTemporaryName { place, .. }) => Some(place.clone()),
             _ => None,
         };
         if let Some(sent) = &sent {
@@ -324,8 +326,10 @@ fn find_step_the_rows_refuse(given: &SyncPlanInput, plan: &SyncPlan) -> Option<S
                 }
             }
             SyncStep::Row(RowStep::GiveUpBinding { .. }) if row.kind == ItemKind::Directory => {
-                if let Some(shown) = given.items.iter().find(|item| local_place(item).is_some_and(|place| place.parent_local_item_id == number) && has_step(item.local_item_id)) {
-                    return Some(format!("the directory {number} gives up its binding before item {} in it had its step", shown.local_item_id));
+                let was_agreed_on_in_it = |item: &Item| item.synced_place.as_ref().is_some_and(|place| place.parent_local_item_id == number) || onedrive_place(item).is_some_and(|place| place.parent_local_item_id == number);
+                let waits_for_it = |item: &Item| plan.waits.iter().any(|wait| wait.item == item.local_item_id && wait.reason == WaitReason::AnotherItem(number));
+                if let Some(shown) = given.items.iter().find(|item| local_place(item).is_some_and(|place| place.parent_local_item_id == number) && was_agreed_on_in_it(item) && !waits_for_it(item)) {
+                    return Some(format!("the directory {number} gives up its binding while the folder shows item {} in it, which the two sides agreed on there and which is not sent into it again", shown.local_item_id));
                 }
             }
             SyncStep::Row(RowStep::MergeItems { onedrive, .. }) if has_step(onedrive.local_item_id) => {
@@ -446,8 +450,11 @@ pub(crate) fn every_enumerated_input() -> Vec<(String, SyncPlanInput)> {
     inputs
 }
 
-/// New: the gate of the decisions between items. Before them, the cells that failed are in
-/// the notes of the stage (`docs/tasks/item-versions-part-3-stage-b-notes.md`).
+/// New: the gate of the decisions between items, written before them. Of its 4529 sets of
+/// rows, 242 could not proceed then: a step sent to a name OneDrive had another item under
+/// (two items of one name as OneDrive compares names, an exchange, a place another item was
+/// leaving), a directory sent or brought into what was in it, items waiting for each other
+/// in a circle, and an item waiting for one a rule leaves out.
 #[test]
 fn every_two_related_items_and_every_three_in_a_circle_have_a_plan_that_can_proceed() {
     let inputs = every_enumerated_input();

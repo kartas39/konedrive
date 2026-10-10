@@ -4,7 +4,7 @@
 //! the names were changed on.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 use super::item_decision::{ItemCase, ItemDecision, ItemDecisions, LocalPlaceAvailability};
 use super::plan_items::PlanItems;
@@ -12,7 +12,7 @@ use super::side_change::{PlaceChange, SideChange};
 use super::sync_step::{FolderStep, ItemVersions, OneDriveStep, SyncStep};
 use super::WaitReason;
 use crate::folded_name::FoldedName;
-use crate::model::LocalItemId;
+use crate::model::{ItemPlace, LocalItemId};
 
 /// How many temporary names are tried for one item.
 const TEMPORARY_NAME_TRIES: u32 = 100;
@@ -25,6 +25,11 @@ pub(crate) fn make_temporary_name(item: LocalItemId, attempt: u32) -> OsString {
     } else {
         format!(".konedrive-swap-{item}-{attempt}").into()
     }
+}
+
+/// Whether `name` is a temporary name of `item`.
+fn is_temporary_name_of(item: LocalItemId, name: &OsStr) -> bool {
+    (1..=TEMPORARY_NAME_TRIES).any(|attempt| make_temporary_name(item, attempt) == name)
 }
 
 /// The first temporary name of `item` that neither side has in `directory`, as OneDrive
@@ -53,18 +58,32 @@ fn find_circle_of_waits(decisions: &ItemDecisions, item: LocalItemId) -> Option<
     }
 }
 
-/// The step that takes the item of `case` out of a circle of waits through a temporary
-/// name; `None` when the item waits for something else than a name.
+/// The step that takes the item of `case` out of `circle`, items that wait for one another,
+/// through a temporary name; `None` when a temporary name of this item ends nothing.
 ///
-/// - Its sending waits for the name (`sending` is what it would send): the same sending,
+/// - Its sending waits for a name (`sending` is what it would send): the same sending,
 ///   under a temporary name in the same directory of OneDrive.
-/// - OneDrive moved it to a name the folder shows another item under: it is renamed here to
-///   a temporary name, in the directory the folder shows it in.
-fn go_through_temporary_name(case: &ItemCase<'_>, items: &PlanItems<'_>, sending: Option<&OneDriveStep>, decision: Option<&ItemDecision>) -> Option<SyncStep> {
+/// - OneDrive moved it, and the folder shows it at the name another item of the circle
+///   waits for, or it waits for the name of an item of the circle in another directory
+///   than the folder shows it in: it is moved here to a temporary name. In the directory
+///   OneDrive has it in, where the folder can bring it there; in the directory the folder
+///   shows it in, where it cannot yet (the folder does not show that directory, or shows
+///   it in the item). An item OneDrive removed that is in the way likewise, where it is.
+///
+/// An item that is under a temporary name of its own in that directory already goes
+/// through no other: a circle that a temporary name did not break is left to be said as a
+/// fault.
+fn go_through_temporary_name(case: &ItemCase<'_>, items: &PlanItems<'_>, sending: Option<&OneDriveStep>, decision: Option<&ItemDecision>, circle: &[(&ItemCase<'_>, Option<&ItemDecision>)]) -> Option<SyncStep> {
     let id = case.item.local_item_id;
-    let directory_here = case.item.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| place.parent_local_item_id);
+    let directory_here = case.item.local.as_ref().and_then(|local| local.place.as_ref()).map(|place| place.parent_local_item_id)?;
+    let is_under_temporary_name_in = |place: Option<&ItemPlace>, directory: LocalItemId| place.is_some_and(|place| place.parent_local_item_id == directory && is_temporary_name_of(id, &place.name));
+    let place_in_onedrive = case.item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref());
+    let place_here = case.item.local.as_ref().and_then(|local| local.place.as_ref());
     if let Some(sending) = sending {
-        let name = find_free_temporary_name(items, id, directory_here?)?;
+        if is_under_temporary_name_in(place_in_onedrive, directory_here) {
+            return None;
+        }
+        let name = find_free_temporary_name(items, id, directory_here)?;
         return Some(SyncStep::OneDrive(match sending.clone() {
             OneDriveStep::MakeDirectory { item, parent, .. } => OneDriveStep::MakeDirectory { item, parent, name },
             OneDriveStep::SendNewFile { item, parent, .. } => OneDriveStep::SendNewFile { item, parent, name },
@@ -72,25 +91,39 @@ fn go_through_temporary_name(case: &ItemCase<'_>, items: &PlanItems<'_>, sending
             OneDriveStep::SendContent { .. } | OneDriveStep::SendFileRemoval { .. } | OneDriveStep::SendDirectoryRemoval { .. } => return None,
         }));
     }
-    let follows_onedrive = matches!(SideChange::of_local(case.item), SideChange::IsThere { place: PlaceChange::Same, .. }) && matches!(SideChange::of_onedrive(case.item), SideChange::IsThere { place: PlaceChange::Moved, .. });
-    match (case.local_place_availability, decision) {
-        (LocalPlaceAvailability::NameTaken(holder), Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for)))) if holder == *waited_for && follows_onedrive => {
-            let name = find_free_temporary_name(items, id, directory_here?)?;
-            Some(SyncStep::Folder(FolderStep::MoveToTemporaryName { item: ItemVersions::of(case.item), name }))
-        }
-        _ => None,
+    let Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for))) = decision else { return None };
+    let is_in_the_way = circle.iter().any(|(other, decision)| {
+        other.local_place_availability == LocalPlaceAvailability::NameTaken(id) && matches!(decision, Some(ItemDecision::Wait(WaitReason::AnotherItem(waited_for))) if *waited_for == id)
+    });
+    let directory_in_onedrive = match SideChange::of_onedrive(case.item) {
+        SideChange::IsThere { place: PlaceChange::Moved, .. } => case.item.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).map(|place| place.parent_local_item_id)?,
+        // What OneDrive removed goes here once nothing is in it: until then it is in the way.
+        SideChange::Removed if is_in_the_way && matches!(SideChange::of_local(case.item), SideChange::IsThere { place: PlaceChange::Same, .. }) => directory_here,
+        _ => return None,
+    };
+    let can_be_brought_there = matches!(case.local_place_availability, LocalPlaceAvailability::Free | LocalPlaceAvailability::NameTaken(_)) && directory_in_onedrive != id && !items.is_shown_in(directory_in_onedrive, id);
+    let leaves_its_directory = case.local_place_availability == LocalPlaceAvailability::NameTaken(*waited_for) && can_be_brought_there && directory_in_onedrive != directory_here;
+    if !is_in_the_way && !leaves_its_directory {
+        return None;
     }
+    let directory = if can_be_brought_there { directory_in_onedrive } else { directory_here };
+    if is_under_temporary_name_in(place_here, directory) {
+        return None;
+    }
+    let name = find_free_temporary_name(items, id, directory)?;
+    Some(SyncStep::Folder(FolderStep::MoveToTemporaryName { item: ItemVersions::of(case.item), place: ItemPlace { parent_local_item_id: directory, name } }))
 }
 
-/// Breaks every circle of items that wait for one another's names: of the items of a circle
-/// that can go through a temporary name, the one with the lowest id does. `sendings` are
-/// the steps towards OneDrive that wait for a name another item leaves, by item.
+/// Breaks every circle of items that wait for one another: of the items of a circle that
+/// can go through a temporary name, the one with the lowest id does. `sendings` are the
+/// steps towards OneDrive that wait for a name another item leaves, by item.
 pub(crate) fn break_circles_of_names(cases: &[ItemCase<'_>], items: &PlanItems<'_>, sendings: &BTreeMap<LocalItemId, OneDriveStep>, decisions: &mut ItemDecisions) {
     let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     // Each circle is broken once; no more circles than items.
     for id in case_of.keys() {
         let Some(circle) = find_circle_of_waits(decisions, *id) else { continue };
-        let through_temporary_name = circle.iter().filter_map(|member| Some((*member, go_through_temporary_name(case_of.get(member)?, items, sendings.get(member), decisions.find(*member))?))).min_by_key(|(member, _)| *member);
+        let members: Vec<(&ItemCase<'_>, Option<&ItemDecision>)> = circle.iter().filter_map(|member| Some((*case_of.get(member)?, decisions.find(*member)))).collect();
+        let through_temporary_name = members.iter().filter_map(|(member, decision)| Some((member.item.local_item_id, go_through_temporary_name(member, items, sendings.get(&member.item.local_item_id), *decision, &members)?))).min_by_key(|(member, _)| *member);
         if let Some((member, step)) = through_temporary_name {
             decisions.replace(member, ItemDecision::Step(step));
         }

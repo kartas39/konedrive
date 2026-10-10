@@ -3,17 +3,30 @@
 //! ([`SyncPlanInput`]) and answers the steps that can run now and, for every other item it
 //! was given, why not ([`SyncPlan`]). No disk, no network, no clock and no store in it.
 //!
-//! It is laid out by what each piece decides:
+//! It is laid out by what each piece decides. For one item by itself:
 //!
-//! - what each side did to one item, from its row ([`side_change`]);
-//! - what that means for the item by itself: the three tables ([`item_decision`]);
-//! - what is not sent, and why ([`sending_obstacle`]);
-//! - one thing to do ([`sync_step`]);
-//! - the rows it is made over, as one item asks about another ([`plan_items`]).
+//! - what each side did to it, from its row ([`side_change`]);
+//! - what that means for it: the three tables ([`item_decision`]);
+//! - what is not sent, and why ([`sending_obstacle`]).
 //!
-//! Each item is decided by itself here: one step, one wait, or nothing. Where an item needs
-//! another (its directory is not in OneDrive yet, another item has the name it comes to,
-//! the folder still shows something in a directory that goes), it waits for that item.
+//! Between items, each over what was answered for every item by itself:
+//!
+//! - a directory moved here into what OneDrive has in it ([`move_cycle`]);
+//! - the items that have or want one name of a directory of OneDrive ([`name_contest`]),
+//!   and the name the one that steps aside gets ([`conflict_copy_name`]);
+//! - a directory one side removed, and what the other side has in it
+//!   ([`removed_directory`]);
+//! - the items that wait for each other's names, and the temporary name one of them goes
+//!   through ([`name_exchange`]);
+//! - the guard against a mass removal ([`mass_removal`]);
+//! - where a wait for another item ends ([`wait_end`]).
+//!
+//! And what they are made of: one thing to do ([`sync_step`]), and the rows of one plan, as
+//! one item asks about another ([`plan_items`]).
+//!
+//! All the steps of one plan can run now, in any order and at once: where one must go
+//! before another, the other waits for its item, and the plan made after the step sees it
+//! done. One step per item.
 //!
 //! Nothing in the daemon calls it yet.
 
@@ -71,12 +84,25 @@ pub enum SendingState {
 
 /// What a plan is made from, all as values.
 ///
-/// **The rows.** `items` are the items that are unsent or whose OneDrive version is not the
-/// synced one, and with each, so that the set is closed: the directory it is in on each
-/// side, the item the folder shows at the place OneDrive has it at, and for a directory
-/// that leaves the folder what the folder shows in it. An item that agrees on everything is
-/// given for another's sake, or because it is a pinned file whose content is not on disk.
-/// The root's row is among them once anything is in the root.
+/// **The rows.** `items` are a bounded number of the items that are unsent or whose OneDrive
+/// version is not the synced one, and with each, so that the set is closed:
+///
+/// - the directory it is in on each side, and the directories above that one on each side
+///   up to the root (the plan asks whether a directory is in another, on either side);
+/// - the items that have its name in the same directory on either side, as OneDrive
+///   compares names ([`FoldedName`](crate::FoldedName)), and those that have a conflict
+///   copy's name it could take ([`make_conflict_copy_name`], from the first attempt on until
+///   one is free on both sides) or its temporary name (`.konedrive-swap-<its id>`);
+/// - for a directory that was removed here, all OneDrive has in it, at any depth;
+/// - for a directory the folder shows that OneDrive does not have, and one that leaves the
+///   folder, what the folder shows in it.
+///
+/// An item that agrees on everything is given for another's sake, or because it is a pinned
+/// file whose content is not on disk. The root's row is among them once anything is in the
+/// root. For an item the plan needs and was not given by its id, it answers that the item
+/// waits for it ([`WaitReason::ItemNotGiven`]), and the caller gives it too. An item that
+/// has a name the plan asks about and was not given is not known to the plan: the name
+/// reads as free.
 ///
 /// **What only the caller knows of an item** is said by the item's id: a set names the
 /// items it holds for, a map the items it has a value for.
@@ -190,9 +216,16 @@ impl PlanFault {
 /// The answer: the steps that can run now, and for every other item given that the two
 /// sides do not agree on, why not. An item that is in none of the four agrees, or its row
 /// is no item.
+///
+/// When no step can run, something waits for a time, for the user, for a step that is
+/// running, for a listing or for an item that was not given, or the plan says it is at
+/// fault: an item never waits for another item whose own answer does not end the wait
+/// ([`PlanFault::WaitWithoutEnd`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncPlan {
-    /// The steps that can run now, in the order the items were given; one step per item.
+    /// The steps that can run now, one per item: those of what is unsent first, the item
+    /// that came to be unsent first before the others, then those for what OneDrive changed,
+    /// in the order the items were given.
     pub steps: Vec<SyncStep>,
     pub waits: Vec<ItemWait>,
     pub exclusions: Vec<ItemExclusion>,
@@ -225,7 +258,7 @@ fn find_local_place_availability(items: &PlanItems<'_>, item: &Item) -> LocalPla
     }
     match items.find(place.parent_local_item_id) {
         Some(directory) if directory.local.is_some() => {}
-        Some(directory) if directory.synced_place.is_some() => return LocalPlaceAvailability::DirectoryRemovedHere(place.parent_local_item_id),
+        Some(directory) if directory.synced_place.is_some() || removed_directory::is_in_directory_removed_here(items, directory) => return LocalPlaceAvailability::DirectoryRemovedHere(place.parent_local_item_id),
         _ => return LocalPlaceAvailability::DirectoryNotShown(place.parent_local_item_id),
     }
     match items.find_shown_at(place) {
@@ -305,21 +338,21 @@ impl SyncPlan {
 }
 
 /// The plan for what `input` gives. Each item is decided by itself first, from its row
-/// ([`item_decision`]); then the items are decided for each other, each kind of case by its
+/// (`item_decision`); then the items are decided for each other, each kind of case by its
 /// own module, in this order:
 ///
-/// 1. a directory moved here into what OneDrive has in it ([`move_cycle`]);
-/// 2. the items that have or want one name of a directory of OneDrive ([`name_contest`]);
-/// 3. a directory one side removed, and what the other has in it ([`removed_directory`]);
-/// 4. the items that wait for each other's names ([`name_exchange`]);
-/// 5. the guard against a mass removal ([`mass_removal`]);
-/// 6. where each wait for another item ends ([`wait_end`]).
+/// 1. a directory moved here into what OneDrive has in it (`move_cycle`);
+/// 2. the items that have or want one name of a directory of OneDrive (`name_contest`);
+/// 3. a directory one side removed, and what the other has in it (`removed_directory`);
+/// 4. the items that wait for each other's names (`name_exchange`);
+/// 5. the guard against a mass removal (`mass_removal`);
+/// 6. where each wait for another item ends (`wait_end`).
 pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
     let items = PlanItems::of(&input.items);
     let cases: Vec<ItemCase<'_>> = input.items.iter().map(|item| describe_item(input, &items, item)).collect();
     let mut decisions = ItemDecisions::of(cases.iter().map(|case| (case.item.local_item_id, decide_item(case))));
-    move_cycle::take_back_moves_into_own_content(&cases, &items, &mut decisions);
-    let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &mut decisions);
+    let moves_taken_back = move_cycle::take_back_moves_into_own_content(&cases, &items, &mut decisions);
+    let sendings_that_wait = name_contest::settle_name_contests(&cases, &items, &input.computer_name, &moves_taken_back, &mut decisions);
     removed_directory::send_one_removal_for_each_directory(&cases, &items, &mut decisions);
     removed_directory::keep_directories_that_hold_the_users_own(&cases, &items, &mut decisions);
     name_exchange::break_circles_of_names(&cases, &items, &sendings_that_wait, &mut decisions);

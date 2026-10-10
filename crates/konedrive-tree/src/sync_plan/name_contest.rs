@@ -120,11 +120,13 @@ fn leaves_its_name(holder: &Item, decision: Option<&ItemDecision>, directory: Lo
 /// or wants that name there ([`decide_name_contest`]), the items by their ids. An item
 /// that is left here is decided too: it steps aside for an item of OneDrive that stays at
 /// its name. An item a step is running for, and a file open for writing, is not decided.
+/// `moves_taken_back` are the items whose move here does not stand
+/// ([`move_cycle`](super::move_cycle)): such a holder stays at its name in OneDrive.
 ///
 /// The steps towards OneDrive that now wait for a name another item leaves are returned,
 /// by item: what waits in a circle goes through a temporary name
 /// ([`name_exchange`](super::name_exchange)).
-pub(crate) fn settle_name_contests(cases: &[ItemCase<'_>], items: &PlanItems<'_>, computer_name: &str, decisions: &mut ItemDecisions) -> BTreeMap<LocalItemId, OneDriveStep> {
+pub(crate) fn settle_name_contests(cases: &[ItemCase<'_>], items: &PlanItems<'_>, computer_name: &str, moves_taken_back: &BTreeSet<LocalItemId>, decisions: &mut ItemDecisions) -> BTreeMap<LocalItemId, OneDriveStep> {
     let case_of: BTreeMap<LocalItemId, &ItemCase<'_>> = cases.iter().map(|case| (case.item.local_item_id, case)).collect();
     let is_left_here = |item: LocalItemId| case_of.get(&item).is_some_and(|case| case.sending.is_ignored);
     let mut sendings_that_wait = BTreeMap::new();
@@ -140,7 +142,7 @@ pub(crate) fn settle_name_contests(cases: &[ItemCase<'_>], items: &PlanItems<'_>
         let (directory, name) = (place.parent_local_item_id, FoldedName::of(&place.name));
         let in_onedrive = items.list_in_onedrive_with_name(directory, &name);
         let holder = in_onedrive.iter().filter(|holder| **holder != id).find_map(|holder| items.find(*holder)).map(|holder| {
-            if leaves_its_name(holder, decisions.find(holder.local_item_id), directory, &name) {
+            if !moves_taken_back.contains(&holder.local_item_id) && leaves_its_name(holder, decisions.find(holder.local_item_id), directory, &name) {
                 NameHolder::Leaves(holder.local_item_id)
             } else {
                 NameHolder::Stays(holder)

@@ -93,7 +93,8 @@ pub(crate) enum LocalPlaceAvailability {
     Free,
     /// The folder does not show the directory yet, or its row was not given: which directory.
     DirectoryNotShown(LocalItemId),
-    /// The directory was removed here, and the folder will not show it again: which.
+    /// The directory was removed here, or OneDrive has it in one that was, and the folder
+    /// will not show it: which.
     DirectoryRemovedHere(LocalItemId),
     /// The folder shows another item under that name there: which.
     NameTaken(LocalItemId),
@@ -392,7 +393,9 @@ fn decide_item_that_cannot_be_shown(case: &ItemCase<'_>, here_content: ContentCh
 /// The table "its place", for an item both sides have.
 ///
 /// - Same here, moved in OneDrive: it is moved here; moved to where the folder cannot show
-///   it, [`decide_item_that_cannot_be_shown`].
+///   it, [`decide_item_that_cannot_be_shown`]; moved into a directory that was removed
+///   here, its place here stands and is sent, so that it is not removed with that
+///   directory.
 /// - Moved here, same in OneDrive: the move is sent.
 /// - Moved on both sides to one place: agree. To different places: OneDrive's stands and
 ///   the folder follows, where it can; where it cannot (the name is taken here, the name
@@ -408,7 +411,8 @@ pub(crate) fn decide_place(case: &ItemCase<'_>, here: PlaceChange, in_onedrive: 
         (PlaceChange::Same, PlaceChange::Same) => ItemDecision::NothingToDo,
         (PlaceChange::Same, PlaceChange::Moved) => match case.local_place_availability {
             LocalPlaceAvailability::Free => folder_step(FolderStep::MoveItem { item: case.versions() }),
-            LocalPlaceAvailability::DirectoryNotShown(directory) | LocalPlaceAvailability::DirectoryRemovedHere(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::DirectoryNotShown(directory) => ItemDecision::Wait(WaitReason::AnotherItem(directory)),
+            LocalPlaceAvailability::DirectoryRemovedHere(_) => send_move(case),
             LocalPlaceAvailability::NameTaken(holder) => ItemDecision::Wait(WaitReason::AnotherItem(holder)),
             LocalPlaceAvailability::NameUnusable => decide_item_that_cannot_be_shown(case, here_content, onedrive_content),
             LocalPlaceAvailability::NoOneDrivePlace => row_fault(case),
