@@ -148,7 +148,7 @@ impl ItemStore<'_> {
     }
 }
 
-/// The error of a change the rows' rules refuse: nothing was written.
+/// The error of a change the rows' rules refuse: the change wrote nothing.
 fn refuse(what: String) -> TreeError {
     TreeError::Refused(what)
 }
@@ -428,7 +428,9 @@ fn set_local_content(tx: &Transaction<'_>, mut item: Item, mut local: ItemVersio
 }
 
 /// [`ItemStore::apply`], inside the caller's transaction: for a change that is written
-/// with other rows of the store in one.
+/// with other rows of the store in one. On any error the caller drops its transaction and
+/// never commits it: a refusal comes before the change wrote anything, but a failure of
+/// SQLite, of the disk or of a rule of the schema may come after a part of it was written.
 pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
     match change {
         LocalVersionChange::Made { kind, place, content, is_name_ignored, replaced } => make(tx, *kind, place, content.as_ref(), *is_name_ignored, *replaced),
@@ -470,7 +472,8 @@ pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) ->
 /// The index of local places is checked at each statement, so the two rows cannot take
 /// each other's place in one: the first steps aside to a name no file can have, the second
 /// takes the first's place, and the first the second's. Nobody reads the name in between:
-/// it does not outlive the transaction.
+/// it does not outlive the transaction. On any error the caller drops its transaction and
+/// never commits it: after the first step it holds that name.
 pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, second: LocalItemId) -> Result<(), TreeError> {
     if first == second {
         return Err(refuse(format!("item {first} does not exchange places with itself")));

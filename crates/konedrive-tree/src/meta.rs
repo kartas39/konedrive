@@ -101,7 +101,9 @@ impl TreeStore {
     }
 
     /// The tree is a listing of `drive` from now on; with the drive known, the root of the
-    /// folder is bound to the drive's root as soon as that is known too, in one transaction.
+    /// folder is bound to the drive's root as soon as that is known too, in one transaction
+    /// that it begins: it is never called with a transaction open, and an error leaves the
+    /// store as it was.
     pub fn set_drive_id(&self, drive: &str) -> Result<(), TreeError> {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         set(&tx, DRIVE_ID, Some(drive))?;

@@ -74,8 +74,10 @@ pub enum TreeError {
     Io(#[from] std::io::Error),
     #[error("the tree store has schema version {0:?}; this daemon knows {SCHEMA_VERSION}")]
     Schema(Option<String>),
-    /// The store refused a change because it would break a rule of its rows: nothing was
-    /// written, and neither SQLite nor the disk failed.
+    /// The store refused a change because it would break a rule of its rows: the refused
+    /// change wrote nothing, and neither SQLite nor the disk failed. What the same
+    /// transaction wrote before it is still in that transaction: a caller that has one open
+    /// drops it on this error as on every other.
     #[error("the tree store refuses: {0}")]
     Refused(String),
 }

@@ -9,6 +9,10 @@
 //! new item (`bind_item`), and with a row made for an item of OneDrive the client did not
 //! know (`make_onedrive_item`).
 //!
+//! What is `pub(crate)` here runs inside its caller's transaction and may fail after it wrote
+//! (SQLite, the disk, a rule of the schema): on any error the caller drops the transaction
+//! and never commits it.
+//!
 //! Each keeps a binding one item's (the row that had it lets it go before another takes
 //! it), and keeps a synced place pointing at a row: what the two sides agreed is in a
 //! directory of OneDrive stays with the row that has that directory's binding.
@@ -88,7 +92,8 @@ fn hand_over(conn: &Connection, from: Item, mut to: Item) -> Result<(), TreeErro
 
 /// The file `replacing` takes the binding and the synced place and content of the file
 /// `replaced`, which the folder does not show any more, and the replaced row goes: OneDrive
-/// sees one item whose content changed. Inside the caller's transaction.
+/// sees one item whose content changed. Inside the caller's transaction: on any error the
+/// caller drops its transaction and never commits it.
 ///
 /// It is not an operation of [`ItemStore`] by itself: which item replaces which is said by
 /// a change of a local version, a file saved over another
@@ -114,7 +119,8 @@ pub(crate) fn take_over_binding(tx: &Transaction<'_>, replacing: LocalItemId, re
     hand_over(tx, giver, taker)
 }
 
-/// [`ItemStore::give_up_binding`], inside the caller's transaction.
+/// [`ItemStore::give_up_binding`], inside the caller's transaction. On any error the
+/// caller drops its transaction and never commits it.
 pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_ignored: bool) -> Result<LocalItemId, TreeError> {
     let mut giver = read_below_root(tx, item)?;
     if giver.local.is_none() {
@@ -133,7 +139,8 @@ pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_i
     Ok(taker)
 }
 
-/// [`ItemStore::merge_items`], inside the caller's transaction.
+/// [`ItemStore::merge_items`], inside the caller's transaction. On any error the
+/// caller drops its transaction and never commits it.
 pub(crate) fn merge_items(tx: &Transaction<'_>, local: LocalItemId, onedrive: LocalItemId) -> Result<(), TreeError> {
     if local == onedrive {
         return Err(refuse(format!("item {local} is not merged with itself")));
@@ -148,7 +155,8 @@ pub(crate) fn merge_items(tx: &Transaction<'_>, local: LocalItemId, onedrive: Lo
     hand_over(tx, giver, taker)
 }
 
-/// [`ItemStore::bind_item`], inside the caller's transaction.
+/// [`ItemStore::bind_item`], inside the caller's transaction. On any error the
+/// caller drops its transaction and never commits it.
 pub(crate) fn bind_item(tx: &Transaction<'_>, item: LocalItemId, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {
     let taker = read_below_root(tx, item)?;
     if taker.onedrive_item.is_some() || taker.local.is_none() {
@@ -161,7 +169,8 @@ pub(crate) fn bind_item(tx: &Transaction<'_>, item: LocalItemId, onedrive_item: 
     }
 }
 
-/// [`ItemStore::make_onedrive_item`], inside the caller's transaction.
+/// [`ItemStore::make_onedrive_item`], inside the caller's transaction. On any error the
+/// caller drops its transaction and never commits it.
 pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveItemReference, kind: ItemKind) -> Result<LocalItemId, TreeError> {
     if let Some(holder) = find_bound_item(tx, onedrive_item)? {
         return Err(refuse(format!("item {} is the item of OneDrive {} already", holder.local_item_id, onedrive_item.item_id.as_str())));
@@ -176,6 +185,11 @@ pub(crate) fn make_onedrive_item(tx: &Transaction<'_>, onedrive_item: &OneDriveI
 /// The reference is row 1's whatever row was made first: a row that has it already (a page
 /// of a listing named children before the root, and their parent got a row at that first
 /// mention) goes, and what was agreed to be in it is in the root.
+///
+/// Inside the transaction of the store's call that learnt the drive or its root
+/// ([`set_drive_id`](crate::TreeStore::set_drive_id), a staged or committed page of a
+/// listing), which begins its own: on any error that transaction is dropped, never
+/// committed, and none of those calls is made with a transaction open.
 pub(crate) fn bind_root(conn: &Connection) -> Result<(), TreeError> {
     let (Some(drive_id), Some(root_item_id)) = (meta::get(conn, meta::DRIVE_ID)?.and_then(DriveId::new), meta::get(conn, meta::ROOT_ITEM_ID)?.filter(|id| !id.is_empty())) else {
         return Ok(());
