@@ -37,6 +37,8 @@ mod legacy_placeholders;
 mod write_bits;
 
 pub(super) use download_landing::LandingOutcome;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(super) use downloaded_copies::DiskMarks;
 pub(super) use file_handles::{DiskEntry, DiskMetadata, EntryKind};
 pub(super) use write_bits::{to_mode_bits, remove_write_bits, restore_write_bits, WriteBits};
 

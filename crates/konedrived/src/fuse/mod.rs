@@ -91,6 +91,8 @@
 mod access_mode_switch;
 mod attributes;
 mod backing_directory;
+// No caller until the mount reads the rows: its tests are what runs it.
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod backing_directory_check;
 mod conflict_copies;
 mod cycle_step;
