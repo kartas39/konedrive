@@ -32,7 +32,7 @@
 //!    a listing does not always name. What the same page moved out of a directory is not
 //!    below it any more when this runs, and what it moved into it is; a change that was
 //!    left ([`ListedChangeOutcome::Outdated`]) moved nothing, so its item is below still,
-//!    and the walk stops there (below).
+//!    and the removal is then not written (below).
 //! 5. A row left with its binding and nothing else, that no row names as its parent, goes.
 //!    Such a row names no parent itself, so no row that goes holds another.
 //!
@@ -52,13 +52,18 @@
 //! the binding free and makes the item again.
 //!
 //! **A call takes nothing through a row it leaves to be read again.** What a page says of
-//! the items below a directory, by a removal or by a full listing's end, stops at a row
-//! stamped later, at any depth: that row is left and answered, and what the rows say is
-//! below it keeps its OneDrive version until the row's own fate is written. Read again it
-//! is gone, and that removal takes what is below; or it is somewhere, and what is below it
-//! is there. The row of a removed directory that a row left still names as its parent
-//! stays, with no version, as a parent named and never listed does, and goes at the first
-//! call's end at which no row names it.
+//! the items below a directory stops at a row stamped later, at any depth.
+//!
+//! - *A removal is written whole or not at all.* When the walk down from an item listed
+//!   gone meets such a row, nothing of the removal is written — not the item's own
+//!   version, nothing below it — the change is [`ListedChangeOutcome::Outdated`], and the
+//!   item and the rows that were met are answered. So every row is as it was, and the
+//!   listing asked again after a stop names the removal again and writes it. Read again,
+//!   the removed item is given back as gone, with what was read of the rows met.
+//! - *A full listing's end* leaves an unseen row stamped after the listing began, answers
+//!   it, and leaves what the rows say is below it with its OneDrive version until that row
+//!   was read: gone, and its removal takes what is below; or somewhere, and the listing's
+//!   end then takes what it did not see below it.
 //!
 //! **A listing, from its beginning to its end** is the store's to keep
 //! ([`listing_under_way`]): a full listing (the first one, and after OneDrive asks to start
@@ -84,7 +89,7 @@ use std::ffi::OsString;
 use rusqlite::Transaction;
 
 use super::bindings::{bind_root, make_onedrive_item};
-use super::item_row::{clear_onedrive_version, clear_onedrive_versions_below, clear_onedrive_versions_unseen, delete_rows_of_binding_alone, find_bound_item, set_onedrive_etag, set_onedrive_version};
+use super::item_row::{clear_onedrive_version, clear_onedrive_versions_below, clear_onedrive_versions_unseen, delete_rows_of_binding_alone, find_bound_item, list_left_below_in_onedrive, set_onedrive_etag, set_onedrive_version};
 use super::{refuse, ItemStore};
 use crate::model::{Change, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId, OneDriveItemId, OneDriveItemReference, Row};
 use crate::{meta, TreeError};
@@ -101,7 +106,7 @@ pub use confirmed_onedrive_version::ConfirmedOneDriveVersion;
 pub use listed_change::{ListedChangeOutcome, ListedChangeRefusal};
 use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, ListedItem};
 pub use listing_under_way::{ListingId, ListingKind, ListingLink, ListingUnderWay};
-use listing_under_way::{decide_page_end, LeftToReadAgain, PageEnd, PageWritten};
+use listing_under_way::{decide_page_end, LeftToReadAgain, PageEnd, PageProgress};
 
 impl ItemStore<'_> {
     /// Writes what one page of the listing `listing` says into the rows, in one
@@ -125,7 +130,10 @@ impl ItemStore<'_> {
     /// with it the listing ends. When it names some, **the link is not written and the
     /// listing has not ended**: the caller reads each of those items again from OneDrive
     /// and calls again, with what it read as the changes (an item OneDrive has, or one
-    /// that is gone), the count that reading began at, and the same link. Every item
+    /// that is gone), the count that reading began at, and the same link. An item answered
+    /// may be a directory the page said is gone, whose removal was not written because a
+    /// row below it is among those answered: it is read like any other, and given back as
+    /// gone. Every item
     /// answered is given back so, as there or as gone: one that is not is answered again
     /// by the next call that reaches it, and a full listing does not end while it did not
     /// see such an item. The caller asks nothing from the link before a call has written
@@ -150,9 +158,10 @@ pub struct ListedPageOutcome {
     /// item the last counts, and each of them has its outcome.
     pub changes: Vec<ListedChangeOutcome>,
     /// The items to read again from OneDrive: those of the changes that are
-    /// [`Outdated`](ListedChangeOutcome::Outdated), and the items no change names at which
-    /// a removal stopped — below a directory listed gone, or not seen by a full listing
-    /// that ends — because something was confirmed of them since.
+    /// [`Outdated`](ListedChangeOutcome::Outdated) — among them a removal that was not
+    /// written because its walk met a row stamped later — and the items no change names:
+    /// the rows such a walk met, and those a full listing that ends did not see though
+    /// something was confirmed of them since it began.
     pub outdated_items: Vec<OneDriveItemId>,
 }
 
@@ -218,6 +227,8 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
         find_bound_item(tx, &OneDriveItemReference { drive_id: drive_id.clone(), item_id: OneDriveItemId::new(item_id) })
     };
 
+    let left = |items: &[OneDriveItemId]| if items.is_empty() { LeftToReadAgain::Nothing } else { LeftToReadAgain::Something };
+
     // Of several changes of one item, the last counts.
     let mut last_change_of = HashMap::new();
     for (at, change) in changes.iter().enumerate() {
@@ -254,19 +265,27 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
     for (at, change) in counted() {
         let Change::Delete(item_id) = change else { continue };
         let row = find_row(item_id)?;
-        outcomes[at] = decide_listed_removal(item_id, row.as_ref(), fetch_began_at_count);
+        // A removal takes what the rows say OneDrive has below the item, which a listing
+        // does not always name: it is written whole, or, when a row below is left to be
+        // read again, not at all.
+        let left_below = match &row {
+            Some(row) => list_left_below_in_onedrive(tx, row.local_item_id, fetch_began_at_count)?,
+            None => Vec::new(),
+        };
+        outcomes[at] = decide_listed_removal(item_id, row.as_ref(), fetch_began_at_count, left(&left_below));
         match (outcomes[at], row) {
-            // What the rows say OneDrive has below it is gone with it, which a listing does
-            // not always name.
             (ListedChangeOutcome::Written, Some(row)) => {
-                outdated_items.extend(clear_onedrive_versions_below(tx, row.local_item_id, fetch_began_at_count)?);
+                clear_onedrive_versions_below(tx, row.local_item_id)?;
                 if row.onedrive.is_some() {
                     clear_onedrive_version(tx, row.local_item_id)?;
                 }
             }
             // An item the client never knew, or forgot already, has no row to write.
             (ListedChangeOutcome::Written, None) => {}
-            (ListedChangeOutcome::Outdated, _) => outdated_items.push(OneDriveItemId::new(item_id)),
+            (ListedChangeOutcome::Outdated, _) => {
+                outdated_items.push(OneDriveItemId::new(item_id));
+                outdated_items.extend(left_below);
+            }
             (ListedChangeOutcome::Refused(refusal), _) => tracing::warn!("that the listing says the item {item_id:?} is gone is not written: {refusal:?}"),
         }
     }
@@ -274,11 +293,10 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
     // What ends the page: the link is written last, and only when nothing is left to read
     // again. A full listing that ends takes what it did not see first; what was confirmed
     // of that since the listing began is to be read again too.
-    let left = |outdated_items: &[OneDriveItemId]| if outdated_items.is_empty() { LeftToReadAgain::Nothing } else { LeftToReadAgain::Something };
-    let mut end = decide_page_end(listing.kind, link, PageWritten::Changes, left(&outdated_items));
+    let mut end = decide_page_end(listing.kind, link, PageProgress::Changes, left(&outdated_items));
     if let (PageEnd::FullListingSweeps, Some(full_listing)) = (end, full_listing) {
         outdated_items.extend(clear_onedrive_versions_unseen(tx, full_listing, listing.began_at_count)?);
-        end = decide_page_end(listing.kind, link, PageWritten::ChangesAndSweep, left(&outdated_items));
+        end = decide_page_end(listing.kind, link, PageProgress::ChangesAndSweep, left(&outdated_items));
     }
     delete_rows_of_binding_alone(tx, listing.binding_alone_left_after_count(end))?;
     listing.write_page_end(tx, end, link)?;

@@ -5,6 +5,7 @@
 
 use std::ffi::OsString;
 
+use super::listing_under_way::LeftToReadAgain;
 use crate::model::{ContentVersion, Item, ItemKind, LocalItemId, Placement};
 
 /// What became of one change of a listing given to the store
@@ -74,8 +75,8 @@ pub(super) fn is_listed_version_outdated(item: &Item, fetch_began_at_count: u64,
 /// Whether the removal a page says of `item` may be older than what OneDrive confirmed of
 /// it: the row was stamped after the page's fetch began, and OneDrive was confirmed to
 /// have the item. What a removal means beyond the item it names — what is below a
-/// directory, what a full listing did not see — is asked the same of each row, in the
-/// statement that takes them.
+/// directory — is asked of the rows below by the entry, and decided in
+/// [`decide_listed_removal`].
 pub(super) fn is_listed_removal_outdated(item: &Item, fetch_began_at_count: u64) -> bool {
     item.confirmed_at_count > fetch_began_at_count && item.onedrive.is_some()
 }
@@ -127,15 +128,19 @@ pub(super) fn decide_listed_root(root_item_id: &str, holder: Option<&Item>) -> L
 }
 
 /// What becomes of a listing's statement that the item `item_id` is gone, given the row
-/// that has the id when there is one: refused for no id and for the root; outdated when
-/// the row may hold something newer; `Written` otherwise, also when there is no row.
-pub(super) fn decide_listed_removal(item_id: &str, row: Option<&Item>, fetch_began_at_count: u64) -> ListedChangeOutcome {
+/// that has the id when there is one, and whether the walk down from that row, by what the
+/// rows say OneDrive has below it, met a row left to be read again (`left_below`). The
+/// first that holds: refused for no id and for the root; outdated when the row may hold
+/// something newer; outdated when a row below is left, as a removal is written whole or
+/// not at all; `Written` otherwise, also when there is no row.
+pub(super) fn decide_listed_removal(item_id: &str, row: Option<&Item>, fetch_began_at_count: u64, left_below: LeftToReadAgain) -> ListedChangeOutcome {
     if item_id.is_empty() {
         return ListedChangeOutcome::Refused(ListedChangeRefusal::NoItemId);
     }
-    match row {
-        Some(row) if row.local_item_id == LocalItemId::ROOT => ListedChangeOutcome::Refused(ListedChangeRefusal::RootListedGone),
-        Some(row) if is_listed_removal_outdated(row, fetch_began_at_count) => ListedChangeOutcome::Outdated,
+    match (row, left_below) {
+        (Some(row), _) if row.local_item_id == LocalItemId::ROOT => ListedChangeOutcome::Refused(ListedChangeRefusal::RootListedGone),
+        (Some(row), _) if is_listed_removal_outdated(row, fetch_began_at_count) => ListedChangeOutcome::Outdated,
+        (Some(_), LeftToReadAgain::Something) => ListedChangeOutcome::Outdated,
         _ => ListedChangeOutcome::Written,
     }
 }

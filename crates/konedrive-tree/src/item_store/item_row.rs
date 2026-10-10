@@ -513,24 +513,27 @@ const BELOW_IN_ONEDRIVE: &str = "WITH RECURSIVE below(id) AS (
 
 /// SQL for "what the rows say OneDrive has in the directory `?1` and below it, as far as a
 /// row stamped after the count `?2`": the walk of [`BELOW_IN_ONEDRIVE`] that finds such a
-/// row, says so of it (`is_left`) and does not go on from it, so that nothing is reached
-/// through a row that is left to be read again, at any depth. To be followed by a `SELECT`
-/// from `below(id, is_left)`.
+/// row, says so of it (`is_left`) and does not go on from it: what is below a row left to
+/// be read again is not asked of. To be followed by a `SELECT` from `below(id, is_left)`.
 const BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT: &str = "WITH RECURSIVE below(id, is_left) AS (
          SELECT local_item_id, confirmed_at_count > ?2 FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1
          UNION
          SELECT child.local_item_id, child.confirmed_at_count > ?2 FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id WHERE NOT below.is_left)";
 
+/// The item ids of OneDrive of the rows stamped after the count `left_after_count` that a
+/// walk down from `directory` meets, by what the rows say OneDrive has in it and below it:
+/// the rows a removal of `directory` would have to pass. None when the removal can be
+/// written whole.
+pub(super) fn list_left_below_in_onedrive(conn: &Connection, directory: LocalItemId, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
+    let sql = format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT} SELECT id FROM below WHERE is_left)");
+    list_onedrive_item_ids(conn, &sql, [directory.as_i64(), left_after_count as i64])
+}
+
 /// What the rows say OneDrive has in `directory` and below it has no OneDrive version from
-/// now on, as far as the rows stamped after the count `left_after_count`: those are left,
-/// with all the rows say is below them, and their item ids of OneDrive answered. Two
-/// statements whatever is below: the rows that are left are read, and then the others are
-/// written, each found from what the rows said before either.
-pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId, left_after_count: u64) -> Result<Vec<OneDriveItemId>, TreeError> {
-    let values = [directory.as_i64(), left_after_count as i64];
-    let left = list_onedrive_item_ids(conn, &format!("SELECT onedrive_item_id FROM items WHERE local_item_id IN ({BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT} SELECT id FROM below WHERE is_left)"), values)?;
-    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE_AS_FAR_AS_LEFT} SELECT id FROM below WHERE NOT is_left)", clear_onedrive_version_sql("")))?.execute(values)?;
-    Ok(left)
+/// now on, all of it: one statement, whatever is below.
+pub(super) fn clear_onedrive_versions_below(conn: &Connection, directory: LocalItemId) -> Result<(), TreeError> {
+    conn.prepare_cached(&format!("{} WHERE local_item_id IN ({BELOW_IN_ONEDRIVE})", clear_onedrive_version_sql("")))?.execute([directory.as_i64()])?;
+    Ok(())
 }
 
 /// SQL for "the row has a place in OneDrive, and the full listing of the id `?1` did not

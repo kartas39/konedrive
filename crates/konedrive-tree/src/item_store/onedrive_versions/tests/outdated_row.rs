@@ -1,6 +1,7 @@
 //! A row a page leaves to be read again (`Outdated`), against everything else the same
 //! page or its end can do: one test a cell. The rule every cell holds: a call takes
-//! nothing through a row it leaves. Each cell says what the rows are after the call, after
+//! nothing through a row it leaves — a removal whose walk meets such a row is not written
+//! at all, and a full listing's end leaves the row and what is below it. Each cell says what the rows are after the call, after
 //! the call that gives what was read again, and after "the daemon died and the page was
 //! asked again".
 //!
@@ -104,83 +105,81 @@ fn a_row_left_by_a_page_that_says_nothing_else() {
     assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "the page asked again");
 }
 
-/// M1 of the second review. The same page says the directory `X` was in is gone. What is
-/// below `X` keeps its OneDrive version; the row of the removed directory stays, with no
-/// version, while the row of `X` names it, as a parent named and never listed does; the
-/// call that at last writes where `X` is deletes it; and the page asked again converges.
+/// M1 of the second review. The same page says the directory `X` was in is gone. A removal
+/// is written whole or not at all: its walk meets `X`, so nothing of it is written, the
+/// directory keeps its version, and both are answered. Given back — where `X` is, and the
+/// directory as gone — the removal is written and the directory's row goes; and the page
+/// asked again, after the confirmation, is written whole.
 #[test]
 fn a_row_left_and_the_directory_it_is_in_listed_gone() {
     const AT_ROOT: &str = "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2";
     let page = [x_moved_to_root(), gone("D")];
     let after_call = || {
         let mut store = store_of_confirmed_x(false);
-        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
+        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["X", "D"], CONFIRMED, Some("link-1")));
         store
     };
-    assert_eq!(give(&mut after_call(), &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "read again");
+    assert_eq!(give(&mut after_call(), &[x_moved_to_root(), gone("D")], 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "read again");
     assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "the page asked again");
 }
 
 /// The same with the directory two above `X` listed gone, and the one between them named
-/// by nothing: that one has no version and stays for `X`; what is below `X` is kept.
+/// by nothing: the removal's walk passes that one and meets `X`, and writes nothing.
 #[test]
 fn a_row_left_and_a_directory_two_above_it_listed_gone() {
     const AT_ROOT: &str = "C=X/c F=S/f K=X/kept S=X/s X=R/x2";
     let page = [x_moved_to_root(), gone("G")];
     let after_call = || {
         let mut store = store_of_confirmed_x(false);
-        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f K=X/kept S=X/s X=D/x2", Some("link-1")));
+        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["X", "G"], CONFIRMED, Some("link-1")));
         store
     };
-    assert_eq!(give(&mut after_call(), &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "read again");
+    assert_eq!(give(&mut after_call(), &[x_moved_to_root(), gone("G")], 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "read again");
     assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], AT_ROOT, Some("link-2")), "the page asked again");
 }
 
 /// A page that does not name `X` says the directory it is in is gone: the removal's walk
-/// finds `X`, leaves it and answers it, and goes no further. Read again, `X` is gone, and
-/// that removal takes what is below it; or it is somewhere, and what is below it is
-/// there. The page asked again after the confirmation takes all.
+/// meets `X`, nothing of the removal is written, and the directory and `X` are answered.
+/// Read again, the directory is gone, and `X` is gone with it or is somewhere, and what is
+/// below it is there. The page asked again after the confirmation takes all.
 #[test]
 fn a_row_left_by_the_removal_of_the_directory_it_is_in() {
     let page = [gone("D")];
     let after_call = || {
         let mut store = store_of_confirmed_x(false);
-        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
+        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["D", "X"], CONFIRMED, Some("link-1")));
         store
     };
-    assert_eq!(give(&mut after_call(), &[gone("X")], 1, &delta_link("link-2")), left(&[], "G=R/G K=- X=-", Some("link-2")), "read again: gone, and the row that was stamped stays until a listing ends that began after");
-    assert_eq!(give(&mut after_call(), &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again: at the root");
-    assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], "G=R/G K=- X=-", Some("link-2")), "the page asked again");
+    const GONE: &str = "G=R/G K=- X=-";
+    assert_eq!(give(&mut after_call(), &[gone("D"), gone("X")], 1, &delta_link("link-2")), left(&[], GONE, Some("link-2")), "read again: gone, and the row that was stamped stays until a listing ends that began after");
+    assert_eq!(give(&mut after_call(), &[gone("D"), x_moved_to_root()], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again: at the root");
+    assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], GONE, Some("link-2")), "the page asked again");
 }
 
-/// The rows after a page fetched before the confirmation said the directory two above `X`
-/// is gone, and named nothing else: the walk passed the directory between, which nothing
-/// was confirmed of, and stopped at `X`. The removed directory's row went, as no row names
-/// it; the one between has no version and stays for `X`.
-fn store_after_the_removal_of_a_directory_two_above_x() -> TreeStore {
-    let mut store = store_of_confirmed_x(false);
-    assert_eq!(give(&mut store, &[gone("G")], 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f K=X/kept S=X/s X=D/x2", Some("link-1")));
-    store
-}
-
-/// The same from two above, and `X` read again: gone, and the removal takes what is below.
+/// The same from two above. The cell that did not hold while a removal was written as far
+/// as the row it met: the removed directory's row went with the first call, and the page
+/// asked again found no way to `X`. Written whole or not at all, the removal leaves every
+/// row as it was, and the page asked again writes it.
 #[test]
 fn a_row_left_by_the_removal_of_a_directory_two_above_it() {
-    let mut store = store_after_the_removal_of_a_directory_two_above_x();
-    assert_eq!(give(&mut store, &[gone("X")], 1, &delta_link("link-2")), left(&[], "K=- X=-", Some("link-2")), "read again: gone");
+    let page = [gone("G")];
+    let after_call = || {
+        let mut store = store_of_confirmed_x(false);
+        assert_eq!(give(&mut store, &page, 0, &delta_link("link-2")), left(&["G", "X"], CONFIRMED, Some("link-1")));
+        store
+    };
+    assert_eq!(give(&mut after_call(), &[gone("G"), gone("X")], 1, &delta_link("link-2")), left(&[], "K=- X=-", Some("link-2")), "read again: gone");
+    assert_eq!(give(&mut after_call(), &page, 1, &delta_link("link-2")), left(&[], "K=- X=-", Some("link-2")), "the page asked again");
 }
 
-/// The cell that does not hold. The same from two above, and `X` is never read again: the
-/// page asked again says the directory two above is gone, whose row went with the first
-/// call, so nothing leads from it to `X`. The rows go on saying OneDrive has `X` and what
-/// is below it, in a directory that has no version, and the listing ends. A removal whose
-/// walk stops at a row keeps no way back to that row once the removed directory is more
-/// than one above it.
+/// Two removals on one page, of which one meets `X`: that one is not written, and the
+/// other, which meets nothing left, is.
 #[test]
-#[ignore = "does not hold: the removed directory's row went with the first call, and the page asked again finds no way to the row that was left"]
-fn a_row_left_by_the_removal_of_a_directory_two_above_it_and_the_page_asked_again() {
-    let mut store = store_after_the_removal_of_a_directory_two_above_x();
-    assert_eq!(give(&mut store, &[gone("G")], 1, &delta_link("link-2")), left(&[], "K=- X=-", Some("link-2")), "the page asked again");
+fn a_removal_that_meets_no_row_left_is_written_beside_one_that_does() {
+    let mut store = store_of_confirmed_x(false);
+    write_fetched_at(&mut store, &[directory("Q", "R", "q"), file("P", "Q", "p", "1")], 0, &next_link("next-1"));
+    assert_eq!(give(&mut store, &[gone("D"), gone("Q")], 0, &delta_link("link-2")), left(&["D", "X"], CONFIRMED, Some("link-1")));
+    assert_eq!((bound(&mut store, "Q"), bound(&mut store, "P")), (None, None));
 }
 
 /// The page says `X` itself is gone: it is left, and what is below it with it. Read
@@ -311,17 +310,18 @@ fn a_row_left_makes_no_row_for_the_parent_the_page_names() {
 
 /// Between the call and what was read again, `X`, which the folder shows, gives its
 /// binding up: the row that took it has the stamp, the version, the items below and the
-/// removed directory as its parent, and what was read again is written to it.
+/// directory the page said is gone, whose removal was not written, as its parent; what was
+/// read again is written to it, and the removal with it.
 #[test]
 fn a_row_left_gives_its_binding_up_before_it_is_read_again() {
     let mut store = store_of_confirmed_x(true);
     let shown = listed(&mut store, "X").local_item_id;
-    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X", "D"], CONFIRMED, Some("link-1")));
     let taker = store.item_store().give_up_binding(shown, false).unwrap();
     assert_eq!((listed(&mut store, "X").local_item_id, listed(&mut store, "X").confirmed_at_count), (taker, 1));
-    assert_eq!(said(&mut store), "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2");
-    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")).0, ["X"], "the page given again is left again");
-    assert_eq!(give(&mut store, &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again");
+    assert_eq!(said(&mut store), CONFIRMED);
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")).0, ["X", "D"], "the page given again is left again");
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again");
     assert_eq!(item(&mut store, shown).onedrive_item, None);
 }
 
@@ -333,7 +333,7 @@ fn a_row_left_is_merged_with_a_new_item_before_it_is_read_again() {
     for by_binding in [false, true] {
         let mut store = store_of_confirmed_x(false);
         let listed_row = listed(&mut store, "X").local_item_id;
-        assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
+        assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X", "D"], CONFIRMED, Some("link-1")));
         let made = make_directory(&mut store, ROOT, "made");
         if by_binding {
             store.item_store().bind_item(made, &reference("X")).unwrap();
@@ -341,9 +341,9 @@ fn a_row_left_is_merged_with_a_new_item_before_it_is_read_again() {
             store.item_store().merge_items(made, listed_row).unwrap();
         }
         assert_eq!((listed(&mut store, "X").local_item_id, listed(&mut store, "X").confirmed_at_count), (made, 1), "by_binding: {by_binding}");
-        assert_eq!(said(&mut store), "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2");
+        assert_eq!(said(&mut store), CONFIRMED);
         assert_eq!(give(&mut store, &[gone("X")], 0, &delta_link("link-2")).0, ["X"], "a page fetched before the confirmation is left still");
-        assert_eq!(give(&mut store, &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again, by_binding: {by_binding}");
+        assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 1, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again, by_binding: {by_binding}");
     }
 }
 
@@ -364,26 +364,27 @@ fn a_row_left_is_the_row_of_a_confirmed_removal() {
 }
 
 /// What was read again is outdated again: a second confirmation came between. The call
-/// leaves everything as the first did, the removed directory's row too, and writes no
+/// leaves everything as the first did, the removal unwritten again, and writes no
 /// link; the next reading is written.
 #[test]
 fn a_row_left_is_read_again_and_left_again() {
     let mut store = store_of_confirmed_x(false);
-    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X", "D"], CONFIRMED, Some("link-1")));
     assert_eq!(confirm_rename_of_x(&mut store, "x3"), 2);
-    assert_eq!(give(&mut store, &[x_moved_to_root()], 1, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x3", Some("link-1")), "read again, and left again");
-    assert_eq!(give(&mut store, &[directory("X", "R", "x3")], 2, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x3", Some("link-2")), "read again");
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 1, &delta_link("link-2")), left(&["X", "D"], "C=X/c D=G/D F=S/f G=R/G K=X/kept S=X/s X=D/x3", Some("link-1")), "read again, and left again");
+    assert_eq!(give(&mut store, &[directory("X", "R", "x3"), gone("D")], 2, &delta_link("link-2")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x3", Some("link-2")), "read again");
 }
 
 /// The step that renamed `X` wrote that the two sides agree it is in `D`. The row of the
-/// removed directory then stays past the call that writes where `X` is, for the place
+/// removed directory then stays, with no version, past the call that writes the removal
+/// and where `X` is, for the place
 /// agreed on names it; it goes at the first call after the folder followed.
 #[test]
 fn the_row_of_the_removed_directory_stays_while_a_place_agreed_on_names_it() {
     let mut store = store_of_confirmed_x(false);
     agree(&mut store, "X");
-    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X"], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=D/x2", Some("link-1")));
-    assert_eq!(give(&mut store, &[x_moved_to_root()], 1, &delta_link("link-2")), left(&[], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again");
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 0, &delta_link("link-2")), left(&["X", "D"], CONFIRMED, Some("link-1")));
+    assert_eq!(give(&mut store, &[x_moved_to_root(), gone("D")], 1, &delta_link("link-2")), left(&[], "C=X/c D=- F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-2")), "read again");
     agree(&mut store, "X");
     assert_eq!(give(&mut store, &[], 1, &delta_link("link-3")), left(&[], "C=X/c F=S/f G=R/G K=X/kept S=X/s X=R/x2", Some("link-3")));
 }

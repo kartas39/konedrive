@@ -782,20 +782,25 @@ fn the_row_of_a_confirmed_removal_stays_until_a_listing_ends_that_began_after_it
     assert_eq!(bound(&mut store, "A"), None);
 }
 
-/// What a directory listed gone takes with it is guarded too: a file confirmed in it after
-/// the fetch began keeps its version and is read again.
+/// What a directory listed gone takes with it is guarded too, and the removal is written
+/// whole or not at all: a file confirmed in it after the fetch began is met by the walk,
+/// so nothing is taken, and the directory and the file are read again.
 #[test]
-fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetch_began() {
+fn a_directory_listed_gone_is_not_written_while_something_was_confirmed_in_it_after_the_fetch_began() {
     let mut store = listed_store();
     write(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "D", "b", "1")]);
     let (d, a) = (listed(&mut store, "D").local_item_id, listed(&mut store, "A").local_item_id);
     let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, a, version(d, "a", Some("22")), Some("e-A-22"));
+    let before = onedrive_side(&mut store);
 
-    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next")), ["A"]);
-    assert_eq!(item(&mut store, a).onedrive, version(d, "a", Some("22")));
-    assert_eq!(bound(&mut store, "B"), None);
-    assert_eq!(listed(&mut store, "D").onedrive, None, "its row stays while a row names it");
+    let outcome = write_page(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next"));
+    assert_eq!((outcome.changes.clone(), ids(outcome.outdated_items)), (vec![ListedChangeOutcome::Outdated], vec!["D".to_owned(), "A".to_owned()]));
+    assert_eq!(onedrive_side(&mut store), before);
+
+    let later = count(&mut store);
+    assert_eq!(write_fetched_at(&mut store, &[gone("D"), gone("A")], later, &next_link("next")), Vec::<String>::new());
+    assert_eq!((listed(&mut store, "D").onedrive, bound(&mut store, "B"), listed(&mut store, "A").onedrive), (None, None, None), "the directory's row stays for the place agreed on of the file");
 }
 
 /// A full listing in several pages over the rows of an earlier one: it marks what it sees,
@@ -1074,25 +1079,33 @@ fn ten_thousand_below() -> Vec<Change> {
     tree
 }
 
-/// A directory with ten thousand items below it listed gone takes them all, whatever their
-/// number, but the one item among them that was confirmed after the fetch began: it keeps
-/// its version and is answered to be read again. How long the page took is printed.
+/// A directory with ten thousand items below it listed gone, one of which was confirmed
+/// after the fetch began: the walk finds that one, whatever the number below, and the
+/// removal is not written. Given again after it was read, it takes them all. How long each
+/// page took is printed.
 #[test]
-fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_but_what_was_confirmed_since() {
+fn a_directory_with_ten_thousand_items_below_it_listed_gone_takes_all_or_nothing() {
     let mut store = listed_store();
     write(&mut store, &ten_thousand_below());
     let (guarded, its_directory) = (listed(&mut store, "F5050").local_item_id, listed(&mut store, "S50").local_item_id);
     let fetch_began_at_count = begin_delta_listing(&mut store);
     confirm(&mut store, guarded, version(its_directory, "f5050", Some("22")), Some("e-F5050-22"));
+    let before = onedrive_side(&mut store);
 
     let began = std::time::Instant::now();
     let read_again = write_fetched_at(&mut store, &[gone("D")], fetch_began_at_count, &next_link("next"));
-    println!("a directory with ten thousand items below it listed gone: the page took {:?}", began.elapsed());
-    assert_eq!(read_again, ["F5050"]);
-    assert_eq!(item(&mut store, guarded).onedrive, version(its_directory, "f5050", Some("22")));
+    println!("a directory with ten thousand items below it listed gone, not written: the page took {:?}", began.elapsed());
+    assert_eq!(read_again, ["D", "F5050"]);
+    assert_eq!(onedrive_side(&mut store), before);
+
+    let later = count(&mut store);
+    let began = std::time::Instant::now();
+    let read_again = write_fetched_at(&mut store, &[gone("D"), gone("F5050")], later, &next_link("next"));
+    println!("a directory with ten thousand items below it listed gone, written: the page took {:?}", began.elapsed());
+    assert_eq!(read_again, Vec::<String>::new());
     let left: Vec<String> = every_row(&mut store).into_iter().filter_map(|row| row.onedrive_item).map(|reference| reference.item_id.as_str().to_owned()).collect();
-    assert_eq!(left, ["R", "S50", "F5050"], "a row stays while a row names it as its parent, and no other");
-    assert_eq!(listed(&mut store, "S50").onedrive, None);
+    assert_eq!(left, ["R", "S50", "F5050"], "the row that was stamped stays, and the directory the two sides agreed it is in");
+    assert_eq!((item(&mut store, guarded).onedrive, listed(&mut store, "S50").onedrive), (None, None));
 }
 
 /// A full listing's end takes what it did not see, whatever its number, but what was

@@ -123,7 +123,7 @@ pub(super) enum PageEnd {
 
 /// How far the writing of a page got when its end is decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum PageWritten {
+pub(super) enum PageProgress {
     /// The page's changes are written.
     Changes,
     /// And a full listing took what it did not see.
@@ -141,12 +141,12 @@ pub(super) enum LeftToReadAgain {
 /// holds: while something is left to be read again no link is written, whatever the link;
 /// a link to a next page is written; a full listing's last page sweeps before it ends; a
 /// listing ends.
-pub(super) fn decide_page_end(kind: ListingKind, link: &ListingLink, written: PageWritten, left: LeftToReadAgain) -> PageEnd {
+pub(super) fn decide_page_end(kind: ListingKind, link: &ListingLink, written: PageProgress, left: LeftToReadAgain) -> PageEnd {
     match (left, link, kind, written) {
         (LeftToReadAgain::Something, _, _, _) => PageEnd::LinkNotWritten,
         (LeftToReadAgain::Nothing, ListingLink::NextLink(_), _, _) => PageEnd::NextLinkWritten,
-        (LeftToReadAgain::Nothing, ListingLink::DeltaLink(_), ListingKind::Full, PageWritten::Changes) => PageEnd::FullListingSweeps,
-        (LeftToReadAgain::Nothing, ListingLink::DeltaLink(_), ListingKind::Full, PageWritten::ChangesAndSweep) => PageEnd::ListingEnds,
+        (LeftToReadAgain::Nothing, ListingLink::DeltaLink(_), ListingKind::Full, PageProgress::Changes) => PageEnd::FullListingSweeps,
+        (LeftToReadAgain::Nothing, ListingLink::DeltaLink(_), ListingKind::Full, PageProgress::ChangesAndSweep) => PageEnd::ListingEnds,
         (LeftToReadAgain::Nothing, ListingLink::DeltaLink(_), ListingKind::Delta, _) => PageEnd::ListingEnds,
     }
 }

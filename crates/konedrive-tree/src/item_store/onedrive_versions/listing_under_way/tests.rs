@@ -1,4 +1,4 @@
-use super::{decide_page_end, LeftToReadAgain, ListingKind, ListingLink, ListingUnderWay, PageEnd, PageWritten};
+use super::{decide_page_end, LeftToReadAgain, ListingKind, ListingLink, ListingUnderWay, PageEnd, PageProgress};
 use crate::item_store::tests::is_refused;
 use crate::{meta, TreeStore};
 
@@ -16,7 +16,7 @@ fn delta_link() -> ListingLink {
 fn a_page_that_leaves_something_to_read_again_writes_no_link() {
     for kind in [ListingKind::Full, ListingKind::Delta] {
         for link in [next_link(), delta_link()] {
-            for written in [PageWritten::Changes, PageWritten::ChangesAndSweep] {
+            for written in [PageProgress::Changes, PageProgress::ChangesAndSweep] {
                 assert_eq!(decide_page_end(kind, &link, written, LeftToReadAgain::Something), PageEnd::LinkNotWritten, "{kind:?} {link:?} {written:?}");
             }
         }
@@ -28,27 +28,27 @@ fn a_page_that_leaves_something_to_read_again_writes_no_link() {
 #[test]
 fn a_page_followed_by_a_link_to_the_next_one_writes_it() {
     for kind in [ListingKind::Full, ListingKind::Delta] {
-        assert_eq!(decide_page_end(kind, &next_link(), PageWritten::Changes, LeftToReadAgain::Nothing), PageEnd::NextLinkWritten, "{kind:?}");
+        assert_eq!(decide_page_end(kind, &next_link(), PageProgress::Changes, LeftToReadAgain::Nothing), PageEnd::NextLinkWritten, "{kind:?}");
     }
 }
 
 /// The last page of a listing of changes, that left nothing: the listing ends.
 #[test]
 fn the_last_page_of_a_listing_of_changes_ends_it() {
-    assert_eq!(decide_page_end(ListingKind::Delta, &delta_link(), PageWritten::Changes, LeftToReadAgain::Nothing), PageEnd::ListingEnds);
+    assert_eq!(decide_page_end(ListingKind::Delta, &delta_link(), PageProgress::Changes, LeftToReadAgain::Nothing), PageEnd::ListingEnds);
 }
 
 /// The last page of a full listing, that left nothing: the listing sweeps before it ends.
 #[test]
 fn the_last_page_of_a_full_listing_sweeps_first() {
-    assert_eq!(decide_page_end(ListingKind::Full, &delta_link(), PageWritten::Changes, LeftToReadAgain::Nothing), PageEnd::FullListingSweeps);
+    assert_eq!(decide_page_end(ListingKind::Full, &delta_link(), PageProgress::Changes, LeftToReadAgain::Nothing), PageEnd::FullListingSweeps);
 }
 
 /// A full listing that swept and left nothing ends; one whose sweep left something is the
 /// first case above.
 #[test]
 fn a_full_listing_whose_sweep_left_nothing_ends() {
-    assert_eq!(decide_page_end(ListingKind::Full, &delta_link(), PageWritten::ChangesAndSweep, LeftToReadAgain::Nothing), PageEnd::ListingEnds);
+    assert_eq!(decide_page_end(ListingKind::Full, &delta_link(), PageProgress::ChangesAndSweep, LeftToReadAgain::Nothing), PageEnd::ListingEnds);
 }
 
 /// The rows that are a binding and nothing else stay by their stamp: at a listing's end

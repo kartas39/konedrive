@@ -1,4 +1,5 @@
 use super::{decide_listed_item, decide_listed_removal, decide_listed_root, is_listed_removal_outdated, is_listed_version_outdated, ListedChangeOutcome, ListedChangeRefusal, ListedItem};
+use crate::item_store::onedrive_versions::listing_under_way::LeftToReadAgain;
 use crate::item_store::tests::{place, reference};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemVersion, LocalItemId, Placement};
 
@@ -117,17 +118,21 @@ fn a_listed_item_is_written_outdated_or_refused_by_what_it_says_and_the_rows_it_
 /// What becomes of a listing's statement that an item is gone, a case each.
 #[test]
 fn a_listed_removal_is_written_outdated_or_refused_by_the_row_it_is_about() {
+    use LeftToReadAgain::{Nothing, Something};
     use ListedChangeOutcome::{Outdated, Refused, Written};
-    for (what, item_id, row, outcome) in [
-        ("an item the store does not know", "A", None, Written),
-        ("an item the store knows", "A", Some(stamped(0, Some("e-1"))), Written),
-        ("stamped when the fetch began", "A", Some(stamped(5, Some("e-1"))), Written),
-        ("stamped later as removed: the removal is what was confirmed", "A", Some(stamped(6, None)), Written),
-        ("stamped later with a version", "A", Some(stamped(6, Some("e-1"))), Outdated),
-        ("no id", "", None, Refused(ListedChangeRefusal::NoItemId)),
-        ("the root", "R", Some(root_row()), Refused(ListedChangeRefusal::RootListedGone)),
+    for (what, item_id, row, left_below, outcome) in [
+        ("an item the store does not know", "A", None, Nothing, Written),
+        ("an item the store knows", "A", Some(stamped(0, Some("e-1"))), Nothing, Written),
+        ("stamped when the fetch began", "A", Some(stamped(5, Some("e-1"))), Nothing, Written),
+        ("stamped later as removed: the removal is what was confirmed", "A", Some(stamped(6, None)), Nothing, Written),
+        ("stamped later with a version", "A", Some(stamped(6, Some("e-1"))), Nothing, Outdated),
+        ("a directory with a row below it left to be read again: whole or not at all", "D", Some(directory_row()), Something, Outdated),
+        ("the same of a row whose removal was confirmed", "A", Some(stamped(6, None)), Something, Outdated),
+        ("no id", "", None, Nothing, Refused(ListedChangeRefusal::NoItemId)),
+        ("the root", "R", Some(root_row()), Nothing, Refused(ListedChangeRefusal::RootListedGone)),
+        ("the root, with a row below it left", "R", Some(root_row()), Something, Refused(ListedChangeRefusal::RootListedGone)),
     ] {
-        assert_eq!(decide_listed_removal(item_id, row.as_ref(), 5), outcome, "{what}");
+        assert_eq!(decide_listed_removal(item_id, row.as_ref(), 5, left_below), outcome, "{what}");
     }
 }
 
