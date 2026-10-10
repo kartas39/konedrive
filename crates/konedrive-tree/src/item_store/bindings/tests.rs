@@ -1,5 +1,5 @@
 use crate::item_store::tests::{hashed, is_refused, is_refused_by_schema, item, make_directory, make_file, place, reference, synced};
-use crate::item_store::write_item;
+use crate::item_store::stored::write_item;
 use crate::model::{ContentPresence, FileSyncState, Item, ItemKind, LocalItemId, LocalVersionChange};
 use crate::TreeStore;
 

@@ -350,18 +350,7 @@ fn only_a_file_at_a_removed_files_synced_place_takes_a_binding_over() {
     for id in [file, dir, moved] {
         store.item_store().apply(&LocalVersionChange::Removed { item: id }).unwrap();
     }
-    let mentioned = Item {
-        local_item_id: LocalItemId::new(50),
-        onedrive_item: Some(reference("P")),
-        kind: ItemKind::Directory,
-        local: None,
-        synced_place: None,
-        synced_content: None,
-        content_presence: ContentPresence::NotOnDisk,
-        content_before_write: None,
-        is_ignored: false,
-    };
-    insert_item(&store.conn, &mentioned).unwrap();
+    insert_item(&store.conn, ItemKind::Directory, Some(&reference("P")), None, ContentPresence::NotOnDisk, false).unwrap();
 
     let made_ids = [
         make_directory(&mut store, ROOT, "file"),
