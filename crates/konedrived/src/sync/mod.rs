@@ -20,6 +20,13 @@ mod running_sync;
 pub mod settings;
 pub mod start_stop;
 pub mod take_down;
+// The sync by the sync plan: no caller until the mount reads the rows.
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod sync_plan_task;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod sync_tasks;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod upload_queue_answers;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
 pub mod wiring;
