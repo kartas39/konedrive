@@ -466,6 +466,16 @@ impl ItemKind {
     }
 }
 
+/// A listing's folder is a directory, and its file a file.
+impl From<Kind> for ItemKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::File => ItemKind::File,
+            Kind::Folder => ItemKind::Directory,
+        }
+    }
+}
+
 /// The directory an item is in and its name there. The parent is named by the client's own
 /// number on every side, so that places of the two sides can be compared. The name is kept as
 /// it was given, bytes that are not UTF-8 included, and never changed to compare it.

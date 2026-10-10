@@ -24,6 +24,15 @@ const LAST_CHECKED: &str = "last_checked";
 /// The count of outbox commits: `onedrive_items.local_seq` of the row a commit
 /// writes (the stale-delta guard, `docs/design/writes.md` §9).
 pub(crate) const OUTBOX_SEQ: &str = "outbox_seq";
+/// The count of confirmations: how many times OneDrive confirmed something to a step of
+/// the client, which the row it confirmed is stamped with (`items.confirmed_count`). The
+/// guard against an outdated listing compares the two.
+pub(crate) const CONFIRMED_COUNT: &str = "confirmed_count";
+/// The count of full listings begun: what a full listing marks the rows it sees with
+/// (`items.seen_in_full_listing`).
+pub(crate) const FULL_LISTING_COUNT: &str = "full_listing_count";
+/// Set while the full listing of that count is under way: begun, and not ended yet.
+pub(crate) const FULL_LISTING_UNDER_WAY: &str = "full_listing_under_way";
 /// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 

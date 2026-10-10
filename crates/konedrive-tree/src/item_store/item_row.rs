@@ -361,3 +361,52 @@ pub(super) fn set_seen_in_full_listing(conn: &Connection, item: LocalItemId, cou
     conn.prepare_cached("UPDATE items SET seen_in_full_listing = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])?;
     Ok(())
 }
+
+/// The items whose OneDrive place or content is not the synced one, by local item id: at
+/// most `limit` of them, after the item `after` when one is given. Found by the index of
+/// those rows, whatever the store holds beside them.
+pub(super) fn list_changed_in_onedrive(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_changed_in_onedrive WHERE {CHANGED_IN_ONEDRIVE} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// Every item OneDrive has in `directory` and below it, as the rows say: found from the
+/// directory down by the index of places in OneDrive, each item once also when the rows of
+/// a listing that has not ended name each other in a circle.
+pub(super) fn list_below_in_onedrive(conn: &Connection, directory: LocalItemId) -> Result<Vec<Item>, TreeError> {
+    let sql = format!(
+        "WITH RECURSIVE below(id) AS (
+             SELECT local_item_id FROM items INDEXED BY items_onedrive_place WHERE onedrive_parent_id = ?1
+             UNION
+             SELECT child.local_item_id FROM below JOIN items child INDEXED BY items_onedrive_place ON child.onedrive_parent_id = below.id)
+         SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id IN (SELECT id FROM below)"
+    );
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map([directory.as_i64()], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// What OneDrive has, by the rows, that the full listing of this count did not list: found
+/// by the index of the listing that saw a row.
+pub(super) fn list_unseen_in_full_listing(conn: &Connection, count: u64) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_seen_in_full_listing WHERE onedrive_parent_id IS NOT NULL AND seen_in_full_listing < ?1");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map([count as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// The rows that are a binding and nothing else, that no row names as its parent on any
+/// side, and whose stamp is `stamped_until` at most, go. Found by the index of such rows.
+/// A row that goes names no parent, so none of them holds another.
+pub(super) fn delete_bindings_alone(conn: &Connection, stamped_until: u64) -> Result<(), TreeError> {
+    let sql = format!(
+        "DELETE FROM items INDEXED BY items_binding_alone WHERE {BINDING_ALONE} AND confirmed_count <= ?1
+            AND NOT EXISTS (SELECT 1 FROM items child WHERE child.local_parent_id = items.local_item_id)
+            AND NOT EXISTS (SELECT 1 FROM items child WHERE child.onedrive_parent_id = items.local_item_id)
+            AND NOT EXISTS (SELECT 1 FROM items child WHERE child.synced_parent_id = items.local_item_id)"
+    );
+    conn.prepare_cached(&sql)?.execute([stamped_until as i64])?;
+    Ok(())
+}

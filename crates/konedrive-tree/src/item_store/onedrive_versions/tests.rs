@@ -1,5 +1,130 @@
-use crate::item_store::tests::is_refused_by_schema;
+use std::collections::BTreeMap;
+
+use super::{is_listed_removal_outdated, is_listed_version_outdated};
+use crate::item_store::item_row::write_item;
+use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_file, place, reference, synced};
+use crate::model::{Change, ContentPresence, ContentVersion, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
 use crate::TreeStore;
+
+const ROOT: LocalItemId = LocalItemId::ROOT;
+
+/// The root of the drive as a listing gives it.
+fn root() -> Change {
+    Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: Some("e-R".into()), ctag: None, quickxor: None, mime: None, placement: Placement::Placed })
+}
+
+/// The directory `id` as a listing gives it: in `parent` under `name`.
+fn directory(id: &str, parent: &str, name: &str) -> Change {
+    Change::Upsert(Row { id: id.into(), parent_id: Some(parent.into()), name: name.into(), kind: Kind::Folder, size: 0, mtime: 500, etag: Some(format!("e-{id}")), ctag: Some(format!("c-{id}")), quickxor: None, mime: None, placement: Placement::Placed })
+}
+
+/// The file `id` as a listing gives it: in `parent` under `name`, with the content `version`.
+fn file(id: &str, parent: &str, name: &str, version: &str) -> Change {
+    Change::Upsert(Row {
+        id: id.into(),
+        parent_id: Some(parent.into()),
+        name: name.into(),
+        kind: Kind::File,
+        size: version.len() as u64,
+        mtime: 1000,
+        etag: Some(format!("e-{id}-{version}")),
+        ctag: Some(format!("c-{version}")),
+        quickxor: Some(format!("h-{version}")),
+        mime: Some("text/plain".into()),
+        placement: Placement::Placed,
+    })
+}
+
+fn gone(id: &str) -> Change {
+    Change::Delete(id.into())
+}
+
+/// The content [`file`] gives as `version`, as the row has it.
+fn content(version: &str) -> ContentVersion {
+    ContentVersion::Hashed { size: version.len() as u64, mtime: 1000, mtime_nsec: 0, hash: Some(format!("h-{version}")), ctag: Some(format!("c-{version}")) }
+}
+
+fn version(parent: LocalItemId, name: &str, content_version: Option<&str>) -> Option<ItemVersion> {
+    Some(ItemVersion { place: Some(place(parent, name)), content: content_version.map(content) })
+}
+
+/// A store that knows its drive, `d1`.
+fn store_of_drive() -> TreeStore {
+    let store = TreeStore::in_memory().unwrap();
+    store.set_drive_id("d1").unwrap();
+    store
+}
+
+/// A store that knows its drive, whose root, `R`, was listed.
+fn listed_store() -> TreeStore {
+    let mut store = store_of_drive();
+    write(&mut store, &[root()]);
+    store
+}
+
+fn count(store: &mut TreeStore) -> u64 {
+    store.item_store().confirmed_count().unwrap()
+}
+
+fn ids(read_again: Vec<OneDriveItemId>) -> Vec<String> {
+    read_again.iter().map(|id| id.as_str().to_owned()).collect()
+}
+
+/// Writes a page fetched now, of a listing that goes on; what is to be read again.
+fn write(store: &mut TreeStore, changes: &[Change]) -> Vec<String> {
+    let fetch_began_at = count(store);
+    ids(store.item_store().write_listed_changes(changes, fetch_began_at, None).unwrap())
+}
+
+/// Writes a page of a fetch that began at the count `fetch_began_at`.
+fn write_fetched_at(store: &mut TreeStore, changes: &[Change], fetch_began_at: u64, delta_link: Option<&str>) -> Vec<String> {
+    ids(store.item_store().write_listed_changes(changes, fetch_began_at, delta_link).unwrap())
+}
+
+fn bound(store: &mut TreeStore, onedrive_id: &str) -> Option<Item> {
+    store.item_store().find_bound_item(&reference(onedrive_id)).unwrap()
+}
+
+/// The row of the item of OneDrive `onedrive_id`.
+fn listed(store: &mut TreeStore, onedrive_id: &str) -> Item {
+    bound(store, onedrive_id).unwrap_or_else(|| panic!("the item of OneDrive {onedrive_id} has no row"))
+}
+
+fn onedrive_place(store: &mut TreeStore, onedrive_id: &str) -> Option<crate::model::ItemPlace> {
+    listed(store, onedrive_id).onedrive.and_then(|onedrive| onedrive.place)
+}
+
+fn every_row(store: &mut TreeStore) -> Vec<Item> {
+    let numbers: Vec<i64> = store.conn.prepare("SELECT local_item_id FROM items ORDER BY local_item_id").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    numbers.into_iter().map(|number| item(store, LocalItemId::new(number))).collect()
+}
+
+/// What the rows say OneDrive has, in OneDrive's own words: for each bound row, by its item
+/// id, its kind, its place there with the parent named by its item id, its content, eTag
+/// and placement. Two stores that were given the same listing in another order say the
+/// same here, whatever local item ids they gave.
+fn onedrive_side(store: &mut TreeStore) -> BTreeMap<String, String> {
+    let rows = every_row(store);
+    let item_id_of = |id: LocalItemId| rows.iter().find(|row| row.local_item_id == id).and_then(|row| row.onedrive_item.as_ref()).map(|reference| reference.item_id.as_str().to_owned());
+    let said = |row: &Item| {
+        let reference = row.onedrive_item.as_ref()?;
+        let onedrive = row.onedrive.as_ref().map(|onedrive| (onedrive.place.as_ref().map(|place| (item_id_of(place.parent_local_item_id), place.name.clone())), onedrive.content.clone()));
+        Some((reference.item_id.as_str().to_owned(), format!("{:?} {onedrive:?} {:?} {:?}", row.kind, row.onedrive_etag, row.placement)))
+    };
+    rows.iter().filter_map(said).collect()
+}
+
+/// A step of the client confirmed something of `item` with OneDrive: OneDrive has
+/// `onedrive` of it now, under `etag`, the two sides agree on that, and the row is stamped.
+fn confirm(store: &mut TreeStore, item_id: LocalItemId, onedrive: Option<ItemVersion>, etag: Option<&str>) -> u64 {
+    let mut row = item(store, item_id);
+    row.synced_place = onedrive.as_ref().and_then(|onedrive| onedrive.place.clone());
+    row.synced_content = onedrive.as_ref().and_then(|onedrive| onedrive.content.clone());
+    row.onedrive = onedrive;
+    row.onedrive_etag = etag.map(str::to_owned);
+    write_item(&store.conn, &row).unwrap();
+    store.item_store().stamp_confirmed(item_id).unwrap()
+}
 
 /// What one row says of the OneDrive side cannot contradict itself, whoever writes it: a
 /// place is a parent and a name; a file OneDrive has, has a content there, and nothing else
@@ -57,4 +182,654 @@ fn the_schema_refuses_an_onedrive_parent_that_has_no_row_or_is_a_file_and_keeps_
         assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
     }
     store.bench_sql("DELETE FROM items WHERE local_item_id = 6; DELETE FROM items WHERE local_item_id = 5;").unwrap();
+}
+
+/// The root's item is row 1: the root a listing gives is bound to it, has no place and has
+/// its eTag. A row that had the root's reference first, as the parent of a child listed
+/// before it, goes, and what OneDrive has in it is in row 1. The root is not written as an
+/// item with a place, and is not taken as gone.
+#[test]
+fn the_roots_item_is_row_1() {
+    let mut store = store_of_drive();
+    write(&mut store, &[file("A", "R", "a", "1")]);
+    let holder = listed(&mut store, "R");
+    assert_ne!(holder.local_item_id, ROOT);
+    assert_eq!(holder.onedrive, None);
+
+    write(&mut store, &[root()]);
+    let root_row = item(&mut store, ROOT);
+    assert_eq!(root_row.onedrive_item, Some(reference("R")));
+    assert_eq!(root_row.onedrive, Some(ItemVersion { place: None, content: None }));
+    assert_eq!(root_row.onedrive_etag.as_deref(), Some("e-R"));
+    assert_eq!(store.item_store().find_item(holder.local_item_id).unwrap(), None);
+    assert_eq!(onedrive_place(&mut store, "A"), Some(place(ROOT, "a")));
+
+    write(&mut store, &[directory("D", "R", "D")]);
+    write(&mut store, &[directory("R", "D", "root")]);
+    write(&mut store, &[gone("R")]);
+    assert_eq!(item(&mut store, ROOT), root_row);
+    assert_eq!(onedrive_place(&mut store, "A"), Some(place(ROOT, "a")), "nothing goes with a root listed as gone");
+}
+
+/// An item the client did not know gets a row with its binding and its kind, and its
+/// OneDrive version is what the listing says: its place, for a file its content, the eTag
+/// and the placement. Nothing else is in the row: the folder does not show the item, and
+/// nothing is agreed on.
+#[test]
+fn an_item_the_client_did_not_know_gets_a_row_with_what_the_listing_says() {
+    let mut store = listed_store();
+    let Change::Upsert(long) = file("L", "R", "long", "1") else { unreachable!() };
+    write(&mut store, &[directory("D", "R", "Docs"), file("A", "D", "a.txt", "1"), Change::Upsert(Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..long })]);
+    let docs = listed(&mut store, "D");
+    assert_eq!(
+        docs,
+        Item {
+            local_item_id: docs.local_item_id,
+            onedrive_item: Some(reference("D")),
+            kind: ItemKind::Directory,
+            local: None,
+            onedrive: version(ROOT, "Docs", None),
+            onedrive_etag: Some("e-D".to_owned()),
+            synced_place: None,
+            synced_content: None,
+            content_presence: ContentPresence::NotOnDisk,
+            content_before_write: None,
+            placement: Placement::Placed,
+            is_name_ignored: false,
+            confirmed_count: 0,
+        }
+    );
+    let a = listed(&mut store, "A");
+    assert_eq!(
+        a,
+        Item { local_item_id: a.local_item_id, onedrive_item: Some(reference("A")), kind: ItemKind::File, onedrive: version(docs.local_item_id, "a.txt", Some("1")), onedrive_etag: Some("e-A-1".to_owned()), ..docs.clone() }
+    );
+    assert_eq!(listed(&mut store, "L").placement, Placement::Skipped(SkipReason::NameTooLong));
+}
+
+/// A file OneDrive gives no hash for has a content told by its cTag alone, and a time
+/// OneDrive gave is whole seconds: written to the synced content from the same value, the
+/// two are equal.
+#[test]
+fn a_file_with_no_hash_has_a_content_told_by_its_ctag() {
+    let mut store = listed_store();
+    let Change::Upsert(row) = file("A", "R", "a", "1") else { unreachable!() };
+    write(&mut store, &[Change::Upsert(Row { quickxor: None, ..row })]);
+    let mut a = listed(&mut store, "A");
+    let listed_content = a.onedrive.clone().unwrap().content;
+    assert_eq!(listed_content, Some(ContentVersion::Hashed { size: 1, mtime: 1000, mtime_nsec: 0, hash: None, ctag: Some("c-1".to_owned()) }));
+    a.synced_place = a.onedrive.clone().unwrap().place;
+    a.synced_content = listed_content;
+    write_item(&store.conn, &a).unwrap();
+    assert_eq!(store.item_store().list_changed_in_onedrive(None, 10).unwrap(), Vec::new(), "the two sides agree on what OneDrive has");
+}
+
+/// A parent named before it arrives gets its row at that first mention, with its binding
+/// alone, and is filled when it arrives, in a later page or in the same one. One that never
+/// arrives stays as it is while a row names it, and what is in it cannot be shown.
+#[test]
+fn a_parent_named_before_it_arrives_gets_its_row_at_its_first_mention() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "D", "a.txt", "1")]);
+    let docs = listed(&mut store, "D");
+    assert_eq!((docs.kind, docs.onedrive.clone(), docs.onedrive_etag.clone(), docs.local.clone()), (ItemKind::Directory, None, None, None));
+    let a = listed(&mut store, "A");
+    assert_eq!(a.onedrive, version(docs.local_item_id, "a.txt", Some("1")));
+    assert!(!store.item_store().can_be_shown(a.local_item_id).unwrap(), "its directory is not known");
+
+    write(&mut store, &[directory("D", "R", "Docs")]);
+    assert_eq!(listed(&mut store, "D"), Item { onedrive: version(ROOT, "Docs", None), onedrive_etag: Some("e-D".to_owned()), ..docs });
+    assert!(store.item_store().can_be_shown(a.local_item_id).unwrap());
+
+    write(&mut store, &[file("C", "N", "c", "1"), directory("N", "M", "N"), directory("M", "R", "M")]);
+    let (m, n) = (listed(&mut store, "M").local_item_id, listed(&mut store, "N").local_item_id);
+    assert_eq!((onedrive_place(&mut store, "C"), onedrive_place(&mut store, "N"), onedrive_place(&mut store, "M")), (Some(place(n, "c")), Some(place(m, "N")), Some(place(ROOT, "M"))));
+}
+
+/// Nothing of a row is touched but what is OneDrive's: the local version, the synced place
+/// and content, whether the content is on disk and what it was before a write stay as they
+/// were through a listed change and a listed removal.
+#[test]
+fn a_listing_writes_nothing_of_a_row_but_what_onedrive_has() {
+    let mut store = listed_store();
+    let report = make_file(&mut store, ROOT, "report");
+    synced(&mut store, report, "A");
+    store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: report }).unwrap();
+    let before = item(&mut store, report);
+    assert!(before.content_before_write.is_some() && before.content_presence == ContentPresence::OnDisk && before.synced_content.is_some());
+
+    write(&mut store, &[file("A", "R", "renamed", "22")]);
+    assert_eq!(item(&mut store, report), Item { onedrive: version(ROOT, "renamed", Some("22")), onedrive_etag: Some("e-A-22".to_owned()), ..before.clone() });
+
+    write(&mut store, &[gone("A")]);
+    assert_eq!(item(&mut store, report), before, "gone from OneDrive, and the row stays for the plan");
+}
+
+/// Two items of OneDrive may hold one name within a listing that has not ended: an
+/// exchange of two names spread over two pages, and a rotation of three across two
+/// directories in one.
+#[test]
+fn two_items_may_hold_one_name_while_a_listing_goes_on() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1"), directory("D", "R", "D"), file("C", "D", "c", "1")]);
+    let d = listed(&mut store, "D").local_item_id;
+
+    write(&mut store, &[file("A", "R", "b", "1")]);
+    assert_eq!((onedrive_place(&mut store, "A"), onedrive_place(&mut store, "B")), (Some(place(ROOT, "b")), Some(place(ROOT, "b"))));
+    write(&mut store, &[file("B", "R", "a", "1")]);
+    assert_eq!((onedrive_place(&mut store, "A"), onedrive_place(&mut store, "B")), (Some(place(ROOT, "b")), Some(place(ROOT, "a"))));
+
+    write(&mut store, &[file("A", "D", "c", "1"), file("C", "R", "a", "1"), file("B", "R", "b", "1")]);
+    assert_eq!(
+        (onedrive_place(&mut store, "A"), onedrive_place(&mut store, "C"), onedrive_place(&mut store, "B")),
+        (Some(place(d, "c")), Some(place(ROOT, "a")), Some(place(ROOT, "b")))
+    );
+}
+
+/// A directory moved under what was its child, in either order of the two changes.
+#[test]
+fn a_directory_is_moved_under_what_was_its_child() {
+    for moved in [[directory("C", "R", "C"), directory("P", "C", "P")], [directory("P", "C", "P"), directory("C", "R", "C")]] {
+        let mut store = listed_store();
+        write(&mut store, &[directory("P", "R", "P"), directory("C", "P", "C")]);
+        write(&mut store, &moved);
+        let c = listed(&mut store, "C").local_item_id;
+        assert_eq!((onedrive_place(&mut store, "C"), onedrive_place(&mut store, "P")), (Some(place(ROOT, "C")), Some(place(c, "P"))));
+    }
+}
+
+/// An item the listing says is gone has no OneDrive version from then on. Its row stays
+/// while the folder shows the item or something is agreed on; a row left with its binding
+/// and nothing else goes, a directory with what was in it, and a parent that was never
+/// listed with its last child.
+#[test]
+fn an_item_listed_gone_has_no_onedrive_version_and_a_row_left_with_its_binding_alone_goes() {
+    let mut store = listed_store();
+    let kept = make_file(&mut store, ROOT, "kept");
+    synced(&mut store, kept, "K");
+    write(&mut store, &[file("K", "R", "kept", "1"), directory("D", "R", "D"), file("A", "D", "a", "1"), file("X", "U", "x", "1")]);
+    let before = item(&mut store, kept);
+    assert!(bound(&mut store, "U").is_some());
+
+    write(&mut store, &[gone("D"), gone("A"), gone("K"), gone("X"), gone("never-known")]);
+    assert_eq!(item(&mut store, kept), Item { onedrive: None, onedrive_etag: None, ..before });
+    for id in ["D", "A", "X", "U", "never-known"] {
+        assert_eq!(bound(&mut store, id), None, "{id}");
+    }
+    assert_eq!(every_row(&mut store).len(), 2, "the root and the file the folder shows");
+}
+
+/// What OneDrive has below a directory listed gone is gone with it, also when the listing
+/// does not name it. What the same page moves out of the directory stays, and what it moves
+/// into it is gone, in either order of the changes.
+#[test]
+fn what_is_below_a_directory_listed_gone_is_gone_with_it() {
+    for at_first in [true, false] {
+        let mut store = listed_store();
+        write(&mut store, &[directory("D", "R", "D"), directory("E", "D", "E"), file("A", "E", "a", "1"), file("B", "D", "b", "1"), file("O", "D", "out", "1"), file("N", "R", "in", "1")]);
+        let mut page = vec![file("O", "R", "out", "1"), file("N", "E", "in", "1")];
+        page.insert(if at_first { 0 } else { 2 }, gone("D"));
+        write(&mut store, &page);
+        for id in ["D", "E", "A", "B", "N"] {
+            assert_eq!(bound(&mut store, id), None, "{id}, the removal listed first: {at_first}");
+        }
+        assert_eq!(onedrive_place(&mut store, "O"), Some(place(ROOT, "out")));
+    }
+}
+
+/// An item is deleted and another is created at its name, in either order of the two.
+#[test]
+fn an_item_is_deleted_and_another_created_at_its_name() {
+    for page in [[gone("A"), file("B", "R", "name", "2")], [file("B", "R", "name", "2"), gone("A")]] {
+        let mut store = listed_store();
+        write(&mut store, &[file("A", "R", "name", "1")]);
+        write(&mut store, &page);
+        assert_eq!(bound(&mut store, "A"), None);
+        assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "name", Some("2")));
+    }
+}
+
+/// Of several changes of one item in a page the last one counts.
+#[test]
+fn the_last_change_of_an_item_in_a_page_counts() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1"), gone("A"), file("B", "R", "b", "1"), gone("B"), file("B", "R", "b", "2")]);
+    assert_eq!(bound(&mut store, "A"), None);
+    assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("2")));
+}
+
+/// The kind of a bound item never changes: a listing that says otherwise is refused for
+/// that item, and the rest of the page is written. So is an item whose parent is a file, is
+/// itself or is not said, and one with no id.
+#[test]
+fn a_listing_that_changes_the_kind_of_an_item_is_refused_for_that_item() {
+    let mut store = listed_store();
+    write(&mut store, &[directory("D", "R", "D"), file("A", "R", "a", "1")]);
+    let mut expected = onedrive_side(&mut store);
+    let Change::Upsert(orphan) = file("N", "R", "no-parent", "1") else { unreachable!() };
+    let read_again = write(
+        &mut store,
+        &[
+            file("D", "R", "D", "1"),
+            directory("A", "R", "a"),
+            file("X", "A", "in-a-file", "1"),
+            Change::Upsert(Row { parent_id: None, ..orphan }),
+            file("S", "S", "in-itself", "1"),
+            directory("T", "T", "in-itself"),
+            file("", "R", "no-id", "1"),
+            file("B", "R", "b", "1"),
+        ],
+    );
+    assert_eq!(read_again, Vec::<String>::new());
+    let b = listed(&mut store, "B");
+    assert_eq!(b.onedrive, version(ROOT, "b", Some("1")));
+    expected.insert("B".to_owned(), onedrive_side(&mut store)["B"].clone());
+    assert_eq!(onedrive_side(&mut store), expected, "the refused items left no row and changed none");
+}
+
+/// What a store holds before the pages of [`the_order_of_the_changes_in_a_page_does_not_matter`].
+fn listed_tree() -> Vec<Change> {
+    vec![
+        root(),
+        directory("D1", "R", "D1"),
+        file("A", "D1", "a", "1"),
+        directory("D2", "R", "D2"),
+        file("B", "R", "b", "1"),
+        directory("D3", "R", "D3"),
+        file("C", "D3", "c", "1"),
+        file("E", "D3", "e", "1"),
+    ]
+}
+
+fn permutations(of: &[usize]) -> Vec<Vec<usize>> {
+    if of.len() <= 1 {
+        return vec![of.to_vec()];
+    }
+    let mut all = Vec::new();
+    for at in 0..of.len() {
+        let mut rest = of.to_vec();
+        let first = rest.remove(at);
+        all.extend(permutations(&rest).into_iter().map(|mut order| {
+            order.insert(0, first);
+            order
+        }));
+    }
+    all
+}
+
+/// The order of the changes within a page does not matter: a new directory, a file moved,
+/// a directory moved with what is in it, a file gone, and a directory gone while a file is
+/// moved out of it into the new one, written in every order, leave the same rows.
+#[test]
+fn the_order_of_the_changes_in_a_page_does_not_matter() {
+    let page = [directory("N", "R", "New"), file("A", "D2", "a", "1"), directory("D1", "D2", "D1"), gone("B"), gone("D3"), file("E", "N", "e", "1")];
+    let written = |order: &[usize]| {
+        let mut store = store_of_drive();
+        write(&mut store, &listed_tree());
+        let changes: Vec<Change> = order.iter().map(|&at| page[at].clone()).collect();
+        write(&mut store, &changes);
+        onedrive_side(&mut store)
+    };
+    let orders = permutations(&(0..page.len()).collect::<Vec<_>>());
+    assert_eq!(orders.len(), 720);
+    let expected = written(&orders[0]);
+    assert_eq!(expected.keys().map(String::as_str).collect::<Vec<_>>(), ["A", "D1", "D2", "E", "N", "R"]);
+    for order in &orders[1..] {
+        assert_eq!(written(order), expected, "the changes in the order {order:?}");
+    }
+}
+
+/// The same for a larger page, shuffled: sixty changes over a tree of forty items, with
+/// new directories whose parents come after them, moves, removals and a directory gone
+/// with what is in it.
+#[test]
+fn a_larger_page_shuffled_leaves_the_same_rows() {
+    let mut tree = vec![root()];
+    tree.extend((0..10).map(|n| directory(&format!("D{n}"), &if n == 0 { "R".to_owned() } else { format!("D{}", n / 2) }, &format!("d{n}"))));
+    tree.extend((0..30).map(|n| file(&format!("F{n}"), &format!("D{}", n % 10), &format!("f{n}"), "1")));
+    let mut page = Vec::new();
+    page.extend((0..10).map(|n| file(&format!("F{n}"), &format!("D{}", (n + 3) % 10), &format!("f{n}"), "2")));
+    page.extend((10..16).map(|n| gone(&format!("F{n}"))));
+    page.extend((0..5).map(|n| directory(&format!("N{n}"), &if n == 0 { "R".to_owned() } else { format!("N{}", n - 1) }, &format!("n{n}"))));
+    page.extend((0..10).map(|n| file(&format!("G{n}"), &format!("N{}", n % 5), &format!("g{n}"), "1")));
+    page.extend([directory("D9", "N4", "d9"), gone("D8"), directory("D3", "R", "d3")]);
+    let written = |page: &[Change]| {
+        let mut store = store_of_drive();
+        write(&mut store, &tree);
+        write(&mut store, page);
+        onedrive_side(&mut store)
+    };
+    let expected = written(&page);
+    assert!(!expected.contains_key("F18") && !expected.contains_key("D8") && expected.contains_key("F8"), "what was in the directory that is gone went with it, and what was moved out stayed");
+    // A generator of the test's own, so that a failure shows the same orders again.
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = |below: usize| {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) as usize % below
+    };
+    for round in 0..25 {
+        for at in (1..page.len()).rev() {
+            page.swap(at, next(at + 1));
+        }
+        assert_eq!(written(&page), expected, "shuffle {round}");
+    }
+}
+
+/// A page written twice leaves the rows as written once, and answers the same.
+#[test]
+fn a_page_written_twice_leaves_the_rows_as_once() {
+    let mut store = store_of_drive();
+    write(&mut store, &listed_tree());
+    let page = [directory("N", "R", "New"), file("F", "N", "f", "1"), file("A", "D2", "a", "2"), gone("B"), gone("D3"), file("X", "U", "x", "1")];
+    let first_answer = write(&mut store, &page);
+    let once = every_row(&mut store);
+    assert_eq!(write(&mut store, &page), first_answer);
+    assert_eq!(every_row(&mut store), once);
+}
+
+/// A listing that moves a directory with ten thousand items below it writes one row.
+#[test]
+fn a_directory_moved_with_ten_thousand_items_below_it_is_one_row_written() {
+    let mut store = listed_store();
+    let mut tree = vec![directory("D", "R", "D"), directory("E", "R", "E")];
+    tree.extend((0..100).map(|n| directory(&format!("S{n}"), "D", &format!("s{n}"))));
+    tree.extend((0..9900).map(|n| file(&format!("F{n}"), &format!("S{}", n % 100), &format!("f{n}"), "1")));
+    write(&mut store, &tree);
+    store
+        .bench_sql(
+            "CREATE TEMP TABLE written (item INTEGER);
+             CREATE TEMP TRIGGER written_update AFTER UPDATE ON items BEGIN INSERT INTO written VALUES (NEW.local_item_id); END;
+             CREATE TEMP TRIGGER written_insert AFTER INSERT ON items BEGIN INSERT INTO written VALUES (NEW.local_item_id); END;
+             CREATE TEMP TRIGGER written_delete AFTER DELETE ON items BEGIN INSERT INTO written VALUES (OLD.local_item_id); END;",
+        )
+        .unwrap();
+    write(&mut store, &[directory("D", "E", "D")]);
+    let written: Vec<i64> = store.conn.prepare("SELECT item FROM written").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    let (d, e) = (listed(&mut store, "D").local_item_id, listed(&mut store, "E").local_item_id);
+    assert_eq!(written, [d.as_i64()]);
+    assert_eq!(onedrive_place(&mut store, "D"), Some(place(e, "D")));
+    let deep = listed(&mut store, "F9899").local_item_id;
+    assert!(store.item_store().can_be_shown(deep).unwrap());
+}
+
+/// The count of confirmations: every stamp raises it and writes it to the row it stamps,
+/// and a cycle reads it when its fetch begins. An id with no row is not stamped.
+#[test]
+fn a_confirmation_stamps_its_row_with_the_next_count() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")]);
+    let (a, b) = (listed(&mut store, "A").local_item_id, listed(&mut store, "B").local_item_id);
+    assert_eq!(count(&mut store), 0);
+    assert_eq!(store.item_store().stamp_confirmed(a).unwrap(), 1);
+    assert_eq!(store.item_store().stamp_confirmed(b).unwrap(), 2);
+    assert_eq!(store.item_store().stamp_confirmed(a).unwrap(), 3);
+    assert_eq!((item(&mut store, a).confirmed_count, item(&mut store, b).confirmed_count, count(&mut store)), (3, 2, 3));
+    assert!(is_refused(store.item_store().stamp_confirmed(LocalItemId::new(99))));
+    assert_eq!(count(&mut store), 3, "a refused stamp is no confirmation");
+}
+
+fn stamped(confirmed_count: u64, onedrive_etag: Option<&str>) -> Item {
+    Item {
+        local_item_id: LocalItemId::new(2),
+        onedrive_item: Some(reference("A")),
+        kind: ItemKind::File,
+        local: None,
+        onedrive: onedrive_etag.and_then(|_| version(ROOT, "a", Some("1"))),
+        onedrive_etag: onedrive_etag.map(str::to_owned),
+        synced_place: None,
+        synced_content: None,
+        content_presence: ContentPresence::NotOnDisk,
+        content_before_write: None,
+        placement: Placement::Placed,
+        is_name_ignored: false,
+        confirmed_count,
+    }
+}
+
+/// Whether what a page says an item is, is older than what was confirmed of it, a case
+/// each: a row never stamped, or stamped when the fetch began or before, takes the page;
+/// one stamped later takes it only when the page says what was confirmed, by its eTag.
+#[test]
+fn a_listed_version_is_outdated_for_a_row_stamped_later_unless_it_is_what_was_confirmed() {
+    for (what, row, listed_etag, outdated) in [
+        ("never stamped", stamped(0, Some("e-1")), Some("e-0"), false),
+        ("stamped before the fetch began", stamped(4, Some("e-1")), Some("e-0"), false),
+        ("stamped when the fetch began", stamped(5, Some("e-1")), Some("e-0"), false),
+        ("stamped later, and the page says what was confirmed", stamped(6, Some("e-1")), Some("e-1"), false),
+        ("stamped later, and the page says another version", stamped(6, Some("e-1")), Some("e-0"), true),
+        ("stamped later, and the page gives no eTag", stamped(6, Some("e-1")), None, true),
+        ("stamped later as removed", stamped(6, None), Some("e-0"), true),
+        ("stamped later as removed, and the page gives no eTag", stamped(6, None), None, true),
+    ] {
+        assert_eq!(is_listed_version_outdated(&row, 5, listed_etag), outdated, "{what}");
+    }
+}
+
+/// Whether a removal a page says, or means, is older than what was confirmed of the item,
+/// a case each: only for a row stamped after the fetch began that OneDrive was confirmed to
+/// have.
+#[test]
+fn a_listed_removal_is_outdated_for_a_row_stamped_later_that_onedrive_has() {
+    for (what, row, outdated) in [
+        ("never stamped", stamped(0, Some("e-1")), false),
+        ("stamped when the fetch began", stamped(5, Some("e-1")), false),
+        ("stamped later as removed", stamped(6, None), false),
+        ("stamped later with a version", stamped(6, Some("e-1")), true),
+    ] {
+        assert_eq!(is_listed_removal_outdated(&row, 5), outdated, "{what}");
+    }
+}
+
+/// The guard against an outdated listing: a page fetched before a confirmation and written
+/// after it. What it says of the row is not taken, and the item's id is answered for it to
+/// be read again; the same page saying what was confirmed is taken; so is a page of a fetch
+/// that began after the confirmation.
+#[test]
+fn a_page_fetched_before_a_confirmation_does_not_overwrite_what_was_confirmed() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1"), file("B", "R", "b", "1")]);
+    let a = listed(&mut store, "A").local_item_id;
+    let fetch_began_at = count(&mut store);
+    confirm(&mut store, a, version(ROOT, "a", Some("333")), Some("e-A-333"));
+    let confirmed = item(&mut store, a);
+
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "22"), file("B", "R", "b", "22")], fetch_began_at, None), ["A"]);
+    assert_eq!(item(&mut store, a), confirmed);
+    assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")), "the rest of the page is written");
+
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at, None), ["A"]);
+    assert_eq!(item(&mut store, a), confirmed);
+
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "333")], fetch_began_at, None), Vec::<String>::new());
+    assert_eq!(item(&mut store, a), confirmed);
+
+    assert_eq!(write(&mut store, &[file("A", "R", "a", "4444")]), Vec::<String>::new());
+    assert_eq!(item(&mut store, a), Item { onedrive: version(ROOT, "a", Some("4444")), onedrive_etag: Some("e-A-4444".to_owned()), ..confirmed });
+}
+
+/// The guard for a confirmed removal: a page fetched before it does not bring the item
+/// back, and its removal there is what was confirmed. The row stays, with no version on
+/// either side, while that listing goes on, at its end, and through the item read again;
+/// it goes at the end of a listing whose fetch began after the confirmation.
+#[test]
+fn a_page_fetched_before_a_confirmed_removal_does_not_bring_the_item_back() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1")]);
+    let a = listed(&mut store, "A").local_item_id;
+    let fetch_began_at = count(&mut store);
+    confirm(&mut store, a, None, None);
+    let removed = item(&mut store, a);
+    assert_eq!((removed.local.clone(), removed.onedrive.clone(), removed.synced_place.clone()), (None, None, None));
+
+    assert_eq!(write_fetched_at(&mut store, &[file("A", "R", "a", "1")], fetch_began_at, None), ["A"]);
+    assert_eq!(write_fetched_at(&mut store, &[gone("A")], fetch_began_at, None), Vec::<String>::new());
+    assert_eq!(write_fetched_at(&mut store, &[], fetch_began_at, Some("link-1")), Vec::<String>::new());
+    assert_eq!(write(&mut store, &[gone("A")]), Vec::<String>::new(), "the item read again, and not found");
+    assert_eq!(item(&mut store, a), removed);
+
+    let later = count(&mut store);
+    write_fetched_at(&mut store, &[], later, Some("link-2"));
+    assert_eq!(store.item_store().find_item(a).unwrap(), None);
+}
+
+/// What a directory listed gone takes with it is guarded too: a file confirmed in it after
+/// the fetch began keeps its version and is read again.
+#[test]
+fn a_directory_listed_gone_does_not_take_what_was_confirmed_in_it_after_the_fetch_began() {
+    let mut store = listed_store();
+    write(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "D", "b", "1")]);
+    let (d, a) = (listed(&mut store, "D").local_item_id, listed(&mut store, "A").local_item_id);
+    let fetch_began_at = count(&mut store);
+    confirm(&mut store, a, version(d, "a", Some("22")), Some("e-A-22"));
+
+    assert_eq!(write_fetched_at(&mut store, &[gone("D")], fetch_began_at, None), ["A"]);
+    assert_eq!(item(&mut store, a).onedrive, version(d, "a", Some("22")));
+    assert_eq!(bound(&mut store, "B"), None);
+    assert_eq!(listed(&mut store, "D").onedrive, None, "its row stays while a row names it");
+}
+
+/// A full listing in several pages over the rows of an earlier one: it marks what it sees,
+/// and at its end what it did not see has no OneDrive version, as if listed gone. Nothing
+/// is taken before its end. What was confirmed after its fetch began and it did not see is
+/// read again. A listing of changes after it takes nothing it does not name.
+#[test]
+fn a_full_listing_takes_what_it_did_not_see_at_its_end_and_nothing_before() {
+    let mut store = listed_store();
+    let kept = make_file(&mut store, ROOT, "kept");
+    synced(&mut store, kept, "K");
+    write_fetched_at(&mut store, &[directory("D", "R", "D"), file("A", "D", "a", "1"), file("B", "R", "b", "1"), file("K", "R", "kept", "1"), file("U", "R", "u", "1")], 0, Some("link-0"));
+    let u = listed(&mut store, "U").local_item_id;
+    let before = onedrive_side(&mut store);
+
+    store.item_store().begin_full_listing().unwrap();
+    let fetch_began_at = count(&mut store);
+    confirm(&mut store, u, version(ROOT, "u", Some("22")), Some("e-U-22"));
+    let confirmed = onedrive_side(&mut store);
+    assert_eq!(write_fetched_at(&mut store, &[root(), directory("D", "R", "D")], fetch_began_at, None), Vec::<String>::new());
+    assert_eq!(onedrive_side(&mut store), confirmed, "nothing is taken before the listing ends");
+    assert_ne!(confirmed, before);
+
+    assert_eq!(write_fetched_at(&mut store, &[file("B", "R", "b", "22")], fetch_began_at, Some("link-1")), ["U"]);
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["B", "D", "K", "R", "U"]);
+    assert_eq!(bound(&mut store, "A"), None);
+    assert_eq!(listed(&mut store, "K").onedrive, None, "the folder shows it: its row stays");
+    assert_eq!(listed(&mut store, "B").onedrive, version(ROOT, "b", Some("22")));
+    assert_eq!(listed(&mut store, "U").onedrive, version(ROOT, "u", Some("22")));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+
+    let after = onedrive_side(&mut store);
+    let later = count(&mut store);
+    write_fetched_at(&mut store, &[], later, Some("link-2"));
+    assert_eq!(onedrive_side(&mut store), after, "the full listing ended: a listing of changes takes nothing it does not name");
+}
+
+/// A full listing that is stopped goes on in a store opened again: what it saw before the
+/// stop is seen.
+#[test]
+fn a_full_listing_goes_on_in_a_store_opened_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tree.sqlite");
+    let mut store = TreeStore::open(&path).unwrap();
+    store.set_drive_id("d1").unwrap();
+    write_fetched_at(&mut store, &[root(), file("A", "R", "a", "1"), file("B", "R", "b", "1")], 0, Some("link-0"));
+    store.item_store().begin_full_listing().unwrap();
+    write(&mut store, &[root(), file("A", "R", "a", "1")]);
+    drop(store);
+
+    let mut store = TreeStore::open(&path).unwrap();
+    write_fetched_at(&mut store, &[], 0, Some("link-1"));
+    assert_eq!(onedrive_side(&mut store).keys().map(String::as_str).collect::<Vec<_>>(), ["A", "R"]);
+}
+
+/// The link the next listing is asked from is written with the answer that gave it, in
+/// one transaction, and only when the caller gives one. A page that cannot be written, in
+/// a store that does not know its drive, writes nothing, the link included.
+#[test]
+fn the_delta_link_is_written_with_the_answer_that_gave_it() {
+    let mut store = listed_store();
+    write(&mut store, &[file("A", "R", "a", "1")]);
+    assert_eq!(store.delta_link().unwrap(), None);
+    write_fetched_at(&mut store, &[file("B", "R", "b", "1")], 0, Some("link-1"));
+    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+
+    let mut no_drive = TreeStore::in_memory().unwrap();
+    assert!(is_refused(no_drive.item_store().write_listed_changes(&[root(), file("A", "R", "a", "1")], 0, Some("link-1"))));
+    assert_eq!(no_drive.delta_link().unwrap(), None);
+    assert_eq!(every_row(&mut no_drive).len(), 1);
+}
+
+/// The two sides agree on what OneDrive has of the item of OneDrive `onedrive_id`.
+fn agree(store: &mut TreeStore, onedrive_id: &str) -> LocalItemId {
+    let mut row = listed(store, onedrive_id);
+    row.synced_place = row.onedrive.as_ref().and_then(|onedrive| onedrive.place.clone());
+    row.synced_content = row.onedrive.as_ref().and_then(|onedrive| onedrive.content.clone());
+    write_item(&store.conn, &row).unwrap();
+    row.local_item_id
+}
+
+/// The items whose OneDrive version is not the synced one, a case each: new in OneDrive,
+/// moved there, of another content there, and removed there are among them; one the two
+/// sides agree on, the root, and a parent that was never listed are not. They are read a
+/// bounded number at a time, by local item id.
+#[test]
+fn the_items_onedrive_changed_are_those_whose_onedrive_version_is_not_the_synced_one() {
+    let mut store = listed_store();
+    write(&mut store, &[directory("D", "R", "D"), file("S", "D", "same", "1"), file("M", "D", "moved", "1"), file("C", "D", "changed", "1"), file("G", "D", "gone", "1")]);
+    for id in ["D", "S", "M", "C", "G"] {
+        agree(&mut store, id);
+    }
+    let changed = |store: &mut TreeStore| -> Vec<String> {
+        let items = store.item_store().list_changed_in_onedrive(None, 100).unwrap();
+        items.into_iter().map(|item| item.onedrive_item.unwrap().item_id.as_str().to_owned()).collect()
+    };
+    assert_eq!(changed(&mut store), Vec::<String>::new());
+
+    write(&mut store, &[file("M", "R", "moved", "1"), file("C", "D", "changed", "22"), gone("G"), file("N", "U", "new", "1")]);
+    assert!(bound(&mut store, "U").is_some(), "a parent that was never listed has a row");
+    assert_eq!(changed(&mut store), ["M", "C", "G", "N"]);
+
+    let first = store.item_store().list_changed_in_onedrive(None, 3).unwrap();
+    assert_eq!(first.len(), 3);
+    let rest = store.item_store().list_changed_in_onedrive(Some(first[2].local_item_id), 3).unwrap();
+    assert_eq!(rest.iter().map(|item| item.onedrive_item.clone().unwrap()).collect::<Vec<_>>(), [reference("N")]);
+
+    for id in ["M", "C", "N"] {
+        agree(&mut store, id);
+    }
+    assert_eq!(changed(&mut store), ["G"]);
+}
+
+/// Whether the folder can show an item, a case each: its own placement and that of every
+/// directory above it in OneDrive say so, up to the root. An item OneDrive does not have,
+/// one below a directory that was never listed, and one whose directories do not end at
+/// the root cannot be shown; the root can. An id with no row is refused.
+#[test]
+fn the_folder_can_show_an_item_that_is_placed_with_every_directory_above_it() {
+    let mut store = listed_store();
+    let Change::Upsert(vault) = directory("V", "R", "Vault") else { unreachable!() };
+    let Change::Upsert(long) = file("L", "D", "long", "1") else { unreachable!() };
+    write(
+        &mut store,
+        &[
+            directory("D", "R", "D"),
+            directory("E", "D", "E"),
+            file("A", "E", "a", "1"),
+            Change::Upsert(Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..long }),
+            Change::Upsert(Row { placement: Placement::Skipped(SkipReason::PersonalVault), ..vault }),
+            directory("W", "V", "W"),
+            file("B", "W", "b", "1"),
+            file("X", "U", "x", "1"),
+            directory("P", "Q", "P"),
+            directory("Q", "P", "Q"),
+            file("Y", "Q", "y", "1"),
+        ],
+    );
+    let here = make_file(&mut store, ROOT, "made-here");
+    for (id, shown) in [("D", true), ("A", true), ("L", false), ("V", false), ("W", false), ("B", false), ("X", false), ("U", false), ("P", false), ("Y", false)] {
+        let item = listed(&mut store, id).local_item_id;
+        assert_eq!(store.item_store().can_be_shown(item).unwrap(), shown, "{id}");
+    }
+    assert!(store.item_store().can_be_shown(ROOT).unwrap());
+    assert!(!store.item_store().can_be_shown(here).unwrap(), "OneDrive does not have it");
+    assert!(is_refused(store.item_store().can_be_shown(LocalItemId::new(999))));
 }

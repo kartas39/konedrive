@@ -47,17 +47,21 @@
 //! and the one of an item id of OneDrive, and are reachable from this module and [`bindings`] alone: what is outside changes a row
 //! through an operation.
 //!
-//! The OneDrive version is not in the rows yet (`onedrive_items` holds it), so the rules of
-//! that side are not held here. A synced place names its directory by local item id; the
-//! schema keeps it pointing at a directory's row, and the operations on bindings at the row
-//! that has that directory's binding.
+//! The OneDrive version of a row is written by a listing ([`onedrive_versions`]) and by
+//! nothing else here. Of that side the schema holds what it holds of the others, per row:
+//! a parent is a directory's row, and no row is its own parent. It does not hold "one item
+//! per name" there, nor "no item is above itself", nor that a parent has an OneDrive version
+//! itself: a listing says its changes in any order and over several pages, and the rows say
+//! what it said so far. A synced place and an OneDrive place name their directory by local
+//! item id; the schema keeps each pointing at a directory's row, and the operations on
+//! bindings at the row that has that directory's binding.
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference};
+use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemReference, Placement};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 /// The three operations that move a binding from one item to another.
@@ -70,7 +74,7 @@ mod onedrive_versions;
 pub(crate) use bindings::bind_root;
 pub(crate) use item_row::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
-use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_changed_in_onedrive, list_children, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -122,6 +126,26 @@ impl ItemStore<'_> {
     /// from the rows at each call, never stored. Refused for an id with no row.
     pub fn is_ignored(&self, item: LocalItemId) -> Result<bool, TreeError> {
         is_ignored(&self.store.conn, item)
+    }
+
+    /// The items whose OneDrive version is not the synced one, in its place or its content:
+    /// what OneDrive made, moved, changed or removed since the two sides last agreed. At
+    /// most `limit` of them by local item id, after the item `after` when one is given: a
+    /// plan reads a bounded number and asks for the next. Found by an index, never by
+    /// reading every row. A row with no version on either side and nothing agreed on is
+    /// not among them.
+    pub fn list_changed_in_onedrive(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
+        list_changed_in_onedrive(&self.store.conn, after, limit)
+    }
+
+    /// Whether the folder can show `item` at all, as OneDrive has it: its own placement
+    /// says so, and that of every directory above it in OneDrive, up to the root. An item
+    /// OneDrive does not have cannot be shown as OneDrive's, nor one whose directories do
+    /// not end at the root within the bound of every walk: a directory that was never
+    /// listed, or rows of a listing that has not ended that name each other in a circle.
+    /// The root can. Refused for an id with no row.
+    pub fn can_be_shown(&self, item: LocalItemId) -> Result<bool, TreeError> {
+        can_be_shown(&self.store.conn, item)
     }
 
     /// Writes one change of an item's local version, in one transaction: all of it or
@@ -199,6 +223,20 @@ fn is_ignored(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
         above = directory.local.and_then(|local| local.place).map(|place| place.parent_local_item_id);
     }
     Err(refuse(format!("the directories above item {id} do not end at the root")))
+}
+
+fn can_be_shown(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
+    let mut row = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
+    // One row for each directory above the item.
+    for _ in 0..=MAX_CHAIN {
+        if row.local_item_id == LocalItemId::ROOT {
+            return Ok(true);
+        }
+        let Some(place) = row.onedrive.and_then(|onedrive| onedrive.place).filter(|_| row.placement == Placement::Placed) else { return Ok(false) };
+        let Some(directory) = find_item(conn, place.parent_local_item_id)? else { return Ok(false) };
+        row = directory;
+    }
+    Ok(false)
 }
 
 /// [`read_shown`] for an item that is not the root, with its local place.
