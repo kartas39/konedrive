@@ -9,6 +9,10 @@ use std::time::Instant;
 use konedrive_fs::placeholder::{State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_STATE};
 use konedrive_tree::{ContentVersion, ItemKind};
 
+use super::super::backing_directory_contents::BackingDirectoryContents;
+use super::super::entry_identities::EntryIdentities;
+use super::super::item_rows::ItemRows;
+use super::super::path_findings::PathFindings;
 use super::{folder, found, DiskFinding, MTIME};
 
 const DIRECTORIES: usize = 5_000;
@@ -59,7 +63,22 @@ fn the_cost_of_a_check_of_a_hundred_thousand_files() {
     eprintln!("built {rows} rows and their entries in {:?}", built.elapsed());
     assert_eq!(rows, 1 + DIRECTORIES / 100 + DIRECTORIES + DIRECTORIES * FILES_IN_EACH);
 
-    for run in ["cold", "warm", "warm"] {
+    // The parts of a run, each by itself: nothing is written, so they can be run apart.
+    let started = Instant::now();
+    let read = ItemRows::new(f.store.item_store().list_items().unwrap());
+    eprintln!("the rows read whole and put by id, place and binding: {:?}", started.elapsed());
+    let started = Instant::now();
+    let contents = BackingDirectoryContents::read(&f.backing_directory);
+    eprintln!("the backing directory read, {} entries: {:?}", contents.len(), started.elapsed());
+    let started = Instant::now();
+    let identities = EntryIdentities::settle(&read, &contents);
+    eprintln!("each entry matched to its item: {:?}", started.elapsed());
+    let started = Instant::now();
+    let findings = PathFindings::decide(&read, &contents, &identities);
+    eprintln!("each path decided: {:?}", started.elapsed());
+    assert_eq!(findings.list_rows(), []);
+
+    for run in ["first", "second", "third"] {
         let started = Instant::now();
         let findings = f.check();
         eprintln!("nothing changed ({run}): {:?}", started.elapsed());

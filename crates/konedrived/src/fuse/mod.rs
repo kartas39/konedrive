@@ -85,6 +85,9 @@
 //!   and hands out the four the daemon asks: the access mode switch, the cycle step, the
 //!   `Files` interface and the backing directory. Its build takes a stale mount off the
 //!   folder first ([`stale_mount`]).
+//! - Before the mount goes over the folder: [`backing_directory_check`] makes the rows of
+//!   `items` say what the backing directory has, over the backing directory, the rules and
+//!   the store's rows. Nothing calls it yet: the mount does not read those rows.
 //! - After the daemon's end: [`stale_mount`] takes off the mount a daemon that died left, and
 //!   [`tidy_step`] leaves each folder a plain directory without its write bits.
 

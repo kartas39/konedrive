@@ -614,3 +614,20 @@ fn a_file_that_is_not_whole_and_marked_with_an_id_no_row_has_is_left_and_said() 
     assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("partial.bin") && left.reason == UnresolvedReason::PartialCopy));
     assert_eq!(f.rows(), before);
 }
+
+/// The rows go no deeper than every walk of them does: what is deeper on disk is not read,
+/// and is said.
+#[test]
+fn a_directory_deeper_than_the_rows_go_is_not_read_and_is_said() {
+    let mut f = folder();
+    let mut deepest = PathBuf::new();
+    for _ in 0..konedrive_fs::MAX_DEPTH + 2 {
+        deepest.push("d");
+    }
+    fs::create_dir_all(f.disk(&deepest)).unwrap();
+    let findings = f.check();
+    assert_eq!(found(&findings), [(DiskFinding::Made, konedrive_fs::MAX_DEPTH)]);
+    let last_with_a_row: PathBuf = deepest.components().take(konedrive_fs::MAX_DEPTH).collect();
+    assert!(matches!(findings.unresolved(), [left] if left.path == last_with_a_row && left.reason == UnresolvedReason::TooDeep), "{:?}", findings.unresolved());
+    assert!(f.row(&last_with_a_row).is_some());
+}

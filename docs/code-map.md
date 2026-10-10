@@ -212,9 +212,12 @@ daemon shows OneDrive.
   one test of a downloaded copy (marked with the file's OneDrive id, and whole), which the
   lookup, the landing and the legacy check read through; a file made marked with an id and
   not whole (`make_partial_file`), marking a copy, taking its marks off, removing one by its
-  OneDrive id alone. `[tests]`
+  OneDrive id alone; the cTag a copy is marked with (`read_ctag_mark`), and the marks of
+  OneDrive taken off an entry that is the user's own, its pin left (`remove_onedrive_marks`).
+  `[tests]`
 - `backing_directory/file_operations.rs` — the files and directories a change makes, renames
-  and removes, and a file opened to read or to write. `[tests]`
+  and removes, a file opened to read or to write, and a directory read, or why it cannot be
+  (`read_directory`). `[tests]`
 - `backing_directory/directory_marks.rs` — the directories down to a path, each marked with
   its OneDrive id, which the caller tells name by name; a file in a directory's way is an
   error. `[tests]`
@@ -227,6 +230,33 @@ daemon shows OneDrive.
   directory and a file with and without them (`to_mode_bits`, `WriteBits`). `[tests]`
 - `backing_directory/legacy_placeholders.rs` — a directory that holds an older konedrive's
   placeholders: it is not opened, so no mount is put over it. `[tests]`
+- `backing_directory_check.rs` — `BackingDirectoryCheck`: the check of the backing directory
+  at start, which makes the rows of `items` say what the disk has; `DiskFindings`, how many
+  of each finding it wrote and the paths it left (`UnresolvedPath`). No caller yet: the
+  mount does not read the rows. `[tests]`: each finding from a real directory, what is
+  moved by hand, a daemon's death at each operation of the backing directory, convergence
+  under hand edits made at random, and the cost of a run (ignored, run by name).
+- `backing_directory_check/disk_finding.rs` — `DiskFinding`, and the one decision
+  (`decide_finding`): what the rows say of a path (`PathRow`) and what the backing directory
+  has there (`PathEntry`, with whose its mark is: `MarkOwner`) answer one finding, or why
+  the path is left (`UnresolvedReason`); whether a file has the content its row has
+  (`compare_content`). No disk and no store. `[tests]`
+- `backing_directory_check/backing_directory_contents.rs` — `BackingDirectoryContents`: all
+  the backing directory holds, read once on several threads, each entry with its marks
+  (`EntryFacts`), and the entries that carry each OneDrive item id; what was not read is
+  said.
+- `backing_directory_check/item_rows.rs` — `ItemRows`: all the rows read once, by id, by
+  place and by the OneDrive item id of their binding.
+- `backing_directory_check/entry_identities.rs` — `EntryIdentities`: which item each entry
+  is (`EntryIdentity`), by its mark and by its place in the item its directory is; several
+  entries with one mark.
+- `backing_directory_check/path_findings.rs` — `PathFindings`: the finding of each entry and
+  of each row no entry is taken as; a directory removed here takes all that is in it.
+- `backing_directory_check/write_order.rs` — `WriteOrder`: the findings written through
+  `ItemStore`, a parent before its child, a name freed before it is taken, a removal
+  deepest first; items that wait for each other's places written in one transaction.
+- `backing_directory_check/local_places.rs` — `LocalPlaces`: which item has each place, as
+  the writes so far leave the rows.
 - `stale_mount.rs` — the mount a daemon that died left on a folder, taken off
   (`unmount_stale_mount`).
 - `tidy_step.rs` — what follows the daemon's end (`konedrived --tidy`): a folder's stale mount
@@ -370,7 +400,7 @@ daemon shows OneDrive.
   it and what a free-up does with it are asked of. `[tests]`
 - `upload_rules.rs` — `UploadRules`: what of the folder is uploaded at all; it owns the
   account's ignore list and touches nothing. What is uploaded and what is ignored (`UploadDecision`), the names no
-  program may make. `[tests]`
+  program may make, and what the list says of a name by itself (`is_name_ignored`). `[tests]`
 - `detections.rs` — what a change in the folder is recorded as: a decision from a typed event
   (`FolderEvent`) and the store's facts (`StoreFacts`), with no disk or mount in it; the
   detections of a local-only entry or of something of OneDrive at a place, built by the
