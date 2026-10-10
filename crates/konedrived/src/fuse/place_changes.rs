@@ -70,6 +70,11 @@
 //!
 //! [`open_at_row_path`]: PlaceChanges::open_at_row_path
 //!
+//! A read closure given to [`open_at_row_path`] may run under `changes` (its last try):
+//! it reads through a reading connection and waits for nothing else — not for the tree
+//! lock, nor for a job of the write-operation thread, which may itself be waiting for
+//! `changes` in [`PlaceChanges::begin`] with the tree lock held.
+//!
 //! **Tested without the rest**, over a temporary backing directory:
 // test: the_count_is_odd_from_the_begin_of_a_change_to_its_end
 // test: a_reader_that_began_during_a_change_sleeps_until_its_end_and_is_woken
@@ -536,20 +541,14 @@ impl PlaceChange<'_> {
         })();
         let refusal = match linked {
             Ok(()) => {
-                let undo = PlaceUndo::RemoveMade { path: path.to_owned(), directories_made };
-                let PlaceUndo::RemoveMade { directories_made, .. } = &undo else { unreachable!() };
                 // The directory the name is in, and each one a directory was made in.
-                let synced = directories_made.iter().chain([&path.to_owned()]).try_for_each(|made| place_changes.sync_directory(made.parent().unwrap_or(Path::new(""))));
-                match synced {
-                    Ok(()) => return Ok(undo),
-                    Err(error) => {
-                        let refusal = to_refusal(&error, path);
-                        if let Err(error) = self.undo(undo) {
-                            tracing::warn!("cannot remove {} from the backing directory, whose directory could not be synced: {error}", path.display());
-                        }
-                        return Err(refusal);
-                    }
+                let synced = directories_made.iter().map(PathBuf::as_path).chain([path]).try_for_each(|made| place_changes.sync_directory(made.parent().unwrap_or(Path::new(""))));
+                let undo = PlaceUndo::RemoveMade { path: path.to_owned(), directories_made };
+                let Err(error) = synced else { return Ok(undo) };
+                if let Err(error) = self.undo(undo) {
+                    tracing::warn!("cannot remove {} from the backing directory, whose directory could not be synced: {error}", path.display());
                 }
+                return Err(to_refusal(&error, path));
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => PlaceRefusal::PlaceHeld { path: path.to_owned() },
             Err(error) => to_refusal(&error, path),
