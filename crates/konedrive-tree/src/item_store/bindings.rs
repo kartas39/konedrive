@@ -104,6 +104,7 @@ fn hand_over(conn: &Connection, mut from: Item, mut to: Item) -> Result<(), Tree
     check_empty(conn, from.local_item_id)?;
     move_children_of_binding(conn, from.local_item_id, to.local_item_id)?;
     let seen_in_full_listing = find_seen_in_full_listing(conn, from.local_item_id)?;
+    super::step_memory::follow_binding(conn, from.local_item_id, to.local_item_id)?;
     // The row that has the binding goes before another takes it.
     delete_item(conn, from.local_item_id)?;
     move_onedrive_side(&mut from, &mut to);
@@ -168,6 +169,7 @@ pub(crate) fn give_up_binding(tx: &Transaction<'_>, item: LocalItemId, is_name_i
     write_item(tx, &taker_row)?;
     set_seen_in_full_listing(tx, taker, seen_in_full_listing)?;
     move_children_of_binding(tx, item, taker)?;
+    super::step_memory::follow_binding(tx, item, taker)?;
     Ok(taker)
 }
 

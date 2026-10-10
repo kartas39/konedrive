@@ -84,11 +84,18 @@ mod onedrive_versions;
 mod pinned_items;
 /// What a step of the sync plan writes into the rows once it is done.
 mod step_commit;
+/// What a step remembers of an item beyond the versions.
+mod step_memory;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
+pub use step_memory::{
+    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedUpload, OpeningRecord, OpeningWindow, PlaceholderSession, Refusal, SpaceFit, StepFact, StepMemory,
+    TakenName, TemporaryName, TimedWait, TooBigForSpace, UploadSession, UploadSessionAddress, UploadTag, UserReason, UPLOAD_SESSION_OPENING_KEPT,
+};
+pub(crate) use step_memory::schema as step_memory_schema;
 
 use item_row::{delete_item, find_bound_item, find_is_left_here, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
 

@@ -57,6 +57,11 @@ pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
 pub use folded_name::FoldedName;
 pub use item_store::{ConfirmedItem, ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay, StepCommitOutcome};
+pub use item_store::{ConfirmedOneDriveVersion, ItemStore, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
+pub use item_store::{
+    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedUpload, OpeningRecord, OpeningWindow, PlaceholderSession, Refusal, SpaceFit, StepFact, StepMemory,
+    TakenName, TemporaryName, TimedWait, TooBigForSpace, UploadSession, UploadSessionAddress, UploadTag, UserReason, UPLOAD_SESSION_OPENING_KEPT,
+};
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
     LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,

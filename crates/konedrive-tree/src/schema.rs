@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
+use crate::item_store::{step_memory_schema, unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -22,7 +22,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "14";
+pub const SCHEMA_VERSION: &str = "15";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -88,6 +88,9 @@ pub const SCHEMA_VERSION: &str = "14";
 ///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
 ///   directory). An outbox row may name an item whose row is gone: the
 ///   removal of a file that was never sent leaves the rows that undo what was sent of it.
+/// - `step_memory`, `upload_session_openings`, `abandoned_upload_sessions`: what the steps
+///   remember beyond the versions, and the trigger `step_memory_item_gone` that takes it
+///   with an item's row ([`crate::item_store`]'s `step_memory`, which has their schema).
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
@@ -206,6 +209,7 @@ fn schema() -> String {
              WHEN {no_local_parent_directory} OR {no_onedrive_parent_directory} OR {no_synced_parent_directory}
              BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
+         {step_memory}
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}
          {staging}
@@ -264,6 +268,7 @@ fn schema() -> String {
          CREATE INDEX upload_openings_parent ON upload_openings(parent);
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
+        step_memory = step_memory_schema(),
         no_local_parent_directory = no_parent_directory("local"),
         no_onedrive_parent_directory = no_parent_directory("onedrive"),
         no_synced_parent_directory = no_parent_directory("synced"),
