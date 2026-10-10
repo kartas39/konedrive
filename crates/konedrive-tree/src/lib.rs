@@ -62,14 +62,20 @@ pub use item_store::{
     RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
     UPLOAD_SESSION_OPENING_KEPT,
 };
+pub use item_store::{OwnUploadContent, PinChange};
+pub use item_store::{FullListingCause, ItemCounts, ItemNotShown, ItemReader, ThumbnailCandidate, UnsentTotal};
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
     LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,
 };
 pub use konedrive_reason::WaitsFor;
+/// The reasons a change waits or is refused for: `konedrive-reason`'s, named here so that
+/// the daemon needs neither that crate nor the outbox's module, which goes.
+pub use konedrive_reason::Reason;
 pub use query::Skipped;
 pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
+pub use schema::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 pub use shared::{Store, QUEUE};
 pub use sync_plan::{
     make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, SendingState, SyncPlan, SyncPlanInput, SyncStep,

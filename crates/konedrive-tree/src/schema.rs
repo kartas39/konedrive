@@ -12,6 +12,10 @@ use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED}
 use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
+/// What becomes of a store an older version of the daemon left.
+mod old_store;
+
+pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 
 /// The schema this daemon reads and writes, kept in `meta` as
 /// `schema_version`. A store of a version a step starts from is brought to

@@ -86,9 +86,36 @@ mod pinned_items;
 mod step_commit;
 /// What a step remembers of an item beyond the versions.
 pub(crate) mod step_memory;
+/// A full listing that was asked for and has not begun.
+mod full_listing_request;
+/// The flag of an ignored name, gone over when the list of ignored names changes.
+mod ignored_names;
+/// The pins, by item, and taken off with their binding.
+mod item_pins;
+/// The rows for who only reads them: the mount's threads and the bus.
+mod item_reader;
+/// What the steps remember, read through the reader.
+mod memory_reader;
+/// The content an upload of this folder left in OneDrive in place of what it sent.
+mod own_upload_content;
+/// The readers a plan is made from, over the reader.
+mod plan_readers;
+/// A file's local content written by the mount apart from a change of its local version.
+mod local_content;
+/// The folder's state of sending, with the stamp of its switch to read-only.
+mod sending_switch;
+/// The conflict copy a step made, on record with its commit.
+mod step_record;
+/// Which content of a file a thumbnail was made for.
+mod thumbnail_marks;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use step_commit::{ConfirmedItem, StepCommitOutcome};
+pub use full_listing_request::FullListingCause;
+pub use item_pins::PinChange;
+pub use own_upload_content::OwnUploadContent;
+pub use item_reader::{ItemCounts, ItemNotShown, ItemReader, UnsentTotal};
+pub use thumbnail_marks::ThumbnailCandidate;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 pub use step_memory::{
