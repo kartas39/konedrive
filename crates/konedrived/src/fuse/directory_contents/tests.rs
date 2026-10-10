@@ -37,6 +37,9 @@ pub(in crate::fuse) fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to:
 /// A drive with a directory `docs` that holds `c.txt`, and two files in its root, `a.txt` and
 /// `b.txt`, with `detections` waiting in the outbox.
 pub(in crate::fuse) fn drive(store: &mut TreeStore, detections: Vec<Detection>) {
+    // The drive is recorded first, as a cycle records it before it lists: no row of `items`
+    // is bound without it. It is the fake OneDrive's drive.
+    store.set_drive_id("D").unwrap();
     let changes = [
         Change::Root(row("R", None, "root", Kind::Folder)),
         Change::Upsert(row("D", Some("R"), "docs", Kind::Folder)),

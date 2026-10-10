@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use konedrive_tree::outbox::OutboxKind;
+use konedrive_tree::reconcile::Deferrals;
 use konedrive_tree::{Change, Kind, NewTree, Row};
 
 use super::uncommitted_cycle::{list_removed_ids, UncommittedCycle};
@@ -20,8 +21,8 @@ use crate::local::held::Rw;
 
 /// Stages `changes` as a cycle of the delta listing in the store of `built`, and has the
 /// step applied to it inside that call of the store, as a cycle does; `rw` is what the
-/// outbox holds.
-fn apply(built: &BuiltMount, changes: Vec<Change>, rw: Option<Rw>) -> CycleOutcome {
+/// outbox holds. The cycle is not committed.
+fn apply_uncommitted(built: &BuiltMount, changes: Vec<Change>, rw: Option<Rw>) -> CycleOutcome {
     let cycle_step = Arc::clone(built.mount.cycle_step());
     let applied = built.store.call_blocking(move |store| {
         store.begin_staging(NewTree::Delta)?;
@@ -29,6 +30,37 @@ fn apply(built: &BuiltMount, changes: Vec<Change>, rw: Option<Rw>) -> CycleOutco
         cycle_step.apply_staged_cycle(store, rw.as_ref())
     });
     applied.unwrap()
+}
+
+/// Commits the cycle the step of `built` was last applied to, as a cycle's commit does: a
+/// read-write folder's keeps the row of what the outbox holds (`rw`) and lets its change
+/// wait. The rows of `items` follow in that commit.
+fn commit(built: &BuiltMount, rw: Option<Rw>) {
+    let copies_on_disk = built.mount.cycle_step().list_copies_on_disk();
+    let committed = built.store.call_blocking(move |store| match rw {
+        None => store.commit_staging("link", &copies_on_disk),
+        Some(rw) => {
+            let held: Vec<String> = store.changed_ids()?.into_iter().filter(|id| rw.held.contains(id) && !rw.removing.contains(id)).collect();
+            store.commit_staging_deferring("link", &Deferrals { consumed: &[], whole: &held, content: &[], fetched_at: 0, waits: &[], copies_on_disk: &copies_on_disk })
+        }
+    });
+    committed.unwrap();
+}
+
+/// A whole cycle over `built`: `changes` staged, the step applied and the cycle committed.
+/// The rows of `items` then say what the mount derives
+/// ([`BuiltMount::check_rows_agree`]).
+fn apply(built: &BuiltMount, changes: Vec<Change>, rw: Option<Rw>) -> CycleOutcome {
+    apply_except(built, changes, rw, &[])
+}
+
+/// [`apply`], with the agreement check leaving out the paths `except`, where the test says
+/// why the rows and the mount's derivation cannot agree.
+fn apply_except(built: &BuiltMount, changes: Vec<Change>, rw: Option<Rw>, except: &[&str]) -> CycleOutcome {
+    let outcome = apply_uncommitted(built, changes, rw.clone());
+    commit(built, rw);
+    built.check_rows_agree_except(except);
+    outcome
 }
 
 /// The OneDrive file `id` as the fixture's drive has it in `parent`, with another content.
@@ -110,7 +142,7 @@ fn the_directories_gone_from_onedrive_are_removed_deepest_first() {
 fn what_a_cycle_keeps_of_the_users_own_in_a_read_write_folder_is_recorded() {
     let built = build_mount();
     assert!(built.mount.switch_to_read_write(Arc::new(|| {})));
-    std::fs::write(built.disk.join("new.txt"), b"mine").unwrap();
+    built.make_own_file("new.txt", b"mine");
     let outcome = apply(&built, vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File))], None);
     assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "new.txt".into(), copy: "new-fedora.txt".into() }]);
     assert_eq!(std::fs::read(built.disk.join("new-fedora.txt")).unwrap(), b"mine");
@@ -123,7 +155,7 @@ fn what_a_cycle_keeps_of_the_users_own_in_a_read_write_folder_is_recorded() {
 #[test]
 fn what_a_cycle_keeps_of_the_users_own_in_a_read_only_folder_is_recorded_only_once_it_is_read_write() {
     let built = build_mount();
-    std::fs::write(built.disk.join("new.txt"), b"mine").unwrap();
+    built.make_own_file("new.txt", b"mine");
     let outcome = apply(&built, vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File))], None);
     assert_eq!(outcome.conflicts.moved_aside, [ConflictCopy { original: "new.txt".into(), copy: "new-fedora.txt".into() }]);
     assert_eq!(std::fs::read(built.disk.join("new-fedora.txt")).unwrap(), b"mine");
@@ -170,11 +202,13 @@ fn nothing_is_moved_onto_what_is_still_in_the_way() {
     let built = build_mount();
     built.download("a.txt", "A", b"content");
     built.make_marked_directory("docs", "D");
-    std::fs::write(built.disk.join("docs/a.txt"), b"mine").unwrap();
+    built.make_own_file("docs/a.txt", b"mine");
     for n in 1..=100 {
-        std::fs::write(built.disk.join("docs").join(crate::local::names::copy_name("a.txt", "fedora", n)), b"an earlier copy").unwrap();
+        built.make_own_file(&format!("docs/{}", crate::local::names::copy_name("a.txt", "fedora", n)), b"an earlier copy");
     }
-    let outcome = apply(&built, vec![Change::Upsert(row("A", Some("D"), "a.txt", Kind::File))], None);
+    // The rows keep the user's own at the name, and the file of OneDrive where its copy
+    // still is; the mount's derivation gives the name to OneDrive's and hides the user's.
+    let outcome = apply_except(&built, vec![Change::Upsert(row("A", Some("D"), "a.txt", Kind::File))], None, &["a.txt", "docs/a.txt"]);
     assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { onedrive_id, .. }] if onedrive_id == "A"));
     assert!(outcome.conflicts.moved_aside.is_empty());
     assert_eq!(std::fs::read(built.disk.join("docs/a.txt")).unwrap(), b"mine");
@@ -187,7 +221,7 @@ fn nothing_is_moved_onto_what_is_still_in_the_way() {
 fn a_directory_of_the_backing_directory_moves_with_its_directory_of_onedrive() {
     let built = build_mount();
     built.make_marked_directory("docs", "D");
-    std::fs::write(built.disk.join("docs/own.txt"), b"mine").unwrap();
+    built.make_own_file("docs/own.txt", b"mine");
     let outcome = apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
     assert!(matches!(&outcome.changes[..], [OneDriveChange::Moved { onedrive_id, .. }] if onedrive_id == "D"));
     assert!(!built.disk.join("docs").exists());
@@ -201,7 +235,10 @@ fn a_directory_of_the_backing_directory_moves_with_its_directory_of_onedrive() {
 fn a_directory_at_the_old_path_that_backs_another_directory_is_not_moved() {
     let built = build_mount();
     built.make_marked_directory("docs", "OTHER");
-    apply(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None);
+    // A directory marked with an id the store does not have is the user's own to the mount's
+    // derivation once no item of OneDrive has its name. No operation made it, so no row says
+    // so: the check of the backing directory at start will find such a directory.
+    apply_except(&built, vec![Change::Upsert(row("D", Some("R"), "papers", Kind::Folder))], None, &["docs"]);
     assert!(built.disk.join("docs").is_dir() && !built.disk.join("papers").exists());
 }
 
@@ -265,4 +302,105 @@ fn a_copy_whose_writer_closed_it_is_removed_when_its_file_has_new_content() {
     let outcome = apply(&built, vec![with_new_content("A", "R", "a.txt")], None);
     assert!(outcome.conflicts.moved_aside.is_empty());
     assert!(!built.disk.join("a.txt").exists() && !built.disk.join("a-fedora.txt").exists());
+}
+
+/// A directory that is gone from OneDrive and holds something of the user's own stays, with
+/// what it holds, as a directory OneDrive does not have: in the rows it gave its binding
+/// up, with what the upload rules say of its name. One whose name is ignored is left here
+/// with all it holds.
+#[test]
+fn a_directory_gone_from_onedrive_that_holds_the_users_own_stays_as_the_users_own() {
+    let built = build_mount_with(&[Change::Upsert(row("K", Some("R"), "cache", Kind::Folder))], &[]);
+    built.make_marked_directory("docs", "D");
+    built.make_marked_directory("cache", "K");
+    built.download("docs/c.txt", "C", b"content");
+    built.make_own_file("docs/own.txt", b"mine");
+    built.make_own_file("cache/own.txt", b"mine");
+    apply(&built, vec![Change::Delete("C".into()), Change::Delete("D".into()), Change::Delete("K".into())], None);
+    assert!(!built.disk.join("docs/c.txt").exists() && built.disk.join("docs/own.txt").exists() && built.disk.join("cache/own.txt").exists());
+    let ignored = built.store.call_blocking(|store| {
+        let own = store.item_store().find_item_by_path("cache/own.txt".as_ref())?.unwrap();
+        store.item_store().is_ignored(own.local_item_id)
+    });
+    assert!(ignored.unwrap(), "what is in a directory of the user's own under an ignored name is left here");
+}
+
+/// A cycle whose commit failed is staged and applied again: what the step wrote to the rows
+/// the first time is not written twice, and the commit that goes through leaves the rows
+/// saying what the folder shows.
+#[test]
+fn a_cycle_applied_again_after_a_commit_that_failed_writes_the_rows_once() {
+    let built = build_mount();
+    built.make_marked_directory("docs", "D");
+    built.download("docs/c.txt", "C", b"content");
+    built.make_own_file("docs/own.txt", b"mine");
+    built.make_own_file("new.txt", b"mine");
+    let changes = vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File)), Change::Delete("C".into()), Change::Delete("D".into())];
+    let first = apply_uncommitted(&built, changes.clone(), None);
+    assert_eq!(first.conflicts.moved_aside, [ConflictCopy { original: "new.txt".into(), copy: "new-fedora.txt".into() }]);
+    let again = apply(&built, changes, None);
+    assert!(again.conflicts.moved_aside.is_empty());
+    assert!(built.disk.join("new-fedora.txt").exists() && built.disk.join("docs/own.txt").exists());
+}
+
+/// A change from OneDrive that waited while the outbox held its file is staged by the first
+/// cycle of the folder once it is read-only, and passes the step: the copy of the content
+/// OneDrive had before goes, and the rows say so.
+#[test]
+fn a_change_that_waited_is_staged_by_a_read_only_cycle_and_reaches_the_folder() {
+    let built = build_mount();
+    built.download("a.txt", "A", b"old");
+    let rw = Rw { held: HashSet::from(["A".to_owned()]), ..Rw::default() };
+    apply(&built, vec![with_new_content("A", "R", "a.txt")], Some(rw));
+    assert_eq!(std::fs::read(built.disk.join("a.txt")).unwrap(), b"old");
+    assert_eq!(built.store.call_blocking(|store| store.deferred_ids()).unwrap(), ["A"]);
+
+    let cycle_step = Arc::clone(built.mount.cycle_step());
+    let outcome = built.store.call_blocking(move |store| {
+        assert!(store.stage_waiting(&[], false)?, "what waits is staged");
+        cycle_step.apply_staged_cycle(store, None)
+    });
+    assert!(matches!(&outcome.unwrap().changes[..], [OneDriveChange::Stayed { onedrive_id, .. }] if onedrive_id == "A"));
+    commit(&built, None);
+    built.check_rows_agree();
+    assert!(!built.disk.join("a.txt").exists());
+    assert!(built.store.call_blocking(|store| store.deferred_ids()).unwrap().is_empty());
+}
+
+/// A listing over a folder that has copies already: a file whose whole copy is at its place
+/// is on disk in its row, also one that is shown only because its directory came, and that
+/// no change of the cycle names.
+#[test]
+fn a_file_that_appears_where_its_whole_copy_is_has_its_content_on_disk() {
+    let built = build_mount_with(&[Change::Upsert(row("X", Some("P"), "x.txt", Kind::File))], &[]);
+    built.make_marked_directory("papers", "P");
+    built.download("papers/x.txt", "X", b"content");
+    built.download("n.txt", "N", b"content");
+    apply(&built, vec![Change::Upsert(row("P", Some("R"), "papers", Kind::Folder)), Change::Upsert(row("N", Some("R"), "n.txt", Kind::File))], None);
+    let states = built.store.call_blocking(|store| {
+        let (n, x) = (store.item_store().find_item_by_path("n.txt".as_ref())?, store.item_store().find_item_by_path("papers/x.txt".as_ref())?);
+        Ok((n.and_then(|item| item.file_sync_state()), x.and_then(|item| item.file_sync_state())))
+    });
+    assert_eq!(states.unwrap(), (Some(konedrive_tree::FileSyncState::Synced), Some(konedrive_tree::FileSyncState::Synced)));
+}
+
+/// The item of a create in flight: a file made here was uploaded and marked with its id,
+/// and the daemon died before the create was committed; a listing then brings the item. Its
+/// row does not take the name the file's row holds: it stays not shown, for the create's
+/// commit to merge into the file's row. Until then the rows say the file is the user's own,
+/// where the mount's derivation takes the marked file for the copy of the listed item.
+#[test]
+fn the_listed_item_of_a_create_that_is_not_committed_does_not_take_the_files_name() {
+    let built = build_mount();
+    let made = built.make_own_file("new.txt", b"mine");
+    xattr::set(built.disk.join("new.txt"), XATTR_ITEM_ID, b"N").unwrap();
+    xattr::set(built.disk.join("new.txt"), konedrive_fs::placeholder::XATTR_STATE, konedrive_fs::placeholder::State::Hydrated.as_str().as_bytes()).unwrap();
+    let outcome = apply_except(&built, vec![Change::Upsert(row("N", Some("R"), "new.txt", Kind::File))], None, &["new.txt"]);
+    assert!(outcome.conflicts.moved_aside.is_empty());
+    let (shown, listed) = built.store.call_blocking(|store| {
+        let reference = konedrive_tree::OneDriveItemReference { drive_id: konedrive_tree::DriveId::new("D").unwrap(), item_id: konedrive_tree::OneDriveItemId::new("N") };
+        Ok((store.item_store().find_item_by_path("new.txt".as_ref())?.unwrap(), store.item_store().find_bound_item(&reference)?.unwrap()))
+    }).unwrap();
+    assert_eq!((shown.local_item_id, shown.onedrive_item), (made, None));
+    assert_eq!((listed.local, listed.synced_place), (None, None));
 }
