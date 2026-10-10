@@ -269,48 +269,55 @@ pub(super) fn would_place(tx: &rusqlite::Transaction<'_>, row: &Row) -> Result<b
     }
 }
 
+/// [`TreeStore::outbox_apply`], inside the caller's transaction: for an examination's
+/// result that is written with other rows of the store in one. The caller commits.
+pub(crate) fn apply_outbox_ops(tx: &rusqlite::Transaction<'_>, ops: &[OutboxOp], now: i64) -> Result<OutboxApplied, TreeError> {
+    let mut out = OutboxApplied::default();
+    for op in ops {
+        match op {
+            OutboxOp::Record(d) => match record(tx, d)? {
+                Recorded::Inserted(seq) | Recorded::Merged(seq) => out.queued.push(seq),
+                Recorded::Removed(seq) => out.removed.push(seq),
+                Recorded::Nothing => {}
+            },
+            OutboxOp::Rebase { from, to } => rebase(tx, from, to)?,
+            OutboxOp::Remove(seq) => {
+                if remove(tx, *seq)? {
+                    out.removed.push(*seq);
+                }
+            }
+            OutboxOp::Skip { rel, reason, size } => {
+                tx.execute(
+                    "INSERT INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(rel) DO UPDATE SET reason = excluded.reason, size = excluded.size",
+                    params![path_value(rel), reason.to_string(), now, *size as i64],
+                )?;
+            }
+            OutboxOp::Hold { seq, reason } => {
+                tx.execute(
+                    "UPDATE outbox SET state = 'held', reason = ?2, next_try = NULL WHERE seq = ?1 AND state != 'running'",
+                    params![seq, reason.to_string()],
+                )?;
+            }
+            OutboxOp::MoveSkipped(moves) => move_skipped(tx, moves)?,
+            OutboxOp::Unskip(rel) => {
+                tx.execute("DELETE FROM local_skipped WHERE rel = ?1", [path_value(rel)])?;
+            }
+        }
+    }
+    out.queued.sort_unstable();
+    out.queued.dedup();
+    let removed: HashSet<i64> = out.removed.iter().copied().collect();
+    out.queued.retain(|seq| !removed.contains(seq));
+    Ok(out)
+}
+
 impl TreeStore {
     /// Applies an examination's result in one transaction: a crash leaves
     /// all of it or none, and the next examination finds the rest on disk.
     pub fn outbox_apply(&mut self, ops: &[OutboxOp], now: i64) -> Result<OutboxApplied, TreeError> {
         let tx = self.conn.transaction()?;
-        let mut out = OutboxApplied::default();
-        for op in ops {
-            match op {
-                OutboxOp::Record(d) => match record(&tx, d)? {
-                    Recorded::Inserted(seq) | Recorded::Merged(seq) => out.queued.push(seq),
-                    Recorded::Removed(seq) => out.removed.push(seq),
-                    Recorded::Nothing => {}
-                },
-                OutboxOp::Rebase { from, to } => rebase(&tx, from, to)?,
-                OutboxOp::Remove(seq) => {
-                    if remove(&tx, *seq)? {
-                        out.removed.push(*seq);
-                    }
-                }
-                OutboxOp::Skip { rel, reason, size } => {
-                    tx.execute(
-                        "INSERT INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)
-                         ON CONFLICT(rel) DO UPDATE SET reason = excluded.reason, size = excluded.size",
-                        params![path_value(rel), reason.to_string(), now, *size as i64],
-                    )?;
-                }
-                OutboxOp::Hold { seq, reason } => {
-                    tx.execute(
-                        "UPDATE outbox SET state = 'held', reason = ?2, next_try = NULL WHERE seq = ?1 AND state != 'running'",
-                        params![seq, reason.to_string()],
-                    )?;
-                }
-                OutboxOp::MoveSkipped(moves) => move_skipped(&tx, moves)?,
-                OutboxOp::Unskip(rel) => {
-                    tx.execute("DELETE FROM local_skipped WHERE rel = ?1", [path_value(rel)])?;
-                }
-            }
-        }
-        out.queued.sort_unstable();
-        out.queued.dedup();
-        let removed: HashSet<i64> = out.removed.iter().copied().collect();
-        out.queued.retain(|seq| !removed.contains(seq));
+        let out = apply_outbox_ops(&tx, ops, now)?;
         tx.commit()?;
         Ok(out)
     }

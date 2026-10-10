@@ -585,3 +585,45 @@ fn the_root_is_bound_once_the_drive_and_its_root_are_known() {
     store.set_drive_id("d9").unwrap();
     assert_eq!(item(&mut store, ROOT).onedrive_item, Some(root_of("d9", "R")));
 }
+
+/// A change of a local version and the outbox's rows of the same operation are written in
+/// one transaction: both are there once it is committed, and neither when it is not.
+#[test]
+fn a_change_and_its_outbox_rows_are_written_in_one_transaction() {
+    use crate::outbox::{apply_outbox_ops, Detection, OutboxKind, OutboxOp, OutboxState};
+    let mut store = TreeStore::in_memory().unwrap();
+    let record = |local_item_id| {
+        OutboxOp::Record(Detection {
+            kind: OutboxKind::Create,
+            item_id: None,
+            object: None,
+            rel: "new".into(),
+            base: None,
+            target_parent: None,
+            target_name: Some("new".into()),
+            same_content: false,
+            state: OutboxState::Ready,
+            reason: None,
+            next_try: None,
+            size: Some(0),
+            local_item_id: Some(local_item_id),
+        })
+    };
+    for committed in [false, true] {
+        let tx = store.conn.transaction().unwrap();
+        let new = apply_change(&tx, &made(place(ROOT, "new"), ItemKind::File)).unwrap();
+        let applied = apply_outbox_ops(&tx, &[record(new)], 0).unwrap();
+        assert_eq!(applied.queued.len(), 1);
+        if committed {
+            tx.commit().unwrap();
+        } else {
+            drop(tx);
+        }
+        let rows = store.outbox_rows().unwrap();
+        assert_eq!((names(&mut store, ROOT).len(), rows.len()), if committed { (1, 1) } else { (0, 0) });
+        if committed {
+            assert_eq!(rows[0].local_item_id, Some(new), "the row names its local item");
+            assert_eq!(item(&mut store, new).local_item_id, new);
+        }
+    }
+}
