@@ -44,13 +44,13 @@ fn an_item_moved_into_a_directory_that_cannot_be_read_is_not_removed() {
     f.rename("top.txt", "secret/top.txt");
     let findings = check_with_unreadable(&mut f, "secret");
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5)]);
-    assert!(!findings.is_read_whole());
+    assert!(findings.has_unread_part());
     assert_eq!(left(&findings), [(path("secret"), false), (path("top.txt"), true)]);
     assert_eq!(f.item(top.local_item_id), top, "its row is as it was");
 
     // Readable again: an item OneDrive never had carries no mark, and is a new item there.
     let findings = f.check();
-    assert!(findings.is_read_whole());
+    assert!(!findings.has_unread_part());
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6), (DiskFinding::Made, 1), (DiskFinding::Removed, 1)]);
     f.assert_settled();
 }
@@ -75,13 +75,13 @@ fn an_unsent_edit_and_a_directory_moved_into_a_directory_that_cannot_be_read_are
     f.rename("box", "secret/box");
     let findings = check_with_unreadable(&mut f, "secret");
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6)]);
-    assert!(!findings.is_read_whole());
+    assert!(findings.has_unread_part());
     assert_eq!(left(&findings), [(path("box"), true), (path("docs/b.txt"), true), (path("secret"), false)]);
     assert_eq!(f.rows(), before, "no row lost its local version, and none went");
 
     // Readable again: the two items of OneDrive are found by their marks, where they are.
     let findings = f.check();
-    assert!(findings.is_read_whole());
+    assert!(!findings.has_unread_part());
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 7), (DiskFinding::Made, 1), (DiskFinding::Moved, 2), (DiskFinding::Removed, 1)]);
     assert_eq!((f.id("secret/b.txt"), f.id("secret/box/c.txt")), (b, c));
     assert_eq!(f.store.item_store().find_item(box_directory).unwrap(), None, "the directory carried no mark: it is a new one there");
@@ -100,21 +100,13 @@ fn a_directory_of_onedrive_renamed_and_made_unreadable_is_not_made_anew_and_what
     f.rename("docs", "docs2");
     let before = f.rows();
     let findings = check_with_unreadable(&mut f, "docs2");
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5), (DiskFinding::ContentNoLongerOnDisk, 1)]);
-    assert_eq!(left(&findings), [(path("docs/b.txt"), true), (path("docs2"), false)]);
-    let now = f.rows();
-    assert_eq!(now.len(), before.len(), "docs2 is not made as a new item");
-    let a = f.id("docs/a.txt");
-    for (was, is) in before.iter().zip(&now) {
-        // The clean copy is not where its row says: its content is not on disk, and nothing
-        // else of any row changed.
-        let expected = if was.local_item_id == a { konedrive_tree::Item { content_presence: ContentPresence::NotOnDisk, ..was.clone() } } else { was.clone() };
-        assert_eq!(*is, expected);
-    }
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5)]);
+    assert_eq!(left(&findings), [(path("docs/a.txt"), true), (path("docs/b.txt"), true), (path("docs2"), false)]);
+    assert_eq!(f.rows(), before, "docs2 is not made as a new item, and no row is written: the clean copy may be in what was not read");
 
     // Readable again: the directory is found by its mark, and what is in it where it is.
     let findings = f.check();
-    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 5), (DiskFinding::Moved, 1), (DiskFinding::CopyLandedBeforeRow, 1)]);
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6), (DiskFinding::Moved, 1)]);
     assert_eq!((f.id("docs2/b.txt"), f.row("docs2/a.txt").unwrap().content_presence), (b, ContentPresence::OnDisk));
     f.assert_settled();
 }
@@ -166,4 +158,79 @@ fn a_copy_of_a_directory_that_cannot_be_read_is_not_taken_as_that_directory_move
     assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::MadeWithStaleMark, 2)]);
     assert_eq!(f.rows().len(), before.len() + 2);
     f.assert_settled();
+}
+
+/// The second review's M3. `cp -a docs docs-copy`, the copy of a.txt removed from it;
+/// `cp -a docs/a.txt a-copy.txt`; `chmod 000 docs`. The place the row of a.txt says is
+/// looked at only through the entry taken as `docs`, and none is: the copy of `docs` may
+/// itself be a copy and stands in for nothing.
+#[test]
+fn a_copy_of_a_file_in_a_directory_that_cannot_be_read_is_not_taken_as_that_file_moved() {
+    if is_root() {
+        return;
+    }
+    let mut f = folder_of_each();
+    let a = f.id("docs/a.txt");
+    f.make_directory("docs-copy");
+    f.mark_directory("docs-copy", "D");
+    f.write("a-copy.txt", b"aaa");
+    f.mark_copy("a-copy.txt", "A");
+    let before = f.rows();
+    let findings = check_with_unreadable(&mut f, "docs");
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 3)]);
+    assert_eq!(f.rows(), before, "no row is written");
+    assert_eq!(left(&findings), [(path("a-copy.txt"), true), (path("docs"), false), (path("docs-copy"), true)]);
+    assert_eq!(f.mark_of("a-copy.txt"), Some("A".to_owned()), "its marks stay");
+
+    // Readable again: the file nobody touched is where its row says, and the copies are new.
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6), (DiskFinding::MadeWithStaleMark, 2)]);
+    assert_eq!((f.id("docs/a.txt"), f.mark_of("docs/a.txt"), f.row("a-copy.txt").unwrap().onedrive_item), (a, Some("A".to_owned()), None));
+    f.assert_settled();
+}
+
+/// The second review's S2. One file that cannot be read holds itself, and no more: the
+/// check says that a part was not read, names the path, and names the one row that is held.
+/// Every other row is as the disk has it and nothing keeps it from being sent.
+#[test]
+fn one_file_that_cannot_be_read_holds_its_own_row_and_no_other() {
+    if is_root() {
+        return;
+    }
+    let mut f = folder_of_each();
+    let top = f.id("top.txt");
+    f.write("docs/new.txt", b"new");
+    fs::write(f.disk("mine/own.txt"), b"edited").unwrap();
+    let findings = check_with_unreadable(&mut f, "top.txt");
+    fs::set_permissions(f.disk("top.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4), (DiskFinding::Made, 1), (DiskFinding::ContentChanged, 1)]);
+    assert!(findings.has_unread_part());
+    assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("top.txt") && matches!(left.reason, UnresolvedReason::Unreadable(_))), "{:?}", findings.unresolved());
+    assert_eq!(findings.list_held_items(), [top]);
+
+    // What is gone meanwhile may be the file that cannot be read: that row is held too.
+    let a = f.id("docs/a.txt");
+    fs::remove_file(f.disk("docs/a.txt")).unwrap();
+    let findings = check_with_unreadable(&mut f, "top.txt");
+    fs::set_permissions(f.disk("top.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(left(&findings), [(path("docs/a.txt"), true), (path("top.txt"), false)]);
+    assert_eq!(findings.list_held_items(), [a.min(top), a.max(top)]);
+
+    // Everything readable: nothing is held.
+    let findings = f.check();
+    assert!(!findings.has_unread_part() && findings.list_held_items().is_empty());
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 6), (DiskFinding::ContentNoLongerOnDisk, 1)]);
+    f.assert_settled();
+}
+
+/// A directory that cannot be read holds its own row, and with it what the rows say is in
+/// it.
+#[test]
+fn the_rows_in_a_directory_that_cannot_be_read_are_held_and_no_other() {
+    if is_root() {
+        return;
+    }
+    let mut f = folder_of_each();
+    let findings = check_with_unreadable(&mut f, "docs");
+    assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 3)]);
+    assert_eq!(findings.list_held_items(), [f.id("docs")], "the row at the name that could not be looked at: what the rows say is in it is held with it");
 }

@@ -1,6 +1,6 @@
 use konedrive_tree::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement};
 
-use super::ItemRows;
+use super::{BoundRows, ItemRows};
 
 pub(in crate::fuse::backing_directory_check) fn id(number: i64) -> LocalItemId {
     LocalItemId::new(number)
@@ -80,25 +80,27 @@ fn a_row_the_folder_shows_is_found_by_its_id_by_its_place_and_among_what_its_dir
     assert_eq!(rows.list().count(), 4);
 }
 
-/// A mark holds an item's id and no drive: of two rows that have one id, the drive tells
-/// which is meant. Where no row of the drive has the id, the row that has it is meant: an
-/// item is not always of the drive of the directory it is in.
+/// A mark holds an item's id and no drive: a row is asked for by the id alone, shown or
+/// not, and the answer says when rows of two drives have it. Nothing chooses among them.
 #[test]
-fn a_bound_row_is_found_by_its_drive_and_its_item_id_shown_and_not_shown_apart() {
+fn the_rows_that_have_an_item_id_are_none_one_or_of_two_drives() {
     let rows = ItemRows::new(vec![
         bound_in("d1", "X", 2, 1, "one.txt", ItemKind::File),
         bound_in("d2", "X", 3, 1, "two.txt", ItemKind::File),
         removed_here(bound_in("d2", "Y", 4, 1, "gone.txt", ItemKind::File)),
-        removed_here(bound_in("d1", "D", 5, 1, "gone", ItemKind::Directory)),
+        bound_in("d1", "Z", 5, 1, "z.txt", ItemKind::File),
+        removed_here(bound_in("d2", "Z", 6, 1, "z-gone.txt", ItemKind::File)),
+        bound_in("d2", "S", 7, 1, "shared", ItemKind::Directory),
+        own(8, 1, "own.txt", ItemKind::File),
     ]);
-    assert_eq!(rows.find_shown_bound(&drive("d1"), "X").map(|row| row.local_item_id), Some(id(2)));
-    assert_eq!(rows.find_shown_bound(&drive("d2"), "X").map(|row| row.local_item_id), Some(id(3)));
-    assert_eq!(rows.find_shown_bound(&drive("d3"), "X").map(|row| row.local_item_id), Some(id(2)), "no row of that drive: the one made first");
-    assert_eq!(rows.find_shown_bound(&drive("d2"), "Y").map(|row| row.local_item_id), None, "not shown");
-    assert_eq!(rows.find_unshown_bound(&drive("d2"), "Y").map(|row| row.local_item_id), Some(id(4)));
-    assert_eq!(rows.find_unshown_bound(&drive("d1"), "Y").map(|row| row.local_item_id), Some(id(4)), "no row of that drive has the id");
-    assert_eq!(rows.find_unshown_bound(&drive("d1"), "none").map(|row| row.local_item_id), None);
-    assert_eq!(rows.find_unshown_bound(&drive("d1"), "X").map(|row| row.local_item_id), None, "shown");
+    let one = |onedrive_id: &str| match rows.find_bound(onedrive_id) {
+        BoundRows::One(row) => Some(row.local_item_id),
+        other => panic!("{onedrive_id}: {other:?}"),
+    };
+    assert_eq!((one("Y"), one("S")), (Some(id(4)), Some(id(7))), "the one row that has the id, shown or not, whichever drive it is of");
+    assert_eq!(rows.find_bound("X"), BoundRows::OfTwoDrives);
+    assert_eq!(rows.find_bound("Z"), BoundRows::OfTwoDrives, "also when the folder shows one of them only");
+    assert_eq!(rows.find_bound("none"), BoundRows::None);
 }
 
 /// What a file made by hand replaces: a file of OneDrive removed here from that place.

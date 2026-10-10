@@ -8,10 +8,10 @@ use crate::fuse::backing_directory_check::backing_directory_contents::tests::{co
 use crate::fuse::backing_directory_check::backing_directory_contents::BackingDirectoryContents;
 use crate::fuse::backing_directory_check::disk_finding::{DiskFinding, UnresolvedReason};
 use crate::fuse::backing_directory_check::entry_identities::EntryIdentities;
-use crate::fuse::backing_directory_check::item_rows::tests::{bound, changed_here, drive, id, not_downloaded, own};
+use crate::fuse::backing_directory_check::item_rows::tests::{bound, bound_in, changed_here, id, not_downloaded, own};
 use crate::fuse::backing_directory_check::item_rows::ItemRows;
 
-use DiskFinding::{ContentNoLongerOnDisk, Made, Moved, MovedOverAnotherItem, NothingChanged, PlaceLost, Removed};
+use DiskFinding::{ContentChanged, ContentNoLongerOnDisk, Made, MadeWithStaleMark, Moved, MovedOverAnotherItem, NothingChanged, PlaceLost, Removed};
 use ItemKind::{Directory, File};
 
 /// The findings of a backing directory that has `listed`, with these rows.
@@ -22,7 +22,7 @@ struct Decided {
 
 fn decide(rows: Vec<Item>, listed: &[(&str, Listed)]) -> Decided {
     let (rows, contents) = (ItemRows::new(rows), contents_of(listed));
-    let identities = EntryIdentities::settle(&rows, &contents, &drive("d1"));
+    let identities = EntryIdentities::settle(&rows, &contents);
     let findings = PathFindings::decide(&rows, &contents, &identities);
     Decided { contents, findings }
 }
@@ -40,10 +40,25 @@ impl Decided {
         rows
     }
 
+    /// The rows that are held back, whatever the reason.
     fn held_back(&self) -> Vec<LocalItemId> {
-        let mut held_back = self.findings.list_held_back().to_vec();
+        let mut held_back: Vec<LocalItemId> = self.findings.list_held_back().iter().map(|(item, _)| *item).collect();
         held_back.sort();
         held_back
+    }
+
+    /// The rows that are held back, each with why.
+    fn held_back_for(&self) -> Vec<(i64, UnresolvedReason)> {
+        let mut held_back: Vec<(i64, UnresolvedReason)> = self.findings.list_held_back().iter().map(|(item, reason)| (item.as_i64(), reason.clone())).collect();
+        held_back.sort_by_key(|(item, _)| *item);
+        held_back
+    }
+
+    /// Every row that is left as it was found.
+    fn left_items(&self) -> Vec<i64> {
+        let mut left: Vec<i64> = self.findings.list_left_items().map(|item| item.as_i64()).collect();
+        left.sort();
+        left
     }
 }
 
@@ -59,7 +74,7 @@ fn each_row_no_entry_is_taken_as_is_decided_by_itself_a_directory_before_what_is
     let decided = decide(rows, &[]);
     assert_eq!(decided.rows(), [(2, NothingChanged), (3, ContentNoLongerOnDisk), (4, Removed), (5, NothingChanged), (6, Removed)]);
     assert_eq!(decided.findings.list_rows()[0].0, id(2), "the directory first");
-    assert!(decided.findings.is_read_whole() && decided.held_back().is_empty());
+    assert!(!decided.findings.has_unread_part() && decided.held_back().is_empty());
 }
 
 /// A file marked with an id and not whole holds nothing of that file.
@@ -68,7 +83,7 @@ fn a_file_that_is_not_whole_is_no_copy_and_one_of_an_id_no_row_has_is_left() {
     let rows = vec![bound("A", 2, 1, "a.txt", File), not_downloaded(bound("R", 3, 1, "r.bin", File))];
     let decided = decide(rows, &[("a.txt", Listed::PartialFile("A")), ("r.bin", Listed::PartialFile("R")), ("p.bin", Listed::PartialFile("P"))]);
     assert_eq!((decided.entry("a.txt"), decided.entry("r.bin"), decided.entry("p.bin")), (Ok(ContentNoLongerOnDisk), Ok(NothingChanged), Err(UnresolvedReason::PartialCopy)));
-    assert!(decided.rows().is_empty() && decided.findings.is_read_whole());
+    assert!(decided.rows().is_empty() && !decided.findings.has_unread_part());
 }
 
 /// Review M4. The store was lost, the copy was bound by its mark, and it is gone before a
@@ -144,9 +159,9 @@ fn an_item_moved_over_the_name_of_another_removes_it_only_when_its_copy_was_on_d
 }
 
 /// Review M1 a), b). A directory could not be read: what is gone from where its row says
-/// may be in it. Nothing is found removed and no row loses its local version; the rows are
-/// left and said, with what is below them. A content that is not on disk any more is said
-/// so all the same: the row keeps its local version.
+/// may be in it. Nothing is found removed, no row loses its local version, and no copy is
+/// found to be on disk no longer: the rows are left as they are and said, with what is
+/// below them.
 #[test]
 fn nothing_is_found_removed_while_a_directory_was_not_read() {
     let rows = vec![
@@ -157,15 +172,70 @@ fn nothing_is_found_removed_while_a_directory_was_not_read() {
         bound("C", 6, 5, "c.txt", File),
         bound("A", 7, 3, "a.txt", File),
         not_downloaded(bound("R", 8, 1, "report", File)),
+        not_downloaded(bound("N", 9, 3, "n.bin", File)),
     ];
     let decided = decide(rows.clone(), &[("docs", Listed::Directory(Some("D"))), ("secret", Listed::UnreadableDirectory(None)), ("report", Listed::Directory(None))]);
-    assert!(!decided.findings.is_read_whole());
-    assert_eq!(decided.rows(), [(7, ContentNoLongerOnDisk)]);
-    assert_eq!(decided.held_back(), [id(2), id(4), id(5), id(8)], "the directory is said, not each row in it");
+    assert!(decided.findings.has_unread_part());
+    assert_eq!(decided.rows(), [(9, NothingChanged)], "a file that was not on disk and has nothing at its name is as its row says");
+    assert_eq!(decided.held_back(), [id(2), id(4), id(5), id(7), id(8)], "the directory is said, not each row in it");
+    assert!(decided.held_back_for().iter().all(|(_, reason)| *reason == UnresolvedReason::MayBeUnread));
+    assert_eq!(decided.left_items(), [2, 4, 5, 7, 8]);
     // The same rows once everything is read.
     let decided = decide(rows, &[("docs", Listed::Directory(Some("D"))), ("secret", Listed::Directory(None)), ("report", Listed::Directory(None))]);
-    assert!(decided.findings.is_read_whole() && decided.held_back().is_empty());
-    assert_eq!(decided.rows(), [(2, Removed), (4, Removed), (5, Removed), (6, PlaceLost), (7, ContentNoLongerOnDisk), (8, PlaceLost)]);
+    assert!(!decided.findings.has_unread_part() && decided.held_back().is_empty() && decided.left_items().is_empty());
+    assert_eq!(decided.rows(), [(2, Removed), (4, Removed), (5, Removed), (6, PlaceLost), (7, ContentNoLongerOnDisk), (8, PlaceLost), (9, NothingChanged)]);
+}
+
+/// A row whose own place could not be looked at is not decided, and is among the rows that
+/// are left; what the rows say is below it is left with it.
+#[test]
+fn a_row_whose_own_place_could_not_be_looked_at_is_left_with_what_is_below_it() {
+    let rows = vec![own(2, 1, "locked", Directory), own(3, 2, "in.txt", File), own(4, 2, "sub", Directory), own(5, 4, "deep.txt", File), own(6, 1, "link", File), own(7, 1, "top.txt", File)];
+    let decided = decide(rows, &[("locked", Listed::UnreadableDirectory(None)), ("link", Listed::Special), ("top.txt", Listed::File(None))]);
+    assert_eq!((decided.entry("locked"), decided.entry("top.txt")), (Ok(NothingChanged), Ok(NothingChanged)));
+    assert_eq!((decided.rows(), decided.held_back()), (vec![], vec![]));
+    assert_eq!(decided.left_items(), [3, 4, 6], "the rows in the directory that was not read, not what is below them; and the row at the name that is no file");
+}
+
+/// The second review's M1 and M2. Rows of two drives have one item id. An entry that carries
+/// it and is not where one of them says is left; the unmarked file at the place of one of
+/// them is left with it; and a row of the id that would lose its content, or leave the
+/// folder, is left as it is. All for a reason of their own.
+#[test]
+fn what_depends_on_which_row_of_an_item_id_in_two_drives_an_entry_is_is_left() {
+    let two_drives = Err(UnresolvedReason::ItemIdInTwoDrives);
+    let rows = || vec![bound_in("d2", "S", 2, 1, "shared", Directory), bound_in("d1", "X", 3, 1, "l.bin", File), bound_in("d2", "X", 4, 2, "h.txt", File)];
+    let listed = [("shared", Listed::Directory(Some("S"))), ("shared/h2.txt", Listed::File(Some("X"))), ("l.bin", Listed::File(None))];
+    let decided = decide(rows(), &listed);
+    assert_eq!((decided.entry("shared/h2.txt"), decided.entry("l.bin")), (two_drives.clone(), two_drives.clone()));
+    assert_eq!(decided.rows(), [], "neither row is removed, moved or said to have lost its copy");
+    assert_eq!(decided.held_back_for(), [(3, UnresolvedReason::ItemIdInTwoDrives), (4, UnresolvedReason::ItemIdInTwoDrives)]);
+    // Each marked entry where a row says: nothing depends on which is which.
+    let listed = [("shared", Listed::Directory(Some("S"))), ("shared/h.txt", Listed::File(Some("X"))), ("l.bin", Listed::File(None))];
+    let decided = decide(rows(), &listed);
+    assert_eq!((decided.entry("shared/h.txt"), decided.entry("l.bin")), (Ok(NothingChanged), Ok(ContentChanged)));
+    assert!(decided.rows().is_empty() && decided.held_back().is_empty());
+    // A row of the id that had nothing on disk is as it was, and is not held: its finding
+    // does not depend on the entry.
+    let rows = vec![bound_in("d1", "X", 3, 1, "l.bin", File), not_downloaded(bound_in("d2", "X", 4, 1, "x.bin", File))];
+    let decided = decide(rows, &[("a.txt", Listed::File(Some("X"))), ("l.bin", Listed::File(Some("X")))]);
+    assert_eq!((decided.entry("a.txt"), decided.entry("l.bin")), (two_drives, Ok(NothingChanged)));
+    assert_eq!((decided.rows(), decided.held_back()), (vec![(4, NothingChanged)], vec![]));
+}
+
+/// A content hashed here that the two sides have not agreed on is here alone, like one a
+/// program changed: its file gone, it was removed by hand, and the removal is the user's.
+/// It does not stay as content to send that no file holds.
+#[test]
+fn a_content_hashed_here_and_not_agreed_on_that_is_gone_was_removed_by_hand() {
+    let hashed_here = |mut item: Item| {
+        item.local.as_mut().unwrap().content = Some(ContentVersion::Hashed { size: 3, mtime: 100, mtime_nsec: 0, hash: Some("h-new".to_owned()), ctag: None });
+        item
+    };
+    let never_agreed = |item: Item| Item { synced_content: None, ..item };
+    let rows = vec![hashed_here(bound("A", 2, 1, "a.txt", File)), never_agreed(hashed_here(bound("B", 3, 1, "b.txt", File))), bound("C", 4, 1, "c.txt", File)];
+    let decided = decide(rows, &[]);
+    assert_eq!(decided.rows(), [(2, Removed), (3, Removed), (4, ContentNoLongerOnDisk)]);
 }
 
 /// Review M1 c). `mv docs docs2 ; chmod 000 docs2`: the marks of a directory that cannot be
@@ -177,6 +247,17 @@ fn a_directory_that_could_not_be_read_and_that_no_row_is_found_for_is_left_and_n
     let decided = decide(rows, &[("docs2", Listed::UnreadableDirectory(None))]);
     assert!(matches!(decided.entry("docs2"), Err(UnresolvedReason::Unreadable(_))), "{:?}", decided.entry("docs2"));
     assert_eq!((decided.rows(), decided.held_back()), (vec![(2, NothingChanged)], vec![id(3)]));
+}
+
+/// The second review's M3. `docs` could not be read; a copy of it, and a copy of a file the
+/// rows say is in it, are seen. Neither is taken as the item moved, and the copy of `docs`
+/// does not make the place of what is in `docs` one that was looked at.
+#[test]
+fn a_copy_of_what_is_in_a_directory_that_was_not_read_is_left_and_no_row_moves() {
+    let rows = vec![bound("D", 2, 1, "docs", Directory), bound("A", 3, 2, "a.txt", File), not_downloaded(bound("R", 4, 2, "r.bin", File))];
+    let decided = decide(rows, &[("docs", Listed::UnreadableDirectory(Some("D"))), ("docs-copy", Listed::Directory(Some("D"))), ("a-copy.txt", Listed::File(Some("A")))]);
+    assert_eq!((decided.entry("docs"), decided.entry("docs-copy"), decided.entry("a-copy.txt")), (Ok(NothingChanged), Ok(MadeWithStaleMark), Err(UnresolvedReason::MayBeUnread)));
+    assert_eq!((decided.rows(), decided.held_back(), decided.left_items()), (vec![], vec![], vec![3, 4]));
 }
 
 /// Found by the test of convergence. `cp -a docs docs-copy ; chmod 000 docs`: the place the
@@ -202,11 +283,11 @@ fn an_entry_with_the_mark_of_a_row_whose_own_place_was_not_looked_at_is_not_that
 fn a_name_that_is_no_file_and_no_directory_hides_what_is_below_the_row_of_a_directory() {
     let rows = || vec![bound("D", 2, 1, "docs", Directory), changed_here(bound("B", 3, 2, "b.txt", File)), own(4, 1, "top.txt", File), own(5, 1, "gone.txt", File)];
     let decided = decide(rows(), &[("docs", Listed::Special)]);
-    assert!(!decided.findings.is_read_whole());
+    assert!(decided.findings.has_unread_part());
     assert_eq!((decided.rows(), decided.held_back()), (vec![], vec![id(4), id(5)]), "what is below it is left with it");
 
     let decided = decide(rows(), &[("docs", Listed::Directory(Some("D"))), ("docs/b.txt", Listed::File(Some("B"))), ("top.txt", Listed::Special), ("link", Listed::Special)]);
-    assert!(decided.findings.is_read_whole());
+    assert!(!decided.findings.has_unread_part());
     assert_eq!((decided.rows(), decided.held_back()), (vec![(5, Removed)], vec![]), "the row at the name is left as it is");
 }
 

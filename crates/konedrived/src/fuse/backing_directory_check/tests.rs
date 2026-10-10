@@ -20,7 +20,9 @@ mod convergence;
 mod cost;
 mod daemon_death;
 mod hand_moves;
+mod own_marks;
 mod place_losses;
+mod two_drives;
 mod unread_parts;
 
 const ROOT: LocalItemId = LocalItemId::ROOT;
@@ -195,6 +197,29 @@ impl Folder {
         id
     }
 
+    /// A file of the item `onedrive_id` of the drive `drive`, the two sides agreeing: a clean
+    /// copy on disk with the bytes `twin`, or one that is not downloaded.
+    pub(super) fn file_of_drive(&mut self, rel: &str, drive: &str, onedrive_id: &str, on_disk: bool) -> LocalItemId {
+        let item = if on_disk { self.own_file(rel, b"twin") } else { self.make_row(rel, ItemKind::File, changed_here(4, 1)) };
+        if on_disk {
+            self.mark_copy(rel, onedrive_id);
+        }
+        self.agree_in(item, drive, onedrive_id);
+        if !on_disk {
+            self.store.item_store().set_content_presence(item, ContentPresence::NotOnDisk).unwrap();
+        }
+        item
+    }
+
+    /// A directory of the drive `drive`, on disk and in the rows: a shared folder is another
+    /// drive's than the folder it is in.
+    pub(super) fn directory_of_drive(&mut self, rel: &str, drive: &str, onedrive_id: &str) -> LocalItemId {
+        let id = self.own_directory(rel);
+        self.mark_directory(rel, onedrive_id);
+        self.agree_in(id, drive, onedrive_id);
+        id
+    }
+
     /// The item at `from` is moved to `to` as a rename through the mount does it: on disk,
     /// and in its row. What was agreed on for it stays: an item of OneDrive in a directory
     /// OneDrive does not have was moved into it, and its move is not sent.
@@ -242,10 +267,10 @@ impl Folder {
     }
 
     /// [`assert_rows_say_the_disk`](Self::assert_rows_say_the_disk), but for the paths the
-    /// check said it left: what is at those has no row.
+    /// check said it left: what is at those has no row, or a row that is as it was.
     pub(super) fn assert_rows_say_the_disk_but(&mut self, left: &[PathBuf]) {
         for rel in self.walk_disk() {
-            if left.contains(&rel) {
+            if left.iter().any(|left| rel.starts_with(left)) {
                 continue;
             }
             let metadata = fs::symlink_metadata(self.disk(&rel)).unwrap();
@@ -262,6 +287,10 @@ impl Folder {
             let Some(place) = row.local.as_ref().and_then(|local| local.place.as_ref()) else { continue };
             let path = self.store.item_store().find_path(row.local_item_id).unwrap().unwrap();
             assert_eq!(path.file_name(), Some(place.name.as_os_str()));
+            // A row the check left as it is, and what is below it, says what it said.
+            if left.iter().any(|left| path.starts_with(left)) {
+                continue;
+            }
             let on_disk = fs::symlink_metadata(self.disk(&path)).ok();
             if row.content_presence == ContentPresence::OnDisk || row.onedrive_item.is_none() {
                 let on_disk = on_disk.unwrap_or_else(|| panic!("the row of {path:?} has no entry on disk: {row:?}"));
@@ -284,7 +313,10 @@ impl Folder {
         let before = self.rows();
         let again = self.check();
         assert!(found(&again).iter().all(|(finding, _)| *finding == DiskFinding::NothingChanged), "a second run found {:?}", found(&again));
-        assert_eq!(again.unresolved().iter().map(|left| left.path.clone()).collect::<Vec<_>>(), left);
+        // A path may be left for two reasons: it is one path.
+        let mut left_again: Vec<PathBuf> = again.unresolved().iter().map(|left| left.path.clone()).collect();
+        left_again.dedup();
+        assert_eq!(left_again, left);
         assert_eq!(self.rows(), before, "a second run wrote");
     }
 }
@@ -631,7 +663,7 @@ fn the_rows_below_a_directory_that_cannot_be_read_are_left_and_the_directory_is_
     let findings = f.check();
     fs::set_permissions(f.disk("mine"), fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 4)]);
-    assert!(!findings.is_read_whole());
+    assert!(findings.has_unread_part());
     assert!(matches!(findings.unresolved(), [left] if left.path == Path::new("mine") && matches!(left.reason, UnresolvedReason::Unreadable(_))), "{:?}", findings.unresolved());
     assert_eq!(f.rows(), before);
 }

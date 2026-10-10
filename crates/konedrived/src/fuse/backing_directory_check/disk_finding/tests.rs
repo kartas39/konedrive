@@ -4,8 +4,8 @@ use super::ContentOrigin::{ChangedHere, FromOneDrive};
 use super::ContentComparison::{Different, Same};
 use super::CopyWholeness::{Partial, Whole};
 use super::ItemBinding::{Bound, Unbound};
-use super::MarkOwner::{RowOfAnotherEntry, RowElsewhere, RowAtPath, NoRow, Unmarked};
-use super::{compare_content, decide_finding, ContentOrigin, ContentComparison, CopyWholeness, DiskFinding, DiskContent, ItemBinding, MarkOwner, PathEntry, PathRow, UnresolvedReason};
+use super::MarkOwner::{AnotherItem, RowElsewhere, RowAtPath, NoRow, Unmarked};
+use super::{compare_content, decide_finding, decide_finding_without_place, ContentOrigin, ContentComparison, CopyWholeness, DiskFinding, DiskContent, ItemBinding, MarkOwner, PathEntry, PathRow, UnresolvedReason};
 use konedrive_tree::ContentPresence::{NotOnDisk, OnDisk};
 
 fn file_row(binding: ItemBinding, content_presence: ContentPresence, origin: ContentOrigin) -> PathRow {
@@ -50,9 +50,9 @@ fn an_entry_marked_as_an_item_whose_row_is_elsewhere_with_nothing_there_is_that_
 
 #[test]
 fn a_second_entry_marked_as_an_item_that_is_where_its_row_says_is_a_new_item_with_a_stale_mark() {
-    assert_eq!(found(PathRow::Nothing, file(RowOfAnotherEntry, Whole, Different)), DiskFinding::MadeWithStaleMark);
-    assert_eq!(found(PathRow::Nothing, file(RowOfAnotherEntry, Partial, Different)), DiskFinding::MadeWithStaleMark);
-    assert_eq!(found(PathRow::Nothing, directory(RowOfAnotherEntry)), DiskFinding::MadeWithStaleMark);
+    assert_eq!(found(PathRow::Nothing, file(AnotherItem, Whole, Different)), DiskFinding::MadeWithStaleMark);
+    assert_eq!(found(PathRow::Nothing, file(AnotherItem, Partial, Different)), DiskFinding::MadeWithStaleMark);
+    assert_eq!(found(PathRow::Nothing, directory(AnotherItem)), DiskFinding::MadeWithStaleMark);
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn an_item_moved_to_a_path_is_over_the_row_that_has_it_whatever_the_row_is() {
 fn what_was_made_by_hand_where_another_items_row_is_is_a_new_item() {
     assert_eq!(found(PathRow::AnotherItemsRow, file(Unmarked, Whole, Different)), DiskFinding::Made);
     assert_eq!(found(PathRow::AnotherItemsRow, directory(Unmarked)), DiskFinding::Made);
-    assert_eq!(found(PathRow::AnotherItemsRow, directory(RowOfAnotherEntry)), DiskFinding::MadeWithStaleMark);
+    assert_eq!(found(PathRow::AnotherItemsRow, directory(AnotherItem)), DiskFinding::MadeWithStaleMark);
     assert_eq!(found(PathRow::AnotherItemsRow, file(NoRow, Whole, Different)), DiskFinding::MarkedWithoutRow);
 }
 
@@ -127,24 +127,28 @@ fn an_item_of_onedrive_with_nothing_of_its_own_on_disk_whose_name_another_item_h
     }
 }
 
+// A row no entry is taken as, whose place the folder cannot keep.
+
 /// The row of its directory goes, or its name is one the check sets items aside to. An item
 /// OneDrive never had goes with it, and so does a file changed here whose copy was on disk:
 /// the person had it before them.
 #[test]
-fn a_row_whose_path_is_no_more_is_removed_here_when_onedrive_never_had_it_or_it_was_changed_here_on_disk() {
+fn a_row_without_a_place_is_removed_here_when_onedrive_never_had_it_or_it_was_changed_here_on_disk() {
     for row in [CHANGED_COPY, OWN_FILE, OWN_FILE_NOT_ON_DISK, PathRow::Directory { binding: Unbound }] {
-        assert_eq!(found(row, PathEntry::NoSuchPath), DiskFinding::Removed, "{row:?}");
+        assert_eq!(decide_finding_without_place(row), DiskFinding::Removed, "{row:?}");
     }
 }
 
 /// Any other item of OneDrive loses its place: one with nothing on disk, and a clean copy
 /// that is gone, which is no removal anywhere.
 #[test]
-fn an_item_of_onedrive_whose_path_is_no_more_loses_its_place_unless_it_was_changed_here_on_disk() {
+fn an_item_of_onedrive_without_a_place_loses_it_unless_it_was_changed_here_on_disk() {
     for row in [NOT_DOWNLOADED, NOT_DOWNLOADED_AND_OPENED, CLEAN_COPY, PathRow::Directory { binding: Bound }] {
-        assert_eq!(found(row, PathEntry::NoSuchPath), DiskFinding::PlaceLost, "{row:?}");
+        assert_eq!(decide_finding_without_place(row), DiskFinding::PlaceLost, "{row:?}");
     }
-    assert_eq!(found(PathRow::Nothing, PathEntry::NoSuchPath), DiskFinding::NothingChanged);
+    for row in [PathRow::Nothing, PathRow::AnotherItemsRow] {
+        assert_eq!(decide_finding_without_place(row), DiskFinding::NothingChanged, "no row of its own is asked of: {row:?}");
+    }
 }
 
 // A file's row, and a file that is its item.
@@ -153,8 +157,28 @@ fn an_item_of_onedrive_whose_path_is_no_more_loses_its_place_unless_it_was_chang
 fn a_copy_of_the_rows_size_and_time_is_unchanged() {
     for row in [CLEAN_COPY, CHANGED_COPY, OWN_FILE] {
         assert_eq!(found(row, file(RowAtPath, Whole, Same)), DiskFinding::NothingChanged, "{row:?}");
+    }
+    for row in [CHANGED_COPY, OWN_FILE] {
         assert_eq!(found(row, file(Unmarked, Whole, Same)), DiskFinding::NothingChanged, "{row:?}");
     }
+}
+
+/// A copy that a download landed is marked: an unmarked file where a clean copy was is
+/// content the user put there, also when its size and time are the row's. Its row says so
+/// before the file gets the id of the item as its mark, which alone would say the file
+/// holds nothing of a content that is OneDrive's.
+#[test]
+fn an_unmarked_file_where_a_clean_copy_was_has_its_content_changed_whatever_its_size_and_time() {
+    assert_eq!(found(CLEAN_COPY, file(Unmarked, Whole, Same)), DiskFinding::ContentChanged);
+    assert_eq!(found(CLEAN_COPY, file(Unmarked, Whole, Different)), DiskFinding::ContentChanged);
+}
+
+/// What the check itself leaves when it marks the own entry of an item with the id alone: a
+/// row whose content is here alone, and a file marked with its id and not whole.
+#[test]
+fn a_file_marked_with_the_id_alone_whose_row_says_its_content_is_here_alone_is_unchanged() {
+    assert_eq!(found(CHANGED_COPY, file(RowAtPath, Partial, Same)), DiskFinding::NothingChanged);
+    assert_eq!(found(CHANGED_COPY, file(RowAtPath, Partial, Different)), DiskFinding::ContentChanged);
 }
 
 #[test]
@@ -193,7 +217,7 @@ fn any_other_file_where_content_is_not_on_disk_is_content_the_user_put_there() {
     assert_eq!(found(NOT_DOWNLOADED, file(Unmarked, Whole, Same)), DiskFinding::ContentChanged);
     assert_eq!(found(NOT_DOWNLOADED, file(Unmarked, Whole, Different)), DiskFinding::ContentChanged);
     assert_eq!(found(NOT_DOWNLOADED, file(RowAtPath, Whole, Different)), DiskFinding::ContentChanged, "a whole copy of another size or time");
-    assert_eq!(found(NOT_DOWNLOADED, file(RowOfAnotherEntry, Whole, Same)), DiskFinding::ContentChanged);
+    assert_eq!(found(NOT_DOWNLOADED, file(AnotherItem, Whole, Same)), DiskFinding::ContentChanged);
 }
 
 /// A file marked with the row's id and not whole holds nothing of the file, unless a writer
@@ -223,7 +247,7 @@ fn a_copy_changed_here_that_is_not_whole_is_told_by_its_size_and_time() {
 #[test]
 fn a_file_that_carries_another_items_mark_where_its_row_is_has_its_content_changed() {
     for row in [CLEAN_COPY, CHANGED_COPY, OWN_FILE] {
-        assert_eq!(found(row, file(RowOfAnotherEntry, Whole, Same)), DiskFinding::ContentChanged, "{row:?}");
+        assert_eq!(found(row, file(AnotherItem, Whole, Same)), DiskFinding::ContentChanged, "{row:?}");
     }
     assert_eq!(found(CLEAN_COPY, file(NoRow, Whole, Same)), DiskFinding::ContentChanged);
     assert_eq!(found(CHANGED_COPY, file(NoRow, Whole, Different)), DiskFinding::ContentChanged);
@@ -242,7 +266,7 @@ fn an_item_with_no_binding_whose_entry_is_marked_with_an_id_no_row_has_is_bound_
 #[test]
 fn a_directory_where_its_row_is_is_unchanged_whatever_it_is_marked_with() {
     for binding in [Bound, Unbound] {
-        for mark in [Unmarked, RowAtPath, RowOfAnotherEntry] {
+        for mark in [Unmarked, RowAtPath, AnotherItem] {
             assert_eq!(found(PathRow::Directory { binding }, directory(mark)), DiskFinding::NothingChanged, "{binding:?} {mark:?}");
         }
     }

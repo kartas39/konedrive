@@ -5,7 +5,9 @@
 //!
 //! The decision is asked once for each entry the backing directory holds, with the row the
 //! entry is taken as when that row has the path, and once for each row no entry is taken
-//! as. Which item an entry is, is settled before it is asked
+//! as. A row no entry is taken as whose place the folder cannot keep is decided by a second
+//! function of the row alone ([`decide_finding_without_place`]): nothing of the backing
+//! directory is asked there. Which item an entry is, is settled before it is asked
 //! ([`entry_identities`](super::entry_identities)) and comes to it as the entry's
 //! [`MarkOwner`]. An entry that turns out to be a row's own by the finding — a file moved
 //! here, or bound here — is asked once more as that row's, for its content alone.
@@ -72,10 +74,10 @@ pub(super) enum ItemBinding {
 }
 
 /// Where the local content of a file came from, as its row says it: a copy of what OneDrive
-/// has, or bytes a program changed here. It is asked of the content itself, not of whether
-/// it is the content the two sides agreed on: a copy whose content the rows took from its
-/// cTag mark has nothing agreed on yet and is a copy of OneDrive's all the same. A file
-/// with no binding is changed here.
+/// has, or bytes that are here alone. A copy of OneDrive's is the content the two sides
+/// agreed on, and one the rows took from the cTag mark of a copy, which has nothing agreed
+/// on yet. Every other content is here alone: one a program changed here, one that was
+/// hashed here and is not agreed on, and that of a file with no binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ContentOrigin {
     FromOneDrive,
@@ -106,9 +108,11 @@ pub(super) enum MarkOwner {
     /// A row at another path has it, where nothing of that item is: the entry is that item,
     /// moved.
     RowElsewhere,
-    /// A row has it that another entry is taken as, or a row of the other kind: the entry
-    /// is a copy made by hand, which keeps the marks.
-    RowOfAnotherEntry,
+    /// It is the id of another item than the entry is: of a row another entry is taken as,
+    /// of a row of the other kind, of a file whose content was not on disk to be moved, or
+    /// of the entry that was bound to an id no row has. The entry is a copy made by hand,
+    /// which keeps the marks.
+    AnotherItem,
     /// No row the folder shows has it.
     NoRow,
 }
@@ -132,13 +136,9 @@ pub(super) enum ContentComparison {
 /// What the backing directory has at a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathEntry {
-    /// Nothing, in a directory that stays.
     Nothing,
     /// An entry that is taken as another item than the row the path has.
     AnotherItemsEntry,
-    /// The path is none of the folder any more: the row of the directory it is in goes, or
-    /// its name is one the check sets an item aside to, which no entry has.
-    NoSuchPath,
     File { mark: MarkOwner, wholeness: CopyWholeness, comparison: ContentComparison },
     Directory { mark: MarkOwner },
 }
@@ -162,8 +162,14 @@ pub(in crate::fuse) enum UnresolvedReason {
     /// its name.
     Blocked,
     /// Nothing of its item is where its row says, and part of the backing directory was not
-    /// read: the item may be there. Its row keeps its local version.
+    /// read: the item may be there. Or it carries the mark of a row whose own place could
+    /// not be looked at, and may be a copy of it. The row keeps its local version, the entry
+    /// its marks.
     MayBeUnread,
+    /// Rows of two drives have the OneDrive item id it is marked with, or its row has: a
+    /// mark names an item id and no drive, so which of the rows an entry elsewhere is cannot
+    /// be said. The entry keeps its marks and the rows are as they were.
+    ItemIdInTwoDrives,
 }
 
 /// What of a file on disk tells its content from another.
@@ -205,7 +211,7 @@ pub(super) fn decide_finding(row: PathRow, entry: PathEntry) -> Result<DiskFindi
     use ContentPresence::{NotOnDisk, OnDisk};
     use CopyWholeness::{Partial, Whole};
     use ItemBinding::{Bound, Unbound};
-    use MarkOwner::{RowOfAnotherEntry, RowElsewhere, RowAtPath, NoRow, Unmarked};
+    use MarkOwner::{AnotherItem, RowElsewhere, RowAtPath, NoRow, Unmarked};
 
     // An entry of the other kind than the row is never the row's item.
     let row = match (row, entry) {
@@ -215,40 +221,34 @@ pub(super) fn decide_finding(row: PathRow, entry: PathEntry) -> Result<DiskFindi
     Ok(match (row, entry) {
         // No row has the path, or the entry is not the item of the row that has it: what
         // the entry is, its mark says. A row it stands in the place of is decided by itself.
-        (PathRow::Nothing | PathRow::AnotherItemsRow, PathEntry::Nothing | PathEntry::AnotherItemsEntry | PathEntry::NoSuchPath) => DiskFinding::NothingChanged,
+        (PathRow::Nothing | PathRow::AnotherItemsRow, PathEntry::Nothing | PathEntry::AnotherItemsEntry) => DiskFinding::NothingChanged,
         (PathRow::Nothing | PathRow::AnotherItemsRow, PathEntry::File { mark: NoRow, wholeness: Partial, .. }) => return Err(UnresolvedReason::PartialCopy),
         (PathRow::Nothing, PathEntry::File { mark, .. } | PathEntry::Directory { mark }) => match mark {
             // The id of the row at this path cannot be said of a path no row has.
             Unmarked | RowAtPath => DiskFinding::Made,
             RowElsewhere => DiskFinding::Moved,
-            RowOfAnotherEntry => DiskFinding::MadeWithStaleMark,
+            AnotherItem => DiskFinding::MadeWithStaleMark,
             NoRow => DiskFinding::MarkedWithoutRow,
         },
         (PathRow::AnotherItemsRow, PathEntry::File { mark, .. } | PathEntry::Directory { mark }) => match mark {
             Unmarked | RowAtPath => DiskFinding::Made,
             RowElsewhere => DiskFinding::MovedOverAnotherItem,
-            RowOfAnotherEntry => DiskFinding::MadeWithStaleMark,
+            AnotherItem => DiskFinding::MadeWithStaleMark,
             NoRow => DiskFinding::MarkedWithoutRow,
         },
 
-        // A row no entry is taken as, that cannot stay where it is: another item has its
-        // name on disk, or its path is none of the folder any more. What the person could
-        // not see is not removed by that.
+        // A row no entry is taken as, whose name another item has on disk. What the person
+        // could not see is not removed by that.
         //
         // An item OneDrive never had goes: nothing of it is anywhere else.
-        (PathRow::File { binding: Unbound, .. } | PathRow::Directory { binding: Unbound }, PathEntry::AnotherItemsEntry | PathEntry::NoSuchPath) => DiskFinding::Removed,
+        (PathRow::File { binding: Unbound, .. } | PathRow::Directory { binding: Unbound }, PathEntry::AnotherItemsEntry) => DiskFinding::Removed,
         // An item of OneDrive with nothing of its own on disk: a file whose content is not
         // on disk, and a directory, which no entry is taken as. It loses its place.
-        (PathRow::File { binding: Bound, content_presence: NotOnDisk, .. } | PathRow::Directory { binding: Bound }, PathEntry::AnotherItemsEntry | PathEntry::NoSuchPath) => DiskFinding::PlaceLost,
-        // A file of OneDrive changed here, whose copy was on disk: the person had it before
-        // them, and it is gone.
-        (PathRow::File { binding: Bound, content_presence: OnDisk, origin: ChangedHere }, PathEntry::AnotherItemsEntry | PathEntry::NoSuchPath) => DiskFinding::Removed,
-        // A clean copy that was on disk. Where another entry stands at its name, the
-        // person put that entry over a file they had before them: removed, as a rename over
-        // it through the mount removes it. Where its path is no more, the copy is gone as a
-        // clean copy that is gone anywhere: not a removal, and it cannot stay.
-        (PathRow::File { binding: Bound, content_presence: OnDisk, origin: FromOneDrive }, PathEntry::AnotherItemsEntry) => DiskFinding::Removed,
-        (PathRow::File { binding: Bound, content_presence: OnDisk, origin: FromOneDrive }, PathEntry::NoSuchPath) => DiskFinding::PlaceLost,
+        (PathRow::File { binding: Bound, content_presence: NotOnDisk, .. } | PathRow::Directory { binding: Bound }, PathEntry::AnotherItemsEntry) => DiskFinding::PlaceLost,
+        // A file of OneDrive whose copy was on disk, changed here or clean: the person put
+        // that entry over a file they had before them. Removed, as a rename over it through
+        // the mount removes it.
+        (PathRow::File { binding: Bound, content_presence: OnDisk, .. }, PathEntry::AnotherItemsEntry) => DiskFinding::Removed,
 
         // A row, and an item moved to its path.
         (PathRow::File { .. }, PathEntry::File { mark: RowElsewhere, .. }) | (PathRow::Directory { .. }, PathEntry::Directory { mark: RowElsewhere }) => DiskFinding::MovedOverAnotherItem,
@@ -268,7 +268,7 @@ pub(super) fn decide_finding(row: PathRow, entry: PathEntry) -> Result<DiskFindi
         // tells, since nothing says the file was changed since.
         (PathRow::File { binding: Unbound, .. }, PathEntry::File { mark: NoRow, .. }) => DiskFinding::MarkedWithoutRow,
         // Another item's bytes laid over it.
-        (PathRow::File { .. }, PathEntry::File { mark: RowOfAnotherEntry | NoRow, .. }) => DiskFinding::ContentChanged,
+        (PathRow::File { .. }, PathEntry::File { mark: AnotherItem | NoRow, .. }) => DiskFinding::ContentChanged,
         // Marked with the row's id and not whole: it holds nothing of the file, unless a
         // writer began to change it.
         (PathRow::File { content_presence: NotOnDisk, origin: FromOneDrive, .. }, PathEntry::File { mark: RowAtPath, wholeness: Partial, .. }) => DiskFinding::NothingChanged,
@@ -278,6 +278,11 @@ pub(super) fn decide_finding(row: PathRow, entry: PathEntry) -> Result<DiskFindi
         // content the user put there.
         (PathRow::File { content_presence: NotOnDisk, .. }, PathEntry::File { mark: RowAtPath, wholeness: Whole, comparison: Same }) => DiskFinding::CopyLandedBeforeRow,
         (PathRow::File { content_presence: NotOnDisk, .. }, PathEntry::File { mark: Unmarked | RowAtPath, .. }) => DiskFinding::ContentChanged,
+        // An unmarked file where the copy of what OneDrive has was: a copy that a download
+        // landed is marked, so this is content the user put there, whatever its size and
+        // time. (It gets the id of the item as its mark, and no more: a file marked so and
+        // not whole would else be read as holding nothing of a content that is OneDrive's.)
+        (PathRow::File { content_presence: OnDisk, origin: FromOneDrive, .. }, PathEntry::File { mark: Unmarked, .. }) => DiskFinding::ContentChanged,
         // A copy on disk, told by its size, its time and its cTag mark.
         (PathRow::File { content_presence: OnDisk, .. }, PathEntry::File { mark: Unmarked | RowAtPath, comparison: Same, .. }) => DiskFinding::NothingChanged,
         (PathRow::File { content_presence: OnDisk, .. }, PathEntry::File { mark: Unmarked | RowAtPath, comparison: Different, .. }) => DiskFinding::ContentChanged,
@@ -286,11 +291,34 @@ pub(super) fn decide_finding(row: PathRow, entry: PathEntry) -> Result<DiskFindi
         (PathRow::Directory { binding: Bound }, PathEntry::Nothing) => DiskFinding::NothingChanged,
         (PathRow::Directory { binding: Unbound }, PathEntry::Nothing) => DiskFinding::Removed,
         (PathRow::Directory { binding: Unbound }, PathEntry::Directory { mark: NoRow }) => DiskFinding::MarkedWithoutRow,
-        (PathRow::Directory { .. }, PathEntry::Directory { mark: Unmarked | RowAtPath | RowOfAnotherEntry | NoRow }) => DiskFinding::NothingChanged,
+        (PathRow::Directory { .. }, PathEntry::Directory { mark: Unmarked | RowAtPath | AnotherItem | NoRow }) => DiskFinding::NothingChanged,
 
         // The other kind was made another item's above.
         (PathRow::File { .. }, PathEntry::Directory { .. }) | (PathRow::Directory { .. }, PathEntry::File { .. }) => DiskFinding::NothingChanged,
     })
+}
+
+/// What is found of a row no entry is taken as, whose place the folder cannot keep: the row
+/// of the directory it is in leaves the folder, or its name is one the check sets an item
+/// aside to, which no entry has. What the person could not see is not removed by that.
+pub(super) fn decide_finding_without_place(row: PathRow) -> DiskFinding {
+    use ContentOrigin::{ChangedHere, FromOneDrive};
+    use ContentPresence::{NotOnDisk, OnDisk};
+    use ItemBinding::{Bound, Unbound};
+
+    match row {
+        PathRow::Nothing | PathRow::AnotherItemsRow => DiskFinding::NothingChanged,
+        // An item OneDrive never had goes: nothing of it is anywhere else.
+        PathRow::File { binding: Unbound, .. } | PathRow::Directory { binding: Unbound } => DiskFinding::Removed,
+        // An item of OneDrive with nothing of its own on disk loses its place.
+        PathRow::File { binding: Bound, content_presence: NotOnDisk, .. } | PathRow::Directory { binding: Bound } => DiskFinding::PlaceLost,
+        // A file of OneDrive changed here, whose copy was on disk: the person had it before
+        // them, and it is gone.
+        PathRow::File { binding: Bound, content_presence: OnDisk, origin: ChangedHere } => DiskFinding::Removed,
+        // A clean copy that was on disk is gone as a clean copy that is gone anywhere: not
+        // a removal, and it cannot stay.
+        PathRow::File { binding: Bound, content_presence: OnDisk, origin: FromOneDrive } => DiskFinding::PlaceLost,
+    }
 }
 
 #[cfg(test)]

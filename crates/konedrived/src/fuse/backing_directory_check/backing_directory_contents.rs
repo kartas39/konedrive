@@ -104,8 +104,8 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
                 continue;
             }
         };
-        // Marks that may not be read say nothing of the entry: it is not taken for an
-        // unmarked one.
+        // Marks that could not be read say nothing of the entry: it is not taken for an
+        // unmarked one. Only an attribute that is not there is no mark.
         let marks = match DiskMarks::try_read(&listed.path()) {
             Ok(marks) => marks,
             Err(e) => {
@@ -115,7 +115,17 @@ fn read_one(backing_directory: &BackingDirectory, rel: &Path) -> DirectoryScan {
         };
         let onedrive_id = marks.onedrive_id();
         let wholeness = if onedrive_id.is_none() || marks.is_whole() { CopyWholeness::Whole } else { CopyWholeness::Partial };
-        let ctag = if kind == ItemKind::File && onedrive_id.is_some() { backing_directory.read_ctag_mark(&rel.join(&name)) } else { None };
+        let ctag = match kind == ItemKind::File && onedrive_id.is_some() {
+            true => match backing_directory.try_read_ctag_mark(&rel.join(&name)) {
+                Ok(ctag) => ctag,
+                // A cTag that is not known would compare as the row's own.
+                Err(e) => {
+                    read.unknown_names.push((name, UnresolvedReason::Unreadable(e.to_string())));
+                    continue;
+                }
+            },
+            false => None,
+        };
         let file = DiskContent { size: metadata.size(), mtime: metadata.mtime(), mtime_nsec: metadata.mtime_nsec() as u32, ctag };
         read.entries.push(BackingDirectoryEntry { name, kind, onedrive_id, wholeness, file });
     }

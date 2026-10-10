@@ -1,18 +1,24 @@
-//! The rows as the check has written them so far ([`WrittenRows`]): the handle of the store,
-//! and in memory the place and the drive of each item after the writes made through it.
+//! What the check writes rows through ([`RowWriter`]): the handle of the store, the upload
+//! rules, and in memory the place and the drive of each item, kept in step with every write
+//! made through it.
 //!
 //! What a finding writes is here, each write one operation of [`ItemStore`] in a
-//! transaction of its own, with the places kept in step: a new item, a binding, a content,
-//! a move to a free place, a removal, a lost place, an exchange, a ring of moves, a row set
-//! aside. Nothing here asks which write comes first: a write whose place is taken, or whose
-//! directory holds something, is refused by the store, and the order is
+//! transaction of its own: a new item, a binding, a content, a move to a free place, a
+//! removal, a lost place, an exchange, a ring of moves, a row set aside. Nothing here asks
+//! which write comes first: a write whose place is taken, or whose directory holds
+//! something, is refused by the store, and the order is
 //! [`WriteOrder`](super::write_order::WriteOrder)'s.
+//!
+//! Here is also the one place where the check derives a drive
+//! ([`RowWriter::derive_drive_inside`]): an entry marked with an item id no row has is bound
+//! in the drive of the nearest directory above it that has a binding. No row is looked for
+//! by a drive anywhere in the check.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, ItemStore, LocalItemId, LocalVersionChange, OneDriveItemReference, TreeError};
+use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemKind, ItemPlace, ItemStore, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, TreeError};
 
 use super::backing_directory_contents::BackingDirectoryEntry;
 use super::disk_finding::{DiskContent, DiskFinding, UnresolvedReason};
@@ -37,7 +43,7 @@ pub(super) fn tell_made_content(entry: &BackingDirectoryEntry, finding: DiskFind
     })
 }
 
-pub(super) struct WrittenRows<'a, 'store> {
+pub(super) struct RowWriter<'a, 'store> {
     item_store: &'a mut ItemStore<'store>,
     /// What says of a made or moved item's name whether it is ignored.
     upload_rules: &'a UploadRules,
@@ -50,12 +56,12 @@ pub(super) struct WrittenRows<'a, 'store> {
     drives: HashMap<LocalItemId, DriveId>,
 }
 
-impl<'a, 'store> WrittenRows<'a, 'store> {
+impl<'a, 'store> RowWriter<'a, 'store> {
     /// Over the rows as they were read: nothing is written yet.
     pub(super) fn new(item_store: &'a mut ItemStore<'store>, upload_rules: &'a UploadRules, drive_id: &'a DriveId, rows: &ItemRows) -> Self {
         let places = LocalPlaces::new(rows.list());
         let drives = rows.list().filter_map(|item| Some((item.local_item_id, item.onedrive_item.as_ref()?.drive_id.clone()))).collect();
-        WrittenRows { item_store, upload_rules, drive_id, places, drives }
+        RowWriter { item_store, upload_rules, drive_id, places, drives }
     }
 
     /// Which item has each place now.
@@ -82,9 +88,11 @@ impl<'a, 'store> WrittenRows<'a, 'store> {
         Ok(item)
     }
 
-    /// The drive of an item of OneDrive in `directory`, where nothing else says it: that of
-    /// the nearest directory, from `directory` up, that has a binding, or the folder's own.
-    pub(super) fn find_drive_inside(&self, directory: LocalItemId) -> &DriveId {
+    /// The drive of an item of OneDrive that is found in `directory` and that no row has:
+    /// that of the nearest directory, from `directory` up, that has a binding, or the
+    /// folder's own. An item is of the drive of the directory OneDrive has it in; it is the
+    /// one thing the check derives a drive for.
+    fn derive_drive_inside(&self, directory: LocalItemId) -> &DriveId {
         let mut at = Some(directory);
         while let Some(here) = at {
             if let Some(drive) = self.drives.get(&here).filter(|_| here != LocalItemId::ROOT) {
@@ -101,6 +109,14 @@ impl<'a, 'store> WrittenRows<'a, 'store> {
         self.item_store.bind_item(item, onedrive_item).map_err(to_refused)?;
         self.drives.insert(item, onedrive_item.drive_id.clone());
         Ok(())
+    }
+
+    /// `item`, which is found in `directory` marked with an item id no row has, is that item
+    /// of OneDrive in the drive of the directory: the one binding whose drive the check
+    /// derives ([`derive_drive_inside`](Self::derive_drive_inside)).
+    pub(super) fn bind_in_drive_of_directory(&mut self, item: LocalItemId, directory: LocalItemId, onedrive_id: &str) -> Result<(), UnresolvedReason> {
+        let reference = OneDriveItemReference { drive_id: self.derive_drive_inside(directory).clone(), item_id: OneDriveItemId::new(onedrive_id) };
+        self.bind(item, &reference)
     }
 
     /// What a finding of a file's content writes to the row of `item`, whose content on

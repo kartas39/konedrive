@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 
 use konedrive_tree::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference, TreeStore};
 
-use super::{tell_made_content, WrittenRows};
+use super::{tell_made_content, RowWriter};
 use crate::folder::disk::{daemon_owned, SET_ASIDE_PREFIX};
 use crate::fuse::backing_directory_check::backing_directory_contents::BackingDirectoryEntry;
 use crate::fuse::backing_directory_check::disk_finding::{CopyWholeness, DiskContent, DiskFinding, UnresolvedReason};
@@ -48,7 +48,7 @@ fn name_of(store: &mut TreeStore, item: LocalItemId) -> (LocalItemId, String) {
 }
 
 /// Every write through it leaves the places it holds in memory as the store has them.
-fn assert_places_are_the_stores(written: &WrittenRows<'_, '_>, items: &[LocalItemId]) {
+fn assert_places_are_the_stores(written: &RowWriter<'_, '_>, items: &[LocalItemId]) {
     for &item in items {
         let in_store = written.item_store.find_item(item).unwrap().and_then(|row| row.local).and_then(|local| local.place);
         let in_memory = written.places().find_place(item).map(|(directory, name)| ItemPlace { parent_local_item_id: directory, name: name.to_owned() });
@@ -72,7 +72,7 @@ fn an_item_is_made_at_its_entrys_name_with_what_the_rules_say_of_it() {
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     let file = entry("new.tmp", ItemKind::File, None);
     let new = written.make(made[0], &file, tell_made_content(&file, DiskFinding::Made), None).unwrap();
     assert_eq!(written.places().find_at(made[0], "new.tmp".as_ref()), Some(new));
@@ -91,13 +91,13 @@ fn an_item_is_bound_in_the_drive_of_the_directory_it_is_in() {
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     let inner = written.make(made[0], &entry("inner", ItemKind::Directory, None), None, None).unwrap();
     let file = entry("f.txt", ItemKind::File, Some("F"));
     let deep = written.make(inner, &file, tell_made_content(&file, DiskFinding::MarkedWithoutRow), None).unwrap();
-    assert_eq!((written.find_drive_inside(inner), written.find_drive_inside(made[0]), written.find_drive_inside(ROOT)), (&drive("d2"), &drive("d2"), &drive("d1")));
-    written.bind(deep, &OneDriveItemReference { drive_id: written.find_drive_inside(inner).clone(), item_id: OneDriveItemId::new("F") }).unwrap();
-    written.bind(made[1], &OneDriveItemReference { drive_id: written.find_drive_inside(ROOT).clone(), item_id: OneDriveItemId::new("T") }).unwrap();
+    assert_eq!((written.derive_drive_inside(inner), written.derive_drive_inside(made[0]), written.derive_drive_inside(ROOT)), (&drive("d2"), &drive("d2"), &drive("d1")));
+    written.bind_in_drive_of_directory(deep, inner, "F").unwrap();
+    written.bind_in_drive_of_directory(made[1], ROOT, "T").unwrap();
     let bound = |store: &mut TreeStore, item| row(store, item).onedrive_item.map(|reference| (reference.drive_id, reference.item_id.as_str().to_owned()));
     assert_eq!(bound(&mut store, deep), Some((drive("d2"), "F".to_owned())));
     assert_eq!(bound(&mut store, made[1]), Some((drive("d1"), "T".to_owned())));
@@ -110,7 +110,7 @@ fn a_content_found_changed_is_another_content_with_its_count_raised_and_is_on_di
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     let file = DiskContent { size: 9, mtime: 200, mtime_nsec: 1, ctag: None };
     written.write_content(made[0], DiskFinding::ContentChanged, &file, false, true).unwrap();
     written.write_content(made[1], DiskFinding::ContentChanged, &file, true, true).unwrap();
@@ -120,11 +120,11 @@ fn a_content_found_changed_is_another_content_with_its_count_raised_and_is_on_di
         assert_eq!((row.local.unwrap().content, row.content_before_write), (changed.clone(), None), "{item}");
     }
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     written.write_content(made[0], DiskFinding::ContentNoLongerOnDisk, &file, false, true).unwrap();
     assert_eq!(row(&mut store, made[0]).content_presence, ContentPresence::NotOnDisk);
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     written.write_content(made[0], DiskFinding::CopyLandedBeforeRow, &file, false, false).unwrap();
     written.write_content(made[1], DiskFinding::NothingChanged, &file, false, true).unwrap();
     assert_eq!((row(&mut store, made[0]).content_presence, row(&mut store, made[1]).local.unwrap().content), (ContentPresence::OnDisk, changed));
@@ -136,7 +136,7 @@ fn an_item_is_moved_to_a_free_place_and_two_and_three_take_each_others_places() 
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     assert!(matches!(written.move_to_free_place(made[0], ROOT, "b".as_ref()), Err(UnresolvedReason::Refused(_))), "the place is taken");
     written.move_to_free_place(made[0], made[3], "a.tmp".as_ref()).unwrap();
     written.exchange(made[1], made[2]).unwrap();
@@ -163,7 +163,7 @@ fn an_item_leaves_the_folder_removed_or_with_its_place_lost() {
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     written.take_from_folder(made[0], DiskFinding::Removed).unwrap();
     written.take_from_folder(made[1], DiskFinding::Removed).unwrap();
     written.take_from_folder(made[2], DiskFinding::PlaceLost).unwrap();
@@ -185,7 +185,7 @@ fn an_item_is_set_aside_to_a_name_of_the_daemons_own_that_no_row_has() {
     let rows = ItemRows::new(store.item_store().list_items().unwrap());
     let (rules, folder_drive) = (rules(), drive("d1"));
     let mut item_store = store.item_store();
-    let mut written = WrittenRows::new(&mut item_store, &rules, &folder_drive, &rows);
+    let mut written = RowWriter::new(&mut item_store, &rules, &folder_drive, &rows);
     let name = written.set_aside(made[0]).unwrap();
     assert!(daemon_owned(&name) && name != taken.name, "{name:?}");
     assert!(written.places().is_at(made[0], ROOT, &name));

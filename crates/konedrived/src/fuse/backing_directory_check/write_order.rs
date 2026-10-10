@@ -2,7 +2,7 @@
 //! schema accepts each write: a parent's row before its child's, a name freed before it is
 //! taken, what leaves the folder deepest first.
 //!
-//! What is written for a finding is [`WrittenRows`]'s; here is which write waits for which.
+//! What is written for a finding is [`RowWriter`]'s; here is which write waits for which.
 //! The entries are gone through as they were read, a directory before what is in it. Where
 //! the place an item is to have is another item's, that one leaves first: it is moved to
 //! where it was found, or leaves the folder with what is in it — removed, or its place
@@ -13,20 +13,30 @@
 //! daemon's own in the root of the folder; a next check moves it on from there, or takes
 //! its row from the folder.
 //!
-//! A row that is held back because part of the backing directory was not read is not
-//! written, and neither is what waits for its place: both are said.
+//! A row that is left as it is — it may be in a part of the backing directory that was not
+//! read, or be an entry that was left — is not written, and neither is what waits for its
+//! place: both are said, and the rows among them are held ([`DiskFindings::list_held_items`]).
+//! A directory leaves the folder with every row that is to leave with it, or with none:
+//! what is found at another path is moved out of it first, and where that cannot be
+//! written, or a row below it is left as it is, the directory stays whole. An item whose
+//! entry could not be written keeps its row where it was, and that path is said too.
+//!
+//! An entry that is taken as the own entry of an item OneDrive has and does not carry that
+//! item's id is marked with it, after its row is written: a later move of it by hand is
+//! followed then. A death between the two is finished by the next check, which finds the
+//! row as it was written and the entry unmarked.
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 
-use konedrive_tree::{ContentPresence, DriveId, ItemKind, ItemStore, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use konedrive_tree::{ContentPresence, DriveId, ItemKind, ItemStore, LocalItemId};
 
 use super::backing_directory_contents::{BackingDirectoryContents, EntryIndex};
 use super::disk_finding::{DiskContent, DiskFinding, MarkOwner, UnresolvedReason};
 use super::entry_identities::{EntryIdentities, EntryIdentity};
-use super::item_rows::ItemRows;
+use super::item_rows::{BoundRows, ItemRows};
 use super::path_findings::PathFindings;
-use super::written_rows::{tell_made_content, WrittenRows};
+use super::row_writer::{tell_made_content, RowWriter};
 use super::DiskFindings;
 use crate::fuse::backing_directory::BackingDirectory;
 use crate::fuse::upload_rules::UploadRules;
@@ -53,14 +63,15 @@ enum UnwrittenEntry {
 }
 
 pub(super) struct WriteOrder<'a, 'store> {
-    /// The marks of an entry that are not its row's own are taken off through it.
+    /// The marks of an entry that are not its row's own are taken off through it, and the
+    /// id of its item is written on an entry that does not carry it.
     backing_directory: &'a BackingDirectory,
     rows: &'a ItemRows,
     contents: &'a BackingDirectoryContents,
     identities: &'a EntryIdentities,
     findings: &'a PathFindings,
     /// The rows as written so far, and what writes them.
-    written: WrittenRows<'a, 'store>,
+    written: RowWriter<'a, 'store>,
     progress: Vec<EntryProgress>,
     /// The items being moved now, the one that waits for the next before it.
     moving: Vec<LocalItemId>,
@@ -69,6 +80,8 @@ pub(super) struct WriteOrder<'a, 'store> {
     /// The items that were set aside by a write of their own, each with the name it was
     /// given in the root of the folder.
     set_aside: Vec<(LocalItemId, OsString)>,
+    /// The entries that were left and that are an item with a row, each with that item.
+    unwritten_items: Vec<(EntryIndex, LocalItemId)>,
     /// What was written so far, and what was left.
     outcome: DiskFindings,
 }
@@ -85,10 +98,10 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         identities: &'a EntryIdentities,
         findings: &'a PathFindings,
     ) -> Self {
-        let written = WrittenRows::new(item_store, upload_rules, drive_id, rows);
+        let written = RowWriter::new(item_store, upload_rules, drive_id, rows);
         let progress = vec![EntryProgress::Waiting; contents.len()];
-        let outcome = DiskFindings::begin(contents.list_unresolved().to_vec(), findings.is_read_whole());
-        WriteOrder { backing_directory, rows, contents, identities, findings, written, progress, moving: Vec::new(), leaving: HashSet::new(), set_aside: Vec::new(), outcome }
+        let outcome = DiskFindings::begin(contents.list_unresolved().to_vec(), findings.has_unread_part());
+        WriteOrder { backing_directory, rows, contents, identities, findings, written, progress, moving: Vec::new(), leaving: HashSet::new(), set_aside: Vec::new(), unwritten_items: Vec::new(), outcome }
     }
 
     /// Writes every finding, and answers how many of each were written and what was left.
@@ -96,11 +109,21 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
         for index in 0..self.contents.len() {
             let _ = self.write_entry(index);
         }
+        // The directories that were to leave the folder and could not: what the rows say is
+        // in them stays with them, and is said with them.
+        let mut staying: HashSet<LocalItemId> = HashSet::new();
         for &(item, finding) in self.findings.list_rows() {
+            let directory = self.written.places().find_place(item).map(|(directory, _)| directory);
             let written = match finding {
                 // One that went with its directory, or made way for an entry, is gone already.
-                DiskFinding::Removed | DiskFinding::PlaceLost if self.written.places().find_place(item).is_none() => Ok(()),
-                DiskFinding::Removed | DiskFinding::PlaceLost => self.take_from_folder(item, finding),
+                DiskFinding::Removed | DiskFinding::PlaceLost if directory.is_none() => Ok(()),
+                DiskFinding::Removed | DiskFinding::PlaceLost if directory.is_some_and(|directory| staying.contains(&directory)) => {
+                    staying.insert(item);
+                    Ok(())
+                }
+                DiskFinding::Removed | DiskFinding::PlaceLost => self.take_from_folder(item, finding).inspect_err(|_| {
+                    staying.insert(item);
+                }),
                 DiskFinding::ContentNoLongerOnDisk => self.written.write_content(item, finding, &DiskContent::default(), false, true).map(|()| self.outcome.add(finding)),
                 _ => {
                     self.outcome.add(finding);
@@ -109,11 +132,23 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
             };
             if let Err(reason) = written {
                 self.outcome.leave(self.written.find_path(item), reason);
+                self.outcome.hold(item);
             }
         }
-        // What may be in the part that was not read keeps its row as it is.
-        for &item in self.findings.list_held_back() {
-            self.outcome.leave(self.written.find_path(item), UnresolvedReason::MayBeUnread);
+        // What was left as it is keeps its row, and is said with why.
+        for (item, reason) in self.findings.list_held_back() {
+            self.outcome.leave(self.written.find_path(*item), reason.clone());
+        }
+        for item in self.findings.list_left_items() {
+            self.outcome.hold(item);
+        }
+        // An item whose entry was left has its row where it was: at another path than the
+        // entry, where the disk does not have what the row says.
+        for (index, item) in &self.unwritten_items {
+            let row_path = self.written.find_path(*item);
+            if row_path != self.contents.resolve_path(*index) && !row_path.as_os_str().is_empty() {
+                self.outcome.leave(row_path, UnresolvedReason::Blocked);
+            }
         }
         // An item that was set aside and could not be moved on has a row at a name the disk
         // does not have: it is said, and a next check finds the item by its mark.
@@ -157,12 +192,32 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
             }
             Err(reason) => {
                 self.progress[index] = EntryProgress::Left;
-                if let Some(reason) = reason {
-                    self.outcome.leave(self.contents.resolve_path(index), reason);
-                }
+                self.leave_entry(index, reason);
                 Err(UnwrittenEntry::Left)
             }
         }
+    }
+
+    /// The entry `index` is left as it was found: for `reason`, which is said at its path,
+    /// or with the directory it is in, which was said. The row the entry is, when it has
+    /// one, is held; where it is at another path than the entry once all is written, that
+    /// path is said too ([`write`](Self::write)).
+    fn leave_entry(&mut self, index: EntryIndex, reason: Option<UnresolvedReason>) {
+        let item = self.identities.find_item(index);
+        let is_left_with_its_directory = reason.is_none();
+        if let Some(reason) = reason {
+            self.outcome.leave(self.contents.resolve_path(index), reason);
+        }
+        let Some(item) = item else { return };
+        // In a directory that was left, a row that is where the entry is in it is left
+        // with that directory's.
+        let directory = self.contents.parent(index).and_then(|directory| self.identities.find_item(directory));
+        let is_in_its_directory = directory.is_some_and(|directory| self.written.places().is_at(item, directory, &self.contents.entry(index).name));
+        if is_left_with_its_directory && is_in_its_directory {
+            return;
+        }
+        self.outcome.hold(item);
+        self.unwritten_items.push((index, item));
     }
 
     fn write_entry_in(&mut self, index: EntryIndex, directory: LocalItemId) -> Result<LocalItemId, UnresolvedReason> {
@@ -182,6 +237,10 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
                 if finding == DiskFinding::MarkedWithoutRow {
                     self.bind(item, directory, index)?;
                 }
+                // The file that was removed here is this one now: its binding went over.
+                if let Some(replaced) = replaced {
+                    self.mark_as_own_entry(index, replaced)?;
+                }
                 item
             }
             (DiskFinding::Moved | DiskFinding::MovedOverAnotherItem, EntryIdentity::Item(item)) => {
@@ -193,10 +252,17 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
                 item
             }
             (DiskFinding::NothingChanged | DiskFinding::ContentChanged | DiskFinding::CopyLandedBeforeRow | DiskFinding::ContentNoLongerOnDisk, EntryIdentity::Item(item)) => {
+                // The row first: a mark on an entry whose row does not say yet that its
+                // content is here alone would say the content is OneDrive's.
                 self.write_content(item, finding, &entry.file)?;
-                // A mark that is not the row's own does not outlive the check.
-                if matches!(self.identities.mark_owner(index), MarkOwner::RowOfAnotherEntry | MarkOwner::NoRow) {
-                    self.remove_stale_marks(index)?;
+                match self.identities.mark_owner(index) {
+                    // A mark that is not the row's own does not outlive the check.
+                    MarkOwner::AnotherItem | MarkOwner::NoRow => {
+                        self.remove_stale_marks(index)?;
+                        self.mark_as_own_entry(index, item)?;
+                    }
+                    MarkOwner::Unmarked => self.mark_as_own_entry(index, item)?,
+                    MarkOwner::RowAtPath | MarkOwner::RowElsewhere => {}
                 }
                 item
             }
@@ -213,16 +279,27 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
     }
 
     /// `item`, which is the entry `index` in `directory`, is the item of OneDrive its mark
-    /// names: the one a row the folder does not show has under that id, or one of the drive
-    /// of the directory it is in.
+    /// names: the one of the row that has that id, a row the folder does not show; or,
+    /// when no row has the id, an item of the drive of the directory it is in.
     fn bind(&mut self, item: LocalItemId, directory: LocalItemId, index: EntryIndex) -> Result<(), UnresolvedReason> {
         let onedrive_id = self.contents.entry(index).onedrive_id.as_deref().unwrap_or_default();
-        let drive = self.written.find_drive_inside(directory).clone();
-        let reference = match self.rows.find_unshown_bound(&drive, onedrive_id).and_then(|unshown| unshown.onedrive_item.clone()) {
-            Some(reference) => reference,
-            None => OneDriveItemReference { drive_id: drive, item_id: OneDriveItemId::new(onedrive_id) },
-        };
-        self.written.bind(item, &reference)
+        match self.rows.find_bound(onedrive_id) {
+            BoundRows::One(row) => match &row.onedrive_item {
+                Some(reference) => self.written.bind(item, reference),
+                None => Err(UnresolvedReason::Blocked),
+            },
+            BoundRows::None => self.written.bind_in_drive_of_directory(item, directory, onedrive_id),
+            // Never bound: which of them is meant the mark does not say.
+            BoundRows::OfTwoDrives => Err(UnresolvedReason::ItemIdInTwoDrives),
+        }
+    }
+
+    /// The entry `index` is the own entry of `item`, as the rows had it when they were
+    /// read: when that is an item OneDrive has, the entry is marked with its id, and with
+    /// nothing else. An entry of an item OneDrive does not have carries no mark.
+    fn mark_as_own_entry(&self, index: EntryIndex, item: LocalItemId) -> Result<(), UnresolvedReason> {
+        let Some(reference) = self.rows.find(item).and_then(|row| row.onedrive_item.as_ref()) else { return Ok(()) };
+        self.backing_directory.write_onedrive_id_mark(&self.contents.resolve_path(index), reference.item_id.as_str()).map_err(|e| UnresolvedReason::Unreadable(e.to_string()))
     }
 
     fn remove_stale_marks(&self, index: EntryIndex) -> Result<(), UnresolvedReason> {
@@ -293,14 +370,32 @@ impl<'a, 'store> WriteOrder<'a, 'store> {
     }
 
     /// `item` leaves the folder as `finding` says, removed here or its place lost, after
-    /// all that is in it has left.
+    /// all that is in it has left. First what is found at another path is moved there, of
+    /// all that the rows say is below it; only when all of that is written does a row leave
+    /// the folder. So a directory that cannot go — a row below it is left as it is, or
+    /// cannot be moved where it was found — keeps every row that is to leave with it.
     fn take_from_folder(&mut self, item: LocalItemId, finding: DiskFinding) -> Result<(), UnresolvedReason> {
         self.leaving.insert(item);
-        let emptied = self.written.places().list_inside(item).into_iter().try_for_each(|inside| self.make_leave(inside));
+        let emptied = self.move_out_of(item).and_then(|()| self.written.places().list_inside(item).into_iter().try_for_each(|inside| self.make_leave(inside)));
         self.leaving.remove(&item);
         emptied.map_err(|_| UnresolvedReason::Blocked)?;
         self.written.take_from_folder(item, finding)?;
         self.outcome.add(finding);
+        Ok(())
+    }
+
+    /// Of all that the rows say is below `directory`, which is leaving the folder: what is
+    /// found at another path is moved there, and every other row is one that leaves too.
+    /// Nothing is taken from the folder here.
+    fn move_out_of(&mut self, directory: LocalItemId) -> Result<(), UnresolvedReason> {
+        for inside in self.written.places().list_inside(directory) {
+            match (self.identities.find_entry(inside), self.findings.find_row_finding(inside)) {
+                (Some(_), _) => self.make_leave(inside)?,
+                (None, Some(DiskFinding::Removed | DiskFinding::PlaceLost)) => self.move_out_of(inside)?,
+                // A row that is left as it is, or stays: its directory stays with it.
+                (None, _) => return Err(UnresolvedReason::Blocked),
+            }
+        }
         Ok(())
     }
 

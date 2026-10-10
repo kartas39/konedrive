@@ -331,3 +331,30 @@ fn of_three_entries_with_one_mark_one_is_the_item_and_no_item_is_two_entries() {
     assert_eq!(found(&findings), [(DiskFinding::NothingChanged, 7), (DiskFinding::MadeWithStaleMark, 3), (DiskFinding::Moved, 1)]);
     f.assert_settled();
 }
+
+/// A directory leaves the folder with every row below it, or with none: what is found at
+/// another path is moved out of it first, and where one of those cannot be written, no row
+/// that was to leave with the directory leaves. `rm -r box`, but for the file of OneDrive
+/// that was in it, which is moved to the name of a file the check cannot make way for.
+#[test]
+fn a_directory_whose_item_cannot_be_moved_out_keeps_every_row_that_was_to_leave_with_it() {
+    let mut f = folder();
+    let box_directory = f.own_directory("box");
+    let own = f.own_file("box/own.txt", b"own");
+    let remote = f.not_downloaded("r.bin", 9, "R");
+    let place = konedrive_tree::ItemPlace { parent_local_item_id: box_directory, name: "r.bin".into() };
+    f.store.item_store().apply(&LocalVersionChange::Moved { item: remote, place, is_name_ignored: false }).unwrap();
+    let a = f.copy("a.txt", b"aaa", "A");
+    f.move_through_the_mount("a.txt", "box/a.txt");
+    // The name the file is moved to is a row's that the store keeps from leaving.
+    let kept = f.own_file("kept.txt", b"kept");
+    f.store.bench_sql(&format!("CREATE TRIGGER keep BEFORE DELETE ON items WHEN OLD.local_item_id = {kept} BEGIN SELECT RAISE(ABORT, 'kept'); END")).unwrap();
+    f.rename("box/a.txt", "kept.txt");
+    fs::remove_dir_all(f.disk("box")).unwrap();
+    let before = f.rows();
+    let findings = f.check();
+    assert_eq!(found(&findings), [], "nothing left the folder: {:?}", findings.unresolved());
+    assert_eq!(f.rows(), before);
+    assert_eq!(findings.list_held_items(), [box_directory, a, kept]);
+    assert!(f.item(own).local.is_some() && f.item(remote).local.is_some(), "what was to leave with the directory stays with it");
+}

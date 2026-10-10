@@ -175,3 +175,21 @@ fn a_start_that_finds_a_row_set_aside_moves_the_item_on_or_takes_the_row_from_th
     assert!(f.rows().iter().all(|row| row.local.as_ref().and_then(|local| local.place.as_ref()).is_none_or(|place| !daemon_owned(&place.name))), "no row is at a name of the check's own");
     f.assert_settled();
 }
+
+/// The second review's N10. A content hashed here that the two sides have not agreed on,
+/// and its file then removed by hand: the content was here alone, so the removal is the
+/// user's own. The row does not stay as content to send that no file holds.
+#[test]
+fn a_file_whose_content_was_hashed_here_and_not_agreed_on_that_is_gone_is_removed_here() {
+    let mut f = folder_of_each();
+    let a = f.id("docs/a.txt");
+    f.store.bench_sql(&format!("UPDATE items SET local_hash = 'h-new', local_ctag = NULL WHERE local_item_id = {a}")).unwrap();
+    assert!(matches!(content(&f.item(a)), Some(ContentVersion::Hashed { hash: Some(hash), .. }) if hash == "h-new"));
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 6)]);
+    fs::remove_file(f.disk("docs/a.txt")).unwrap();
+    assert_eq!(found(&f.check()), [(DiskFinding::NothingChanged, 5), (DiskFinding::Removed, 1)]);
+    let removed = f.item(a);
+    assert_eq!((removed.local.clone(), removed.onedrive_item.clone()), (None, Some(reference("d1", "A"))));
+    assert!(removed.synced_place.is_some(), "the removal is to be sent");
+    f.assert_settled();
+}
