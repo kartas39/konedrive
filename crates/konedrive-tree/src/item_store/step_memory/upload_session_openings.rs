@@ -49,7 +49,7 @@ pub(super) fn schema() -> &'static str {
 /// What the trigger `step_memory_item_gone` does to this table when the row `OLD` of `items`
 /// goes: the records in a directory go with the directory, and a record whose file's row
 /// went names no file.
-pub(super) const WHEN_ITEM_GOES: &str = "
+pub(super) const ITEM_GONE_STATEMENTS: &str = "
     DELETE FROM upload_session_openings WHERE directory_local_item_id = OLD.local_item_id;
     UPDATE upload_session_openings SET file_local_item_id = NULL WHERE file_local_item_id = OLD.local_item_id;";
 

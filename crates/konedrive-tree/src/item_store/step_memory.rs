@@ -106,10 +106,10 @@ pub(crate) fn schema() -> String {
         upload_session_openings::schema(),
         upload_session_cancellations::schema(),
         mismatched_item_removals::schema(),
-        upload_session_cancellations::WHEN_ITEM_GOES,
-        mismatched_item_removals::WHEN_ITEM_GOES,
-        upload_session_openings::WHEN_ITEM_GOES,
-        memory_row::WHEN_ITEM_GOES,
+        upload_session_cancellations::ITEM_GONE_STATEMENTS,
+        mismatched_item_removals::ITEM_GONE_STATEMENTS,
+        upload_session_openings::ITEM_GONE_STATEMENTS,
+        memory_row::ITEM_GONE_STATEMENTS,
     )
 }
 

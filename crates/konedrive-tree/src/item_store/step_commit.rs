@@ -31,6 +31,15 @@
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
 //! confirmation ([`confirm_onedrive_version`]): the version, the eTag and the stamp of the
 //! guard against an outdated listing, in one statement.
+//!
+//! **What the steps remember of the item** ([`step_memory`](super::step_memory)) is kept
+//! right in the same transaction, where the commit knows more than the rows say: a commit
+//! of a step towards OneDrive forgets what was kept for the request OneDrive confirmed
+//! ([`ConfirmedRequest`]) — the failed tries, the upload session that sent the content,
+//! which ended and is not to be cancelled, the temporary name of a move that reached the
+//! place the name led to —, and
+//! the commit of the step that hashed the local content carries that content, the same
+//! bytes, into the facts that hold it.
 
 use std::ffi::{OsStr, OsString};
 

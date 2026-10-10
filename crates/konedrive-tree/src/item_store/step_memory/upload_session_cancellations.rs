@@ -28,7 +28,7 @@ pub(super) fn schema() -> &'static str {
 /// What the trigger `step_memory_item_gone` does to this table when the row `OLD` of `items`
 /// goes, while the row of `step_memory` is still there: the address of the item's upload
 /// session is kept to be cancelled, and no empty file is in a directory that went.
-pub(super) const WHEN_ITEM_GOES: &str = "
+pub(super) const ITEM_GONE_STATEMENTS: &str = "
     INSERT OR IGNORE INTO upload_session_cancellations (address, empty_file_parent_id, empty_file_folded_name)
         SELECT session_address, session_empty_file_parent_id, session_empty_file_folded_name FROM step_memory
          WHERE local_item_id = OLD.local_item_id AND session_address IS NOT NULL;

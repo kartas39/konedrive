@@ -25,7 +25,7 @@ pub(super) fn schema() -> &'static str {
 /// What the trigger `step_memory_item_gone` does to this table when the row `OLD` of `items`
 /// goes, while the row of `step_memory` is still there: the item an upload of the file left
 /// is kept to be removed.
-pub(super) const WHEN_ITEM_GOES: &str = "
+pub(super) const ITEM_GONE_STATEMENTS: &str = "
     INSERT OR IGNORE INTO mismatched_item_removals (onedrive_item_id, ctag, etag)
         SELECT mismatched_item_id, mismatched_ctag, mismatched_etag FROM step_memory
          WHERE local_item_id = OLD.local_item_id AND mismatched_item_id IS NOT NULL;";

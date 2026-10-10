@@ -1,5 +1,5 @@
 //! A row of `step_memory` in the database: its columns, the one place it is read from SQLite
-//! and written to it, and the table as the schema has it ([`schema`], [`WHEN_ITEM_GOES`]).
+//! and written to it, and the table as the schema has it ([`schema`], [`ITEM_GONE_STATEMENTS`]).
 //! What is here writes a row as it is told and asks no rule.
 
 use std::ffi::{OsStr, OsString};
@@ -94,7 +94,7 @@ pub(super) fn schema() -> String {
 /// remembered of the item goes; and what other rows hold of a place in the item, a
 /// directory, is taken from them, since no place will ever be in it again: the place of an
 /// empty file, a taken name, and a refusal of a version at a place in it.
-pub(super) const WHEN_ITEM_GOES: &str = "
+pub(super) const ITEM_GONE_STATEMENTS: &str = "
     DELETE FROM step_memory WHERE local_item_id = OLD.local_item_id;
     UPDATE step_memory SET session_empty_file_parent_id = NULL, session_empty_file_name = NULL, session_empty_file_folded_name = NULL
      WHERE session_empty_file_parent_id = OLD.local_item_id;

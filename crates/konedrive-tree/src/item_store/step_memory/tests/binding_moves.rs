@@ -114,3 +114,15 @@ fn items_that_are_merged_drop_the_new_items_session_and_keep_the_openings_of_the
     store.item_store().merge_items(local_directory, onedrive_directory).unwrap();
     assert_eq!(windows(&mut store, &place(local_directory, "x")), [(10, 10)]);
 }
+
+/// The root takes its binding from a row a listing made for it first: the openings in that
+/// row are in the root, as with every binding that moves.
+#[test]
+fn the_openings_in_a_row_that_had_the_roots_binding_are_in_the_root() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let file = make_file(&mut store, ROOT, "report");
+    let listed_first = store.item_store().make_onedrive_item(&reference("R"), ItemKind::Directory).unwrap();
+    store.step_memory().remember_upload_session_opening(file, &place(listed_first, "report"), 10).unwrap();
+    crate::item_store::bindings::bind_root(&store.conn, &reference("R")).unwrap();
+    assert_eq!((store.item_store().find_item(listed_first).unwrap(), windows(&mut store, &place(ROOT, "report"))), (None, vec![(10, 10)]));
+}
