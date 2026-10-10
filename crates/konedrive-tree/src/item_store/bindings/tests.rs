@@ -89,11 +89,15 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
             onedrive_item: Some(reference("A")),
             kind: ItemKind::File,
             local: None,
+            onedrive: None,
+            onedrive_etag: None,
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
             content_before_write: None,
+            placement: crate::model::Placement::Placed,
             is_name_ignored: false,
+            confirmed_count: 0,
         }
     );
     assert_eq!(bound_to(&mut store, "A"), Some(taker));
@@ -325,11 +329,15 @@ fn make_onedrive_item_makes_a_row_with_the_binding_and_the_kind_alone() {
             onedrive_item: Some(reference("P")),
             kind: ItemKind::Directory,
             local: None,
+            onedrive: None,
+            onedrive_etag: None,
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
             content_before_write: None,
+            placement: crate::model::Placement::Placed,
             is_name_ignored: false,
+            confirmed_count: 0,
         }
     );
     let file = store.item_store().make_onedrive_item(&reference("F"), ItemKind::File).unwrap();

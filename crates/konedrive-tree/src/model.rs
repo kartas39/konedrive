@@ -549,9 +549,6 @@ impl ContentPresence {
 }
 
 /// One item: a file or directory the folder shows or OneDrive has. A row of `items`.
-///
-/// Until the OneDrive version is in the row too, `onedrive_items` holds it, with the eTag
-/// and the placement, under the binding's item id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub local_item_id: LocalItemId,
@@ -562,6 +559,12 @@ pub struct Item {
     pub kind: ItemKind,
     /// What the folder shows of the item; `None` when it does not show it.
     pub local: Option<ItemVersion>,
+    /// What OneDrive had of the item when it was last asked; `None` when OneDrive does not
+    /// have it, or the client was never told what it has. The root's has no place, and is
+    /// there once the root is bound.
+    pub onedrive: Option<ItemVersion>,
+    /// The eTag OneDrive gave with that version: what a request to OneDrive is guarded with.
+    pub onedrive_etag: Option<String>,
     /// The place the two sides last agreed on.
     pub synced_place: Option<ItemPlace>,
     /// The content the two sides last agreed on.
@@ -570,9 +573,19 @@ pub struct Item {
     /// The content a file had before its first writer opened it; held until the last writer
     /// closes.
     pub content_before_write: Option<ContentVersion>,
+    /// Whether the folder can show the item at all, as OneDrive's listing said of the item
+    /// itself: an item below a directory that cannot be shown cannot be shown either, which
+    /// [`ItemStore::can_be_shown`](crate::ItemStore::can_be_shown) asks. `Placed` for an
+    /// item OneDrive does not have.
+    pub placement: Placement,
     /// The upload rules ignore the item's own name. Whether the item is left here is not
     /// stored: [`ItemStore::is_ignored`](crate::ItemStore::is_ignored) derives it.
     pub is_name_ignored: bool,
+    /// The count of confirmations at which OneDrive last confirmed something of the item to
+    /// a step of the client; 0 when it never did. The stamp of the guard against an outdated
+    /// listing: what a listing fetched before that count says of the item may be older than
+    /// what was confirmed.
+    pub confirmed_count: u64,
 }
 
 /// How a file the folder shows stands between OneDrive and this computer.

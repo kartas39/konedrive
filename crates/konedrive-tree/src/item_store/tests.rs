@@ -96,11 +96,15 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             onedrive_item: None,
             kind: ItemKind::Directory,
             local: Some(ItemVersion { place: None, content: None }),
+            onedrive: None,
+            onedrive_etag: None,
             synced_place: None,
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
             content_before_write: None,
+            placement: crate::model::Placement::Placed,
             is_name_ignored: false,
+            confirmed_count: 0,
         }
     );
     assert_eq!(path(&mut store, ROOT), Some(PathBuf::new()));

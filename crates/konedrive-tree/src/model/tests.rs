@@ -148,11 +148,15 @@ fn file_item(onedrive_item: bool, presence: ContentPresence, local: &str, synced
         onedrive_item: onedrive_item.then(|| OneDriveItemReference { drive_id: DriveId::new("d1").unwrap(), item_id: OneDriveItemId::new("A") }),
         kind: ItemKind::File,
         local: Some(ItemVersion { place: Some(place.clone()), content: Some(content(local)) }),
+        onedrive: None,
+        onedrive_etag: None,
         synced_place: synced.map(|_| place),
         synced_content: synced.map(content),
         content_presence: presence,
         content_before_write: None,
+        placement: crate::model::Placement::Placed,
         is_name_ignored: false,
+        confirmed_count: 0,
     }
 }
 

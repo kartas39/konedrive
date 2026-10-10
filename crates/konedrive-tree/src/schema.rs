@@ -7,7 +7,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK};
+use crate::item_store::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
+use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
@@ -20,7 +21,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "11";
+pub const SCHEMA_VERSION: &str = "12";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -32,22 +33,38 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   the empty text, and no two rows have the same (`items_onedrive_item`). `kind` is the
 ///   item's, a file or a directory, on every row, also one the folder does not show. The local version is the `local_`
 ///   columns: the folder shows the item when its local place is set, and the root always.
+///   The OneDrive version is the `onedrive_` columns: OneDrive has the item when its place
+///   there is set, and the root when the root is bound; `onedrive_etag` is what a request to
+///   OneDrive is guarded with, and `placement` whether the folder can show the item at all,
+///   as the listing said of the item itself. A parent on that side is named by its local
+///   item id like every other. Several rows may have one place there
+///   (`items_onedrive_place` is no unique index): a listing that has not ended says so of an
+///   exchange of names.
 ///   The synced place and content are the `synced_` ones, the content before the first
 ///   writer the `before_write_` ones; a content is six columns, `change_count` null for a
-///   hashed one. No two rows have one local place (`items_local_place`). The checks hold
+///   hashed one, and always for one OneDrive gave. No two rows have one local place (`items_local_place`). The checks hold
 ///   what one row can say by itself: a place is a parent and a name; the root is a
 ///   directory with no place; no row is its own parent; a file the folder shows has a local
 ///   content and nothing else has one; a directory has no content on any side, none on disk
 ///   and none before a write; neither has an item the folder does not show; a content is
 ///   on disk or not on disk; nothing is agreed on, a place or a content, for an item with
 ///   no binding, so that a row is bound before, or in the statement in which, a synced
-///   place or content is written to it.
+///   place or content is written to it; and no OneDrive version and no eTag either. The same
+///   checks of a place, of a parent and of a file's content hold of the OneDrive side.
+///   `confirmed_count` is the count of confirmations at which OneDrive last confirmed
+///   something of the row (0: never), the stamp of the guard against an outdated listing;
+///   `seen_in_full_listing` the count of the full listing that last listed the item
+///   ([`crate::item_store`]'s `onedrive_versions`). `items_changed_in_onedrive` holds the
+///   rows whose OneDrive place or content is not the synced one, `items_binding_alone` those
+///   that are a binding and nothing else, by their stamp, and `items_seen_in_full_listing`
+///   what OneDrive has, by the full listing that saw it: none of the three is found by
+///   reading every row.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
-///   below it. A row is made with, and moved to, only a local and a synced parent that is
+///   below it. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
 ///   `items_parent_directory_update`, asked per row, at one read by the key for each side:
 ///   a directory's row is written before what is in it). A row is not deleted while another
-///   names it as its local or its synced parent, and row 1 never (the trigger
+///   names it as its local, its OneDrive or its synced parent, and row 1 never (the trigger
 ///   `items_parent_kept`, asked per row: what is in a directory is deleted before the
 ///   directory). An outbox row may name an item whose row is gone: the
 ///   removal of a file that was never sent leaves the rows that undo what was sent of it.
@@ -111,35 +128,49 @@ fn schema() -> String {
              onedrive_drive_id TEXT, onedrive_item_id TEXT,
              kind TEXT NOT NULL,
              local_parent_id INTEGER, local_name, {local_content},
+             onedrive_parent_id INTEGER, onedrive_name, {onedrive_content},
+             onedrive_etag TEXT,
              synced_parent_id INTEGER, synced_name, {synced_content},
              content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
              {content_before_write},
+             placement TEXT NOT NULL DEFAULT '{placed}',
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
+             confirmed_count INTEGER NOT NULL DEFAULT 0,
+             seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
              CHECK (onedrive_item_id IS NOT NULL OR (synced_parent_id IS NULL AND synced_size IS NULL)),
+             CHECK (onedrive_item_id IS NOT NULL OR (onedrive_parent_id IS NULL AND onedrive_size IS NULL AND onedrive_etag IS NULL)),
              CHECK (content_presence IN ('{on_disk}', '{not_on_disk}')),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
+             CHECK ((onedrive_parent_id IS NULL) = (onedrive_name IS NULL)),
              CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
-             CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
-             CHECK (local_parent_id IS NOT local_item_id AND synced_parent_id IS NOT local_item_id),
+             CHECK (local_item_id != {root} OR (kind = '{directory}' AND local_parent_id IS NULL AND onedrive_parent_id IS NULL AND synced_parent_id IS NULL)),
+             CHECK (local_parent_id IS NOT local_item_id AND onedrive_parent_id IS NOT local_item_id AND synced_parent_id IS NOT local_item_id),
              CHECK ((kind = '{file}' AND local_parent_id IS NOT NULL) = (local_size IS NOT NULL)),
+             CHECK ((kind = '{file}' AND onedrive_parent_id IS NOT NULL) = (onedrive_size IS NOT NULL)),
+             CHECK (onedrive_change_count IS NULL),
              CHECK (kind = '{file}' OR (synced_size IS NULL AND content_presence = '{not_on_disk}' AND before_write_size IS NULL)),
              CHECK (local_parent_id IS NOT NULL OR (content_presence = '{not_on_disk}' AND before_write_size IS NULL)));
          CREATE UNIQUE INDEX items_onedrive_item ON items(onedrive_drive_id, onedrive_item_id) WHERE onedrive_item_id IS NOT NULL;
          CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
+         CREATE INDEX items_onedrive_place ON items(onedrive_parent_id, onedrive_name) WHERE onedrive_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
+         CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
+         CREATE INDEX items_binding_alone ON items(confirmed_count) WHERE {binding_alone};
+         CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}
                OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
+               OR EXISTS (SELECT 1 FROM items WHERE onedrive_parent_id = OLD.local_item_id)
                OR EXISTS (SELECT 1 FROM items WHERE synced_parent_id = OLD.local_item_id)
              BEGIN SELECT RAISE(ABORT, 'items: the root''s row and a row that is another row''s parent are not deleted'); END;
          CREATE TRIGGER items_parent_directory_insert BEFORE INSERT ON items
-             WHEN {no_local_parent_directory} OR {no_synced_parent_directory}
+             WHEN {no_local_parent_directory} OR {no_onedrive_parent_directory} OR {no_synced_parent_directory}
              BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
-         CREATE TRIGGER items_parent_directory_update BEFORE UPDATE OF local_parent_id, synced_parent_id ON items
-             WHEN {no_local_parent_directory} OR {no_synced_parent_directory}
+         CREATE TRIGGER items_parent_directory_update BEFORE UPDATE OF local_parent_id, onedrive_parent_id, synced_parent_id ON items
+             WHEN {no_local_parent_directory} OR {no_onedrive_parent_directory} OR {no_synced_parent_directory}
              BEGIN SELECT RAISE(ABORT, 'items: a row''s parent is the row of a directory'); END;
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          CREATE TABLE pins (id TEXT PRIMARY KEY);
@@ -191,8 +222,13 @@ fn schema() -> String {
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
         no_local_parent_directory = no_parent_directory("local"),
+        no_onedrive_parent_directory = no_parent_directory("onedrive"),
         no_synced_parent_directory = no_parent_directory("synced"),
         local_content = content("local"),
+        onedrive_content = content("onedrive"),
+        placed = PLACED,
+        changed_in_onedrive = CHANGED_IN_ONEDRIVE,
+        binding_alone = BINDING_ALONE,
         synced_content = content("synced"),
         content_before_write = content("before_write"),
         root = LocalItemId::ROOT,

@@ -64,8 +64,11 @@ use crate::{TreeError, TreeStore, MAX_CHAIN};
 mod bindings;
 /// A row of `items`: its columns, reading it, and its raw writers.
 mod item_row;
+/// What a listing of OneDrive says of an item, written into its row.
+mod onedrive_versions;
 
 pub(crate) use bindings::bind_root;
+pub(crate) use item_row::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
 use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_children, set_local_place, set_local_place_aside, write_item};
 

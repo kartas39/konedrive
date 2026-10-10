@@ -13,7 +13,7 @@ use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::refuse;
-use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
+use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference, Placement, PLACED};
 use crate::outbox::{path_from, path_value};
 use crate::TreeError;
 
@@ -23,10 +23,26 @@ const CONTENT_COLUMNS: [&str; 6] = ["size", "mtime", "mtime_nsec", "hash", "ctag
 /// The columns of an [`Item`], in the order [`item_from`] reads them and [`values_of`] gives them.
 const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, kind, \
      local_parent_id, local_name, local_size, local_mtime, local_mtime_nsec, local_hash, local_ctag, local_change_count, \
+     onedrive_parent_id, onedrive_name, onedrive_size, onedrive_mtime, onedrive_mtime_nsec, onedrive_hash, onedrive_ctag, onedrive_change_count, \
+     onedrive_etag, \
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
-     is_name_ignored";
+     placement, is_name_ignored, confirmed_count";
+
+/// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
+/// changed, made or removed since the two sides last agreed, and what they never agreed
+/// on. The index `items_changed_in_onedrive` holds these rows, and a query finds them by it
+/// when it asks in these words.
+pub(crate) const CHANGED_IN_ONEDRIVE: &str = "(onedrive_parent_id IS NOT synced_parent_id OR onedrive_name IS NOT synced_name \
+     OR onedrive_size IS NOT synced_size OR onedrive_mtime IS NOT synced_mtime OR onedrive_mtime_nsec IS NOT synced_mtime_nsec \
+     OR onedrive_hash IS NOT synced_hash OR onedrive_ctag IS NOT synced_ctag OR onedrive_change_count IS NOT synced_change_count)";
+
+/// SQL for "the row is a binding and nothing else": no version on either side and nothing
+/// agreed on, and not the root's. The index `items_binding_alone` holds these rows by their
+/// stamp, and a query finds them by it when it asks in these words.
+pub(crate) const BINDING_ALONE: &str = "onedrive_item_id IS NOT NULL AND local_parent_id IS NULL AND onedrive_parent_id IS NULL \
+     AND synced_parent_id IS NULL AND synced_size IS NULL AND local_item_id != 1";
 
 /// Where each column of [`ITEM_COLUMNS`] is; a content's is where its first column is.
 mod column_index {
@@ -40,12 +56,18 @@ mod column_index {
     pub(super) const LOCAL_PARENT_ID: usize = column(ITEM_COLUMNS, "local_parent_id");
     pub(super) const LOCAL_NAME: usize = column(ITEM_COLUMNS, "local_name");
     pub(super) const LOCAL_CONTENT: usize = column(ITEM_COLUMNS, "local_size");
+    pub(super) const ONEDRIVE_PARENT_ID: usize = column(ITEM_COLUMNS, "onedrive_parent_id");
+    pub(super) const ONEDRIVE_NAME: usize = column(ITEM_COLUMNS, "onedrive_name");
+    pub(super) const ONEDRIVE_CONTENT: usize = column(ITEM_COLUMNS, "onedrive_size");
+    pub(super) const ONEDRIVE_ETAG: usize = column(ITEM_COLUMNS, "onedrive_etag");
     pub(super) const SYNCED_PARENT_ID: usize = column(ITEM_COLUMNS, "synced_parent_id");
     pub(super) const SYNCED_NAME: usize = column(ITEM_COLUMNS, "synced_name");
     pub(super) const SYNCED_CONTENT: usize = column(ITEM_COLUMNS, "synced_size");
     pub(super) const CONTENT_PRESENCE: usize = column(ITEM_COLUMNS, "content_presence");
     pub(super) const CONTENT_BEFORE_WRITE: usize = column(ITEM_COLUMNS, "before_write_size");
+    pub(super) const PLACEMENT: usize = column(ITEM_COLUMNS, "placement");
     pub(super) const IS_NAME_IGNORED: usize = column(ITEM_COLUMNS, "is_name_ignored");
+    pub(super) const CONFIRMED_COUNT: usize = column(ITEM_COLUMNS, "confirmed_count");
 }
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
@@ -108,16 +130,26 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         None if local_item_id == LocalItemId::ROOT => Some(ItemVersion { place: None, content: None }),
         None => None,
     };
+    // OneDrive has what has a place there, and the root, which has none, once it is bound.
+    let onedrive = match place_from(row, column_index::ONEDRIVE_PARENT_ID, column_index::ONEDRIVE_NAME)? {
+        Some(place) => Some(ItemVersion { place: Some(place), content: content_from(row, column_index::ONEDRIVE_CONTENT)? }),
+        None if local_item_id == LocalItemId::ROOT && onedrive_item.is_some() => Some(ItemVersion { place: None, content: None }),
+        None => None,
+    };
     Ok(Item {
         local_item_id,
         onedrive_item,
         kind: ItemKind::decode(&row.get::<_, String>(column_index::KIND)?),
         local,
+        onedrive,
+        onedrive_etag: row.get(column_index::ONEDRIVE_ETAG)?,
         synced_place: place_from(row, column_index::SYNCED_PARENT_ID, column_index::SYNCED_NAME)?,
         synced_content: content_from(row, column_index::SYNCED_CONTENT)?,
         content_presence: ContentPresence::decode(&row.get::<_, String>(column_index::CONTENT_PRESENCE)?),
         content_before_write: content_from(row, column_index::CONTENT_BEFORE_WRITE)?,
+        placement: Placement::decode(&row.get::<_, String>(column_index::PLACEMENT)?),
         is_name_ignored: row.get::<_, i64>(column_index::IS_NAME_IGNORED)? != 0,
+        confirmed_count: row.get::<_, i64>(column_index::CONFIRMED_COUNT)?.max(0) as u64,
     })
 }
 
@@ -140,6 +172,14 @@ fn place_values(place: Option<&ItemPlace>) -> [Value; 2] {
     }
 }
 
+/// The values of the `onedrive_` columns, in their order: the place, the content, the eTag.
+fn onedrive_values(onedrive: Option<&ItemVersion>, etag: Option<&str>) -> Vec<Value> {
+    let mut values: Vec<Value> = place_values(onedrive.and_then(|onedrive| onedrive.place.as_ref())).into();
+    values.extend(content_values(onedrive.and_then(|onedrive| onedrive.content.as_ref())));
+    values.push(etag.map(str::to_owned).into());
+    values
+}
+
 /// The value of every column of [`ITEM_COLUMNS`] but the first, the key, in their order.
 fn values_of(item: &Item) -> Vec<Value> {
     let binding = item.onedrive_item.as_ref();
@@ -148,11 +188,14 @@ fn values_of(item: &Item) -> Vec<Value> {
     values.push(item.kind.as_str().to_owned().into());
     values.extend(place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
+    values.extend(onedrive_values(item.onedrive.as_ref(), item.onedrive_etag.as_deref()));
     values.extend(place_values(item.synced_place.as_ref()));
     values.extend(content_values(item.synced_content.as_ref()));
     values.push(item.content_presence.as_str().to_owned().into());
     values.extend(content_values(item.content_before_write.as_ref()));
+    values.push(item.placement.encode().into());
     values.push(i64::from(item.is_name_ignored).into());
+    values.push((item.confirmed_count as i64).into());
     values
 }
 
@@ -254,5 +297,67 @@ pub(super) fn set_binding(conn: &Connection, item: LocalItemId, onedrive_item: &
     check_onedrive_item_id(Some(onedrive_item))?;
     conn.prepare_cached("UPDATE items SET onedrive_drive_id = ?2, onedrive_item_id = ?3 WHERE local_item_id = ?1")?
         .execute(params![item.as_i64(), onedrive_item.drive_id.as_str(), onedrive_item.item_id.as_str()])?;
+    Ok(())
+}
+
+/// The names of the `onedrive_` columns, in the order [`onedrive_values`] gives them.
+fn onedrive_columns() -> Vec<String> {
+    let mut columns = vec!["onedrive_parent_id".to_owned(), "onedrive_name".to_owned()];
+    columns.extend(CONTENT_COLUMNS.map(|column| format!("onedrive_{column}")));
+    columns.push("onedrive_etag".to_owned());
+    columns
+}
+
+/// What OneDrive has of `item` is `onedrive` from now on, with this eTag and this
+/// placement, and nothing else of the row is written. `seen_in_full_listing`: the count of
+/// the full listing that says so, when one does; the row keeps what it has otherwise. A
+/// name is kept as OneDrive gave it and is not asked to be the name of a directory entry:
+/// whether the folder can show the item is its placement.
+pub(super) fn set_onedrive_version(conn: &Connection, item: LocalItemId, onedrive: &ItemVersion, etag: Option<&str>, placement: Placement, seen_in_full_listing: Option<u64>) -> Result<(), TreeError> {
+    let mut values = onedrive_values(Some(onedrive), etag);
+    let mut sets: Vec<String> = onedrive_columns().iter().enumerate().map(|(n, column)| format!("{column} = ?{}", n + 1)).collect();
+    values.push(placement.encode().into());
+    sets.push(format!("placement = ?{}", values.len()));
+    values.push(seen_in_full_listing.map(|count| count as i64).into());
+    sets.push(format!("seen_in_full_listing = COALESCE(?{}, seen_in_full_listing)", values.len()));
+    values.push(item.as_i64().into());
+    let sql = format!("UPDATE items SET {} WHERE local_item_id = ?{}", sets.join(", "), values.len());
+    conn.prepare_cached(&sql)?.execute(rusqlite::params_from_iter(values))?;
+    Ok(())
+}
+
+/// OneDrive does not have `item` from now on: no version, no eTag, and the placement of an
+/// item it does not have. Nothing else of the row is written.
+pub(super) fn clear_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
+    let sets = onedrive_columns().iter().map(|column| format!("{column} = NULL")).collect::<Vec<_>>().join(", ");
+    conn.prepare_cached(&format!("UPDATE items SET {sets}, placement = '{PLACED}' WHERE local_item_id = ?1"))?.execute([item.as_i64()])?;
+    Ok(())
+}
+
+/// The eTag OneDrive gave for `item` is `etag` from now on: the root's, which has no other
+/// version there.
+pub(super) fn set_onedrive_etag(conn: &Connection, item: LocalItemId, etag: Option<&str>) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET onedrive_etag = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), etag])?;
+    Ok(())
+}
+
+/// The stamp of `item` is `count` from now on.
+pub(super) fn set_confirmed_count(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
+    if conn.prepare_cached("UPDATE items SET confirmed_count = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])? == 0 {
+        return Err(refuse(format!("item {item} has no row to stamp")));
+    }
+    Ok(())
+}
+
+/// The count of the full listing that last listed `item`; 0 when none did, and for an id
+/// with no row.
+pub(super) fn find_seen_in_full_listing(conn: &Connection, item: LocalItemId) -> Result<u64, TreeError> {
+    let count: Option<i64> = conn.prepare_cached("SELECT seen_in_full_listing FROM items WHERE local_item_id = ?1")?.query_row([item.as_i64()], |row| row.get(0)).optional()?;
+    Ok(count.unwrap_or(0).max(0) as u64)
+}
+
+/// The full listing of this count listed `item`.
+pub(super) fn set_seen_in_full_listing(conn: &Connection, item: LocalItemId, count: u64) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET seen_in_full_listing = ?2 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), count as i64])?;
     Ok(())
 }
