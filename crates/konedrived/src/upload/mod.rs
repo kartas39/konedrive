@@ -41,6 +41,13 @@ pub mod space;
 mod steps;
 
 pub mod kept_back;
+// The steps towards OneDrive of the sync plan: no caller until the mount reads the rows.
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod onedrive_space;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod onedrive_steps;
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub mod sending_holds;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
