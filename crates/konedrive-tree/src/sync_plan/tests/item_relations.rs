@@ -226,6 +226,21 @@ fn open_an_item_that_is_left_here_at_the_name_of_an_item_of_onedrive_is_renamed_
     assert_eq!(answer(&given, 5), waits_for(4));
 }
 
+/// Found by the convergence run in which OneDrive is a state of its own (seed 82): an item
+/// that is left here steps aside only for an item of OneDrive that needs its place — the
+/// same name, byte for byte. It is never sent, so how OneDrive compares names has nothing
+/// to say of it: beside an item OneDrive has under a name that only folds to its own, the
+/// folder shows both, and it stays as it is. (A plan given the two rows renamed it; a plan
+/// given what differs was never given it: the two did not agree.)
+#[test]
+fn an_item_that_is_left_here_stays_beside_an_item_of_onedrive_whose_name_only_folds_to_its_own() {
+    let mut given = input(vec![synced_directory(2, ROOT, "~X.TMP"), made_file(3, ROOT, "~x.tmp"), made_file(4, ROOT, "Build"), listed(5, ItemKind::File, ROOT, "build")]);
+    given.ignored_items = [id(3), id(4)].into();
+    assert_eq!(answer(&given, 3), Answer::Exclusion(ExclusionReason::NameIgnored));
+    assert_eq!(answer(&given, 4), Answer::Exclusion(ExclusionReason::NameIgnored));
+    assert_eq!(answer(&given, 5), folder_step(FolderStep::ShowItem { item: versions(&given, 5) }), "the folder holds the two names apart");
+}
+
 /// Decided after stage B (the brief's §6, 1; the design's §6): no removal is ever sent
 /// because a name is ignored. An item OneDrive has is never left here, whatever its row says
 /// of its name: one that got its binding while its sending was running and whose name is

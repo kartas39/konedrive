@@ -159,7 +159,8 @@ pub(crate) struct NameContests {
 /// Decides every item whose place here is to be its place in OneDrive against what else has
 /// or wants that name there ([`decide_name_contest`]), the items by their ids. An item
 /// that is left here is decided too: it steps aside for an item of OneDrive that stays at
-/// its name. An item that is held back — a step is running for it, a program holds it open
+/// its name, the same byte for byte — it is never sent, so a name of OneDrive that only
+/// folds to its own takes nothing from it, and the folder shows both. An item that is held back — a step is running for it, a program holds it open
 /// for writing — is not decided, and as a holder it is waited for.
 /// `places_taken_in_onedrive` is what OneDrive answered is taken
 /// ([`SyncPlanInput`](super::SyncPlanInput)). `moves_taken_back` are the items whose move here does not stand
@@ -187,7 +188,10 @@ pub(crate) fn settle_name_contests(
         }
         let (directory, name) = (place.parent_local_item_id, FoldedName::of(&place.name));
         let in_onedrive = items.list_in_onedrive_with_name(directory, &name);
-        let holder = in_onedrive.iter().filter(|holder| **holder != id).find_map(|holder| items.find(*holder));
+        // An item that is left here is never sent: how OneDrive compares names says nothing
+        // of it, and only an item OneDrive has under its very name needs its place.
+        let has_the_place = |holder: &&Item| !is_left_here(id) || holder.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()).is_some_and(|in_onedrive| in_onedrive.name == place.name);
+        let holder = in_onedrive.iter().filter(|holder| **holder != id).filter_map(|holder| items.find(*holder)).find(has_the_place);
         let holder_cannot_be_shown = holder.is_some_and(|holder| cannot_be_shown(holder.local_item_id));
         let holder = holder.map(|holder| {
             if answers.is_held(holder.local_item_id) {
