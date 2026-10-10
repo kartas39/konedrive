@@ -10,7 +10,9 @@
 //!
 //! 1. Of several changes of one item, the last counts.
 //! 2. The root. Row 1 is bound to it; a row that had its reference first, as a parent named
-//!    before the root came, goes, and what is in it is in row 1.
+//!    before the root came, goes, and what is in it is in row 1. A root no row can be is
+//!    refused like any other item: one with no id, or with the id of a file or of an item
+//!    the folder shows.
 //! 3. Every item the page says OneDrive has, each by itself: the row that has its item id
 //!    and the row that has its parent's are found; what becomes of the change is decided
 //!    from them ([`listed_change`]); and only for a change that is written a row is made
@@ -380,10 +382,16 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
     let mut outcomes = vec![ListedChangeOutcome::Written; changes.len()];
     let mut outdated_items = Vec::new();
 
-    for (_, change) in counted() {
-        let Change::Root(row) = change else { continue };
-        bind_root(tx, &OneDriveItemReference { drive_id: drive_id.clone(), item_id: OneDriveItemId::new(&row.id) })?;
-        set_onedrive_etag(tx, LocalItemId::ROOT, row.etag.as_deref())?;
+    for (at, change) in counted() {
+        let Change::Root(listed_root) = change else { continue };
+        outcomes[at] = decide_listed_root(&listed_root.id, find_row(&listed_root.id)?.as_ref());
+        match outcomes[at] {
+            ListedChangeOutcome::Written => {
+                bind_root(tx, &OneDriveItemReference { drive_id: drive_id.clone(), item_id: OneDriveItemId::new(&listed_root.id) })?;
+                set_onedrive_etag(tx, LocalItemId::ROOT, listed_root.etag.as_deref())?;
+            }
+            outcome => tracing::warn!("what the listing says of the root of the drive, {:?}, is not written: {outcome:?}", listed_root.id),
+        }
     }
 
     for (at, change) in counted() {
@@ -454,7 +462,7 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, changes: &[Change], fet
 mod listed_change;
 
 pub use listed_change::{ListedChangeOutcome, ListedChangeRefusal};
-use listed_change::{decide_listed_item, decide_listed_removal, ListedItem};
+use listed_change::{decide_listed_item, decide_listed_removal, decide_listed_root, ListedItem};
 
 #[cfg(test)]
 mod tests;

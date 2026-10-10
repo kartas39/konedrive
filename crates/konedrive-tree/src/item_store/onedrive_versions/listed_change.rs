@@ -40,6 +40,9 @@ pub enum ListedChangeRefusal {
     RootGivenPlace,
     /// The root of the drive is listed gone.
     RootListedGone,
+    /// The id the listing gives as the root's is that of a file, or of an item the folder
+    /// shows: such a row is not the root.
+    RootIdOfAnotherItem,
 }
 
 /// What a listing says OneDrive has of one item that is not the root, in the store's own
@@ -104,6 +107,21 @@ pub(super) fn decide_listed_item(listed: &ListedItem, row: Option<&Item>, parent
         return Outdated;
     }
     Written
+}
+
+/// What becomes of a listing's statement that `root_item_id` is the root of the drive,
+/// given the row that has that id when there is one: refused for no id, and for the id of
+/// a file or of an item the folder shows. `Written` otherwise: row 1 is bound to it, in
+/// place of a row that had the id as a parent named before the root came.
+pub(super) fn decide_listed_root(root_item_id: &str, holder: Option<&Item>) -> ListedChangeOutcome {
+    if root_item_id.is_empty() {
+        return ListedChangeOutcome::Refused(ListedChangeRefusal::NoItemId);
+    }
+    match holder {
+        Some(holder) if holder.local_item_id == LocalItemId::ROOT => ListedChangeOutcome::Written,
+        Some(holder) if holder.local.is_some() || holder.kind != ItemKind::Directory => ListedChangeOutcome::Refused(ListedChangeRefusal::RootIdOfAnotherItem),
+        _ => ListedChangeOutcome::Written,
+    }
 }
 
 /// What becomes of a listing's statement that the item `item_id` is gone, given the row

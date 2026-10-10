@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::{ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
 use crate::item_store::item_row::write_item;
-use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_file, place, reference, synced};
+use crate::item_store::tests::{is_refused, is_refused_by_schema, item, make_directory, make_file, place, reference, synced};
 use crate::model::{Change, ContentPresence, ContentVersion, FolderVisibility, Item, ItemKind, ItemVersion, Kind, LocalItemId, LocalVersionChange, OneDriveItemId, Placement, Row, SkipReason};
 use crate::{ConfirmedOneDriveVersion, TreeStore};
 
@@ -486,6 +486,31 @@ fn each_change_is_answered_written_or_refused_with_its_reason_and_a_refused_one_
     assert_eq!(write_page(&mut store, &[gone("R"), file("B", "R", "b", "1")], now, &next_link("next")).changes, [Refused(ListedChangeRefusal::RootListedGone), Written]);
     expected.insert("B".to_owned(), onedrive_side(&mut store)["B"].clone());
     assert_eq!(onedrive_side(&mut store), expected);
+}
+
+/// N1 of the review: a listing that contradicts itself about the root is refused for the
+/// root, and the rest of the page is written: a root with the empty text for an id, and a
+/// root whose id is that of a file or of an item the folder shows. Row 1 stays as it was.
+#[test]
+fn a_root_no_row_can_be_is_refused_for_itself_and_the_rest_of_the_page_is_written() {
+    use ListedChangeOutcome::{Refused, Written};
+    let root_with_id = |id: &str| {
+        let Change::Root(row) = root() else { unreachable!() };
+        Change::Root(Row { id: id.to_owned(), ..row })
+    };
+    let mut store = store_of_drive();
+    assert_eq!(write_page(&mut store, &[root_with_id(""), file("A", "R", "a", "1")], 0, &next_link("next")).changes, [Refused(ListedChangeRefusal::NoItemId), Written]);
+    assert_eq!(item(&mut store, ROOT).onedrive_item, None);
+    assert!(bound(&mut store, "A").is_some());
+
+    write(&mut store, &[root()]);
+    let shown = make_directory(&mut store, ROOT, "shown");
+    synced(&mut store, shown, "S");
+    let root_row = item(&mut store, ROOT);
+    assert_eq!(write_page(&mut store, &[root_with_id("A"), file("B", "R", "b", "1")], 0, &next_link("next")).changes, [Refused(ListedChangeRefusal::RootIdOfAnotherItem), Written]);
+    assert_eq!(write_page(&mut store, &[root_with_id("S"), file("C", "R", "c", "1")], 0, &next_link("next")).changes, [Refused(ListedChangeRefusal::RootIdOfAnotherItem), Written]);
+    assert_eq!(item(&mut store, ROOT), root_row);
+    assert_eq!((onedrive_place(&mut store, "B"), onedrive_place(&mut store, "C")), (Some(place(ROOT, "b")), Some(place(ROOT, "c"))));
 }
 
 /// What a store holds before the pages of [`the_order_of_the_changes_in_a_page_does_not_matter`].

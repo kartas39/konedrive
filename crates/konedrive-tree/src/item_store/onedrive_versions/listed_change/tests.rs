@@ -1,4 +1,4 @@
-use super::{decide_listed_item, decide_listed_removal, is_listed_removal_outdated, is_listed_version_outdated, ListedChangeOutcome, ListedChangeRefusal, ListedItem};
+use super::{decide_listed_item, decide_listed_removal, decide_listed_root, is_listed_removal_outdated, is_listed_version_outdated, ListedChangeOutcome, ListedChangeRefusal, ListedItem};
 use crate::item_store::tests::{place, reference};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemVersion, LocalItemId, Placement};
 
@@ -125,5 +125,23 @@ fn a_listed_removal_is_written_outdated_or_refused_by_the_row_it_is_about() {
         ("the root", "R", Some(root_row()), Refused(ListedChangeRefusal::RootListedGone)),
     ] {
         assert_eq!(decide_listed_removal(item_id, row.as_ref(), 5), outcome, "{what}");
+    }
+}
+
+/// What becomes of a listing's statement of the drive's root, a case each.
+#[test]
+fn a_listed_root_is_written_or_refused_by_the_row_that_has_its_id() {
+    use ListedChangeOutcome::{Refused, Written};
+    let first_mention = Item { onedrive: None, onedrive_etag: None, ..directory_row() };
+    let shown = Item { local: Some(ItemVersion { place: Some(place(ROOT, "D")), content: None }), ..directory_row() };
+    for (what, root_item_id, holder, outcome) in [
+        ("no row has the id", "R", None, Written),
+        ("row 1 has the id", "R", Some(root_row()), Written),
+        ("a directory the folder does not show has the id, as a parent named before the root", "D", Some(first_mention), Written),
+        ("no id", "", None, Refused(ListedChangeRefusal::NoItemId)),
+        ("a file has the id", "A", Some(stamped(0, Some("e-1"))), Refused(ListedChangeRefusal::RootIdOfAnotherItem)),
+        ("a directory the folder shows has the id", "D", Some(shown), Refused(ListedChangeRefusal::RootIdOfAnotherItem)),
+    ] {
+        assert_eq!(decide_listed_root(root_item_id, holder.as_ref()), outcome, "{what}");
     }
 }
