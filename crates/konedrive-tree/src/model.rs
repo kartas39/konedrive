@@ -578,8 +578,9 @@ pub struct Item {
     /// The content a file had before its first writer opened it; held until the last writer
     /// closes.
     pub content_before_write: Option<ContentVersion>,
-    /// The upload rules leave it, or a directory above it, here.
-    pub is_ignored: bool,
+    /// The upload rules ignore the item's own name. Whether the item is left here is not
+    /// stored: [`ItemStore::is_ignored`](crate::ItemStore::is_ignored) derives it.
+    pub is_name_ignored: bool,
 }
 
 /// How a file the folder shows stands between OneDrive and this computer.
@@ -618,17 +619,18 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalVersionChange {
     /// A file or directory was made at `place`: a file with `content`, a directory with none.
+    /// `is_name_ignored` is what the upload rules say of its name.
     /// `replaced` is the write operation's statement that the file is made where that file
     /// was removed here, whose removal is not sent yet: the made file takes over its
     /// binding, and OneDrive sees one item whose content changed. The store checks the
     /// statement and finds no such item by itself.
-    Made { kind: ItemKind, place: ItemPlace, content: Option<ContentVersion>, is_ignored: bool, replaced: Option<LocalItemId> },
-    /// `item` was renamed or moved to `place`, where nothing is. `is_ignored` is what the
-    /// upload rules say of it there, for it and all below it.
-    Moved { item: LocalItemId, place: ItemPlace, is_ignored: bool },
-    /// `replacing` was renamed over `replaced` and has its place now: a file saved over
-    /// another takes over its binding.
-    SavedOver { replacing: LocalItemId, replaced: LocalItemId, is_ignored: bool },
+    Made { kind: ItemKind, place: ItemPlace, content: Option<ContentVersion>, is_name_ignored: bool, replaced: Option<LocalItemId> },
+    /// `item` was renamed or moved to `place`, where nothing is. `is_name_ignored` is what
+    /// the upload rules say of its name there.
+    Moved { item: LocalItemId, place: ItemPlace, is_name_ignored: bool },
+    /// `replacing` was renamed over `replaced` and has its place now, and with its name what
+    /// the upload rules say of that name: a file saved over another takes over its binding.
+    SavedOver { replacing: LocalItemId, replaced: LocalItemId },
     /// `item` was removed from the folder.
     Removed { item: LocalItemId },
     /// The first writer opened the file `item`: its content begins to change.

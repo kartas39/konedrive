@@ -93,7 +93,7 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
             content_before_write: None,
-            is_ignored: false,
+            is_name_ignored: false,
         }
     );
     assert_eq!(bound_to(&mut store, "A"), Some(taker));

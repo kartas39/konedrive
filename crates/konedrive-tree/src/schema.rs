@@ -39,6 +39,8 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   directory with no place; no row is its own parent; a file the folder shows has a local
 ///   content and nothing else has one; a directory has no content on any side, none on disk
 ///   and none before a write; neither has an item the folder does not show.
+///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
+///   below it.
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
@@ -93,7 +95,7 @@ fn schema() -> String {
              synced_parent_id INTEGER, synced_name, {synced_content},
              content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
              {content_before_write},
-             is_ignored INTEGER NOT NULL DEFAULT 0,
+             is_name_ignored INTEGER NOT NULL DEFAULT 0,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),

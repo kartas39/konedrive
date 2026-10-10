@@ -28,12 +28,12 @@ pub(super) fn reference(id: &str) -> OneDriveItemReference {
 
 pub(super) fn made(place: ItemPlace, kind: ItemKind) -> LocalVersionChange {
     let content = (kind == ItemKind::File).then(made_here);
-    LocalVersionChange::Made { kind, place, content, is_ignored: false, replaced: None }
+    LocalVersionChange::Made { kind, place, content, is_name_ignored: false, replaced: None }
 }
 
 /// A file made at `place` that the write operation says replaces the removed item `replaced`.
 fn made_replacing(place: ItemPlace, replaced: LocalItemId) -> LocalVersionChange {
-    LocalVersionChange::Made { kind: ItemKind::File, place, content: Some(made_here()), is_ignored: false, replaced: Some(replaced) }
+    LocalVersionChange::Made { kind: ItemKind::File, place, content: Some(made_here()), is_name_ignored: false, replaced: Some(replaced) }
 }
 
 pub(super) fn make_file(store: &mut TreeStore, parent: LocalItemId, name: &str) -> LocalItemId {
@@ -100,7 +100,7 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             synced_content: None,
             content_presence: ContentPresence::NotOnDisk,
             content_before_write: None,
-            is_ignored: false,
+            is_name_ignored: false,
         }
     );
     assert_eq!(path(&mut store, ROOT), Some(PathBuf::new()));
@@ -115,9 +115,9 @@ fn the_root_is_not_removed_or_given_a_place() {
     let dir = make_directory(&mut store, ROOT, "dir");
     let mut items = store.item_store();
     assert!(is_refused(items.apply(&LocalVersionChange::Removed { item: ROOT })));
-    assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: ROOT, place: place(dir, "root"), is_ignored: false })));
-    assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing: dir, replaced: ROOT, is_ignored: false })));
-    assert!(is_refused(items.exchange_local_places(ROOT, dir, false, false)));
+    assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: ROOT, place: place(dir, "root"), is_name_ignored: false })));
+    assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing: dir, replaced: ROOT })));
+    assert!(is_refused(items.exchange_local_places(ROOT, dir)));
 }
 
 /// An item made is found by its id, by its place, among its directory's children, and has
@@ -134,7 +134,7 @@ fn a_made_item_is_found_by_its_id_its_place_and_in_its_directory() {
 
     let found = item(&mut store, file);
     assert_eq!((found.kind, found.local.clone()), (ItemKind::File, Some(ItemVersion { place: Some(place(dir, "File.txt")), content: Some(made_here()) })));
-    assert_eq!((found.onedrive_item.clone(), found.content_presence, found.is_ignored), (None, ContentPresence::OnDisk, false), "a file made here is on disk");
+    assert_eq!((found.onedrive_item.clone(), found.content_presence, found.is_name_ignored), (None, ContentPresence::OnDisk, false), "a file made here is on disk");
     assert_eq!(item(&mut store, dir).content_presence, ContentPresence::NotOnDisk, "a directory has no content");
     assert_eq!(store.item_store().find_item_at(dir, OsStr::new("File.txt")).unwrap(), Some(found.clone()));
     assert_eq!(store.item_store().find_item_at(dir, OsStr::new("file.txt")).unwrap(), None, "a name is not changed to compare it");
@@ -168,7 +168,7 @@ fn an_item_is_made_and_moved_only_into_a_directory_the_folder_shows() {
     for parent in [LocalItemId::new(99), file, gone] {
         let mut items = store.item_store();
         assert!(is_refused(items.apply(&made(place(parent, "new"), ItemKind::File))), "made in {parent}");
-        assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: moving, place: place(parent, "moved"), is_ignored: false })), "moved into {parent}");
+        assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: moving, place: place(parent, "moved"), is_name_ignored: false })), "moved into {parent}");
     }
     assert_eq!(path(&mut store, moving), Some(PathBuf::from("moving")), "nothing was changed");
     assert_eq!(names(&mut store, ROOT), ["file", "moving"]);
@@ -179,7 +179,7 @@ fn an_item_is_made_and_moved_only_into_a_directory_the_folder_shows() {
 fn a_file_is_made_with_a_content_and_a_directory_without() {
     let mut store = TreeStore::in_memory().unwrap();
     let mut items = store.item_store();
-    let version = |kind, content| LocalVersionChange::Made { kind, place: place(ROOT, "x"), content, is_ignored: false, replaced: None };
+    let version = |kind, content| LocalVersionChange::Made { kind, place: place(ROOT, "x"), content, is_name_ignored: false, replaced: None };
     assert!(is_refused(items.apply(&version(ItemKind::File, None))));
     assert!(is_refused(items.apply(&version(ItemKind::Directory, Some(made_here())))));
     assert_eq!(names(&mut store, ROOT), Vec::<String>::new());
@@ -198,7 +198,7 @@ fn a_directory_has_one_item_per_name() {
     let mut items = store.item_store();
     assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::File))));
     assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::Directory))));
-    assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: b, place: place(ROOT, "a"), is_ignored: false })));
+    assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: b, place: place(ROOT, "a"), is_name_ignored: false })));
     assert!(is_refused_by_schema(items.store.bench_sql("UPDATE items SET local_name = 'a' WHERE local_name = 'b'")), "whoever writes the rows");
     items.apply(&made(place(dir, "a"), ItemKind::File)).unwrap();
     items.apply(&made(place(ROOT, "A"), ItemKind::File)).unwrap();
@@ -218,49 +218,105 @@ fn a_directory_is_not_moved_into_itself_or_below() {
     let beside = make_directory(&mut store, ROOT, "beside");
     let mut items = store.item_store();
     for parent in [top, middle, bottom] {
-        assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: top, place: place(parent, "top"), is_ignored: false })), "into {parent}");
+        assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: top, place: place(parent, "top"), is_name_ignored: false })), "into {parent}");
     }
-    items.apply(&LocalVersionChange::Moved { item: bottom, place: place(beside, "up"), is_ignored: false }).unwrap();
-    items.apply(&LocalVersionChange::Moved { item: top, place: place(bottom, "down"), is_ignored: false }).unwrap();
+    items.apply(&LocalVersionChange::Moved { item: bottom, place: place(beside, "up"), is_name_ignored: false }).unwrap();
+    items.apply(&LocalVersionChange::Moved { item: top, place: place(bottom, "down"), is_name_ignored: false }).unwrap();
     assert_eq!(path(&mut store, middle), Some(PathBuf::from("beside/up/down/middle")), "what was below it once is not below it now");
 }
 
-/// A move gives the item its place, and with it everything below its path; what the upload
-/// rules say of the new place is written for the item and all below it.
+/// A move gives the item its place, and with it everything below its path. What the upload
+/// rules say of the new name is written for the moved item alone: a renamed directory
+/// changes no row below it.
 #[test]
-fn a_move_changes_the_path_and_what_is_ignored_of_all_below() {
+fn a_move_changes_the_path_of_all_below_and_the_flag_of_the_moved_item_alone() {
     let mut store = TreeStore::in_memory().unwrap();
     let dir = make_directory(&mut store, ROOT, "dir");
     let inner = make_directory(&mut store, dir, "inner");
     let file = make_file(&mut store, inner, "file");
     let beside = make_file(&mut store, ROOT, "beside");
-    let moved = store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, ".cache"), is_ignored: true }).unwrap();
+    let moved = store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, ".cache"), is_name_ignored: true }).unwrap();
     assert_eq!(moved, dir, "the item keeps its id");
     assert_eq!(path(&mut store, file), Some(PathBuf::from(".cache/inner/file")));
-    assert_eq!([dir, inner, file, beside].map(|id| item(&mut store, id).is_ignored), [true, true, true, false]);
-    store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, "dir"), is_ignored: false }).unwrap();
-    assert_eq!([dir, inner, file].map(|id| item(&mut store, id).is_ignored), [false, false, false]);
-    let ignored = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "x.tmp"), content: Some(made_here()), is_ignored: true, replaced: None }).unwrap();
-    assert!(item(&mut store, ignored).is_ignored);
+    assert_eq!([dir, inner, file, beside].map(|id| item(&mut store, id).is_name_ignored), [true, false, false, false]);
+    assert_eq!([dir, inner, file, beside].map(|id| store.item_store().is_ignored(id).unwrap()), [true, true, true, false], "all below a directory that is left here");
+    store.item_store().apply(&LocalVersionChange::Moved { item: dir, place: place(ROOT, "dir"), is_name_ignored: false }).unwrap();
+    assert_eq!([dir, inner, file].map(|id| store.item_store().is_ignored(id).unwrap()), [false, false, false]);
+    let ignored = store.item_store().apply(&LocalVersionChange::Made { kind: ItemKind::File, place: place(ROOT, "x.tmp"), content: Some(made_here()), is_name_ignored: true, replaced: None }).unwrap();
+    assert!(item(&mut store, ignored).is_name_ignored);
+}
+
+/// An item made with `is_name_ignored` as given.
+fn make_named(store: &mut TreeStore, kind: ItemKind, parent: LocalItemId, name: &str, is_name_ignored: bool) -> LocalItemId {
+    let content = (kind == ItemKind::File).then(made_here);
+    store.item_store().apply(&LocalVersionChange::Made { kind, place: place(parent, name), content, is_name_ignored, replaced: None }).unwrap()
+}
+
+/// Whether an item is left here is derived, never written over a subtree: its own name is
+/// ignored, or that of a directory above it that OneDrive does not have. A directory that
+/// holds a lock file and an ignored directory is renamed: the lock file and what is in the
+/// ignored directory are still left here, and the rest is not.
+#[test]
+fn a_renamed_directory_leaves_what_was_ignored_in_it_ignored() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let proj = make_directory(&mut store, ROOT, "proj");
+    let lock = make_named(&mut store, ItemKind::File, proj, ".~lock.x#", true);
+    let cache = make_named(&mut store, ItemKind::Directory, proj, ".cache", true);
+    let cached = make_file(&mut store, cache, "blob");
+    let source = make_file(&mut store, proj, "main.rs");
+    let all = [proj, lock, cache, cached, source];
+    let before = all.map(|id| store.item_store().is_ignored(id).unwrap());
+    assert_eq!(before, [false, true, true, true, false]);
+
+    store.item_store().apply(&LocalVersionChange::Moved { item: proj, place: place(ROOT, "proj2"), is_name_ignored: false }).unwrap();
+    assert_eq!(all.map(|id| store.item_store().is_ignored(id).unwrap()), before, "a new name of the directory changes nothing below it");
+    assert_eq!(all.map(|id| item(&mut store, id).is_name_ignored), [false, true, true, false, false], "each row says what the rules say of its own name");
+
+    // The directory itself gets an ignored name: all in it is left here, and no row below
+    // it is written; with its former name back, each is as before.
+    store.item_store().apply(&LocalVersionChange::Moved { item: proj, place: place(ROOT, ".proj"), is_name_ignored: true }).unwrap();
+    assert_eq!(all.map(|id| store.item_store().is_ignored(id).unwrap()), [true; 5]);
+    store.item_store().apply(&LocalVersionChange::Moved { item: proj, place: place(ROOT, "proj"), is_name_ignored: false }).unwrap();
+    assert_eq!(all.map(|id| store.item_store().is_ignored(id).unwrap()), before);
+}
+
+/// A directory OneDrive has is OneDrive's whatever its name: what is in it is not left here
+/// for the directory's name. When the directory gives its binding up, it is; and an item's
+/// own ignored name counts wherever it is. An id with no row is refused.
+#[test]
+fn a_directory_of_onedrive_with_an_ignored_name_does_not_ignore_what_is_in_it() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let cache = make_named(&mut store, ItemKind::Directory, ROOT, ".cache", true);
+    let inside = make_file(&mut store, cache, "inside");
+    let lock = make_named(&mut store, ItemKind::File, cache, ".~lock", true);
+    synced(&mut store, cache, "C");
+    assert_eq!([inside, lock].map(|id| store.item_store().is_ignored(id).unwrap()), [false, true]);
+    store.item_store().give_up_binding(cache).unwrap();
+    assert_eq!([inside, lock].map(|id| store.item_store().is_ignored(id).unwrap()), [true, true], "a directory OneDrive does not have any more");
+    assert!(is_refused(store.item_store().is_ignored(LocalItemId::new(99))));
+    assert!(!store.item_store().is_ignored(ROOT).unwrap());
 }
 
 /// Two items exchange their places in one step, in one directory and across two, although
 /// the index of local places is checked at each statement; nothing is left under another
-/// name. A directory is not exchanged with what is below it.
+/// name. Each takes, with the other's name, what the upload rules say of that name. A
+/// directory is not exchanged with what is below it.
 #[test]
 fn two_items_exchange_their_places() {
     let mut store = TreeStore::in_memory().unwrap();
     let a = make_file(&mut store, ROOT, "a");
-    let b = make_directory(&mut store, ROOT, "b");
+    let b = make_named(&mut store, ItemKind::Directory, ROOT, "b", true);
     let inside = make_file(&mut store, b, "inside");
-    store.item_store().exchange_local_places(a, b, false, true).unwrap();
+    assert!(store.item_store().is_ignored(inside).unwrap());
+    store.item_store().exchange_local_places(a, b).unwrap();
     assert_eq!(item(&mut store, a).local.unwrap().place, Some(place(ROOT, "b")));
     assert_eq!(item(&mut store, b).local.unwrap().place, Some(place(ROOT, "a")));
     assert_eq!(names(&mut store, ROOT), ["a", "b"]);
     assert_eq!(path(&mut store, inside), Some(PathBuf::from("a/inside")));
-    assert_eq!([a, b, inside].map(|id| item(&mut store, id).is_ignored), [false, true, true]);
+    assert_eq!([a, b, inside].map(|id| item(&mut store, id).is_name_ignored), [true, false, false], "each has the other's name, and what the rules say of that name");
+    assert!(!store.item_store().is_ignored(inside).unwrap(), "the directory it is in has a name that is not ignored now");
 
-    store.item_store().exchange_local_places(inside, a, false, false).unwrap();
+    store.item_store().exchange_local_places(inside, a).unwrap();
     assert_eq!(path(&mut store, inside), Some(PathBuf::from("b")));
     assert_eq!(path(&mut store, a), Some(PathBuf::from("a/inside")));
     assert_eq!((names(&mut store, ROOT), names(&mut store, b)), (vec!["a".to_owned(), "b".to_owned()], vec!["inside".to_owned()]));
@@ -268,10 +324,10 @@ fn two_items_exchange_their_places() {
     let deep = make_directory(&mut store, b, "deep");
     let deeper = make_file(&mut store, deep, "deeper");
     let mut items = store.item_store();
-    assert!(is_refused(items.exchange_local_places(b, deeper, false, false)), "it would be below itself");
-    assert!(is_refused(items.exchange_local_places(deeper, b, false, false)));
-    assert!(is_refused(items.exchange_local_places(a, a, false, false)));
-    assert!(is_refused(items.exchange_local_places(a, LocalItemId::new(99), false, false)));
+    assert!(is_refused(items.exchange_local_places(b, deeper)), "it would be below itself");
+    assert!(is_refused(items.exchange_local_places(deeper, b)));
+    assert!(is_refused(items.exchange_local_places(a, a)));
+    assert!(is_refused(items.exchange_local_places(a, LocalItemId::new(99))));
     assert_eq!(path(&mut store, deeper), Some(PathBuf::from("a/deep/deeper")), "a refused exchange changed nothing");
 }
 
@@ -350,7 +406,7 @@ fn a_made_file_replaces_the_item_the_operation_names_and_no_other() {
     let mut store = TreeStore::in_memory().unwrap();
     let moved = make_file(&mut store, ROOT, "a");
     synced(&mut store, moved, "M");
-    store.item_store().apply(&LocalVersionChange::Moved { item: moved, place: place(ROOT, "b"), is_ignored: false }).unwrap();
+    store.item_store().apply(&LocalVersionChange::Moved { item: moved, place: place(ROOT, "b"), is_name_ignored: false }).unwrap();
     store.item_store().apply(&LocalVersionChange::Removed { item: moved }).unwrap();
     let being_sent = make_file(&mut store, ROOT, "sent");
     synced(&mut store, being_sent, "S");
@@ -399,9 +455,9 @@ fn a_made_file_replaces_only_a_bound_file_the_folder_does_not_show() {
     for replaced in [shown, local, removed_dir, ROOT, LocalItemId::new(99)] {
         assert!(is_refused(items.apply(&made_replacing(place(ROOT, "new"), replaced))), "replacing {replaced}");
     }
-    let directory_back = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_ignored: false, replaced: Some(removed_dir) };
+    let directory_back = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_name_ignored: false, replaced: Some(removed_dir) };
     assert!(is_refused(items.apply(&directory_back)), "a directory takes no binding over");
-    let directory_over_file = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_ignored: false, replaced: Some(removed_file) };
+    let directory_over_file = LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "new"), content: None, is_name_ignored: false, replaced: Some(removed_file) };
     assert!(is_refused(items.apply(&directory_over_file)));
     assert_eq!(names(&mut store, ROOT), ["local", "shown"], "nothing was made");
     assert_eq!(store.item_store().find_bound_item(&reference("F")).unwrap().map(|i| i.local_item_id), Some(removed_file));
@@ -414,42 +470,47 @@ fn a_file_saved_over_a_bound_file_takes_over_its_binding() {
     let mut store = TreeStore::in_memory().unwrap();
     let original = make_file(&mut store, ROOT, "report");
     let original_row = synced(&mut store, original, "A");
-    let temporary = make_file(&mut store, ROOT, ".report.tmp");
-    let saved = store.item_store().apply(&LocalVersionChange::SavedOver { replacing: temporary, replaced: original, is_ignored: false }).unwrap();
+    let temporary = make_named(&mut store, ItemKind::File, ROOT, ".report.tmp", true);
+    let saved = store.item_store().apply(&LocalVersionChange::SavedOver { replacing: temporary, replaced: original }).unwrap();
     assert_eq!(saved, temporary, "the id follows the file the kernel holds");
     assert_eq!(store.item_store().find_item(original).unwrap(), None);
     let row = item(&mut store, temporary);
     assert_eq!(row.local.as_ref().unwrap().place, Some(place(ROOT, "report")));
     assert_eq!((row.onedrive_item.clone(), row.synced_place.clone(), row.synced_content.clone()), (original_row.onedrive_item, original_row.synced_place, original_row.synced_content));
     assert_eq!(row.file_sync_state(), Some(FileSyncState::ModifiedHere));
+    assert!(!row.is_name_ignored, "its name is the replaced file's now, and so is what the rules say of it");
     assert_eq!(names(&mut store, ROOT), ["report"]);
 }
 
 /// The other cases of one item renamed over another. Over an item OneDrive never had: its
 /// row goes. A bound item over a bound one: each binding stays with its item, and the
-/// replaced one is removed here. What `is_ignored` says is the replacing item's from then.
+/// replaced one is removed here. The replacing item has the replaced one's name, and what
+/// the upload rules say of that name; what is below a directory is left here or not by the
+/// name the directory has now.
 #[test]
 fn an_item_renamed_over_another_takes_its_place() {
     let mut store = TreeStore::in_memory().unwrap();
     let new = make_file(&mut store, ROOT, "new");
-    let never_sent = make_file(&mut store, ROOT, "never-sent");
-    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: new, replaced: never_sent, is_ignored: true }).unwrap();
+    let never_sent = make_named(&mut store, ItemKind::File, ROOT, "never-sent", true);
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: new, replaced: never_sent }).unwrap();
     assert_eq!(store.item_store().find_item(never_sent).unwrap(), None);
     let row = item(&mut store, new);
-    assert_eq!((row.local.unwrap().place, row.onedrive_item, row.is_ignored), (Some(place(ROOT, "never-sent")), None, true));
+    assert_eq!((row.local.unwrap().place, row.onedrive_item, row.is_name_ignored), (Some(place(ROOT, "never-sent")), None, true));
 
     let (a, b) = (make_file(&mut store, ROOT, "a"), make_file(&mut store, ROOT, "b"));
     synced(&mut store, a, "A");
     let b_row = synced(&mut store, b, "B");
-    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: a, replaced: b, is_ignored: false }).unwrap();
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: a, replaced: b }).unwrap();
     let a_row = item(&mut store, a);
     assert_eq!((a_row.onedrive_item, a_row.local.unwrap().place, a_row.synced_place), (Some(reference("A")), Some(place(ROOT, "b")), Some(place(ROOT, "a"))));
     assert_eq!(item(&mut store, b), Item { local: None, content_presence: ContentPresence::NotOnDisk, ..b_row }, "removed here, to be removed in OneDrive");
 
-    let (empty, full) = (make_directory(&mut store, ROOT, "empty"), make_directory(&mut store, ROOT, "full"));
+    let (empty, full) = (make_directory(&mut store, ROOT, "empty"), make_named(&mut store, ItemKind::Directory, ROOT, ".full", true));
     let inside = make_file(&mut store, full, "inside");
-    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: full, replaced: empty, is_ignored: false }).unwrap();
+    assert!(store.item_store().is_ignored(inside).unwrap());
+    store.item_store().apply(&LocalVersionChange::SavedOver { replacing: full, replaced: empty }).unwrap();
     assert_eq!(path(&mut store, inside), Some(PathBuf::from("empty/inside")));
+    assert!(!store.item_store().is_ignored(inside).unwrap(), "the directory it is in has the replaced one's name");
     assert_eq!(store.item_store().find_item(empty).unwrap(), None);
 }
 
@@ -468,7 +529,7 @@ fn an_item_is_renamed_only_over_one_of_its_kind_that_holds_nothing() {
     store.item_store().apply(&LocalVersionChange::Removed { item: gone }).unwrap();
     let mut items = store.item_store();
     for (replacing, replaced) in [(file, file), (file, dir), (dir, file), (dir, full), (file, gone), (gone, file), (file, LocalItemId::new(99))] {
-        assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing, replaced, is_ignored: false })), "{replacing} over {replaced}");
+        assert!(is_refused(items.apply(&LocalVersionChange::SavedOver { replacing, replaced })), "{replacing} over {replaced}");
     }
     assert_eq!(names(&mut store, ROOT), ["dir", "file", "full"]);
 }

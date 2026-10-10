@@ -152,7 +152,7 @@ fn file_item(onedrive_item: bool, presence: ContentPresence, local: &str, synced
         synced_content: synced.map(content),
         content_presence: presence,
         content_before_write: None,
-        is_ignored: false,
+        is_name_ignored: false,
     }
 }
 

@@ -23,7 +23,7 @@ const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, 
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
-     is_ignored";
+     is_name_ignored";
 
 /// Where each column of [`ITEM_COLUMNS`] is; a content's is where its first column is.
 mod at {
@@ -42,7 +42,7 @@ mod at {
     pub(super) const SYNCED_CONTENT: usize = column(ITEM_COLUMNS, "synced_size");
     pub(super) const CONTENT_PRESENCE: usize = column(ITEM_COLUMNS, "content_presence");
     pub(super) const CONTENT_BEFORE_WRITE: usize = column(ITEM_COLUMNS, "before_write_size");
-    pub(super) const IS_IGNORED: usize = column(ITEM_COLUMNS, "is_ignored");
+    pub(super) const IS_NAME_IGNORED: usize = column(ITEM_COLUMNS, "is_name_ignored");
 }
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
@@ -90,7 +90,7 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         synced_content: content_from(row, at::SYNCED_CONTENT)?,
         content_presence: ContentPresence::decode(&row.get::<_, String>(at::CONTENT_PRESENCE)?),
         content_before_write: content_from(row, at::CONTENT_BEFORE_WRITE)?,
-        is_ignored: row.get::<_, i64>(at::IS_IGNORED)? != 0,
+        is_name_ignored: row.get::<_, i64>(at::IS_NAME_IGNORED)? != 0,
     })
 }
 
@@ -125,7 +125,7 @@ fn values_of(item: &Item) -> Vec<Value> {
     values.extend(content_values(item.synced_content.as_ref()));
     values.push(item.content_presence.as_str().to_owned().into());
     values.extend(content_values(item.content_before_write.as_ref()));
-    values.push(i64::from(item.is_ignored).into());
+    values.push(i64::from(item.is_name_ignored).into());
     values
 }
 
@@ -142,16 +142,16 @@ pub(super) fn insert_item(
     onedrive_item: Option<&OneDriveItemReference>,
     local: Option<&ItemVersion>,
     content_presence: ContentPresence,
-    is_ignored: bool,
+    is_name_ignored: bool,
 ) -> Result<LocalItemId, TreeError> {
     let mut values: Vec<Value> = vec![onedrive_item.map(|b| b.drive_id.as_str().to_owned()).into(), onedrive_item.map(|b| b.item_id.as_str().to_owned()).into(), kind.as_str().to_owned().into()];
     values.extend(place_values(local.and_then(|local| local.place.as_ref())));
     values.extend(content_values(local.and_then(|local| local.content.as_ref())));
     values.push(content_presence.as_str().to_owned().into());
-    values.push(i64::from(is_ignored).into());
+    values.push(i64::from(is_name_ignored).into());
     let content = CONTENT_COLUMNS.map(|column| format!("local_{column}")).join(", ");
     let places = (1..=values.len()).map(|n| format!("?{n}")).collect::<Vec<_>>().join(", ");
-    let sql = format!("INSERT INTO items (onedrive_drive_id, onedrive_item_id, kind, local_parent_id, local_name, {content}, content_presence, is_ignored) VALUES ({places})");
+    let sql = format!("INSERT INTO items (onedrive_drive_id, onedrive_item_id, kind, local_parent_id, local_name, {content}, content_presence, is_name_ignored) VALUES ({places})");
     conn.prepare_cached(&sql)?.execute(rusqlite::params_from_iter(values))?;
     Ok(LocalItemId::new(conn.last_insert_rowid()))
 }
@@ -196,13 +196,14 @@ pub(super) fn list_children(conn: &Connection, directory: LocalItemId) -> Result
     Ok(children)
 }
 
-/// `item`'s local place is `place` from now on. The index of local places refuses a place
-/// another item has.
-pub(super) fn set_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value) -> Result<(), TreeError> {
-    conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3 WHERE local_item_id = ?1")?.execute(params![item.as_i64(), parent.as_i64(), name])?;
+/// `item` has the name `name` in the directory `parent` from now on, and `is_name_ignored`
+/// is what the upload rules say of that name: the two are written together, since the one
+/// is said of the other. The index of local places refuses a place another item has.
+pub(super) fn set_local_place(conn: &Connection, item: LocalItemId, parent: LocalItemId, name: Value, is_name_ignored: bool) -> Result<(), TreeError> {
+    conn.prepare_cached("UPDATE items SET local_parent_id = ?2, local_name = ?3, is_name_ignored = ?4 WHERE local_item_id = ?1")?
+        .execute(params![item.as_i64(), parent.as_i64(), name, is_name_ignored])?;
     Ok(())
 }
-
 
 /// The binding of `item` is `onedrive_item` from now on, whatever it was.
 pub(super) fn set_binding(conn: &Connection, item: LocalItemId, onedrive_item: &OneDriveItemReference) -> Result<(), TreeError> {

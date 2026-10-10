@@ -34,7 +34,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use rusqlite::types::Value;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::meta;
 use crate::model::{ContentPresence, ContentVersion, DriveId, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, LocalVersionChange, OneDriveItemId, OneDriveItemReference};
@@ -89,6 +89,14 @@ impl ItemStore<'_> {
         find_path(&self.store.conn, item)
     }
 
+    /// Whether `item` is left here, and so never sent: the upload rules ignore its own name,
+    /// or the name of a directory above it in the folder that OneDrive does not have. A
+    /// directory OneDrive has is OneDrive's whatever its name. Derived from the rows at each
+    /// call. Refused for an id with no row.
+    pub fn is_ignored(&self, item: LocalItemId) -> Result<bool, TreeError> {
+        is_ignored(&self.store.conn, item)
+    }
+
     /// Writes one change of an item's local version, in one transaction: all of it or
     /// nothing. The item it is about: the one made, moved, or saved over another. A change
     /// that would break a rule of the rows is refused ([`TreeError::Refused`]) and changes
@@ -100,10 +108,10 @@ impl ItemStore<'_> {
     }
 
     /// The two items have each the other's local place, in one transaction: two names
-    /// exchanged, as `renameat2` does with `RENAME_EXCHANGE`. `first_is_ignored` and
-    /// `second_is_ignored` are what the upload rules say of each at its new place.
-    pub fn exchange_local_places(&mut self, first: LocalItemId, second: LocalItemId, first_is_ignored: bool, second_is_ignored: bool) -> Result<(), TreeError> {
-        self.write(|tx| exchange_local_places(tx, first, second, first_is_ignored, second_is_ignored))
+    /// exchanged, as `renameat2` does with `RENAME_EXCHANGE`. Each takes, with the other's
+    /// name, what the upload rules say of that name; nothing else of either changes.
+    pub fn exchange_local_places(&mut self, first: LocalItemId, second: LocalItemId) -> Result<(), TreeError> {
+        self.write(|tx| exchange_local_places(tx, first, second))
     }
 
     /// Runs `work` in a transaction of its own and commits what it did; an error leaves
@@ -144,6 +152,23 @@ fn read_shown(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVersion),
     let item = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
     let local = item.local.clone().ok_or_else(|| refuse(format!("the folder does not show item {id}")))?;
     Ok((item, local))
+}
+
+fn is_ignored(conn: &Connection, id: LocalItemId) -> Result<bool, TreeError> {
+    let item = find_item(conn, id)?.ok_or_else(|| refuse(format!("item {id} has no row")))?;
+    if item.is_name_ignored {
+        return Ok(true);
+    }
+    let mut above = item.local.and_then(|local| local.place).map(|place| place.parent_local_item_id);
+    // One row for each directory above the item.
+    for _ in 0..=MAX_CHAIN {
+        let Some(directory) = above.and_then(|directory| find_item(conn, directory).transpose()).transpose()? else { return Ok(false) };
+        if directory.is_name_ignored && directory.onedrive_item.is_none() {
+            return Ok(true);
+        }
+        above = directory.local.and_then(|local| local.place).map(|place| place.parent_local_item_id);
+    }
+    Err(refuse(format!("the directories above item {id} do not end at the root")))
 }
 
 /// [`read_shown`] for an item that is not the root, with its local place.
@@ -210,20 +235,6 @@ fn check_place_is_free(conn: &Connection, place: &ItemPlace) -> Result<(), TreeE
     }
 }
 
-/// What the upload rules say of `item` is `is_ignored` from now on, for it and for all the
-/// folder shows below it.
-fn set_ignored(conn: &Connection, item: LocalItemId, is_ignored: bool) -> Result<(), TreeError> {
-    conn.prepare_cached(&format!(
-        "WITH RECURSIVE below(id, depth) AS (
-             SELECT ?1, 0
-             UNION ALL
-             SELECT c.local_item_id, b.depth + 1 FROM items c JOIN below b ON c.local_parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-         UPDATE items SET is_ignored = ?2 WHERE local_item_id IN (SELECT id FROM below)"
-    ))?
-    .execute(params![item.as_i64(), is_ignored])?;
-    Ok(())
-}
-
 /// The folder does not show `item` any more. The row of an item OneDrive never had goes;
 /// a bound one stays, with what the two sides last agreed on.
 fn remove_local_version(conn: &Connection, mut item: Item) -> Result<(), TreeError> {
@@ -274,19 +285,18 @@ fn make(tx: &Transaction<'_>, kind: ItemKind, place: &ItemPlace, content: Option
     Ok(made)
 }
 
-fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_ignored: bool) -> Result<(), TreeError> {
+fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_name_ignored: bool) -> Result<(), TreeError> {
     read_shown_below_root(tx, item)?;
     check_directory(tx, place.parent_local_item_id)?;
     check_not_below(tx, place.parent_local_item_id, item)?;
     check_place_is_free(tx, place)?;
-    set_local_place(tx, item, place.parent_local_item_id, name_value(&place.name))?;
-    set_ignored(tx, item, is_ignored)
+    set_local_place(tx, item, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
 }
 
 /// `replacing` has the place of `replaced`, which leaves the folder. A file OneDrive does
 /// not have, over a file it has, takes over the binding; otherwise each binding stays with
 /// its item, and the replaced one is removed here like any other.
-fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId, is_ignored: bool) -> Result<(), TreeError> {
+fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId) -> Result<(), TreeError> {
     if replacing == replaced {
         return Err(refuse(format!("item {replacing} is not saved over itself")));
     }
@@ -298,14 +308,15 @@ fn save_over(tx: &Transaction<'_>, replacing: LocalItemId, replaced: LocalItemId
     check_empty(tx, replaced)?;
     check_not_below(tx, place.parent_local_item_id, replacing)?;
     let takes_over = replacing_item.kind == ItemKind::File && replacing_item.onedrive_item.is_none() && replaced_item.onedrive_item.is_some();
+    // The replacing item has the replaced one's name, and what the rules say of that name.
+    let is_name_ignored = replaced_item.is_name_ignored;
     // The replaced item leaves the folder first: a binding is taken over from an item
     // the folder does not show.
     remove_local_version(tx, replaced_item)?;
     if takes_over {
         bindings::take_over_binding(tx, replacing, replaced)?;
     }
-    set_local_place(tx, replacing, place.parent_local_item_id, name_value(&place.name))?;
-    set_ignored(tx, replacing, is_ignored)
+    set_local_place(tx, replacing, place.parent_local_item_id, name_value(&place.name), is_name_ignored)
 }
 
 fn remove(tx: &Transaction<'_>, id: LocalItemId) -> Result<(), TreeError> {
@@ -327,9 +338,9 @@ fn set_local_content(tx: &Transaction<'_>, mut item: Item, mut local: ItemVersio
 /// with other rows of the store in one.
 pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
     match change {
-        LocalVersionChange::Made { kind, place, content, is_ignored, replaced } => make(tx, *kind, place, content.as_ref(), *is_ignored, *replaced),
-        LocalVersionChange::Moved { item, place, is_ignored } => move_item(tx, *item, place, *is_ignored).map(|()| *item),
-        LocalVersionChange::SavedOver { replacing, replaced, is_ignored } => save_over(tx, *replacing, *replaced, *is_ignored).map(|()| *replacing),
+        LocalVersionChange::Made { kind, place, content, is_name_ignored, replaced } => make(tx, *kind, place, content.as_ref(), *is_name_ignored, *replaced),
+        LocalVersionChange::Moved { item, place, is_name_ignored } => move_item(tx, *item, place, *is_name_ignored).map(|()| *item),
+        LocalVersionChange::SavedOver { replacing, replaced } => save_over(tx, *replacing, *replaced).map(|()| *replacing),
         LocalVersionChange::Removed { item } => remove(tx, *item).map(|()| *item),
         LocalVersionChange::OpenedForWriting { item } => {
             let Some((row, local, content)) = find_shown_file(tx, *item)? else { return Ok(*item) };
@@ -367,20 +378,18 @@ pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) ->
 /// each other's place in one: the first steps aside to a name no file can have (it holds a
 /// NUL and a `/`), the second takes the first's place, and the first the second's. Nobody
 /// reads the name in between: it does not outlive the transaction.
-pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, second: LocalItemId, first_is_ignored: bool, second_is_ignored: bool) -> Result<(), TreeError> {
+pub(crate) fn exchange_local_places(tx: &Transaction<'_>, first: LocalItemId, second: LocalItemId) -> Result<(), TreeError> {
     if first == second {
         return Err(refuse(format!("item {first} does not exchange places with itself")));
     }
-    let (_, _, first_place) = read_shown_below_root(tx, first)?;
-    let (_, _, second_place) = read_shown_below_root(tx, second)?;
+    let (first_item, _, first_place) = read_shown_below_root(tx, first)?;
+    let (second_item, _, second_place) = read_shown_below_root(tx, second)?;
     check_not_below(tx, second_place.parent_local_item_id, first)?;
     check_not_below(tx, first_place.parent_local_item_id, second)?;
     let aside = Value::Blob(format!("\0/{first}").into_bytes());
-    set_local_place(tx, first, first_place.parent_local_item_id, aside)?;
-    set_local_place(tx, second, first_place.parent_local_item_id, name_value(&first_place.name))?;
-    set_local_place(tx, first, second_place.parent_local_item_id, name_value(&second_place.name))?;
-    set_ignored(tx, first, first_is_ignored)?;
-    set_ignored(tx, second, second_is_ignored)
+    set_local_place(tx, first, first_place.parent_local_item_id, aside, first_item.is_name_ignored)?;
+    set_local_place(tx, second, first_place.parent_local_item_id, name_value(&first_place.name), first_item.is_name_ignored)?;
+    set_local_place(tx, first, second_place.parent_local_item_id, name_value(&second_place.name), second_item.is_name_ignored)
 }
 
 /// The root of the folder is bound to the root of the drive, once the store knows both the
