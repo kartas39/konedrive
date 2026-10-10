@@ -77,12 +77,12 @@ pub enum UploadTag {
 /// The item an upload of a new file left in OneDrive with other content than was sent: to be
 /// removed before the file is sent again.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MismatchedUpload {
+pub struct MismatchedItem {
     pub item_id: OneDriveItemId,
     pub tag: UploadTag,
 }
 
-impl MismatchedUpload {
+impl MismatchedItem {
     /// What the upload's answer says of the item it made: its cTag, or its eTag when it has
     /// no cTag.
     pub fn of_answer(item_id: OneDriveItemId, ctag: Option<&str>, etag: Option<&str>) -> Self {
@@ -127,7 +127,7 @@ pub struct FailedTries {
 
 /// A file OneDrive refused as too big for the space it has.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TooBigForSpace {
+pub struct SpaceRefusal {
     /// The content that was refused; its size is what the file needs.
     pub content: ContentVersion,
     /// The free space of OneDrive, in bytes, as the quota read at the refusal, or the last
@@ -142,7 +142,7 @@ pub enum SpaceFit {
     StillTooBig,
 }
 
-impl TooBigForSpace {
+impl SpaceRefusal {
     /// The file fits when its size is no more than the free space, as today's upload worker
     /// lets a waiting file go after a quota read.
     pub fn decide_fit(&self, free_space: u64) -> SpaceFit {
@@ -179,10 +179,10 @@ pub struct TakenName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepFact {
     UploadSession,
-    MismatchedUpload,
+    MismatchedItem,
     TemporaryName,
     FailedTries,
-    TooBigForSpace,
+    SpaceRefusal,
     RemovalConfirmation,
     Refusal,
     TakenName,
@@ -221,7 +221,7 @@ impl UploadSession {
     }
 }
 
-impl TooBigForSpace {
+impl SpaceRefusal {
     /// The refusal for lack of space is the item's while the file's local content is the
     /// content that was refused.
     pub fn decide_standing(&self, item: &Item) -> FactStanding {
@@ -261,10 +261,10 @@ pub fn decide_removal_confirmation_standing(item: &Item) -> FactStanding {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ItemMemory {
     pub upload_session: Option<UploadSession>,
-    pub mismatched_upload: Option<MismatchedUpload>,
+    pub mismatched_item: Option<MismatchedItem>,
     pub temporary_name: Option<TemporaryName>,
     pub failed_tries: Option<FailedTries>,
-    pub too_big_for_space: Option<TooBigForSpace>,
+    pub space_refusal: Option<SpaceRefusal>,
     /// The user confirmed the item's removal when a mass removal was held.
     pub is_removal_confirmed: bool,
     pub refusal: Option<Refusal>,
@@ -288,7 +288,7 @@ impl ItemMemory {
             }
         }
         part(self.upload_session, |fact| fact.decide_standing(item), &mut said.upload_session, &mut gone.upload_session);
-        part(self.too_big_for_space, |fact| fact.decide_standing(item), &mut said.too_big_for_space, &mut gone.too_big_for_space);
+        part(self.space_refusal, |fact| fact.decide_standing(item), &mut said.space_refusal, &mut gone.space_refusal);
         part(self.refusal, |fact| fact.decide_standing(item), &mut said.refusal, &mut gone.refusal);
         part(self.temporary_name, |fact| fact.decide_standing(item), &mut said.temporary_name, &mut gone.temporary_name);
         part(self.taken_name, |fact| fact.decide_standing(item), &mut said.taken_name, &mut gone.taken_name);
@@ -298,7 +298,7 @@ impl ItemMemory {
                 FactStanding::VersionGone => gone.is_removal_confirmed = true,
             }
         }
-        said.mismatched_upload = self.mismatched_upload;
+        said.mismatched_item = self.mismatched_item;
         said.failed_tries = self.failed_tries;
         (said, gone)
     }

@@ -92,8 +92,8 @@ pub use step_commit::{ConfirmedItem, StepCommitOutcome};
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 pub use step_memory::{
-    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedUpload, OpeningRecord, OpeningWindow, PlaceholderSession, Refusal, SpaceFit, StepFact, StepMemory,
-    TakenName, TemporaryName, TimedWait, TooBigForSpace, UploadSession, UploadSessionAddress, UploadTag, UserReason, UPLOAD_SESSION_OPENING_KEPT,
+    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedItem, OpeningRecord, OpeningWindow, PlaceholderSession, Refusal, SpaceFit, StepFact, StepMemory,
+    TakenName, TemporaryName, TimedWait, SpaceRefusal, UploadSession, UploadSessionAddress, UploadTag, UserReason, UPLOAD_SESSION_OPENING_KEPT,
 };
 pub(crate) use step_memory::schema as step_memory_schema;
 

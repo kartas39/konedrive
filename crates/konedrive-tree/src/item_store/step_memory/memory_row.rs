@@ -9,7 +9,7 @@ use konedrive_reason::Reason;
 use rusqlite::types::{FromSql, Value};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::item_memory::{FailedTries, ItemMemory, MismatchedUpload, Refusal, TakenName, TemporaryName, TooBigForSpace, UploadSession, UploadSessionAddress, UploadTag};
+use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, TakenName, TemporaryName, SpaceRefusal, UploadSession, UploadSessionAddress, UploadTag};
 use crate::model::{ContentVersion, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId};
 use crate::outbox::{path_from, path_value};
 use crate::{FoldedName, TreeError};
@@ -38,8 +38,8 @@ fn columns() -> Vec<(String, &'static str)> {
         named(&["temporary_toward_name"], ""),
         named(&["tries_count", "next_try_at"], "INTEGER"),
         named(&["last_failure"], "TEXT"),
-        content("too_big"),
-        named(&["too_big_free_space"], "INTEGER"),
+        content("space_refusal"),
+        named(&["space_refusal_free_space"], "INTEGER"),
         named(&["is_removal_confirmed"], "INTEGER NOT NULL DEFAULT 0"),
         named(&["refusal_reason"], "TEXT"),
         named(&["refused_parent_id"], "INTEGER"),
@@ -53,7 +53,7 @@ fn columns() -> Vec<(String, &'static str)> {
 
 /// The rows that hold a reason for the user: a refusal for good, or a file too big for the
 /// space. What the index `step_memory_user_reason` holds.
-pub(super) const HAS_USER_REASON: &str = "(refusal_reason IS NOT NULL OR too_big_size IS NOT NULL)";
+pub(super) const HAS_USER_REASON: &str = "(refusal_reason IS NOT NULL OR space_refusal_size IS NOT NULL)";
 
 /// What a store is created with for what the steps remember: `step_memory`, one row per item
 /// by its local item id, every fact in columns of its own and null while it is not
@@ -77,7 +77,7 @@ pub(crate) fn schema() -> String {
              CHECK (mismatched_item_id IS NOT NULL OR (mismatched_ctag IS NULL AND mismatched_etag IS NULL)),
              CHECK ((temporary_name IS NULL) = (temporary_toward_parent_id IS NULL) AND (temporary_name IS NULL) = (temporary_toward_name IS NULL)),
              CHECK ((tries_count IS NULL) = (last_failure IS NULL) AND (next_try_at IS NULL OR tries_count IS NOT NULL)),
-             CHECK ((too_big_size IS NULL) = (too_big_free_space IS NULL)),
+             CHECK ((space_refusal_size IS NULL) = (space_refusal_free_space IS NULL)),
              CHECK ((refused_parent_id IS NULL) = (refused_name IS NULL)),
              CHECK (refusal_reason IS NOT NULL OR (refused_parent_id IS NULL AND refused_size IS NULL)),
              CHECK ((taken_parent_id IS NULL) = (taken_name IS NULL) AND (taken_parent_id IS NULL) = (taken_holder_name IS NULL)));
@@ -172,20 +172,20 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
         placeholder,
     });
     let (item_id, ctag, etag): (Option<String>, Option<String>, Option<String>) = (read.next()?, read.next()?, read.next()?);
-    let mismatched_upload = item_id.map(|item_id| MismatchedUpload::of_answer(OneDriveItemId::new(item_id), ctag.as_deref(), etag.as_deref()));
+    let mismatched_item = item_id.map(|item_id| MismatchedItem::of_answer(OneDriveItemId::new(item_id), ctag.as_deref(), etag.as_deref()));
     let (name, toward) = (read.name()?, read.place()?);
     let temporary_name = name.zip(toward).map(|(name, toward)| TemporaryName { name, toward });
     let (count, next_try_at, last_failure): (Option<u32>, Option<i64>, Option<String>) = (read.next()?, read.next()?, read.next()?);
     let failed_tries = count.zip(last_failure).map(|(count, last_failure)| FailedTries { count, next_try_at, last_failure: Reason::parse(&last_failure) });
     let (content, free_space) = (read.content()?, read.next::<Option<i64>>()?);
-    let too_big_for_space = content.zip(free_space).map(|(content, free_space)| TooBigForSpace { content, free_space: free_space.max(0) as u64 });
+    let space_refusal = content.zip(free_space).map(|(content, free_space)| SpaceRefusal { content, free_space: free_space.max(0) as u64 });
     let is_removal_confirmed = read.next::<i64>()? != 0;
     let (reason, place, content) = (read.next::<Option<String>>()?, read.place()?, read.content()?);
     // A refused version has a place; a refusal with none is that of a removal.
     let refusal = reason.map(|reason| Refusal { reason: Reason::parse(&reason), version: place.map(|place| ItemVersion { place: Some(place), content }) });
     let (place, holder_name) = (read.place()?, read.name()?);
     let taken_name = place.zip(holder_name).map(|(place, holder_name)| TakenName { place, holder_name });
-    Ok(ItemMemory { upload_session, mismatched_upload, temporary_name, failed_tries, too_big_for_space, is_removal_confirmed, refusal, taken_name })
+    Ok(ItemMemory { upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, is_removal_confirmed, refusal, taken_name })
 }
 
 fn content_values(content: Option<&ContentVersion>) -> [Value; 6] {
@@ -222,7 +222,7 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     let placeholder = session.and_then(|session| session.placeholder.as_ref());
     values.extend(place_values(placeholder));
     values.push(placeholder.map_or(Value::Null, |place| folded_name_value(&place.name)));
-    let mismatched = memory.mismatched_upload.as_ref();
+    let mismatched = memory.mismatched_item.as_ref();
     values.push(optional(mismatched.map(|upload| upload.item_id.as_str().to_owned())));
     let (ctag, etag) = match mismatched.map(|upload| &upload.tag) {
         Some(UploadTag::CTag(ctag)) => (Some(ctag.clone()), None),
@@ -237,9 +237,9 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     values.push(optional(tries.map(|tries| i64::from(tries.count))));
     values.push(optional(tries.and_then(|tries| tries.next_try_at)));
     values.push(optional(tries.map(|tries| tries.last_failure.to_string())));
-    let too_big = memory.too_big_for_space.as_ref();
-    values.extend(content_values(too_big.map(|too_big| &too_big.content)));
-    values.push(optional(too_big.map(|too_big| too_big.free_space as i64)));
+    let space_refusal = memory.space_refusal.as_ref();
+    values.extend(content_values(space_refusal.map(|space_refusal| &space_refusal.content)));
+    values.push(optional(space_refusal.map(|space_refusal| space_refusal.free_space as i64)));
     values.push(i64::from(memory.is_removal_confirmed).into());
     let refusal = memory.refusal.as_ref();
     let refused = refusal.and_then(|refusal| refusal.version.as_ref());

@@ -57,7 +57,7 @@ mod memory_row;
 mod upload_session_openings;
 
 pub use item_memory::{
-    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedUpload, Refusal, SpaceFit, StepFact, TakenName, TemporaryName, TooBigForSpace, UploadSession,
+    decide_removal_confirmation_standing, FactStanding, FailedTries, ItemMemory, MismatchedItem, Refusal, SpaceFit, StepFact, TakenName, TemporaryName, SpaceRefusal, UploadSession,
     UploadSessionAddress, UploadTag,
 };
 pub(crate) use memory_row::schema;
@@ -204,8 +204,8 @@ impl StepMemory<'_> {
 
     /// An upload of `item` left `upload` in OneDrive with other content than was sent: kept
     /// before its removal is asked. Refused for an id with no row.
-    pub fn remember_mismatched_upload(&mut self, item: LocalItemId, upload: &MismatchedUpload) -> Result<(), TreeError> {
-        self.write(|tx| remember_mismatched_upload(tx, item, upload))
+    pub fn remember_mismatched_item(&mut self, item: LocalItemId, upload: &MismatchedItem) -> Result<(), TreeError> {
+        self.write(|tx| remember_mismatched_item(tx, item, upload))
     }
 
     /// `item` goes through `temporary_name` in OneDrive: kept before the request that takes
@@ -229,8 +229,8 @@ impl StepMemory<'_> {
 
     /// OneDrive refused the content of `item` for lack of space. Not written when the file's
     /// content is not the refused one any more. Refused for an id with no row.
-    pub fn remember_too_big_for_space(&mut self, item: LocalItemId, too_big: &TooBigForSpace) -> Result<FactStanding, TreeError> {
-        self.write(|tx| remember_too_big_for_space(tx, item, too_big))
+    pub fn remember_space_refusal(&mut self, item: LocalItemId, space_refusal: &SpaceRefusal) -> Result<FactStanding, TreeError> {
+        self.write(|tx| remember_space_refusal(tx, item, space_refusal))
     }
 
     /// OneDrive has `free_space` bytes free, as a quota read said: every file kept as too big
@@ -299,8 +299,8 @@ fn list_timed_waits(conn: &Connection, limit: usize) -> Result<Vec<TimedWait>, T
 /// a file too big for the space.
 fn find_user_reason(memory: ItemMemory, row: &Item) -> Option<Reason> {
     let (said, _) = memory.split_by_standing(row);
-    let too_big = said.too_big_for_space.map(|too_big| Reason::TooBig(Some((too_big.content.size(), too_big.free_space))));
-    said.refusal.map(|refusal| refusal.reason).or(too_big)
+    let space_refusal = said.space_refusal.map(|space_refusal| Reason::TooBig(Some((space_refusal.content.size(), space_refusal.free_space))));
+    said.refusal.map(|refusal| refusal.reason).or(space_refusal)
 }
 
 fn list_user_reasons(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<UserReason>, TreeError> {
@@ -414,10 +414,10 @@ pub(crate) fn abandon_upload_session(conn: &Connection, item: LocalItemId) -> Re
     Ok(())
 }
 
-/// [`StepMemory::remember_mismatched_upload`], inside the caller's transaction.
-pub(crate) fn remember_mismatched_upload(conn: &Connection, item: LocalItemId, upload: &MismatchedUpload) -> Result<(), TreeError> {
+/// [`StepMemory::remember_mismatched_item`], inside the caller's transaction.
+pub(crate) fn remember_mismatched_item(conn: &Connection, item: LocalItemId, upload: &MismatchedItem) -> Result<(), TreeError> {
     write_fact(conn, item, |_, memory| {
-        memory.mismatched_upload = Some(upload.clone());
+        memory.mismatched_item = Some(upload.clone());
         Ok(())
     })
 }
@@ -448,12 +448,12 @@ pub(crate) fn clear_next_tries(conn: &Connection) -> Result<usize, TreeError> {
     Ok(conn.prepare_cached("UPDATE step_memory SET next_try_at = NULL WHERE next_try_at IS NOT NULL")?.execute([])?)
 }
 
-/// [`StepMemory::remember_too_big_for_space`], inside the caller's transaction.
-pub(crate) fn remember_too_big_for_space(conn: &Connection, item: LocalItemId, too_big: &TooBigForSpace) -> Result<FactStanding, TreeError> {
+/// [`StepMemory::remember_space_refusal`], inside the caller's transaction.
+pub(crate) fn remember_space_refusal(conn: &Connection, item: LocalItemId, space_refusal: &SpaceRefusal) -> Result<FactStanding, TreeError> {
     write_fact(conn, item, |row, memory| {
-        let fact_standing = too_big.decide_standing(row);
+        let fact_standing = space_refusal.decide_standing(row);
         if fact_standing == FactStanding::StillSaid {
-            memory.too_big_for_space = Some(too_big.clone());
+            memory.space_refusal = Some(space_refusal.clone());
         }
         Ok(fact_standing)
     })
@@ -462,12 +462,12 @@ pub(crate) fn remember_too_big_for_space(conn: &Connection, item: LocalItemId, t
 /// [`StepMemory::write_free_space`], inside the caller's transaction.
 pub(crate) fn write_free_space(conn: &Connection, free_space: u64) -> Result<usize, TreeError> {
     let mut let_go = 0;
-    for (item, _) in list_memories(conn, "too_big_size IS NOT NULL", &[])? {
+    for (item, _) in list_memories(conn, "space_refusal_size IS NOT NULL", &[])? {
         change_memory(conn, item, |_, memory| {
-            match memory.too_big_for_space.as_mut().map(|too_big| (too_big.decide_fit(free_space), too_big)) {
-                Some((SpaceFit::StillTooBig, too_big)) => too_big.free_space = free_space,
+            match memory.space_refusal.as_mut().map(|space_refusal| (space_refusal.decide_fit(free_space), space_refusal)) {
+                Some((SpaceFit::StillTooBig, space_refusal)) => space_refusal.free_space = free_space,
                 Some((SpaceFit::Fits, _)) => {
-                    memory.too_big_for_space = None;
+                    memory.space_refusal = None;
                     let_go += 1;
                 }
                 None => {}
@@ -537,13 +537,21 @@ pub(crate) fn remember_taken_name(conn: &Connection, item: LocalItemId, taken_na
 
 /// [`StepMemory::forget_fact`], inside the caller's transaction.
 pub(crate) fn forget_fact(conn: &Connection, item: LocalItemId, fact: StepFact) -> Result<(), TreeError> {
+    if fact == StepFact::UploadSession {
+        // Taken out before what the row does not say goes to the abandoned ones: a session
+        // that ended is not cancelled, whatever the file's content is by now.
+        let mut kept = read_memory(conn, item)?;
+        if kept.upload_session.take().is_some() {
+            write_memory(conn, item, &kept)?;
+        }
+    }
     change_memory(conn, item, |_, memory| {
         match fact {
             StepFact::UploadSession => memory.upload_session = None,
-            StepFact::MismatchedUpload => memory.mismatched_upload = None,
+            StepFact::MismatchedItem => memory.mismatched_item = None,
             StepFact::TemporaryName => memory.temporary_name = None,
             StepFact::FailedTries => memory.failed_tries = None,
-            StepFact::TooBigForSpace => memory.too_big_for_space = None,
+            StepFact::SpaceRefusal => memory.space_refusal = None,
             StepFact::RemovalConfirmation => memory.is_removal_confirmed = false,
             StepFact::Refusal => memory.refusal = None,
             StepFact::TakenName => memory.taken_name = None,

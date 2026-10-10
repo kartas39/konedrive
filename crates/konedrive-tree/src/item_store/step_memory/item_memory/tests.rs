@@ -60,20 +60,20 @@ fn an_upload_session_stands_while_the_files_content_is_the_one_being_sent() {
 /// A file too big for the space is so while its local content is the refused one.
 #[test]
 fn a_file_too_big_for_the_space_stands_while_its_content_is_the_refused_one() {
-    let too_big = TooBigForSpace { content: content(1), free_space: 5 };
-    assert_eq!(too_big.decide_standing(&shown("report", 1)), StillSaid);
-    assert_eq!(too_big.decide_standing(&shown("renamed", 1)), StillSaid, "a rename leaves the content");
-    assert_eq!(too_big.decide_standing(&shown("report", 2)), VersionGone, "the content changed");
-    assert_eq!(too_big.decide_standing(&row(None, true, true)), VersionGone, "the folder does not show the file");
+    let space_refusal = SpaceRefusal { content: content(1), free_space: 5 };
+    assert_eq!(space_refusal.decide_standing(&shown("report", 1)), StillSaid);
+    assert_eq!(space_refusal.decide_standing(&shown("renamed", 1)), StillSaid, "a rename leaves the content");
+    assert_eq!(space_refusal.decide_standing(&shown("report", 2)), VersionGone, "the content changed");
+    assert_eq!(space_refusal.decide_standing(&row(None, true, true)), VersionGone, "the folder does not show the file");
 }
 
 /// A file refused for lack of space fits when its size is no more than the free space.
 #[test]
 fn a_file_fits_when_its_size_is_no_more_than_the_free_space() {
-    let too_big = TooBigForSpace { content: content(1), free_space: 5 };
-    assert_eq!(too_big.decide_fit(9), SpaceFit::StillTooBig);
-    assert_eq!(too_big.decide_fit(10), SpaceFit::Fits);
-    assert_eq!(too_big.decide_fit(11), SpaceFit::Fits);
+    let space_refusal = SpaceRefusal { content: content(1), free_space: 5 };
+    assert_eq!(space_refusal.decide_fit(9), SpaceFit::StillTooBig);
+    assert_eq!(space_refusal.decide_fit(10), SpaceFit::Fits);
+    assert_eq!(space_refusal.decide_fit(11), SpaceFit::Fits);
 }
 
 /// A refusal is the item's while its local version is the refused one, place and content;
@@ -118,10 +118,10 @@ fn the_confirmation_of_a_removal_stands_while_the_row_is_a_removal_not_sent() {
 fn a_memory_is_parted_into_what_the_row_says_and_what_is_gone() {
     let memory = ItemMemory {
         upload_session: Some(UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: Some(9), next_offset: 3, content: content(1), placeholder: None }),
-        mismatched_upload: Some(MismatchedUpload::of_answer(OneDriveItemId::new("B"), Some("c-B"), Some("e-B"))),
+        mismatched_item: Some(MismatchedItem::of_answer(OneDriveItemId::new("B"), Some("c-B"), Some("e-B"))),
         temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
         failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
-        too_big_for_space: Some(TooBigForSpace { content: content(1), free_space: 5 }),
+        space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
         is_removal_confirmed: true,
         refusal: Some(Refusal { reason: Reason::Forbidden, version: Some(version("report", 1)) }),
         taken_name: Some(TakenName { place: place("report"), holder_name: "REPORT".into() }),
@@ -131,8 +131,8 @@ fn a_memory_is_parted_into_what_the_row_says_and_what_is_gone() {
     assert_eq!(gone, ItemMemory { is_removal_confirmed: true, ..ItemMemory::default() });
 
     let (said, gone) = memory.clone().split_by_standing(&shown("renamed", 2));
-    assert_eq!(said, ItemMemory { mismatched_upload: memory.mismatched_upload.clone(), failed_tries: memory.failed_tries.clone(), ..ItemMemory::default() }, "what holds no version");
-    assert_eq!(gone, ItemMemory { mismatched_upload: None, failed_tries: None, ..memory.clone() });
+    assert_eq!(said, ItemMemory { mismatched_item: memory.mismatched_item.clone(), failed_tries: memory.failed_tries.clone(), ..ItemMemory::default() }, "what holds no version");
+    assert_eq!(gone, ItemMemory { mismatched_item: None, failed_tries: None, ..memory.clone() });
 
     let (said, _) = memory.clone().split_by_standing(&row(None, true, true));
     assert!(said.is_removal_confirmed && said.upload_session.is_none() && said.refusal.is_none(), "removed here: the confirmation, and nothing of the content");
@@ -142,13 +142,13 @@ fn a_memory_is_parted_into_what_the_row_says_and_what_is_gone() {
 /// answer, its eTag when it carried no cTag, and nothing when it carried neither.
 #[test]
 fn an_item_an_upload_left_is_told_by_the_tag_of_the_answer() {
-    let by_ctag = MismatchedUpload::of_answer(OneDriveItemId::new("B"), Some("c1"), Some("e1"));
+    let by_ctag = MismatchedItem::of_answer(OneDriveItemId::new("B"), Some("c1"), Some("e1"));
     assert_eq!(by_ctag.tag, UploadTag::CTag("c1".to_owned()));
     assert!(by_ctag.is_still_in_onedrive(Some("c1"), Some("e2")), "the eTag moved, the content did not");
     assert!(!by_ctag.is_still_in_onedrive(Some("c2"), Some("e1")));
-    let by_etag = MismatchedUpload::of_answer(OneDriveItemId::new("B"), None, Some("e1"));
+    let by_etag = MismatchedItem::of_answer(OneDriveItemId::new("B"), None, Some("e1"));
     assert!(by_etag.is_still_in_onedrive(None, Some("e1")) && !by_etag.is_still_in_onedrive(Some("c1"), Some("e2")));
-    assert!(MismatchedUpload::of_answer(OneDriveItemId::new("B"), None, None).is_still_in_onedrive(Some("c9"), Some("e9")), "nothing says it is not");
+    assert!(MismatchedItem::of_answer(OneDriveItemId::new("B"), None, None).is_still_in_onedrive(Some("c9"), Some("e9")), "nothing says it is not");
 }
 
 /// The address of an upload session is not printed.

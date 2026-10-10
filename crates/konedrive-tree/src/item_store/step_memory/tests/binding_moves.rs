@@ -30,7 +30,7 @@ fn a_binding_taken_over_brings_the_confirmation_and_drops_what_was_asked_of_oned
     store.item_store().write(|tx| take_over_binding(tx, replacing, replaced)).unwrap();
     assert_eq!(
         kept(&store, replacing),
-        ItemMemory { mismatched_upload: before.mismatched_upload, too_big_for_space: before.too_big_for_space, taken_name: before.taken_name, is_removal_confirmed: true, ..ItemMemory::default() }
+        ItemMemory { mismatched_item: before.mismatched_item, space_refusal: before.space_refusal, taken_name: before.taken_name, is_removal_confirmed: true, ..ItemMemory::default() }
     );
     assert_eq!((count(&store, "step_memory"), sorted(abandoned(&mut store))), (1, vec!["https://up/1".to_owned(), "https://up/replaced".to_owned()]));
     assert!(!said(&mut store, replacing).is_removal_confirmed, "the folder shows it: no removal");
@@ -48,14 +48,14 @@ fn a_file_that_gives_its_binding_up_drops_what_was_asked_of_onedrive_for_it() {
     let file = make_file(&mut store, ROOT, "report");
     synced(&mut store, file, "A");
     let update = UploadSession { address: address("update"), expires_at: None, next_offset: 7, content: local_content(&mut store, file), placeholder: None };
-    let (refusal, big) = (refusal_of(&mut store, file, Reason::Forbidden), too_big(&mut store, file, 1));
+    let (refusal, big) = (refusal_of(&mut store, file, Reason::Forbidden), space_refusal(&mut store, file, 1));
     store.step_memory().remember_upload_session(file, &update).unwrap();
     store.step_memory().remember_refusal(file, &refusal).unwrap();
     store.step_memory().remember_failed_try(file, &Reason::Locked, Some(40)).unwrap();
-    store.step_memory().remember_too_big_for_space(file, &big).unwrap();
+    store.step_memory().remember_space_refusal(file, &big).unwrap();
 
     let taker = store.item_store().give_up_binding(file, false).unwrap();
-    assert_eq!(kept(&store, file), ItemMemory { too_big_for_space: Some(big), ..ItemMemory::default() });
+    assert_eq!(kept(&store, file), ItemMemory { space_refusal: Some(big), ..ItemMemory::default() });
     assert_eq!((kept(&store, taker), abandoned(&mut store)), (ItemMemory::default(), vec![address("update")]));
 }
 
@@ -93,7 +93,7 @@ fn items_that_are_merged_drop_the_new_items_session_and_keep_the_openings_of_the
     store.item_store().merge_items(local, onedrive).unwrap();
     assert_eq!(
         kept(&store, local),
-        ItemMemory { mismatched_upload: before.mismatched_upload, too_big_for_space: before.too_big_for_space, taken_name: before.taken_name, ..ItemMemory::default() }
+        ItemMemory { mismatched_item: before.mismatched_item, space_refusal: before.space_refusal, taken_name: before.taken_name, ..ItemMemory::default() }
     );
     assert_eq!(abandoned(&mut store), [address("1")]);
 
