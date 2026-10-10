@@ -596,8 +596,8 @@ pub struct Item {
     /// by one of the two being there and the other not — and `None` while they agree. The
     /// order in which what is unsent came to be so. The store keeps it with every write of
     /// either ([`ItemStore::list_unsent`](crate::ItemStore::list_unsent)); nothing writes
-    /// it by itself. An item that is left here has it too: who is not sent is the plan's
-    /// question.
+    /// it by itself. An item that is left here has it too: the stamp says what differs, and
+    /// the reader of what is unsent leaves such an item out.
     pub unsent_since: Option<u64>,
 }
 

@@ -54,6 +54,11 @@ pub(crate) fn unsent_columns() -> String {
     [of("local"), of("synced")].concat().join(", ")
 }
 
+/// SQL for "the row's item is left here by its own name": it has no binding, and the upload
+/// rules ignore its name. The index `items_unsent` leaves these rows out, and a query finds
+/// the others by it when it asks in these words.
+pub(crate) const LEFT_HERE: &str = "(onedrive_item_id IS NULL AND is_name_ignored != 0)";
+
 /// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
 /// changed, made or removed since the two sides last agreed, and what they never agreed
 /// on. The index `items_changed_in_onedrive` holds these rows, and a query finds them by it
@@ -427,10 +432,12 @@ pub(super) fn list_changed_in_onedrive(conn: &Connection, after: Option<LocalIte
     Ok(items)
 }
 
-/// The unsent items in the order in which each came to be unsent: at most `limit` of
-/// them, after the stamp `after` when one is given. Found by the index of their stamps.
+/// The unsent items that are not left here ([`LEFT_HERE`]), in the order in which each
+/// came to be unsent: at most `limit` of them, after the stamp `after` when one is given.
+/// Found by the index of their stamps, which holds no row that is left here: none of those
+/// is read to reach the others.
 pub(super) fn list_unsent(conn: &Connection, after: Option<u64>, limit: usize) -> Result<Vec<Item>, TreeError> {
-    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_unsent WHERE unsent_since IS NOT NULL AND unsent_since > ?1 ORDER BY unsent_since LIMIT ?2");
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_unsent WHERE unsent_since IS NOT NULL AND NOT {LEFT_HERE} AND unsent_since > ?1 ORDER BY unsent_since LIMIT ?2");
     let mut statement = conn.prepare_cached(&sql)?;
     let items = statement.query_map(params![after.map_or(0, |stamp| stamp as i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)

@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
+use crate::item_store::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -22,7 +22,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "13";
+pub const SCHEMA_VERSION: &str = "14";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -60,7 +60,7 @@ pub const SCHEMA_VERSION: &str = "13";
 ///   checks of a place, of a parent and of a file's content hold of the OneDrive side.
 ///   `confirmed_at_count` is the count of confirmations at which OneDrive last confirmed
 ///   something of the row (0: never), the stamp of the guard against an outdated listing;
-///   `seen_in_full_listing` the count of the full listing that last listed the item
+///   `seen_in_full_listing` the id of the full listing that last listed the item
 ///   ([`crate::item_store`]'s `onedrive_versions`). `items_changed_in_onedrive` holds the
 ///   rows whose OneDrive place or content is not the synced one, `items_binding_alone` those
 ///   that are a binding and nothing else, by their stamp, and `items_seen_in_full_listing`
@@ -73,7 +73,8 @@ pub const SCHEMA_VERSION: &str = "13";
 ///   after any statement that writes a local or a synced column, so that no writer of
 ///   either can leave it out; they give the next stamp when the two first differ, leave a
 ///   stamp that is there, and take it when they agree. `items_unsent` holds the unsent rows
-///   by their stamp.
+///   by their stamp, but those of items left here, which are never sent: a bounded read
+///   of what is unsent reads none of them.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
 ///   below it. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
@@ -186,7 +187,7 @@ fn schema() -> String {
          CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
          CREATE INDEX items_binding_alone ON items(confirmed_at_count) WHERE {binding_alone};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
-         CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL;
+         CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL AND NOT {left_here};
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}
                OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
@@ -266,6 +267,7 @@ fn schema() -> String {
         placed = PLACED,
         changed_in_onedrive = CHANGED_IN_ONEDRIVE,
         binding_alone = BINDING_ALONE,
+        left_here = LEFT_HERE,
         last_unsent_since = meta::LAST_UNSENT_SINCE,
         new_unsent = unsent("NEW."),
         unsent_columns = unsent_columns(),

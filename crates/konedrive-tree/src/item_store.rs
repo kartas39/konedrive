@@ -81,7 +81,7 @@ mod onedrive_versions;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
-pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
+pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE};
 
 use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_children_in_onedrive_with_folded_name, list_children_with_folded_name, list_unsent, set_local_place, set_local_place_aside, write_item};
 
@@ -161,13 +161,16 @@ impl ItemStore<'_> {
         list_children_in_onedrive_with_folded_name(&self.store.conn, directory, name)
     }
 
-    /// The unsent items: those whose local version is not what the two sides last agreed
-    /// on, in its place or its content, or by one of the two being there and the other not
-    /// — made here, moved, changed or removed here since. In the order in which each first
-    /// came to be so ([`Item::unsent_since`]), at most `limit` of them, after the stamp
-    /// `after` when one is given: a plan reads a bounded number and asks for the next.
-    /// Found by an index, never by reading every row. An item that is left here is among
-    /// them: the stamp says what differs, not what is sent.
+    /// The unsent items a plan reads: those whose local version is not what the two sides
+    /// last agreed on, in its place or its content, or by one of the two being there and
+    /// the other not — made here, moved, changed or removed here since — and that are not
+    /// left here. In the order in which each first came to be unsent
+    /// ([`Item::unsent_since`]), at most `limit` of them, after the stamp `after` when one
+    /// is given: a plan reads a bounded number and asks for the next. Found by an index
+    /// that holds no item that is left here, so that none of those is read to reach what
+    /// can be sent, however many there are. An item that is left here keeps its stamp, and
+    /// is among these, where that stamp puts it, from the moment it is not left here any
+    /// more.
     pub fn list_unsent(&self, after: Option<u64>, limit: usize) -> Result<Vec<Item>, TreeError> {
         list_unsent(&self.store.conn, after, limit)
     }
