@@ -354,6 +354,8 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
     let mut store = TreeStore::in_memory().unwrap();
     let dir = make_directory(&mut store, ROOT, "dir");
     let file = make_file(&mut store, dir, "file");
+    let own = make_directory(&mut store, dir, "own");
+    let dir_row = synced(&mut store, dir, "D");
     let before = synced(&mut store, file, "F");
     store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: file }).unwrap();
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: dir })), "a directory that holds something");
@@ -365,12 +367,28 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
         "the binding, the kind and the synced place and content stay"
     );
     assert_eq!(item(&mut store, file).kind, ItemKind::File, "a row the folder does not show says what it is");
-    assert_eq!(names(&mut store, dir), Vec::<String>::new());
     assert_eq!(path(&mut store, file), None, "an item the folder does not show has no path");
+    store.item_store().apply(&LocalVersionChange::Removed { item: own }).unwrap();
+    assert_eq!(store.item_store().find_item(own).unwrap(), None, "a directory OneDrive never had goes with its removal");
+    assert_eq!(names(&mut store, dir), Vec::<String>::new());
     store.item_store().apply(&LocalVersionChange::Removed { item: dir }).unwrap();
-    assert_eq!(store.item_store().find_item(dir).unwrap(), None);
+    assert_eq!(item(&mut store, dir), Item { local: None, ..dir_row }, "the removed file's synced place still names a row");
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: file })), "removed already");
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: LocalItemId::new(99) })));
+}
+
+/// Rows that say the two sides agreed something is in a directory OneDrive does not have
+/// (no operation leaves such) do not make a removal fail as SQLite's: the removal of that
+/// directory is refused, and nothing changes.
+#[test]
+fn a_directory_with_no_binding_that_something_was_agreed_to_be_in_is_not_removed() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let dir = make_directory(&mut store, ROOT, "dir");
+    let file = make_file(&mut store, dir, "file");
+    synced(&mut store, file, "F");
+    store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap();
+    assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: dir })));
+    assert_eq!(names(&mut store, ROOT), ["dir"]);
 }
 
 /// A file made where a file was removed here whose removal is not sent yet takes over that
@@ -736,6 +754,30 @@ fn the_schema_refuses_a_row_that_contradicts_itself() {
     ] {
         assert!(is_refused_by_schema(store.bench_sql(sql)), "{what}");
     }
+}
+
+/// A child's parent exists, whoever deletes a row: the schema refuses to delete a row that
+/// another names as its parent in the folder, or as the directory the two sides agreed it
+/// is in. With nothing in it on either side, the row goes.
+#[test]
+fn the_schema_refuses_to_delete_a_row_from_under_what_is_in_it() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let local_parent = make_directory(&mut store, ROOT, "local-parent");
+    let child = make_file(&mut store, local_parent, "child");
+    let synced_parent = store.item_store().make_onedrive_item(&reference("P"), ItemKind::Directory).unwrap();
+    let mut child_row = synced(&mut store, child, "C");
+    child_row.synced_place = Some(place(synced_parent, "child"));
+    write_item(&store.conn, &child_row).unwrap();
+
+    let delete = |store: &TreeStore, id: LocalItemId| store.bench_sql(&format!("DELETE FROM items WHERE local_item_id = {id}"));
+    assert!(is_refused_by_schema(delete(&store, local_parent)), "the folder shows something in it");
+    assert!(is_refused_by_schema(delete(&store, synced_parent)), "the two sides agreed something is in it");
+    assert!(is_refused_by_schema(store.bench_sql("DELETE FROM items WHERE local_item_id != 1")), "several rows at once, a parent among them");
+    assert_eq!(names(&mut store, local_parent), ["child"]);
+    delete(&store, child).unwrap();
+    delete(&store, local_parent).unwrap();
+    delete(&store, synced_parent).unwrap();
+    assert_eq!(store.item_store().list_children(ROOT).unwrap(), Vec::new());
 }
 
 fn onedrive_root(id: &str) -> Change {

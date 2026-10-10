@@ -40,7 +40,10 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   content and nothing else has one; a directory has no content on any side, none on disk
 ///   and none before a write; neither has an item the folder does not show.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
-///   below it.
+///   below it. A row is not deleted while another names it as its local or its synced
+///   parent (the trigger `items_parent_kept`, asked per row: what is in a directory is
+///   deleted before the directory). An outbox row may name an item whose row is gone: the
+///   removal of a file that was never sent leaves the rows that undo what was sent of it.
 /// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
@@ -108,6 +111,10 @@ fn schema() -> String {
          CREATE UNIQUE INDEX items_onedrive_item ON items(onedrive_drive_id, onedrive_item_id) WHERE onedrive_item_id IS NOT NULL;
          CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
          CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
+         CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
+             WHEN EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
+               OR EXISTS (SELECT 1 FROM items WHERE synced_parent_id = OLD.local_item_id)
+             BEGIN SELECT RAISE(ABORT, 'items: a row that is another row''s parent is not deleted'); END;
          INSERT INTO items (local_item_id, kind) VALUES ({root}, '{directory}');
          CREATE TABLE pins (id TEXT PRIMARY KEY);
          {onedrive_items}

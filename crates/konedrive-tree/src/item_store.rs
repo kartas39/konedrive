@@ -6,7 +6,9 @@
 //!
 //! - *An item's parent exists in the folder and is a directory.* The code: an item is made
 //!   or moved only into a directory the folder shows ([`check_directory`]), and a directory
-//!   leaves the folder only when the folder shows nothing in it ([`check_empty`]).
+//!   leaves the folder only when the folder shows nothing in it ([`check_empty`]). The
+//!   schema, whoever deletes: a row does not go while another names it as its local or its
+//!   synced parent (the trigger `items_parent_kept`).
 //! - *No item is above itself.* The schema refuses a row that is its own parent; the code
 //!   refuses a move into what is below the item ([`check_not_below`]).
 //! - *In the folder, one item per name in a directory.* The schema: the unique index
@@ -240,6 +242,12 @@ fn check_place_is_free(conn: &Connection, place: &ItemPlace) -> Result<(), TreeE
 /// a bound one stays, with what the two sides last agreed on.
 fn remove_local_version(conn: &Connection, mut item: Item) -> Result<(), TreeError> {
     if item.onedrive_item.is_none() {
+        // No operation leaves something agreed to be in a directory OneDrive does not have;
+        // rows that say so all the same are refused here, before the schema would.
+        let holds = conn.prepare_cached("SELECT 1 FROM items WHERE synced_parent_id = ?1 LIMIT 1")?.exists([item.local_item_id.as_i64()])?;
+        if holds {
+            return Err(refuse(format!("the two sides agreed something is in item {}, which has no binding: its row does not go", item.local_item_id)));
+        }
         return delete_item(conn, item.local_item_id);
     }
     item.local = None;
