@@ -98,6 +98,7 @@ fn give_up_binding_leaves_the_item_local_and_a_new_row_takes_the_binding() {
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
             confirmed_at_count: 0,
+            unsent_since: None,
         }
     );
     assert_eq!(bound_to(&mut store, "A"), Some(taker));
@@ -180,7 +181,8 @@ fn merge_items_gives_the_local_row_the_binding_and_the_other_row_goes() {
     write_item(&store.conn, &listed_row).unwrap();
 
     store.item_store().merge_items(local, listed).unwrap();
-    assert_eq!(item(&mut store, local), Item { onedrive_item: Some(reference("P")), synced_place: Some(place(ROOT, "Photos")), ..before });
+    assert!(before.unsent_since.is_some());
+    assert_eq!(item(&mut store, local), Item { onedrive_item: Some(reference("P")), synced_place: Some(place(ROOT, "Photos")), unsent_since: None, ..before }, "a directory where the two sides agree it is: nothing of it is unsent");
     assert_eq!(store.item_store().find_item(listed).unwrap(), None);
     assert_eq!(bound_to(&mut store, "P"), Some(local));
     assert_eq!(item(&mut store, listed_file).synced_place, Some(place(local, "a.jpg")));
@@ -338,6 +340,7 @@ fn make_onedrive_item_makes_a_row_with_the_binding_and_the_kind_alone() {
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
             confirmed_at_count: 0,
+            unsent_since: None,
         }
     );
     let file = store.item_store().make_onedrive_item(&reference("F"), ItemKind::File).unwrap();

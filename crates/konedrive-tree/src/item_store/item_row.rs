@@ -28,7 +28,30 @@ const ITEM_COLUMNS: &str = "local_item_id, onedrive_drive_id, onedrive_item_id, 
      synced_parent_id, synced_name, synced_size, synced_mtime, synced_mtime_nsec, synced_hash, synced_ctag, synced_change_count, \
      content_presence, \
      before_write_size, before_write_mtime, before_write_mtime_nsec, before_write_hash, before_write_ctag, before_write_change_count, \
-     placement, is_name_ignored, confirmed_at_count";
+     placement, is_name_ignored, confirmed_at_count, unsent_since";
+
+/// The column of [`ITEM_COLUMNS`] that is read and never written here: the schema keeps it
+/// with every write of a local version or of a synced place or content (the triggers
+/// `items_unsent_since_*`).
+const UNSENT_SINCE: &str = "unsent_since";
+
+/// SQL for "the local place or content of `row` is not the synced one", `row` being the
+/// empty text for the row a statement is about, or `NEW.` in a trigger: the two differ in
+/// the place or in the content, or one is there and the other is not. The triggers that
+/// keep `unsent_since` ask it in these words.
+pub(crate) fn unsent(row: &str) -> String {
+    let differs = |column: &str| format!("{row}local_{column} IS NOT {row}synced_{column}");
+    let places = ["parent_id", "name"].map(differs).join(" OR ");
+    let contents = CONTENT_COLUMNS.map(differs).join(" OR ");
+    format!("({places} OR {contents})")
+}
+
+/// The columns [`unsent`] reads: a write of any of them is a write of a local version or
+/// of a synced place or content.
+pub(crate) fn unsent_columns() -> String {
+    let of = |side: &str| std::iter::once("parent_id").chain(["name"]).chain(CONTENT_COLUMNS).map(|column| format!("{side}_{column}")).collect::<Vec<_>>();
+    [of("local"), of("synced")].concat().join(", ")
+}
 
 /// SQL for "the row's OneDrive place or content is not the synced one": what OneDrive
 /// changed, made or removed since the two sides last agreed, and what they never agreed
@@ -68,6 +91,7 @@ mod column_index {
     pub(super) const PLACEMENT: usize = column(ITEM_COLUMNS, "placement");
     pub(super) const IS_NAME_IGNORED: usize = column(ITEM_COLUMNS, "is_name_ignored");
     pub(super) const CONFIRMED_AT_COUNT: usize = column(ITEM_COLUMNS, "confirmed_at_count");
+    pub(super) const UNSENT_SINCE: usize = column(ITEM_COLUMNS, "unsent_since");
 }
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
@@ -150,6 +174,7 @@ fn item_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         placement: Placement::decode(&row.get::<_, String>(column_index::PLACEMENT)?),
         is_name_ignored: row.get::<_, i64>(column_index::IS_NAME_IGNORED)? != 0,
         confirmed_at_count: row.get::<_, i64>(column_index::CONFIRMED_AT_COUNT)?.max(0) as u64,
+        unsent_since: row.get::<_, Option<i64>>(column_index::UNSENT_SINCE)?.map(|stamp| stamp.max(0) as u64),
     })
 }
 
@@ -180,7 +205,7 @@ fn onedrive_values(onedrive: Option<&ItemVersion>, etag: Option<&str>) -> Vec<Va
     values
 }
 
-/// The value of every column of [`ITEM_COLUMNS`] but the first, the key, in their order.
+/// The value of every column [`written_columns`] names, in their order.
 fn values_of(item: &Item) -> Vec<Value> {
     let binding = item.onedrive_item.as_ref();
     let local = item.local.as_ref();
@@ -199,9 +224,10 @@ fn values_of(item: &Item) -> Vec<Value> {
     values
 }
 
-/// The names of [`ITEM_COLUMNS`] but the first, the key.
+/// The names of [`ITEM_COLUMNS`] but the first, the key, and [`UNSENT_SINCE`], which the
+/// schema keeps.
 fn written_columns() -> impl Iterator<Item = &'static str> {
-    ITEM_COLUMNS.split(',').map(str::trim).skip(1)
+    ITEM_COLUMNS.split(',').map(str::trim).skip(1).filter(|column| *column != UNSENT_SINCE)
 }
 
 /// A new row: an item of `kind` with this binding and this local version, and nothing
@@ -367,6 +393,15 @@ pub(super) fn list_changed_in_onedrive(conn: &Connection, after: Option<LocalIte
     let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_changed_in_onedrive WHERE {CHANGED_IN_ONEDRIVE} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2");
     let mut statement = conn.prepare_cached(&sql)?;
     let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+/// The unsent items in the order in which each came to be unsent: at most `limit` of
+/// them, after the stamp `after` when one is given. Found by the index of their stamps.
+pub(super) fn list_unsent(conn: &Connection, after: Option<u64>, limit: usize) -> Result<Vec<Item>, TreeError> {
+    let sql = format!("SELECT {ITEM_COLUMNS} FROM items INDEXED BY items_unsent WHERE unsent_since IS NOT NULL AND unsent_since > ?1 ORDER BY unsent_since LIMIT ?2");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let items = statement.query_map(params![after.map_or(0, |stamp| stamp as i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)
 }
 

@@ -22,6 +22,7 @@ fn stamped(confirmed_at_count: u64, onedrive_etag: Option<&str>) -> Item {
         placement: Placement::Placed,
         is_name_ignored: false,
         confirmed_at_count,
+        unsent_since: None,
     }
 }
 

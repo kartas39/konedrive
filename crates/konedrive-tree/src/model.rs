@@ -586,6 +586,14 @@ pub struct Item {
     /// listing: what a listing fetched before that count says of the item may be older than
     /// what was confirmed.
     pub confirmed_at_count: u64,
+    /// A stamp from one counter of the store, given when the item's local version first came
+    /// to differ from what the two sides last agreed on — in its place or its content, or
+    /// by one of the two being there and the other not — and `None` while they agree. The
+    /// order in which what is unsent came to be so. The store keeps it with every write of
+    /// either ([`ItemStore::list_unsent`](crate::ItemStore::list_unsent)); nothing writes
+    /// it by itself. An item that is left here has it too: who is not sent is the plan's
+    /// question.
+    pub unsent_since: Option<u64>,
 }
 
 /// Whether the folder can show an item as OneDrive has it

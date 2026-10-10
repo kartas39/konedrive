@@ -60,7 +60,7 @@ pub(super) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) 
     row.synced_content = local.content.clone();
     row.onedrive_item = Some(reference(onedrive_id));
     write_item(&store.conn, &row).unwrap();
-    row
+    item(store, id)
 }
 
 /// The code refused what would break a rule of the rows.
@@ -105,6 +105,7 @@ fn the_root_is_item_1_a_directory_with_no_place() {
             placement: crate::model::Placement::Placed,
             is_name_ignored: false,
             confirmed_at_count: 0,
+            unsent_since: None,
         }
     );
     assert_eq!(path(&mut store, ROOT), Some(PathBuf::new()));
@@ -389,10 +390,11 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
     store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: file }).unwrap();
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: dir })), "a directory that holds something");
 
+    let opened_at = unsent_since(&mut store, file);
     assert_eq!(store.item_store().apply(&LocalVersionChange::Removed { item: file }).unwrap(), file);
     assert_eq!(
         item(&mut store, file),
-        Item { local: None, content_presence: ContentPresence::NotOnDisk, content_before_write: None, ..before },
+        Item { local: None, content_presence: ContentPresence::NotOnDisk, content_before_write: None, unsent_since: opened_at, ..before },
         "the binding, the kind and the synced place and content stay"
     );
     assert_eq!(item(&mut store, file).kind, ItemKind::File, "a row the folder does not show says what it is");
@@ -401,7 +403,9 @@ fn a_removal_takes_the_local_version_and_keeps_a_bound_row() {
     assert_eq!(store.item_store().find_item(own).unwrap(), None, "a directory OneDrive never had goes with its removal");
     assert_eq!(names(&mut store, dir), Vec::<String>::new());
     store.item_store().apply(&LocalVersionChange::Removed { item: dir }).unwrap();
-    assert_eq!(item(&mut store, dir), Item { local: None, ..dir_row }, "the removed file's synced place still names a row");
+    let removed_at = unsent_since(&mut store, dir);
+    assert!(removed_at.is_some());
+    assert_eq!(item(&mut store, dir), Item { local: None, unsent_since: removed_at, ..dir_row }, "the removed file's synced place still names a row");
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: file })), "removed already");
     assert!(is_refused(store.item_store().apply(&LocalVersionChange::Removed { item: LocalItemId::new(99) })));
 }
@@ -575,7 +579,9 @@ fn a_file_of_onedrive_renamed_over_another_file_of_onedrive_is_moved_and_the_oth
     let a_row = item(&mut store, a);
     assert_eq!((a_row.onedrive_item.clone(), a_row.local.clone().unwrap().place, a_row.synced_place.clone()), (Some(reference("A")), Some(place(ROOT, "b")), Some(place(ROOT, "a"))));
     assert_eq!(a_row.file_sync_state(), Some(FileSyncState::Synced), "moved, and its content is the one agreed on");
-    assert_eq!(item(&mut store, b), Item { local: None, content_presence: ContentPresence::NotOnDisk, ..b_row }, "removed here, to be removed in OneDrive");
+    let removed_at = unsent_since(&mut store, b);
+    assert!(removed_at.is_some());
+    assert_eq!(item(&mut store, b), Item { local: None, content_presence: ContentPresence::NotOnDisk, unsent_since: removed_at, ..b_row }, "removed here, to be removed in OneDrive");
     assert_eq!(names(&mut store, ROOT), ["b"]);
 
     let (c, d) = (make_directory(&mut store, ROOT, "c"), make_directory(&mut store, ROOT, "d"));
@@ -584,7 +590,9 @@ fn a_file_of_onedrive_renamed_over_another_file_of_onedrive_is_moved_and_the_oth
     let d_row = synced(&mut store, d, "D");
     store.item_store().apply(&LocalVersionChange::SavedOver { replacing: c, replaced: d }).unwrap();
     assert_eq!(item(&mut store, c).onedrive_item, Some(reference("C")));
-    assert_eq!(item(&mut store, d), Item { local: None, ..d_row });
+    let removed_at = unsent_since(&mut store, d);
+    assert!(removed_at.is_some());
+    assert_eq!(item(&mut store, d), Item { local: None, unsent_since: removed_at, ..d_row });
     assert_eq!(path(&mut store, inside), Some(PathBuf::from("d/inside")));
 }
 
@@ -599,7 +607,9 @@ fn a_directory_that_is_not_in_onedrive_renamed_over_one_that_is_takes_no_binding
     store.item_store().apply(&LocalVersionChange::SavedOver { replacing: new, replaced: old }).unwrap();
     let row = item(&mut store, new);
     assert_eq!((row.onedrive_item, row.synced_place, row.local.unwrap().place), (None, None, Some(place(ROOT, "old"))));
-    assert_eq!(item(&mut store, old), Item { local: None, ..old_row });
+    let removed_at = unsent_since(&mut store, old);
+    assert!(removed_at.is_some());
+    assert_eq!(item(&mut store, old), Item { local: None, unsent_since: removed_at, ..old_row });
 }
 
 /// A file saved over a file a program holds open for writing: the replaced file's content
@@ -1150,4 +1160,153 @@ fn the_root_is_not_bound_to_a_reference_that_a_shown_item_or_a_file_has() {
         assert!(is_refused(store.set_drive_id("d1")), "shown: {shown}");
         assert_eq!(item(&mut store, ROOT).onedrive_item, None);
     }
+}
+
+fn unsent_since(store: &mut TreeStore, id: LocalItemId) -> Option<u64> {
+    item(store, id).unsent_since
+}
+
+fn apply(store: &mut TreeStore, change: LocalVersionChange) {
+    store.item_store().apply(&change).unwrap();
+}
+
+/// An item made here is unsent from the moment it is made, a file and a directory alike,
+/// each with the next stamp of one counter; what is done to it afterwards keeps the stamp.
+/// An item whose name the upload rules ignore has it like any other. The root, which has no
+/// place on either side, never has one.
+#[test]
+fn an_item_made_here_is_unsent_since_it_was_made() {
+    let mut store = TreeStore::in_memory().unwrap();
+    assert_eq!(store.item_store().last_unsent_since().unwrap(), 0);
+    let file = make_file(&mut store, ROOT, "file");
+    let dir = make_directory(&mut store, ROOT, "dir");
+    let ignored = make_named(&mut store, ItemKind::File, ROOT, "ignored.tmp", true);
+    assert_eq!((unsent_since(&mut store, file), unsent_since(&mut store, dir), unsent_since(&mut store, ignored)), (Some(1), Some(2), Some(3)));
+    assert_eq!((unsent_since(&mut store, ROOT), store.item_store().last_unsent_since().unwrap()), (None, 3));
+
+    apply(&mut store, LocalVersionChange::Moved { item: file, place: place(dir, "moved"), is_name_ignored: false });
+    apply(&mut store, LocalVersionChange::OpenedForWriting { item: file });
+    apply(&mut store, LocalVersionChange::ClosedChanged { item: file, size: 5, mtime: 300, mtime_nsec: 0 });
+    apply(&mut store, LocalVersionChange::Truncated { item: file, size: 1, mtime: 301, mtime_nsec: 0 });
+    store.item_store().bind_item(file, &reference("A")).unwrap();
+    assert_eq!((unsent_since(&mut store, file), store.item_store().last_unsent_since().unwrap()), (Some(1), 3), "the first stamp, and no other given");
+}
+
+/// Each kind of change of the local version of an item the two sides agree on gives the
+/// stamp once, a later change keeps the first stamp, and a change back to what was agreed
+/// on clears it: a move and the move back; a writer's open and its close that changed
+/// nothing; a close that changed the content, and a truncation; a removal.
+#[test]
+fn a_change_of_the_local_version_is_unsent_since_the_first_and_no_more_once_it_is_taken_back() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let dir = make_directory(&mut store, ROOT, "dir");
+    let file = make_file(&mut store, ROOT, "file");
+    synced(&mut store, dir, "D");
+    synced(&mut store, file, "A");
+    assert_eq!((unsent_since(&mut store, dir), unsent_since(&mut store, file)), (None, None), "the two sides agree");
+    let given = |store: &mut TreeStore| store.item_store().last_unsent_since().unwrap();
+    let before = given(&mut store);
+
+    apply(&mut store, LocalVersionChange::Moved { item: file, place: place(dir, "file"), is_name_ignored: false });
+    assert_eq!(unsent_since(&mut store, file), Some(before + 1));
+    apply(&mut store, LocalVersionChange::Moved { item: file, place: place(dir, "renamed"), is_name_ignored: false });
+    apply(&mut store, LocalVersionChange::OpenedForWriting { item: file });
+    assert_eq!(unsent_since(&mut store, file), Some(before + 1), "the first stamp is kept through later changes");
+    apply(&mut store, LocalVersionChange::ClosedUnchanged { item: file });
+    apply(&mut store, LocalVersionChange::Moved { item: file, place: place(ROOT, "file"), is_name_ignored: false });
+    assert_eq!(unsent_since(&mut store, file), None, "moved back, and the content as it was");
+
+    apply(&mut store, LocalVersionChange::OpenedForWriting { item: file });
+    assert_eq!(unsent_since(&mut store, file), Some(before + 2), "not clean from the open on");
+    apply(&mut store, LocalVersionChange::ClosedUnchanged { item: file });
+    assert_eq!(unsent_since(&mut store, file), None);
+
+    apply(&mut store, LocalVersionChange::OpenedForWriting { item: file });
+    apply(&mut store, LocalVersionChange::ClosedChanged { item: file, size: 9, mtime: 300, mtime_nsec: 5 });
+    apply(&mut store, LocalVersionChange::Truncated { item: file, size: 0, mtime: 301, mtime_nsec: 0 });
+    assert_eq!(unsent_since(&mut store, file), Some(before + 3));
+
+    apply(&mut store, LocalVersionChange::Moved { item: dir, place: place(ROOT, "renamed"), is_name_ignored: false });
+    assert_eq!(unsent_since(&mut store, dir), Some(before + 4), "a directory has a place to differ in");
+    apply(&mut store, LocalVersionChange::Removed { item: file });
+    assert_eq!(unsent_since(&mut store, file), Some(before + 3), "removed here, with a change before it");
+    let other = make_file(&mut store, ROOT, "other");
+    synced(&mut store, other, "B");
+    apply(&mut store, LocalVersionChange::Removed { item: other });
+    assert_eq!(unsent_since(&mut store, other), Some(given(&mut store)), "removed here: the folder shows nothing where the two sides agreed on something");
+    assert_eq!(given(&mut store), before + 6, "the file made here had the fifth");
+}
+
+/// An exchange of two names leaves both items unsent, and the exchange back neither. A file
+/// saved over another by a rename keeps the stamp it had as a new file, with the binding it
+/// takes over.
+#[test]
+fn an_exchange_and_a_save_over_keep_the_stamps_of_what_is_unsent() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let (first, second) = (make_file(&mut store, ROOT, "first"), make_file(&mut store, ROOT, "second"));
+    synced(&mut store, first, "A");
+    synced(&mut store, second, "B");
+    store.item_store().exchange_local_places(first, second).unwrap();
+    let (first_since, second_since) = (unsent_since(&mut store, first), unsent_since(&mut store, second));
+    assert!(first_since.is_some() && second_since.is_some() && first_since != second_since);
+    store.item_store().exchange_local_places(first, second).unwrap();
+    assert_eq!((unsent_since(&mut store, first), unsent_since(&mut store, second)), (None, None));
+
+    let temporary = make_file(&mut store, ROOT, "first.tmp");
+    let made_at = unsent_since(&mut store, temporary);
+    assert!(made_at.is_some());
+    apply(&mut store, LocalVersionChange::SavedOver { replacing: temporary, replaced: first });
+    let saved = item(&mut store, temporary);
+    assert_eq!((saved.onedrive_item.clone(), saved.unsent_since), (Some(reference("A")), made_at), "the content differs from the one agreed on, since the file was made");
+}
+
+/// The operations on bindings write what was agreed on, and the stamp follows: an item that
+/// gives its binding up is a new item to send, and the row that takes the binding has
+/// nothing here to send; a new item merged with one of OneDrive is still unsent, since it
+/// was made; an item whose removal OneDrive confirmed is not.
+#[test]
+fn an_operation_on_a_binding_leaves_the_stamp_saying_what_differs() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let file = make_file(&mut store, ROOT, "file");
+    synced(&mut store, file, "A");
+    let taker = store.item_store().give_up_binding(file, false).unwrap();
+    assert!(unsent_since(&mut store, file).is_some(), "nothing is agreed on for it any more");
+    assert_eq!(unsent_since(&mut store, taker), None);
+
+    let made = make_file(&mut store, ROOT, "made");
+    let made_at = unsent_since(&mut store, made);
+    let listed = store.item_store().make_onedrive_item(&reference("B"), ItemKind::File).unwrap();
+    store.item_store().merge_items(made, listed).unwrap();
+    assert_eq!(unsent_since(&mut store, made), made_at);
+
+    let removed = make_file(&mut store, ROOT, "removed");
+    synced(&mut store, removed, "C");
+    apply(&mut store, LocalVersionChange::Removed { item: removed });
+    assert!(unsent_since(&mut store, removed).is_some());
+    store.item_store().confirm_onedrive_version(removed, &crate::ConfirmedOneDriveVersion::Removed).unwrap();
+    assert_eq!(unsent_since(&mut store, removed), None, "gone on both sides");
+}
+
+/// The unsent items are read in the order in which each came to be unsent, a bounded number
+/// at a time, after a given stamp. What is not unsent is not among them.
+#[test]
+fn the_unsent_items_are_read_in_the_order_they_came_to_be_unsent() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let agreed = make_file(&mut store, ROOT, "agreed");
+    let (third, first, second) = (make_file(&mut store, ROOT, "third"), make_file(&mut store, ROOT, "first"), make_file(&mut store, ROOT, "second"));
+    for (id, onedrive_id) in [(agreed, "S"), (third, "C"), (first, "A"), (second, "B")] {
+        synced(&mut store, id, onedrive_id);
+    }
+    assert_eq!(store.item_store().list_unsent(None, 10).unwrap(), Vec::new());
+    for id in [first, second, third] {
+        apply(&mut store, LocalVersionChange::OpenedForWriting { item: id });
+    }
+    let ids = |items: Vec<Item>| items.into_iter().map(|item| item.local_item_id).collect::<Vec<_>>();
+    assert_eq!(ids(store.item_store().list_unsent(None, 10).unwrap()), [first, second, third]);
+    let page = store.item_store().list_unsent(None, 2).unwrap();
+    let after = page[1].unsent_since;
+    assert_eq!(ids(page), [first, second]);
+    assert_eq!(ids(store.item_store().list_unsent(after, 2).unwrap()), [third]);
+    apply(&mut store, LocalVersionChange::ClosedUnchanged { item: second });
+    assert_eq!(ids(store.item_store().list_unsent(None, 10).unwrap()), [first, third]);
 }

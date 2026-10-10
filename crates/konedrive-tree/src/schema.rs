@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::item_store::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
+use crate::item_store::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK, ON_DISK, PLACED};
 use crate::{meta, outbox, TreeError, TreeStore};
 
@@ -60,6 +60,14 @@ pub const SCHEMA_VERSION: &str = "13";
 ///   that are a binding and nothing else, by their stamp, and `items_seen_in_full_listing`
 ///   what OneDrive has, by the full listing that saw it: none of the three is found by
 ///   reading every row.
+///   `unsent_since` is a stamp of one counter of the store (`meta` `last_unsent_since`, whose
+///   row is made here), set while the row's local place or content is not the synced one
+///   and null while they are the same: three triggers keep it (`items_unsent_since_insert`,
+///   `items_unsent_since_given`, `items_unsent_since_cleared`), run after a row is made and
+///   after any statement that writes a local or a synced column, so that no writer of
+///   either can leave it out; they give the next stamp when the two first differ, leave a
+///   stamp that is there, and take it when they agree. `items_unsent` holds the unsent rows
+///   by their stamp.
 ///   `is_name_ignored` is what the upload rules say of the item's own name, and of nothing
 ///   below it. A row is made with, and moved to, only a local, an OneDrive and a synced parent that is
 ///   the row of a directory (the triggers `items_parent_directory_insert` and
@@ -122,6 +130,12 @@ fn schema() -> String {
             ItemKind::Directory.as_str()
         )
     };
+    // The next stamp of the store's one counter, given to the row a trigger is run for.
+    let give_unsent_since = format!(
+        "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = '{key}';
+         UPDATE items SET unsent_since = (SELECT CAST(value AS INTEGER) FROM meta WHERE key = '{key}') WHERE local_item_id = NEW.local_item_id;",
+        key = meta::LAST_UNSENT_SINCE
+    );
     let content = |of: &str| format!("{of}_size INTEGER, {of}_mtime INTEGER, {of}_mtime_nsec INTEGER, {of}_hash TEXT, {of}_ctag TEXT, {of}_change_count INTEGER");
     format!(
         "CREATE TABLE items (
@@ -138,6 +152,7 @@ fn schema() -> String {
              is_name_ignored INTEGER NOT NULL DEFAULT 0,
              confirmed_at_count INTEGER NOT NULL DEFAULT 0,
              seen_in_full_listing INTEGER NOT NULL DEFAULT 0,
+             unsent_since INTEGER,
              CHECK (kind IN ('{file}', '{directory}')),
              CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
              CHECK (onedrive_drive_id != '' AND onedrive_item_id != ''),
@@ -161,6 +176,7 @@ fn schema() -> String {
          CREATE INDEX items_changed_in_onedrive ON items(local_item_id) WHERE {changed_in_onedrive};
          CREATE INDEX items_binding_alone ON items(confirmed_at_count) WHERE {binding_alone};
          CREATE INDEX items_seen_in_full_listing ON items(seen_in_full_listing) WHERE onedrive_parent_id IS NOT NULL;
+         CREATE INDEX items_unsent ON items(unsent_since) WHERE unsent_since IS NOT NULL;
          CREATE TRIGGER items_parent_kept BEFORE DELETE ON items
              WHEN OLD.local_item_id = {root}
                OR EXISTS (SELECT 1 FROM items WHERE local_parent_id = OLD.local_item_id)
@@ -181,6 +197,16 @@ fn schema() -> String {
          CREATE INDEX onedrive_items_seq ON onedrive_items(local_seq);
          CREATE INDEX onedrive_items_skipped ON onedrive_items(id) WHERE {skipped};
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO meta (key, value) VALUES ('{last_unsent_since}', '0');
+         CREATE TRIGGER items_unsent_since_insert AFTER INSERT ON items
+             WHEN {new_unsent}
+             BEGIN {give_unsent_since} END;
+         CREATE TRIGGER items_unsent_since_given AFTER UPDATE OF {unsent_columns} ON items
+             WHEN NEW.unsent_since IS NULL AND {new_unsent}
+             BEGIN {give_unsent_since} END;
+         CREATE TRIGGER items_unsent_since_cleared AFTER UPDATE OF {unsent_columns} ON items
+             WHEN NEW.unsent_since IS NOT NULL AND NOT {new_unsent}
+             BEGIN UPDATE items SET unsent_since = NULL WHERE local_item_id = NEW.local_item_id; END;
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
          CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
@@ -230,6 +256,10 @@ fn schema() -> String {
         placed = PLACED,
         changed_in_onedrive = CHANGED_IN_ONEDRIVE,
         binding_alone = BINDING_ALONE,
+        last_unsent_since = meta::LAST_UNSENT_SINCE,
+        new_unsent = unsent("NEW."),
+        unsent_columns = unsent_columns(),
+        give_unsent_since = give_unsent_since,
         synced_content = content("synced"),
         content_before_write = content("before_write"),
         root = LocalItemId::ROOT,

@@ -39,6 +39,10 @@ pub(crate) const FULL_LISTING_UNDER_WAY: &str = "full_listing_under_way";
 /// The link the next page of the listing under way is asked from. Not [`LISTING_NEXT`],
 /// which is the resume point of today's first listing into `onedrive_items`.
 pub(crate) const LISTING_NEXT_LINK: &str = "listing_next_link";
+/// The last stamp given to an item that came to be unsent (`items.unsent_since`): one
+/// counter of the store, raised by the schema's triggers and never lowered. Its row is made
+/// with the schema.
+pub(crate) const LAST_UNSENT_SINCE: &str = "last_unsent_since";
 /// A pause's end, unix seconds; `0` until resumed (§11).
 pub(crate) const PAUSED_UNTIL: &str = "paused_until";
 

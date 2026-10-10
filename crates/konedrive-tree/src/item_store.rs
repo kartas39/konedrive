@@ -38,6 +38,11 @@
 //!   its trigger `items_parent_kept`, which lets nobody delete row 1; the code refuses
 //!   every change of it.
 //! - *An id is never given twice.* The schema: `AUTOINCREMENT`.
+//! - *An item has a stamp, `unsent_since`, exactly while its local version is not what the
+//!   two sides last agreed on.* The schema: three triggers, run after a row is made and
+//!   after every statement that writes a local or a synced column, whoever writes it, give
+//!   the next stamp of the store's one counter when the two first differ, leave the stamp
+//!   while they go on differing, and take it when they agree. No operation writes it.
 //!
 //! What the code refuses is [`TreeError::Refused`], and a rule of the schema that an
 //! operation could trip is asked by the code before, so that an operation fails as SQLite's
@@ -73,9 +78,9 @@ mod onedrive_versions;
 
 pub(crate) use bindings::bind_root_once_known;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingKind, ListingLink, ListingUnderWay};
-pub(crate) use item_row::{BINDING_ALONE, CHANGED_IN_ONEDRIVE};
+pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE};
 
-use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, set_local_place, set_local_place_aside, write_item};
+use item_row::{delete_item, find_bound_item, find_item, find_item_at, insert_item, list_below_in_onedrive, list_changed_in_onedrive, list_children, list_children_in_onedrive, list_unsent, set_local_place, set_local_place_aside, write_item};
 
 /// The store's rows of `items`, for one job of the store's thread: what finds an item and
 /// what changes one. Borrowed from the store as [`ReadStore`](crate::ReadStore) is
@@ -137,6 +142,25 @@ impl ItemStore<'_> {
     /// not among them.
     pub fn list_changed_in_onedrive(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         list_changed_in_onedrive(&self.store.conn, after, limit)
+    }
+
+    /// The unsent items: those whose local version is not what the two sides last agreed
+    /// on, in its place or its content, or by one of the two being there and the other not
+    /// — made here, moved, changed or removed here since. In the order in which each first
+    /// came to be so ([`Item::unsent_since`]), at most `limit` of them, after the stamp
+    /// `after` when one is given: a plan reads a bounded number and asks for the next.
+    /// Found by an index, never by reading every row. An item that is left here is among
+    /// them: the stamp says what differs, not what is sent.
+    pub fn list_unsent(&self, after: Option<u64>, limit: usize) -> Result<Vec<Item>, TreeError> {
+        list_unsent(&self.store.conn, after, limit)
+    }
+
+    /// The last stamp given to an item that came to be unsent; 0 before the first. Every
+    /// item unsent now has this stamp or an earlier one, and every item that comes to be
+    /// unsent from now on a later one: what a folder notes when it is switched to
+    /// read-only, to tell afterwards what was unsent then.
+    pub fn last_unsent_since(&self) -> Result<u64, TreeError> {
+        Ok(crate::meta::get(&self.store.conn, crate::meta::LAST_UNSENT_SINCE)?.and_then(|stamp| stamp.parse().ok()).unwrap_or(0))
     }
 
     /// What OneDrive has in `directory`, as the rows say, by name there: the items whose

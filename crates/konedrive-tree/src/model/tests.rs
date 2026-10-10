@@ -157,6 +157,7 @@ fn file_item(onedrive_item: bool, presence: ContentPresence, local: &str, synced
         placement: crate::model::Placement::Placed,
         is_name_ignored: false,
         confirmed_at_count: 0,
+        unsent_since: None,
     }
 }
 
