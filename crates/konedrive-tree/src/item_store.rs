@@ -114,7 +114,10 @@ impl ItemStore<'_> {
 
     /// Writes one change of an item's local version, in one transaction: all of it or
     /// nothing. The item it is about: the one made, moved, or saved over another. A change
-    /// that would break a rule of the rows is refused and changes nothing.
+    /// that would break a rule of the rows is refused ([`TreeError::Refused`]) and changes
+    /// nothing. A change of the content of a file the folder does not show any more, or
+    /// whose row went, is nothing and no error: a program that holds a file open goes on
+    /// after the file was removed or saved over.
     pub fn apply(&mut self, change: &LocalVersionChange) -> Result<LocalItemId, TreeError> {
         self.write(|tx| apply_change(tx, change))
     }
@@ -138,7 +141,7 @@ impl ItemStore<'_> {
 
 /// The error of a change the rows' rules refuse: nothing was written.
 fn refuse(what: String) -> TreeError {
-    TreeError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("the items: {what}")))
+    TreeError::Refused(what)
 }
 
 /// A name as `items` keeps it: text when it is UTF-8 and its bytes otherwise, as the outbox
@@ -311,11 +314,15 @@ fn shown_below_root(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVer
     Ok((item, local, place))
 }
 
-/// [`shown`] for a file, with its local content.
-fn shown_file(conn: &Connection, id: LocalItemId) -> Result<(Item, ItemVersion, ContentVersion), TreeError> {
-    let (item, local) = shown(conn, id)?;
+/// The file `id` as the folder shows it, with its local content: what a change of a file's
+/// content is written to. `None` when the folder does not show the item, or its row went: a
+/// program may hold a file open that was removed or saved over since, and what it does to
+/// that file is no change of a row. Refused for a directory.
+fn find_shown_file(conn: &Connection, id: LocalItemId) -> Result<Option<(Item, ItemVersion, ContentVersion)>, TreeError> {
+    let Some(item) = find_item(conn, id)? else { return Ok(None) };
+    let Some(local) = item.local.clone() else { return Ok(None) };
     match local.content.clone() {
-        Some(content) if local.kind == ItemKind::File => Ok((item, local, content)),
+        Some(content) if local.kind == ItemKind::File => Ok(Some((item, local, content))),
         _ => Err(refuse(format!("item {id} is no file: it has no content to change"))),
     }
 }
@@ -352,6 +359,15 @@ fn check_not_below(conn: &Connection, directory: LocalItemId, item: LocalItemId)
         at = parent_of.query_row([here.as_i64()], |row| row.get::<_, Option<i64>>(0)).optional()?.flatten().map(LocalItemId::new);
     }
     Err(refuse(format!("the directories above item {directory} do not end at the root")))
+}
+
+/// The rule "one item per name in a directory": refused when the folder shows an item at
+/// `place` already.
+fn check_place_is_free(conn: &Connection, place: &ItemPlace) -> Result<(), TreeError> {
+    match find_item_at(conn, place.parent_local_item_id, &place.name)? {
+        Some(holder) => Err(refuse(format!("item {} has the name {:?} in directory {}", holder.local_item_id, place.name, place.parent_local_item_id))),
+        None => Ok(()),
+    }
 }
 
 /// `item`'s local place is `place` from now on. The index of local places refuses a place
@@ -408,6 +424,7 @@ fn make(tx: &Transaction<'_>, version: &ItemVersion, is_ignored: bool) -> Result
         return Err(refuse("a file is made with a content and a directory without".to_owned()));
     }
     check_directory(tx, place.parent_local_item_id)?;
+    check_place_is_free(tx, place)?;
     let removed = if version.kind == ItemKind::File { find_removed_file_at(tx, place)? } else { None };
     let made = insert_item(
         tx,
@@ -433,6 +450,7 @@ fn move_item(tx: &Transaction<'_>, item: LocalItemId, place: &ItemPlace, is_igno
     shown_below_root(tx, item)?;
     check_directory(tx, place.parent_local_item_id)?;
     check_not_below(tx, place.parent_local_item_id, item)?;
+    check_place_is_free(tx, place)?;
     set_local_place(tx, item, place.parent_local_item_id, name_value(&place.name))?;
     set_ignored(tx, item, is_ignored)
 }
@@ -485,7 +503,7 @@ pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) ->
         LocalVersionChange::SavedOver { replacing, replaced, is_ignored } => save_over(tx, *replacing, *replaced, *is_ignored).map(|()| *replacing),
         LocalVersionChange::Removed { item } => remove(tx, *item).map(|()| *item),
         LocalVersionChange::OpenedForWriting { item } => {
-            let (row, local, content) = shown_file(tx, *item)?;
+            let Some((row, local, content)) = find_shown_file(tx, *item)? else { return Ok(*item) };
             // Another content from now on, before any byte: of the same size and time until
             // the close says otherwise. What it was is kept, unless an open whose close was
             // never written kept an older one.
@@ -495,19 +513,19 @@ pub(crate) fn apply_change(tx: &Transaction<'_>, change: &LocalVersionChange) ->
             set_local_content(tx, row, local, opened, before_write).map(|()| *item)
         }
         LocalVersionChange::ClosedChanged { item, size, mtime, mtime_nsec } => {
-            let (row, local, content) = shown_file(tx, *item)?;
+            let Some((row, local, content)) = find_shown_file(tx, *item)? else { return Ok(*item) };
             let closed = ContentVersion::ChangedHere { size: *size, mtime: *mtime, mtime_nsec: *mtime_nsec, change_count: content.change_count().max(1) };
             set_local_content(tx, row, local, closed, None).map(|()| *item)
         }
         LocalVersionChange::ClosedUnchanged { item } => {
-            let (row, local, content) = shown_file(tx, *item)?;
+            let Some((row, local, content)) = find_shown_file(tx, *item)? else { return Ok(*item) };
             // With no former content kept, the content it has is the one to leave: a
             // truncation, or a close already written.
             let before_write = row.content_before_write.clone().unwrap_or(content);
             set_local_content(tx, row, local, before_write, None).map(|()| *item)
         }
         LocalVersionChange::Truncated { item, size, mtime, mtime_nsec } => {
-            let (row, local, content) = shown_file(tx, *item)?;
+            let Some((row, local, content)) = find_shown_file(tx, *item)? else { return Ok(*item) };
             let cut = ContentVersion::ChangedHere { size: *size, mtime: *mtime, mtime_nsec: *mtime_nsec, change_count: content.change_count() + 1 };
             set_local_content(tx, row, local, cut, None).map(|()| *item)
         }

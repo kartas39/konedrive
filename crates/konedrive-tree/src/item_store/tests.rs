@@ -59,7 +59,7 @@ pub(super) fn synced(store: &mut TreeStore, id: LocalItemId, onedrive_id: &str) 
 
 /// The code refused what would break a rule of the rows.
 pub(super) fn is_refused<T: std::fmt::Debug>(result: Result<T, TreeError>) -> bool {
-    matches!(&result, Err(TreeError::Io(e)) if e.kind() == std::io::ErrorKind::InvalidInput) || panic!("not refused: {result:?}")
+    matches!(&result, Err(TreeError::Refused(_))) || panic!("not refused: {result:?}")
 }
 
 /// The schema refused it: a unique index or a check.
@@ -179,8 +179,9 @@ fn a_file_is_made_with_a_content_and_a_directory_without() {
     assert_eq!(names(&mut store, ROOT), Vec::<String>::new());
 }
 
-/// The rule "in the folder, one item per name in a directory" is the schema's: the unique
-/// index of local places refuses a second item made at a name and an item moved onto one.
+/// The rule "in the folder, one item per name in a directory": a second item made at a name
+/// and an item moved onto one are refused before the schema's unique index of local places
+/// would refuse them, which holds the rule whoever writes the rows.
 /// The same name in another directory, and a name of other letters' case, are other places.
 #[test]
 fn a_directory_has_one_item_per_name() {
@@ -189,9 +190,10 @@ fn a_directory_has_one_item_per_name() {
     let a = make_file(&mut store, ROOT, "a");
     let b = make_file(&mut store, ROOT, "b");
     let mut items = store.item_store();
-    assert!(is_refused_by_schema(items.apply(&made(place(ROOT, "a"), ItemKind::File))));
-    assert!(is_refused_by_schema(items.apply(&made(place(ROOT, "a"), ItemKind::Directory))));
-    assert!(is_refused_by_schema(items.apply(&LocalVersionChange::Moved { item: b, place: place(ROOT, "a"), is_ignored: false })));
+    assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::File))));
+    assert!(is_refused(items.apply(&made(place(ROOT, "a"), ItemKind::Directory))));
+    assert!(is_refused(items.apply(&LocalVersionChange::Moved { item: b, place: place(ROOT, "a"), is_ignored: false })));
+    assert!(is_refused_by_schema(items.store.bench_sql("UPDATE items SET local_name = 'a' WHERE local_name = 'b'")), "whoever writes the rows");
     items.apply(&made(place(dir, "a"), ItemKind::File)).unwrap();
     items.apply(&made(place(ROOT, "A"), ItemKind::File)).unwrap();
     assert_eq!(names(&mut store, ROOT), ["A", "a", "b", "dir"]);
@@ -501,22 +503,41 @@ fn a_truncation_is_another_content_that_no_close_puts_back() {
     assert_eq!(item(&mut store, file).file_sync_state(), Some(FileSyncState::ModifiedHere));
 }
 
-/// Only a file the folder shows has a content to change: a directory, a removed item and
-/// an id with no row are refused.
+/// Only a file has a content to change: a directory and the root are refused.
 #[test]
-fn only_a_file_the_folder_shows_has_its_content_changed() {
+fn only_a_file_has_its_content_changed() {
     let mut store = TreeStore::in_memory().unwrap();
     let dir = make_directory(&mut store, ROOT, "dir");
-    let gone = make_file(&mut store, ROOT, "gone");
-    synced(&mut store, gone, "G");
-    store.item_store().apply(&LocalVersionChange::Removed { item: gone }).unwrap();
     let mut items = store.item_store();
-    for item in [dir, gone, ROOT, LocalItemId::new(99)] {
+    for item in [dir, ROOT] {
         assert!(is_refused(items.apply(&LocalVersionChange::OpenedForWriting { item })), "{item}");
         assert!(is_refused(items.apply(&LocalVersionChange::ClosedChanged { item, size: 1, mtime: 1, mtime_nsec: 0 })), "{item}");
         assert!(is_refused(items.apply(&LocalVersionChange::ClosedUnchanged { item })), "{item}");
         assert!(is_refused(items.apply(&LocalVersionChange::Truncated { item, size: 1, mtime: 1, mtime_nsec: 0 })), "{item}");
     }
+}
+
+/// A program that holds a file open goes on after the file was removed or saved over: its
+/// open, its truncation and its close then name an item the folder does not show any more,
+/// or whose row went. Each is nothing, and no error: no row is changed.
+#[test]
+fn a_change_of_the_content_of_a_file_that_is_gone_is_nothing() {
+    let mut store = TreeStore::in_memory().unwrap();
+    let removed = make_file(&mut store, ROOT, "removed");
+    synced(&mut store, removed, "G");
+    store.item_store().apply(&LocalVersionChange::OpenedForWriting { item: removed }).unwrap();
+    store.item_store().apply(&LocalVersionChange::Removed { item: removed }).unwrap();
+    let before = item(&mut store, removed);
+    let no_row = LocalItemId::new(99);
+    for id in [removed, no_row] {
+        let mut items = store.item_store();
+        assert_eq!(items.apply(&LocalVersionChange::OpenedForWriting { item: id }).unwrap(), id);
+        assert_eq!(items.apply(&LocalVersionChange::Truncated { item: id, size: 1, mtime: 1, mtime_nsec: 0 }).unwrap(), id);
+        assert_eq!(items.apply(&LocalVersionChange::ClosedChanged { item: id, size: 1, mtime: 1, mtime_nsec: 0 }).unwrap(), id);
+        assert_eq!(items.apply(&LocalVersionChange::ClosedUnchanged { item: id }).unwrap(), id);
+    }
+    assert_eq!(item(&mut store, removed), before, "the removed row is as the removal left it");
+    assert_eq!(store.item_store().find_item(no_row).unwrap(), None);
 }
 
 /// What one row can say by itself is the schema's to hold, whoever writes it: a row is not
