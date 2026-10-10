@@ -84,7 +84,8 @@ fn a_death_after_an_item_of_onedrive_was_renamed_leaves_its_row_at_the_new_place
 }
 
 /// An item OneDrive never had carries no mark: after a death its rename is read as a removal
-/// and a new item. The folder shows the same; the item's number is another.
+/// and a new item. The folder shows the same; the item's number is another, and so is the
+/// stamp since which it is unsent.
 #[test]
 fn a_death_after_an_item_onedrive_never_had_was_renamed_leaves_a_new_item_at_the_new_place() {
     let mut f = folder_of_each();
@@ -96,6 +97,9 @@ fn a_death_after_an_item_onedrive_never_had_was_renamed_leaves_a_new_item_at_the
     assert_ne!(renamed.local_item_id, top.local_item_id);
     let mut expected = top.clone();
     expected.local_item_id = renamed.local_item_id;
+    // A new item is unsent since it was made: a later stamp than the renamed one had.
+    assert!(renamed.unsent_since > top.unsent_since);
+    expected.unsent_since = renamed.unsent_since;
     expected.local.as_mut().unwrap().place.as_mut().unwrap().name = "renamed.txt".into();
     assert_eq!(renamed, expected);
     f.assert_settled();
