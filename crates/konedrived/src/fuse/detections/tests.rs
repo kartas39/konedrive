@@ -58,6 +58,7 @@ pub(in crate::fuse) fn in_docs(name: &str) -> EntryPlace {
 /// The detection that the local-only entry `on_disk` is at `place`, in `state`.
 pub(in crate::fuse) fn detection_of(kind: OutboxKind, on_disk: &DiskEntry, place: &EntryPlace, state: OutboxState) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: None,
         object: Some(on_disk.handle.clone()),

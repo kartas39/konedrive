@@ -191,6 +191,7 @@ impl TreeStore {
                     session_next: None,
                     confirmed: false,
                     size: None,
+                    local_item_id: committed.local_item_id,
                 },
             )?;
         }

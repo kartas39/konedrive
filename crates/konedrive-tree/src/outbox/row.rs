@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use konedrive_fs::handle::FileHandle;
 
 use super::{LocalSkip, Reason, Snapshot};
-use crate::Row;
+use crate::{LocalItemId, Row};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OutboxKind {
@@ -177,6 +177,8 @@ pub struct OutboxRow {
     /// sums say until the row's snapshot does. `None` for a row written
     /// before it was recorded, and for what sends no content.
     pub size: Option<u64>,
+    /// The item of `items` the row is about; `None` for a row no item was named for.
+    pub local_item_id: Option<LocalItemId>,
 }
 
 impl OutboxRow {
@@ -228,6 +230,8 @@ pub struct Detection {
     pub next_try: Option<i64>,
     /// The file's size as the examination saw it.
     pub size: Option<u64>,
+    /// The item of `items` the detection is about, as in [`OutboxRow::local_item_id`].
+    pub local_item_id: Option<LocalItemId>,
 }
 
 impl Detection {

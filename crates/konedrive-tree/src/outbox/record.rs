@@ -26,6 +26,7 @@ fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
         session_next: None,
         confirmed: false,
         size: d.size,
+        local_item_id: d.local_item_id,
     }
 }
 
@@ -61,6 +62,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     row.object = d.object.clone().or_else(|| existing.object.clone());
     row.attempts = existing.attempts;
     row.size = d.size.or(existing.size);
+    row.local_item_id = d.local_item_id.or(existing.local_item_id);
     // A confirmed removal stays confirmed while it is still one.
     row.confirmed = existing.confirmed && kind.removes();
     if row.confirmed && d.state == OutboxState::Held {
@@ -121,7 +123,10 @@ fn follow_up(running: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     };
     // Behind a create the item has no id or base yet: the commit fills them.
     let base = if pending_create { None } else { running.base.clone() };
-    Some(new_row(d, kind, base))
+    let mut row = new_row(d, kind, base);
+    // The same item as the running row's, whoever named it.
+    row.local_item_id = d.local_item_id.or(running.local_item_id);
+    Some(row)
 }
 
 pub(super) fn record(conn: &Connection, d: &Detection) -> Result<Recorded, TreeError> {

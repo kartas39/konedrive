@@ -18,6 +18,7 @@ pub(in crate::fuse) fn row(id: &str, parent: Option<&str>, name: &str, kind: Kin
 /// A detection of the OneDrive id `id`, which the base has as `name` in the root.
 pub(in crate::fuse) fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Option<&str>)) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: Some(id.into()),
         object: None,

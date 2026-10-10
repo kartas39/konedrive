@@ -27,6 +27,7 @@ fn base(row: &Row) -> Base {
 
 fn removed(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
+        local_item_id: None,
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
         object: handle,
@@ -62,6 +63,7 @@ impl World {
     /// A detection of `kind` at `rel`, which names the directory of OneDrive it is in.
     pub fn detection(&self, kind: OutboxKind, rel: &Path, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
         Detection {
+            local_item_id: None,
             kind,
             item_id: None,
             object: handle,

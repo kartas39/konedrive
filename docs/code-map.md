@@ -21,7 +21,7 @@ A change that adds, moves or removes a file changes its line here.
 | `crates/konedrived` | The user's daemon: sign-in, the sync, the folder as a FUSE mount, the D-Bus API |
 | `crates/konedrivectl` | The command line: everything the window can do |
 | `crates/konedrive-graph` | Sign-in with Microsoft and everything that talks to Microsoft Graph |
-| `crates/konedrive-tree` | The tree store (SQLite): the items as OneDrive has them, staging, the outbox |
+| `crates/konedrive-tree` | The tree store (SQLite): the items, the tree as OneDrive has it, staging, the outbox |
 | `crates/konedrive-fs` | A folder's files on the local filesystem: konedrive's extended attributes and modes, leases, handles, the feature probe |
 | `crates/konedrive-reason` | Why a change is kept back: the reasons of outbox rows and local skips, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
@@ -715,7 +715,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 
 - `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
 - `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
-  written. `[tests]`
+  written; an item as `items` holds it (`Item`, its ids, `ItemVersion`, `ItemPlace`,
+  `ContentVersion`, `LocalVersionChange`), the sync state it gives a file, and `DriveId`. `[tests]`
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring a store of an earlier version to

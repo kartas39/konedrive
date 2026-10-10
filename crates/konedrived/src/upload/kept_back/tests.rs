@@ -6,6 +6,7 @@ use konedrive_tree::TreeStore;
 
 fn create(rel: &str, state: OutboxState, reason: Option<&str>) -> OutboxOp {
     OutboxOp::Record(Detection {
+        local_item_id: None,
         kind: OutboxKind::Create,
         item_id: None,
         object: None,

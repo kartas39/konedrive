@@ -104,6 +104,7 @@ fn a_marked_directory_is_its_folder_by_the_base_or_by_a_row_of_the_outbox() {
     };
     let (this, other) = (handle_of("this"), handle_of("other"));
     let row = |kind: OutboxKind, rel: &str, object: Option<&FileHandle>| OutboxRow {
+        local_item_id: None,
         seq: 1,
         kind,
         item_id: Some("N".into()),

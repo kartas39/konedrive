@@ -9,6 +9,7 @@ use crate::TreeStore;
 fn a_rows_snapshot_and_target_name_are_read_as_written() {
     let mut s = TreeStore::in_memory().unwrap();
     let d = Detection {
+        local_item_id: None,
         kind: OutboxKind::Create,
         item_id: None,
         object: None,

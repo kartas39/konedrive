@@ -38,6 +38,7 @@ fn object(n: u64) -> FileHandle {
 
 fn row(kind: OutboxKind, rel: &str, n: u64) -> OutboxRow {
     OutboxRow {
+        local_item_id: None,
         seq: 0,
         kind,
         item_id: None,

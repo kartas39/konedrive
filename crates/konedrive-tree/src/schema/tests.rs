@@ -34,3 +34,16 @@ fn a_store_that_is_not_one_is_rebuilt() {
     Connection::open(&path).unwrap().execute_batch("CREATE TABLE items (id TEXT PRIMARY KEY);").unwrap();
     assert_eq!(TreeStore::open(&path).unwrap().meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
 }
+
+/// A new store has every table from the start: `pins` too, which nothing makes at first
+/// use any more, and the outbox's column that names a row's local item.
+#[test]
+fn a_new_store_has_the_pins_and_the_outboxs_local_item() {
+    let store = TreeStore::in_memory().unwrap();
+    let has = |sql: &str| store.conn.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap() == 1;
+    assert!(has("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'pins'"));
+    assert!(has("SELECT count(*) FROM pragma_table_info('outbox') WHERE name = 'local_item_id'"));
+    assert_eq!(store.pins().unwrap(), Vec::<String>::new());
+    store.set_pin("A", true).unwrap();
+    assert_eq!(store.pins().unwrap(), ["A"]);
+}

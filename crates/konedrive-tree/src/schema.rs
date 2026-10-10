@@ -7,7 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::model::skipped;
+use crate::model::{skipped, ItemKind, LocalItemId, NOT_ON_DISK};
 use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
@@ -25,6 +25,19 @@ pub const SCHEMA_VERSION: &str = "11";
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
 ///
+/// - `items`: one row per item, keyed by its local item id ([`crate::item_store`]).
+///   `AUTOINCREMENT`: an id is never handed out twice, so the kernel's node id of an item
+///   that is gone never names another. The root of the folder is row 1, made here. The
+///   binding is `onedrive_drive_id` and `onedrive_item_id`, both or neither, and no two rows
+///   have the same (`items_onedrive_item`). The local version is the `local_` columns
+///   (`local_kind` is null when the folder does not show the item), the synced place and
+///   content the `synced_` ones, the content before the first writer the `before_write_`
+///   ones; a content is six columns, `change_count` null for a hashed one. No two rows have
+///   one local place (`items_local_place`). The checks hold what one row can say by itself:
+///   a place is a parent and a name; only the root is shown without a place, and it is a
+///   directory; no row is its own parent; a file has a local content and a directory none;
+///   only a file the folder shows has content on disk or a content before a write.
+/// - `pins`: the items that carry a pin of their own, by OneDrive item id ([`crate::pins`]).
 /// - `onedrive_items`, `staging`: the tree and the tree a cycle builds. `local_seq`
 ///   is the outbox commit that last wrote the row
 ///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
@@ -36,7 +49,8 @@ pub const SCHEMA_VERSION: &str = "11";
 ///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
 ///   at commit can never be mistaken for a new one by a worker still
 ///   holding it. `handle` is the file handle of the local object a row is
-///   about, which is what the object is. The content being sent is `snapshot_size`,
+///   about, which is what the object is. `local_item_id` is the row of `items` it is
+///   about. The content being sent is `snapshot_size`,
 ///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`.
 /// - `upload_sessions`: the upload sessions opened and not yet completed,
 ///   cancelled or found gone, with the place a new file's
@@ -67,8 +81,30 @@ fn schema() -> String {
              CREATE INDEX {table}_parent ON {table}(parent_id);"
         )
     };
+    let content = |of: &str| format!("{of}_size INTEGER, {of}_mtime INTEGER, {of}_mtime_nsec INTEGER, {of}_hash TEXT, {of}_ctag TEXT, {of}_change_count INTEGER");
     format!(
-        "{onedrive_items}
+        "CREATE TABLE items (
+             local_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+             onedrive_drive_id TEXT, onedrive_item_id TEXT,
+             local_parent_id INTEGER, local_name, local_kind TEXT, {local_content},
+             synced_parent_id INTEGER, synced_name, {synced_content},
+             content_presence TEXT NOT NULL DEFAULT '{not_on_disk}',
+             {content_before_write},
+             is_ignored INTEGER NOT NULL DEFAULT 0,
+             CHECK ((onedrive_drive_id IS NULL) = (onedrive_item_id IS NULL)),
+             CHECK ((local_parent_id IS NULL) = (local_name IS NULL)),
+             CHECK ((synced_parent_id IS NULL) = (synced_name IS NULL)),
+             CHECK (local_item_id = {root} OR (local_kind IS NULL) = (local_parent_id IS NULL)),
+             CHECK (local_item_id != {root} OR (local_kind IS '{directory}' AND local_parent_id IS NULL AND synced_parent_id IS NULL)),
+             CHECK (local_parent_id IS NOT local_item_id AND synced_parent_id IS NOT local_item_id),
+             CHECK ((local_kind IS '{file}') = (local_size IS NOT NULL)),
+             CHECK (local_kind IS '{file}' OR (content_presence = '{not_on_disk}' AND before_write_size IS NULL)));
+         CREATE UNIQUE INDEX items_onedrive_item ON items(onedrive_drive_id, onedrive_item_id) WHERE onedrive_item_id IS NOT NULL;
+         CREATE UNIQUE INDEX items_local_place ON items(local_parent_id, local_name) WHERE local_parent_id IS NOT NULL;
+         CREATE INDEX items_synced_place ON items(synced_parent_id, synced_name) WHERE synced_parent_id IS NOT NULL;
+         INSERT INTO items (local_item_id, local_kind) VALUES ({root}, '{directory}');
+         CREATE TABLE pins (id TEXT PRIMARY KEY);
+         {onedrive_items}
          {staging}
          CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
          CREATE INDEX onedrive_items_seq ON onedrive_items(local_seq);
@@ -97,8 +133,10 @@ fn schema() -> String {
              handle BLOB,
              confirmed INTEGER NOT NULL DEFAULT 0,
              size INTEGER,
-             bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT);
+             bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT,
+             local_item_id INTEGER);
          CREATE INDEX outbox_item ON outbox(item_id);
+         CREATE INDEX outbox_local_item ON outbox(local_item_id) WHERE local_item_id IS NOT NULL;
          CREATE INDEX outbox_handle ON outbox(handle);
          CREATE INDEX outbox_rel ON outbox(rel);
          CREATE INDEX outbox_due ON outbox(state, next_try, seq);
@@ -113,6 +151,13 @@ fn schema() -> String {
          CREATE INDEX upload_openings_parent ON upload_openings(parent);
          CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
          CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
+        local_content = content("local"),
+        synced_content = content("synced"),
+        content_before_write = content("before_write"),
+        root = LocalItemId::ROOT,
+        file = ItemKind::File.as_str(),
+        directory = ItemKind::Directory.as_str(),
+        not_on_disk = NOT_ON_DISK,
         onedrive_items = tree("onedrive_items"),
         staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),

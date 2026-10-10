@@ -1,7 +1,9 @@
 //! What the tree holds: a row of `onedrive_items` and `staging`, a delta entry, the
 //! words the store keeps for a kind and a placement, and the one place a
-//! row is read from SQLite and written to it.
+//! row is read from SQLite and written to it. And an item as `items` holds it: its ids,
+//! its versions, and the sync state they give.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use rusqlite::params;
@@ -28,6 +30,11 @@ pub(crate) fn skipped(column: &str) -> String {
 /// A row's `kind`, as stored.
 pub(crate) const FILE: &str = "file";
 const FOLDER: &str = "folder";
+/// An item's kind in `items`, as stored: a file is [`FILE`].
+const DIRECTORY: &str = "directory";
+/// A row's `content_presence` in `items`, as stored.
+pub(crate) const ON_DISK: &str = "on-disk";
+pub(crate) const NOT_ON_DISK: &str = "not-on-disk";
 
 /// Every column, for copies between `onedrive_items` and `staging`: the local ones
 /// (`thumb_key`, `local_seq`) travel with the row.
@@ -394,6 +401,240 @@ impl PartialEq<String> for DriveId {
     fn eq(&self, other: &String) -> bool {
         self.is_spelled(other)
     }
+}
+
+/// The permanent number the client gives an item: the key of its row in `items`, and the
+/// kernel's node id of what the folder shows. Never reused, never changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LocalItemId(i64);
+
+impl LocalItemId {
+    /// The root of the folder: the number FUSE gives the root.
+    pub const ROOT: Self = Self(1);
+
+    pub fn new(number: i64) -> Self {
+        Self(number)
+    }
+
+    pub fn as_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for LocalItemId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The id OneDrive has for an item within its drive, as Graph gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OneDriveItemId(String);
+
+impl OneDriveItemId {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What names one item of OneDrive, as Graph's `itemReference` does: a drive and the item's
+/// id within it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OneDriveItemReference {
+    pub drive_id: DriveId,
+    pub item_id: OneDriveItemId,
+}
+
+/// The kind of an item, in the filesystem's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemKind {
+    File,
+    Directory,
+}
+
+impl ItemKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ItemKind::File => FILE,
+            ItemKind::Directory => DIRECTORY,
+        }
+    }
+
+    /// What a stored kind says. Any word but a directory's reads as a file, as
+    /// [`Kind::decode`] reads a folder's.
+    pub(crate) fn decode(value: &str) -> Self {
+        if value == DIRECTORY {
+            ItemKind::Directory
+        } else {
+            ItemKind::File
+        }
+    }
+}
+
+/// The directory an item is in and its name there. The parent is named by the client's own
+/// number on every side, so that places of the two sides can be compared. The name is kept as
+/// it was given, bytes that are not UTF-8 included, and never changed to compare it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ItemPlace {
+    pub parent_local_item_id: LocalItemId,
+    pub name: OsString,
+}
+
+/// What tells one content of a file from another, with its size and its modification time
+/// (`mtime` in whole Unix seconds, `mtime_nsec` the rest of it: 0 for a time OneDrive gave).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ContentVersion {
+    /// Told by what OneDrive gave or the client computed from the bytes: the QuickXorHash
+    /// (base64) and the cTag.
+    Hashed { size: u64, mtime: i64, mtime_nsec: u32, hash: Option<String>, ctag: Option<String> },
+    /// Changed by a program here, with no hash known yet: told by a number the client raises
+    /// each time a program begins to change the content.
+    ChangedHere { size: u64, mtime: i64, mtime_nsec: u32, change_count: u64 },
+}
+
+impl ContentVersion {
+    pub fn size(&self) -> u64 {
+        match self {
+            ContentVersion::Hashed { size, .. } | ContentVersion::ChangedHere { size, .. } => *size,
+        }
+    }
+
+    /// The modification time: whole Unix seconds, and the nanoseconds beyond them.
+    pub fn mtime(&self) -> (i64, u32) {
+        match self {
+            ContentVersion::Hashed { mtime, mtime_nsec, .. } | ContentVersion::ChangedHere { mtime, mtime_nsec, .. } => (*mtime, *mtime_nsec),
+        }
+    }
+
+    /// How many times a program began to change the content since a hash was last known.
+    pub(crate) fn change_count(&self) -> u64 {
+        match self {
+            ContentVersion::Hashed { .. } => 0,
+            ContentVersion::ChangedHere { change_count, .. } => *change_count,
+        }
+    }
+}
+
+/// What an item is on one side: its place, its kind, and for a file its content. The root of
+/// the folder has no place; every other item has one. A file has a content and a directory
+/// has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemVersion {
+    pub place: Option<ItemPlace>,
+    pub kind: ItemKind,
+    pub content: Option<ContentVersion>,
+}
+
+/// Whether the whole content of a file the folder shows is in the backing directory. A stable
+/// state: a download or an upload in progress is not written into it. An item that is no file
+/// of the folder is `NotOnDisk`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentPresence {
+    OnDisk,
+    NotOnDisk,
+}
+
+impl ContentPresence {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ContentPresence::OnDisk => ON_DISK,
+            ContentPresence::NotOnDisk => NOT_ON_DISK,
+        }
+    }
+
+    /// What a stored presence says. Any word but `on-disk` reads as not on disk: a word that
+    /// cannot be read never says content is here that may not be.
+    pub(crate) fn decode(value: &str) -> Self {
+        if value == ON_DISK {
+            ContentPresence::OnDisk
+        } else {
+            ContentPresence::NotOnDisk
+        }
+    }
+}
+
+/// One item: a file or directory the folder shows or OneDrive has. A row of `items`.
+///
+/// Until the OneDrive version is in the row too, `onedrive_items` holds it, with the eTag
+/// and the placement, under the binding's item id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub local_item_id: LocalItemId,
+    /// The binding: which item of OneDrive this is. No other item has the same.
+    pub onedrive_item: Option<OneDriveItemReference>,
+    /// What the folder shows of the item; `None` when it does not show it.
+    pub local: Option<ItemVersion>,
+    /// The place the two sides last agreed on.
+    pub synced_place: Option<ItemPlace>,
+    /// The content the two sides last agreed on.
+    pub synced_content: Option<ContentVersion>,
+    pub content_presence: ContentPresence,
+    /// The content a file had before its first writer opened it; held until the last writer
+    /// closes.
+    pub content_before_write: Option<ContentVersion>,
+    /// The upload rules leave it, or a directory above it, here.
+    pub is_ignored: bool,
+}
+
+/// How a file the folder shows stands between OneDrive and this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileSyncState {
+    /// Made here; OneDrive has no item for it.
+    LocalOnly,
+    /// In OneDrive, and its content is not on disk.
+    RemoteOnly,
+    /// In OneDrive, and its content here is not the one the two sides last agreed on.
+    ModifiedHere,
+    /// In OneDrive, on disk, and the same on both sides.
+    Synced,
+}
+
+impl Item {
+    /// The sync state of the file the folder shows as this item: the first that holds of no
+    /// binding, content not on disk, local content that is not the synced one, and synced.
+    /// `None` for an item the folder does not show as a file.
+    pub fn file_sync_state(&self) -> Option<FileSyncState> {
+        let local = self.local.as_ref().filter(|local| local.kind == ItemKind::File)?;
+        Some(if self.onedrive_item.is_none() {
+            FileSyncState::LocalOnly
+        } else if self.content_presence == ContentPresence::NotOnDisk {
+            FileSyncState::RemoteOnly
+        } else if local.content != self.synced_content {
+            FileSyncState::ModifiedHere
+        } else {
+            FileSyncState::Synced
+        })
+    }
+}
+
+/// One change of an item's local version, which a write operation of the mount hands the
+/// store ([`ItemStore::apply`](crate::ItemStore::apply)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalVersionChange {
+    /// A file or directory was made, as `version`. A file made at the place of a file removed
+    /// here whose removal is not sent yet takes over that item's binding.
+    Made { version: ItemVersion, is_ignored: bool },
+    /// `item` was renamed or moved to `place`, where nothing is. `is_ignored` is what the
+    /// upload rules say of it there, for it and all below it.
+    Moved { item: LocalItemId, place: ItemPlace, is_ignored: bool },
+    /// `replacing` was renamed over `replaced` and has its place now: a file saved over
+    /// another takes over its binding.
+    SavedOver { replacing: LocalItemId, replaced: LocalItemId, is_ignored: bool },
+    /// `item` was removed from the folder.
+    Removed { item: LocalItemId },
+    /// The first writer opened the file `item`: its content begins to change.
+    OpenedForWriting { item: LocalItemId },
+    /// The last writer closed the file `item`, and its content is another now, of this size
+    /// and modification time.
+    ClosedChanged { item: LocalItemId, size: u64, mtime: i64, mtime_nsec: u32 },
+    /// The last writer closed the file `item` and nothing was changed.
+    ClosedUnchanged { item: LocalItemId },
+    /// The file `item` was cut or grown to `size` with no writer's close to follow.
+    Truncated { item: LocalItemId, size: u64, mtime: i64, mtime_nsec: u32 },
 }
 
 #[cfg(test)]

@@ -127,6 +127,7 @@ fn base(row: &Row) -> Base {
 
 fn detect_at(place: &EntryPlace, kind: OutboxKind, handle: Option<FileHandle>, size: Option<u64>) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: None,
         object: handle,
@@ -204,6 +205,7 @@ pub(super) fn wait_for_quiet(d: &mut Detection, now: i64) {
 /// local-only entry by its `handle`.
 fn detect_removed_at(row: Option<&Row>, handle: Option<FileHandle>, rel: &Path) -> Detection {
     Detection {
+        local_item_id: None,
         kind: OutboxKind::Delete,
         item_id: row.map(|r| r.id.clone()),
         object: handle,

@@ -26,6 +26,7 @@ fn store() -> TreeStore {
 /// A detection of the OneDrive id `id`, which the base has as `name` in the root.
 fn of(kind: OutboxKind, id: &str, name: &str, rel: &str, to: (Option<&str>, Option<&str>)) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: Some(id.into()),
         object: None,

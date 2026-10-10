@@ -20,6 +20,7 @@ fn store(files: usize) -> TreeStore {
 
 fn detection(kind: OutboxKind, id: Option<&str>, name: &str) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: id.map(str::to_owned),
         object: None,

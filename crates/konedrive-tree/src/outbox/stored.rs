@@ -11,27 +11,27 @@ use rusqlite::{params, Connection};
 
 use super::encoded::StoredSnapshot;
 use super::{Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl};
-use crate::model::column;
+use crate::model::{column, LocalItemId};
 use crate::TreeError;
 
 /// What a query that reads rows selects, in the order [`outbox_row`] finds
 /// them by name.
 const OUTBOX_COLUMNS: &str = "seq, kind, item_id, rel, base_etag, base_ctag, base_parent, base_name, \
      target_parent, target_name, state, reason, attempts, next_try, snapshot_size, snapshot_mtime, snapshot_mtime_nsec, \
-     session_url, session_expires, session_next, handle, confirmed, size";
+     session_url, session_expires, session_next, handle, confirmed, size, local_item_id";
 
 /// A path as the store keeps it: text when it is UTF-8, its bytes otherwise
 /// (Linux names need not be UTF-8; such a name is blocked, and still has to
 /// be listed where it is). One path always gets the same form, so equality
 /// in SQL holds.
-pub(super) fn path_value(path: &Path) -> Value {
+pub(crate) fn path_value(path: &Path) -> Value {
     match path.to_str() {
         Some(text) => Value::Text(text.to_owned()),
         None => Value::Blob(path.as_os_str().as_bytes().to_vec()),
     }
 }
 
-pub(super) fn path_from(value: ValueRef<'_>) -> PathBuf {
+pub(crate) fn path_from(value: ValueRef<'_>) -> PathBuf {
     match value {
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => PathBuf::from(OsStr::from_bytes(bytes)),
         _ => PathBuf::new(),
@@ -65,6 +65,7 @@ mod at {
     pub(super) const HANDLE: usize = column(OUTBOX_COLUMNS, "handle");
     pub(super) const CONFIRMED: usize = column(OUTBOX_COLUMNS, "confirmed");
     pub(super) const SIZE: usize = column(OUTBOX_COLUMNS, "size");
+    pub(super) const LOCAL_ITEM_ID: usize = column(OUTBOX_COLUMNS, "local_item_id");
 }
 
 /// A row of the outbox, read from a query that selects [`OUTBOX_COLUMNS`].
@@ -110,6 +111,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         session_next: row.get::<_, Option<i64>>(at::SESSION_NEXT)?.map(|n| n as u64),
         confirmed: row.get::<_, i64>(at::CONFIRMED)? != 0,
         size: row.get::<_, Option<i64>>(at::SIZE)?.map(|n| n.max(0) as u64),
+        local_item_id: row.get::<_, Option<i64>>(at::LOCAL_ITEM_ID)?.map(LocalItemId::new),
     })
 }
 
@@ -154,6 +156,7 @@ fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
         ("handle", row.object.as_ref().map(FileHandle::encode).into()),
         ("confirmed", i64::from(row.confirmed).into()),
         ("size", row.size.map(|n| n as i64).into()),
+        ("local_item_id", row.local_item_id.map(LocalItemId::as_i64).into()),
     ]
 }
 

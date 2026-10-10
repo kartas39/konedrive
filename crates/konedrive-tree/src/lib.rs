@@ -45,7 +45,10 @@ mod thumbs;
 
 pub use activity::{ActivityKind, ActivityRow, ACTIVITY_KEPT};
 pub use conflicts::{ConflictKind, ConflictRow};
-pub use model::{usable_id, Change, Counts, DriveId, Kind, Located, NewTree, Placement, Row, SkipReason, Table};
+pub use model::{
+    usable_id, Change, ContentPresence, ContentVersion, Counts, DriveId, FileSyncState, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
+    LocalVersionChange, Located, NewTree, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason, Table,
+};
 pub use konedrive_reason::WaitsFor;
 pub use query::Skipped;
 pub use read::ReadStore;

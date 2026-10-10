@@ -5,6 +5,7 @@ use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Reason, Snapsho
 
 fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
     OutboxRow {
+        local_item_id: None,
         seq,
         kind: OutboxKind::Create,
         item_id: None,

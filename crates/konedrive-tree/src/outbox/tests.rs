@@ -40,6 +40,7 @@ fn base_of(row: &Row) -> Base {
 
 fn detect(kind: OutboxKind, item: Option<&Row>, object: Option<FileHandle>, rel: &str, parent: Option<&str>) -> Detection {
     Detection {
+        local_item_id: None,
         kind,
         item_id: item.map(|r| r.id.clone()),
         object,
@@ -413,6 +414,7 @@ fn a_path_that_is_not_utf8_is_kept_as_it_is() {
 fn a_row_with_a_reason_the_enum_does_not_know_is_kept() {
     let mut s = TreeStore::in_memory().unwrap();
     let d = Detection {
+        local_item_id: None,
         kind: OutboxKind::Create,
         item_id: None,
         object: None,
@@ -446,6 +448,7 @@ fn the_rows_waiting_for_space_are_found_by_their_reasons() {
     let mut s = TreeStore::in_memory().unwrap();
     let create = |rel: &str, reason: Option<Reason>| {
         OutboxOp::Record(Detection {
+            local_item_id: None,
             kind: OutboxKind::Create,
             item_id: None,
             object: None,
@@ -523,4 +526,39 @@ fn two_objects_that_had_one_inode_number_have_rows_of_their_own() {
     assert_ne!(first, second);
     assert_eq!(s.outbox_for_object(&generation(1)).unwrap().iter().map(|r| r.seq).collect::<Vec<_>>(), vec![first]);
     assert_eq!(s.checked_blockers(second).unwrap(), Vec::<i64>::new(), "the second waits for no row of the first");
+}
+
+/// A row names the item of `items` it is about, and keeps naming it: through a merge with a
+/// detection that names none, in the follow-up behind a running row, and in the move a
+/// commit under a temporary name leaves.
+#[test]
+fn a_row_keeps_the_local_item_it_names() {
+    use OutboxKind::*;
+    let a = base_row("A", "R", "a.txt", Kind::File);
+    let mut s = store(std::slice::from_ref(&a));
+    let named = crate::LocalItemId::new(7);
+    let seq = match s.outbox_record(&Detection { local_item_id: Some(named), ..detect(Update, Some(&a), Some(object(1)), "a.txt", Some("R")) }).unwrap() {
+        Recorded::Inserted(seq) => seq,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().local_item_id, Some(named));
+    assert_eq!(s.outbox_record(&detect(Move, Some(&a), Some(object(1)), "b.txt", Some("R"))).unwrap(), Recorded::Merged(seq));
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().local_item_id, Some(named), "a merge keeps it");
+
+    s.outbox_set_state(seq, OutboxState::Running, None, None).unwrap();
+    let behind = match s.outbox_record(&detect(Update, Some(&a), Some(object(1)), "b.txt", Some("R"))).unwrap() {
+        Recorded::Inserted(behind) => behind,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(s.outbox_row(behind).unwrap().unwrap().local_item_id, Some(named), "the follow-up is about the same item");
+
+    let mut s = store(&[]);
+    let new = match s.outbox_record(&Detection { local_item_id: Some(named), ..detect(Create, None, Some(object(2)), "new.txt", Some("R")) }).unwrap() {
+        Recorded::Inserted(seq) => seq,
+        other => panic!("{other:?}"),
+    };
+    let answer = Row { name: format!("{SWAP_PREFIX}1"), ..base_row("N", "R", "", Kind::File) };
+    s.outbox_commit_temporary(new, &answer, "R", "new.txt", None).unwrap();
+    let rows = s.outbox_rows().unwrap();
+    assert_eq!(rows.iter().map(|row| (row.kind, row.local_item_id)).collect::<Vec<_>>(), [(Move, Some(named))]);
 }
