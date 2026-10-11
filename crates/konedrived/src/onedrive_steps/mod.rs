@@ -96,7 +96,11 @@
 // test: a_step_whose_commit_may_not_begin_writes_nothing
 // test: each_written_step_answers_its_event_with_the_path_of_its_commit
 // test: a_step_that_sends_no_content_holds_a_metadata_slot_for_its_request
-// TODO: a measurement against OneDrive itself, on the test account: a 412 is answered `ItemChanged` and waits for a listing to write the item's eTag (`SendContent`, `SendMove`, `SendFileRemoval`). An eTag moves in OneDrive with no change of content (the old worker read the item in place for that reason). What is missing: whether the delta names an item whose eTag alone moved. Measure once: note an item's eTag, wait until `GET /me/drive/items/{id}` answers another with the same cTag, and ask the delta from a link taken before. If the delta does not name it, the step is refused at every try, and the 412 must ask for the item to be read again (`DriveClient::item`) instead of for a cycle.
+// A 412 is answered `ItemChanged` and waits for a listing to write the item's eTag (`SendContent`,
+// `SendMove`, `SendFileRemoval`). That is enough: OneDrive moves an eTag with no change of content (an
+// image's moved twice within a minute of its upload), and the delta names an item whose eTag alone
+// moved, with the new eTag and the cTag it had (measured on a personal account, 2026-10-11, by a
+// change of the time of last change and of the description).
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;

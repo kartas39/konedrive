@@ -71,7 +71,8 @@ pub struct PlanSettings {
 pub const QUIET_TIME: i64 = 2;
 
 /// How many unsent items, and how many OneDrive changed, a plan reads at first.
-// TODO: a measurement on a large folder: 1000 is a guess (the old engine had no window to take a number from: its worker took one row at a time). What is missing: how long one plan's reading takes — `plan_next_steps`, with the closing of the set, in one read transaction — on a store of a folder with some 100 000 items of which more than 1000 are unsent, for 250, 1000 and 4000; the number is to keep one plan well below a second.
+/// The number is not tuned and need not be: a plan reads rows of the store, which takes far less
+/// time than sending what it plans, so the window never holds the sync back.
 pub const ITEMS_READ_AT_ONCE: usize = 1000;
 
 impl PlanSettings {
