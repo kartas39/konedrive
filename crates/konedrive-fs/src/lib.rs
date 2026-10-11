@@ -1,10 +1,7 @@
 //! Local filesystem primitives for a folder's files: konedrive's extended
-//! attributes and modes, write leases, file handles and the feature probe.
+//! attributes and modes, file handles and the feature probe.
 
 pub mod handle;
-// TODO: check whether the lease is still needed (its one caller, the old upload's read of a
-// file, went) and fix if needed.
-pub mod lease;
 pub mod placeholder;
 pub mod probe;
 

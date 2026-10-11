@@ -8,7 +8,6 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 
 use crate::handle::FileHandle;
-use crate::lease::WriteLease;
 use crate::placeholder::punch_all;
 
 #[derive(Debug, thiserror::Error)]
@@ -78,8 +77,7 @@ fn open_probe_file(dir: &Path) -> io::Result<File> {
 const HANDLES: &str = "file handles (name_to_handle_at)";
 
 /// Creates one nameless temporary file in `dir` and exercises every feature
-/// a folder needs: sparse size, hole punching, user xattrs, a write lease
-/// and a file handle.
+/// a folder needs: sparse size, hole punching, user xattrs and a file handle.
 pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     let unusable = |e: io::Error| ProbeError::Unusable {
         path: dir.display().to_string(),
@@ -99,32 +97,10 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
     punch_all(&file).map_err(|e| classify(e, dir, "sparse files with hole punching"))?;
     xattr::FileExt::set_xattr(&file, crate::placeholder::XATTR_STATE, b"probe")
         .map_err(|e| classify(e, dir, "user.* extended attributes"))?;
-    probe_lease(&file, dir)?;
     // A file or directory of the folder is its handle, and nothing else: a
     // filesystem that gives none cannot say which object is which.
     FileHandle::of(&file).map_err(|e| classify(e, dir, HANDLES))?;
     Ok(())
-}
-
-/// Exercises `F_SETLEASE` on the probe's own file.
-///
-/// The probe's own file has never been opened anywhere else, so `EAGAIN` is
-/// as impossible here as `EACCES` (this process owns it): either one reaching
-/// this function is the filesystem refusing leases, reported now, against the
-/// folder the user is trying to register.
-fn probe_lease(file: &File, dir: &Path) -> Result<(), ProbeError> {
-    match WriteLease::take(file) {
-        Ok(Some(lease)) => {
-            drop(lease);
-            Ok(())
-        }
-        Ok(None) => Err(ProbeError::Unusable {
-            path: dir.display().to_string(),
-            why: "a write lease (F_SETLEASE) on a file nothing else has open was refused".into(),
-            errno: None,
-        }),
-        Err(e) => Err(classify(e, dir, "write leases (F_SETLEASE)")),
-    }
 }
 
 #[cfg(test)]
