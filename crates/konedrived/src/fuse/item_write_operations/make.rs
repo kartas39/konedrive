@@ -16,7 +16,9 @@
 //! (the entry is there, no row has its place), taking the binding of `replaced` over.
 //!
 //! **Tested without the rest:**
+// test: each_case_of_a_make_is_decided
 // test: a_directory_made_is_on_disk_and_then_in_its_row
+// test: a_directory_made_below_a_directory_that_is_not_on_disk_makes_it_marked
 // test: a_file_made_is_empty_on_disk_changed_here_and_on_disk_in_its_row
 // test: a_file_made_where_a_file_was_removed_and_not_sent_takes_its_binding_over
 // test: a_file_made_where_a_removal_is_being_sent_takes_nothing_over
@@ -26,17 +28,26 @@
 // test: a_name_the_disk_holds_though_no_row_says_so_is_refused_and_nothing_is_replaced
 // test: a_file_created_is_made_and_open_for_writing_in_one_transaction
 // test: a_row_refused_after_the_disk_removes_what_was_made
-#![allow(dead_code, unused_variables)]
+// test: a_made_entry_that_cannot_be_removed_again_asks_for_the_take_down_and_keeps_its_record
+#![allow(dead_code)]
 
 use std::ffi::OsStr;
+use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use fuser::{Errno, FileAttr};
-use konedrive_tree::{Item, LocalItemId};
+use fuser::Errno;
+use konedrive_tree::{ContentVersion, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange, MadeEntryOwner, PlaceChangeRecord, PlaceChangeRowWrite, TreeStore};
 
+use super::super::backing_directory::EntryKind;
+use super::super::errno::to_errno;
 use super::super::open_handles::Fh;
 use super::super::place_changes::DirectoryMarks;
-use super::ItemWriteOperations;
+use super::{read_size_and_time, ItemWriteOperations};
+use crate::folder::disk::is_hidden_name;
+
+#[cfg(test)]
+mod tests;
 
 /// What is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,11 +60,29 @@ pub(in crate::fuse) enum MadeKind {
     FileOpenedForWriting,
 }
 
+impl MadeKind {
+    fn to_item_kind(self) -> ItemKind {
+        match self {
+            MadeKind::Directory => ItemKind::Directory,
+            MadeKind::File | MadeKind::FileOpenedForWriting => ItemKind::File,
+        }
+    }
+
+    fn to_entry_kind(self) -> EntryKind {
+        match self {
+            MadeKind::Directory => EntryKind::Directory,
+            MadeKind::File | MadeKind::FileOpenedForWriting => EntryKind::File,
+        }
+    }
+}
+
 /// What was made.
 #[derive(Debug, Clone)]
 pub(in crate::fuse) struct MadeItem {
-    pub(in crate::fuse) item: LocalItemId,
-    pub(in crate::fuse) attributes: FileAttr,
+    /// The row of the made item, as it was written: what the request's answer makes the
+    /// attributes from (`item_attributes::to_item_attributes`, with the facts
+    /// `ItemLookup::read_backing_file_facts` reads; the write operations hold neither).
+    pub(in crate::fuse) item: Item,
     /// The writer's handle of a created file; `Fh::NOT_OPENED` otherwise.
     pub(in crate::fuse) fh: Fh,
 }
@@ -77,9 +106,9 @@ pub(super) struct MakeCase {
     /// may be at OneDrive already, and nothing is taken over.
     pub(super) has_removed_file_a_running_step: bool,
     pub(super) kind: MadeKind,
-    /// `folder::disk::is_hidden_name` of the name: an entry no row says, a row the check
-    /// set aside, a temporary name.
+    /// `folder::disk::is_hidden_name` of the name: an entry no row says, a temporary name.
     pub(super) is_hidden_name: bool,
+    /// A file manager's trash directory, to be made in the folder itself.
     pub(super) is_trash: bool,
     pub(super) is_name_ignored: bool,
 }
@@ -98,14 +127,46 @@ pub(super) struct MakeDecision {
 /// replaces anything; a file replaces a removed file only when its own name is not
 /// ignored and no step runs for that file.
 pub(super) fn decide_make(case: &MakeCase) -> Result<MakeDecision, Errno> {
-    todo!()
+    if case.directory.is_none() {
+        return Err(Errno::ENOENT);
+    }
+    if case.is_hidden_name || case.is_trash {
+        return Err(Errno::EPERM);
+    }
+    if case.holder.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let replaced = match (case.kind, &case.removed_file) {
+        (MadeKind::File | MadeKind::FileOpenedForWriting, Some(removed)) if !case.is_name_ignored && !case.has_removed_file_a_running_step => Some(removed.local_item_id),
+        _ => None,
+    };
+    Ok(MakeDecision { is_name_ignored: case.is_name_ignored, replaced })
 }
 
 impl ItemWriteOperations {
     /// What [`decide_make`] decides from, read in one job of the store through the
     /// writer, with what the upload rules and the running steps say.
     fn read_make_case(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind) -> Result<MakeCase, Errno> {
-        todo!()
+        let name_read = name.to_owned();
+        let (directory_row, directory_path, directory_marks, holder, removed_file) = self.run_store_job("the place of a make could not be read", move |store| {
+            let items = store.item_store();
+            let reader = items.reader();
+            let Some(shown) = reader.find_item(directory)?.filter(|row| row.kind == ItemKind::Directory && row.local.is_some()) else { return Ok((None, None, Vec::new(), None, None)) };
+            let (path, marks) = reader.find_path_with_marks(directory)?.unzip();
+            Ok((Some(shown), path, marks.unwrap_or_default(), reader.find_item_at(directory, &name_read)?, reader.find_removed_file_at_synced_place(directory, &name_read)?))
+        })?;
+        Ok(MakeCase {
+            directory: directory_row,
+            directory_path,
+            directory_marks,
+            holder,
+            has_removed_file_a_running_step: removed_file.as_ref().is_some_and(|removed| self.running_steps.has_running_step(removed.local_item_id)),
+            removed_file,
+            kind,
+            is_hidden_name: is_hidden_name(name),
+            is_trash: kind == MadeKind::Directory && directory == LocalItemId::ROOT && self.upload_rules.is_trash(&name.to_string_lossy()),
+            is_name_ignored: self.upload_rules.is_name_ignored(name),
+        })
     }
 
     /// Mkdir, mknod, create: makes `name` in `directory`.
@@ -120,10 +181,52 @@ impl ItemWriteOperations {
     /// created file `apply_made_open_for_writing` with the record, after which the writer
     /// is added to `ItemHandles`.
     /// The new file's content is `ContentVersion::ChangedHere` of size 0, the backing
-    /// file's time, change count 1.
+    /// file's time, change count 1. A created file that is closed with nothing written
+    /// has that content again (`ClosedUnchanged`): its writer is not marked as having
+    /// written, since an empty new file is unsent as it is.
     ///
     /// Called by the kernel's mkdir, mknod and create, on the write-operation thread.
     pub(in crate::fuse) fn make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind) -> Result<MadeItem, Errno> {
-        todo!()
+        self.access_mode_switch.check_read_write()?;
+        let case = self.read_make_case(directory, name, kind)?;
+        let decision = decide_make(&case)?;
+        let path = case.directory_path.as_ref().ok_or(Errno::ENOENT)?.join(name);
+        let place = ItemPlace { parent_local_item_id: directory, name: name.to_owned() };
+        let item_kind = kind.to_item_kind();
+        let record = self.write_place_change_record(PlaceChangeRecord::MakeEntry { kind: item_kind, place: place.clone(), owner: MadeEntryOwner::NewItem { replaced: decision.replaced } })?;
+        #[cfg(test)]
+        self.reach(super::tests::OperationPoint::RecordWritten);
+        let change = self.place_changes.begin();
+        let (file, undo) = change.make_entry(&path, kind.to_entry_kind(), &case.directory_marks).map_err(|refusal| self.refuse_place_change(record, &refusal))?;
+        // What the row is written from, read from the made file; and the mark of the item
+        // whose binding it takes over.
+        let replaced_binding = case.removed_file.as_ref().filter(|removed| decision.replaced == Some(removed.local_item_id)).and_then(|removed| removed.onedrive_item.as_ref());
+        let read = (|| -> io::Result<Option<ContentVersion>> {
+            let Some(file) = &file else { return Ok(None) };
+            if let Some(binding) = replaced_binding {
+                self.backing_directory.mark_downloaded_copy(&path, binding.item_id.as_str())?;
+            }
+            let (size, mtime, mtime_nsec) = read_size_and_time(file)?;
+            Ok(Some(ContentVersion::ChangedHere { size, mtime, mtime_nsec, change_count: 1 }))
+        })();
+        let content = match read {
+            Ok(content) => content,
+            Err(error) => return Err(self.undo_place_change(&change, undo, record, to_errno(&error))),
+        };
+        #[cfg(test)]
+        self.reach(super::tests::OperationPoint::DiskChanged);
+        let (is_name_ignored, replaced) = (decision.is_name_ignored, decision.replaced);
+        let write = move |store: &mut TreeStore| match (kind, content) {
+            (MadeKind::FileOpenedForWriting, Some(content)) => store.item_store().apply_made_open_for_writing(&place, &content, is_name_ignored, replaced, Some(record)),
+            (_, content) => store.item_store().settle_place_change_record(record, &PlaceChangeRowWrite::LocalVersion(LocalVersionChange::Made { kind: item_kind, place, content, is_name_ignored, replaced })),
+        };
+        let (made, _) = self.write_row_or_undo(&change, undo, record, write)?;
+        change.end();
+        let item = self.read_item(made)?.ok_or(Errno::EIO)?;
+        let fh = match (kind, file) {
+            (MadeKind::FileOpenedForWriting, Some(file)) => self.item_handles.add_writer(made, Arc::new(file)).0,
+            _ => Fh::NOT_OPENED,
+        };
+        Ok(MadeItem { item, fh })
     }
 }

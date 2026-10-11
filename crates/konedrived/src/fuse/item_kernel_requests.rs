@@ -253,8 +253,10 @@ impl ItemKernelRequests {
 
     /// mkdir, mknod, create. `ItemWriteOperations::make` on the write-operation thread:
     /// the disk, then `LocalVersionChange::Made`; a created file made and opened in one
-    /// transaction. For the bridge's own thread (mkdir, mknod): answered from the rows,
-    /// nothing made.
+    /// transaction. The operation answers the made item's row (`MadeItem::item`): the
+    /// attributes of the reply are made here, from that row
+    /// (`item_attributes::to_item_attributes`, with `ItemLookup::read_backing_file_facts`).
+    /// For the bridge's own thread (mkdir, mknod): answered from the rows, nothing made.
     pub(super) fn queue_make(&self, directory: LocalItemId, name: &OsStr, kind: MadeKind, thread_id: u32, reply: ReplyTo<MadeItem>) {
         todo!()
     }
@@ -280,13 +282,16 @@ impl ItemKernelRequests {
 
     /// The rest of a truncation: with a download, awaited on the runtime first; then
     /// `ItemWriteOperations::truncate`, with the `fh` the request carries, as a job of the
-    /// write-operation thread, which answers `reply`.
+    /// write-operation thread; the operation answers no attributes, and `reply` is
+    /// answered as getattr answers, with the `fh`.
     pub(super) async fn fill_and_truncate(&self, node: LocalItemId, fh: Option<Fh>, size: u64, fill: FileToFill, reply: ReplyTo<FileAttr>) {
         todo!()
     }
 
     /// setattr with a time and no size. `ItemWriteOperations::set_modified_time`, with the
-    /// `fh` the request carries. Mode, owner and the other times are ignored, as today.
+    /// `fh` the request carries; the operation answers no attributes, and `reply` is
+    /// answered as getattr answers, with the `fh`. Mode, owner and the other times are
+    /// ignored, as today.
     /// For the bridge's own thread: answered as getattr.
     pub(super) fn queue_set_modified_time(&self, node: LocalItemId, fh: Option<Fh>, mtime: i64, mtime_nsec: u32, thread_id: u32, reply: ReplyTo<FileAttr>) {
         todo!()

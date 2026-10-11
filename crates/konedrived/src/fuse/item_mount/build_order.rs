@@ -136,6 +136,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
     ));
     let write_operations = Arc::new(ItemWriteOperations::new(
         Arc::clone(&place_changes),
+        Arc::clone(&backing_directory),
         store.clone(),
         Arc::clone(&item_handles),
         Arc::clone(&download_states),
