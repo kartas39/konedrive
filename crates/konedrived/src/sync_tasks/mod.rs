@@ -132,5 +132,6 @@ impl Drop for SyncTasks {
     }
 }
 
+// Seen by the tests of the layers above: `tests::start_sync_over_fixture` gives them a sync that runs.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

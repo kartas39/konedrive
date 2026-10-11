@@ -29,7 +29,7 @@ const LONG: Duration = Duration::from_secs(3600);
 /// What a start over the fixture's folder is given: the fixture's store file, tree lock,
 /// ignore list, pool and clock, `drive` for OneDrive, a lease on a lock nobody holds,
 /// read-write wanted, nothing held, nothing kept, no thumbnail cache.
-pub(super) fn make_start_input(fixture: &ItemFixture, drive: DriveClient) -> FolderStartInput {
+pub(crate) fn make_start_input(fixture: &ItemFixture, drive: DriveClient) -> FolderStartInput {
     FolderStartInput {
         root: SyncRoot { path: fixture.folder(), root_id: ROOT_ONEDRIVE_ID.into() },
         tree_db: fixture.store_path.clone(),
@@ -76,7 +76,7 @@ pub(super) fn make_kept_parts(fixture: &ItemFixture) -> KeptFolderParts {
 }
 
 /// Starts the sync of the fixture's folder over the parts it keeps, as `input` says.
-pub(super) async fn start_over_kept_parts(fixture: &ItemFixture, mut input: FolderStartInput) -> StartedFolder {
+pub(crate) async fn start_over_kept_parts(fixture: &ItemFixture, mut input: FolderStartInput) -> StartedFolder {
     input.kept = Some(make_kept_parts(fixture));
     match start_folder_sync(input).await {
         Ok(started) => started,
@@ -84,15 +84,47 @@ pub(super) async fn start_over_kept_parts(fixture: &ItemFixture, mut input: Fold
     }
 }
 
+/// A folder whose sync RUNS over `fixture`, for the tests of the layers above this one
+/// (the owner of the folder's state holds a `StartedFolder` in `Sync::Running`): the
+/// start's stages 5 to 7 over the parts of the fixture's folder — its store and leaf
+/// state, and a mount built now and NOT served, so nothing is mounted. Read-write, with
+/// nothing held but the first listing, and no thumbnail cache.
+///
+/// **What runs,** on the runtime this is awaited on: the listing's poller (its first
+/// cycle at once, then none for an hour unless asked: `tasks.poll().refresh()`) and the
+/// plan's loop with the REAL runners of its steps — towards the folder over the built
+/// mount, towards OneDrive through `drive`, of the rows. No thumbnail filler; no task
+/// watches the account (the owner's does). The quota is read once from `drive` before
+/// the tasks start.
+///
+/// **`drive`** is where every request goes: a fake OneDrive's client
+/// (`fixture.start_fake_onedrive().await.client()`), with which a cycle ends and steps
+/// send; or a client that reaches nothing, with which the first listing never ends, so
+/// nothing is sent and only steps towards the folder and of the rows run.
+///
+/// **A start of another shape** (read-only wanted, holds that stand, a lease on the
+/// test's own lock, a thumbnail cache): [`make_start_input`], change its fields, then
+/// [`start_over_kept_parts`].
+///
+/// **At the end of the test the caller stops it** — [`stop`]`(started).await`, which
+/// answers the parts the folder keeps — before the fixture is dropped: a sync that is
+/// only dropped is told to stop and not waited for, and its tasks may still touch the
+/// fixture's store and folder while the fixture goes. Whoever keeps the `StartedFolder`
+/// inside a value of its own stops it by what that value's owner calls
+/// (`stop_order::stop_folder_sync` after `tasks.stop_handle().cancel()`).
+pub(crate) async fn start_sync_over_fixture(fixture: &ItemFixture, drive: DriveClient) -> StartedFolder {
+    start_over_kept_parts(fixture, make_start_input(fixture, drive)).await
+}
+
 /// Stops a started sync as its owner does: the token first, then the stop.
-pub(super) async fn stop(started: StartedFolder) -> KeptFolderParts {
+pub(crate) async fn stop(started: StartedFolder) -> KeptFolderParts {
     started.tasks.stop_handle().cancel();
     stop_folder_sync(started).await
 }
 
 /// Waits until `is_so` answers yes, for ten seconds at most: for what a task of the sync
 /// does by itself, which a test can only wait for.
-pub(super) async fn wait_until(what: &str, mut is_so: impl FnMut() -> bool) {
+pub(crate) async fn wait_until(what: &str, mut is_so: impl FnMut() -> bool) {
     let waited = tokio::time::timeout(Duration::from_secs(10), async {
         while !is_so() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -127,6 +159,25 @@ fn a_folder_started_and_stopped_leaves_no_task_running() {
         assert!(Arc::ptr_eq(&kept.sync_plan_wake, &fixture.sync_plan_wake) && Arc::ptr_eq(&kept.running_steps, &fixture.running_steps));
         assert!(kept.store.call(|store| store.drive_id()).await.is_ok());
         assert!(fixture.running_steps.list_steps().is_empty(), "no step is left running");
+    });
+}
+
+#[test]
+fn a_sync_started_over_the_fixture_runs_its_tasks_until_it_is_stopped() {
+    let fixture = ItemFixture::new();
+    let listed = fixture.list_onedrive_file("listed.txt", b"listed");
+    fixture.runtime().block_on(async {
+        let graph = fixture.start_fake_onedrive().await;
+
+        let started = start_sync_over_fixture(&fixture, graph.client()).await;
+
+        assert!(started.mount.access_mode_switch().is_read_write());
+        // The plan's loop runs with its real runners: what OneDrive has is shown. And the poller: its first cycle ends.
+        wait_until("the listed file is shown", || fixture.find_item(listed.local_item_id).is_some_and(|item| item.local.is_some())).await;
+        wait_until("the first listing ended", || started.tasks.sending_holds().find((fixture.clock())()).is_none()).await;
+        let kept = stop(started).await;
+        assert!(fixture.running_steps.list_steps().is_empty());
+        drop(kept);
     });
 }
 
