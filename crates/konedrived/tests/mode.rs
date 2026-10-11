@@ -8,7 +8,7 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +16,9 @@ use common::*;
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
+use konedrived::account::state::{ModeNote, SignInState};
 use konedrived::account::{
-    AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
+    AccountService, FolderAccount, HeldUnsentChanges, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_KNOWN, DRIVE_NOT_SEEN, SIGN_IN_TO_WRITE,
 };
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{AccountId, ConfigError, ConfigStore, DriveId, Mode, Paths};
@@ -359,33 +360,45 @@ async fn a_switch_of_an_account_with_no_recorded_drive_learns_it_or_is_refused_b
     assert_eq!(s.refresh_token().as_deref(), Some("RT1"));
 }
 
-/// A folder whose uploads wait, as `PendingUploads` says (the outbox worker's outbox, faked here).
-struct Waiting {
-    pending: u64,
-    dropped: AtomicBool,
+/// An account's folder as the switch between the modes asks it (`PendingUploads`), faked
+/// here: how many changes are unsent, whether a request that changes OneDrive is in
+/// flight, and whether it was told to hold what is unsent. It drops nothing: what is
+/// unsent stays unsent when it is held.
+#[derive(Default)]
+struct UnsentFolder {
+    unsent: AtomicU64,
+    is_request_in_flight: AtomicBool,
+    is_held: AtomicBool,
+}
+
+impl UnsentFolder {
+    fn with_unsent(unsent: u64) -> Arc<Self> {
+        Arc::new(Self { unsent: AtomicU64::new(unsent), ..Self::default() })
+    }
 }
 
 #[async_trait::async_trait]
-impl PendingUploads for Waiting {
+impl PendingUploads for UnsentFolder {
     async fn pending_uploads(&self) -> u64 {
-        if self.dropped.load(Ordering::SeqCst) {
-            0
-        } else {
-            self.pending
-        }
+        self.unsent.load(Ordering::SeqCst)
     }
 
-    async fn hold_unsent_changes(&self) -> konedrived::account::HeldUnsentChanges {
-        self.dropped.store(true, Ordering::SeqCst);
-        konedrived::account::HeldUnsentChanges { unsent: 0, is_request_in_flight: false }
+    async fn hold_unsent_changes(&self) -> HeldUnsentChanges {
+        self.is_held.store(true, Ordering::SeqCst);
+        HeldUnsentChanges { unsent: self.unsent.load(Ordering::SeqCst), is_request_in_flight: self.is_request_in_flight.load(Ordering::SeqCst) }
+    }
+
+    fn has_request_in_flight(&self) -> bool {
+        self.is_request_in_flight.load(Ordering::SeqCst)
     }
 }
 
-/// Read-write → read-only is refused `PendingUploads` while changes wait, and forced, drops
-/// them and switches.
-#[tokio::test]
-async fn a_switch_to_read_only_waits_for_uploads_unless_forced() {
+/// An account that runs read-write with no sign-in made: `config.toml` says read-write and
+/// records drive D1, and its state says signed in, with a token that can write and was seen
+/// to reach D1. Its folder is `folder`.
+async fn read_write_account(folder: &Arc<UnsentFolder>) -> Fixture {
     let f = Fixture::new(Duration::from_secs(5)).await;
+    f.svc.config().record_drive(f.svc.id(), &DriveId::new("D1").unwrap()).unwrap();
     f.svc
         .config()
         .update_account(f.svc.id(), |a| {
@@ -393,32 +406,152 @@ async fn a_switch_to_read_only_waits_for_uploads_unless_forced() {
             Ok::<_, ConfigError>(())
         })
         .unwrap();
-    let waiting = Arc::new(Waiting { pending: 3, dropped: AtomicBool::new(false) });
-    let folder: std::sync::Weak<Waiting> = Arc::downgrade(&waiting);
-    f.svc.set_uploads(folder);
-    let refused = f.svc.set_mode("read-only", false).await.unwrap_err();
-    assert!(matches!(&refused, ModeError::PendingUploads(why) if why.starts_with("3 changes")), "{refused:?}");
-    assert_eq!(f.svc.configured_mode(), Mode::ReadWrite, "nothing changed");
-    assert!(!waiting.dropped.load(Ordering::SeqCst));
-    assert_eq!(f.svc.set_mode("read-only", true).await.unwrap(), "");
-    assert!(waiting.dropped.load(Ordering::SeqCst), "forced: the rows are dropped");
-    assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
+    f.svc.state().update(|s| {
+        s.state = SignInState::SignedIn;
+        s.granted_scopes = READ_WRITE.to_owned();
+        s.live_drive = "D1".to_owned();
+    });
+    f.svc.recheck_mode();
+    assert_eq!((f.svc.mode(), f.svc.state().get().mode_note), (Mode::ReadWrite, None), "the account runs read-write");
+    let uploads: std::sync::Weak<UnsentFolder> = Arc::downgrade(folder);
+    f.svc.set_uploads(uploads);
+    f
 }
 
-/// Read-only already — a switch nobody forced kept the changes — a forced
-/// switch to read-only drops them all the same: the way out of a Forget or a Remove refused
-/// `PendingUploads`. Unforced, it changes nothing.
+/// Whether `config.toml` keeps the account's wish for read-only.
+fn keeps_wish(f: &Fixture) -> bool {
+    f.svc.config().account(f.svc.id()).unwrap().read_only_wanted
+}
+
+/// Read-write → read-only asked while changes are unsent, not forced, is neither made nor
+/// refused: the wish is kept, in `config.toml` too, the account stays read-write and says
+/// "switching" with the count the folder last told; when the folder tells that nothing is
+/// unsent the switch is made by itself, the folder holds, and the wish and the note are gone.
 #[tokio::test]
-async fn a_forced_switch_drops_what_a_read_only_account_kept() {
-    let f = Fixture::new(Duration::from_secs(5)).await;
-    let waiting = Arc::new(Waiting { pending: 2, dropped: AtomicBool::new(false) });
-    let folder: std::sync::Weak<Waiting> = Arc::downgrade(&waiting);
-    f.svc.set_uploads(folder);
-    assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
-    assert_eq!(f.svc.set_mode("read-only", false).await.unwrap(), "");
-    assert!(!waiting.dropped.load(Ordering::SeqCst), "unforced: kept");
+async fn a_switch_to_read_only_asked_with_changes_unsent_keeps_the_wish_and_is_made_when_none_is_left() {
+    let folder = UnsentFolder::with_unsent(3);
+    let f = read_write_account(&folder).await;
+    assert_eq!(f.svc.set_mode("read-only", false).await.unwrap(), "", "not refused");
+    assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadWrite, Mode::ReadWrite), "the account is read-write still");
+    assert!(keeps_wish(&f), "the wish is in config.toml");
+    assert!(!folder.is_held.load(Ordering::SeqCst), "the folder goes on sending");
+    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 3 }));
+
+    // The folder's plan counts what is left.
+    folder.unsent.store(1, Ordering::SeqCst);
+    f.svc.tell_unsent_count(1);
+    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 1 }));
+    assert_eq!(f.svc.configured_mode(), Mode::ReadWrite, "not yet");
+
+    folder.unsent.store(0, Ordering::SeqCst);
+    f.svc.tell_unsent_count(0);
+    let svc = &f.svc;
+    eventually("the switch made by itself", || async move { svc.configured_mode() == Mode::ReadOnly && svc.state().get().mode_note.is_none() }).await;
+    assert!(folder.is_held.load(Ordering::SeqCst), "the folder was told to hold");
+    assert!(!keeps_wish(&f), "the wish went with the switch");
+    assert_eq!(f.svc.mode(), Mode::ReadOnly);
+}
+
+/// A wish for read-only is taken back by a switch to read-write: no sign-in, the account
+/// is read-write as it was, the note is gone, and a folder that then says nothing is
+/// unsent switches nothing.
+#[tokio::test]
+async fn a_wish_for_read_only_is_taken_back_by_a_switch_to_read_write() {
+    let folder = UnsentFolder::with_unsent(2);
+    let f = read_write_account(&folder).await;
+    f.svc.set_mode("read-only", false).await.unwrap();
+    assert!(keeps_wish(&f));
+    assert_eq!(f.svc.set_mode("read-write", false).await.unwrap(), "", "no sign-in is needed");
+    assert!(!keeps_wish(&f));
+    assert_eq!((f.svc.configured_mode(), f.svc.mode(), f.svc.state().get().mode_note), (Mode::ReadWrite, Mode::ReadWrite, None));
+
+    folder.unsent.store(0, Ordering::SeqCst);
+    f.svc.tell_unsent_count(0);
+    // Whatever that call started has run by now: nothing was switched.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(f.svc.configured_mode(), Mode::ReadWrite);
+    assert!(!folder.is_held.load(Ordering::SeqCst));
+}
+
+/// A forced switch to read-only goes through at once with changes unsent: `config.toml`
+/// says read-only, no wish is kept, the folder holds what is unsent, and nothing of it is
+/// dropped.
+#[tokio::test]
+async fn a_forced_switch_to_read_only_is_made_at_once_and_what_is_unsent_stays_held() {
+    let folder = UnsentFolder::with_unsent(3);
+    let f = read_write_account(&folder).await;
     assert_eq!(f.svc.set_mode("read-only", true).await.unwrap(), "");
-    assert!(waiting.dropped.load(Ordering::SeqCst), "forced: dropped");
+    assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadOnly, Mode::ReadOnly));
+    assert!(!keeps_wish(&f));
+    assert!(folder.is_held.load(Ordering::SeqCst), "the folder holds what is unsent");
+    assert_eq!(folder.pending_uploads().await, 3, "nothing is dropped");
+    assert_eq!(f.svc.state().get().mode_note, None);
+}
+
+/// A wish that is kept is not asked a second time: asked again with force the switch is
+/// made at once, and the wish is forgotten with it.
+#[tokio::test]
+async fn a_kept_wish_asked_again_with_force_switches_at_once() {
+    let folder = UnsentFolder::with_unsent(3);
+    let f = read_write_account(&folder).await;
+    f.svc.set_mode("read-only", false).await.unwrap();
+    assert!(keeps_wish(&f));
+    f.svc.set_mode("read-only", true).await.unwrap();
+    assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
+    assert!(!keeps_wish(&f));
+    assert!(folder.is_held.load(Ordering::SeqCst));
+    assert_eq!(folder.pending_uploads().await, 3, "nothing is dropped");
+}
+
+/// Read-only already, with changes that were unsent at the switch: a switch to read-only
+/// asked again, forced or not, tells the folder to hold again, keeps no wish and drops
+/// nothing.
+#[tokio::test]
+async fn a_switch_to_read_only_of_a_read_only_account_holds_again_and_drops_nothing() {
+    for force in [false, true] {
+        let f = Fixture::new(Duration::from_secs(5)).await;
+        let folder = UnsentFolder::with_unsent(2);
+        let uploads: std::sync::Weak<UnsentFolder> = Arc::downgrade(&folder);
+        f.svc.set_uploads(uploads);
+        assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
+        assert_eq!(f.svc.set_mode("read-only", force).await.unwrap(), "");
+        assert!(folder.is_held.load(Ordering::SeqCst), "force {force}: the folder is told again");
+        assert!(!keeps_wish(&f), "force {force}");
+        assert_eq!(folder.pending_uploads().await, 2, "force {force}: nothing is dropped");
+        assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
+    }
+}
+
+/// The token that can write is not given up while a request that changes OneDrive is in
+/// flight: the switch is made (`config.toml`, the folder held) and the account says
+/// "switching" until the folder, asked again after a short wait, says none is — only then
+/// the note goes with the token.
+#[tokio::test]
+async fn the_switch_to_read_only_is_shown_as_under_way_while_a_request_is_in_flight() {
+    let folder = UnsentFolder::with_unsent(2);
+    folder.is_request_in_flight.store(true, Ordering::SeqCst);
+    let f = read_write_account(&folder).await;
+    f.svc.set_mode("read-only", true).await.unwrap();
+    assert_eq!(f.svc.configured_mode(), Mode::ReadOnly);
+    assert!(folder.is_held.load(Ordering::SeqCst));
+    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 2 }), "the token is kept: the switch is under way");
+
+    // Asked again while the request still hangs: nothing changes.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(6)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(f.svc.state().get().mode_note, Some(ModeNote::SwitchingToReadOnly { unsent: 2 }), "still in flight");
+
+    // The request ended: at the next ask the token goes, and the note with it.
+    folder.is_request_in_flight.store(false, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(6)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(f.svc.state().get().mode_note, None);
+    assert_eq!((f.svc.configured_mode(), f.svc.mode()), (Mode::ReadOnly, Mode::ReadOnly));
 }
 
 /// The mode an account runs in at start: read-write only when `config.toml` says so — a hand
