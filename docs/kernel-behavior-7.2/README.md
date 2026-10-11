@@ -1,5 +1,13 @@
 # What the kernel actually does: fanotify on Linux 7.2 (measured on 7.2.5 and 7.2.7)
 
+**What this record is for.** These are measurements of fanotify, leases and file handles, made
+for a sync folder that was a plain directory whose opens a root helper intercepted. konedrive
+does not work that way: its sync folder is a FUSE mount the daemon serves, and it has no helper.
+The record is kept for what it says of the kernel. The programmes it names (`tests/vm/…`), the
+helper (`crates/konedrive-helper`) and the design sections it cites are not in this tree, so the
+commands below cannot be run from it; the branch `dev` holds them. The suite that mounts a sync
+folder is `tests/fuse-probe/run.sh` ([`../developing.md`](../developing.md), "The VM suite").
+
 Everything stated as a result below, except where §10 says otherwise, was
 measured by one of the three committed programmes
 
