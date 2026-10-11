@@ -119,10 +119,13 @@ fn the_pinned_to_download_are_read_while_the_reader_is_asked_and_not_otherwise()
     fixture.write_rows(move |store| store.set_pin(&onedrive_id, true));
 
     let asked = plan(&fixture, facts());
-    assert_eq!(asked.pinned_files_reading, PinnedFilesReading::SomeMissing);
+    assert_eq!(asked.pinned_files_reading, PinnedFilesReading::SomeMissing(PinnedDownloadTotal { count: 1, bytes: 6 }), "with all that is missing, counted");
+    assert_eq!(asked.pinned_files_reading.find_total(), Some(PinnedDownloadTotal { count: 1, bytes: 6 }));
+    assert_eq!(PinnedFilesReading::NoneMissing.find_total(), Some(PinnedDownloadTotal::default()));
     assert!(asked.plan.steps.iter().any(|step| matches!(step, SyncStep::Folder(konedrive_tree::FolderStep::DownloadContent { item }) if item.local_item_id == id)), "{:?}", asked.plan);
 
     let not_asked = plan(&fixture, DaemonFacts { is_pinned_files_reader_asked: false, ..facts() });
     assert_eq!(not_asked.pinned_files_reading, PinnedFilesReading::NotAsked);
+    assert_eq!(not_asked.pinned_files_reading.find_total(), None, "nothing is known anew");
     assert_eq!(not_asked.plan.steps, Vec::new(), "the file agrees on everything, and nothing else gives it to a plan");
 }

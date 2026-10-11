@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemPlace, ItemVersion, ItemVersions, LocalItemId, OneDriveItemId, OneDriveItemReference, OneDriveStep, RowStep};
+use konedrive_tree::{ContentPresence, ContentVersion, DriveId, ItemPlace, ItemVersion, ItemVersions, LocalItemId, OneDriveItemId, OneDriveItemReference, OneDriveStep, PinnedDownloadTotal, RowStep};
 
 use super::*;
 use crate::sync_parts::step_outcome::{RowsChangedFollowUp, StepFailure, StepObstacle, StepRefusal};
@@ -22,6 +22,12 @@ fn item() -> ItemVersions {
     }
 }
 
+fn some_missing() -> PinnedFilesReading {
+    PinnedFilesReading::SomeMissing(TOTAL)
+}
+
+const TOTAL: PinnedDownloadTotal = PinnedDownloadTotal { count: 2500, bytes: 5 << 30 };
+
 fn written() -> StepOutcome {
     StepOutcome::Written { events: Vec::new() }
 }
@@ -37,7 +43,7 @@ fn the_reader_is_asked_from_the_start_until_a_reading_answers_that_none_is_missi
 #[test]
 fn a_reading_that_was_not_asked_or_found_some_missing_changes_nothing() {
     let missing = MissingPinnedFiles::new();
-    missing.note_reading(PinnedFilesReading::SomeMissing);
+    missing.note_reading(some_missing());
     missing.note_reading(PinnedFilesReading::NotAsked);
     assert!(missing.is_reader_asked(), "the downloads the last plan planned are planned again");
     missing.note_reading(PinnedFilesReading::NoneMissing);
@@ -89,4 +95,32 @@ fn each_end_of_a_step_that_can_leave_a_pinned_file_missing_has_the_reader_asked_
         missing.note_ended_steps(&[(step.clone(), outcome.clone())]);
         assert_eq!(missing.is_reader_asked(), is_asked_again, "{step:?} ended {outcome:?}");
     }
+}
+
+/// One line for the journal when the first reading finds pinned files missing, one when a
+/// reading finds none; nothing while they go on being missing, and nothing of a reading
+/// that did not ask.
+#[test]
+fn the_download_of_pinned_files_begins_and_ends_once_each() {
+    let fewer = PinnedFilesReading::SomeMissing(PinnedDownloadTotal { count: 7, bytes: 6 << 20 });
+    let cases = [
+        (false, some_missing(), PinnedDownloadNews::Began(TOTAL)),
+        (true, fewer, PinnedDownloadNews::Nothing),
+        (true, PinnedFilesReading::NoneMissing, PinnedDownloadNews::Ended),
+        (false, PinnedFilesReading::NoneMissing, PinnedDownloadNews::Nothing),
+        (true, PinnedFilesReading::NotAsked, PinnedDownloadNews::Nothing),
+        (false, PinnedFilesReading::NotAsked, PinnedDownloadNews::Nothing),
+    ];
+    for (was_under_way, reading, news) in cases {
+        assert_eq!(decide_download_news(was_under_way, reading), news, "{was_under_way} {reading:?}");
+    }
+
+    let missing = MissingPinnedFiles::new();
+    assert_eq!(missing.note_reading(PinnedFilesReading::NoneMissing), PinnedDownloadNews::Nothing, "a start with nothing to download");
+    assert_eq!(missing.note_reading(some_missing()), PinnedDownloadNews::Began(TOTAL));
+    assert_eq!(missing.note_reading(fewer), PinnedDownloadNews::Nothing);
+    assert_eq!(missing.note_reading(PinnedFilesReading::NotAsked), PinnedDownloadNews::Nothing);
+    assert_eq!(missing.note_reading(PinnedFilesReading::NoneMissing), PinnedDownloadNews::Ended);
+    assert_eq!(missing.note_reading(PinnedFilesReading::NoneMissing), PinnedDownloadNews::Nothing);
+    assert_eq!(missing.note_reading(some_missing()), PinnedDownloadNews::Began(TOTAL), "pinned again");
 }

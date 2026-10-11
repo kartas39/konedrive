@@ -39,7 +39,7 @@ pub use step_memory::{
 };
 pub use item_store::{OwnUploadContent, PinChange};
 pub use item_store::{MadeEntryOwner, PlaceChangeRecord, PlaceChangeRecordId, PlaceChangeRowWrite};
-pub use item_store::{FullListingCause, ItemCounts, ItemNotShown, ItemReader, ItemsNeverShown, ThumbnailCandidate, UnsentTotal};
+pub use item_store::{FullListingCause, ItemCounts, ItemNotShown, ItemReader, ItemsNeverShown, PinnedDownloadTotal, ThumbnailCandidate, UnsentTotal};
 pub use model::{
     usable_id, Change, ContentPresence, ContentVersion, DriveId, FileSyncState, FolderVisibility, Item, ItemKind, ItemPlace, ItemVersion, Kind, LocalItemId,
     LocalVersionChange, OneDriveItemId, OneDriveItemReference, Placement, Row, SkipReason,

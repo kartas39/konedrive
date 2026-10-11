@@ -137,6 +137,17 @@ pub struct UnsentTotal {
     pub bytes: u64,
 }
 
+/// The pinned files whose content is still to be downloaded, as one count and one sum: what
+/// is left to download of what the user keeps on this device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PinnedDownloadTotal {
+    /// The files a pin holds for that agree on everything and whose content is not on disk
+    /// ([`ItemReader::list_pinned_files_to_download`]).
+    pub count: u64,
+    /// The size of their contents.
+    pub bytes: u64,
+}
+
 /// An item OneDrive has that the folder cannot show: a line of `Folder.Skipped()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemNotShown {

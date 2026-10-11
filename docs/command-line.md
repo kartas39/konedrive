@@ -58,7 +58,9 @@ seconds, or `every minute (connecting)`), the mode, what waits to be downloaded 
 uploaded, what is blocked or waits for space in OneDrive, a pause and its cause, the space the
 folder takes on this computer, the number of pins and of conflicts, and when the check of the
 folder on disk at the daemon's start last finished (`Local scan:`). A line is left out when it
-has nothing to say.
+has nothing to say. What waits to be downloaded is every pinned file that is not on this computer
+yet, counted from the moment it is pinned, and each file a program opens while it downloads; `sync
+transfers` says the same number as "files left", beside how many download now.
 
 `sync forget` takes the mount off and leaves the folder a plain directory. Changes that were not
 sent to OneDrive stay as plain local files: with any, it says how many and asks whether to go on,

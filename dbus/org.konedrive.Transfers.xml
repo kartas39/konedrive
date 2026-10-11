@@ -44,9 +44,10 @@
     <property name="LargeStreamLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>
     <!-- The queue totals, each way, updated with the speeds above. Left:
-         files to download — the pinned files waiting and every download
-         under way (a file being opened or a replacement counts only while it
-         runs) — and changes to upload (UploadQueue.PendingCount; a move, a
+         files to download — the pinned files whose content is not on this
+         computer yet, counted from the moment they are pinned and fewer only
+         as files land, and each file being opened while its download runs
+         — and changes to upload (UploadQueue.PendingCount; a move, a
          delete or a new folder is a change of no bytes), with their bytes
          less what is already moved of those under way. Done: bytes moved
          since nothing was last left that way, or since the daemon started; 0

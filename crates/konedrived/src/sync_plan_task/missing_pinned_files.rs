@@ -3,12 +3,15 @@
 //! (`ItemReader::list_pinned_files_to_download`, the one reader of a plan that no index
 //! bounds).
 //!
-//! **State owned:** one flag, for the life of the task's run. Set when the task starts
-//! and by whatever can leave a pinned file with no content on disk
+//! **State owned:** two flags, for the life of the task's run. The first is set when the
+//! task starts and by whatever can leave a pinned file with no content on disk
 //! ([`can_cause_leave_pinned_file_missing`], [`can_step_leave_pinned_file_missing`]);
 //! cleared when a reading that asked the reader answered that none is missing. Changed by
 //! the plan's loop alone, which also makes the plans: what sets it is taken before a plan
-//! is made, and a cause that comes while a plan is read is taken by the next round.
+//! is made, and a cause that comes while a plan is read is taken by the next round. The
+//! second is whether a download of pinned files is under way as the journal was told: set
+//! by the first reading that finds some missing, cleared by the one that finds none
+//! ([`decide_download_news`]), so that the journal has one line for each and none per file.
 //!
 //! While it is set the reader is asked with every plan — a plan that left the pinned
 //! files out would drop the downloads the last one planned —, so the scans go on until
@@ -24,11 +27,13 @@
 // test: a_reading_that_was_not_asked_or_found_some_missing_changes_nothing
 // test: each_cause_that_can_leave_a_pinned_file_missing_has_the_reader_asked_again
 // test: each_end_of_a_step_that_can_leave_a_pinned_file_missing_has_the_reader_asked_again
+// test: the_download_of_pinned_files_begins_and_ends_once_each
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use konedrive_tree::{FolderStep, SyncStep};
+use konedrive_tree::{FolderStep, PinnedDownloadTotal, SyncStep};
 
 use super::plan_input::PinnedFilesReading;
 use crate::sync_parts::step_outcome::StepOutcome;
@@ -37,6 +42,29 @@ use crate::sync_parts::sync_plan_wake::WakeCause;
 /// Whether a pinned file may be missing its content, for one folder's plan's task.
 pub struct MissingPinnedFiles {
     may_be_missing: AtomicBool,
+    is_download_under_way: AtomicBool,
+}
+
+/// What a plan's reading says of the download of the pinned files that the one before
+/// did not: what the journal is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinnedDownloadNews {
+    /// Some are missing and none was before: so many are to be downloaded.
+    Began(PinnedDownloadTotal),
+    /// None is missing any more.
+    Ended,
+    Nothing,
+}
+
+/// What `reading` says anew, when a download of pinned files was under way before it
+/// (`was_under_way`) or was not: it begins with the first reading that finds some missing
+/// and ends with the one that finds none; a reading that did not ask says nothing. Pure.
+pub fn decide_download_news(was_under_way: bool, reading: PinnedFilesReading) -> PinnedDownloadNews {
+    match (was_under_way, reading) {
+        (false, PinnedFilesReading::SomeMissing(total)) => PinnedDownloadNews::Began(total),
+        (true, PinnedFilesReading::NoneMissing) => PinnedDownloadNews::Ended,
+        (true, PinnedFilesReading::SomeMissing(_)) | (false, PinnedFilesReading::NoneMissing) | (_, PinnedFilesReading::NotAsked) => PinnedDownloadNews::Nothing,
+    }
 }
 
 /// Whether what woke the plan can have left a pinned file with no content on disk: a page
@@ -65,10 +93,21 @@ pub fn can_step_leave_pinned_file_missing(step: &SyncStep, outcome: &StepOutcome
     }
 }
 
+/// Says `news` of the pinned files of `folder` in the journal: one line as their download
+/// begins and one as it ends, none per file.
+pub fn log_download_news(news: PinnedDownloadNews, folder: &Path) {
+    // TODO: wording
+    match news {
+        PinnedDownloadNews::Began(total) => tracing::info!("the download of the pinned files of {} began: {} file(s), {}", folder.display(), total.count, crate::status::activity::human_size(total.bytes)),
+        PinnedDownloadNews::Ended => tracing::info!("every pinned file of {} is on this computer", folder.display()),
+        PinnedDownloadNews::Nothing => {}
+    }
+}
+
 impl MissingPinnedFiles {
     /// The task started: nothing is known, and the reader is asked.
     pub fn new() -> Self {
-        MissingPinnedFiles { may_be_missing: AtomicBool::new(true) }
+        MissingPinnedFiles { may_be_missing: AtomicBool::new(true), is_download_under_way: AtomicBool::new(false) }
     }
 
     /// Whether the next plan's reading asks the reader of pinned files.
@@ -91,12 +130,20 @@ impl MissingPinnedFiles {
     }
 
     /// What a plan's reading answered of the pinned files: one that asked the reader and
-    /// found none missing ends the asking.
-    pub fn note_reading(&self, reading: PinnedFilesReading) {
+    /// found none missing ends the asking. Answers what the reading says anew of their
+    /// download ([`decide_download_news`]), for the journal.
+    pub fn note_reading(&self, reading: PinnedFilesReading) -> PinnedDownloadNews {
         match reading {
             PinnedFilesReading::NoneMissing => self.may_be_missing.store(false, Ordering::SeqCst),
-            PinnedFilesReading::NotAsked | PinnedFilesReading::SomeMissing => {}
+            PinnedFilesReading::NotAsked | PinnedFilesReading::SomeMissing(_) => {}
         }
+        let news = decide_download_news(self.is_download_under_way.load(Ordering::SeqCst), reading);
+        match news {
+            PinnedDownloadNews::Began(_) => self.is_download_under_way.store(true, Ordering::SeqCst),
+            PinnedDownloadNews::Ended => self.is_download_under_way.store(false, Ordering::SeqCst),
+            PinnedDownloadNews::Nothing => {}
+        }
+        news
     }
 }
 

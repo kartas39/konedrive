@@ -3,6 +3,7 @@ use std::time::Duration;
 use super::*;
 use crate::status::snapshot::{UploadQueueStatus, PauseStatus, TransferStatus};
 use konedrive_graph::pool::{Direction, TransferPool, STILL_AFTER};
+use konedrive_tree::PinnedDownloadTotal;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -97,11 +98,40 @@ async fn the_totals_are_published_and_kept_up_to_date() {
     tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!((state.get().transfers.queue.up.left_count, state.get().transfers.queue.up.left_bytes), (2, MIB));
 
-    let entry = transfers.start("/r/f.bin".into(), 3 * MIB);
+    // A directory was pinned: all of it is left before any download runs.
+    state.update(|s| s.transfers.pinned_download = PinnedDownloadTotal { count: 2500, bytes: 5000 * MIB });
     tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
-    assert_eq!((state.get().transfers.queue.down.left_count, state.get().transfers.queue.down.left_bytes), (1, 3 * MIB));
+    assert_eq!((state.get().transfers.queue.down.left_count, state.get().transfers.queue.down.left_bytes), (2500, 5000 * MIB));
+    let entry = transfers.start("/r/f.bin".into(), 3 * MIB);
+    entry.progress(MIB, 3 * MIB);
+    tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
+    assert_eq!((state.get().transfers.queue.down.left_count, state.get().transfers.queue.down.left_bytes), (2500, 4999 * MIB), "a download under way is still left, less what it received");
     drop(entry);
+    state.update(|s| s.transfers.pinned_download = PinnedDownloadTotal::default());
     tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!(state.get().transfers.queue.down, Totals::default());
     task.abort();
+}
+
+fn transfer(done: u64, total: u64, open: bool) -> Transfer {
+    Transfer { path: "/r/f.bin".into(), done, total, open }
+}
+
+/// What is left to download is the pinned files with no content here, whether or not
+/// their downloads run, and the files being opened that are downloaded now.
+#[test]
+fn downloads_left_are_the_pinned_files_not_here_and_the_files_being_opened() {
+    let pinned = PinnedDownloadTotal { count: 2500, bytes: 5000 * MIB };
+    let none = PinnedDownloadTotal::default();
+    let of = |transfers: &[Transfer]| transfers.iter().cloned().zip(0u64..).map(|(t, id)| (id, t)).collect::<BTreeMap<u64, Transfer>>();
+
+    assert_eq!(count_downloads_left(none, &of(&[])), (0, 0), "nothing pinned is missing and nothing is opened");
+    assert_eq!(count_downloads_left(pinned, &of(&[])), (2500, 5000 * MIB), "pinned a moment ago: no download runs yet");
+    // Eleven of the pool's slots hold downloads of pinned files: the count is not theirs.
+    let running: Vec<Transfer> = (0..11).map(|_| transfer(MIB, 2 * MIB, false)).collect();
+    assert_eq!(count_downloads_left(pinned, &of(&running)), (2500, 4989 * MIB), "less what they received");
+    assert_eq!(count_downloads_left(none, &of(&[transfer(MIB, 4 * MIB, true)])), (1, 3 * MIB), "a file being opened counts while it downloads");
+    assert_eq!(count_downloads_left(pinned, &of(&[transfer(MIB, 2 * MIB, false), transfer(MIB, 4 * MIB, true)])), (2501, 5002 * MIB), "both");
+    // A size not known yet, and a count the store has not caught up with: nothing below 0.
+    assert_eq!(count_downloads_left(none, &of(&[transfer(MIB, 2 * MIB, false), transfer(0, 0, true)])), (1, 0));
 }

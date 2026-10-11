@@ -32,9 +32,11 @@
 //! **Tested without the rest:**
 // test: each_plan_reader_answers_what_the_item_stores_reader_of_the_same_name_answers
 // test: the_items_whose_writer_has_not_closed_are_those_with_a_content_before_the_write
+// test: the_pinned_files_to_download_are_counted_with_the_bytes_of_their_contents
 
 
 use super::onedrive_versions::read_confirmation_count;
+use super::item_reader::PinnedDownloadTotal;
 use super::{item_row, ItemReader};
 use crate::model::{Item, LocalItemId};
 use crate::{FoldedName, TreeError};
@@ -56,6 +58,16 @@ impl ItemReader<'_> {
     /// move of a directory rewriting all that is below it.
     pub fn list_pinned_files_to_download(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
         item_row::list_pinned_files_to_download(self.conn(), after, limit)
+    }
+
+    /// How many pinned files are to be downloaded, and the bytes of their contents: the
+    /// rows [`list_pinned_files_to_download`](Self::list_pinned_files_to_download) lists
+    /// with no limit, counted in one sum, none read whole. It reads every row below a
+    /// pinned directory as that reader does, and is asked beside it: by a plan's reading
+    /// that found some missing, never for a read of the status.
+    pub fn count_pinned_files_to_download(&self) -> Result<PinnedDownloadTotal, TreeError> {
+        let (count, bytes) = item_row::count_pinned_files_to_download(self.conn())?;
+        Ok(PinnedDownloadTotal { count, bytes })
     }
 
     /// As `ItemStore::list_shown_items_that_cannot_be_shown`: by its index.

@@ -421,6 +421,7 @@ impl SyncPlanTask {
         }
         // A stopped sync shows no count of its own: the task, the one writer, says so last.
         crate::upload_queue::publish_stopped_queue(&parts.state);
+        parts.state.update_if_changed(|state| state.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal::default());
         // The task that cancels upload sessions heard the stop: it ends after the request it is at.
         let session_cancellations_task = crate::panic::lock(&self.session_cancellations_task).take();
         if let Some(Err(error)) = match session_cancellations_task {
@@ -685,7 +686,7 @@ impl SyncPlanTask {
     async fn make_plan(&self, facts: DaemonFacts) -> Result<PlannedRound, konedrive_tree::TreeError> {
         let round = self.parts.store.read_items(move |items| plan_input::plan_next_steps(items, &facts)).await?;
         *crate::panic::lock(&self.local_step_tries) = round.local_step_tries.clone();
-        self.missing_pinned_files.note_reading(round.pinned_files_reading);
+        missing_pinned_files::log_download_news(self.missing_pinned_files.note_reading(round.pinned_files_reading), &self.parts.folder);
         Ok(round)
     }
 
@@ -915,7 +916,8 @@ impl SyncPlanTask {
     }
 
     /// Publishes what a plan answered: the answers per item (`PublishedPlan::publish`),
-    /// the folder's counts (`PlannedRound::item_counts`, of the plan's own reading) and
+    /// the folder's counts (`PlannedRound::item_counts`, of the plan's own reading), the
+    /// pinned files still to download (`PinnedFilesReading::find_total`, of the same) and
     /// note on the bus (through `state`), the faults of the plan in the journal, each
     /// once. The task is the one owner of the note (`UploadQueueStatus::note`): it writes it
     /// with every plan, also to none, and nobody else may. For
@@ -956,6 +958,8 @@ impl SyncPlanTask {
         };
         let counts = round.item_counts;
         parts.state.update_if_changed(|state| {
+            // A reading that did not ask the reader of pinned files knows nothing anew: the count stays.
+            state.transfers.pinned_download = round.pinned_files_reading.find_total().unwrap_or(state.transfers.pinned_download);
             state.cycle.items_listed = counts.in_onedrive;
             state.cycle.items_placed = counts.shown;
             state.cycle.skipped_count = counts.cannot_be_shown;

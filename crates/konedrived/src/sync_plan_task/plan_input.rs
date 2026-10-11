@@ -45,6 +45,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 
+use konedrive_tree::PinnedDownloadTotal;
 use konedrive_tree::{
     is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ContentVersion, FoldedName, FolderVisibility, Item, ItemCounts, ItemKind, ItemMemory, ItemPlace, ItemReader, ItemVersions, LocalItemId, NextTry, OneDriveItemReference, Reason,
     SyncPlan, SyncPlanInput, TreeError, TriedStep, WaitReason,
@@ -126,8 +127,21 @@ pub enum PinnedFilesReading {
     NotAsked,
     /// Asked, and no pinned file is missing its content.
     NoneMissing,
-    /// Asked, and some are: they were given to the plan.
-    SomeMissing,
+    /// Asked, and some are: a window of them was given to the plan, and this is all of
+    /// them (`ItemReader::count_pinned_files_to_download`, of the same reading).
+    SomeMissing(PinnedDownloadTotal),
+}
+
+impl PinnedFilesReading {
+    /// What is left to download of the pinned files as this reading knows it: nothing is
+    /// known anew when the reader was not asked.
+    pub fn find_total(self) -> Option<PinnedDownloadTotal> {
+        match self {
+            PinnedFilesReading::NotAsked => None,
+            PinnedFilesReading::NoneMissing => Some(PinnedDownloadTotal::default()),
+            PinnedFilesReading::SomeMissing(total) => Some(total),
+        }
+    }
 }
 
 /// The rows a plan is given, by id, with those of them whose relatives are still to be
@@ -436,7 +450,9 @@ pub struct DifferingItemsRead {
 /// (`list_pinned_files_to_download`, which scans all below the pinned directories: asked
 /// with every plan while a pinned file may be missing its content, as a plan that left
 /// them out would drop the downloads the last one planned, and not at all once a reading
-/// found none); and whether each was read whole.
+/// found none; when some are missing, all of them are counted beside the window read:
+/// one more scan of the same rows, for what the status says is left to download); and
+/// whether each was read whole.
 pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinned_files_reader_asked: bool) -> Result<DifferingItemsRead, TreeError> {
     let read_at_once = window.of_each_other_kind;
     let unsent = items.list_unsent(None, window.unsent)?;
@@ -446,7 +462,7 @@ pub fn read_differing_items(items: &ItemReader<'_>, window: ReadWindow, is_pinne
     let pinned_files_reading = match (is_pinned_files_reader_asked, pinned.is_empty()) {
         (false, _) => PinnedFilesReading::NotAsked,
         (true, true) => PinnedFilesReading::NoneMissing,
-        (true, false) => PinnedFilesReading::SomeMissing,
+        (true, false) => PinnedFilesReading::SomeMissing(items.count_pinned_files_to_download()?),
     };
     let is_unsent_read_whole = unsent.len() < window.unsent;
     let is_all_read = is_unsent_read_whole && [changed.len(), cannot_be_shown.len(), pinned.len()].iter().all(|read| *read < read_at_once);

@@ -18,18 +18,21 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nPool: 0 of 16 · large files: 0 (0 of 4 streams)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
+    // A directory of twelve files was pinned: all of them are left, and one downloads now.
+    f.service.state().update(|s| s.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal { count: 12, bytes: 40 << 20 });
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
     entry.progress(1 << 20, 4 << 20);
     // The totals are counted at most once a second.
-    wait_for(|| f.service.state().get().transfers.queue.down.left_count == 1).await;
+    wait_for(|| f.service.state().get().transfers.queue.down.left_bytes == 39 << 20).await;
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
-    // "N now" counts files, not slots: the one downloading, which holds none here.
-    assert!(text.starts_with("Downloading:  1 now, 1 file left (3.0 MiB), 0 B done, 0 B/s\n"), "{text}");
+    // "N now" counts files, not slots: the one downloading, which holds none here. What is left is every pinned file not here yet.
+    assert!(text.starts_with("Downloading:  1 now, 12 files left (39.0 MiB), 0 B done, 0 B/s\n"), "{text}");
     let list = text.lines().nth(3).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
+    f.service.state().update(|s| s.transfers.pinned_download = konedrive_tree::PinnedDownloadTotal::default());
     wait_for(|| f.service.state().get().transfers.queue.down.left_count == 0).await;
     assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), idle);
 }

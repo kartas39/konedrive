@@ -32,6 +32,21 @@ fn local_bytes_count_what_files_occupy_not_their_size() {
     assert_eq!(local_bytes(root), blocks("online.bin") + blocks("docs/here.bin"));
 }
 
+/// The backing directory of a mounted folder is walked by the link the kernel keeps for its
+/// descriptor (`BackingDirectory::resolve_root_path`), which is on another filesystem than
+/// the directory: what is in the directories below counts all the same.
+#[test]
+fn local_bytes_of_a_directory_named_by_the_link_of_its_descriptor_count_what_is_below() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("pinned/inner")).unwrap();
+    std::fs::write(dir.path().join("pinned/inner/here.bin"), vec![7u8; 64 * 1024]).unwrap();
+    let descriptor = File::open(dir.path()).unwrap();
+    let link = konedrive_fs::proc_path(&descriptor);
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert!(local_bytes(&link) >= 64 * 1024);
+    assert_eq!(local_bytes(&link), local_bytes(dir.path()));
+}
+
 /// A `Report` that reports nowhere — the plain
 /// `serve_hydrations`' — starts no walker, and a walker stopped starts
 /// again at the next kick.

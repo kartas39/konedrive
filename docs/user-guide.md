@@ -108,7 +108,8 @@ In the OneDrive folder every file and folder has an emblem:
 The right-click menu has, under **OneDrive**:
 
 - **Always Keep on This Device** — downloads it and keeps it, for a file or a whole folder; what
-  comes into a pinned folder later is downloaded too;
+  comes into a pinned folder later is downloaded too. The Activity page says how many files are
+  still to download, and the Status page how much the folder takes on this computer;
 - **Free Up Space** — makes it online-only again, and unpins it;
 - **Open in OneDrive** — opens its page in OneDrive's web interface, where it can be shared and its
   versions seen. With two personal accounts this opens under the account your browser is signed in

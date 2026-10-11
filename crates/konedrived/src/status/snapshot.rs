@@ -194,6 +194,11 @@ pub struct TransferStatus {
     /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
     /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead.
     pub throughput: konedrive_graph::pool::Throughput,
+    /// The pinned files whose content is still to be downloaded, as the store had them at
+    /// the last plan that asked. ONE writer: the plan's task, with every plan whose
+    /// reading counted them (`SyncPlanTask::publish_round`), and to none when it stops. On
+    /// the bus only through `queue`, which counts what is left to download from it.
+    pub pinned_download: konedrive_tree::PinnedDownloadTotal,
     /// `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft` and
     /// the same four for uploads: counted from the rest by [`totals::run`].
     pub queue: totals::QueueTotals,

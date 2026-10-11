@@ -131,3 +131,24 @@ fn the_items_whose_writer_has_not_closed_are_those_with_a_content_before_the_wri
     assert_eq!(open_for_writing(reader.list_changed_in_onedrive(None, 10).unwrap()), [open_and_changed], "also as OneDrive changed it");
     assert_eq!(reader.find_item(closed_unchanged).unwrap().unwrap().content_before_write, None);
 }
+
+/// The count is of the rows the reader of pinned files lists, whatever its limit: a pin on
+/// a directory counts every file below it that is only to be downloaded, a file whose
+/// content landed is counted no more, and neither is one made here or one never shown.
+#[test]
+fn the_pinned_files_to_download_are_counted_with_the_bytes_of_their_contents() {
+    let Rows { mut store, f, .. } = rows();
+    let count = |store: &mut TreeStore| store.item_store().reader().count_pinned_files_to_download().unwrap();
+    assert_eq!(count(&mut store), PinnedDownloadTotal { count: 1, bytes: 3 }, "`p` alone is pinned");
+
+    store.set_pin("A", true).unwrap();
+    assert_eq!(count(&mut store), PinnedDownloadTotal { count: 3, bytes: 9 }, "with `f` and `g` below `a`; not `own`, not `new`");
+    assert_eq!(store.item_store().reader().list_pinned_files_to_download(None, 1).unwrap().len(), 1, "the list is bounded, the count is not");
+
+    write_listing_of_changes(&mut store, &[listed_file("G", "S", "g", (7, "h-g2"), "e-G2")]);
+    assert_eq!(count(&mut store), PinnedDownloadTotal { count: 2, bytes: 6 }, "`g` changed in OneDrive: its change is taken first");
+    store.item_store().set_content_presence(f, ContentPresence::OnDisk).unwrap();
+    assert_eq!(count(&mut store), PinnedDownloadTotal { count: 1, bytes: 3 });
+    store.set_pin("P", false).unwrap();
+    assert_eq!(count(&mut store), PinnedDownloadTotal::default());
+}

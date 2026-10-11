@@ -115,7 +115,7 @@ pub use item_pins::PinChange;
 pub use own_upload_content::OwnUploadContent;
 pub use place_change_records::{MadeEntryOwner, PlaceChangeRecord, PlaceChangeRecordId, PlaceChangeRowWrite};
 pub(crate) use place_change_records::schema as place_change_records_schema;
-pub use item_reader::{ItemCounts, ItemNotShown, ItemReader, ItemsNeverShown, UnsentTotal};
+pub use item_reader::{ItemCounts, ItemNotShown, ItemReader, ItemsNeverShown, PinnedDownloadTotal, UnsentTotal};
 pub(crate) use item_reader::NOT_PLACED;
 pub(crate) use own_upload_content::schema as own_upload_contents_schema;
 pub(crate) use thumbnail_marks::{schema as thumbnail_marks_schema, IMAGE_OR_VIDEO};

@@ -5,9 +5,13 @@
 //!
 //! - **Left.** Uploads, in changes: the unsent changes not uploaded yet (`PendingCount`,
 //!   `PendingBytes`; a move, a delete or a new folder is a change of no bytes), less the bytes
-//!   already sent of the uploads under way. Downloads, in files: every download under way
-//!   (`Transfers`: files being read, `Hydrate`, pinned files), less the bytes already
-//!   received of those. Nothing is queued ahead: a download counts only while it runs.
+//!   already sent of the uploads under way. Downloads, in files: the pinned files whose
+//!   content is not on this computer yet, as the store had them at the last plan
+//!   (`TransferStatus::pinned_download`: known from the moment a directory is pinned, and
+//!   fewer only as files land), and the files being opened that are downloaded now
+//!   (`Transfers`: files being read, `Hydrate`); less the bytes already received of the
+//!   downloads under way. No file being opened is queued ahead: it counts only while its
+//!   download runs.
 //!   What is kept back — blocked, waiting for space while OneDrive is full, too big for
 //!   the space left — is not left: the Not Uploaded page counts it.
 //! - **Done.** The bytes moved that way (the transfer pool's count) since nothing was last
@@ -20,6 +24,8 @@
 //! [`PUBLISH_EVERY`](konedrive_graph::pool::PUBLISH_EVERY), as the pool publishes its speeds.
 
 use std::collections::BTreeMap;
+
+use konedrive_tree::PinnedDownloadTotal;
 
 use super::transfers::{Transfer, Transfers};
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
@@ -54,9 +60,7 @@ impl Counter {
     /// The totals now, from the published state `s` and the downloads under way.
     pub fn count(&mut self, s: &SyncSnapshot, transfers: &BTreeMap<u64, Transfer>) -> QueueTotals {
         let pool = s.transfers.throughput;
-        let received: u64 = transfers.values().map(|t| t.total.saturating_sub(t.done)).sum();
-        let running = u32::try_from(transfers.len()).unwrap_or(u32::MAX);
-        let down = (running, received);
+        let down = count_downloads_left(s.transfers.pinned_download, transfers);
         // `PendingCount` takes in the changes that wait for space and those too big for it:
         // kept back, not left.
         let sent: u64 = s.upload_queue.uploads.iter().map(|(_, sent, _)| sent).sum();
@@ -84,6 +88,19 @@ impl Counter {
         };
         Totals { left_count: count, left_bytes: bytes, done_bytes: moved.saturating_sub(self.began[at]), time_left }
     }
+}
+
+/// What is left to download, as (files, bytes): the pinned files with no content here,
+/// less what the downloads of pinned files under way have received; and each file being
+/// opened that is downloaded now, with what it has still to receive. A download of a
+/// pinned file is of one of `pinned`: the plan gives a step to no other. Pure.
+pub fn count_downloads_left(pinned: PinnedDownloadTotal, transfers: &BTreeMap<u64, Transfer>) -> (u32, u64) {
+    let (opened, of_pins): (Vec<&Transfer>, Vec<&Transfer>) = transfers.values().partition(|t| t.open);
+    // TODO: check whether a pinned file a program opens before its step ran (it is then a file being opened, and among `pinned` too) is worth telling apart, and fix if needed: it is counted twice while it downloads.
+    let count = pinned.count.saturating_add(opened.len() as u64);
+    let received_of_pins: u64 = of_pins.iter().map(|t| t.done.min(t.total)).sum();
+    let left_of_opened: u64 = opened.iter().map(|t| t.total.saturating_sub(t.done)).sum();
+    (u32::try_from(count).unwrap_or(u32::MAX), pinned.bytes.saturating_sub(received_of_pins).saturating_add(left_of_opened))
 }
 
 /// Counts the totals into `state`: at once, then whenever the state or the downloads under

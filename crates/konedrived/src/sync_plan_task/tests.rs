@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use konedrive_tree::{ActivityKind, ActivityRow, ConflictRow};
+use konedrive_tree::{ActivityKind, ActivityRow, ConflictRow, PinnedDownloadTotal};
 
 use super::*;
 use crate::mount::item_fixture::ItemFixture;
@@ -189,6 +189,41 @@ fn the_status_is_published_after_a_plan_and_after_a_settled_round_and_the_marks_
     assert!(task_fixture.marks_calls.lock().unwrap().iter().all(|(items, _)| !items.contains(&listed)), "a step towards the folder changes no sync mark");
     // The step towards the folder that showed the listed file nudged the thumbnail filler.
     assert!(futures_util::FutureExt::now_or_never(task_fixture.after_folder_steps.notified()).is_some());
+}
+
+/// What is left to download of the pinned files is published with the plan whose reading
+/// counted them: all of them as soon as they are pinned, before any step ran, and none
+/// once the content landed. A stopped sync shows none.
+#[test]
+fn the_pinned_files_to_download_are_published_with_the_plan_that_counted_them() {
+    let task_fixture = TaskFixture::new();
+    let (fixture, task) = (&task_fixture.fixture, &task_fixture.task);
+    let pinned_download = || task_fixture.state.get().transfers.pinned_download;
+    let plan_and_publish = || {
+        fixture.runtime().block_on(async {
+            let round = task.make_plan(task.gather_daemon_facts()).await.expect("the store is read");
+            task.publish_round(&round, None).await;
+        })
+    };
+    let directory = fixture.show_onedrive_directory("kept");
+    let first = fixture.show_onedrive_file("kept/a.txt", b"theirs").local_item_id;
+    let second = fixture.show_onedrive_file("kept/b.txt", b"theirs too").local_item_id;
+    plan_and_publish();
+    assert_eq!(pinned_download(), PinnedDownloadTotal::default(), "nothing is pinned");
+
+    let onedrive_id = directory.onedrive_item.as_ref().expect("bound").item_id.as_str().to_owned();
+    fixture.write_rows(move |store| store.set_pin(&onedrive_id, true));
+    task.missing_pinned_files.note_wake_causes(&[WakeCause::UserAnswered].into());
+    plan_and_publish();
+    assert_eq!(pinned_download(), PinnedDownloadTotal { count: 2, bytes: 16 }, "both, though no step ran");
+
+    fixture.write_rows(move |store| store.item_store().set_content_presence(first, konedrive_tree::ContentPresence::OnDisk));
+    plan_and_publish();
+    assert_eq!(pinned_download(), PinnedDownloadTotal { count: 1, bytes: 10 }, "one landed");
+    fixture.write_rows(move |store| store.item_store().set_content_presence(second, konedrive_tree::ContentPresence::OnDisk));
+    plan_and_publish();
+    assert_eq!(pinned_download(), PinnedDownloadTotal::default());
+    assert!(!task.missing_pinned_files.is_reader_asked(), "and the reader is asked no more");
 }
 
 fn event(fixture: &ItemFixture, kind: ActivityKind, path: &str) -> ActivityRow {

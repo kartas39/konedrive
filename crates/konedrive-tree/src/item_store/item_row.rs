@@ -636,22 +636,39 @@ pub(super) fn find_is_pinned(conn: &Connection, item: LocalItemId) -> Result<boo
     Ok(conn.prepare_cached(&sql)?.query_row([item.as_i64()], |row| row.get(0))?)
 }
 
+/// SQL for the rows a pin holds for, as `held(id)`: from each pinned row the folder shows,
+/// down by what the folder shows in it.
+const HELD_BY_PIN: &str = "WITH RECURSIVE held(id) AS (
+             SELECT items.local_item_id FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE items.local_parent_id IS NOT NULL OR items.local_item_id = 1
+             UNION
+             SELECT child.local_item_id FROM held JOIN items child INDEXED BY items_local_place ON child.local_parent_id = held.id)";
+
+/// SQL for "a file a pin holds for (`held`, [`HELD_BY_PIN`]) that agrees on everything and
+/// whose content is not on disk": what is listed and what is counted are the same rows.
+fn pinned_file_to_download() -> String {
+    format!(
+        "local_item_id IN (SELECT id FROM held)
+             AND kind = 'file' AND content_presence = 'not-on-disk' AND local_parent_id IS NOT NULL AND onedrive_parent_id IS NOT NULL
+             AND unsent_since IS NULL AND NOT {CHANGED_IN_ONEDRIVE}"
+    )
+}
+
 /// [`ItemStore::list_pinned_files_to_download`](super::ItemStore::list_pinned_files_to_download):
 /// from each pinned row the folder shows, down by what the folder shows in it.
 pub(super) fn list_pinned_files_to_download(conn: &Connection, after: Option<LocalItemId>, limit: usize) -> Result<Vec<Item>, TreeError> {
-    let sql = format!(
-        "WITH RECURSIVE held(id) AS (
-             SELECT items.local_item_id FROM pins JOIN items ON items.onedrive_item_id = pins.id WHERE items.local_parent_id IS NOT NULL OR items.local_item_id = 1
-             UNION
-             SELECT child.local_item_id FROM held JOIN items child INDEXED BY items_local_place ON child.local_parent_id = held.id)
-         SELECT {ITEM_COLUMNS} FROM items WHERE local_item_id IN (SELECT id FROM held) AND local_item_id > ?1
-             AND kind = 'file' AND content_presence = 'not-on-disk' AND local_parent_id IS NOT NULL AND onedrive_parent_id IS NOT NULL
-             AND unsent_since IS NULL AND NOT {CHANGED_IN_ONEDRIVE}
-         ORDER BY local_item_id LIMIT ?2"
-    );
+    let sql = format!("{HELD_BY_PIN} SELECT {ITEM_COLUMNS} FROM items WHERE {} AND local_item_id > ?1 ORDER BY local_item_id LIMIT ?2", pinned_file_to_download());
     let mut statement = conn.prepare_cached(&sql)?;
     let items = statement.query_map(params![after.map_or(0, LocalItemId::as_i64), limit as i64], item_from)?.collect::<Result<Vec<_>, _>>()?;
     Ok(items)
+}
+
+/// [`ItemReader::count_pinned_files_to_download`](super::ItemReader::count_pinned_files_to_download):
+/// how many rows [`list_pinned_files_to_download`] would list with no limit, and the sum of
+/// the sizes of their contents; no row is read whole.
+pub(super) fn count_pinned_files_to_download(conn: &Connection) -> Result<(u64, u64), TreeError> {
+    let sql = format!("{HELD_BY_PIN} SELECT COUNT(*), COALESCE(SUM(onedrive_size), 0) FROM items WHERE {}", pinned_file_to_download());
+    let (count, bytes): (i64, i64) = conn.prepare_cached(&sql)?.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok((count.max(0) as u64, bytes.max(0) as u64))
 }
 
 /// SQL for "the folder shows the item, and its own placement says the folder cannot show
