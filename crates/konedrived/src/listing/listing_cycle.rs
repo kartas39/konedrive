@@ -469,6 +469,7 @@ impl ListingCycle {
     /// `ShowItem` steps commit, not as pages come: the plan's task publishes it too.
     /// Whether a full listing is under way is not said here: the cycle's loop and its end
     /// say it. MISSING-2.d.
+    // TODO: these three counts have a second writer here: the plan's task publishes them with every plan (`SyncPlanTask::publish_round`), and it is woken after every page, so it is to be the one writer and this function to go. Left as it is: the cycle's tests read the counts after a cycle with no task running; check and fix if needed.
     async fn publish_counts(&self) -> Result<ItemCounts, CycleError> {
         let counts = self.store.read_items(|reader| reader.count_items()).await?;
         self.state.update_if_changed(|state| {

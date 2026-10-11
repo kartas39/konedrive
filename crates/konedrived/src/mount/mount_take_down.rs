@@ -8,9 +8,14 @@
 //!
 //! **Answers for:** design §8: "a row that cannot be written is undone on disk; if the
 //! undo fails too, the mount is taken down and the daemon starts over through the start-up
-//! check". The owner of the folder's state (`SyncService`, inside a change of the folder)
-//! stops the tasks, stops the mount, closes the store and runs the start again
-//! (`sync_tasks::stop_order::take_folder_down`, `start_order::start_folder_sync`).
+//! check". The report is received by a task of the owner of the folder's state
+//! (`account_folder::take_down`, `SyncService::take_folder_down_for_fault`): inside a
+//! change of the folder it stops the sync, takes the folder down
+//! (`sync_tasks::stop_order::take_folder_down`), shows the trouble with its cause, and
+//! starts the folder again by itself after a growing pause
+//! (`account_folder::take_down::decide_retry_wait`: 1 min, 5 min, 30 min, then hourly; the
+//! user's "sync now" tries at once; the count starts over after a start that stayed up).
+//! Nothing of the mount and no task of the sync starts the folder.
 //!
 //! **Tested without the rest:**
 // test: a_take_down_asked_for_switches_the_folder_to_read_only_and_reports_once
@@ -36,8 +41,10 @@ pub enum TakeDownCause {
     StoreFailed { detail: String },
 }
 
-/// Who is told of a take-down: the owner of the folder's state. Called once, from the
-/// write-operation thread: it must not block (it sends to the owner's task).
+/// Who is told of a take-down: the owner of the folder's state
+/// (`SyncService::take_down_report` makes it). Called once, from the write-operation
+/// thread: it must not block (it spawns the owner's task,
+/// `SyncService::take_folder_down_for_fault`).
 pub type TakeDownReport = Arc<dyn Fn(TakeDownCause) + Send + Sync>;
 
 /// The request of one mount.

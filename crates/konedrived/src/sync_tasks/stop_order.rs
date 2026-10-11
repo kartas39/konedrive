@@ -51,7 +51,9 @@ impl SyncTasks {
     /// returns (`SyncPlanTask::run`: requests are aborted, a step between a disk change
     /// and its commit is settled, a step towards the folder that waits for the lease is
     /// not run); the watcher of the sign-in; the thumbnail filler. After it no task holds
-    /// a clone of the store. The mount and the store stay.
+    /// a clone of the store. The mount and the store stay. The queue's status on the bus
+    /// is empty by then: the plan's loop published it so before it returned
+    /// (`upload_queue::publish_stopped_queue`), and nobody else writes it.
     ///
     /// Called by the owner of the folder's state for every change of the folder that ends
     /// its sync, the daemon's end among them. The owner runs it in a task of its own
@@ -72,13 +74,11 @@ impl SyncTasks {
         todo!()
     }
 
-    /// A refresh the user asked for: the plan's task is woken with the refresh's cause —
-    /// on which the task itself makes every next try due (`StepMemory::clear_next_tries`
-    /// and its own tries; this function clears nothing) — and the listing is asked for a
-    /// cycle (`ListingPollHandle::refresh`).
-    // TODO: wake with the refresh's own variant of `WakeCause` once the plan's task has it
-    // (it is being added); until then `WakeCause::UserAnswered`, on which the task clears
-    // the tries today — check and fix if needed.
+    /// A refresh the user asked for ("sync now"): the plan's task is woken with
+    /// `WakeCause::RefreshAsked` — on which the task itself makes every next try due
+    /// (`StepMemory::clear_next_tries` and its own tries; this function clears nothing) —
+    /// and the listing is asked for a cycle (`ListingPollHandle::refresh`). The one way a
+    /// refresh reaches a running sync: `Folder.Refresh()` calls nothing else of it.
     pub fn refresh(&self) {
         todo!()
     }
@@ -160,12 +160,33 @@ pub enum TakeDownOutcome {
 /// off); every `Arc` of the mount and of the leaf state dropped — `kept` is taken by
 /// value; then the store closed (`Store::close`), waited for with a bound.
 ///
-/// The owner does NOT start the folder again by itself after a take-down for a fault:
-/// the same fault would take it down again, without end. The folder stays in trouble
-/// until the user's refresh or the daemon's next start, whose
-/// `start_order::start_folder_sync` with nothing kept runs the check at start, which
-/// reads what the failed undo left as a change made while no daemon ran (design §8).
+/// Nothing is started here. The OWNER starts the folder again by itself, after a growing
+/// pause (`account_folder::take_down::decide_retry_wait`: 1 min, 5 min, 30 min, then
+/// hourly), at once on the user's "sync now", and at the daemon's next start; the folder
+/// shows its trouble with its cause meanwhile. Each such start is
+/// `start_order::start_folder_sync` with nothing kept, which runs the check at start,
+/// which reads what the failed undo left as a change made while no daemon ran (design
+/// §8). `StoreStillOpen` is answered to that owner, which then does not start by itself.
 pub async fn take_folder_down(kept: KeptFolderParts, cause: TakeDownCause, state: &SyncStateHandle) -> TakeDownOutcome {
+    todo!()
+}
+
+/// The daemon's end, for one folder whose sync runs: the sync stopped
+/// ([`stop_folder_sync`]), then the mount of the parts that answers stopped
+/// (`ItemMount::stop`, off the runtime's threads), which leaves the folder on disk
+/// without its write bits; the parts are dropped, nothing is closed, the process exits.
+/// The ONE function the owner calls at the daemon's end, in a task of its own and under
+/// the daemon's stop bound; for a folder that keeps its parts with no sync running the
+/// owner calls [`end_kept_folder_at_daemon_stop`]. A caller that is cut at the bound
+/// leaves the task running until the process exits, and the unit's tidy step
+/// (`konedrived --tidy`) does for the folder what was not reached.
+pub async fn end_folder_at_daemon_stop(started: StartedFolder) {
+    todo!()
+}
+
+/// As [`end_folder_at_daemon_stop`], for a folder whose sync does not run and that keeps
+/// its parts: the mount stopped, the parts dropped.
+pub async fn end_kept_folder_at_daemon_stop(kept: KeptFolderParts) {
     todo!()
 }
 
@@ -207,8 +228,11 @@ pub enum ForgetDecision {
     RefusedForUnsent { count: u64 },
 }
 
-/// Whether the folder is forgotten: refused while something is unsent, unless forced, as
-/// today; counted by `ItemReader::count_unsent` — also from a store that is closed. Pure.
+/// Whether the folder is forgotten: refused while something is unsent, unless forced;
+/// counted by `ItemReader::count_unsent` — also from a store that is closed. Forced, a
+/// folder is forgotten whatever is unsent, a change OneDrive refused for good among it:
+/// the files stay where they are, and what the store knew of them goes with it.
+/// `is_forced` is the caller's (`SyncService::unregister_root(is_forced)`). Pure.
 pub fn decide_forget(unsent: UnsentTotal, is_forced: bool) -> ForgetDecision {
     todo!()
 }

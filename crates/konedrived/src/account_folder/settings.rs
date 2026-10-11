@@ -97,7 +97,8 @@ impl SyncService {
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;
         // TODO: `sync_tasks::access_mode_change::apply_ignore_list_change` for a folder whose mount is
-        // served: the rows are gone over once and the plan woken.
+        // served, running or stopped (`View::parts`: its mount and the wake it was built with): the rows are
+        // gone over once and the plan woken.
         Ok(())
     }
 

@@ -58,7 +58,7 @@ impl SyncService {
 /// The downloads that never ended in a folder served through FUSE: each one's size on disk
 /// and its checkpoint.
 pub fn staged(service: &SyncService) -> Vec<(u64, Option<u64>)> {
-    // TODO: check whether the VM suite still asks for the downloads that never ended, and fix if needed: no layer of the mount lists them (`list_unfinished_downloads` went with the old downloader).
+    // TODO: `ItemFilesInterface::list_unfinished_downloads` of the folder's mount (each one's size on disk and its checkpoint); it is async, so this becomes async with it. Check whether the VM suite still asks for them, and fix if needed.
     todo!()
 }
 
@@ -141,6 +141,8 @@ impl FolderAccount for Account {
     fn snapshot(&self) -> AccountSnapshot {
         self.state.get()
     }
+
+    fn nothing_is_unsent(&self) {}
 
     fn changes(&self) -> watch::Receiver<AccountSnapshot> {
         self.state.subscribe()

@@ -12,10 +12,15 @@
 //! inside a change of the folder, which holds the folder's write lock. It calls
 //! `start_order::start_folder_sync` with everything a start needs, keeps the answer
 //! (`StartedFolder`) in the folder's state, and ends it with `stop_order::stop_folder_sync`
-//! and then, where the folder goes down too, `stop_order::take_folder_down` or
-//! `stop_order::forget_folder`. The mount's request for its take-down reaches that owner
-//! through the report the start was given (`FolderStartInput::take_down_report`): no task
-//! of the sync takes the folder down or starts it.
+//! — whose answer, `start_order::KeptFolderParts`, it keeps as it is, the one type of what
+//! a stopped sync keeps — and then, where the folder goes down too,
+//! `stop_order::take_folder_down` or `stop_order::forget_folder`. The mount's request for
+//! its take-down reaches that owner through the report the start was given
+//! (`FolderStartInput::take_down_report`): no task of the sync takes the folder down or
+//! starts it. After a take-down for a fault the OWNER starts the folder again by itself,
+//! after a growing pause (`account_folder::take_down`: 1 min, 5 min, 30 min, then hourly;
+//! the user's "sync now" tries at once; the count starts over after a start that stayed
+//! up): the timer and the count are the owner's state, and nothing here keeps either.
 //!
 //! **What the owner's change must do** — the owner's change of a folder is rewritten at
 //! the switch, and this layer does not bend to the one in the tree:
@@ -33,12 +38,11 @@
 //!   start cut between two of its stages would drop a store the activity log is still
 //!   attached to, and a mount on one of the runtime's threads, where its drop joins a
 //!   thread and unmounts. `start_order::start_folder_sync` relies on never being cut;
-//! - at the daemon's end it stops the sync (`stop_order::stop_folder_sync`, under the
-//!   daemon's stop bound) and then stops the mount of the parts that answers
-//!   (`ItemMount::stop`, off the runtime's threads), which leaves the folder on disk
-//!   without its write bits; it closes nothing more, the process exits. Neither
-//!   `take_folder_down` (it says a trouble) nor `forget_folder` (it gives the write bits
-//!   back) is called for it;
+//! - at the daemon's end it calls ONE function, `stop_order::end_folder_at_daemon_stop`,
+//!   in a task of its own, under the daemon's stop bound: the sync stopped, then the
+//!   mount stopped, which leaves the folder on disk without its write bits; it closes
+//!   nothing more, the process exits. Neither `take_folder_down` (it says a trouble) nor
+//!   `forget_folder` (it gives the write bits back) is called for it;
 //! - a pause an older daemon left is not taken over (`take_old_pause` has no place in the
 //!   start's order): a store of an older version is rebuilt.
 //!
@@ -47,7 +51,7 @@
 //!
 //! **Tested without the rest** (the tests of each part are listed in its module):
 // test: a_folder_started_and_stopped_leaves_no_task_running
-// test: a_folder_taken_down_for_a_fault_is_not_started_again_by_itself
+// test: a_folder_taken_down_for_a_fault_is_started_again_by_its_owner_and_by_no_task_of_the_sync
 // test: a_sync_dropped_unstopped_has_its_stop_token_cancelled
 #![allow(dead_code, unused_variables)]
 

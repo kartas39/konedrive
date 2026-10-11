@@ -82,19 +82,32 @@ async fn main() -> anyhow::Result<()> {
     // The stop: nothing new is sent, and the requests in flight
     // get a bounded time to return and be persisted; a second signal ends it.
     tracing::info!("stopping: the uploads in flight get up to {} s", stop::STOP_BOUND.as_secs());
-    let closing: Vec<_> = registry.accounts().iter().filter_map(|sync| sync.close_outbox()).collect();
-    match stop::wind_down(futures_util::future::join_all(closing).map(|_| ()), stop::STOP_BOUND, signals.next()).await {
+    // One call per account: its sync is stopped, then its folder loses its mount and is locked.
+    // The folders that got there within the bound are kept, for the desktop to be told. The unit's
+    // tidy step does the same for a daemon that could not.
+    // TODO: check that a folder whose stop was cut at the bound, or by a second signal, is left to the tidy step as before (its mount was stopped after the bound until now), and fix if needed.
+    let ended: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>> = Arc::default();
+    let ending: Vec<_> = registry
+        .accounts()
+        .into_iter()
+        .map(|sync| {
+            let ended = Arc::clone(&ended);
+            async move {
+                if let Some(folder) = sync.end_at_daemon_stop().await {
+                    konedrived::panic::lock(&ended).push(folder);
+                }
+            }
+        })
+        .collect();
+    match stop::wind_down(futures_util::future::join_all(ending).map(|_| ()), stop::STOP_BOUND, signals.next()).await {
         stop::Ended::Finished => tracing::info!("stopped"),
         stop::Ended::Bound => tracing::warn!("stopped: requests still in flight are cut"),
         stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
     }
-    // Last: a folder that shows OneDrive loses its mount, is locked, and whoever showed the
-    // mount is told to read the folder on disk. The unit's tidy step does the same for a daemon
-    // that could not.
-    for sync in registry.accounts().iter() {
-        if let Some(folder) = sync.unmount().await {
-            konedrived::desktop::dirnotify::read_again(konedrived::mount::list_directories(&folder)).await;
-        }
+    // Last: whoever showed a mount that is gone is told to read the folder on disk.
+    let ended: Vec<std::path::PathBuf> = std::mem::take(&mut *konedrived::panic::lock(&ended));
+    for folder in ended {
+        konedrived::desktop::dirnotify::read_again(konedrived::mount::list_directories(&folder)).await;
     }
     // Not through the runtime's drop, which would wait for blocking tasks.
     std::process::exit(code)

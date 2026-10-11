@@ -52,7 +52,9 @@ pub(super) fn publish(folder: &Folder) -> Published {
         // a running sync, and fix if needed.
         Some(Sync::Running(started)) if started.tasks.stop_handle().is_cancelled() => SyncView::Stopped(None),
         Some(Sync::Running(started)) => SyncView::Running(started.tasks.stop_handle()),
-        Some(Sync::Stopped(Why::CannotStart(why))) => SyncView::Stopped(Some(why.clone())),
+        Some(Sync::Stopped(Why::CannotStart(why) | Why::DriveNotKnown(why))) => SyncView::Stopped(Some(why.clone())),
+        // A folder taken down says its cause as blocking trouble until a start stays up.
+        Some(Sync::Stopped(Why::TakenDown { cause, .. })) => SyncView::Stopped(Some(cause.clone())),
         Some(Sync::Stopped(_)) => SyncView::Stopped(None),
     };
     let view = |down: Option<String>| View {
@@ -60,8 +62,10 @@ pub(super) fn publish(folder: &Folder) -> Published {
         down,
         wanted: folder.wanted,
         tree_lock: folder.acted_on().map(|record| Arc::clone(&record.kept.tree_lock)),
-        store: folder.store(),
-        mount: folder.acted_on().and_then(|record| record.kept.mount.clone()),
+        parts: folder.acted_on().and_then(|_| folder.parts()),
+        // TODO: `sending_holds` and `onedrive_space` from the running sync (`SyncTasks::sending_holds`, `StartedFolder::onedrive_space`): `SyncTasks`' accessors are `todo!()` until the folder's start is written.
+        sending_holds: None,
+        onedrive_space: None,
         sync: sync.clone(),
     };
     let (state, error, down) = match &folder.is {

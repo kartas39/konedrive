@@ -263,7 +263,7 @@ impl SyncService {
             return;
         }
         let path = record.root.path.clone();
-        if record.kept.mount.is_some() {
+        if stopped.folder().mount().is_some() {
             // Mounted already: the folder is what it was, and its path is the mount.
             return self.come_up(stopped, record.root.clone(), false).await;
         }

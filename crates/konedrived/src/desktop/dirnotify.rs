@@ -35,7 +35,7 @@ pub async fn read_again(directories: Vec<PathBuf>) {
 /// [`read_again`] for the folder at `folder` and every directory `store` names in it: after
 /// its mount came, or the modes its mount shows changed.
 pub async fn read_folder_again(store: Store, folder: PathBuf) {
-    // TODO: the directories the folder shows, from the root down (`ItemReader::list_children` in a read
-    // of the store, `Store::read_items`), then `read_again`.
+    // TODO: the directories the folder shows (`ItemReader::list_shown_directories`, in pages, each a read
+    // of the store, `Store::read_items`; at most `MOST`), each under `folder`, then `read_again`.
     todo!()
 }

@@ -45,9 +45,34 @@ pub struct ItemPathStatus {
     pub onedrive_item: OneDriveItemReference,
     /// `None` for a directory.
     pub sync_state: Option<FileSyncState>,
+    /// Whether a pin holds for the item, its own or that of a directory above it.
     pub is_pinned: bool,
+    /// Whose pin holds for it.
+    pub pin_holder: PinHolder,
     pub is_downloading: bool,
     pub is_open_for_writing: bool,
+}
+
+/// Whose pin holds for an item: what `Unpin`, `FreeUp`, `Dehydrate` and `Files.Menu`
+/// refuse and name by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinHolder {
+    /// No pin holds for it.
+    Nobody,
+    /// The item's own pin, and no directory above it has one.
+    Itself,
+    /// A directory above it has a pin (whether or not the item has one of its own): the
+    /// nearest such directory, by its full path — what a refusal names.
+    DirectoryAbove { path: PathBuf },
+}
+
+impl ItemPathStatus {
+    /// What `user.konedrive.state` says of the item (`item_lookup::decide_state_attribute`
+    /// of `sync_state` and `is_downloading`): what `Files.Menu` shows a file as. `None`
+    /// for a directory and for a file that is no file of OneDrive's.
+    pub fn find_state_attribute(&self) -> Option<konedrive_fs::placeholder::State> {
+        todo!()
+    }
 }
 
 /// What a free-up counts for one file it asked about: freed, kept back, or neither — a
@@ -128,7 +153,8 @@ impl ItemFilesInterface {
         let (item, is_pinned) = self.find_onedrive_item(path).await?;
         let Some(onedrive_item) = item.onedrive_item.clone() else { return Err(FilesRefusal::NotInOneDrive) };
         let id = item.local_item_id;
-        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
+        // TODO: `pin_holder` from `ItemReader::find_pin_holder(id)` and its path (`find_path`), read in `find_onedrive_item`'s closure; `Nobody` until that reader is filled.
+        Ok(ItemPathStatus { item: id, kind: item.kind, onedrive_item, sync_state: item.file_sync_state(), is_pinned, pin_holder: PinHolder::Nobody, is_downloading: self.download_states.is_downloading(id), is_open_for_writing: self.item_handles.is_open_for_writing(id) })
     }
 
     /// Asks for the download of each of `files` and waits for them all: the first
@@ -214,17 +240,46 @@ impl ItemFilesInterface {
     }
 
     /// `Files.Pin` / `Unpin`: `ItemStore::set_item_pin` as one job of the store, then the
-    /// plan woken (`WakeCause::UserAnswered`), which downloads what the pin holds.
-    pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<(), FilesRefusal> {
+    /// plan woken (`WakeCause::UserAnswered`), which downloads what the pin holds, and the
+    /// change of the pin announced to whoever watches the folder
+    /// (`ItemInotifyBridge::announce` with `ItemAnnouncement::MarksChanged` of the item at
+    /// its place: the emblem is read from `user.konedrive.pin`). It is the item's OWN pin
+    /// that is set or taken off, whatever a directory above it has. Answers whether the
+    /// item's own pin changed: `false` for a pin that was there already, or was not.
+    // TODO: the answer is `true` for every pin written: `PinChange` does not say whether the pin was there. And nothing is announced yet (this part holds no bridge). Check and fix if needed.
+    pub async fn set_pin(&self, path: &Path, is_pinned: bool) -> Result<bool, FilesRefusal> {
         let (item, _) = self.find_onedrive_item(path).await?;
         let id = item.local_item_id;
         match self.store.call(move |store| store.item_store().set_item_pin(id, is_pinned)).await.map_err(to_refusal)? {
             PinChange::Written => {
                 self.sync_plan_wake.wake(WakeCause::UserAnswered);
-                Ok(())
+                Ok(true)
             }
             PinChange::NoBinding | PinChange::NoItem => Err(FilesRefusal::NotInOneDrive),
         }
+    }
+
+    /// What a free-up of the item at `path` would decide now
+    /// (`item_free_up::decide_item_free_up`, with the row, its pin, what runs for it and
+    /// whether it is open for writing, read as a free-up reads them) — and, with
+    /// `is_own_pin_taken_off`, what it would decide once the item's own pin is off, as
+    /// `Files.FreeUp` takes it off first: a pin of a directory above still holds then.
+    /// Changes nothing. What `Dehydrate`, `FreeUp`'s check and `Files.Menu` say as a
+    /// refusal or offer. For a directory: the decision of the directory's own row
+    /// (pinned or not), its files are decided each by itself when the free-up runs.
+    #[allow(unused_variables)]
+    pub async fn decide_free_up(&self, path: &Path, is_own_pin_taken_off: bool) -> Result<FreeUpDecision, FilesRefusal> {
+        todo!()
+    }
+
+    /// The files whose whole download began and has not landed: a download that runs now
+    /// (`ItemDownloadStates`), and the unfinished files earlier downloads left in the
+    /// backing directory to be gone on from. Of each: its full path, its size on disk and
+    /// its checkpoint (`user.konedrive.progress`; none where none was written). For the
+    /// test support of the daemon (`account_folder::testing::staged`); no member of the
+    /// bus asks it.
+    pub async fn list_unfinished_downloads(&self) -> Result<Vec<(PathBuf, u64, Option<u64>)>, FilesRefusal> {
+        todo!()
     }
 
     /// `Folder.PinnedCount` (`ItemReader::count_pins`).

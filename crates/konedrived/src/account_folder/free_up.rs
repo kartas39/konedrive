@@ -13,7 +13,7 @@ use crate::account_folder::{SyncError, SyncService};
 /// The refusal of a path a pin keeps: it names the folder above that pins it, or the path
 /// itself for a pin of its own.
 fn pinned(path: &Path, status: &ItemPathStatus) -> SyncError {
-    // TODO: the directory above that pins the path. `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+    // TODO: `ItemPathStatus::pin_holder`: `PinHolder::DirectoryAbove { path }` names the folder above, `PinHolder::Itself` the path.
     todo!()
 }
 
@@ -22,8 +22,9 @@ fn pinned(path: &Path, status: &ItemPathStatus) -> SyncError {
 /// be uploaded, which freeing it up would lose (`NotUploaded`). Anything else is left to the
 /// free-up itself, which counts what it leaves.
 fn refuse_free_up(path: &Path, status: &ItemPathStatus) -> Result<(), SyncError> {
-    // TODO: the free-up's decision once the path's own pin is off (`mount::item_free_up`'s decision over
-    // `ItemPathStatus`). `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+    // TODO: by the free-up's decision once the path's own pin is off, which the caller asked the mount for
+    // (`ItemFilesInterface::decide_free_up(path, true)`) and gives here beside the status — the signature gains
+    // that `FreeUpDecision` when this is filled.
     todo!()
 }
 
@@ -37,7 +38,7 @@ impl SyncService {
     /// downloaded, and `InUse` for one that could not be freed after all. The mount decides
     /// ([`FreeUpDecision`]); this says its decision as a refusal.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) and `free_up`; the decision is `mount::item_free_up`'s.
+        // TODO: `ItemFilesInterface::decide_free_up(path, false)` said as the refusal (`find_path_status` for the pin's holder), then `free_up`.
         todo!()
     }
 
@@ -56,7 +57,7 @@ impl SyncService {
     /// folder a call's paths are in first, so that a call that spans accounts is refused as
     /// a whole or not at all.
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path, after `check_unpinnable`.
+        // TODO: after `check_unpinnable`, for each path `ItemFilesInterface::decide_free_up(path, true)`: `refuse_free_up`.
         todo!()
     }
 
@@ -74,8 +75,8 @@ impl SyncService {
     /// change not uploaded yet is left and counted in [`FreedUp::pinned`]. One `freed`
     /// event per path that freed anything.
     pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`), `set_pin` and `free_up`.
-        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        // TODO: `ItemFilesInterface::find_path_status` (`pin_holder`: a path pinned from above is refused, one
+        // with its own pin loses it by `set_pin`), then `free_up`, then `show_pins`.
         todo!()
     }
 }

@@ -197,7 +197,7 @@ fn the_status_of_a_path_is_the_rows_sync_state_its_pin_and_what_runs_for_it() {
     let run = fixture.runtime();
     let status = |path: &str| run.block_on(files.find_path_status(&fixture.disk_path(path))).expect("the status");
 
-    assert_eq!(status("docs"), ItemPathStatus { item: directory.local_item_id, kind: ItemKind::Directory, onedrive_item: ItemFixture::onedrive_reference_of("docs"), sync_state: None, is_pinned: false, is_downloading: false, is_open_for_writing: false });
+    assert_eq!(status("docs"), ItemPathStatus { item: directory.local_item_id, kind: ItemKind::Directory, onedrive_item: ItemFixture::onedrive_reference_of("docs"), sync_state: None, is_pinned: false, pin_holder: super::PinHolder::Nobody, is_downloading: false, is_open_for_writing: false });
     assert_eq!(status("docs/remote.txt").sync_state, Some(FileSyncState::RemoteOnly));
     assert_eq!(status("docs/clean.txt").sync_state, Some(FileSyncState::Synced));
     assert_eq!(status("docs/changed.txt").sync_state, Some(FileSyncState::ModifiedHere));

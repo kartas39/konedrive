@@ -54,10 +54,18 @@ mod upload_rules;
 mod write_operation_thread;
 // The mount over the rows of `items`: no caller until the owner of a folder's state starts a
 // sync through `sync_tasks`.
-// TODO: check whether the runner of the plan's steps towards the folder gets a directory of
-// its own (`folder_steps/`) and fix if needed: `ItemMount` builds and holds `FolderSteps`
-// (`item_mount/build_order.rs`), and `FolderSteps` is over eleven parts of the mount, so
-// two directories would use each other, which the layer order refuses.
+// TODO: the runner of the plan's steps towards the folder is to be built by the start of the
+// sync (`sync_tasks::start_order`) and to live in a directory of its own (`folder_steps/`,
+// after `mount` in the layer order). Moving its construction is not all it needs: it is made
+// of eleven parts of the mount — `PlaceChanges` and `PlaceChange`, `WriteOperationThread`,
+// `UploadRules`, `ItemInotifyBridge`, `ItemDownloader`, `ItemDownloadStates`,
+// `ItemRangeFetcher`, `MountTakeDown`, the landing's outcome, `item_announcements`,
+// `backing_directory::EntryKind` — every one of which is `pub(super)` to the mount today,
+// and its tests run over the mount's fixture by `super::` paths. So it needs: (1) those
+// parts, and the functions of them a step calls, made `pub(crate)` and handed out by
+// `ItemMount` (one accessor that answers them together); (2) `ItemMount` no longer
+// building or holding `FolderSteps` (`item_mount/build_order.rs`, `ItemMount::folder_steps`,
+// the fixture); (3) the tests moved with it. Check and fix if needed.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod folder_steps;
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
@@ -109,7 +117,7 @@ pub use backing_directory::{restore_write_bits, BackingDirectory};
 pub use folder_steps::FolderSteps;
 pub use item_announcements::ItemAnnouncement;
 pub use item_content_files::{ItemContentFiles, LocalContentFile};
-pub use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus};
+pub use item_files_interface::{DownloadedSpace, FilesRefusal, FreedSpace, ItemFilesInterface, ItemPathStatus, PinHolder};
 pub use item_free_up::FreeUpDecision;
 pub use item_handles::ItemHandles;
 pub use item_mount::{ItemMount, ItemMountError, ItemMountSetup};

@@ -39,7 +39,7 @@ BEGIN {
 
     # The daemon: its directories in layer order.
     DAEMON = "crates/konedrived/src/"
-    count = split("config account folder conditions status content_source local sync_parts mount onedrive_steps listing desktop sync_plan_task sync_tasks upload_queue account_folder daemon dbus", order, " ")
+    count = split("config account folder conditions status content_source local sync_parts mount onedrive_steps listing desktop upload_queue sync_plan_task sync_tasks account_folder daemon dbus", order, " ")
     for (i = 1; i <= count; i++)
         layer[order[i]] = i
 }

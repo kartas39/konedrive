@@ -7,8 +7,10 @@
 //! **Answers for:** the map's 7.1 (where the check goes), 7.b (what is done with its
 //! answer): design §10's second rule — sending is held back for the rows the check left
 //! (`DiskFindings::list_held_items`) and what is below each, not for the folder. The
-//! paths the check left, with their reasons, are said in the journal here: no member of
-//! the bus shows them.
+//! paths the check left, with their reasons, are said in the journal here. On the bus the
+//! rows it left are entries of the queue's answers, each said as "could not be read on
+//! disk" (`upload_queue::decide_queue_reason`, from the plan's `WaitReason::StartUpCheck`);
+//! a path with no row is in the journal alone.
 //!
 //! **Tested without the rest:**
 // test: a_check_that_left_nothing_holds_nothing_back

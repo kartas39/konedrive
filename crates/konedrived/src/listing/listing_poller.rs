@@ -8,6 +8,10 @@
 //! **Answers for:** when a cycle runs: at once at its start, every interval, on the retry
 //! schedule after a failure, on a refresh, and while the account's work runs
 //! (`conditions::running`). How long it waits is decided in `poll_wait`, from typed cases.
+//! While the account's work is stopped the poller wakes by the clock (a timed pause), at
+//! its interval and on a refresh, and by nothing else: whoever ends a pause or a hold asks
+//! for a cycle (`account_folder/pause.rs`, `show_pause`), or the first cycle after it comes
+//! up to an interval late.
 //! A refresh given while a cycle runs is kept, and several are one: one more cycle runs
 //! after the one under way. It holds no cycle back for a read-only folder with unsent
 //! changes (today's `held_back`, `listing/poller.rs:170-184`, goes: design §13 (3)).

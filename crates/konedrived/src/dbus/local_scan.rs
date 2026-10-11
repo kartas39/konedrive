@@ -3,8 +3,10 @@ use zbus::interface;
 use crate::dbus::properties::*;
 use crate::dbus::LocalScan;
 
-/// The Full local scan (issue #8). Every property is a row of `properties`, which says
-/// what it is.
+/// The check of the backing directory at a folder's start (the Full local scan of issue
+/// #8, as it was). Every property is a row of `properties`, which says what it is; the one
+/// writer of what they read (`local.scan`) is the folder's start
+/// (`sync_tasks::start_order::start_folder_sync`, around the mount's build).
 #[interface(name = "org.konedrive.LocalScan")]
 impl LocalScan {
     #[zbus(property)]

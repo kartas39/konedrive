@@ -25,7 +25,15 @@ impl SyncService {
     /// it answers is put into the state, from where only a change takes it out.
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
         // TODO: `sync_tasks::start_order::start_folder_sync`, in a task of its own, its answer
-        // (`StartedFolder`) kept as `Sync::Running`; a `RefusedStart` goes to `cannot_start`.
+        // (`StartedFolder`) kept as `Sync::Running`. Its input: `kept` is `Kept::parts`, taken whole;
+        // `settings` is `PlanSettings::of(self.machine_name())`; `standing_holds` the pause as it is shown and
+        // `mode::decide_account_holds` of the account's snapshot read now; `take_down_report` is
+        // `self.take_down_report()`; `nothing_unsent_report` tells the account
+        // (`FolderAccount::nothing_is_unsent`); `lease` is `Lease::on(&self.folder)`.
+        // A `RefusedStart` goes to `cannot_start` — `StartRefusal::DriveNotKnown` as `Why::DriveNotKnown`,
+        // which the watcher of the account starts again — and the parts it gives back into `Kept::parts`.
+        // After a start: the desktop told the mount came (`stopped.read_again()`, in either access mode),
+        // and `PinnedCount` shown (`show_pins`).
         todo!()
     }
 
@@ -63,8 +71,10 @@ impl SyncService {
     /// back that does not wait for the next start. When that fails too, and for a folder
     /// that only waits (for a `source` that can be read), the refusal is `NotUp`, with why.
     pub async fn refresh(&self) -> Result<(), SyncError> {
-        // TODO: `SyncTasks::refresh` (`sync_tasks::stop_order`) while a sync runs; a folder that is down or
-        // whose sync could not start is started through `refresh_in`, inside a change.
+        // TODO: `SyncTasks::refresh` (`sync_tasks::stop_order`: `WakeCause::RefreshAsked` and a cycle) while a
+        // sync runs, with `refresh_quota`; a folder that is down or whose sync does not run — it could not
+        // start, or a fault took its mount down (`Why::TakenDown`: tried at once, whatever its next try, the
+        // count kept) — is started through `refresh_in`, inside a change.
         todo!()
     }
 
@@ -106,7 +116,8 @@ impl SyncService {
     /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
     /// changes nothing.
     async fn refresh_quota(&self) {
-        // TODO: `OneDriveSpace::apply_quota` (`sync_parts::onedrive_space`) with the quota read, after `Quota::read`.
+        // TODO: `DriveClient::quota`, then `OneDriveSpace::apply_quota(quota, now)` of the running sync (who reads the
+        // quota applies it; it writes the account's figures too), then the plan's task woken (`WakeCause::QuotaRead`).
         todo!()
     }
 
@@ -120,8 +131,7 @@ impl SyncService {
     /// [`refresh_now`](Self::refresh_now); whether a sync was running to
     /// nudge.
     pub(super) fn nudge(&self) -> bool {
-        // TODO: `ListingPollHandle::refresh` and `ListingPollHandle::wake_live` of `SyncTasks::poll`; whether a
-        // sync was running.
+        // TODO: `SyncTasks::wake_for_network`; whether a sync was running.
         todo!()
     }
 

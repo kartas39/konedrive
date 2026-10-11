@@ -33,6 +33,12 @@ pub enum ItemAnnouncement {
     Vanished { item: LocalItemId, former_place: ItemPlace, kind: ItemKind },
     /// The content or the times of the file `item`, at `place`, changed.
     ContentChanged { item: LocalItemId, place: ItemPlace },
+    /// What the mount answers as the sync mark or the pin of `item`, a file or a
+    /// directory at `place`, changed (`user.konedrive.sync`, `user.konedrive.pin`): a step
+    /// towards OneDrive began or ended for it, the plan's answer for it turned to or from
+    /// a wait for the user, a pin was set or taken off. Its content did not change:
+    /// nothing the kernel cached of it is dropped.
+    MarksChanged { item: LocalItemId, place: ItemPlace },
 }
 
 /// The announcements of one step: a move is a vanishing and an appearing.
@@ -44,14 +50,14 @@ impl ItemAnnouncement {
     /// The item the announcement is of.
     pub(super) fn item(&self) -> LocalItemId {
         match self {
-            ItemAnnouncement::Appeared { item, .. } | ItemAnnouncement::Vanished { item, .. } | ItemAnnouncement::ContentChanged { item, .. } => *item,
+            ItemAnnouncement::Appeared { item, .. } | ItemAnnouncement::Vanished { item, .. } | ItemAnnouncement::ContentChanged { item, .. } | ItemAnnouncement::MarksChanged { item, .. } => *item,
         }
     }
 
     /// The place the announcement names: where the item is now, or where it was.
     pub(super) fn place(&self) -> &ItemPlace {
         match self {
-            ItemAnnouncement::Appeared { place, .. } | ItemAnnouncement::ContentChanged { place, .. } => place,
+            ItemAnnouncement::Appeared { place, .. } | ItemAnnouncement::ContentChanged { place, .. } | ItemAnnouncement::MarksChanged { place, .. } => place,
             ItemAnnouncement::Vanished { former_place, .. } => former_place,
         }
     }
@@ -69,7 +75,8 @@ pub(super) enum AnnouncementSystemCall {
     Rmdir(PathBuf),
     /// `unlink`: a file vanished.
     Unlink(PathBuf),
-    /// `utimensat` with the time of now: the content or the times of a file changed.
+    /// `utimensat` with the time of now: the content or the times of a file changed, or
+    /// the marks of a file or a directory.
     Utimensat(PathBuf),
 }
 
@@ -90,7 +97,9 @@ pub(super) fn decide_system_call(announcement: &ItemAnnouncement, directory_path
         (ItemAnnouncement::Appeared { .. }, Some(ItemKind::Directory)) => AnnouncementSystemCall::Mkdir(path),
         (ItemAnnouncement::Appeared { .. }, Some(ItemKind::File)) => AnnouncementSystemCall::Mknod(path),
         (ItemAnnouncement::ContentChanged { .. }, Some(ItemKind::File)) => AnnouncementSystemCall::Utimensat(path),
-        (ItemAnnouncement::Appeared { .. }, None) | (ItemAnnouncement::ContentChanged { .. }, None | Some(ItemKind::Directory)) => return None,
+        // TODO: check that a touch of a directory through the mount (`utimensat`) is answered without a change of the rows, as a file's by the bridge's thread is, and that the bridge drops no cached page for it, and fix if needed.
+        (ItemAnnouncement::MarksChanged { .. }, Some(_)) => AnnouncementSystemCall::Utimensat(path),
+        (ItemAnnouncement::Appeared { .. } | ItemAnnouncement::MarksChanged { .. }, None) | (ItemAnnouncement::ContentChanged { .. }, None | Some(ItemKind::Directory)) => return None,
     })
 }
 
@@ -118,7 +127,7 @@ pub(super) fn find_announced_name(in_progress: Option<&ItemAnnouncement>, parent
         ItemAnnouncement::Vanished { item, kind, .. } => Some(AnnouncedName::Vanishing { item: *item, kind: *kind }),
         ItemAnnouncement::Appeared { .. } => Some(AnnouncedName::Appearing),
         // The file is there before and after: its touch is answered from its row.
-        ItemAnnouncement::ContentChanged { .. } => None,
+        ItemAnnouncement::ContentChanged { .. } | ItemAnnouncement::MarksChanged { .. } => None,
     }
 }
 

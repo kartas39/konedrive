@@ -115,7 +115,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         source,
         pool,
         split_download_share,
-        report,
+        report.clone(),
         folder.clone(),
         runtime.clone(),
     ));
@@ -146,6 +146,7 @@ fn build_over(backing_directory: Arc<BackingDirectory>, setup: ItemMountSetup, r
         running_steps,
         Arc::clone(&sync_plan_wake),
         Arc::clone(&mount_take_down),
+        report.clone(),
     ));
     let folder_steps = Arc::new(FolderSteps::new(
         Arc::clone(&place_changes),

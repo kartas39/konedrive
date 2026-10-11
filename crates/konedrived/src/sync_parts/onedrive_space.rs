@@ -106,11 +106,16 @@ impl OneDriveSpace {
         self.is_full.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// A quota was read, by this folder or by the account: what it changed. Called by the
-    /// plan's task, which then calls `StepMemory::forget_fitting_space_refusals` for
-    /// `HasSpace` and makes the plan again
-    /// (`WakeCause::QuotaRead`). Replaces `space.rs:234`, `:247` (`apply_quota`,
-    /// `decide_quota`) and `:279` (`release_fitting`).
+    /// A quota was read, by this folder or by the account: what it changed. Called by
+    /// WHOEVER read the quota, with what it read: the plan's task for its own due read,
+    /// the folder's start (`sync_tasks::start_order::read_quota_before_first_plan`), and
+    /// the owner of the folder's state for the account's read (`PendingUploads::quota_read`)
+    /// and the user's refresh. A caller that is not the plan's task then wakes it
+    /// (`WakeCause::QuotaRead`); the task asks nothing of OneDrive on that cause: it takes
+    /// what is free from here ([`find_free_space`](Self::find_free_space)), calls
+    /// `StepMemory::forget_fitting_space_refusals` with it and makes the plan again.
+    /// Replaces `space.rs:234`, `:247` (`apply_quota`, `decide_quota`) and `:279`
+    /// (`release_fitting`).
     ///
     /// The read is written into the account's quota here, as made at `now`, whoever made
     /// it: one path for the folder's own reads and the account's. For a read the account
@@ -177,6 +182,17 @@ impl OneDriveSpace {
     /// Called by the steps that send content, after their commit was written.
     pub fn count_uploaded(&self, bytes: u64) {
         self.quota.uploaded(bytes);
+    }
+
+    /// How many bytes OneDrive has free, as the last quota applied here said
+    /// ([`apply_quota`](Self::apply_quota), [`refuse_for_space`](Self::refuse_for_space)),
+    /// less what was uploaded since (`Quota::uploaded`); `None` while OneDrive is full,
+    /// and before any quota that says something of the space was applied. What the plan's
+    /// task forgets the fitting refusals for lack of space by after
+    /// `WakeCause::QuotaRead`: the one who read the quota applied it and gave the task no
+    /// figures.
+    pub fn find_free_space(&self) -> Option<u64> {
+        todo!()
     }
 
     /// When the quota is to be read next by itself, Unix seconds: every 30 minutes while

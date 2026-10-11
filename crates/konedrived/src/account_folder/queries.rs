@@ -17,7 +17,7 @@ impl SyncService {
     /// so it is held as long as the clone is, even when this call is dropped
     /// part-way.
     pub async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
-        // TODO: `upload_queue::read_items_not_shown`, in a read of the folder's store (`Store::read_items`), over `PublishedPlan::list_answers`.
+        // TODO: `upload_queue::read_items_not_shown`, in a read of the folder's store (`View::parts`: `Store::read_items`), over `PublishedPlan::list_answers` — empty with no plan published yet.
         todo!()
     }
 

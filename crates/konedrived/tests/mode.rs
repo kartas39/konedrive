@@ -375,8 +375,9 @@ impl PendingUploads for Waiting {
         }
     }
 
-    async fn drop_pending_uploads(&self) {
+    async fn hold_unsent_changes(&self) -> u64 {
         self.dropped.store(true, Ordering::SeqCst);
+        0
     }
 }
 

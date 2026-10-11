@@ -1,14 +1,13 @@
-//! The folder's side of the account's mode (`docs/design/writes.md` §2, §2.2): a OneDrive folder follows
-//! the mode its account runs in (`Account.Mode`). A read-only folder's mount refuses every
-//! change; a read-write one's takes them, and its outbox worker uploads them.
+//! The folder's side of its account: the ONE watcher of the account's state
+//! ([`watch_account`]), and what the folder does when that changes — it follows the
+//! account's mode, holds its sending while the account is signed out or may not write
+//! ([`decide_account_holds`]), and starts a sync that waited for the account's drive.
 //!
-//! A switch stops the folder's sync, changes the mode inside a change of its state, and
-//! starts the sync again, whose first cycle is a Full reconcile under the new mode. The
-//! sync that starts says to the mount whether it takes changes (`start_stop`).
-//!
-//! What the mode starts and stops with the folder's sync is beside this file: the outbox
-//! worker with its rows (`outbox`), which [`PendingUploads`] counts before a switch to
-//! read-only and drops when that switch is forced.
+//! A read-only folder's mount refuses every change, and nothing of it is sent; a
+//! read-write one's takes them, and they are sent. A switch stops no task of the sync
+//! (`sync_tasks::access_mode_change`). What the account asks of the folder for a switch
+//! is [`PendingUploads`]: how many changes are unsent, and to hold them here at the
+//! switch itself. Nothing is ever dropped.
 // The skeleton of the switch: bodies that drove the old mechanism are `todo!()`.
 #![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 
@@ -29,163 +28,121 @@ impl SyncService {
         self.view().wanted
     }
 
-    /// Follows the account to `mode` (`docs/design/writes.md` §2, §2.2). The folder's sync is stopped as
-    /// a Forget stops it, and the mode changed inside one change of the folder's state, so
-    /// no reconcile, registration or free-up runs meanwhile. The sync then starts again, if
-    /// it ran: its first cycle is a Full reconcile, in read-write mode it starts the outbox
-    /// worker, and the folder's mount takes changes or refuses them as the new mode says.
+    /// Follows the account to `mode`. No task of the folder's sync is stopped for it: the
+    /// folder's mount takes changes or refuses them as the new mode says, and a read-only
+    /// folder sends nothing (`sync_tasks::access_mode_change`). The mode is changed inside
+    /// one change of the folder's state.
     ///
     /// The accounts manager calls this once before the folder is restored, with the mode
     /// the account starts in: nothing is up then, so the folder only takes the mode.
     pub async fn follow_mode(&self, mode: Mode) {
-        // TODO: `sync_tasks::access_mode_change::switch_to_read_only` or `switch_to_read_write`, while the
-        // tasks run; a folder that is not up only takes the mode.
+        // TODO: `sync_tasks::access_mode_change::switch_to_read_only` or `switch_to_read_write`, over the parts
+        // of the running sync and while its tasks run; a folder that is not up, or whose sync does not run, only
+        // takes the mode (`Folder::wanted`), which its next start applies. A folder the account turned read-only
+        // through `hold_unsent_changes` is found turned already.
         todo!()
     }
 
 }
 
-/// The write gate of a folder: whether its account may change OneDrive now — asked by
-/// the outbox worker before each row and between an upload's fragments
-/// (`OutboxHost::may_write`, which went). It may while the folder and
-/// the account are read-write, `config.toml` — read again now — says read-write and records a
-/// drive for the account, the drive its token was last seen to reach is that one, its
-/// token can write, and the folder's sync is not stopped by blocking trouble (`CycleError::blocking`:
-/// another account's drive, a sign-out, a failure of the tree store; the cycle that
-/// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
-/// says why until it opens, and the account's mode is worked out again, which turns it
-/// read-only and says why in the account's `LastError`.
-///
-/// It holds what it reads, and no way back to the service.
-// TODO: check whether the gate stays as what `SendingHolds::set_writes_refusal` and
-// `StandingSendingHolds::writes_refusal` are given, and fix if needed: nothing asks it now.
-pub(super) struct Gate {
-    view: watch::Receiver<View>,
-    account: Arc<dyn crate::account::FolderAccount>,
-    persist: super::Persist,
-    state: crate::status::snapshot::SyncStateHandle,
+/// What of the account holds the folder's sending, beside the folder's own access mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountHolds {
+    /// Nobody is signed in.
+    pub is_signed_out: bool,
+    /// Why the account may not write to OneDrive now; `None` when it may, and when the
+    /// only cause is that the account or the folder is read-only (that is the folder's
+    /// own hold, `SendingHold::FolderReadOnly`).
+    pub writes_refusal: Option<String>,
 }
 
-impl Gate {
-    /// Blocking: it reads `config.toml`, here and in the mode check. The worker asks its
-    /// host from a blocking thread, as one section (`Engine::may_write`).
-    pub(super) fn check(&self) -> Result<(), String> {
-        let refusal = self.refusal();
-        let note = OutboxNote::after_gate(&self.state.get().outbox.note, refusal.as_deref());
-        let changed = note.is_some();
-        if let Some(note) = note {
-            self.state.update(|s| s.outbox.note = note);
-        }
-        match refusal {
-            None => Ok(()),
-            Some(why) => {
-                if changed {
-                    self.account.recheck_mode();
-                }
-                Err(why)
-            }
-        }
-    }
-
-    /// Why the gate is closed now, if it is.
-    fn refusal(&self) -> Option<String> {
-        if self.view.borrow().wanted != Mode::ReadWrite {
-            return Some("the folder is read-only".into());
-        }
-        let persist = &self.persist;
-        let snapshot = self.account.snapshot();
-        if snapshot.mode != Mode::ReadWrite {
-            return Some("the account is read-only".into());
-        }
-        if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) {
-            return Some("the account's sign-in does not allow changes".into());
-        }
-        match persist.store.write_standing(&persist.account) {
-            None => return Some("config.toml cannot be read".into()),
-            Some(WriteStanding { mode: Mode::ReadOnly, .. }) => return Some("config.toml says the account is read-only".into()),
-            Some(WriteStanding { recorded_drive: None, .. }) => {
-                return Some("config.toml records no drive for the account".into())
-            }
-            Some(WriteStanding { recorded_drive: Some(drive), .. }) if drive != snapshot.live_drive => {
-                return Some(format!(
-                    "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml records",
-                    snapshot.live_drive,
-                    drive.as_str()
-                ))
-            }
-            Some(_) => {}
-        }
-        if let Some(trouble) = self.state.get().cycle.sync_trouble.filter(|t| t.blocking) {
-            return Some(format!("the folder's sync is stopped ({})", trouble.text));
-        }
-        None
-    }
+/// What `snapshot`, the account's state, and `standing`, what `config.toml` says of its
+/// mode and drive now (`ConfigStore::write_standing`; `None` when the file cannot be
+/// read), hold of the folder's sending. Pure. `is_signed_out` for any state but signed
+/// in. The refusal, the first that holds, for an account `config.toml` says is
+/// read-write: `config.toml` cannot be read; it records no drive; the token was last seen
+/// to reach another drive than the recorded one (with both); the sign-in does not allow
+/// changes (`oauth::grants_writes`). None for an account `config.toml` says is read-only:
+/// its folder is read-only, and held as such. The folder's own trouble
+/// (`cycle.sync_trouble`) is no part of it: a cycle that fails for another account's
+/// drive tells the account (`drive_seen`), and the refusal follows from the snapshot.
+/// One function for the start (`StandingSendingHolds::is_signed_out`, `writes_refusal`)
+/// and for every later change ([`watch_account`]).
+pub fn decide_account_holds(snapshot: &AccountSnapshot, standing: Option<&WriteStanding>) -> AccountHolds {
+    todo!()
 }
 
 impl SyncService {
-    /// The folder's write gate ([`Gate`]).
-    pub(super) fn gate(&self) -> Gate {
-        Gate {
-            view: self.view.subscribe(),
-            account: Arc::clone(&self.wiring.account),
-            persist: self.wiring.persist.clone(),
-            state: self.state.clone(),
-        }
+    /// The account's state changed to `snapshot`: what the folder does about it, all of
+    /// it here. In this order:
+    ///
+    /// 1. the mode followed ([`follow_mode`](Self::follow_mode)) when it is not the
+    ///    folder's;
+    /// 2. what holds the sending of a running sync set to what [`decide_account_holds`]
+    ///    answers now, each when it changed: signed out —
+    ///    `SyncTasks::hold_for_sign_out` (the release at a sign-in is the sync's own
+    ///    watcher's, `stop_order::watch_sign_in`); the refusal —
+    ///    `SendingHolds::set_writes_refusal`;
+    /// 3. a folder whose sync could not start because no drive was known
+    ///    (`Why::DriveNotKnown`) started again, inside a change, when the snapshot or
+    ///    `config.toml` names a drive now.
+    ///
+    /// Called by [`watch_account`] and by nobody else.
+    pub(super) async fn follow_account(&self, snapshot: &AccountSnapshot) {
+        todo!()
     }
 }
 
 #[async_trait::async_trait]
 impl PendingUploads for SyncService {
-    /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
-    /// still full.
+    /// `RefreshInfo` read the quota: applied to the running sync's `OneDriveSpace`
+    /// (`apply_quota(quota, now)`: who reads the quota applies it), and then the plan's
+    /// task woken (`WakeCause::QuotaRead`), which takes what is free from `OneDriveSpace`
+    /// and forgets the refusals that fit. Nothing with no running sync: its start reads
+    /// the quota itself.
     fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
-        // TODO: `OneDriveSpace::apply_quota` (`sync_parts::onedrive_space`) of the running sync.
+        // TODO: `OneDriveSpace::apply_quota` of the running sync (`View::onedrive_space`), then `SyncPlanWake::wake(WakeCause::QuotaRead)` (`View::parts`).
         todo!()
     }
 
-    /// How many changes wait to be uploaded — the outbox's live rows
-    /// (`konedrive_tree::outbox`). A switch to read-only is refused `PendingUploads` while
-    /// this is not 0 and the switch is not forced. A change saved a moment ago counts: the
-    /// folder's mount records each one before it answers the program that made it.
+    /// How many changes made here are unsent. A change saved a moment ago counts: the
+    /// folder's mount writes each one before it answers the program that made it. 0 for
+    /// an account with no folder and for a folder whose store is not open.
     async fn pending_uploads(&self) -> u64 {
         // TODO: `ItemReader::count_unsent`, read through the folder's store (`Store::read_items`).
         todo!()
     }
 
-    /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`
-    /// §2); the files stay, as ordinary local changes, protected by the read phase's stamp
-    /// check and rescue. Called once `config.toml` says read-only. The worker is told to
-    /// stop with every other part, before anything is waited for, so nothing more is sent.
-    ///
-    /// The folder's sync stops for the drop and starts again after it: the rows go inside
-    /// a change of the folder's state, with no task running, as at any switch, so nothing
-    /// here holds the state or the tree lock while it waits for the other with a cycle
-    /// under way (`docs/design/writes.md` §9).
-    ///
-    /// A read-write folder turns read-only here, in the same step, rather than when it
-    /// follows its account ([`SyncService::follow_mode`], which then finds it turned): its
-    /// mount takes no change from then on, so nothing records again what was dropped,
-    /// whether or not the folder is ever told to follow.
-    ///
-    /// A folder read-only already — its sync holding its cycles for these changes — starts
-    /// its sync again without them, as a read-only start does: what a read-write cycle
-    /// deferred is the base's, and the first cycle is a Full reconcile.
-    async fn drop_pending_uploads(&self) {
-        // TODO: `sync_tasks::access_mode_change::switch_to_read_only`: a forced switch drops nothing
-        // (`access_mode_change`'s module doc) — check whether this member of `PendingUploads` stays, and fix if needed.
+    /// The account switches to read-only now (forced, or with nothing unsent): the
+    /// folder turns read-only here, in this call, rather than when it follows its
+    /// account ([`SyncService::follow_mode`], which then finds it turned) —
+    /// `sync_tasks::access_mode_change::switch_to_read_only` over the parts of the running
+    /// sync, which answers only when the folder takes no change, sends nothing and no
+    /// step towards OneDrive runs; `wanted` set to read-only in the same change of the
+    /// folder's state. The account gives its token up after this returned. Nothing is
+    /// dropped: what is unsent stays in the rows and is sent when the folder is
+    /// read-write again. Answers how many changes stay unsent
+    /// (`ItemReader::count_unsent`, read after the switch). For a folder whose sync does
+    /// not run there is nothing to hold: only `wanted` changes, and the next start
+    /// applies it before its first plan.
+    async fn hold_unsent_changes(&self) -> u64 {
+        // TODO: `sync_tasks::access_mode_change::switch_to_read_only(mount, sending_holds, running_steps)`, then `ItemReader::count_unsent`.
         todo!()
     }
 }
 
-/// Makes `sync` follow its account's mode (`AccountSnapshot::mode`, which the account works
-/// out from `config.toml`, its recorded drive and its token) for as long as both exist. The accounts
-/// manager starts one per account, once the folder has taken the mode the account started
-/// in.
-pub async fn follow(mut account: watch::Receiver<AccountSnapshot>, sync: Weak<SyncService>) {
+/// The owner's watcher of the account, for as long as both exist: at every change of the
+/// account's state (`FolderAccount::changes`) it has the folder follow it
+/// ([`SyncService::follow_account`]) — its mode, its sign-out, whether it may write, and
+/// a drive that came to be known. The ONE task of the folder that watches the account;
+/// the accounts manager starts one per account, once the folder has taken the mode the
+/// account started in.
+pub async fn watch_account(mut account: watch::Receiver<AccountSnapshot>, sync: Weak<SyncService>) {
     loop {
-        let mode = account.borrow_and_update().mode;
+        let snapshot = account.borrow_and_update().clone();
         let Some(service) = sync.upgrade() else { return };
-        service.follow_mode(mode).await;
+        // TODO: `service.follow_account(&snapshot)`, which follows the mode among the rest; until it is written the mode alone is followed, as before.
+        service.follow_mode(snapshot.mode).await;
         drop(service);
         if account.changed().await.is_err() {
             return;

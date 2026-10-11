@@ -223,8 +223,9 @@ impl SyncService {
             paused
         });
         if changed {
-            // TODO: `SendingHolds::set_paused` of `SyncTasks::sending_holds`, which wakes the plan;
-            // the poll looks at the pause itself.
+            // TODO: `SendingHolds::set_paused` of `SyncTasks::sending_holds`, which wakes the plan; and the
+            // listing asked for a cycle (`SyncTasks::poll().refresh()`): the poller looks at the pause itself
+            // only at its interval, and after an untimed pause nothing else wakes it.
             todo!()
         }
     }

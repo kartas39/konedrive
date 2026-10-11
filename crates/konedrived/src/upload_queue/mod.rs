@@ -22,9 +22,20 @@
 //! held mass removal (1.k, 2.l). The members of the bus, their XML, their row types
 //! (`konedrive_dbus::rows`) and every word they carry stay today's.
 //!
-//! **Not here:** `Folder.Refresh()` is `sync_tasks::stop_order`'s `retry_now`,
+//! **Not here:** `Folder.Refresh()` is `SyncTasks::refresh` (`sync_tasks::stop_order`),
 //! which wakes the plan with `WakeCause::RefreshAsked` — the plan's task makes every
-//! next try due on that cause, and nobody else clears them. `org.konedrive.Conflicts`
+//! next try due on that cause, and nobody else clears them.
+//!
+//! **With no running sync** (it could not start, the folder was taken down, a change of
+//! the folder is under way) the answers are read from the store alone: the published
+//! answers and the running steps are empty, and what holds sending and whether OneDrive
+//! is full are not known ([`describe_stopped_sync`]). Every unsent item is then an entry
+//! that reads `waiting`, but what the memory keeps as refused, which reads `blocked`;
+//! the properties are empty, as the stop published them ([`publish_stopped_queue`]).
+//!
+//! **Called from below and from above.** The plan's task publishes the properties
+//! ([`publish_queue_status`]: this directory is before `sync_plan_task` in the layer
+//! order); the owner of the folder's state answers the methods of the bus. `org.konedrive.Conflicts`
 //! reads the conflict record, which stays as it is (design §11). The interface has no
 //! member that drops one unsent change or chooses a side of a conflict, today or here.
 //!
@@ -157,6 +168,17 @@ pub struct QueueConditions {
     /// today.
     pub hold: Option<SendingHold>,
     pub is_onedrive_full: bool,
+    /// Whether a sync runs. False: `hold` and `is_onedrive_full` are not known (`None`
+    /// and `false`), and say nothing ([`describe_stopped_sync`]).
+    pub is_sync_running: bool,
+}
+
+/// The conditions of a folder whose sync does not run: no hold known, OneDrive not known
+/// to be full, `is_sync_running` false. What the owner gives the readers in place of
+/// [`read_queue_conditions`] when it has no `SendingHolds` and no `OneDriveSpace` to ask,
+/// with empty answers and no running step. Pure.
+pub fn describe_stopped_sync() -> QueueConditions {
+    todo!()
 }
 
 /// An unsent item with the sources read for it. It has no path: the counts need none,
@@ -172,6 +194,10 @@ pub struct UnsentEntry {
     /// What the steps remember of it that its row still says
     /// (`ItemReader::find_item_memory`).
     pub memory: ItemMemory,
+    /// For a directory whose removal the last plan holds for the user: how many items
+    /// the removal takes from OneDrive below it (`PublishedPlan::find_held_removal_count`).
+    /// `None` for every other entry.
+    pub held_items_below: Option<u64>,
 }
 
 /// The state of one entry; `None` for an item the plan leaves out
@@ -186,6 +212,10 @@ pub struct UnsentEntry {
 ///   `WaitReason::User(reason)` with a reason that neither waits for space
 ///   (`Reason::waits_for_space`) nor is of the group `waiting` (`Reason::group`); or
 ///   `WaitReason::StartUpCheck`; or `ItemAnswer::Fault`;
+/// - `waiting`, with the reason that the folder is read-only: `sending.hold` is
+///   `SendingHold::FolderReadOnly` — what was unsent at a forced switch stays here and
+///   is neither blocked nor lost; and every entry while `sending.is_sync_running` is
+///   false;
 /// - `paused`: `sending.hold` is `SendingHold::Paused`, whatever else the entry would say,
 ///   a running step among it — as today;
 /// - `running`: a step runs for it (`entry.running`);
@@ -219,7 +249,11 @@ pub fn decide_queue_state(entry: &UnsentEntry, sending: &QueueConditions) -> Opt
 /// - any other wait: nothing, 0;
 /// - and where none of these gave a reason, while OneDrive is full
 ///   (`sending.is_onedrive_full`) and `kind` sends content: `Reason::WaitingForSpace`.
-// TODO: decide what the window says of an item the check at start left and of an item the plan is at fault about: no reason of today's names either, so both read `blocked` with the reason `blocked`, which says nothing of what the user can do.
+///
+/// The owner decided what the window says of two of them, and neither is called blocked:
+/// an item the check at start left reads "could not be read on disk", an item the plan is
+/// at fault about "being checked" (the daemon asks a full listing by itself).
+// TODO: the two reasons do not exist in `konedrive-reason` yet (`Reason::NotReadOnDisk`, `Reason::BeingChecked`, with their keys, groups and texts in the catalogue): until they do both carry `Reason::Blocked`. Add them there and name them here; check and fix if needed.
 pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEntry, sending: &QueueConditions) -> (Option<Reason>, i64) {
     todo!()
 }
@@ -234,6 +268,12 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
 /// `None` for an item that agrees by now ([`decide_unsent_kind`]) and for one the plan
 /// leaves out ([`decide_queue_state`]). Pure. The caller leaves out an entry
 /// [`read_entry_paths`] has no path for.
+///
+/// A held mass removal of a directory is ONE row, the directory's: `state` is `held`,
+/// `sent` is 0 and `total` is the number of items the removal takes from OneDrive below
+/// it (`entry.held_items_below`) — a count of items there, not of bytes, which the
+/// window says as "N files". The rows below such a directory are no rows of their own:
+/// the reader leaves them out ([`read_unsent_entries`]).
 pub fn describe_queue_change(entry: &UnsentEntry, path: &Path, sending: &QueueConditions, folder: &Path) -> Option<Change> {
     todo!()
 }
@@ -289,7 +329,12 @@ pub struct QueueTotals {
 ///   upload).
 ///
 /// Each saturates at 0 and at the type's largest.
-// TODO: decide what `HeldCount` counts, which the window's question about a mass removal shows: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan. Two numbers the user sees beside it differ too: while a removed directory is held, the items below it are entries of their own that read `waiting` (the plan answers them `AnotherItem(directory)`) and stay in `PendingCount`, where today held rows are in neither; and `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not `HeldCount`.
+///
+/// The owner decided `HeldCount`: a held mass removal of a directory is ONE, the
+/// directory, whatever is below it; the rows below it are counted nowhere while it is
+/// held — not in `held` and not in `pending` — as they are no entries. The number of
+/// files is on the directory's row ([`describe_queue_change`]).
+// TODO: `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not this number; check which of the two the window shows after the answer and fix if needed. Former note: here it is the removals the last plan holds — a directory removed with all below it is one, and a removal beyond the plan's reach is none — where today it is one per file and directory. The number of items the held removals take from OneDrive is `ItemReader::count_unsent_removals`, a walk below every removed directory at each plan. Two numbers the user sees beside it differ too: while a removed directory is held, the items below it are entries of their own that read `waiting` (the plan answers them `AnotherItem(directory)`) and stay in `PendingCount`, where today held rows are in neither; and `ConfirmDeletes()` answers the confirmations written (the directory and all below it), which is not `HeldCount`.
 pub fn count_queue(totals: &QueueTotals, sending: &QueueConditions) -> QueueCounts {
     todo!()
 }
@@ -363,7 +408,12 @@ pub fn describe_running_uploads(running: &[RunningStep], paths: &BTreeMap<LocalI
 /// step that takes the item out of the folder is planned, or no upload keeps it);
 /// `WaitsFor::Uploads(1)` for any other wait. Pure.
 /// MISSING-2.e.
-// TODO: decide what `Skipped()` says keeps a directory here: today the number of changes at or below it that wait; the plan's answer is for the directory alone, so this says 1.
+///
+/// The owner decided: an item the folder cannot show is listed at the level of the item
+/// itself, one row, with no count of what waits below it (`WaitsFor::Uploads(1)` for a
+/// directory too). This list is also where the user finds why a directory cannot be
+/// removed here: the rows of what it holds that cannot be shown
+/// (`mount`'s `rmdir` answers `ENOTEMPTY` for it and says so once in the activity log).
 pub fn describe_item_not_shown(not_shown: &ItemNotShown, local_path: Option<&Path>, answer: Option<&ItemAnswer>, folder: &Path) -> NotInFolder {
     todo!()
 }
@@ -386,8 +436,10 @@ pub fn read_queue_conditions(sending_holds: &SendingHolds, onedrive_space: &OneD
 
 /// The entry of `item`: its memory (`ItemReader::find_item_memory`), its answer of
 /// `answers`, and of `running` the step that is of it or carries its row. Called inside
-/// `Store::read_items` by the readers below.
-fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<UnsentEntry, TreeError> {
+/// `Store::read_items` by the readers below. `held_items_below` is the count of
+/// `held_removal_counts` for `item`. The same map is given to every reader below, and a
+/// row below a held directory is no entry in any of them.
+fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<UnsentEntry, TreeError> {
     todo!()
 }
 
@@ -395,9 +447,12 @@ fn read_unsent_entry(items: &ItemReader<'_>, item: Item, answers: &BTreeMap<Loca
 /// be unsent (`ItemReader::list_unsent(None, limit)`; `limit` 0 for all, read in pages by
 /// the stamp), each as [`read_unsent_entry`] reads it. `answers` and `running` are
 /// `PublishedPlan::list_answers` and `RunningSteps::list_steps`, taken by the caller
-/// before the read. Called inside `Store::read_items`: the rows and the memory are of one
-/// moment, and the bus waits for no writer.
-pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], limit: usize) -> Result<Vec<UnsentEntry>, TreeError> {
+/// before the read, `held_removal_counts` `PublishedPlan::list_held_removal_counts`, taken
+/// with them. A row whose answer is `WaitReason::AnotherItem(d)` with `d` a directory of
+/// `held_removal_counts` is left out, and does not count towards `limit`: it is part of
+/// that directory's one entry. Called inside `Store::read_items`: the rows and the memory
+/// are of one moment, and the bus waits for no writer.
+pub fn read_unsent_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>, limit: usize) -> Result<Vec<UnsentEntry>, TreeError> {
     todo!()
 }
 
@@ -415,7 +470,7 @@ pub fn read_entry_paths(items: &ItemReader<'_>, entries: &[&UnsentEntry]) -> Res
 /// left out when the row is gone, has no stamp `unsent_since` or is left here
 /// (`ItemReader::is_ignored`) — as [`read_unsent_entry`] reads it. Called inside
 /// `Store::read_items`, with `answers` and `running` taken before it.
-pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<QueueTotals, TreeError> {
+pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<QueueTotals, TreeError> {
     todo!()
 }
 
@@ -425,7 +480,7 @@ pub fn read_queue_totals(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId,
 /// (`list_refusal_reasons(None, ..)`, `list_space_refusal_reasons`, both whole) that are
 /// not among them, read the same way. As many rows as the last plan was given and the
 /// memory refuses; no path. Called inside `Store::read_items`.
-pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep]) -> Result<Vec<UnsentEntry>, TreeError> {
+pub fn read_kept_back_entries(items: &ItemReader<'_>, answers: &BTreeMap<LocalItemId, ItemAnswer>, running: &[RunningStep], held_removal_counts: &BTreeMap<LocalItemId, u64>) -> Result<Vec<UnsentEntry>, TreeError> {
     todo!()
 }
 
@@ -453,14 +508,24 @@ pub fn read_items_not_shown(items: &ItemReader<'_>, answers: &BTreeMap<LocalItem
 /// writer of these fields: the properties' change signals, the folder's overall state
 /// (`status::overall`) and what is left to upload (`status::totals`) follow from it.
 ///
-/// Called by the plan's task after every plan it published and after every round of
-/// steps it settled, with the counts of one `Store::read_items`
+/// Called by the plan's task alone (`SyncPlanTask::publish_queue_status`), after every
+/// plan it published and after every round of steps it settled, with the counts of one
+/// `Store::read_items`
 /// ([`read_queue_totals`], [`count_queue`], [`read_running_upload_paths`],
 /// [`describe_running_uploads`]) — and, with the counts as they were, by its timer while
 /// a step that sends content runs, at most once a second, for the bytes of `uploads`
-/// (`RunningSteps::tell_progress` wakes nobody). Called with everything empty when the
-/// folder's sync stops (today's `clear_outbox_counts`).
+/// (`RunningSteps::tell_progress` wakes nobody). The stop of a folder's sync publishes
+/// through [`publish_stopped_queue`].
 pub fn publish_queue_status(state: &SyncStateHandle, counts: QueueCounts, uploads: Vec<Transfer>, is_onedrive_full: bool) {
+    todo!()
+}
+
+/// Publishes the queue of a sync that stopped: every count 0, no upload, OneDrive not
+/// full, and the note none — the note is the plan's task's too, and a stopped task says
+/// nothing. Called by the plan's loop as the last thing before it returns at a stop
+/// (`SyncPlanTask::run`), so by the one writer of these fields; and by nobody else: a
+/// Forget finds them empty.
+pub fn publish_stopped_queue(state: &SyncStateHandle) {
     todo!()
 }
 

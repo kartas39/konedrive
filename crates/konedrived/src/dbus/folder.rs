@@ -19,7 +19,8 @@ impl Folder {
     }
 
     async fn unregister(&self) -> Result<()> {
-        Ok(self.service.unregister_root().await?)
+        // TODO: `Folder.Unregister` has no argument that says the Forget is forced (the XML, the proxy, `konedrivectl` and the window would each gain one): until it has, a folder with something unsent that can never be sent cannot be forgotten from the bus. Check and fix if needed.
+        Ok(self.service.unregister_root(false).await?)
     }
 
     /// Refused: kept for the clients that still know the call.

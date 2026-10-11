@@ -35,8 +35,9 @@ impl SyncService {
     /// (`NotAllowed`). `Files` asks every account whose folder a call's paths are in first,
     /// so that a call that spans accounts is refused as a whole or not at all.
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
-        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path:
+        // `ItemPathStatus::pin_holder` is `PinHolder::DirectoryAbove { path }` for one a folder above pins, and
+        // the refusal names that path.
         todo!()
     }
 
@@ -60,14 +61,17 @@ impl SyncService {
     /// Puts each path's own pin on, or takes it off; how many changed. A path a folder
     /// above it pins is left as it is.
     async fn set_pins(&self, paths: &[PathBuf], pinned: bool) -> Result<u32, SyncError> {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) and `set_pin`, then `show_pins`.
-        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
+        // TODO: `ItemFilesInterface::find_path_status` (a path whose `pin_holder` is a directory above is left
+        // as it is) and `set_pin`, which answers whether the path's own pin changed: those are counted. Then
+        // `show_pins`.
         todo!()
     }
 
-    /// `PinnedCount`, as the mount has it.
-    pub(super) fn show_pins(&self, mount: &ItemMount) {
-        // TODO: `ItemFilesInterface::count_pins` (the mount's `item_files_interface`), which is async now.
+    /// `PinnedCount`, as the mount has it: written into the published state. Called after
+    /// a start of the folder's sync and after every change of a pin made through the bus;
+    /// what a listing changes of the pins is published by the plan's task with its round.
+    pub(super) async fn show_pins(&self, mount: &ItemMount) {
+        // TODO: `ItemFilesInterface::count_pins` (the mount's `item_files_interface`).
         todo!()
     }
 }

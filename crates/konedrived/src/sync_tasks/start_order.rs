@@ -23,13 +23,17 @@
 //!    ends;
 //! 2. [`decide_check_drive`]: the drive for the check at start;
 //! 3. the leaf state made (`SyncPlanWake`, `RunningSteps`, `PublishedPlan`), then the
-//!    mount built (`fuse::ItemMount::build`: inside it the check at start; read-only) and
+//!    mount built (`mount::ItemMount::build`: inside it the check at start; read-only) and
 //!    served (`ItemMount::serve`, which takes the `ItemKernelRequests` the build
-//!    answered): from here on the folder's path is the mount;
+//!    answered): from here on the folder's path is the mount. Around the build
+//!    `LocalScan` on the bus says the check (`state`'s `local.scan`: running with the
+//!    time it began, then finished with the time it took and, from
+//!    `StartCheckFindings`, how much it left) — this function is the one writer of it;
 //! 4. [`request_first_listing`]: a full listing asked for where the check bound entries
 //!    by their marks;
-//! 5. [`apply_wanted_access_mode`](super::access_mode_change::apply_wanted_access_mode):
-//!    the mount's access mode and the store's state of sending, BEFORE any task plans;
+//! 5. `SendingHolds::new(wake)` with `input.standing_holds` set on it, then
+//!    [`apply_wanted_access_mode`](super::access_mode_change::apply_wanted_access_mode):
+//!    the mount's access mode and the hold of a read-only folder, BEFORE any task plans;
 //! 6. `OneDriveSpace::new(input.quota)`, then [`read_quota_before_first_plan`];
 //! 7. [`start_sync_tasks`]: the listing's poller, the thumbnail filler, the plan's task,
 //!    the watcher of the sign-in. In either access mode. Nothing is awaited in it.
@@ -102,6 +106,13 @@ use crate::onedrive_steps::content_upload::Limits;
 /// a sync, and so does its store and what the mount was made with. Answered by
 /// `stop_order::stop_folder_sync`, given back by a start that is refused, and ended by
 /// `stop_order::take_folder_down` or `stop_order::forget_folder`.
+///
+/// The ONE type of what a stopped sync keeps: the owner of the folder's state holds this
+/// very value between a stop and the next start (`account_folder::folder::Kept::parts`),
+/// never its fields apart, and gives it back as `FolderStartInput::kept`. A clone shares
+/// every part (each is a handle); the owner drops every clone before a take-down or a
+/// Forget closes the store.
+#[derive(Clone)]
 pub struct KeptFolderParts {
     pub store: Store,
     /// Built and served.
@@ -127,7 +138,10 @@ pub struct StandingSendingHolds {
     pub paused_until: Option<Option<i64>>,
     pub is_signed_out: bool,
     /// Why the account may not write to OneDrive now, as the account says it; `None` when
-    /// it may. As `SendingHolds::set_writes_refusal` takes it.
+    /// it may. As `SendingHolds::set_writes_refusal` takes it. Computed by the owner with
+    /// the same function its watcher of the account sets it by afterwards
+    /// (`account_folder::mode::decide_account_holds`), from the account's snapshot read
+    /// when the start begins.
     pub writes_refusal: Option<String>,
 }
 
@@ -158,6 +172,8 @@ pub struct FolderStartInput {
     /// The account's one quota.
     pub quota: Quota,
     pub limits: Limits,
+    /// What the plan is given that does not change while the sync runs
+    /// (`PlanSettings::of` the account's machine name).
     pub settings: PlanSettings,
     pub schedule: Schedule,
     pub running: Arc<Running>,
@@ -172,9 +188,16 @@ pub struct FolderStartInput {
     pub clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// The access mode the account wants.
     pub wanted: Mode,
-    /// Who is told that the mount must be taken down: the caller itself, which then stops
-    /// the sync and calls `stop_order::take_folder_down`, inside a change of the folder.
+    /// Who is told that the mount must be taken down: the caller itself
+    /// (`SyncService::take_down_report`), whose task then stops the sync, calls
+    /// `stop_order::take_folder_down` inside a change of the folder, and starts the folder
+    /// again after its pause.
     pub take_down_report: TakeDownReport,
+    /// Called by the plan's task after each plan whose reading counted nothing unsent
+    /// (`SyncPlanTaskParts::nothing_unsent_report`): the owner tells the account
+    /// (`FolderAccount::nothing_is_unsent`), which may wait for it with a switch to
+    /// read-only. It must not block.
+    pub nothing_unsent_report: Arc<dyn Fn() + Send + Sync>,
     /// What the folder keeps from an earlier sync; `None` at the folder's first start and
     /// after a take-down. With kept parts the fields the mount was made with at its build
     /// are not read: `tree_db`, `recorded_drive`, `account_drive`, `source`,
@@ -212,7 +235,9 @@ pub enum StartRefusal {
     /// at start has none to bind an unknown mark in, and the mount is not built until it
     /// is known. No task of the sync exists then, so nothing here watches the account:
     /// the owner of the folder's state starts the folder again when the account changes
-    /// (its sign-in, its profile read). That is the owner's, written at the switch.
+    /// (its sign-in, its profile read): its watcher of the account does
+    /// (`account_folder::mode::watch_account`, for a sync that is
+    /// `Why::CannotStart` with `StartRefusal::DriveNotKnown`).
     DriveNotKnown,
     /// The backing directory, the mount or a thread of it.
     Mount(String),
@@ -252,8 +277,7 @@ pub struct RefusedStart {
 ///   `ItemMountError`, and a `serve` that fails — `Mount`. The build takes the write bits
 ///   off again by itself; a mount that was built and not served is stopped.
 /// - 4: `request_first_listing` — `Store`.
-/// - 5: `apply_wanted_access_mode`'s `Err` — `Store` (the mount's switch cannot fail; the
-///   stamp's write can).
+/// - 5: `apply_wanted_access_mode`'s `Err` — `Mount` (the mount's thread is gone).
 /// - 6 fails nothing: a quota that cannot be read leaves OneDrive as not full.
 /// - 7 cannot fail.
 ///
@@ -261,20 +285,20 @@ pub struct RefusedStart {
 /// the runtime's threads: it joins a thread and unmounts), the activity log detached, and
 /// the store of this start dropped. Parts given as kept are never stopped or dropped
 /// here: they are given back in [`RefusedStart::kept`], and with them only 5 and 6 can be
-/// reached — a mount whose switch was made before the stamp's write failed stays as
-/// switched. `RefusedStart::rebuild_loss` is what stage 1 answered.
+/// reached. `RefusedStart::rebuild_loss` is what stage 1 answered.
 pub async fn start_folder_sync(input: FolderStartInput) -> Result<StartedFolder, RefusedStart> {
     todo!()
 }
 
-/// Stages 5 to 7 over the parts of a folder: the access mode applied
-/// (`apply_wanted_access_mode`), `OneDriveSpace::new(input.quota)` and
+/// Stages 5 to 7 over the parts of a folder: the holds made and the access mode applied
+/// (`SendingHolds::new`, `input.standing_holds`, `apply_wanted_access_mode`),
+/// `OneDriveSpace::new(input.quota)` and
 /// [`read_quota_before_first_plan`], then [`start_sync_tasks`] with `parts.drive_id`. The
 /// answer holds the parts, the tasks, the space and `store_origin` as given.
 ///
 /// `input.kept` is not read: the parts are `parts`, kept or made by the caller in this
 /// start. The mount of `parts` is built; whether it is served is not asked, so a test
-/// gives one that is not. A refusal (stage 5's `Err`: `StartRefusal::Store`) stops
+/// gives one that is not. A refusal (stage 5's `Err`: `StartRefusal::Mount`) stops
 /// nothing and drops nothing: the parts are given back with it, and the caller —
 /// [`start_folder_sync`] — gives back the ones it was given as kept and ends the ones it
 /// made.
@@ -351,9 +375,10 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// is awaited here.
 ///
 /// The stop's token is made first: every task and the step runners get a clone, and
-/// `SyncTasks::stop_handle` hands it out. Then `SendingHolds::new(wake)`, and on it
-/// `input.standing_holds` (`set_paused`, `set_signed_out`, `set_writes_refusal`) — BEFORE
-/// the plan's loop is spawned; `OneDriveSpace` (given, read before); `GraphAccess`;
+/// `SyncTasks::stop_handle` hands it out. `sending_holds` is given: stage 5 made it and
+/// set on it what stands (`input.standing_holds`: `set_paused`, `set_signed_out`,
+/// `set_writes_refusal`; a read-only folder's hold) — BEFORE the plan's loop is spawned;
+/// `OneDriveSpace` (given, read before); `GraphAccess`;
 /// `SessionCancellations::new`, `LostAnswers::new`, `MadeItems::new`, `NameHolders::new`,
 /// `ContentUpload::new`; `OneDriveSteps::new` (with the tree lock and the mount's
 /// `item_content_files`); `RowSteps::new`; `StepRunners::of_runners` (the mount's
@@ -364,15 +389,19 @@ async fn read_quota_before_first_plan(drive: &DriveClient, space: &OneDriveSpace
 /// here, the thumbnail filler's nudge) and `ListingPoller::start` (a first cycle at once;
 /// a full listing found under way goes on from its link); the thumbnail filler where
 /// `input.thumbnail_cache` names a cache (`ThumbnailFiller::new(..).spawn(nudge, stop)`);
-/// `SyncPlanTask::new` with the runners, the mount's `start_check_findings` and a
+/// `SyncPlanTask::new` with the runners, the mount's `start_check_findings`, a
 /// `quota_reader` that asks `input.drive` for the quota (`DriveClient::quota`, `None`
-/// when it could not be read), and its loop spawned with the stop's token; the watcher of
+/// when it could not be read), the activity log (`input.report.activity`), the
+/// announcer of sync marks (`FolderSteps::announce_marks_changed` of the mount's
+/// `folder_steps`), the thumbnail filler's nudge as `after_folder_steps` (the same
+/// `Notify` the cycle was given) and `input.nothing_unsent_report`, and its loop spawned
+/// with the stop's token; the watcher of
 /// the sign-in (`stop_order::watch_sign_in`, with `input.account_changes` and
 /// `input.standing_holds.is_signed_out` as its first state). The poller's handle is
 /// cloned for the plan's task, the watcher and `SyncTasks::poll`. The plan's
 /// task sends nothing to OneDrive until the first listing of this start ended
 /// (`SendingHold::FirstListingNotEnded`).
 #[allow(clippy::too_many_arguments)]
-fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
+fn start_sync_tasks(input: &FolderStartInput, store: &Store, mount: &Arc<ItemMount>, sync_plan_wake: &Arc<SyncPlanWake>, running_steps: &Arc<RunningSteps>, published_plan: &Arc<PublishedPlan>, sending_holds: &Arc<crate::sync_parts::sending_holds::SendingHolds>, onedrive_space: &Arc<OneDriveSpace>, drive_id: &DriveId) -> SyncTasks {
     todo!()
 }

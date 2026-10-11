@@ -2,7 +2,7 @@
 //! owner.
 //!
 //! **State owned:** the causes that hold now: the folder's sync stopping, the sign-out,
-//! the account not being allowed to write, the pause, OneDrive's throttle with its end,
+//! the account not being allowed to write, the folder being read-only, the pause, OneDrive's throttle with its end,
 //! the first listing of this run not having ended. Each is set and cleared by its own
 //! cause, through the functions here, and every change wakes the plan
 //! (`WakeCause::SendingHoldChanged`); none is stored (as today: `engine/state.rs`,
@@ -44,6 +44,11 @@ pub enum SendingHold {
     /// The account's sign-in grants no writes, or the token reaches another drive than
     /// the folder's: with the reason as the account says it.
     WritesNotAllowed { reason: String },
+    /// The folder is read-only: what is unsent stays here, not sent and not lost, and is
+    /// sent when the folder is read-write again. Set by a switch to read-only
+    /// (`sync_tasks::access_mode_change`), before the account gives up the token that
+    /// can write. Shown as waiting because the folder is read-only, never as blocked.
+    FolderReadOnly,
     /// The account's sync is paused, until a time or until resumed.
     Paused { until: Option<i64> },
     /// OneDrive asked to wait, until this time.
@@ -171,7 +176,7 @@ impl SendingHolds {
         let ends = crate::panic::lock(&self.holds).list(now).into_iter().filter_map(|hold| match hold {
             SendingHold::Paused { until } => until,
             SendingHold::Throttled { until } => Some(until),
-            SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FirstListingNotEnded => None,
+            SendingHold::Stopping | SendingHold::SignedOut | SendingHold::WritesNotAllowed { .. } | SendingHold::FolderReadOnly | SendingHold::FirstListingNotEnded => None,
         });
         ends.min()
     }
@@ -186,12 +191,28 @@ impl SendingHolds {
         self.change(|holds| holds.is_signed_out = is_signed_out);
     }
 
-    /// What the write gate says of the account (`account_folder/mode.rs`, `Gate`): its refusal, or
-    /// none. The gate's two refusals of a read-only folder and account are not given
-    /// here: a read-only folder sends what was unsent at its switch (design §13 (3); the
-    /// map's RISK-7.f).
+    /// Why the account may not write to OneDrive now, or none
+    /// (`account_folder::mode::decide_account_holds`: the sign-in grants no writes,
+    /// `config.toml` cannot be read or records no drive, the token reaches another drive
+    /// than the recorded one). Called by the owner's watcher of the account
+    /// (`account_folder::mode::watch_account`) whenever what that function answers
+    /// changed; what stands at the start is given with the start
+    /// (`StandingSendingHolds::writes_refusal`). That the folder is read-only is NOT
+    /// given here: that is a hold of its own
+    /// ([`set_folder_read_only`](Self::set_folder_read_only)), with another setter.
     pub fn set_writes_refusal(&self, refusal: Option<String>) {
         self.change(|holds| holds.writes_refusal = refusal);
+    }
+
+    /// The folder was switched to read-only, or back to read-write: the hold
+    /// `SendingHold::FolderReadOnly`, shown after `WritesNotAllowed` and before `Paused`
+    /// in the order of the cases; it holds what is sent and no download. Called by
+    /// `sync_tasks::access_mode_change` alone — at a switch, and at a start for a folder
+    /// wanted read-only — which is its one setter: the account's own refusal is
+    /// `set_writes_refusal`'s, and neither clears the other.
+    #[allow(unused_variables)]
+    pub fn set_folder_read_only(&self, is_read_only: bool) {
+        todo!()
     }
 
     /// OneDrive throttled a step, naming `retry_after` or nothing: today's rules

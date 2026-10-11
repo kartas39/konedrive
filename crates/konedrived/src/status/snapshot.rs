@@ -237,10 +237,10 @@ pub enum TroubleKind {
     Other,
 }
 
-/// What keeps the outbox's changes from going, and who says so: the write gate's note is
-/// the gate's alone to take back (`Gate::check` in `account_folder/mode.rs`), the throttle's and the
-/// unopenable folder's are the outbox worker's (its host, `account_folder/outbox.rs`), the other two are the poller's
-/// (`remote::listing::poller`).
+/// What keeps the folder's changes from going. ONE writer: the plan's task, which writes
+/// it with every plan it publishes, from the hold that is shown (`SyncPlanTask::publish_round`:
+/// `SendingHold::WritesNotAllowed` is `GateClosed`, `SendingHold::Throttled` is `Throttled`),
+/// and takes it off when the sync stops (`upload_queue::publish_stopped_queue`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxNote {
     /// The write gate is closed under a read-write folder: why.

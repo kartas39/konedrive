@@ -69,6 +69,7 @@ use super::mount_take_down::{MountTakeDown, TakeDownCause};
 use super::place_changes::{PlaceChange, PlaceChanges, PlaceRefusal, PlaceUndo};
 use super::read_connections::ReadConnections;
 use super::upload_rules::UploadRules;
+use crate::status::report::Report;
 use crate::sync_parts::running_steps::RunningSteps;
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 
@@ -165,6 +166,9 @@ pub(super) struct ItemWriteOperations {
     running_steps: Arc<RunningSteps>,
     sync_plan_wake: Arc<SyncPlanWake>,
     mount_take_down: Arc<MountTakeDown>,
+    /// Where the user is told what an errno cannot say
+    /// (`remove::tell_directory_not_removable`): the activity log, which announces it.
+    report: Report,
     /// What a test has run at the points of an operation between its record and its row.
     #[cfg(test)]
     operation_point_hook: tests::OperationPointHook,
@@ -185,6 +189,7 @@ impl ItemWriteOperations {
         running_steps: Arc<RunningSteps>,
         sync_plan_wake: Arc<SyncPlanWake>,
         mount_take_down: Arc<MountTakeDown>,
+        report: Report,
     ) -> Self {
         Self {
             place_changes,
@@ -198,6 +203,7 @@ impl ItemWriteOperations {
             running_steps,
             sync_plan_wake,
             mount_take_down,
+            report,
             #[cfg(test)]
             operation_point_hook: tests::OperationPointHook::default(),
         }

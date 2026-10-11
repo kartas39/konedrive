@@ -284,6 +284,37 @@ impl ItemReader<'_> {
         Ok(self.conn().prepare_cached(&sql)?.query_row(params![directory.as_i64(), name_value(name)], item_from).optional()?)
     }
 
+    /// The item whose own pin holds for `item`: the nearest directory above it in the
+    /// folder that has a pin of its own, else `item` itself when it has one, else none.
+    /// A directory above comes first, also when the item has a pin of its own: that is
+    /// the pin an unpin or a free-up of the item cannot take off. By the local places, as
+    /// [`is_pinned`](Self::is_pinned), which answers whether this is some. Called by the
+    /// mount's `Files` interface for the status of a path (`PinHolder`).
+    #[allow(unused_variables)]
+    pub fn find_pin_holder(&self, item: LocalItemId) -> Result<Option<LocalItemId>, TreeError> {
+        todo!()
+    }
+
+    /// Whether OneDrive has in `directory`, at any depth, an item the folder does not
+    /// show: a row with an OneDrive place below it and no local place — one the folder
+    /// cannot show, or one no step has shown yet. By the OneDrive places, as
+    /// `list_below_in_onedrive`, and it ends at the first such row. Called by the mount's
+    /// `rmdir`, in the job that reads its case: a directory for which this holds is not
+    /// removed here (`ENOTEMPTY`).
+    #[allow(unused_variables)]
+    pub fn has_onedrive_items_not_shown_below(&self, directory: LocalItemId) -> Result<bool, TreeError> {
+        todo!()
+    }
+
+    /// The directories the folder shows, the root first, each with its path relative to
+    /// the root, by local item id, after the directory `after`, at most `limit`. By the
+    /// local places. Called to tell the desktop's programs to list them again
+    /// (`desktop::dirnotify::read_folder_again`), in pages.
+    #[allow(unused_variables)]
+    pub fn list_shown_directories(&self, after: Option<LocalItemId>, limit: usize) -> Result<Vec<(LocalItemId, std::path::PathBuf)>, TreeError> {
+        todo!()
+    }
+
     /// The files the folder shows below `directory`, at any depth, by local item id, after
     /// the item `after`, at most `limit`. Called by free-up of a directory, by a pin's
     /// download of what it holds and by the count of what is downloaded below a path. It

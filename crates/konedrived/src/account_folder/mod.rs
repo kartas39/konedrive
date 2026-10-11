@@ -324,14 +324,20 @@ impl SyncService {
 
     /// The folder's mount, as last published: there from the folder's first sync on.
     pub(crate) fn mount(&self) -> Option<Arc<crate::mount::ItemMount>> {
-        self.view.borrow().mount.clone()
+        self.view.borrow().parts.as_ref().map(|parts| Arc::clone(&parts.mount))
     }
 
-    /// The daemon is stopping: the folder loses its mount and is locked, so
-    /// that it shows its downloaded files and takes nothing until the daemon is back. Its path.
-    pub async fn unmount(&self) -> Option<std::path::PathBuf> {
-        // TODO: the daemon's end: `sync_tasks::stop_order::stop_folder_sync`, then `ItemMount::stop` off the
-        // runtime's threads (`sync_tasks`' module doc).
+    /// The daemon is stopping: the ONE call of the daemon's end for this account's
+    /// folder. Nothing new is sent, the requests in flight are cut or settled, the sync
+    /// is stopped, and then the folder loses its mount and is locked, so that it shows
+    /// its downloaded files and takes nothing until the daemon is back. Its path, for
+    /// the desktop to be told; `None` for an account whose folder is not mounted. The
+    /// caller bounds the wait (`crate::daemon::stop`): the work runs in a task of its
+    /// own, which a caller that is cut leaves running until the process exits.
+    pub async fn end_at_daemon_stop(&self) -> Option<std::path::PathBuf> {
+        // TODO: inside a change of the folder: `sync_tasks::stop_order::end_folder_at_daemon_stop` for a running
+        // sync, `end_kept_folder_at_daemon_stop` for the parts a stopped one kept (`Kept::parts`), each in a task
+        // of its own that is awaited here.
         todo!()
     }
 

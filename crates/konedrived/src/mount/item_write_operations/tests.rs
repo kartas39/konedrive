@@ -123,6 +123,7 @@ impl OperationsFixture {
             Arc::clone(&fixture.running_steps),
             Arc::clone(&fixture.sync_plan_wake),
             Arc::clone(&fixture.mount_take_down),
+            crate::status::report::Report::nowhere(),
         ));
         OperationsFixture { fixture, operations }
     }

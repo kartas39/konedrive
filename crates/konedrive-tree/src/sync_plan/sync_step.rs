@@ -252,6 +252,9 @@ pub enum RowStep {
     /// has below it what the folder never showed — an item, or the content of a file that
     /// was removed here —: its removal is of the folder alone, and the plan made after it
     /// shows the directory again, where the folder can show it, with what it never showed.
+    /// The mount does not let a program remove such a directory (`rmdir` answers
+    /// `ENOTEMPTY` while OneDrive has in it what the folder does not show): the plan
+    /// meets this case only when the item was listed between that check and the row.
     ForgetSyncedVersion { item: ItemVersions },
     /// The local content is hashed, and the hash written into the local content version:
     /// the plan made after it can ask whether the two sides have the same content.

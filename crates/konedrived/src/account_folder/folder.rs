@@ -22,7 +22,7 @@ use konedrive_tree::Store;
 use tokio::sync::RwLockWriteGuard;
 use tokio_util::sync::CancellationToken;
 
-use crate::sync_tasks::start_order::StartedFolder;
+use crate::sync_tasks::start_order::{KeptFolderParts, StartedFolder};
 
 use super::SyncService;
 use crate::config::Mode;
@@ -83,23 +83,25 @@ pub(super) struct Kept {
     /// Where the folder's files are downloaded from: the drive, from its first bring-up
     /// on (`None` when the daemon was given no drive).
     pub source: Option<Arc<dyn ContentSource>>,
-    /// The folder's tree store: opened when its sync first starts, or when a change
-    /// first needs it, and the one connection to it from then on.
-    pub store: Option<Store>,
     /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
     /// across each commit that touches `onedrive_items`, the mount's recorder across each change it
     /// records, and a cycle must hold it from staging to swap, or the swap reverts the
     /// commit. One for as long as the folder is recorded, so that what took it before a
     /// sync was started again still keeps the new sync's cycle out.
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The folder's mount, from its first sync on: it stays while the folder is recorded,
-    /// so that the folder shows its names also while no sync runs.
-    pub mount: Option<Arc<ItemMount>>,
+    /// What the folder's sync left when it was stopped: the store, the mount — still
+    /// served, so that the folder shows its names also while no sync runs — and what the
+    /// mount was made with. The very value `stop_order::stop_folder_sync` answered (or a
+    /// refused start gave back), held whole and given whole to the next start
+    /// (`FolderStartInput::kept`); never its fields apart. `None` before the folder's
+    /// first sync, while a sync runs (the running sync holds them, `Sync::Running`), and
+    /// after a take-down or a Forget ended them.
+    pub parts: Option<KeptFolderParts>,
 }
 
 impl std::fmt::Debug for Kept {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Kept").field("source", &self.source.is_some()).field("store", &self.store.is_some()).field("mount", &self.mount.is_some()).finish()
+        f.debug_struct("Kept").field("source", &self.source.is_some()).field("parts", &self.parts.is_some()).finish()
     }
 }
 
@@ -150,9 +152,9 @@ impl Down {
     }
 }
 
-/// Whether the sync of a OneDrive folder that is up runs.
-// TODO: check that `StartedFolder` (`sync_tasks::start_order`) is what a running sync keeps
-// here, and `KeptFolderParts` what `Kept` keeps of a stopped one, and fix if needed.
+/// Whether the sync of a OneDrive folder that is up runs. A running sync is what the
+/// start answered (`sync_tasks::start_order::StartedFolder`), held whole; a stopped one
+/// left its parts in the folder's record (`Kept::parts`, `KeptFolderParts`).
 pub(super) enum Sync {
     Stopped(Why),
     Running(Box<StartedFolder>),
@@ -168,6 +170,21 @@ pub(super) enum Why {
     Interrupted,
     /// It could not start. The sentence; `Refresh()` tries again.
     CannotStart(String),
+    /// It could not start because no drive is known for the account yet
+    /// (`StartRefusal::DriveNotKnown`). The sentence. The owner's watcher of the account
+    /// starts it again when the account changes (`mode::watch_account`); `Refresh()`
+    /// tries too.
+    DriveNotKnown(String),
+    /// A fault took the folder's mount down (`TakeDownCause`): the sync was stopped, the
+    /// mount and the store ended, and the folder shows the trouble with its cause.
+    /// `cause` is the sentence shown. The owner starts the folder again by itself:
+    /// `attempt` counts the starts tried since the last one that stayed up (0: none
+    /// yet), `next_try_at` is when the next is due, Unix seconds
+    /// (`take_down::decide_retry_wait`) — `None` when none is (the store could not be
+    /// closed: `TakeDownOutcome::StoreStillOpen`). `Refresh()` tries at once and leaves
+    /// the count; a start that stayed up (`take_down::STAYED_UP_AFTER`) forgets it. The
+    /// timer and the count are this state and nothing else's.
+    TakenDown { cause: String, attempt: u32, next_try_at: Option<i64> },
 }
 
 /// A folder that is up.
@@ -232,14 +249,39 @@ impl Folder {
         }
     }
 
-    /// The tree store of the recorded folder, once it has been opened.
+    /// The tree store of the recorded folder, once it has been opened: the running
+    /// sync's, else the one a stopped sync kept.
     pub fn store(&self) -> Option<Store> {
-        self.record().and_then(|record| record.kept.store.clone())
+        match self.running() {
+            Some(started) => Some(started.store.clone()),
+            None => self.record().and_then(|record| record.kept.parts.as_ref()).map(|parts| parts.store.clone()),
+        }
     }
 
-    /// The folder's mount, once it has been mounted.
+    /// The folder's mount, once it has been mounted: the running sync's, else the one a
+    /// stopped sync kept.
     pub fn mount(&self) -> Option<&Arc<ItemMount>> {
-        self.record().and_then(|record| record.kept.mount.as_ref())
+        match self.running() {
+            Some(started) => Some(&started.mount),
+            None => self.record().and_then(|record| record.kept.parts.as_ref()).map(|parts| &parts.mount),
+        }
+    }
+
+    /// What the queue's answers and the `Files` interface read of the folder's sync,
+    /// running or stopped: the parts a stopped sync kept, or those of the running one
+    /// (a clone: every part is a handle). `None` for a folder that keeps none.
+    pub fn parts(&self) -> Option<KeptFolderParts> {
+        match self.running() {
+            Some(started) => Some(KeptFolderParts {
+                store: started.store.clone(),
+                mount: Arc::clone(&started.mount),
+                sync_plan_wake: Arc::clone(&started.sync_plan_wake),
+                running_steps: Arc::clone(&started.running_steps),
+                published_plan: Arc::clone(&started.published_plan),
+                drive_id: started.drive_id.clone(),
+            }),
+            None => self.record().and_then(|record| record.kept.parts.clone()),
+        }
     }
 }
 
@@ -261,10 +303,18 @@ pub(super) struct View {
     /// The tree lock of the folder, for `RestoreDeletes`, which takes it with no state
     /// lock.
     pub tree_lock: Option<Arc<tokio::sync::Mutex<()>>>,
-    /// The tree store of the recorded folder ([`Folder::store`]).
-    pub store: Option<Store>,
-    /// The folder's mount ([`Folder::mount`]).
-    pub mount: Option<Arc<ItemMount>>,
+    /// The parts of the folder's sync, running or stopped ([`Folder::parts`]), held as
+    /// the one type they are: the store, the mount (with its `Files` interface), the
+    /// published plan and the running steps the queue's answers are made over, and the
+    /// wake of the plan, for the user's answers and a change of the ignore list. `None`
+    /// for a folder that keeps none. The owner publishes a view without them before a
+    /// take-down or a Forget closes the store: each holds it open.
+    pub parts: Option<KeptFolderParts>,
+    /// What holds the sending of a RUNNING sync, and whether its OneDrive is full: `None`
+    /// while no sync runs — the queue's answers then say them as not known
+    /// (`upload_queue::describe_stopped_sync`).
+    pub sending_holds: Option<Arc<crate::sync_parts::sending_holds::SendingHolds>>,
+    pub onedrive_space: Option<Arc<crate::sync_parts::onedrive_space::OneDriveSpace>>,
     pub sync: SyncView,
 }
 
@@ -376,7 +426,8 @@ impl SyncService {
     pub(super) async fn change(&self) -> Stopped<'_> {
         // TODO: the owner's change of a folder at the switch: cancel `SyncTasks::stop_handle`, take the
         // folder's write lock, then `sync_tasks::stop_order::stop_folder_sync` in a task of its own
-        // (`sync_tasks`' module doc, "What the owner's change must do").
+        // (`sync_tasks`' module doc, "What the owner's change must do"); what it answers
+        // (`KeptFolderParts`) goes into `Kept::parts`, whole.
         todo!()
     }
 
@@ -401,6 +452,6 @@ impl SyncService {
 
     /// The tree store of the recorded folder, as last published.
     pub(super) fn tree_store(&self) -> Option<Store> {
-        self.view.borrow().store.clone()
+        self.view.borrow().parts.as_ref().map(|parts| parts.store.clone())
     }
 }

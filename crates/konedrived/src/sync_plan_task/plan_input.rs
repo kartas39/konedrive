@@ -62,6 +62,24 @@ pub struct PlanSettings {
     pub items_read_at_once: usize,
 }
 
+/// How long after its last change a file's content is not sent, in seconds: a program
+/// that saves in several writes is not sent half-way. A guess.
+pub const QUIET_TIME: i64 = 2;
+
+/// How many unsent items, and how many OneDrive changed, a plan reads at first.
+pub const ITEMS_READ_AT_ONCE: usize = 1000;
+
+impl PlanSettings {
+    /// The settings of a folder's sync: `computer_name` (the account's machine name, as a
+    /// conflict copy's name holds it), the largest file OneDrive takes
+    /// (`local::names::MAX_FILE_SIZE`), [`QUIET_TIME`] and [`ITEMS_READ_AT_ONCE`]. What
+    /// the owner of the folder's state gives a start (`FolderStartInput::settings`).
+    #[allow(unused_variables)]
+    pub fn of(computer_name: String) -> Self {
+        todo!()
+    }
+}
+
 /// What the daemon knows beside the rows when a plan is made, as values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonFacts {

@@ -158,14 +158,24 @@ const DRIVE_MISMATCH: &str = "this account's sign-in reaches the OneDrive drive"
 /// ([`ModeNote::WiderGrant`]).
 const WIDER_GRANT: &str = "Microsoft answered a request for read-only access with a token that can";
 
-/// What the switch between the modes asks of the account's folder (`docs/design/writes.md` §2): how many
-/// changes wait to be uploaded, and dropping them when a switch to read-only is forced — the
-/// files stay, as ordinary local changes. The account's `SyncService` answers
-/// (`crate::account_folder::mode`); until the outbox exists (the examination and the outbox worker), nothing waits.
+/// What the switch between the modes asks of the account's folder: how many changes are
+/// unsent, and holding them here when a switch to read-only is forced. Nothing is ever
+/// dropped. The account's `SyncService` answers (`crate::account_folder::mode`).
 #[async_trait::async_trait]
 pub trait PendingUploads: Send + Sync {
+    /// How many changes made here are unsent now (`ItemReader::count_unsent`). 0 for an
+    /// account with no folder.
     async fn pending_uploads(&self) -> u64;
-    async fn drop_pending_uploads(&self);
+    /// A switch to read-only was forced while changes were unsent: from this call on the
+    /// folder sends nothing (`SendingHolds::set_folder_read_only(true)`, the hold
+    /// `SendingHold::FolderReadOnly`) and takes no change (the mount's switch). Returns
+    /// only when both hold and no request that changes OneDrive is in flight — the
+    /// account gives its token that can write up AFTER this, so no request leaves under a
+    /// token that cannot write and none is refused for it. What is unsent stays here,
+    /// not sent and not lost, and is sent when the folder is read-write again. Answers
+    /// how many changes stay unsent. Called also for a switch that was not forced, at
+    /// the switch itself: nothing is unsent then.
+    async fn hold_unsent_changes(&self) -> u64;
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
@@ -187,6 +197,12 @@ pub trait FolderAccount: Send + Sync {
     /// The folder's cycle saw the account's token reach `drive`, which is not the drive
     /// the folder was listed from.
     fn drive_seen(&self, drive: &str);
+    /// The folder's plan found nothing unsent: an account whose user asked for read-only
+    /// while changes were unsent switches now (`AccountService::switch_to_read_only_when_sent`,
+    /// in a task of its own: this never waits). Called by the folder, from the report it
+    /// gave its sync (`FolderStartInput::nothing_unsent_report`), after each plan whose
+    /// reading counted no unsent item; nothing for an account that keeps no such wish.
+    fn nothing_is_unsent(&self);
 }
 
 impl FolderAccount for AccountService {
@@ -208,6 +224,10 @@ impl FolderAccount for AccountService {
 
     fn drive_seen(&self, drive: &str) {
         AccountService::drive_seen(self, drive);
+    }
+
+    fn nothing_is_unsent(&self) {
+        todo!()
     }
 }
 
@@ -411,7 +431,7 @@ impl AccountService {
     ///
     /// Called whenever one of them may have changed, the folder's outbox worker finding the
     /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
-    /// `Mode` (`crate::account_folder::mode::follow`).
+    /// `Mode` (`crate::account_folder::mode::watch_account`).
     fn recompute_mode(&self) {
         // The mode and the recorded drive, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when

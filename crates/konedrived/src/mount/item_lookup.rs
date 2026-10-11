@@ -487,7 +487,10 @@ impl SyncMark {
 /// the plan's answer is a wait for the user or a fault; else `Pending` — a wait for a
 /// time, another item or a listing among it, and an item the last plan was not given.
 /// Pure. The mount answers the attribute; nothing is written on disk, and design §8's
-/// marks stay two (the map's MISSING-2.j).
+/// marks stay two (the map's MISSING-2.j). Since nothing is written, a change of the
+/// mark reaches whoever watches the folder only when it is announced
+/// (`FolderSteps::announce_marks_changed`, by the plan's task).
+// TODO: `Blocked` is to be answered exactly where the queue's answers say `blocked` (`upload_queue::decide_queue_state`): today every wait for the user is — a file open for writing, a wait for space, a read-only folder's wait — and a refusal the memory keeps of an item the plan was not given is not. `upload_queue` is above the mount, so the rule is to be one pure function below both (`sync_parts`); check and fix if needed.
 ///
 /// `is_ignored` is `ItemReader::is_ignored`: the row alone says only whether the item's
 /// OWN name is ignored, and the plan is not given an item that is left here, so it has

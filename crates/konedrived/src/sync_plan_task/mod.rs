@@ -90,11 +90,12 @@ use konedrive_tree::{FolderStep, FullListingCause, ItemMemory, LocalItemId, Plan
 use tokio_util::sync::CancellationToken;
 
 use crate::sync_parts::published_plan::{ItemAnswer, PublishedPlan};
-use crate::sync_parts::running_steps::{RunningSteps, StepClass};
+use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
 use crate::sync_parts::step_outcome::{StepFailure, StepObstacle, StepOutcome, StepRefusal};
 use crate::sync_parts::sync_plan_wake::{SyncPlanWake, WakeCause};
 use crate::mount::StartCheckFindings;
 use crate::listing::listing_poller::ListingPollHandle;
+use crate::status::activity::Activity;
 use crate::status::snapshot::{OutboxNote, SyncStateHandle};
 use crate::sync_parts::onedrive_space::{OneDriveSpace, SpaceChange};
 use crate::onedrive_steps::session_cancellations::SessionCancellations;
@@ -149,7 +150,33 @@ pub struct SyncPlanTaskParts {
     /// (`OneDriveSpace::find_next_read`); what it answers is applied by
     /// `OneDriveSpace::apply_quota`.
     pub quota_reader: Arc<dyn Fn() -> RunningFuture<Option<DriveQuota>> + Send + Sync>,
+    /// The folder's activity log: every event the settlement of a step wrote into the
+    /// store is announced through it (`Activity::announce`: `ActivityLog.Added`), and
+    /// `Conflicts.Count` read again after a conflict (`Activity::prune`). The task is the
+    /// one writer of a step's events, so it is the one that announces them.
+    pub activity: Arc<Activity>,
+    /// Tells whoever watches the folder that the sync mark of these items changed
+    /// (`FolderSteps::announce_marks_changed`, or a test's stand-in): the task changes
+    /// what the mark is answered from (`RunningSteps`, `PublishedPlan`), so it says so.
+    pub marks_announcer: Arc<dyn Fn(Vec<LocalItemId>) + Send + Sync>,
+    /// Nudged after a round in which a step towards the folder was written: the
+    /// thumbnail filler's, the very `Notify` the listing's cycle nudges at a listing's
+    /// end (`ListingCycleSetup::after_listing`). A listing ends before the plan shows what
+    /// it brought, so the nudge of the cycle alone finds no file to make a thumbnail
+    /// for. `None` with no filler.
+    pub after_folder_steps: Option<Arc<tokio::sync::Notify>>,
+    /// Called after each published plan whose reading counted no unsent item
+    /// (`PlannedRound`'s count of unsent, of the plan's own reading), and never
+    /// otherwise: who waits for "nothing is unsent now" — the account that keeps a wish
+    /// for read-only (`FolderAccount::nothing_is_unsent`). The task is the ONE that says
+    /// it; nobody asks the count on a timer. It must not block.
+    pub nothing_unsent_report: Arc<dyn Fn() + Send + Sync>,
 }
+
+/// How often the bytes of the uploads that run are published while one runs, in seconds
+/// (`SyncPlanTask::publish_queue_status` on the task's tick).
+#[allow(dead_code)]
+const UPLOAD_PROGRESS_PUBLISHED_EVERY: i64 = 1;
 
 /// How long after the old openings of upload sessions were forgotten they are forgotten
 /// again, in seconds: once a day.
@@ -256,6 +283,16 @@ pub fn decide_outcome_of_ended_task(is_cancelled: bool, detail: String) -> Optio
     (!is_cancelled).then_some(StepOutcome::Failed(StepFailure::RunnerPanicked { detail }))
 }
 
+/// When the task wakes next only to publish the bytes of the uploads that run
+/// (`SyncPlanTask::publish_queue_status`), Unix seconds: `UPLOAD_PROGRESS_PUBLISHED_EVERY`
+/// after `now` while a step of the class `StepClass::Content` runs, else none. A wake at
+/// this time is a round that does not plan: it settles what ended, publishes, and waits
+/// again — unless the plan's own time ([`decide_next_wake`]) was reached too. Pure.
+#[allow(unused_variables)]
+pub fn decide_progress_tick(running: &[RunningStep], now: i64) -> Option<i64> {
+    todo!()
+}
+
 /// When the task wakes by itself next, Unix seconds: the soonest of the plan's waits
 /// until a time, the end of what holds all sending when it has one
 /// (`SendingHolds::find_end`), and the quota's next read; `None` when nothing is due.
@@ -287,6 +324,7 @@ impl SyncPlanTask {
         let mut causes = BTreeSet::new();
         loop {
             let settled = self.settle_steps(self.take_ended_steps(), &memories).await;
+            // TODO: the queue's status is published here after every round that settled a step and after every plan (`publish_queue_status`), and on a tick of its own while a content step runs (`decide_progress_tick`: `wait_for_round` is given the sooner of the two times, and a wake at the tick alone makes no plan — a fourth case of `decide_round`). Not called yet: its body is `todo!()`.
             match decide_round(&causes, settled, steps_left_to_start.len()) {
                 RoundDecision::MakePlan => {
                     let now = (parts.clock)();
@@ -325,6 +363,7 @@ impl SyncPlanTask {
         }
         parts.sending_holds.set_stopping();
         parts.running_steps.abort_requests();
+        // TODO: after the loop below, the queue's status is published empty (`upload_queue::publish_stopped_queue`): the task is its one writer, and a stopped sync shows no count of its own. Not called yet: its body is `todo!()`.
         // TODO: a step towards the folder waits for the folder's lease and a step of the rows for the tree lock, and a stop aborts neither (the review's Q3): if whoever awaits this holds the lease for writing, or the tree lock, this loop does not end. Check `SyncTasks::stop` and its callers once they are filled, and fix if needed.
         loop {
             self.settle_steps(self.take_ended_steps(), &memories).await;
@@ -373,7 +412,7 @@ impl SyncPlanTask {
     async fn apply_wake_causes(self: &Arc<Self>, causes: &BTreeSet<WakeCause>, stop: &CancellationToken) {
         let parts = &self.parts;
         let now = (parts.clock)();
-        // TODO: on `WakeCause::QuotaRead` the quota another just read is to be applied (`OneDriveSpace::apply_quota`), with no second request; nothing gives the task that read (`OneDriveSpace` keeps the account's quota to itself). Check who wakes `QuotaRead` and how the figures come here, and fix if needed.
+        // TODO: on `WakeCause::QuotaRead` nothing is asked of OneDrive: whoever read the quota applied it (`OneDriveSpace::apply_quota`) before it woke the task, and the task takes what is free from `OneDriveSpace::find_free_space` and forgets the refusals that fit (`StepMemory::forget_fitting_space_refusals`), as below for its own read. Not written yet: `find_free_space` is `todo!()`.
         let is_quota_read_due = parts.onedrive_space.find_next_read().is_some_and(|at| at <= now);
         let is_retry_due = crate::panic::lock(&self.quota_read_failed_at).is_none_or(|failed_at| now.saturating_sub(failed_at) >= READ_RETRY_WAIT);
         if is_quota_read_due && is_retry_due {
@@ -442,6 +481,34 @@ impl SyncPlanTask {
         }));
     }
 
+    /// Publishes what the properties of the bus say of the queue
+    /// (`upload_queue::publish_queue_status`), from ONE `Store::read_items` with the
+    /// published answers and the running steps taken before it
+    /// (`upload_queue::read_queue_totals`, `count_queue`, `read_running_upload_paths`,
+    /// `describe_running_uploads`), `read_queue_conditions` taken before the read too.
+    /// With `is_counts_read` false only the bytes of the running uploads are published,
+    /// with the counts as they were last read: the tick's round, which reads no row but
+    /// the paths of the uploads. The task is the ONE writer of these fields. Called by
+    /// the loop after every plan it published, after every round in which a step was
+    /// settled, and at the tick ([`decide_progress_tick`]); a read that fails is a warning
+    /// and publishes nothing.
+    #[allow(dead_code, unused_variables)]
+    async fn publish_queue_status(&self, is_counts_read: bool) {
+        todo!()
+    }
+
+    /// Announces what a round's settlement wrote and changed: each event written
+    /// (`Activity::announce`, in the order written; `Activity::prune` once when one of
+    /// them is a conflict, so that `Conflicts.Count` says it); the sync marks of the
+    /// items of the steps towards OneDrive that were settled (`marks_announcer`); the
+    /// thumbnail filler nudged when a step towards the folder was written
+    /// (`after_folder_steps`). Called by [`settle_steps`](Self::settle_steps) after the
+    /// job of the store, with the rows that job wrote.
+    #[allow(dead_code, unused_variables)]
+    fn announce_settled_steps(&self, settled: &[(SyncStep, StepSettlement)], written: &[konedrive_tree::ActivityRow]) {
+        todo!()
+    }
+
     /// What the daemon knows beside the rows, as values, read now: the items with a
     /// running step (`RunningSteps::list_items`), whether OneDrive is full, the time, the
     /// destinations of the running steps, the rows the check at start left, and a copy of
@@ -498,7 +565,8 @@ impl SyncPlanTask {
 
     /// Starts the steps of `planned` that can start at `now`
     /// (`step_choice::decide_steps_to_start`): the `ShowItem` steps as one task, every
-    /// other as its own. Answers the steps that stay for a later round of this plan. While
+    /// other as its own. For each step towards OneDrive it starts, the sync mark of its
+    /// items is announced (`marks_announcer`: the emblem turns to "uploading"). Answers the steps that stay for a later round of this plan. While
     /// OneDrive is full no content is sent: the steps of the last plan that send content
     /// stay, each would be refused in its turn.
     fn start_steps(self: &Arc<Self>, planned: Vec<SyncStep>, now: i64) -> Vec<SyncStep> {
@@ -544,7 +612,8 @@ impl SyncPlanTask {
     /// Starts the `ShowItem` steps of one plan as ONE task: every item marked running,
     /// `StepRunners::run_show_steps`, each outcome handed to the loop. (Whose a listed
     /// file at a place of this folder's own opening is, is not asked here: nobody calls
-    /// `MadeItems::find_left_upload` until the owner said what follows from it.)
+    /// the owner decided that no layer asks: a file uploaded and then removed here whose
+    /// confirmation was lost is shown again as any item of OneDrive's.)
     fn start_show_steps(self: &Arc<Self>, steps: Vec<SyncStep>) {
         let mut started = Vec::new();
         let mut items = Vec::new();
@@ -625,6 +694,7 @@ impl SyncPlanTask {
         }
         let settlements: Vec<StepSettlement> = settled.iter().map(|(_, settlement)| settlement.clone()).collect();
         let (folder, logged_since_listing_ended) = (parts.folder.clone(), self.logged_since_listing_ended.load(Ordering::SeqCst));
+        // TODO: the rows this job wrote are to be announced (`announce_settled_steps`): `write_step_settlements` answers only how many it logged of what OneDrive changed, so it is to answer the rows too (`SettlementsWritten { logged_count, rows }`). Not changed yet: its tests hold its answer; check and fix if needed.
         match parts.store.call(move |store| step_settlement::write_step_settlements(store, &settlements, &folder, logged_since_listing_ended, now)).await {
             Ok(logged) => {
                 self.logged_since_listing_ended.fetch_add(logged, Ordering::SeqCst);
@@ -676,13 +746,16 @@ impl SyncPlanTask {
         answers.extend(plan.exclusions.iter().map(|exclusion| (exclusion.item, ItemAnswer::Excluded(exclusion.reason))));
         answers.extend(plan.faults.iter().map(|fault| (fault.local_item_id(), ItemAnswer::Fault(fault.clone()))));
         parts.published_plan.publish(answers);
+        // TODO: `nothing_unsent_report` is called here when the plan's reading counted nothing unsent: `PlannedRound` carries no count of what is unsent yet (`ItemReader::count_unsent` in `plan_next_steps`, beside `item_counts`). Check and fix if needed.
+        // TODO: with every publish: the counts of the held removals of directories (`PublishedPlan::publish_held_removal_counts`, from `round.input.onedrive_item_count_below` for the directories answered `WaitReason::User(Reason::MassDelete)`), and the sync marks of the items whose answer turned to or from a wait for the user or a fault (`marks_announcer`). Not called yet: the first is `todo!()`.
 
         let note = match hold {
             Some(SendingHold::Throttled { until }) => Some(OutboxNote::Throttled(*until)),
             Some(SendingHold::WritesNotAllowed { reason }) => Some(OutboxNote::GateClosed(reason.clone())),
-            Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
+            Some(SendingHold::Stopping | SendingHold::SignedOut | SendingHold::FolderReadOnly | SendingHold::Paused { .. } | SendingHold::FirstListingNotEnded) | None => None,
         };
         let counts = round.item_counts;
+        // TODO: `PinnedCount` is to be published here too, from the plan's reading (`ItemReader::count_pins` into `ItemCounts`): a listing that removed a pinned item takes its pin, and nobody else publishes the count then. Check and fix if needed.
         parts.state.update_if_changed(|state| {
             state.cycle.items_listed = counts.in_onedrive;
             state.cycle.items_placed = counts.shown;

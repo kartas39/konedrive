@@ -40,19 +40,49 @@ pub enum ItemAnswer {
 /// The plan's answers of one folder.
 pub struct PublishedPlan {
     answers: std::sync::RwLock<BTreeMap<LocalItemId, ItemAnswer>>,
+    /// For each directory whose removal the last plan holds for the user
+    /// (`WaitReason::User(Reason::MassDelete)`): how many items OneDrive has in it and
+    /// below it, as the plan was given it (`SyncPlanInput::onedrive_item_count_below`).
+    held_removal_counts: std::sync::RwLock<BTreeMap<LocalItemId, u64>>,
 }
 
 impl PublishedPlan {
     /// Nothing published: before the first plan. Made by the folder's start and given to
     /// the mount's setup and to the plan's task.
     pub fn new() -> Self {
-        PublishedPlan { answers: std::sync::RwLock::default() }
+        PublishedPlan { answers: std::sync::RwLock::default(), held_removal_counts: std::sync::RwLock::default() }
     }
 
     /// The answers of the plan made now replace those of the one before. Called by the
     /// plan's task after each plan.
     pub fn publish(&self, answers: BTreeMap<LocalItemId, ItemAnswer>) {
         *crate::panic::write(&self.answers) = answers;
+    }
+
+    /// The counts of the plan made now replace those of the one before: for each
+    /// directory whose removal that plan holds for the user, how many items the removal
+    /// takes from OneDrive below it — the plan's own count
+    /// (`PlannedRound::input.onedrive_item_count_below`, of the plan's reading). Called by
+    /// the plan's task right after [`publish`](Self::publish), with every plan, also with
+    /// none held.
+    #[allow(unused_variables)]
+    pub fn publish_held_removal_counts(&self, counts: BTreeMap<LocalItemId, u64>) {
+        todo!()
+    }
+
+    /// How many items the held removal of the directory `item` takes from OneDrive below
+    /// it; `None` for an item that is no directory whose removal the last plan holds.
+    /// Called by the queue's answers: a held mass removal of a directory is ONE entry,
+    /// the directory, with this number (`upload_queue::UnsentEntry::held_items_below`).
+    #[allow(unused_variables)]
+    pub fn find_held_removal_count(&self, item: LocalItemId) -> Option<u64> {
+        todo!()
+    }
+
+    /// Every count of [`find_held_removal_count`](Self::find_held_removal_count), by
+    /// directory: taken once, with the answers, before a read of the store.
+    pub fn list_held_removal_counts(&self) -> BTreeMap<LocalItemId, u64> {
+        todo!()
     }
 
     /// The answer for `item`, when the last plan was given it. Called by the queue's

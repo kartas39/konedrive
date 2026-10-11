@@ -250,6 +250,21 @@ impl FolderSteps {
         Self { place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder }
     }
 
+    /// Announces that what the mount answers as the sync mark of each of `items` changed
+    /// (`ItemAnnouncement::MarksChanged` of the item at the place the folder shows it at
+    /// now, read in one read of the rows; an item the folder does not show is passed
+    /// over): Dolphin reads the emblem again on it. The mark itself is not kept anywhere:
+    /// it is answered from `RunningSteps` and `PublishedPlan` (`item_lookup::decide_sync_mark`),
+    /// so whoever changes those says so here — the plan's task, and nobody else: after it
+    /// began or settled a step towards OneDrive (the items of the step), and after a
+    /// published plan, for the items whose answer turned to or from what the mark shows
+    /// as blocked. Never waits for the kernel: the bridge's queue takes them. The pin's
+    /// change is announced by who sets it (`ItemFilesInterface::set_pin`).
+    #[allow(unused_variables)]
+    pub fn announce_marks_changed(&self, items: Vec<LocalItemId>) {
+        todo!()
+    }
+
     /// Runs `step` and answers what came of it: total over the cases. A `ShowItem` goes
     /// through [`run_show_items`](Self::run_show_items) with the one item, a
     /// `DownloadContent` through [`run_download_content`](Self::run_download_content);

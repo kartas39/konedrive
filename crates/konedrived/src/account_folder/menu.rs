@@ -131,9 +131,9 @@ impl SyncService {
     /// asked of the folder's mount, which answers from the tree store and from the names in
     /// the folder under it.
     pub async fn menu_part(&self, paths: &[PathBuf]) -> Part {
-        // TODO: `ItemFilesInterface::find_path_status` (the mount's `item_files_interface`) for each path.
-        // `ItemPathStatus` says `is_pinned` only: no layer says whether the pin is the path's own or which directory above pins it.
-        // Nor does `ItemPathStatus` say the state attribute shown of a file (`hydrated`): `sync_state` and `is_downloading` are what it has.
+        // TODO: for each path `ItemFilesInterface::find_path_status` — `ItemPathStatus::pin_holder` for whose
+        // pin it is, `find_state_attribute` for the state shown of a file — and `decide_free_up(path, true)`
+        // for what "Free up space" is offered or refused for.
         todo!()
     }
 }

@@ -367,7 +367,8 @@ impl AccountManager {
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
         // forgotten (a held account's too), then the sign-in.
-        let forgotten = account.sync.retire().await?;
+        // TODO: `Accounts.Remove` has no argument that says the removal is forced: check and fix if needed.
+        let forgotten = account.sync.retire(false).await?;
         let failed = match account.account.retire().await {
             Err(e) => Some((ManagerError::Failed(format!("cannot delete the sign-in: {e}")), false)),
             Ok(()) => self.config.remove_account(&account.id).err().map(|e| (ManagerError::from(e), true)),
@@ -635,7 +636,7 @@ async fn follow_mode(account: &Account) {
     let changes = account.account.state().subscribe();
     let mode = changes.borrow().mode;
     account.sync.follow_mode(mode).await;
-    let follower = tokio::spawn(crate::account_folder::mode::follow(changes, Arc::downgrade(&account.sync)));
+    let follower = tokio::spawn(crate::account_folder::mode::watch_account(changes, Arc::downgrade(&account.sync)));
     crate::panic::lock(&account.signals).push(follower);
 }
 

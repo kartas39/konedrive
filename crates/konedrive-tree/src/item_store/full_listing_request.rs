@@ -24,7 +24,7 @@ pub enum FullListingCause {
     /// The plan found a row whose OneDrive side cannot be judged, with no listing under
     /// way that would say it (`PlanFault::FullListingNeeded`): which item.
     PlanFault(LocalItemId),
-    /// The user took removals back (`RestoreDeletes`), or asked for it (`SyncAnyway`).
+    /// The user asked for it (`SyncAnyway`).
     UserAsked,
     /// The check at start bound an entry by a mark no row had: OneDrive's version of it
     /// is not known (design §10, "a store that was lost").
@@ -55,7 +55,7 @@ impl FullListingCause {
 
 impl ItemStore<'_> {
     /// Asks that the next listing be a full one. Called by the plan's task for a fault of
-    /// the plan, by `RestoreDeletes`, and by the start of a folder whose check bound
+    /// the plan, and by the start of a folder whose check bound
     /// entries by their marks. One transaction; asking twice is asking once, and the
     /// first cause is the one kept. The cause is for the journal. Asked for while a full
     /// listing is under way, it is the next one that is asked for. MISSING-1.d.

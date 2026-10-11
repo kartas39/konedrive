@@ -45,7 +45,7 @@ pub struct AccountSnapshot {
     /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
     /// while `config.toml` says so, `granted_scopes` carries `Files.ReadWrite`, and
     /// `live_drive` is the drive recorded for it. The account's folder follows it
-    /// (`crate::account_folder::mode::follow`).
+    /// (`crate::account_folder::mode::watch_account`).
     pub mode: Mode,
     /// What the account's last token may be used for: the token response's `scope` (or what
     /// was asked for, when it said nothing), never more than was asked for — see
@@ -141,6 +141,11 @@ pub enum ModeNote {
     SignInToWrite,
     /// Which drive the sign-in reaches has not been seen yet.
     DriveNotSeen,
+    /// The user asked for read-only while changes were unsent: the account is still
+    /// read-write and sends them, and switches by itself when none is left
+    /// (`AccountService::keep_read_only_wish`). How many are still to send, as the folder
+    /// last counted them. What the bus shows as "switching to read-only".
+    SwitchingToReadOnly { unsent: u64 },
 }
 
 impl ModeNote {
@@ -152,6 +157,8 @@ impl ModeNote {
                 "{WIDER_GRANT} also change files ({granted}); konedrive uses it to read only. The consent \
                  stays with Microsoft until it is revoked at https://account.live.com/consent/Manage"
             ),
+            // TODO: check the sentence against the catalogue of texts (`konedrive-text`) and the window, and fix if needed.
+            Self::SwitchingToReadOnly { unsent } => format!("switching to read-only: {unsent} changes still to send"),
             Self::ConfigUnreadable => CONFIG_UNREADABLE.to_owned(),
             Self::NoDriveRecorded => NO_DRIVE_RECORDED.to_owned(),
             Self::DriveMismatch { live, recorded } => format!(
