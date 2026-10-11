@@ -179,3 +179,85 @@ fn a_rebuild_counts_what_it_loses_before_the_file_goes() {
     assert_eq!(count_rebuild_loss(&other), None);
     assert_eq!(count_rebuild_loss(&Connection::open_in_memory().unwrap()), Some(RebuildLoss::default()), "no table holds nothing");
 }
+
+/// A store of the older version `version` at `path`, with the old table of upload
+/// sessions holding `urls`.
+fn make_old_store_with_sessions(path: &Path, version: &str, urls: &[&str]) {
+    drop(store_in_file_with_listed_root(path));
+    set_stored_version(path, version);
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);").unwrap();
+    for url in urls {
+        conn.execute("INSERT INTO upload_sessions (url, opened) VALUES (?1, 0)", [url]).unwrap();
+    }
+}
+
+#[test]
+fn the_version_a_stores_file_says_is_read_without_changing_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_path(&dir);
+    assert_eq!(find_stored_version(&path).unwrap(), StoredVersion::NoStore, "no file");
+    assert!(!path.exists(), "and none is made by the question");
+
+    drop(store_in_file_with_listed_root(&path));
+    assert_eq!(find_stored_version(&path).unwrap(), StoredVersion::Version(SCHEMA_VERSION.to_owned()));
+    set_stored_version(&path, "14");
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(find_stored_version(&path).unwrap(), StoredVersion::Version("14".to_owned()));
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the file is as it was");
+
+    let no_database = dir.path().join("notes.txt");
+    std::fs::write(&no_database, vec![b'x'; 4096]).unwrap();
+    assert_eq!(find_stored_version(&no_database).unwrap(), StoredVersion::NotADatabase);
+}
+
+#[test]
+fn a_stores_file_that_cannot_be_opened_is_an_error_and_no_version() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory where the file should be: no finding of a version, a failure.
+    let path = dir.path().join("tree.sqlite");
+    std::fs::create_dir(&path).unwrap();
+    assert!(find_stored_version(&path).is_err());
+}
+
+#[test]
+fn the_upload_sessions_of_a_store_of_an_older_version_are_listed_from_both_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = store_path(&dir);
+    make_old_store_with_sessions(&path, "19", &["https://up/1", "https://up/2"]);
+    // What the steps remember, where the old store has that table: a session beside one row with none.
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("DROP TABLE IF EXISTS step_memory; CREATE TABLE step_memory (local_item_id INTEGER PRIMARY KEY, session_address TEXT); INSERT INTO step_memory VALUES (1, 'https://up/3'), (2, NULL);").unwrap();
+    drop(conn);
+    let before = std::fs::read(&path).unwrap();
+
+    let mut sessions = list_old_store_upload_sessions(&path).unwrap();
+    sessions.sort();
+
+    assert_eq!(sessions, ["https://up/1", "https://up/2", "https://up/3"]);
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the file is not changed");
+}
+
+#[test]
+fn no_upload_session_is_listed_where_none_is_to_cancel() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(list_old_store_upload_sessions(&store_path(&dir)).unwrap().is_empty(), "no file");
+
+    // A store of today's version goes on with its sessions: none is listed, whatever it holds.
+    let todays = dir.path().join("todays.sqlite");
+    make_old_store_with_sessions(&todays, SCHEMA_VERSION, &["https://up/kept"]);
+    assert!(list_old_store_upload_sessions(&todays).unwrap().is_empty());
+
+    let no_database = dir.path().join("notes.txt");
+    std::fs::write(&no_database, vec![b'x'; 4096]).unwrap();
+    assert!(list_old_store_upload_sessions(&no_database).unwrap().is_empty());
+
+    // An older store with neither table, and one whose table has another shape.
+    let bare = dir.path().join("bare.sqlite");
+    drop(store_in_file_with_listed_root(&bare));
+    set_stored_version(&bare, "8");
+    Connection::open(&bare).unwrap().execute_batch("DROP TABLE IF EXISTS upload_sessions; DROP TABLE IF EXISTS step_memory;").unwrap();
+    assert!(list_old_store_upload_sessions(&bare).unwrap().is_empty());
+    Connection::open(&bare).unwrap().execute_batch("CREATE TABLE upload_sessions (address TEXT);").unwrap();
+    assert!(list_old_store_upload_sessions(&bare).unwrap().is_empty(), "a shape that cannot be read holds nothing to cancel");
+}

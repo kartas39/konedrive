@@ -285,3 +285,6 @@ pub fn count_unsent_of_closed_store(tree_db: &std::path::Path) -> Result<UnsentT
         konedrive_tree::OldStoreDecision::Make | konedrive_tree::OldStoreDecision::Rebuild => Ok(UnsentTotal::default()),
     }
 }
+
+#[cfg(test)]
+mod tests;

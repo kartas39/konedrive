@@ -216,3 +216,31 @@ fn the_flags_of_ignored_names_are_gone_over_as_a_job_of_the_write_operation_thre
     mount.stop();
     assert!(matches!(fixture.runtime().block_on(mount.rewrite_ignored_names()), Err(TreeError::Io(_))), "a stopped mount goes over nothing");
 }
+
+#[test]
+fn a_mount_that_asked_to_be_taken_down_refuses_the_switch_to_read_write() {
+    let fixture = ItemFixture::new();
+    let (mount, _kernel_requests) = build(&fixture);
+    assert!(mount.switch_to_read_write().expect("no take-down was asked"));
+    let take_down = mount.folder_step_parts().mount_take_down;
+
+    take_down.ask(crate::mount::TakeDownCause::StoreFailed { detail: "a fault".into() });
+
+    assert!(!mount.access_mode_switch().is_read_write(), "the asking made the folder read-only");
+    assert!(mount.switch_to_read_write().is_err(), "and no switch makes it take changes again");
+    assert!(!mount.access_mode_switch().is_read_write());
+    // A switch to read-only goes through as before: the thread runs.
+    assert!(!fixture.runtime().block_on(mount.switch_to_read_only()).expect("the thread runs"), "it is read-only already");
+    assert_eq!(crate::panic::lock(&fixture.take_downs).len(), 1, "the owner was told once");
+}
+
+#[test]
+fn a_switch_to_read_only_of_a_stopped_mount_says_its_thread_is_gone() {
+    let fixture = ItemFixture::new();
+    let (mount, _kernel_requests) = build(&fixture);
+    assert!(mount.switch_to_read_write().expect("no take-down was asked"));
+    mount.stop();
+
+    assert!(fixture.runtime().block_on(mount.switch_to_read_only()).is_err());
+    assert!(!mount.access_mode_switch().is_read_write(), "the switch is made all the same");
+}

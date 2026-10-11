@@ -35,3 +35,6 @@ impl FuseConnection {
         fs::write(self.abort_path(), "1")
     }
 }
+
+#[cfg(test)]
+mod tests;

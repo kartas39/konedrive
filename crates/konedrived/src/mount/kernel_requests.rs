@@ -487,3 +487,6 @@ impl Filesystem for KernelRequests {
         reply.error(self.refuse_unsupported(Errno::ENOTSUP));
     }
 }
+
+#[cfg(test)]
+mod tests;

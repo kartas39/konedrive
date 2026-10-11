@@ -708,3 +708,6 @@ fn make_folder_steps(parts: FolderStepParts) -> Arc<FolderSteps> {
     let FolderStepParts { place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder } = parts;
     Arc::new(FolderSteps::new(place_changes, store, write_operation_thread, upload_rules, item_handles, inotify_bridge, downloader, download_states, range_fetcher, mount_take_down, folder))
 }
+
+#[cfg(test)]
+mod tests;

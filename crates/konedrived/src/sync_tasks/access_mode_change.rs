@@ -150,3 +150,6 @@ pub async fn apply_ignore_list_change(mount: &ItemMount, sync_plan_wake: &SyncPl
     sync_plan_wake.wake(WakeCause::SendingHoldChanged);
     Ok(rewritten)
 }
+
+#[cfg(test)]
+mod tests;

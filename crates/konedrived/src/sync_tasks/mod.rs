@@ -131,3 +131,6 @@ impl Drop for SyncTasks {
         self.stop.cancel();
     }
 }
+
+#[cfg(test)]
+mod tests;
