@@ -478,7 +478,11 @@ impl Filesystem for KernelRequests {
     }
 
     /// The attributes are konedrive's own to write; a program that copies a file's along is
-    /// told the folder keeps none.
+    /// told the folder keeps none. Every name is refused here, before anything is asked of
+    /// the folder — also the folder's own (`user.konedrive.item-id`, `.state`, …), which a
+    /// file copied in with its attributes (`cp -a`) or a `setfattr` would write: none
+    /// reaches the backing file, whose marks the check at start reads, by this way. The
+    /// marks of a backing file are written by the daemon alone, on the backing directory.
     fn setxattr(&self, _req: &Request, _ino: INodeNo, _name: &OsStr, _value: &[u8], _flags: i32, _position: u32, reply: ReplyEmpty) {
         reply.error(self.refuse_unsupported(Errno::ENOTSUP));
     }
