@@ -4,7 +4,9 @@
 //! has below it, at any depth, was shown here and removed here by the user, and none of it
 //! is a file whose content OneDrive changed since ([`decide_directory_removal`]). It is
 //! then one removal in OneDrive for all of that, and stands where OneDrive renamed or
-//! moved those items since. Where OneDrive has anything below it that the folder never
+//! moved those items since. An item an upload of this folder left below it with other
+//! content than was sent is the folder's own, not what the user never saw: it goes with
+//! the directory, and keeps no removal from being sent. Where OneDrive has anything below it that the folder never
 //! showed — it cannot be shown, it was not shown yet, another client put it there — or a
 //! content the folder never showed — that of a file that was removed here and that
 //! OneDrive changed, which by itself comes back —, the removal is of the folder alone:
@@ -54,7 +56,7 @@ pub(crate) fn is_in_directory_removed_here(items: &PlanItems<'_>, item: &Item) -
 /// One item the rows say OneDrive has below a directory that was removed here, at any
 /// depth: what the removal of that directory would take from OneDrive with it. The first
 /// that holds, in the order of [`of`](Self::of): shown, held back, a content changed in
-/// OneDrive, removed here, never shown.
+/// OneDrive, removed here, left by an upload, never shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ItemBelowRemovedDirectory {
     /// The folder shows it: it was moved out of the directory here, or OneDrive moved it
@@ -72,6 +74,11 @@ pub(crate) enum ItemBelowRemovedDirectory {
     /// agreed on of it still, and its own removal would be sent — OneDrive did nothing to
     /// it since, or moved it, into the directory too.
     RemovedHere(ItemVersions),
+    /// The folder never showed it, and an upload of this folder left it in OneDrive with
+    /// other content than was sent
+    /// ([`SyncPlanInput::items_left_by_uploads`](super::SyncPlanInput::items_left_by_uploads)):
+    /// it waits to be removed there, and the removal of the directory takes it too.
+    LeftByUpload(LocalItemId),
     /// The folder never showed it, as the rows say: nothing is agreed on of it. OneDrive
     /// made it there or moved it there since, the folder cannot show it, or the plan took
     /// it off the folder because it could not.
@@ -80,8 +87,10 @@ pub(crate) enum ItemBelowRemovedDirectory {
 
 impl ItemBelowRemovedDirectory {
     /// What `row` is, a row OneDrive has below a directory that was removed here.
-    /// `is_held_back`: what the rows do not say — whether something holds the item back.
-    pub(crate) fn of(row: &Item, is_held_back: bool) -> Self {
+    /// What the rows do not say: `is_held_back`, whether something holds the item back,
+    /// and `is_left_by_upload`, whether an upload of this folder left it in OneDrive
+    /// (`find_mismatched_item` of its binding).
+    pub(crate) fn of(row: &Item, is_held_back: bool, is_left_by_upload: bool) -> Self {
         if row.local.is_some() {
             ItemBelowRemovedDirectory::ShownHere(row.local_item_id)
         } else if is_held_back {
@@ -90,8 +99,9 @@ impl ItemBelowRemovedDirectory {
             ItemBelowRemovedDirectory::ContentChangedInOneDrive(row.local_item_id)
         } else if row.synced_place.is_some() || row.synced_content.is_some() {
             ItemBelowRemovedDirectory::RemovedHere(ItemVersions::of(row))
+        } else if is_left_by_upload {
+            ItemBelowRemovedDirectory::LeftByUpload(row.local_item_id)
         } else {
-            // TODO: contract — an item an upload of this folder left below the directory (`SyncPlanInput::items_left_by_uploads`) reads as never shown here, and makes the removal one of the folder alone: the directory then comes back. This function is asked by the store too (`ItemStore::can_directory_removal_be_sent`, item_store), which is not told what an upload left.
             ItemBelowRemovedDirectory::NeverShownHere(row.local_item_id)
         }
     }
@@ -125,8 +135,9 @@ pub(crate) enum DirectoryRemovalOutcome {
 ///   unguarded removal takes all that is in the directory, and what the user never saw
 ///   here — an item, or the content a file has now — is not theirs to have removed;
 /// - otherwise all of `below` was shown here and removed here, as OneDrive still has it
-///   but for its place: the removal is sent, and stands where OneDrive renamed or moved
-///   those items since.
+///   but for its place, or is what an upload of this folder left there: the removal is
+///   sent, and stands where OneDrive renamed or moved those items since. What an upload
+///   left goes with the directory, and is not among what was removed here with it.
 pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[ItemBelowRemovedDirectory]) -> DirectoryRemovalOutcome {
     if is_listing_under_way {
         return DirectoryRemovalOutcome::WaitsForListing;
@@ -137,6 +148,7 @@ pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[Item
         match item {
             ItemBelowRemovedDirectory::ShownHere(kept) | ItemBelowRemovedDirectory::IsHeldBack(kept) => return DirectoryRemovalOutcome::WaitsFor(*kept),
             ItemBelowRemovedDirectory::RemovedHere(versions) => removed_with_it.push(versions.clone()),
+            ItemBelowRemovedDirectory::LeftByUpload(_) => {}
             ItemBelowRemovedDirectory::ContentChangedInOneDrive(_) | ItemBelowRemovedDirectory::NeverShownHere(_) => is_anything_never_shown = true,
         }
     }
@@ -152,7 +164,8 @@ pub(crate) fn decide_directory_removal(is_listing_under_way: bool, below: &[Item
 /// decided from, by the directory's id.
 pub(crate) fn list_below_removed_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> HashMap<LocalItemId, Vec<ItemBelowRemovedDirectory>> {
     let held: HashSet<LocalItemId> = cases.iter().filter(|case| find_hold(case).is_some()).map(|case| case.item.local_item_id).collect();
-    let describe = |below: LocalItemId| Some(ItemBelowRemovedDirectory::of(items.find(below)?, held.contains(&below)));
+    let left_by_uploads: HashSet<LocalItemId> = cases.iter().filter(|case| case.is_left_by_upload).map(|case| case.item.local_item_id).collect();
+    let describe = |below: LocalItemId| Some(ItemBelowRemovedDirectory::of(items.find(below)?, held.contains(&below), left_by_uploads.contains(&below)));
     cases
         .iter()
         .filter(|case| is_directory_removed_here(case.item))
@@ -187,7 +200,8 @@ fn count_directories_above_in_onedrive(items: &PlanItems<'_>, item: &Item) -> us
 ///   OneDrive has below it that the folder does not show waits for the directory: what was
 ///   removed here with it, the directories among that too, and a file removed here whose
 ///   content OneDrive changed, which comes back once the directory is decided. So none of
-///   them has a step of its own while a directory above it is still to be removed.
+///   them has a step of its own while a directory above it is still to be removed. What
+///   an upload left is left out by its own rule, and waits for nothing.
 pub(crate) fn wait_for_removals_of_directories(cases: &[ItemCase<'_>], items: &PlanItems<'_>) -> Vec<Overruling> {
     let mut removed: Vec<&ItemCase<'_>> = cases.iter().filter(|case| is_directory_removed_here(case.item)).collect();
     removed.sort_by_key(|case| (count_directories_above_in_onedrive(items, case.item), case.item.local_item_id));
@@ -200,7 +214,7 @@ pub(crate) fn wait_for_removals_of_directories(cases: &[ItemCase<'_>], items: &P
         }
         for item in &case.below_in_onedrive {
             let goes_with_it = match item {
-                ItemBelowRemovedDirectory::ShownHere(_) => continue,
+                ItemBelowRemovedDirectory::ShownHere(_) | ItemBelowRemovedDirectory::LeftByUpload(_) => continue,
                 ItemBelowRemovedDirectory::IsHeldBack(item) | ItemBelowRemovedDirectory::NeverShownHere(item) | ItemBelowRemovedDirectory::ContentChangedInOneDrive(item) => *item,
                 ItemBelowRemovedDirectory::RemovedHere(item) => item.local_item_id,
             };

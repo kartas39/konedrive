@@ -251,7 +251,10 @@ pub(crate) fn settle_name_contests(
                 answers.overrule(id, ItemDecision::Wait(WaitReason::AnotherItem(holder)));
             }
             (NameContestOutcome::WaitsForListing, Some(_)) => answers.overrule(id, ItemDecision::Wait(WaitReason::Listing)),
-            // TODO: contract — `WaitReason` (sync_plan.rs, read by the daemon) has no case for a wait for a request the daemon sends by itself, of another item: `RunningStep` says "a step of the item is running". A wait for the holder itself would end at an item a rule leaves out, which the plan answers as a fault.
+            // No step of the claimant runs: it waits for the request by which the daemon
+            // removes the holder by itself, which is not settled yet. That lasts seconds,
+            // and of the reasons a wait has, a running step says it nearest. A wait for
+            // the holder itself would end at an item a rule leaves out, a fault.
             (NameContestOutcome::WaitsForRemovalOfHolder, Some(_)) => answers.overrule(id, ItemDecision::Wait(WaitReason::RunningStep)),
             (NameContestOutcome::MergesWith(holder), _) => {
                 let Some(onedrive) = items.find(holder) else { continue };

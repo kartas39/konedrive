@@ -42,7 +42,8 @@
 //! transaction, each time by the one function
 //! (`sync_plan::removed_directory::decide_directory_removal`): all the rows say OneDrive
 //! has below the directory was shown here and removed here, and OneDrive changed the
-//! content of none of it since. Every row it takes the OneDrive version from is stamped
+//! content of none of it since; but an item an upload of this folder left there
+//! (`step_memory::find_mismatched_item`), which goes with the directory. Every row it takes the OneDrive version from is stamped
 //! with it.
 //!
 //! **What a commit of a step towards OneDrive writes of OneDrive** goes through the one
@@ -82,7 +83,7 @@ use super::onedrive_versions::{confirm_onedrive_version, ListingUnderWay};
 use super::place_change_records::{forget_place_change_record_when_written, PlaceChangeRecordId};
 use super::sent_removal_window::add_sent_removals;
 use crate::step_memory::{
-    carry_content, forget_confirmed_request, forget_ended_upload_session, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks, ConfirmedRequest, UploadSessionAddress,
+    carry_content, find_mismatched_item, forget_confirmed_request, forget_ended_upload_session, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks, ConfirmedRequest, UploadSessionAddress,
 };
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
@@ -196,6 +197,10 @@ impl ItemStore<'_> {
     /// OneDrive has in the directory and below it was shown here and removed here — it is
     /// `below`, no row more and none less, none shown by the folder, none the folder never
     /// showed, and none a file whose content OneDrive changed since it was removed here.
+    /// An item an upload of this folder left below the directory with other content than
+    /// was sent, as the step memory says it now (`StepMemory::find_mismatched_item` of
+    /// its binding), is the folder's own and not one it never showed: it is not of
+    /// `below`, holds the removal back by nothing, and goes with the directory.
     ///
     /// What the rows do not say, the caller gives, as it gives it to the plan
     /// ([`SyncPlanInput`](crate::SyncPlanInput)) and with nothing taken out:
@@ -376,12 +381,20 @@ fn find_planned_new_item(conn: &Connection, planned: &ItemVersions) -> Result<Op
 /// ([`ItemStore::can_directory_removal_be_sent`]): the directory's row is as planned, and
 /// the plan's own decision ([`decide_directory_removal`]), made from all the rows say
 /// OneDrive has below it now, is that the removal is sent, for `below` and nothing else.
-/// `is_held_back`: what the caller says of an item the rows do not say.
+/// `is_held_back`: what the caller says of an item the rows do not say. Whether an upload
+/// left an item the folder does not show is read from the step memory here.
 fn is_directory_removal_as_planned(conn: &Connection, item: &ItemVersions, below: &[ItemVersions], is_listing_under_way: bool, is_held_back: &dyn Fn(LocalItemId) -> bool) -> Result<bool, TreeError> {
     if find_planned(conn, item)?.is_none() {
         return Ok(false);
     }
-    let rows_below: Vec<ItemBelowRemovedDirectory> = list_below_in_onedrive(conn, item.local_item_id)?.iter().map(|row| ItemBelowRemovedDirectory::of(row, is_held_back(row.local_item_id))).collect();
+    let mut rows_below = Vec::new();
+    for row in list_below_in_onedrive(conn, item.local_item_id)? {
+        let is_left_by_upload = match row.onedrive_item.as_ref().filter(|_| row.local.is_none()) {
+            Some(onedrive_item) => find_mismatched_item(conn, onedrive_item)?.is_some(),
+            None => false,
+        };
+        rows_below.push(ItemBelowRemovedDirectory::of(&row, is_held_back(row.local_item_id), is_left_by_upload));
+    }
     let by_id = |versions: &[ItemVersions]| {
         let mut versions: Vec<ItemVersions> = versions.to_vec();
         versions.sort_by_key(|versions| versions.local_item_id);
