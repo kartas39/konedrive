@@ -338,6 +338,9 @@ impl SyncService {
     /// own, which a caller that is cut leaves running until the process exits.
     pub async fn end_at_daemon_stop(&self) -> Option<std::path::PathBuf> {
         let mut stopped = self.change().await;
+        // Nothing starts this folder from here on: a `Refresh()` during the stop's bound, the report of the mount
+        // that is being stopped, a change that starts again what ran.
+        stopped.folder_mut().is_ended_at_daemon_stop = true;
         // A folder a fault took down is not tried again: the daemon ends.
         if let Some(folder::Sync::Stopped(folder::Why::TakenDown { next_try_at, .. })) = stopped.folder_mut().sync_mut() {
             *next_try_at = None;

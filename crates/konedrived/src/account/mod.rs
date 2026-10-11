@@ -185,13 +185,20 @@ pub trait PendingUploads: Send + Sync {
     /// forced or not (nothing is unsent then), in the one order of a switch
     /// (`AccountService::set_mode`): `config.toml` written and the mode worked out again
     /// first — so that the account's snapshot says read-only before the folder is told,
-    /// and the folder's watcher cannot turn it back —, then this call, awaited — and
-    /// asked again, after a short wait, for as long as it answers that a request is in
-    /// flight —, and only then the token that can write given up. So no request leaves
+    /// and the folder's watcher cannot turn it back —, then this call, awaited — and,
+    /// for as long as a request is in flight
+    /// ([`has_request_in_flight`](Self::has_request_in_flight), asked after a short wait
+    /// each time), nothing more —, and only then the token that can write given up. So no request leaves
     /// under a token that cannot write and none is refused for it. What is unsent stays
     /// here, not sent and not lost, and is sent when the folder is read-write again.
-    /// Asked again of a folder that holds already, it changes nothing and answers anew.
     async fn hold_unsent_changes(&self) -> HeldUnsentChanges;
+    /// Whether a request that changes OneDrive is in flight now: what the account asks
+    /// again, after [`hold_unsent_changes`](Self::hold_unsent_changes) answered that one
+    /// was, until none is. It must hold no door of the folder and wait for nothing: the
+    /// folder was switched once, and the account's own wait is the only one.
+    fn has_request_in_flight(&self) -> bool {
+        false
+    }
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it.
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}

@@ -36,6 +36,9 @@ pub(super) struct Folder {
     /// a read-only folder's mount takes no change, a read-write one's does.
     pub wanted: Mode,
     pub is: Is,
+    /// The daemon's end reached this folder (`SyncService::end_at_daemon_stop`): its mount
+    /// is stopped, and no sync of it is started any more, whoever asks.
+    pub is_ended_at_daemon_stop: bool,
 }
 
 /// Whether the account takes a folder.
@@ -212,7 +215,7 @@ pub(super) struct TakeDownTry {
 
 impl Folder {
     pub fn new() -> Self {
-        Self { standing: Standing::Active, wanted: Mode::ReadOnly, is: Is::Absent }
+        Self { standing: Standing::Active, wanted: Mode::ReadOnly, is: Is::Absent, is_ended_at_daemon_stop: false }
     }
 
     /// The folder the daemon holds, up or not.
@@ -440,26 +443,14 @@ impl Drop for Stopped<'_> {
 }
 
 impl Stopped<'_> {
-    /// Takes into the state what a start or a stop of the folder's sync left: the parts a stopped sync keeps
-    /// go into the folder's record, whole; a sync that was started is answered, for the change to stop it — it
-    /// was never in the state. Either way a sync ran, or was to: the change starts it again.
-    fn keep_left(&mut self, left: SyncChange) -> Option<Box<StartedFolder>> {
-        self.ran = true;
-        let (kept, started) = match left {
-            SyncChange::Stopped(kept) => (Some(kept), None),
-            SyncChange::Started(started) => (None, Some(started)),
-            SyncChange::Refused(refused) => (refused.kept, None),
-        };
-        if let Some(sync) = self.folder.sync_mut() {
-            *sync = Sync::Stopped(Why::Interrupted);
-        }
+    /// Puts the parts a stopped sync keeps, or a refused start gave back, into the folder's record, whole.
+    fn keep_parts(&mut self, kept: Option<KeptFolderParts>) {
         match (kept, self.folder.record_mut()) {
             (Some(kept), Some(record)) => record.kept.parts = Some(kept),
             // No folder is recorded to keep them: their mount is stopped where a thread may be joined.
             (Some(kept), None) => drop(tokio::task::spawn_blocking(move || drop(kept))),
             (None, _) => {}
         }
-        started
     }
 }
 
@@ -497,7 +488,13 @@ impl SyncChangeTask {
     /// Runs `work` in a task of its own and waits for it; its answer, `None` when it
     /// panicked. Cut while it waits, the task goes on and its answer is the next
     /// [`wait`](Self::wait)'s.
-    pub async fn run(&self, work: impl std::future::Future<Output = SyncChange> + Send + 'static) -> Option<SyncChange> {
+    ///
+    /// `adopt` is run when this call is cut while it waits, and never otherwise: it takes
+    /// the answer into the folder's state without waiting for the next change of the
+    /// folder to come by itself ([`SyncService::adopt_left_sync_change`]). Until then a
+    /// sync that was started runs outside the state and the view, where nothing of the
+    /// account reaches it.
+    pub async fn run(&self, work: impl std::future::Future<Output = SyncChange> + Send + 'static, adopt: impl FnOnce() + Send + 'static) -> Option<SyncChange> {
         // Nothing is awaited before the task is spawned: `work` owns what it starts or stops, and is not dropped
         // unrun. The gate is free: the caller waited under the folder's write lock.
         let gate = Arc::clone(&self.gate).try_lock_owned().ok();
@@ -510,10 +507,27 @@ impl SyncChangeTask {
             *crate::panic::lock(&left) = Some(answer);
             drop(gate);
         });
-        if let Err(error) = task.await {
+        let mut waiter = CutWaiter { adopt: Some(Box::new(adopt)) };
+        let ended = task.await;
+        waiter.adopt = None;
+        if let Err(error) = ended {
             tracing::error!("a start or a stop of the folder's sync failed inside konedrive: {error}");
         }
         crate::panic::lock(&self.left).take()
+    }
+}
+
+/// Who waits for a start or a stop: dropped while it still waits — its caller was cut —
+/// it has the answer adopted.
+struct CutWaiter {
+    adopt: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl Drop for CutWaiter {
+    fn drop(&mut self) {
+        if let Some(adopt) = self.adopt.take() {
+            adopt();
+        }
     }
 }
 
@@ -607,10 +621,20 @@ impl SyncService {
         let mut stopped = Stopped { service: self, folder, ran: false, was_writable, told: false };
         // What a start or a stop left whose caller was cut before it ended: waited for here, under the lock, and taken
         // into the state as that caller would have taken it.
-        let mut running = match self.sync_change.wait().await {
-            Some(left) => stopped.keep_left(left),
-            None => None,
-        };
+        let mut running = None;
+        match self.sync_change.wait().await {
+            Some(SyncChange::Stopped(kept)) => stopped.keep_parts(Some(kept)),
+            // A sync that was started and never in the state: stopped below, as one that ran.
+            Some(SyncChange::Started(started)) => running = Some(started),
+            // Said as the start's own caller would have said it: by what the sync was before the start.
+            Some(SyncChange::Refused(refused)) => {
+                stopped.keep_parts(refused.kept);
+                if let Some(root) = stopped.folder.up().map(|up| up.record.root.clone()) {
+                    self.refuse_start(&mut stopped, refused.refusal, &root);
+                }
+            }
+            None => {}
+        }
         if let Some(sync) = stopped.folder.sync_mut() {
             match std::mem::replace(sync, Sync::Stopped(Why::Interrupted)) {
                 Sync::Running(started) => {
@@ -627,16 +651,30 @@ impl SyncService {
             started.tasks.stop_handle().cancel();
             // In a task of its own: a caller that is cut does not cut the stop, and the next change waits for it.
             let stop = async move { SyncChange::Stopped(crate::sync_tasks::stop_order::stop_folder_sync(*started).await) };
-            match self.sync_change.run(stop).await {
-                Some(left) => {
-                    stopped.keep_left(left);
-                }
-                None => tracing::error!("the stop of the folder's sync failed inside konedrive: what it kept is gone, and the folder is started with nothing kept"),
+            match self.sync_change.run(stop, self.adopt_left_sync_change()).await {
+                Some(SyncChange::Stopped(kept)) => stopped.keep_parts(Some(kept)),
+                Some(SyncChange::Started(_) | SyncChange::Refused(_)) | None => tracing::error!("the stop of the folder's sync failed inside konedrive: what it kept is gone, and the folder is started with nothing kept"),
             }
         }
         // What the folder is now: its sync stopped, its parts kept.
         stopped.publish();
         stopped
+    }
+
+    /// What a start or a stop is given to run when its caller is cut (`SyncChangeTask::run`): a task of the
+    /// service's own makes one change of the folder — which waits for the start or the stop, takes its answer
+    /// into the state — and starts again what ran, so that the folder is as the cut caller found it. By a weak
+    /// reference: nothing when the service is gone, or no runtime is left to run it.
+    pub(super) fn adopt_left_sync_change(&self) -> impl FnOnce() + Send + 'static {
+        let (service, runtime) = (self.me.clone(), tokio::runtime::Handle::try_current());
+        move || {
+            let Ok(runtime) = runtime else { return };
+            runtime.spawn(async move {
+                let Some(service) = service.upgrade() else { return };
+                let mut stopped = service.change().await;
+                service.start_again(&mut stopped).await;
+            });
+        }
     }
 
     /// What the folder is, as last published.

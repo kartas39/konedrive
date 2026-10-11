@@ -27,6 +27,10 @@ impl SyncService {
     /// it answers is put into the state, from where only a change takes it out.
     pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>) {
         debug_assert!(stopped.folder().running().is_none(), "a sync runs inside a change");
+        // The daemon's end reached the folder: its mount is stopped, and nothing mounts it again.
+        if stopped.folder().is_ended_at_daemon_stop {
+            return;
+        }
         // What a start reads of the folder is what it is now.
         stopped.publish();
         let Some(up) = stopped.folder().up() else { return };
@@ -92,7 +96,7 @@ impl SyncService {
                 Err(refused) => SyncChange::Refused(refused),
             }
         };
-        let started = match self.sync_change.run(start).await {
+        let started = match self.sync_change.run(start, self.adopt_left_sync_change()).await {
             Some(SyncChange::Started(started)) => started,
             Some(SyncChange::Refused(refused)) => {
                 if let Some(said) = refused.rebuild_loss.as_ref().and_then(Self::describe_rebuild_loss) {
@@ -156,7 +160,7 @@ impl SyncService {
 
     /// A start of the folder at `root` was refused: why its sync does not run, written into the state
     /// ([`decide_refused_sync`]) and published as blocking trouble. The try the start was made as is over.
-    fn refuse_start(&self, stopped: &mut Stopped<'_>, refusal: StartRefusal, root: &crate::folder::root::SyncRoot) {
+    pub(super) fn refuse_start(&self, stopped: &mut Stopped<'_>, refusal: StartRefusal, root: &crate::folder::root::SyncRoot) {
         let now = self.clock.now();
         if let Some(up) = stopped.folder_mut().up_mut() {
             let why = decide_refused_sync(&up.sync, up.take_down_try.take(), &refusal, &root.path, now);

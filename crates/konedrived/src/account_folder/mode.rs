@@ -50,8 +50,14 @@ impl SyncService {
             return;
         }
         held.set_wanted(mode);
-        // A folder whose sync does not run only takes the mode: its next start applies it.
-        let Some(started) = held.folder().running() else { return };
+        // A folder whose sync does not run takes the mode, which its next start applies; the mount it keeps, still
+        // served, is switched now: it takes no change for an account that is read-only.
+        let Some(started) = held.folder().running() else {
+            if let Some(mount) = held.folder().mount() {
+                switch_kept_mount(mount, mode).await;
+            }
+            return;
+        };
         let sending_holds = started.tasks.sending_holds();
         let switched = match mode {
             // An account that turned read-only for a cause of its own holds no token that can write any more:
@@ -65,6 +71,23 @@ impl SyncService {
         }
     }
 
+}
+
+/// Switches the mount a stopped sync keeps to `mode`: the mount's own switch alone — there is
+/// no sending to hold, and the next start sets the hold with the mode. A mount that asked for
+/// its take-down made itself read-only for a fault, and is never made to take changes again.
+async fn switch_kept_mount(mount: &crate::mount::ItemMount, mode: Mode) {
+    match mode {
+        Mode::ReadOnly => {
+            if let Err(error) = mount.switch_to_read_only().await {
+                tracing::warn!("the folder's mount could not be switched to read-only on its own thread: {error}");
+            }
+        }
+        Mode::ReadWrite if mount.is_take_down_asked() => {}
+        Mode::ReadWrite => {
+            mount.switch_to_read_write();
+        }
+    }
 }
 
 /// What of the account holds the folder's sending, beside the folder's own access mode.
@@ -82,7 +105,8 @@ pub struct AccountHolds {
 /// mode and drive now (`ConfigStore::write_standing`; `None` when the file cannot be
 /// read), hold of the folder's sending. Pure. `is_signed_out` for any state but signed
 /// in. The refusal, the first that holds, for an account `config.toml` says is
-/// read-write: `config.toml` cannot be read; it records no drive; the token was last seen
+/// read-write: `config.toml` cannot be read; it records no drive; which drive the token
+/// reaches has not been seen yet; the token was last seen
 /// to reach another drive than the recorded one (with both); the sign-in does not allow
 /// changes (`oauth::grants_writes`). None for an account `config.toml` says is read-only:
 /// its folder is read-only, and held as such. The folder's own trouble
@@ -97,6 +121,9 @@ pub fn decide_account_holds(snapshot: &AccountSnapshot, standing: Option<&WriteS
         // A read-only account's folder is read-only, and held as such.
         Some(WriteStanding { mode: Mode::ReadOnly, .. }) => None,
         Some(WriteStanding { recorded_drive: None, .. }) => Some("config.toml records no drive for the account".to_owned()),
+        Some(WriteStanding { recorded_drive: Some(_), .. }) if snapshot.live_drive.is_empty() => {
+            Some("which OneDrive drive the account's sign-in reaches has not been seen yet".to_owned())
+        }
         Some(WriteStanding { recorded_drive: Some(drive), .. }) if *drive != snapshot.live_drive => Some(format!(
             "the account's token was last seen to reach drive {:?}, not drive {:?}, which config.toml records",
             snapshot.live_drive,
@@ -184,6 +211,13 @@ impl PendingUploads for SyncService {
         parts.sync_plan_wake.wake(WakeCause::QuotaRead);
     }
 
+    /// Whether a step towards OneDrive runs now (`RunningSteps::list_steps` of the view's parts: one that sends
+    /// content or metadata). It takes no lock of the folder and waits for nothing.
+    fn has_request_in_flight(&self) -> bool {
+        let Some(parts) = self.view().parts else { return false };
+        parts.running_steps.list_steps().iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
+    }
+
     /// How many changes made here are unsent. A change saved a moment ago counts: the
     /// folder's mount writes each one before it answers the program that made it. 0 for
     /// an account with no folder and for a folder whose store is not open.
@@ -227,7 +261,13 @@ impl PendingUploads for SyncService {
                         started.running_steps.list_steps().iter().any(|step| matches!(step.class, StepClass::Content | StepClass::Metadata))
                     }
                 },
-                None => false,
+                // No sync, no request; the mount a stopped sync keeps, still served, takes no change from here on.
+                None => {
+                    if let Some(mount) = held.folder().mount() {
+                        switch_kept_mount(mount, Mode::ReadOnly).await;
+                    }
+                    false
+                }
             };
             (held.folder().store(), is_request_in_flight)
         };

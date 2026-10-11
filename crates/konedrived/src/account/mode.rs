@@ -271,13 +271,26 @@ impl AccountService {
     /// reading and the hold stays here unsent, under the hold, as after a forced switch:
     /// the switch is not put off again for it. Nothing for an account with no wish.
     pub(crate) async fn switch_to_read_only_when_sent(&self) {
-        if !self.keeps_read_only_wish() {
-            return;
+        // The mode is written only while the wish still stands, in the one update of `config.toml` that forgets it:
+        // a wish the user took back a moment ago switches nothing.
+        let written = self.config.update_account(&self.id, |account| {
+            if !account.read_only_wanted || account.mode != Mode::ReadWrite {
+                return Ok::<_, ConfigError>(false);
+            }
+            account.mode = Mode::ReadOnly;
+            account.read_only_wanted = false;
+            Ok(true)
+        });
+        match written {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!("the account {:?} could not switch to read-only though nothing is unsent; its wish stands: {error}", self.id);
+                return;
+            }
         }
-        // As a forced switch, and in its order: what came to be unsent since the plan's count stays here under the hold.
-        if let Err(error) = self.switch_to_read_only(true).await {
-            tracing::warn!("the account {:?} could not switch to read-only though nothing is unsent; its wish stands: {error:?}", self.id);
-        }
+        let uploads = crate::panic::lock(&self.uploads).as_ref().and_then(Weak::upgrade);
+        self.end_switch_to_read_only(uploads).await;
     }
 
     /// [`set_mode`](Self::set_mode) to read-only.
@@ -318,9 +331,15 @@ impl AccountService {
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| ModeError::Failed(format!("cannot save the configuration: {e}")))?;
-        // The one order of a switch, forced or not: `config.toml` says read-only; the mode is worked out again, so that
-        // the snapshot says read-only before the folder is told and its watcher cannot turn it back; the folder holds
-        // what is unsent and takes no change, awaited; and only then the token goes.
+        self.end_switch_to_read_only(uploads).await;
+        Ok(())
+    }
+
+    /// The rest of a switch to read-only once `config.toml` says so, in the one order of a switch, forced or not:
+    /// the mode is worked out again, so that the snapshot says read-only before the folder is told and its
+    /// watcher cannot turn it back; the folder holds what is unsent and takes no change, awaited; and only then
+    /// the token goes — at once, or when no request that changes OneDrive is in flight any more.
+    async fn end_switch_to_read_only(&self, uploads: Option<Arc<dyn PendingUploads>>) {
         self.recompute_mode();
         if let Some(uploads) = &uploads {
             let held = uploads.hold_unsent_changes().await;
@@ -334,11 +353,10 @@ impl AccountService {
                     let folder = Arc::downgrade(uploads);
                     tokio::spawn(async move { service.give_write_token_up_when_sent(folder).await });
                 }
-                return Ok(());
+                return;
             }
         }
         self.give_write_token_up().await;
-        Ok(())
     }
 
     /// The token that could write goes; the next one comes from a refresh that asks for
@@ -351,7 +369,8 @@ impl AccountService {
     }
 
     /// The end of a switch to read-only whose folder answered that a request that changes
-    /// OneDrive was still in flight: the folder is asked again, after a short wait
+    /// OneDrive was still in flight: the folder is asked again
+    /// (`PendingUploads::has_request_in_flight`, which holds no door of the folder), after a short wait
     /// ([`REQUEST_IN_FLIGHT_ASKED_AGAIN_AFTER`]), until it answers that none is, and only
     /// then the token goes ([`give_write_token_up`](Self::give_write_token_up)). The
     /// account shows `ModeNote::SwitchingToReadOnly` meanwhile. Ends without giving the
@@ -364,14 +383,10 @@ impl AccountService {
                 self.recompute_mode();
                 return;
             }
-            let held = match folder.upgrade() {
-                Some(folder) => folder.hold_unsent_changes().await,
-                None => break,
-            };
-            if !held.is_request_in_flight {
+            // The folder was switched once; asked again, it only reads what runs.
+            if !folder.upgrade().is_some_and(|folder| folder.has_request_in_flight()) {
                 break;
             }
-            self.state.update(|s| s.set_mode_note(Some(ModeNote::SwitchingToReadOnly { unsent: held.unsent })));
         }
         // Asked once more: the user may have switched back while the folder was asked.
         if self.configured_mode() == Mode::ReadOnly && !self.is_retired() {

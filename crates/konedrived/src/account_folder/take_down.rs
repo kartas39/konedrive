@@ -94,6 +94,17 @@ impl SyncService {
     /// and the files stay.
     /// The folder that was forgotten.
     async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
+        // In a task of its own, all of it: from the moment the state says absent the rest runs to its end whoever
+        // waits — the mount stopped with its write bits given back, the store's files removed, Baloo let in again.
+        let Some(me) = self.me.upgrade() else { return Err(SyncError::Stopping) };
+        match tokio::spawn(async move { me.forget_to_the_end(retire).await }).await {
+            Ok(forgotten) => forgotten,
+            Err(e) => Err(SyncError::Io(format!("the task forgetting the folder failed: {e}"))),
+        }
+    }
+
+    /// [`forget`](Self::forget), in its task.
+    async fn forget_to_the_end(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
         let mut stopped = self.change().await;
         self.restore_in(&mut stopped).await;
         let Some(mut record) = stopped.folder().record().cloned() else {
@@ -327,18 +338,25 @@ impl SyncService {
                 clock.sleep_until(due_at).await;
             }
             let Some(me) = service.upgrade() else { return };
+            // Still the try that was waited for: a `Refresh()` that started the folder, a Forget and the daemon's end
+            // leave another state, and a folder taken down again since has a timer of its own. Looked at under a read
+            // of the folder first: a timer that finds another state stops nothing.
+            let is_waited_for = |folder: &super::folder::Folder| {
+                folder.standing == Standing::Active
+                    && matches!(folder.up().map(|up| &up.sync), Some(Sync::Stopped(Why::TakenDown { attempt: tried, next_try_at: Some(due), .. })) if *tried == attempt && *due == due_at)
+            };
+            if !is_waited_for(&*me.folder.read().await) {
+                return;
+            }
             let mut stopped = me.change().await;
-            if stopped.folder().standing != Standing::Active {
+            // Looked at again under the change: another change may have come between the two.
+            if !is_waited_for(stopped.folder()) {
+                me.start_again(&mut stopped).await;
                 return;
             }
             let now = me.clock.now();
-            // Still the try that was waited for: a `Refresh()` that started the folder, a Forget and the daemon's end
-            // leave another state, and a folder taken down again since has a timer of its own.
-            match stopped.folder_mut().up_mut() {
-                Some(up) if matches!(&up.sync, Sync::Stopped(Why::TakenDown { attempt: tried, next_try_at: Some(due), .. }) if *tried == attempt && *due == due_at) => {
-                    up.take_down_try = Some(TakeDownTry { attempt: attempt.saturating_add(1), started_at: now });
-                }
-                _ => return,
+            if let Some(up) = stopped.folder_mut().up_mut() {
+                up.take_down_try = Some(TakeDownTry { attempt: attempt.saturating_add(1), started_at: now });
             }
             // With nothing kept: the check at start runs.
             me.start_sync(&mut stopped).await;
