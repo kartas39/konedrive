@@ -28,7 +28,7 @@ fn a_binding_taken_over_drops_the_confirmation_and_what_was_asked_of_onedrive() 
     store.step_memory().remember_temporary_name(replaced, &under).unwrap();
     remove(&mut store, replaced);
     let removal = unsent_removal(&mut store, replaced);
-    assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), 1);
+    assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
     let replacing = make_file(&mut store, ROOT, "report.tmp");
     let before = remember_everything_of_a_shown_file(&mut store, replacing);
 
@@ -56,7 +56,7 @@ fn a_file_that_gives_its_binding_up_drops_what_was_asked_of_onedrive_for_it() {
     let (refusal, big) = (refusal_of(&mut store, file, Reason::Forbidden), space_refusal(&mut store, file, 1));
     assert_eq!(remember_session(&mut store, file, &update), Continued);
     assert_eq!(remember_refused(&mut store, file, &refusal), StillSaid);
-    remember_try(&mut store, file, &Reason::Locked, Some(40));
+    let _ = remember_try(&mut store, file, &Reason::Locked, Some(40));
     assert_eq!(remember_space(&mut store, file, &big), StillSaid);
 
     let taker = store.item_store().give_up_binding(file, false).unwrap();
@@ -86,7 +86,7 @@ fn a_directory_that_gives_its_binding_up_leaves_what_was_asked_of_it_with_the_bi
     remove(&mut store, removed);
     let removal = unsent_removal(&mut store, removed);
     let refused_removal = Refusal { reason: Reason::Forbidden, version: RefusedVersion::Removal };
-    store.step_memory().remember_removals_confirmed(&[removal]).unwrap();
+    assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
     assert_eq!(remember_refused(&mut store, removed, &refused_removal), StillSaid);
 
     let taker = store.item_store().give_up_binding(directory, false).unwrap();
@@ -130,4 +130,35 @@ fn the_openings_in_a_row_that_had_the_roots_binding_are_in_the_root() {
     store.step_memory().remember_upload_session_opening(file, &place(listed_first, "report"), 10).unwrap();
     crate::item_store::bindings::bind_root(&store.conn, &reference("R")).unwrap();
     assert_eq!((store.item_store().find_item(listed_first).unwrap(), windows(&mut store, &place(ROOT, "report"))), (None, vec![(10, 10)]));
+}
+
+/// The third review's sequence. A directory is made here as `plans`, and is made in
+/// OneDrive under a temporary name, remembered before the request; the answer is lost. A
+/// listing brings the item under the temporary name, and the row is merged with the
+/// directory. The temporary name is the directory's still: it says where OneDrive has the
+/// item, which nothing agreed on says, and its step finishes the exchange. Merged with an
+/// item OneDrive has under another name, or put over the binding of another file, the
+/// temporary name was not that item's, and goes.
+#[test]
+fn a_new_item_merged_with_the_item_under_its_temporary_name_keeps_the_name() {
+    use crate::item_store::tests::listed_drive::{listed_directory, store_with_listed_root, write_listing_of_changes};
+    for (listed_name, is_kept) in [(".swap", true), ("Plans", false)] {
+        let mut store = store_with_listed_root();
+        let plans = make_directory(&mut store, ROOT, "plans");
+        let under = TemporaryName { name: ".swap".into(), toward: place(ROOT, "plans") };
+        store.step_memory().remember_temporary_name(plans, &under).unwrap();
+        write_listing_of_changes(&mut store, &[listed_directory("N", "R", listed_name, "e-N")]);
+        let listed = store.item_store().find_bound_item(&crate::item_store::tests::listed_drive::reference("N")).unwrap().unwrap().local_item_id;
+        store.item_store().merge_items(plans, listed).unwrap();
+        assert_eq!(kept(&store, plans).temporary_name, is_kept.then(|| under.clone()), "merged with the item OneDrive has as {listed_name}");
+    }
+    // Bound by the item's id alone, before any listing said where OneDrive has it.
+    let mut store = store_with_listed_root();
+    let plans = make_directory(&mut store, ROOT, "plans");
+    let under = TemporaryName { name: ".swap".into(), toward: place(ROOT, "plans") };
+    store.step_memory().remember_temporary_name(plans, &under).unwrap();
+    store.item_store().bind_item(plans, &crate::item_store::tests::listed_drive::reference("N")).unwrap();
+    assert_eq!(kept(&store, plans).temporary_name, Some(under));
+    write_listing_of_changes(&mut store, &[listed_directory("N", "R", "plans", "e-N")]);
+    assert_eq!(kept(&store, plans).temporary_name, None, "a listing says OneDrive has it under another name");
 }

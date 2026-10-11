@@ -48,8 +48,6 @@ enum Fact {
     MismatchedItem,
     TemporaryName,
     FailedTries,
-    /// The failed tries of a step for an item nothing is unsent of: of OneDrive's version.
-    TriesOfOneDriveVersion,
     SpaceRefusal,
     Refusal,
     TakenName,
@@ -57,13 +55,12 @@ enum Fact {
     RemovalRefusal,
 }
 
-const FACTS: [Fact; 11] = [
+const FACTS: [Fact; 10] = [
     Fact::UploadSession,
     Fact::Opening,
     Fact::MismatchedItem,
     Fact::TemporaryName,
     Fact::FailedTries,
-    Fact::TriesOfOneDriveVersion,
     Fact::SpaceRefusal,
     Fact::Refusal,
     Fact::TakenName,
@@ -107,11 +104,17 @@ struct Happening {
     is_removal_confirmed: bool,
     /// A commit wrote the hash of the same bytes.
     is_hash_computed: bool,
-    /// The commit of a step towards the folder, or of the rows alone, was written of the
-    /// item.
-    is_folder_or_row_step_written: bool,
     /// A listing wrote where OneDrive has the item: at this place, or nowhere.
     listed_place: Option<Option<ItemPlace>>,
+    /// A listing ended since the fact was learnt.
+    is_listing_ended: bool,
+    /// A listing put another item under the name a row already said the holder of the
+    /// taken name has.
+    is_other_item_listed_under_taken_name: bool,
+    /// A listing said that the item an upload left has another content, or is gone.
+    is_mismatched_item_listed_changed_or_gone: bool,
+    /// A listing put an item into the item, a directory, that the rows did not say it had.
+    is_item_listed_into_it: bool,
 }
 
 /// What the store says, beside the item's own row, when the cell is over.
@@ -124,6 +127,10 @@ struct RowsAfter {
     /// A row is bound to the item an upload left, and the folder shows it or the two sides
     /// agreed on a place of it.
     is_mismatched_item_of_the_folder: bool,
+    /// A row other than the item's says that OneDrive has an item under the holder's name
+    /// of the taken name, as OneDrive compares names, in the directory the item was sent
+    /// into.
+    is_taken_name_held_in_onedrive: bool,
 }
 
 /// The rules, as one function: what becomes of `fact`, learnt of an item whose row was
@@ -139,20 +146,24 @@ struct RowsAfter {
 ///    request OneDrive confirmed. An upload session that is not answered is queued to be
 ///    cancelled, unless a commit was told it ended.
 ///    A taken name ends with a commit that wrote that OneDrive has the item at that place.
-/// 2. A fact of what OneDrive has: the failed tries of a step for an item nothing is unsent
-///    of are answered while the row has the eTag they were learnt for, until a request of
-///    the item is confirmed or a step towards the folder or of the rows is written; the
-///    temporary name is with the row that has the binding, until a commit or a listing
-///    wrote that OneDrive has the item at another place than the temporary name, or does
-///    not have it; the item an upload left is void once a row the folder has is bound to it,
-///    and is queued for removal when its file's row goes; an opening is of its place, and
-///    with the row that has the directory's binding.
+///    It says too that OneDrive has an item under the name, which is of what OneDrive has:
+///    it ends when a listing ended and no other row says OneDrive has an item under that
+///    name there — a function of the rows —, and when a listing put another item under a
+///    name a row already had. The confirmation of a directory's removal ends when a
+///    listing puts an item into the directory that the rows did not say it had.
+/// 2. A fact of what OneDrive has: the temporary name is with the row that has the
+///    binding, until a commit or a listing wrote that OneDrive has the item at another
+///    place than the temporary name, or does not have it — for a new item, which had no
+///    binding, while its row says no place in OneDrive, or the temporary name's; the item
+///    an upload left is void once a row the folder has is bound to it, or a listing said
+///    it has another content or is gone, and is queued for removal when its file's row
+///    goes; an opening is of its place, and with the row that has the directory's binding.
 fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAfter, happening: &Happening) -> Fate {
     let now = after.row.as_ref();
     match fact {
         Fact::Opening => return if happening.is_directory_binding_changed { Fate::Moved } else { Fate::Answered },
         Fact::MismatchedItem => {
-            return match (after.is_mismatched_item_of_the_folder, now) {
+            return match (after.is_mismatched_item_of_the_folder || happening.is_mismatched_item_listed_changed_or_gone, now) {
                 (true, _) => Fate::Gone,
                 (false, None) => Fate::Queued,
                 (false, Some(_)) => Fate::Answered,
@@ -162,8 +173,15 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
             let temporary = temporary_toward_place(learnt.local.as_ref().and_then(|local| local.place.clone()).expect("learnt of a shown item"), learnt.local_item_id);
             let temporary_place = ItemPlace { parent_local_item_id: temporary.toward.parent_local_item_id, name: temporary.name };
             return match (learnt.onedrive_item.is_some(), after.holder_of_learnt_binding) {
-                // It was of no item of OneDrive, and the row has another binding now.
-                (false, _) if happening.is_item_binding_changed => Fate::Gone,
+                // It was of no item of OneDrive: it says where OneDrive has the item the row
+                // is bound to since, while the row says no place in OneDrive or that one.
+                (false, _) => match now.map(|now| (now.onedrive_item.is_some(), now.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()))) {
+                    None => Fate::Gone,
+                    Some(_) if !happening.is_item_binding_changed => Fate::Answered,
+                    Some((true, None)) => Fate::Answered,
+                    Some((true, Some(at))) if *at == temporary_place => Fate::Answered,
+                    Some(_) => Fate::Gone,
+                },
                 (true, Some(holder)) if holder != learnt.local_item_id => Fate::Moved,
                 (true, None) => Fate::Gone,
                 _ if now.is_none() => Fate::Gone,
@@ -172,13 +190,6 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
                 _ if happening.listed_place.as_ref().is_some_and(|listed| listed.as_ref().is_none_or(|to| *to != temporary_place && Some(to) != learnt.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()))) => Fate::Gone,
                 _ => Fate::Answered,
             };
-        }
-        Fact::TriesOfOneDriveVersion => {
-            let is_answered = now.is_some_and(|now| now.onedrive_etag == learnt.onedrive_etag)
-                && !happening.is_item_binding_changed
-                && !happening.is_request_confirmed
-                && !happening.is_folder_or_row_step_written;
-            return if is_answered { Fate::Answered } else { Fate::Gone };
         }
         _ => {}
     }
@@ -198,10 +209,15 @@ fn decide_fate_by_rule(fact: Fact, kind: ItemKind, learnt: &Item, after: &RowsAf
         Fact::UploadSession => !happening.is_session_ended && has_same_bytes && (learnt.onedrive_item.is_some() || is_in_same_directory_of_onedrive),
         Fact::SpaceRefusal => has_same_bytes,
         Fact::Refusal => is_at_same_place && (kind == ItemKind::Directory || has_same_bytes) && is_in_same_directory_of_onedrive,
-        Fact::TakenName => is_at_same_place && is_in_same_directory_of_onedrive && happening.confirmed_move.as_ref() != learnt_local.and_then(|local| local.place.as_ref()),
+        Fact::TakenName => {
+            let is_said_by_the_item = is_at_same_place && is_in_same_directory_of_onedrive && happening.confirmed_move.as_ref() != learnt_local.and_then(|local| local.place.as_ref());
+            let is_said_by_onedrive = (after.is_taken_name_held_in_onedrive || !happening.is_listing_ended) && !happening.is_other_item_listed_under_taken_name;
+            is_said_by_the_item && is_said_by_onedrive
+        }
         Fact::FailedTries => !happening.is_request_confirmed,
-        Fact::RemovalConfirmation | Fact::RemovalRefusal => true,
-        Fact::Opening | Fact::MismatchedItem | Fact::TemporaryName | Fact::TriesOfOneDriveVersion => unreachable!("decided above"),
+        Fact::RemovalConfirmation => !happening.is_item_listed_into_it,
+        Fact::RemovalRefusal => true,
+        Fact::Opening | Fact::MismatchedItem | Fact::TemporaryName => unreachable!("decided above"),
     };
     if is_answered {
         Fate::Answered
@@ -272,11 +288,22 @@ enum Operation {
     ListedWithAnotherContent,
     ListedGone,
     ListedAnotherItemAtItsName,
+    // A listing says something of the item that holds the name the item was sent under.
+    ListedTheHolderGone,
+    ListedTheHolderUnderAnotherName,
+    ListedTheHolderWithAnotherContent,
+    ListedAnotherItemUnderTheHoldersName,
+    /// The holder was never listed, and a listing of other items ends.
+    ListedNothingOfTheHolder,
+    ListedTheItemUnderItsTemporaryNameAndMerged,
     ListedTheMismatchedItem,
+    ListedTheMismatchedItemWithAnotherContent,
+    ListedTheMismatchedItemGone,
     ListedTheMismatchedItemAndShownIt,
     ShownTheMismatchedItemAndRemovedHere,
     RemovedHereAndShownTheMismatchedItem,
     // Of an item removed here.
+    ListedAnItemIntoIt,
     ShownAgain,
     ShownAgainAndRemovedAgain,
     MadeAgain,
@@ -291,7 +318,7 @@ enum Operation {
 
 use Operation::*;
 
-const OPERATIONS: [Operation; 68] = [
+const OPERATIONS: [Operation; 77] = [
     Renamed,
     RenamedAndRenamedBack,
     MovedBackToSyncedPlace,
@@ -346,10 +373,19 @@ const OPERATIONS: [Operation; 68] = [
     ListedWithAnotherContent,
     ListedGone,
     ListedAnotherItemAtItsName,
+    ListedTheHolderGone,
+    ListedTheHolderUnderAnotherName,
+    ListedTheHolderWithAnotherContent,
+    ListedAnotherItemUnderTheHoldersName,
+    ListedNothingOfTheHolder,
+    ListedTheItemUnderItsTemporaryNameAndMerged,
     ListedTheMismatchedItem,
+    ListedTheMismatchedItemWithAnotherContent,
+    ListedTheMismatchedItemGone,
     ListedTheMismatchedItemAndShownIt,
     ShownTheMismatchedItemAndRemovedHere,
     RemovedHereAndShownTheMismatchedItem,
+    ListedAnItemIntoIt,
     ShownAgain,
     ShownAgainAndRemovedAgain,
     MadeAgain,
@@ -382,12 +418,19 @@ fn shapes_for(operation: Operation, kind: ItemKind) -> &'static [Shape] {
             SHOWN
         }
         RemovedAndMadeAgain | CommitTakeOneDriveContent | CommitAgreeOnContent if is_file => BOUND_AND_SHOWN,
-        Merged | BoundFirst | BoundAndMerged | MergedAndGaveUpBinding | CommitSendNewItem | CommitSendNewItemAndMerged | CommitMergeItems | ListedAnotherItemAtItsName => &[New],
+        Merged | BoundFirst | BoundAndMerged | MergedAndGaveUpBinding | CommitSendNewItem | CommitSendNewItemAndMerged | CommitMergeItems | ListedAnotherItemAtItsName
+        | ListedTheItemUnderItsTemporaryNameAndMerged => &[New],
+        // The holder of a name is another item than the one sent under it: a new item, or
+        // one renamed here.
+        ListedTheHolderGone | ListedTheHolderUnderAnotherName | ListedTheHolderWithAnotherContent | ListedAnotherItemUnderTheHoldersName | ListedNothingOfTheHolder => &[New, Shape::Moved],
+        ListedAnItemIntoIt if !is_file => &[Removed],
         MergedWithTheMismatchedItemAndSavedOver
         | CommitSendNewFileThatIsTheMismatchedItem
         | CommitSendNewFileChangedMeanwhile
         | CommitSendNewFileUnderItsSessionsName
         | ListedTheMismatchedItem
+        | ListedTheMismatchedItemWithAnotherContent
+        | ListedTheMismatchedItemGone
         | ListedTheMismatchedItemAndShownIt
         | ShownTheMismatchedItemAndRemovedHere
         | RemovedHereAndShownTheMismatchedItem
@@ -549,16 +592,12 @@ impl Scene {
             }
             Fact::MismatchedItem => {
                 let _ = is_file.then_some(())?;
-                store.step_memory().remember_mismatched_item(id, &mismatched_item()).unwrap();
+                assert_eq!(store.step_memory().remember_mismatched_item(id, &mismatched_item()).unwrap(), LeftToRemove);
             }
             Fact::TemporaryName => {
                 store.step_memory().remember_temporary_name(id, &temporary_toward_place(at?, id)).unwrap();
             }
-            Fact::FailedTries => assert_eq!(remember_try(store, id, unsent_since?), Some(1)),
-            Fact::TriesOfOneDriveVersion => {
-                let _ = (unsent_since.is_none() && row.onedrive_etag.is_some()).then_some(())?;
-                assert_eq!(remember_try_of_onedrive_version(store, &row), Some(1));
-            }
+            Fact::FailedTries => assert_eq!(remember_try(store, id, unsent_since?), Counted(1)),
             Fact::SpaceRefusal => {
                 let _ = (is_file && is_shown).then_some(())?;
                 let refused = space_refusal(store, id, 1);
@@ -571,12 +610,12 @@ impl Scene {
             }
             Fact::TakenName => {
                 let _ = is_shown.then_some(())?;
-                let taken = taken_at(store, id, "REPORT");
+                let taken = taken_at(store, id, &holder_name(at.as_ref()?));
                 assert_eq!(remember_taken(store, id, unsent_since?, &taken), StillSaid);
             }
             Fact::RemovalConfirmation => {
                 let removal = UnsentRemoval::of(&row)?;
-                assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), 1);
+                assert_eq!(store.step_memory().remember_removals_confirmed(&[removal]).unwrap(), []);
             }
             Fact::RemovalRefusal => {
                 let removal = UnsentRemoval::of(&row)?;
@@ -600,14 +639,14 @@ fn remember_session(store: &mut TreeStore, id: LocalItemId, unsent_since: u64, s
     store.step_memory().remember_upload_session(id, Some(unsent_since), session).unwrap()
 }
 
-fn remember_try(store: &mut TreeStore, id: LocalItemId, unsent_since: u64) -> Option<u32> {
-    store.step_memory().remember_failed_try(id, Some(&TriedChange::Unsent { unsent_since }), &Reason::Network, Some(60)).unwrap()
+fn remember_try(store: &mut TreeStore, id: LocalItemId, unsent_since: u64) -> FailedTryStanding {
+    store.step_memory().remember_failed_try(id, Some(unsent_since), &Reason::Network, Some(60)).unwrap()
 }
 
-fn remember_try_of_onedrive_version(store: &mut TreeStore, row: &Item) -> Option<u32> {
-    let tried = TriedChange::of_versions(&ItemVersions::of(row));
-    assert!(matches!(tried, Some(TriedChange::OfOneDrive { .. })));
-    store.step_memory().remember_failed_try(row.local_item_id, tried.as_ref(), &Reason::Network, Some(60)).unwrap()
+/// The name of the item OneDrive answered has the name an item at `at` was sent under: the
+/// same name in other letters, which is one name to OneDrive.
+fn holder_name(at: &ItemPlace) -> String {
+    at.name.to_str().expect("the cells' names are UTF-8").to_uppercase()
 }
 
 fn remember_space(store: &mut TreeStore, id: LocalItemId, unsent_since: u64, refused: &SpaceRefusal) -> FactStanding {
@@ -664,9 +703,13 @@ fn prepare(scene: &mut Scene, operation: Operation) {
         CommitRemoveItem | CommitAgreeOnRemoval => write_listing_of_changes(store, &[listed_gone("X")]),
         CommitAgreeOnPlace => write_listing_of_changes(store, &[listed(kind, "X", "moved", "e-X2")]),
         CommitSendRemovalOfTheDirectory => remove(store, directory),
+        ListedTheHolderGone | ListedTheHolderUnderAnotherName | ListedTheHolderWithAnotherContent | ListedAnotherItemUnderTheHoldersName => {
+            let at = item(store, id).local.and_then(|local| local.place).expect("shown");
+            write_listing_of_changes(store, &[listed_file("H", "D", &holder_name(&at), (5, "h-H"), "e-H")]);
+        }
+        ListedTheMismatchedItemGone => write_listing_of_changes(store, &[listed_file(MISMATCHED, "D", "left", (0, "h-BAD"), "e-BAD")]),
         _ => {}
     }
-    let _ = id;
 }
 
 /// The operation of the cell, after the fact was learnt.
@@ -841,6 +884,38 @@ fn act(scene: &mut Scene, operation: Operation) {
             scene.happening.listed_place = Some(None);
         }
         ListedAnotherItemAtItsName => scene.step(|store| write_listing_of_changes(store, &[listed(kind, "N", "report", "e-N2")])),
+        ListedTheHolderGone => scene.step(|store| write_listing_of_changes(store, &[listed_gone("H")])),
+        ListedTheHolderUnderAnotherName => scene.step(|store| write_listing_of_changes(store, &[listed_file("H", "D", "minutes", (5, "h-H"), "e-H2")])),
+        ListedTheHolderWithAnotherContent => {
+            let name = holder_name(&at());
+            scene.step(|store| write_listing_of_changes(store, &[listed_file("H", "D", &name, (6, "h-H2"), "e-H2")]));
+        }
+        ListedAnotherItemUnderTheHoldersName => {
+            let name = holder_name(&at()).to_lowercase();
+            scene.step(|store| write_listing_of_changes(store, &[listed_file("H2", "D", &format!("{}{}", &name[..1].to_uppercase(), &name[1..]), (6, "h-H2"), "e-H2")]));
+            scene.happening.is_other_item_listed_under_taken_name = true;
+        }
+        ListedNothingOfTheHolder => scene.step(|store| write_listing_of_changes(store, &[listed_file("O", "D", "unrelated", (1, "h-O"), "e-O")])),
+        ListedTheItemUnderItsTemporaryNameAndMerged => {
+            let name = temporary_toward_place(at(), id).name.to_str().unwrap().to_owned();
+            scene.step(|store| write_listing_of_changes(store, &[listed(kind, "N", &name, "e-N")]));
+            scene.step(|store| {
+                let listed = bound_row(store, "N");
+                store.item_store().merge_items(id, listed).unwrap();
+            });
+        }
+        ListedTheMismatchedItemWithAnotherContent => {
+            scene.step(|store| write_listing_of_changes(store, &[listed_file(MISMATCHED, "D", "left", (4, "h-theirs"), "e-BAD2")]));
+            scene.happening.is_mismatched_item_listed_changed_or_gone = true;
+        }
+        ListedTheMismatchedItemGone => {
+            scene.step(|store| write_listing_of_changes(store, &[listed_gone(MISMATCHED)]));
+            scene.happening.is_mismatched_item_listed_changed_or_gone = true;
+        }
+        ListedAnItemIntoIt => {
+            scene.step(|store| write_listing_of_changes(store, &[listed_file("C", "X", "new", (1, "h-C"), "e-C")]));
+            scene.happening.is_item_listed_into_it = true;
+        }
         ListedTheMismatchedItem | ListedTheMismatchedItemAndShownIt | ShownTheMismatchedItemAndRemovedHere | RemovedHereAndShownTheMismatchedItem => {
             if operation == RemovedHereAndShownTheMismatchedItem {
                 scene.step(|store| remove(store, id));
@@ -895,24 +970,27 @@ fn act(scene: &mut Scene, operation: Operation) {
         CommitForgetSyncedVersion => scene.step(|store| is_written(store.item_store().commit_forget_synced_version(&planned_from))),
         CommitAgreeOnRemoval => scene.step(|store| is_written(store.item_store().commit_agree_on_removal(&planned_from))),
     }
-    scene.happening.is_folder_or_row_step_written = matches!(
+    scene.happening.is_listing_ended = matches!(
         operation,
-        CommitMoveItem
-            | CommitTakeMoveBack
-            | CommitTakeOneDriveContent
-            | CommitAgreeOnContent
-            | CommitRemoveItem
-            | CommitDownloadContent
-            | CommitRenameToConflictCopy
-            | CommitMoveToTemporaryName
-            | CommitHashLocalContent
-            | CommitAgreeOnPlace
-            | CommitForgetSyncedVersion
-            | CommitAgreeOnRemoval
-            | ShownAgain
-            | ShownAgainAndRemovedAgain
-            | ShownAgainAndGaveUpBinding
-            | ShownAgainAndCeasedToBeShown
+        ListedAtAnotherPlace
+            | ListedAtItsTemporaryName
+            | ListedWithAnotherContent
+            | ListedGone
+            | ListedAnotherItemAtItsName
+            | ListedTheHolderGone
+            | ListedTheHolderUnderAnotherName
+            | ListedTheHolderWithAnotherContent
+            | ListedAnotherItemUnderTheHoldersName
+            | ListedNothingOfTheHolder
+            | ListedTheItemUnderItsTemporaryNameAndMerged
+            | ListedTheMismatchedItem
+            | ListedTheMismatchedItemWithAnotherContent
+            | ListedTheMismatchedItemGone
+            | ListedTheMismatchedItemAndShownIt
+            | ShownTheMismatchedItemAndRemovedHere
+            | RemovedHereAndShownTheMismatchedItem
+            | MergedWithTheMismatchedItemAndSavedOver
+            | ListedAnItemIntoIt
     );
     // The folder took OneDrive's removal of the item: OneDrive has it nowhere.
     if operation == CommitRemoveItem {
@@ -927,8 +1005,7 @@ fn holds(memory: &ItemMemory, fact: Fact) -> bool {
         Fact::Opening => false,
         Fact::MismatchedItem => memory.mismatched_item.is_some(),
         Fact::TemporaryName => memory.temporary_name.is_some(),
-        Fact::FailedTries => matches!(&memory.failed_tries, Some(FailedTries { tried: TriedChange::Unsent { .. }, .. })),
-        Fact::TriesOfOneDriveVersion => matches!(&memory.failed_tries, Some(FailedTries { tried: TriedChange::OfOneDrive { .. }, .. })),
+        Fact::FailedTries => memory.failed_tries.is_some(),
         Fact::SpaceRefusal => memory.space_refusal.is_some(),
         Fact::Refusal => memory.refusal.as_ref().is_some_and(|refusal| !is_removal_refusal(refusal)),
         Fact::TakenName => memory.taken_name.is_some(),
@@ -957,7 +1034,7 @@ fn list_other_holders(store: &TreeStore, id: LocalItemId, fact: Fact) -> Vec<Loc
 fn is_listed(store: &mut TreeStore, id: LocalItemId, fact: Fact, at: Option<&ItemPlace>) -> Option<bool> {
     let memory = store.step_memory();
     Some(match fact {
-        Fact::FailedTries | Fact::TriesOfOneDriveVersion => memory.list_timed_waits(100).unwrap().iter().any(|wait| wait.item == id),
+        Fact::FailedTries => memory.list_timed_waits(100).unwrap().iter().any(|wait| wait.item == id),
         Fact::Refusal | Fact::RemovalRefusal => memory.list_refusal_reasons(None, None, 100).unwrap().iter().any(|refused| refused.item == id),
         Fact::SpaceRefusal => memory.list_space_refusal_reasons(None, 100).unwrap().iter().any(|refused| refused.item == id),
         Fact::RemovalConfirmation => memory.list_items_with_confirmed_removal(None, 100).unwrap().contains(&id),
@@ -1046,7 +1123,13 @@ fn read_rows_after(scene: &mut Scene) -> RowsAfter {
     let store = &mut scene.store;
     let holder_of_learnt_binding = learnt_binding.and_then(|binding| store.item_store().find_bound_item(&binding).unwrap()).map(|holder| holder.local_item_id);
     let mismatched = store.item_store().find_bound_item(&reference(MISMATCHED)).unwrap();
-    RowsAfter { row, holder_of_learnt_binding, is_mismatched_item_of_the_folder: mismatched.is_some_and(|holder| holder.local.is_some() || holder.synced_place.is_some()) }
+    let item = scene.item;
+    let sent_at = scene.learnt.as_ref().and_then(|learnt| learnt.local.as_ref()).and_then(|local| local.place.clone());
+    let is_taken_name_held_in_onedrive = sent_at.is_some_and(|at| {
+        let holders = store.item_store().list_children_in_onedrive_with_folded_name(at.parent_local_item_id, &crate::FoldedName::of(OsStr::new(&holder_name(&at)))).unwrap();
+        holders.iter().any(|holder| holder.local_item_id != item)
+    });
+    RowsAfter { row, holder_of_learnt_binding, is_mismatched_item_of_the_folder: mismatched.is_some_and(|holder| holder.local.is_some() || holder.synced_place.is_some()), is_taken_name_held_in_onedrive }
 }
 
 /// One cell: the fate the rule gives and the fate found, with what is wrong of it; `None`

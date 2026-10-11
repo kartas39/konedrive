@@ -86,8 +86,8 @@ mod upload_session_openings;
 
 pub(crate) use item_memory::ConfirmedRequest;
 pub use item_memory::{
-    is_content_of, FactStanding, FailedTries, ItemMemory, ItemMemoryParts, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, TakenName,
-    TemporaryName, TriedChange, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    is_content_of, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, MismatchedItem, MismatchedItemStanding, Refusal, RefusedVersion, RemovalConfirmation, SpaceFit, SpaceRefusal,
+    StepFact, TakenName, TemporaryName, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
 };
 pub use refusal_reasons::ItemRefusalReason;
 pub use upload_session_openings::{OpeningTry, OpeningWindow, UPLOAD_SESSION_OPENING_KEPT};
@@ -98,7 +98,7 @@ pub(crate) use upload_session_cancellations::list_cancellations as list_upload_s
 pub(crate) use upload_session_openings::{forget_openings_at, forget_openings_before, list_opening_windows, settle_answered_opening};
 
 use memory_row::{folded_name_value, list_memories, read_memory, write_memory};
-use mismatched_item_removals::{find_removal, forget_removal, is_item_of_folder, list_files_of};
+use mismatched_item_removals::{find_removal, forget_removal, is_item_of_folder, leave_removal, list_files_of};
 use upload_session_cancellations::{abandon, abandon_address, forget_cancellation, list_cancellations_at, move_empty_files};
 use upload_session_openings::{forget_opening_of, move_openings, remember_opening};
 
@@ -121,7 +121,39 @@ pub(crate) fn schema() -> String {
         upload_session_cancellations::ITEM_GONE_STATEMENTS,
         mismatched_item_removals::item_gone_statements(),
         upload_session_openings::ITEM_GONE_STATEMENTS,
-        memory_row::ITEM_GONE_STATEMENTS,
+        memory_row::item_gone_statements(),
+    ) + &taken_name_triggers()
+}
+
+/// The two triggers that hold "a name found taken is void once OneDrive answered again
+/// about that name", whoever writes the row — a listing's page, a full listing's sweep, a
+/// removal that takes what is below a directory, the commit of a step OneDrive confirmed a
+/// move or a removal to — and in that writer's transaction:
+///
+/// - `taken_name_holder_left`: a row's place in OneDrive is no more the one it was. Every
+///   taken name at the place it left, the holder's name compared as OneDrive compares
+///   names, is forgotten: the item that held the name was moved, renamed or removed.
+/// - `taken_name_other_item_came`: a row is given a place in OneDrive that another row has
+///   already. OneDrive said that another item has the name now; every taken name there is
+///   forgotten, and the plan decides from the rows.
+///
+/// A row that is given the place first — the holder itself, listed after the answer —
+/// forgets nothing: the rows then say what the taken name says. A binding that moves to
+/// another row moves the place with it, and no row is left or joined by that.
+fn taken_name_triggers() -> String {
+    let is_another_place = "(NEW.onedrive_parent_id IS NOT OLD.onedrive_parent_id OR NEW.onedrive_folded_name IS NOT OLD.onedrive_folded_name)";
+    let cleared = memory_row::TAKEN_NAME_CLEARED;
+    format!(
+        "
+         CREATE TRIGGER taken_name_holder_left AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items
+             WHEN OLD.onedrive_parent_id IS NOT NULL AND {is_another_place} BEGIN
+             UPDATE step_memory SET {cleared} WHERE taken_parent_id = OLD.onedrive_parent_id AND taken_holder_folded_name = OLD.onedrive_folded_name;
+         END;
+         CREATE TRIGGER taken_name_other_item_came AFTER UPDATE OF onedrive_parent_id, onedrive_folded_name ON items
+             WHEN NEW.onedrive_parent_id IS NOT NULL AND {is_another_place} AND EXISTS (SELECT 1 FROM items
+                  WHERE onedrive_parent_id = NEW.onedrive_parent_id AND onedrive_folded_name = NEW.onedrive_folded_name AND local_item_id != NEW.local_item_id) BEGIN
+             UPDATE step_memory SET {cleared} WHERE taken_parent_id = NEW.onedrive_parent_id AND taken_holder_folded_name = NEW.onedrive_folded_name;
+         END;"
     )
 }
 
@@ -183,9 +215,9 @@ impl StepMemory<'_> {
         find_item_memory(&self.store.conn, item)
     }
 
-    /// The items that wait until a time, soonest first, at most `limit` of them. Found by an
-    /// index; an item whose row is not what the tries were of any more — another unsent
-    /// change or none, another version of OneDrive — is not among them.
+    /// The items whose step towards OneDrive waits until a time, soonest first, at most
+    /// `limit` of them. Found by an index; an item whose row is not the unsent change the
+    /// tries were of any more — another, or none — is not among them.
     pub fn list_timed_waits(&self, limit: usize) -> Result<Vec<TimedWait>, TreeError> {
         list_timed_waits(&self.store.conn, limit)
     }
@@ -310,9 +342,10 @@ impl StepMemory<'_> {
     /// The session of `item` at `address` got as far as `next_offset`, and ends by itself at
     /// `expires_at`. *Abandoned* when the item's row does not say that session any more, or
     /// the item has none at that address, or no row: nothing is written, the cancel of the
-    /// session at `address` is left to send, and the step sends nothing more to it. Refused,
-    /// with nothing queued, when `address` is the session another item's memory keeps: the
-    /// caller named the wrong item, and that session is not this call's to cancel.
+    /// session at `address` is left to send, and the step sends nothing more to it.
+    /// *OfAnotherItem*, with nothing written and nothing queued, when `address` is the
+    /// session another item's memory keeps: the caller named the wrong item, and that
+    /// session is not this call's to cancel.
     pub fn advance_upload_session(&mut self, item: LocalItemId, address: &UploadSessionAddress, next_offset: u64, expires_at: Option<i64>) -> Result<UploadSessionStanding, TreeError> {
         self.write(|tx| advance_upload_session(tx, item, address, next_offset, expires_at))
     }
@@ -323,11 +356,15 @@ impl StepMemory<'_> {
         self.write(|tx| abandon_upload_session(tx, item))
     }
 
-    /// The session at `address` ended — OneDrive answered its last fragment, answered that
-    /// it does not have the session, or the time it said the session ends at has passed —
-    /// and is forgotten: of `item` when it is the
-    /// item's, and among the cancellations. Nothing is left to cancel. Another session the
-    /// item has stays. For a session given up, [`abandon_upload_session`](Self::abandon_upload_session).
+    /// The session of `item` at `address` ended — OneDrive answered its last fragment,
+    /// answered that it does not have the session, or the time it said the session ends at
+    /// has passed — and is forgotten, with nothing left to cancel. As
+    /// [`advance_upload_session`](Self::advance_upload_session), it acts on the session the
+    /// item's memory keeps and on no other: another session the item has stays, a session
+    /// another item keeps stays, and a cancel that was left of `address` before stays for
+    /// the loop that sends the cancels, which is answered that the session is gone and
+    /// forgets it ([`forget_upload_session_cancellation`](Self::forget_upload_session_cancellation)).
+    /// For a session given up, [`abandon_upload_session`](Self::abandon_upload_session).
     pub fn forget_ended_upload_session(&mut self, item: LocalItemId, address: &UploadSessionAddress) -> Result<(), TreeError> {
         self.write(|tx| forget_ended_upload_session(tx, item, address))
     }
@@ -339,9 +376,12 @@ impl StepMemory<'_> {
     }
 
     /// An upload of `item` left `upload` in OneDrive with other content than was sent: kept
-    /// before its removal is asked. Nothing is kept of an item the folder has. Refused for
-    /// an id with no row.
-    pub fn remember_mismatched_item(&mut self, item: LocalItemId, upload: &MismatchedItem) -> Result<(), TreeError> {
+    /// before its removal is asked. *OfFolder*, with nothing kept, for an item the folder
+    /// has: its removal is not asked. An item an earlier upload of the same file left, kept
+    /// until now, is left to remove by itself
+    /// ([`list_mismatched_item_removals`](Self::list_mismatched_item_removals)). Refused
+    /// for an id with no row.
+    pub fn remember_mismatched_item(&mut self, item: LocalItemId, upload: &MismatchedItem) -> Result<MismatchedItemStanding, TreeError> {
         self.write(|tx| remember_mismatched_item(tx, item, upload))
     }
 
@@ -361,16 +401,15 @@ impl StepMemory<'_> {
         self.write(|tx| remember_temporary_name(tx, item, temporary_name))
     }
 
-    /// A try of the step of `item` to carry over `tried` failed for `reason`; the next is
-    /// due at `next_try_at`, or at once. `tried` is what the versions the step was planned
-    /// from say ([`TriedChange::of_versions`]): the unsent change by its stamp, or, for an
-    /// item nothing was unsent of, OneDrive's version by its eTag. The count of tries of
-    /// that change, with this one; `None`, with nothing written, when the row is not that
-    /// change any more — another stamp or none, another eTag — or none was given: the
-    /// tries of one piece of work are not counted on to the next. Refused for an id with no
-    /// row.
-    pub fn remember_failed_try(&mut self, item: LocalItemId, tried: Option<&TriedChange>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
-        self.write(|tx| remember_failed_try(tx, item, tried, reason, next_try_at))
+    /// A try of the step of `item` towards OneDrive, planned from a row stamped
+    /// `unsent_since`, failed for `reason`; the next is due at `next_try_at`, or at once.
+    /// *Counted*, with how many tries of that unsent change failed, this one among them.
+    /// *ChangeGone*, with nothing written, when the row has another stamp or none: the
+    /// tries of one piece of work are not counted on to the next. Only a step towards
+    /// OneDrive gives its tries here: the tries of a step towards the folder or of the rows
+    /// are the plan's task's, for its run. Refused for an id with no row.
+    pub fn remember_failed_try(&mut self, item: LocalItemId, unsent_since: Option<u64>, reason: &Reason, next_try_at: Option<i64>) -> Result<FailedTryStanding, TreeError> {
+        self.write(|tx| remember_failed_try(tx, item, unsent_since, reason, next_try_at))
     }
 
     /// Every item that waits until a time is due now, with its count and its reason kept:
@@ -395,9 +434,9 @@ impl StepMemory<'_> {
     }
 
     /// The user confirmed `removals`, which a mass removal held: written of each whose row
-    /// is still that removal, with the stamp it was held with, and of no other. How many
-    /// were written.
-    pub fn remember_removals_confirmed(&mut self, removals: &[UnsentRemoval]) -> Result<usize, TreeError> {
+    /// is still that removal, with the stamp it was held with, and of no other. Those that
+    /// were not written, each a row that is another removal by now, or none.
+    pub fn remember_removals_confirmed(&mut self, removals: &[UnsentRemoval]) -> Result<Vec<UnsentRemoval>, TreeError> {
         self.write(|tx| remember_removals_confirmed(tx, removals))
     }
 
@@ -447,14 +486,12 @@ pub(crate) fn find_item_memory(conn: &Connection, item: LocalItemId) -> Result<I
 
 /// [`StepMemory::list_timed_waits`], inside the caller's transaction.
 pub(crate) fn list_timed_waits(conn: &Connection, limit: usize) -> Result<Vec<TimedWait>, TreeError> {
-    // The tries are asked what they are tries of and nothing more, so the rows are asked in
-    // the statement: the stamp for those of an unsent change, the eTag for those of
-    // OneDrive's version.
+    // The tries are asked the stamp and nothing more, so the rows are asked in the
+    // statement.
     let mut statement = conn.prepare_cached(
         "SELECT local_item_id, next_try_at FROM step_memory INDEXED BY step_memory_next_try
           WHERE next_try_at IS NOT NULL
-            AND ((tries_onedrive_etag IS NULL AND unsent_since = (SELECT unsent_since FROM items WHERE items.local_item_id = step_memory.local_item_id))
-              OR (tries_onedrive_etag IS NOT NULL AND tries_onedrive_etag = (SELECT onedrive_etag FROM items WHERE items.local_item_id = step_memory.local_item_id)))
+            AND unsent_since = (SELECT unsent_since FROM items WHERE items.local_item_id = step_memory.local_item_id)
           ORDER BY next_try_at, local_item_id LIMIT ?1",
     )?;
     let waits = statement.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| Ok(TimedWait { item: LocalItemId::new(row.get(0)?), until: row.get(1)? }))?;
@@ -623,7 +660,8 @@ pub(crate) fn remember_upload_session(conn: &Connection, item: LocalItemId, unse
 /// [`StepMemory::advance_upload_session`], inside the caller's transaction.
 pub(crate) fn advance_upload_session(conn: &Connection, item: LocalItemId, address: &UploadSessionAddress, next_offset: u64, expires_at: Option<i64>) -> Result<UploadSessionStanding, TreeError> {
     if let Some((holder, _)) = list_memories(conn, "session_address = ?1", &[address.as_str().to_owned().into()])?.into_iter().find(|(holder, _)| *holder != item) {
-        return Err(refuse(format!("the upload session is item {holder}'s, not item {item}'s: it is not advanced, and not cancelled")));
+        tracing::warn!("the upload session is item {holder}'s, not item {item}'s: it is not advanced, and not cancelled");
+        return Ok(UploadSessionStanding::OfAnotherItem);
     }
     let advanced = change_memory(conn, item, |_, memory| match memory.upload_session.as_mut().filter(|session| &session.address == address) {
         Some(session) => {
@@ -661,7 +699,6 @@ fn take_ended_session(conn: &Connection, item: LocalItemId, has_ended: impl FnOn
 /// [`StepMemory::forget_ended_upload_session`], inside the caller's transaction.
 pub(crate) fn forget_ended_upload_session(conn: &Connection, item: LocalItemId, address: &UploadSessionAddress) -> Result<(), TreeError> {
     take_ended_session(conn, item, |session| &session.address == address)?;
-    forget_cancellation(conn, address)?;
     take_away_what_is_gone(conn, item)
 }
 
@@ -678,14 +715,55 @@ pub(crate) fn forget_upload_session_cancellation(conn: &Connection, address: &Up
 }
 
 /// [`StepMemory::remember_mismatched_item`], inside the caller's transaction.
-pub(crate) fn remember_mismatched_item(conn: &Connection, item: LocalItemId, upload: &MismatchedItem) -> Result<(), TreeError> {
+pub(crate) fn remember_mismatched_item(conn: &Connection, item: LocalItemId, upload: &MismatchedItem) -> Result<MismatchedItemStanding, TreeError> {
     let is_of_folder = is_item_of_folder(conn, &upload.item)?;
     write_fact(conn, item, |_, memory| {
-        if !is_of_folder {
-            memory.mismatched_item = Some(upload.clone());
+        if is_of_folder {
+            return Ok(MismatchedItemStanding::OfFolder);
         }
-        Ok(())
+        // The item an earlier upload of the file left is in OneDrive still: it is left to
+        // remove by itself, as it is when the file's row goes.
+        if let Some(earlier) = memory.mismatched_item.replace(upload.clone()).filter(|earlier| earlier.item != upload.item) {
+            if !is_item_of_folder(conn, &earlier.item)? {
+                leave_removal(conn, &earlier)?;
+            }
+        }
+        Ok(MismatchedItemStanding::LeftToRemove)
     })
+}
+
+/// A listing wrote that OneDrive has the item `onedrive_item` with these tags: in the
+/// listing's transaction. When an upload of this folder left that item and the tag of the
+/// upload's answer is another one now, another client wrote the item since: it is not what
+/// the upload left any more, and is forgotten wherever it is kept.
+pub(crate) fn forget_mismatched_item_listed_changed(conn: &Connection, onedrive_item: &OneDriveItemReference, ctag: Option<&str>, etag: Option<&str>) -> Result<(), TreeError> {
+    let kept = match list_files_of(conn, onedrive_item)?.into_iter().next() {
+        Some(file) => read_memory(conn, file)?.mismatched_item,
+        None => find_removal(conn, onedrive_item)?,
+    };
+    if kept.is_some_and(|kept| kept.is_listed_changed(ctag, etag)) {
+        forget_mismatched_item(conn, onedrive_item)?;
+    }
+    Ok(())
+}
+
+/// A listing wrote that the item `directory` of OneDrive, or a directory OneDrive has it
+/// below, has an item in it that the rows did not say it had: in the listing's
+/// transaction. The user's confirmation of the removal of each of those directories is
+/// forgotten: it was given for what OneDrive had below the directory then, and the guard
+/// against a mass removal asks again for what it has now. Nothing is read while no
+/// confirmation is kept.
+pub(crate) fn forget_removal_confirmations_above(conn: &Connection, directory: LocalItemId) -> Result<(), TreeError> {
+    if !conn.prepare_cached("SELECT EXISTS (SELECT 1 FROM step_memory WHERE is_removal_confirmed IS NOT NULL)")?.query_row([], |row| row.get::<_, bool>(0))? {
+        return Ok(());
+    }
+    // A directory may be below what is below it between two pages: each is met once.
+    let (mut at, mut met) = (Some(directory), std::collections::BTreeSet::new());
+    while let Some(above) = at.filter(|above| met.insert(*above)) {
+        change_kept_memory(conn, above, |memory| memory.removal_confirmation = None)?;
+        at = find_item(conn, above)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.place).map(|place| place.parent_local_item_id);
+    }
+    Ok(())
 }
 
 /// [`StepMemory::find_mismatched_item`], inside the caller's transaction.
@@ -720,42 +798,23 @@ pub(crate) fn remember_temporary_name(conn: &Connection, item: LocalItemId, temp
 }
 
 /// [`StepMemory::remember_failed_try`], inside the caller's transaction.
-pub(crate) fn remember_failed_try(conn: &Connection, item: LocalItemId, tried: Option<&TriedChange>, reason: &Reason, next_try_at: Option<i64>) -> Result<Option<u32>, TreeError> {
+pub(crate) fn remember_failed_try(conn: &Connection, item: LocalItemId, unsent_since: Option<u64>, reason: &Reason, next_try_at: Option<i64>) -> Result<FailedTryStanding, TreeError> {
     write_fact(conn, item, |row, memory| {
-        let Some(tried) = tried else { return Ok(None) };
-        // Counted on only from tries of the same change.
-        let count = memory.failed_tries.as_ref().filter(|tries| &tries.tried == tried).map_or(0, |tries| tries.count).saturating_add(1);
-        let tries = FailedTries { count, next_try_at, last_failure: reason.clone(), tried: tried.clone() };
-        let fact_standing = match tried {
-            TriedChange::Unsent { unsent_since } => learn_of_unsent_change(row, memory, Some(*unsent_since), |memory| memory.failed_tries = Some(tries)),
-            TriedChange::OfOneDrive { .. } => {
-                // Written when the row says it, by the readers' own decision.
-                let mut learnt = memory.clone();
-                learnt.failed_tries = Some(tries);
-                if learnt.clone().split_by_standing(row).said == learnt {
-                    *memory = learnt;
-                    FactStanding::StillSaid
-                } else {
-                    FactStanding::VersionGone
-                }
-            }
-        };
-        Ok((fact_standing == FactStanding::StillSaid).then_some(count))
+        // `memory` is what the row still says: tries kept in it are of this unsent change.
+        let count = memory.failed_tries.as_ref().map_or(0, |tries| tries.count).saturating_add(1);
+        let tries = FailedTries { count, next_try_at, last_failure: reason.clone() };
+        Ok(match learn_of_unsent_change(row, memory, unsent_since, |memory| memory.failed_tries = Some(tries)) {
+            FactStanding::StillSaid => FailedTryStanding::Counted(count),
+            FactStanding::VersionGone => FailedTryStanding::ChangeGone,
+        })
     })
 }
 
-/// The commit of a step towards the folder, or of the rows alone, was written of `item`: in
-/// its transaction. The tries of a step for what OneDrive has of the item are over; the
-/// eTag, which they are told by, is the same after such a step.
-pub(crate) fn forget_tries_of_onedrive_version(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
-    change_kept_memory(conn, item, ItemMemory::forget_tries_of_onedrive_version)
-}
-
-/// A listing wrote that OneDrive has `item` at `listed`, where the row said another place
-/// before: in the listing's transaction. A temporary name that is not that place's is
-/// forgotten.
-pub(crate) fn forget_temporary_name_listed_elsewhere(conn: &Connection, item: LocalItemId, listed: &ItemPlace) -> Result<(), TreeError> {
-    change_kept_memory(conn, item, |memory| memory.forget_temporary_name_unless_at(listed))
+/// OneDrive said that it has `item` at `place` — a listing, where the row said another
+/// place before, or the answer to the request that made the item: in the transaction that
+/// writes it. A temporary name that is not that place's is forgotten.
+pub(crate) fn forget_temporary_name_unless_at(conn: &Connection, item: LocalItemId, place: &ItemPlace) -> Result<(), TreeError> {
+    change_kept_memory(conn, item, |memory| memory.forget_temporary_name_unless_at(place))
 }
 
 /// The temporary name of every item the rows say OneDrive does not have is forgotten: after
@@ -768,6 +827,21 @@ pub(crate) fn forget_temporary_names_of_items_onedrive_lacks(conn: &Connection) 
             AND EXISTS (SELECT 1 FROM items WHERE items.local_item_id = step_memory.local_item_id AND onedrive_item_id IS NOT NULL AND onedrive_parent_id IS NULL AND items.local_item_id != 1)",
     )?
     .execute([])?;
+    Ok(())
+}
+
+/// A listing ended: in its transaction. A taken name is forgotten when no row says that
+/// OneDrive has an item under the holder's name, as OneDrive compares names, in that
+/// directory: the listing is OneDrive's answer about the directory, and the item that held
+/// the name was never listed there, or left before any listing named it. While a listing
+/// is under way nothing is asked: its later pages may still name the holder.
+pub(crate) fn forget_taken_names_onedrive_lacks(conn: &Connection) -> Result<(), TreeError> {
+    let sql = format!(
+        "UPDATE step_memory SET {} WHERE taken_parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM items
+          WHERE onedrive_parent_id = step_memory.taken_parent_id AND onedrive_folded_name = step_memory.taken_holder_folded_name AND items.local_item_id != step_memory.local_item_id)",
+        memory_row::TAKEN_NAME_CLEARED
+    );
+    conn.prepare_cached(&sql)?.execute([])?;
     Ok(())
 }
 
@@ -801,18 +875,18 @@ pub(crate) fn forget_fitting_space_refusals(conn: &Connection, free_space: u64) 
 }
 
 /// [`StepMemory::remember_removals_confirmed`], inside the caller's transaction.
-pub(crate) fn remember_removals_confirmed(conn: &Connection, removals: &[UnsentRemoval]) -> Result<usize, TreeError> {
-    let mut written = 0;
+pub(crate) fn remember_removals_confirmed(conn: &Connection, removals: &[UnsentRemoval]) -> Result<Vec<UnsentRemoval>, TreeError> {
+    let mut not_written = Vec::new();
     for removal in removals {
-        change_memory(conn, removal.item, |row, memory| {
+        let standing = change_memory(conn, removal.item, |row, memory| {
             let confirmation = RemovalConfirmation { unsent_since: removal.unsent_since };
-            if learn_of_unsent_change(row, memory, Some(removal.unsent_since), |memory| memory.removal_confirmation = Some(confirmation)) == FactStanding::StillSaid {
-                written += 1;
-            }
-            Ok(())
+            Ok(learn_of_unsent_change(row, memory, Some(removal.unsent_since), |memory| memory.removal_confirmation = Some(confirmation)))
         })?;
+        if standing != Some(FactStanding::StillSaid) {
+            not_written.push(*removal);
+        }
     }
-    Ok(written)
+    Ok(not_written)
 }
 
 /// [`StepMemory::remember_refusal`], inside the caller's transaction.
@@ -905,7 +979,8 @@ pub(crate) fn carry_content(conn: &Connection, item: LocalItemId, from: &Content
 
 /// An operation is done on the binding of `item`: every fact of an unsent change is dropped
 /// from it, its upload session to the cancellations ([`ItemMemory::drop_facts_of_binding`]).
-/// The temporary name it had is returned: it is of the binding the item had.
+/// The temporary name it had is returned, and is not the item's any more: the caller says
+/// which row it is with from now on.
 fn drop_facts_of_item_binding(conn: &Connection, item: LocalItemId) -> Result<Option<TemporaryName>, TreeError> {
     let (session, temporary_name) = change_kept_memory(conn, item, ItemMemory::drop_facts_of_binding)?;
     if let Some(session) = session {
@@ -915,10 +990,16 @@ fn drop_facts_of_item_binding(conn: &Connection, item: LocalItemId) -> Result<Op
 }
 
 /// `item`, which had no binding, is given one: inside the transaction of the operation that
-/// gives it. What was learnt of the item as one OneDrive did not have is dropped.
+/// gives it. What was learnt of the item as one OneDrive did not have is dropped. The
+/// temporary name stays: remembered before the request that made the item under it, it
+/// says where OneDrive has the item that is this row's from now on, until the commit of
+/// that request, a later one or a listing says otherwise.
 pub(crate) fn drop_facts_of_binding(conn: &Connection, item: LocalItemId) -> Result<(), TreeError> {
-    drop_facts_of_item_binding(conn, item).map(|_| ())
+    let temporary_name = drop_facts_of_item_binding(conn, item)?;
+    change_kept_memory(conn, item, |memory| memory.temporary_name = temporary_name)
 }
+
+
 
 /// The binding of `from` is `to`'s from now on: what is remembered follows, inside the
 /// transaction of the operation that moves the binding, before the row of `from` goes if it
@@ -927,7 +1008,12 @@ pub(crate) fn drop_facts_of_binding(conn: &Connection, item: LocalItemId) -> Res
 /// - An operation was done on the binding of both items: every fact of an unsent change is
 ///   dropped from both, an upload session to the cancellations
 ///   ([`ItemMemory::drop_facts_of_binding`]). The temporary name `from` had is `to`'s: it
-///   says under which name OneDrive has the item of that binding.
+///   says under which name OneDrive has the item of that binding. When `from` had none,
+///   `to` keeps its own where the row of `from` says that OneDrive has the item under
+///   that very name: a new item made in OneDrive under a temporary name, whose answer was
+///   lost, is bound here to the row a listing made of it. The temporary name of `to` is
+///   dropped where OneDrive has the item of `from` under another name: it was the name of
+///   another item.
 /// - What OneDrive answered about sending an item into the directory `from` is dropped from
 ///   that item, the upload session of a new file in it to the cancellations
 ///   ([`ItemMemory::drop_answers_of_directory`]).
@@ -939,7 +1025,9 @@ pub(crate) fn drop_facts_of_binding(conn: &Connection, item: LocalItemId) -> Res
 /// holds ([`mismatched_item_removals`]).
 pub(crate) fn follow_binding(conn: &Connection, from: LocalItemId, to: LocalItemId) -> Result<(), TreeError> {
     let temporary_name = drop_facts_of_item_binding(conn, from)?;
-    drop_facts_of_item_binding(conn, to)?;
+    let onedrive_place = find_item(conn, from)?.and_then(|row| row.onedrive).and_then(|onedrive| onedrive.place);
+    let own_temporary_name = drop_facts_of_item_binding(conn, to)?.filter(|own| onedrive_place.as_ref().is_some_and(|place| own.is_at(place)));
+    let temporary_name = temporary_name.or(own_temporary_name);
     if temporary_name.is_some() {
         change_kept_memory(conn, to, |memory| memory.temporary_name = temporary_name)?;
     }

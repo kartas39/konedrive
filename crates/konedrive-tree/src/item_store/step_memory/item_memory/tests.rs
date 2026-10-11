@@ -64,7 +64,7 @@ fn everything() -> ItemMemory {
         upload_session: Some(UploadSession { address: UploadSessionAddress::new("https://up/1"), expires_at: Some(9), next_offset: 3, content: content(1), empty_file_place: Some(place("report")) }),
         mismatched_item: Some(MismatchedItem::of_answer(reference("B"), Some("c-B"), Some("e-B"))),
         temporary_name: Some(TemporaryName { name: ".konedrive-swap-A".into(), toward: place("report") }),
-        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network, tried: TriedChange::Unsent { unsent_since: LEARNT_UNDER } }),
+        failed_tries: Some(FailedTries { count: 2, next_try_at: Some(50), last_failure: Reason::Network }),
         space_refusal: Some(SpaceRefusal { content: content(1), free_space: 5 }),
         removal_confirmation: None,
         refusal: Some(Refusal { reason: Reason::Forbidden, version: RefusedVersion::Shown(version("report", 1)) }),
@@ -294,37 +294,19 @@ fn the_address_of_an_upload_session_is_not_printed() {
     assert_eq!(format!("{:?}", UploadSessionAddress::new("https://up/secret")), "UploadSessionAddress(…)");
 }
 
-/// The failed tries are said by what they are tries of, a case each: the unsent change
-/// while the row has its stamp, OneDrive's version while the row has its eTag, whatever is
-/// unsent of the item then. What a step planned from a row tries is the unsent change when
-/// the row has a stamp, OneDrive's version otherwise, and nothing with neither.
+/// The failed tries are of the unsent change the memory's stamp tells, a case each: said
+/// while the row has that stamp, whatever OneDrive has of the item, and not for another
+/// stamp or for a row nothing is unsent of.
 #[test]
-fn the_failed_tries_are_said_by_the_change_they_are_tries_of() {
+fn the_failed_tries_are_said_while_the_row_has_the_stamp_they_were_learnt_under() {
     let with_etag = |etag: &str, unsent_since: Option<u64>| Item { onedrive_etag: Some(etag.to_owned()), unsent_since, ..row(Some(version("report", 1)), true, true) };
-    let of_onedrive = TriedChange::OfOneDrive { etag: "e1".to_owned() };
-    let tries = |tried: &TriedChange| FailedTries { count: 1, next_try_at: Some(50), last_failure: Reason::Network, tried: tried.clone() };
-    let memory = ItemMemory { failed_tries: Some(tries(&of_onedrive)), ..ItemMemory::default() };
+    let tries = FailedTries { count: 1, next_try_at: Some(50), last_failure: Reason::Network };
+    let memory = ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: Some(tries), ..ItemMemory::default() };
     let is_said = |item: &Item| said(memory.clone(), item).failed_tries.is_some();
-    assert!(is_said(&with_etag("e1", None)), "the version of OneDrive the step was planned from");
-    assert!(is_said(&with_etag("e1", Some(9))), "changed here since: OneDrive's version is the same");
-    assert!(!is_said(&with_etag("e2", None)), "another version of OneDrive");
-    assert!(!is_said(&shown("report", 1)), "an item OneDrive does not have");
-    assert_eq!(said(memory.clone(), &with_etag("e1", None)).unsent_since, None, "they are under no stamp");
-
-    let of_unsent = ItemMemory { unsent_since: Some(LEARNT_UNDER), failed_tries: Some(tries(&TriedChange::Unsent { unsent_since: LEARNT_UNDER })), ..ItemMemory::default() };
-    assert!(said(of_unsent.clone(), &with_etag("e2", Some(LEARNT_UNDER))).failed_tries.is_some(), "the stamp, whatever OneDrive has");
-    assert!(said(of_unsent, &with_etag("e1", None)).failed_tries.is_none());
-
-    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&with_etag("e1", Some(4)))), Some(TriedChange::Unsent { unsent_since: 4 }));
-    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&with_etag("e1", None))), Some(of_onedrive));
-    assert_eq!(TriedChange::of_versions(&ItemVersions::of(&row(None, true, false))), None);
-
-    let mut memory = ItemMemory { failed_tries: Some(tries(&TriedChange::OfOneDrive { etag: "e1".to_owned() })), ..everything() };
-    memory.forget_tries_of_onedrive_version();
-    assert_eq!(memory, ItemMemory { failed_tries: None, ..everything() });
-    let mut memory = everything();
-    memory.forget_tries_of_onedrive_version();
-    assert_eq!(memory, everything(), "the tries of an unsent change stay");
+    assert!(is_said(&with_etag("e1", Some(LEARNT_UNDER))));
+    assert!(is_said(&with_etag("e2", Some(LEARNT_UNDER))), "the stamp, whatever OneDrive has");
+    assert!(!is_said(&with_etag("e1", Some(LEARNT_UNDER + 1))), "another unsent change");
+    assert!(!is_said(&with_etag("e1", None)), "nothing unsent");
 }
 
 /// A listing wrote where OneDrive has the item: the temporary name stays only when that is

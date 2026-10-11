@@ -129,8 +129,8 @@ pub use thumbnail_marks::ThumbnailCandidate;
 pub use onedrive_versions::{ConfirmedOneDriveVersion, ListedChangeOutcome, ListedChangeRefusal, ListedPageOutcome, ListingId, ListingKind, ListingLink, ListingUnderWay};
 pub(crate) use item_row::{unsent, unsent_columns, BINDING_ALONE, CHANGED_IN_ONEDRIVE, LEFT_HERE, SHOWN_AGAINST_PLACEMENT};
 pub use step_memory::{
-    is_content_of, EmptyFileSession, FactStanding, FailedTries, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemUpload, OpeningTry, OpeningWindow, Refusal, RefusedVersion,
-    RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, TriedChange, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
+    is_content_of, EmptyFileSession, FactStanding, FailedTries, FailedTryStanding, ItemMemory, ItemMemoryParts, ItemRefusalReason, ItemTakenName, MismatchedItem, MismatchedItemStanding, MismatchedItemUpload, OpeningTry, OpeningWindow, Refusal, RefusedVersion,
+    RemovalConfirmation, SpaceFit, SpaceRefusal, StepFact, StepMemory, TakenName, TemporaryName, TimedWait, UnsentRemoval, UploadSession, UploadSessionAddress, UploadSessionStanding, UploadTag,
     UPLOAD_SESSION_OPENING_KEPT,
 };
 pub(crate) use step_memory::schema as step_memory_schema;

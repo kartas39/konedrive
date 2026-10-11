@@ -19,7 +19,7 @@ use std::ffi::OsStr;
 use rusqlite::{params, Transaction};
 
 use super::place_change_records::forget_place_change_record_when_written;
-use super::step_commit::{commit_rename_to_conflict_copy, forget_tries_when_written};
+use super::step_commit::commit_rename_to_conflict_copy;
 use super::{ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::conflicts::ConflictRow;
 use crate::sync_plan::ItemVersions;
@@ -51,7 +51,7 @@ impl ItemStore<'_> {
     /// `forget_place_change_record` for a write that has no outcome), and stands otherwise.
     pub fn commit_rename_to_conflict_copy_on_record(&mut self, item: &ItemVersions, name: &OsStr, is_name_ignored: bool, conflict: &ConflictRow, record: Option<PlaceChangeRecordId>) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| {
-            let outcome = forget_tries_when_written(tx, item, commit_rename_to_conflict_copy(tx, item, name, is_name_ignored)?)?;
+            let outcome = commit_rename_to_conflict_copy(tx, item, name, is_name_ignored)?;
             if outcome == StepCommitOutcome::Written {
                 add_conflicts_in(tx, std::slice::from_ref(conflict))?;
             }

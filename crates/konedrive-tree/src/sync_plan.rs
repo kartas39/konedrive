@@ -613,4 +613,4 @@ pub fn make_sync_plan(input: &SyncPlanInput) -> SyncPlan {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

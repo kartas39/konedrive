@@ -1,5 +1,5 @@
 //! A row of `step_memory` in the database: its columns, the one place it is read from SQLite
-//! and written to it, and the table as the schema has it ([`schema`], [`ITEM_GONE_STATEMENTS`]).
+//! and written to it, and the table as the schema has it ([`schema`], [`item_gone_statements`]).
 //! What is here writes a row as it is told and asks no rule.
 
 use std::ffi::{OsStr, OsString};
@@ -9,7 +9,7 @@ use konedrive_reason::Reason;
 use rusqlite::types::{FromSql, Value};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::item_memory::{FailedTries, TriedChange, ItemMemory, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
+use super::item_memory::{FailedTries, ItemMemory, MismatchedItem, Refusal, RefusedVersion, RemovalConfirmation, SpaceRefusal, TakenName, TemporaryName, UploadSession, UploadSessionAddress, UploadTag};
 use crate::model::{ContentVersion, DriveId, ItemPlace, ItemVersion, LocalItemId, OneDriveItemId, OneDriveItemReference};
 use crate::outbox::{path_from, path_value};
 use crate::{FoldedName, TreeError};
@@ -38,7 +38,7 @@ fn columns() -> Vec<(String, &'static str)> {
         named(&["temporary_toward_parent_id"], "INTEGER"),
         named(&["temporary_toward_name"], ""),
         named(&["tries_count", "next_try_at"], "INTEGER"),
-        named(&["last_failure", "tries_onedrive_etag"], "TEXT"),
+        named(&["last_failure"], "TEXT"),
         content("space_refusal"),
         named(&["space_refusal_free_space"], "INTEGER"),
         named(&["is_removal_confirmed"], "INTEGER"),
@@ -47,21 +47,20 @@ fn columns() -> Vec<(String, &'static str)> {
         named(&["refused_name"], ""),
         content("refused"),
         named(&["taken_parent_id"], "INTEGER"),
-        named(&["taken_name", "taken_holder_name"], ""),
+        named(&["taken_name", "taken_holder_name", "taken_holder_folded_name"], ""),
     ]
     .concat()
 }
 
 /// The table `step_memory`: one row per item by its local item id, every fact in columns of
 /// its own and null while it is not remembered. `unsent_since` is the stamp the facts of an
-/// unsent change were learnt under, and none of them is kept without it. The failed tries
-/// with an eTag are of that version of OneDrive, and those with none of the unsent change.
-/// A refusal with a
+/// unsent change were learnt under, and none of them is kept without it. A refusal with a
 /// place is of the version shown there, and one without is of a removal. The item an
 /// upload left is kept with its drive. Each reader that is not by the item has an index:
 /// the items that wait until a time, those OneDrive refused for good and those it refused
 /// for lack of space, those whose removal is confirmed, and by directory the names that are
-/// taken in it, the versions that were refused in it and the empty files of upload
+/// taken in it (with the holder's name folded as OneDrive compares names, which is what a
+/// row that leaves or takes that name is matched by), the versions that were refused in it and the empty files of upload
 /// sessions in it; a session is found by its address, and the item an upload left by its
 /// id.
 pub(super) fn schema() -> String {
@@ -70,7 +69,7 @@ pub(super) fn schema() -> String {
         "CREATE TABLE step_memory (
              local_item_id INTEGER PRIMARY KEY,
              {columns}
-             CHECK (unsent_since IS NOT NULL OR (session_address IS NULL AND (tries_count IS NULL OR tries_onedrive_etag IS NOT NULL) AND space_refusal_size IS NULL
+             CHECK (unsent_since IS NOT NULL OR (session_address IS NULL AND tries_count IS NULL AND space_refusal_size IS NULL
                 AND is_removal_confirmed IS NULL AND refusal_reason IS NULL AND taken_parent_id IS NULL)),
              CHECK ((session_address IS NULL) = (session_next_offset IS NULL) AND (session_address IS NULL) = (session_size IS NULL)),
              CHECK (session_address IS NOT NULL OR (session_expires_at IS NULL AND session_empty_file_parent_id IS NULL)),
@@ -79,17 +78,17 @@ pub(super) fn schema() -> String {
              CHECK ((mismatched_item_id IS NULL) = (mismatched_drive_id IS NULL)),
              CHECK (mismatched_item_id IS NOT NULL OR (mismatched_ctag IS NULL AND mismatched_etag IS NULL)),
              CHECK ((temporary_name IS NULL) = (temporary_toward_parent_id IS NULL) AND (temporary_name IS NULL) = (temporary_toward_name IS NULL)),
-             CHECK ((tries_count IS NULL) = (last_failure IS NULL) AND (next_try_at IS NULL OR tries_count IS NOT NULL)
-                AND (tries_onedrive_etag IS NULL OR tries_count IS NOT NULL)),
+             CHECK ((tries_count IS NULL) = (last_failure IS NULL) AND (next_try_at IS NULL OR tries_count IS NOT NULL)),
              CHECK ((space_refusal_size IS NULL) = (space_refusal_free_space IS NULL)),
              CHECK ((refused_parent_id IS NULL) = (refused_name IS NULL)),
              CHECK (refusal_reason IS NOT NULL OR (refused_parent_id IS NULL AND refused_size IS NULL)),
-             CHECK ((taken_parent_id IS NULL) = (taken_name IS NULL) AND (taken_parent_id IS NULL) = (taken_holder_name IS NULL)));
+             CHECK ((taken_parent_id IS NULL) = (taken_name IS NULL) AND (taken_parent_id IS NULL) = (taken_holder_name IS NULL)
+                AND (taken_parent_id IS NULL) = (taken_holder_folded_name IS NULL)));
          CREATE INDEX step_memory_next_try ON step_memory(next_try_at, local_item_id) WHERE next_try_at IS NOT NULL;
          CREATE INDEX step_memory_refusal ON step_memory(local_item_id) WHERE refusal_reason IS NOT NULL;
          CREATE INDEX step_memory_space_refusal ON step_memory(local_item_id) WHERE space_refusal_size IS NOT NULL;
          CREATE INDEX step_memory_removal_confirmation ON step_memory(local_item_id) WHERE is_removal_confirmed IS NOT NULL;
-         CREATE INDEX step_memory_taken_name ON step_memory(taken_parent_id) WHERE taken_parent_id IS NOT NULL;
+         CREATE INDEX step_memory_taken_name ON step_memory(taken_parent_id, taken_holder_folded_name) WHERE taken_parent_id IS NOT NULL;
          CREATE INDEX step_memory_refused_place ON step_memory(refused_parent_id) WHERE refused_parent_id IS NOT NULL;
          CREATE INDEX step_memory_session_empty_file ON step_memory(session_empty_file_parent_id, session_empty_file_folded_name)
              WHERE session_empty_file_parent_id IS NOT NULL;
@@ -104,14 +103,22 @@ pub(super) fn schema() -> String {
 /// remembered of the item goes; and what other rows hold of a place in the item, a
 /// directory, is taken from them, since no place will ever be in it again: the place of an
 /// empty file, a taken name, and a refusal of a version at a place in it.
-pub(super) const ITEM_GONE_STATEMENTS: &str = "
+pub(super) fn item_gone_statements() -> String {
+    format!(
+        "
     DELETE FROM step_memory WHERE local_item_id = OLD.local_item_id;
     UPDATE step_memory SET session_empty_file_parent_id = NULL, session_empty_file_name = NULL, session_empty_file_folded_name = NULL
      WHERE session_empty_file_parent_id = OLD.local_item_id;
-    UPDATE step_memory SET taken_parent_id = NULL, taken_name = NULL, taken_holder_name = NULL WHERE taken_parent_id = OLD.local_item_id;
+    UPDATE step_memory SET {TAKEN_NAME_CLEARED} WHERE taken_parent_id = OLD.local_item_id;
     UPDATE step_memory SET refusal_reason = NULL, refused_parent_id = NULL, refused_name = NULL, refused_size = NULL, refused_mtime = NULL,
            refused_mtime_nsec = NULL, refused_hash = NULL, refused_ctag = NULL, refused_change_count = NULL
-     WHERE refused_parent_id = OLD.local_item_id;";
+     WHERE refused_parent_id = OLD.local_item_id;"
+    )
+}
+
+/// The columns of a taken name, set to nothing: what follows `SET` where one is forgotten
+/// by a statement.
+pub(super) const TAKEN_NAME_CLEARED: &str = "taken_parent_id = NULL, taken_name = NULL, taken_holder_name = NULL, taken_holder_folded_name = NULL";
 
 /// A name as the tables keep it, as `items` keeps one: text when it is UTF-8 and its bytes
 /// otherwise.
@@ -178,9 +185,7 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
     let (name, toward) = (read.name()?, read.place()?);
     let temporary_name = name.zip(toward).map(|(name, toward)| TemporaryName { name, toward });
     let (count, next_try_at, last_failure): (Option<u32>, Option<i64>, Option<String>) = (read.next()?, read.next()?, read.next()?);
-    // Tries with an eTag are of that version of OneDrive; the others of the unsent change.
-    let tried = read.next::<Option<String>>()?.map(|etag| TriedChange::OfOneDrive { etag }).or(unsent_since.map(|unsent_since| TriedChange::Unsent { unsent_since }));
-    let failed_tries = count.zip(last_failure).zip(tried).map(|((count, last_failure), tried)| FailedTries { count, next_try_at, last_failure: Reason::parse(&last_failure), tried });
+    let failed_tries = count.zip(last_failure).map(|(count, last_failure)| FailedTries { count, next_try_at, last_failure: Reason::parse(&last_failure) });
     let (content, free_space) = (read.content()?, read.next::<Option<i64>>()?);
     let space_refusal = content.zip(free_space).map(|(content, free_space)| SpaceRefusal { content, free_space: free_space.max(0) as u64 });
     // The confirmation is of the removal the memory's stamp is of.
@@ -193,6 +198,7 @@ fn memory_from(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<ItemMe
     };
     let refusal = reason.map(|reason| Refusal { reason: Reason::parse(&reason), version: refused });
     let (place, holder_name) = (read.place()?, read.name()?);
+    read.next::<Value>()?;
     let taken_name = place.zip(holder_name).map(|(place, holder_name)| TakenName { place, holder_name });
     Ok(ItemMemory { unsent_since, upload_session, mismatched_item, temporary_name, failed_tries, space_refusal, removal_confirmation, refusal, taken_name })
 }
@@ -259,10 +265,6 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     values.push(optional(tries.map(|tries| i64::from(tries.count))));
     values.push(optional(tries.and_then(|tries| tries.next_try_at)));
     values.push(optional(tries.map(|tries| tries.last_failure.to_string())));
-    values.push(optional(tries.and_then(|tries| match &tries.tried {
-        TriedChange::OfOneDrive { etag } => Some(etag.clone()),
-        TriedChange::Unsent { .. } => None,
-    })));
     let space_refusal = memory.space_refusal.as_ref();
     values.extend(content_values(space_refusal.map(|space_refusal| &space_refusal.content)));
     values.push(optional(space_refusal.map(|space_refusal| space_refusal.free_space as i64)));
@@ -278,6 +280,7 @@ fn values_of(memory: &ItemMemory) -> Vec<Value> {
     let taken = memory.taken_name.as_ref();
     values.extend(place_values(taken.map(|taken| &taken.place)));
     values.push(taken.map_or(Value::Null, |taken| name_value(&taken.holder_name)));
+    values.push(taken.map_or(Value::Null, |taken| folded_name_value(&taken.holder_name)));
     values
 }
 

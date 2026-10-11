@@ -10,24 +10,19 @@ use crate::item_store::tests::listed_drive::{listed_directory, listed_file, list
 use crate::item_store::{ConfirmedItem, StepCommitOutcome};
 use crate::sync_plan::ItemVersions;
 
-fn versions(store: &mut TreeStore, id: LocalItemId) -> ItemVersions {
+pub(super) fn versions(store: &mut TreeStore, id: LocalItemId) -> ItemVersions {
     ItemVersions::of(&item(store, id))
 }
 
-fn show(store: &mut TreeStore, item_id: &str) -> LocalItemId {
+pub(super) fn show(store: &mut TreeStore, item_id: &str) -> LocalItemId {
     let id = store.item_store().find_bound_item(&reference(item_id)).unwrap().expect("listed").local_item_id;
     let planned_from = versions(store, id);
     assert_eq!(store.item_store().commit_show_item(&planned_from, false).unwrap(), StepCommitOutcome::Written);
     id
 }
 
-/// A try of the step planned from `planned_from` failed.
-fn remember_try_of(store: &mut TreeStore, planned_from: &ItemVersions, next_try_at: Option<i64>) -> Option<u32> {
-    store.step_memory().remember_failed_try(planned_from.local_item_id, TriedChange::of_versions(planned_from).as_ref(), &Reason::Network, next_try_at).unwrap()
-}
-
 /// A store whose folder shows the directory `docs` of OneDrive, `D`.
-fn store_with_docs() -> (TreeStore, LocalItemId) {
+pub(super) fn store_with_docs() -> (TreeStore, LocalItemId) {
     let mut store = store_with_listed_root();
     write_listing_of_changes(&mut store, &[listed_directory("D", "R", "docs", "e-D")]);
     let docs = show(&mut store, "D");
@@ -89,11 +84,12 @@ fn the_tries_of_an_unsent_change_are_not_answered_or_counted_on_for_the_next() {
     let (mut store, docs) = store_with_docs();
     write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (3, "h-X"), "e-X")]);
     let file = show(&mut store, "X");
-    let of_no_unsent_change = TriedChange::Unsent { unsent_since: 1 };
-    assert_eq!(store.step_memory().remember_failed_try(file, Some(&of_no_unsent_change), &Reason::Network, Some(60)).unwrap(), None, "nothing is unsent of it: no try of an unsent change is counted");
+    for of_no_unsent_change in [Some(1), None] {
+        assert_eq!(store.step_memory().remember_failed_try(file, of_no_unsent_change, &Reason::Network, Some(60)).unwrap(), ChangeGone, "nothing is unsent of it: no try of an unsent change is counted");
+    }
     store.item_store().apply(&LocalVersionChange::Moved { item: file, place: place(docs, "renamed"), is_name_ignored: false }).unwrap();
-    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(60)), Some(1));
-    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(120)), Some(2));
+    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(60)), Counted(1));
+    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(120)), Counted(2));
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [TimedWait { item: file, until: 120 }]);
 
     store.item_store().apply(&LocalVersionChange::Moved { item: file, place: place(docs, "report"), is_name_ignored: false }).unwrap();
@@ -101,7 +97,7 @@ fn the_tries_of_an_unsent_change_are_not_answered_or_counted_on_for_the_next() {
 
     change_content(&mut store, file);
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [], "unsent again: another change");
-    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(300)), Some(1), "counted from one");
+    assert_eq!(remember_try(&mut store, file, &Reason::Network, Some(300)), Counted(1), "counted from one");
     assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [TimedWait { item: file, until: 300 }]);
 }
 
@@ -166,36 +162,11 @@ fn nothing_of_an_unsent_change_is_learnt_of_the_root_or_of_an_item_the_two_sides
             let taken = TakenName { place: place(ROOT, "docs"), holder_name: "Docs".into() };
             let mut memory = store.step_memory();
             assert_eq!(memory.remember_upload_session(id, unsent_since, &session).unwrap(), Abandoned);
-            assert_eq!(memory.remember_failed_try(id, unsent_since.map(|unsent_since| TriedChange::Unsent { unsent_since }).as_ref(), &Reason::Network, Some(60)).unwrap(), None);
-            assert_eq!(memory.remember_failed_try(id, Some(&TriedChange::OfOneDrive { etag: "e-none".to_owned() }), &Reason::Network, Some(60)).unwrap(), None);
+            assert_eq!(memory.remember_failed_try(id, unsent_since, &Reason::Network, Some(60)).unwrap(), ChangeGone);
             assert_eq!(memory.remember_taken_name(id, unsent_since, &taken).unwrap(), VersionGone);
-            assert_eq!(memory.remember_removals_confirmed(&[UnsentRemoval { item: id, unsent_since: 1 }]).unwrap(), 0);
+            assert_eq!(memory.remember_removals_confirmed(&[UnsentRemoval { item: id, unsent_since: 1 }]).unwrap(), [UnsentRemoval { item: id, unsent_since: 1 }]);
             memory.forget_upload_session_cancellation(&address("1")).unwrap();
         }
         assert_eq!((kept(&store, id), store.step_memory().list_timed_waits(10).unwrap()), (ItemMemory::default(), vec![]));
     }
-}
-
-/// A step towards the folder of an item nothing is unsent of fails: its tries are of what
-/// OneDrive has, told by the eTag the step was planned from. It waits, the count goes on,
-/// and it is over once the step is written, or OneDrive has another version.
-#[test]
-fn the_tries_of_a_step_for_an_item_nothing_is_unsent_of_are_of_onedrives_version() {
-    let (mut store, _docs) = store_with_docs();
-    write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (3, "h-X"), "e-X")]);
-    let file = show(&mut store, "X");
-    write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (9, "h-X2"), "e-X2")]);
-    let planned_from = versions(&mut store, file);
-    assert_eq!(planned_from.unsent_since, None, "OneDrive changed the content, and nothing is unsent");
-    assert_eq!(remember_try_of(&mut store, &planned_from, Some(60)), Some(1), "the download failed");
-    assert_eq!(remember_try_of(&mut store, &planned_from, Some(120)), Some(2));
-    assert_eq!(store.step_memory().list_timed_waits(10).unwrap(), [TimedWait { item: file, until: 120 }], "not planned again at once");
-
-    write_listing_of_changes(&mut store, &[listed_file("X", "D", "report", (11, "h-X3"), "e-X3")]);
-    assert_eq!((store.step_memory().list_timed_waits(10).unwrap(), said(&mut store, file).failed_tries), (vec![], None), "another version of OneDrive: another piece of work");
-    assert_eq!(remember_try_of(&mut store, &planned_from, Some(300)), None, "the step was planned from the version before");
-    let planned_from = versions(&mut store, file);
-    assert_eq!(remember_try_of(&mut store, &planned_from, Some(300)), Some(1), "counted from one");
-    assert_eq!(store.item_store().commit_take_onedrive_content(&planned_from, None).unwrap(), StepCommitOutcome::Written);
-    assert_eq!((store.step_memory().list_timed_waits(10).unwrap(), kept(&store, file)), (vec![], ItemMemory::default()), "the step went through");
 }

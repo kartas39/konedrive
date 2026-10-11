@@ -90,6 +90,19 @@ pub(crate) fn list_removals(conn: &Connection, limit: usize) -> Result<Vec<Misma
     Ok(items.collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect())
 }
 
+/// `upload` is left to remove with no file's memory keeping it: its file's memory holds a
+/// later one from now on.
+pub(super) fn leave_removal(conn: &Connection, upload: &MismatchedItem) -> Result<(), TreeError> {
+    let (ctag, etag) = match &upload.tag {
+        super::item_memory::UploadTag::CTag(ctag) => (Some(ctag.as_str()), None),
+        super::item_memory::UploadTag::ETag(etag) => (None, Some(etag.as_str())),
+        super::item_memory::UploadTag::NotGiven => (None, None),
+    };
+    conn.prepare_cached("INSERT OR IGNORE INTO mismatched_item_removals (onedrive_drive_id, onedrive_item_id, ctag, etag) VALUES (?1, ?2, ?3, ?4)")?
+        .execute(params![upload.item.drive_id.as_str(), upload.item.item_id.as_str(), ctag, etag])?;
+    Ok(())
+}
+
 /// The removal left of the item `item`, if one is.
 pub(super) fn find_removal(conn: &Connection, item: &OneDriveItemReference) -> Result<Option<MismatchedItem>, TreeError> {
     let sql = "SELECT onedrive_drive_id, onedrive_item_id, ctag, etag FROM mismatched_item_removals WHERE onedrive_drive_id = ?1 AND onedrive_item_id = ?2";

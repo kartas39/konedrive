@@ -96,7 +96,9 @@
 //! at, not by the count of the call that ends it: a listing that was resumed, or whose
 //! last call brings what was read again, has pages older than that call.
 
-use super::step_memory::{forget_temporary_name_listed_elsewhere, forget_temporary_names_of_items_onedrive_lacks};
+use super::step_memory::{
+    forget_mismatched_item, forget_mismatched_item_listed_changed, forget_removal_confirmations_above, forget_taken_names_onedrive_lacks, forget_temporary_name_unless_at, forget_temporary_names_of_items_onedrive_lacks,
+};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 
@@ -223,11 +225,27 @@ fn write_listed_item(tx: &Transaction<'_>, listed: &ListedItem, row: Option<&Ite
         None => make_onedrive_item(tx, &reference(&listed.item_id), listed.kind)?,
     };
     let place = ItemPlace { parent_local_item_id: directory, name: listed.name.clone() };
+    let place_before = row.and_then(|row| row.onedrive.as_ref()).and_then(|onedrive| onedrive.place.as_ref());
+    // What the steps remember of what OneDrive has is void where this answer of OneDrive
+    // says otherwise, in the page's transaction. (A name found taken: the schema's
+    // triggers, as the place is written.)
     // OneDrive has the item at another place than the row said: a temporary name a step
     // remembered of it is not the name it is under, unless it is that very place.
-    if row.is_some_and(|row| row.onedrive.as_ref().and_then(|onedrive| onedrive.place.as_ref()) != Some(&place)) {
-        forget_temporary_name_listed_elsewhere(tx, item, &place)?;
+    if row.is_some() && place_before != Some(&place) {
+        forget_temporary_name_unless_at(tx, item, &place)?;
     }
+    // The directory has an item the rows did not say it had: a removal of the directory,
+    // or of one above it, that the user confirmed was confirmed for less.
+    if place_before.map(|before| before.parent_local_item_id) != Some(directory) {
+        forget_removal_confirmations_above(tx, directory)?;
+    }
+    // An item an upload of this folder left that has another content now is another
+    // client's.
+    let ctag = match &listed.content {
+        Some(ContentVersion::Hashed { ctag, .. }) => ctag.as_deref(),
+        Some(ContentVersion::ChangedHere { .. }) | None => None,
+    };
+    forget_mismatched_item_listed_changed(tx, &reference(&listed.item_id), ctag, listed.etag.as_deref())?;
     let onedrive = ItemVersion { place: Some(place), content: listed.content.clone() };
     set_onedrive_version(tx, item, &onedrive, listed.etag.as_deref(), listed.mime.as_deref(), listed.placement, seen_in_full_listing)
 }
@@ -303,6 +321,11 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
             None => Vec::new(),
         };
         outcomes[at] = decide_listed_removal(item_id, row.as_ref(), fetch_began_at_count, left(&left_below));
+        // OneDrive does not have the item: when an upload of this folder left it, nothing
+        // is left to remove.
+        if outcomes[at] == ListedChangeOutcome::Written && !item_id.is_empty() {
+            forget_mismatched_item(tx, &OneDriveItemReference { drive_id: drive_id.clone(), item_id: OneDriveItemId::new(item_id) })?;
+        }
         match (outcomes[at], row) {
             (ListedChangeOutcome::Written, Some(row)) => {
                 clear_onedrive_versions_below(tx, row.local_item_id)?;
@@ -331,6 +354,12 @@ pub(crate) fn write_listed_changes(tx: &Transaction<'_>, listing: ListingId, cha
     // What the page and the sweep wrote that OneDrive does not have is under no temporary
     // name any more.
     forget_temporary_names_of_items_onedrive_lacks(tx)?;
+    // A listing that ends is OneDrive's whole answer: a name found taken that no row has an
+    // item under is taken no more. (A row that left the name or was joined at it forgot the
+    // taken name as it was written: the schema's triggers.)
+    if end == PageEnd::ListingEnds {
+        forget_taken_names_onedrive_lacks(tx)?;
+    }
     delete_rows_of_binding_alone(tx, listing.binding_alone_left_after_count(end))?;
     listing.write_page_end(tx, end, link)?;
     let mut answered = HashSet::new();

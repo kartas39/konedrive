@@ -43,7 +43,7 @@ use crate::{ListingLink, TreeStore};
 /// OneDrive in these tests: what it has, and what changes it.
 mod drive;
 /// The caller of the plan in miniature: what it reads and gives.
-mod plan_input;
+pub(crate) mod plan_input;
 /// Requests that are answered late or never, and pages written after what they are older
 /// than.
 mod requests_in_flight;

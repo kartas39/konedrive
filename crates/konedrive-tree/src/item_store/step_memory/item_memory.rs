@@ -3,7 +3,7 @@
 //! reads or writes the store: every decision is a function of a fact and a row.
 //!
 //! **A fact of a local change that is not sent** — the upload session, the failed tries of
-//! a step for that change, the refusal for lack of space, the refusal for good, the taken name, the confirmation of a
+//! a step towards OneDrive for that change, the refusal for lack of space, the refusal for good, the taken name, the confirmation of a
 //! removal — is learnt under the stamp the item's row has while its local version is not
 //! the synced one ([`Item::unsent_since`]). The stamp is given when the two first differ,
 //! stays while they differ, and is taken when they agree; the next difference gets another.
@@ -27,12 +27,18 @@
 //! ([`UnsentRemoval`]), which the stamp implies. The failed tries are asked nothing more.
 //!
 //! **A fact of what OneDrive has** holds no version of the item and is not of an unsent
-//! change: the failed tries of a step for an item nothing is unsent of — a step towards
-//! the folder — are of the version OneDrive has, told by its eTag
-//! ([`TriedChange::OfOneDrive`]), and are answered while the row has that eTag; the
-//! temporary name says under which name OneDrive has the item that has the
+//! change: the temporary name says under which name OneDrive has the item that has the
 //! binding, and goes with the binding; the item an upload left is an item of OneDrive, told
 //! by its own id.
+//!
+//! **Every fact names what voids it**, and the voider is something that happens for every
+//! way the fact can stop being true. What a fact says of OneDrive is void when OneDrive
+//! has answered again about that item: by the step's own next answer, or by a listing that
+//! names the item. Each type here says its voiders in one line, with where the store does
+//! it. A fact that can name no such voider is not kept in the store: the failed tries of a
+//! step towards the folder or of the rows alone, which nothing of a row tells from the
+//! tries of the next piece of work, are kept by the plan's task for its run, and the store
+//! keeps the tries of what is sent to OneDrive alone ([`FailedTries`]).
 //!
 //! What becomes of the facts when something other than the row's versions changes is
 //! decided here too, each a function of the memory and of typed cases: a request OneDrive
@@ -96,6 +102,10 @@ pub enum UploadSessionStanding {
     /// or the item has another session. Its address is kept to be
     /// cancelled, and the step sends nothing more to it.
     Abandoned,
+    /// The address is the session another item's memory keeps: the caller named the wrong
+    /// item. Nothing was written and nothing is left to cancel: that session is its
+    /// item's, and this step sends nothing to it.
+    OfAnotherItem,
 }
 
 /// What tells whether an item of OneDrive is still what an upload left there.
@@ -131,6 +141,17 @@ impl MismatchedItem {
         Self { item, tag }
     }
 
+    /// Whether a listing that names the item with these tags says that it is not what the
+    /// upload left any more: the tag the answer gave is given again, and is another one. A
+    /// listing that does not give that tag says nothing.
+    pub fn is_listed_changed(&self, ctag: Option<&str>, etag: Option<&str>) -> bool {
+        match &self.tag {
+            UploadTag::CTag(kept) => ctag.is_some_and(|ctag| ctag != kept),
+            UploadTag::ETag(kept) => etag.is_some_and(|etag| etag != kept),
+            UploadTag::NotGiven => false,
+        }
+    }
+
     /// Whether an item OneDrive has now with these tags is still what the upload left, and
     /// not something another client wrote since. With no tag kept, nothing says it is not.
     pub fn is_unchanged_since_upload(&self, ctag: Option<&str>, etag: Option<&str>) -> bool {
@@ -155,41 +176,41 @@ pub struct TemporaryName {
     pub toward: ItemPlace,
 }
 
-/// What a step that failed tried to carry over: what its tries are of, and what tells that
-/// change from the next.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TriedChange {
-    /// A local change that is not sent, told by the stamp of the row
-    /// ([`Item::unsent_since`]): a step towards OneDrive, and any step for an item
-    /// something is unsent of.
-    Unsent { unsent_since: u64 },
-    /// What OneDrive has of an item nothing is unsent of, told by the eTag of the row: a
-    /// step towards the folder.
-    OfOneDrive { etag: String },
-}
-
-impl TriedChange {
-    /// What a step planned from `versions` tries to carry over: the unsent change when the
-    /// row had a stamp, OneDrive's version by its eTag otherwise; `None` where the row had
-    /// neither, and nothing is kept of a try.
-    pub fn of_versions(versions: &ItemVersions) -> Option<Self> {
-        match (versions.unsent_since, &versions.onedrive_etag) {
-            (Some(unsent_since), _) => Some(TriedChange::Unsent { unsent_since }),
-            (None, Some(etag)) => Some(TriedChange::OfOneDrive { etag: etag.clone() }),
-            (None, None) => None,
-        }
+impl TemporaryName {
+    /// Whether `place`, a place in OneDrive, is the temporary name itself: in the
+    /// directory of `toward`, under the temporary name.
+    pub fn is_at(&self, place: &ItemPlace) -> bool {
+        self.toward.parent_local_item_id == place.parent_local_item_id && self.name == place.name
     }
 }
 
-/// The tries of an item's step that failed: how many, when the next is due, why the last
-/// failed, and what they are tries of.
+/// The tries of an item's step towards OneDrive that failed: how many, when the next is
+/// due, and why the last failed. They are tries of the unsent change the memory's stamp
+/// tells ([`ItemMemory::unsent_since`]): every step towards OneDrive is planned from a row
+/// that has something unsent.
+///
+/// *Voided by:* the row's stamp being another or none (the change was sent, taken back, or
+/// is another one: [`ItemMemory::split_by_standing`]); the commit of a request OneDrive
+/// confirmed while the item stays unsent ([`ItemMemory::forget_confirmed_request`]); an
+/// operation on the item's binding ([`ItemMemory::drop_facts_of_binding`]); and the wait
+/// alone by its time, or by the user's refresh (`clear_next_tries`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedTries {
     pub count: u32,
     /// Unix seconds; `None` when the next try is due at once.
     pub next_try_at: Option<i64>,
     pub last_failure: Reason,
-    pub tried: TriedChange,
+}
+
+/// What became of a failed try given to the store.
+#[must_use = "a try that was not counted is of a row that is another piece of work by now: its step does not wait"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailedTryStanding {
+    /// Counted: so many tries of this unsent change failed, with this one.
+    Counted(u32),
+    /// The row has another stamp or none: what the step tried to send is not what is
+    /// unsent any more. Nothing was written, and the next plan decides.
+    ChangeGone,
 }
 
 /// A file OneDrive refused as too big for the space it has.
@@ -303,6 +324,17 @@ pub enum StepFact {
     TakenName,
 }
 
+/// What became of an item an upload left that was given to the store.
+#[must_use = "an item that is not left to remove is one the folder has: its removal is not asked"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MismatchedItemStanding {
+    /// Kept with the file: its removal is asked before the file is sent again.
+    LeftToRemove,
+    /// The folder has the item — a row is bound to it, and the folder shows it or the two
+    /// sides agreed on a place of it: nothing was kept, and it is not to be removed.
+    OfFolder,
+}
+
 /// Whether an item's row still says what a fact of an unsent change was learnt for.
 #[must_use = "a fact that is not written was learnt of a row that is another by now"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,7 +375,7 @@ impl RefusedVersion {
 
 /// A request to OneDrive that OneDrive confirmed and that may leave the item unsent, as the
 /// commit of its step says it. A removal is not among them: its row is a binding alone
-/// after it, with no stamp and no eTag.
+/// after it, with no stamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfirmedRequest<'a> {
     /// The content of a file OneDrive has was sent, by the upload session at
@@ -391,8 +423,7 @@ impl ItemMemory {
 
     /// Whether a fact of an unsent change is kept.
     fn holds_fact_of_unsent_change(&self) -> bool {
-        let has_tries = matches!(&self.failed_tries, Some(FailedTries { tried: TriedChange::Unsent { .. }, .. }));
-        self.upload_session.is_some() || has_tries || self.space_refusal.is_some() || self.removal_confirmation.is_some() || self.refusal.is_some() || self.taken_name.is_some()
+        self.upload_session.is_some() || self.failed_tries.is_some() || self.space_refusal.is_some() || self.removal_confirmation.is_some() || self.refusal.is_some() || self.taken_name.is_some()
     }
 
     /// The memory holds the stamp only while it holds a fact that was learnt under it.
@@ -407,9 +438,8 @@ impl ItemMemory {
     ///
     /// A fact of an unsent change is said while the row has the stamp the memory holds, and
     /// what the fact is asked beside the stamp holds too (the module's words say what, for
-    /// each). The failed tries are said by what they are tries of: the unsent change by its
-    /// stamp, or OneDrive's version by the row's eTag. The temporary name and the item an
-    /// upload left are of what OneDrive has, and are said as long as they are kept.
+    /// each). The temporary name and the item an upload left are of what OneDrive has, and
+    /// are said as long as they are kept: what voids them is done where OneDrive answers.
     pub fn split_by_standing(self, item: &Item) -> ItemMemoryParts {
         let mut parts = ItemMemoryParts::default();
         let is_same_unsent_change = self.unsent_since.is_some() && self.unsent_since == item.unsent_since;
@@ -421,11 +451,7 @@ impl ItemMemory {
         }
         let (said, gone) = (&mut parts.said, &mut parts.gone);
         part(self.upload_session, |fact| is_same_unsent_change && is_content_of(item, &fact.content), &mut said.upload_session, &mut gone.upload_session);
-        let is_tried_change_of = |fact: &FailedTries| match &fact.tried {
-            TriedChange::Unsent { unsent_since } => is_same_unsent_change && item.unsent_since == Some(*unsent_since),
-            TriedChange::OfOneDrive { etag } => item.onedrive_etag.as_ref() == Some(etag),
-        };
-        part(self.failed_tries, is_tried_change_of, &mut said.failed_tries, &mut gone.failed_tries);
+        part(self.failed_tries, |_| is_same_unsent_change, &mut said.failed_tries, &mut gone.failed_tries);
         part(self.space_refusal, |fact| is_same_unsent_change && is_content_of(item, &fact.content), &mut said.space_refusal, &mut gone.space_refusal);
         part(self.removal_confirmation, |_| is_same_unsent_change && is_removal(item), &mut said.removal_confirmation, &mut gone.removal_confirmation);
         part(self.refusal, |fact| is_same_unsent_change && fact.version.is_version_of(item), &mut said.refusal, &mut gone.refusal);
@@ -474,8 +500,7 @@ impl ItemMemory {
                 if self.taken_name.as_ref().is_some_and(|taken_name| &taken_name.place == to) {
                     self.taken_name = None;
                 }
-                let is_at_temporary_name = |temporary_name: &TemporaryName| temporary_name.toward.parent_local_item_id == to.parent_local_item_id && temporary_name.name == to.name;
-                if !self.temporary_name.as_ref().is_some_and(is_at_temporary_name) {
+                if !self.temporary_name.as_ref().is_some_and(|temporary_name| temporary_name.is_at(to)) {
                     self.temporary_name = None;
                 }
             }
@@ -483,19 +508,10 @@ impl ItemMemory {
         self.keep_stamp_only_with_its_facts();
     }
 
-    /// A step towards the folder, or of the rows alone, was written of the item: the tries
-    /// of a step for what OneDrive has are over.
-    pub(crate) fn forget_tries_of_onedrive_version(&mut self) {
-        if matches!(&self.failed_tries, Some(FailedTries { tried: TriedChange::OfOneDrive { .. }, .. })) {
-            self.failed_tries = None;
-        }
-    }
-
-    /// A listing wrote that OneDrive has the item at `listed`: a temporary name that is not
-    /// that place's is not the name OneDrive has the item under.
-    pub(crate) fn forget_temporary_name_unless_at(&mut self, listed: &ItemPlace) {
-        let is_at_temporary_name = |temporary_name: &TemporaryName| temporary_name.toward.parent_local_item_id == listed.parent_local_item_id && temporary_name.name == listed.name;
-        if !self.temporary_name.as_ref().is_some_and(is_at_temporary_name) {
+    /// OneDrive said that it has the item at `place`: a temporary name that is not that
+    /// place's is not the name OneDrive has the item under.
+    pub(crate) fn forget_temporary_name_unless_at(&mut self, place: &ItemPlace) {
+        if !self.temporary_name.as_ref().is_some_and(|temporary_name| temporary_name.is_at(place)) {
             self.temporary_name = None;
         }
     }

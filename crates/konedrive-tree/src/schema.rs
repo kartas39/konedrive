@@ -24,7 +24,7 @@ pub use old_store::{decide_old_store, OldStoreDecision, RebuildLoss, StoreOrigin
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "21";
+pub const SCHEMA_VERSION: &str = "22";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with.

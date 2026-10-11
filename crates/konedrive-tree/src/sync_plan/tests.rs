@@ -20,7 +20,7 @@ mod item_relations;
 mod directory_removal;
 mod start_up_check;
 mod enumeration;
-mod convergence;
+pub(crate) mod convergence;
 
 pub(crate) const ROOT: LocalItemId = LocalItemId::ROOT;
 

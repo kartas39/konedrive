@@ -28,7 +28,7 @@ use rusqlite::Connection;
 
 use super::item_row::{find_item, set_content_presence, write_item};
 use super::place_change_records::{forget_place_change_record, forget_place_change_record_when_written};
-use super::step_commit::{commit_show_item, forget_tries_when_written};
+use super::step_commit::commit_show_item;
 use super::{apply_change, make, refuse, ItemStore, PlaceChangeRecordId, StepCommitOutcome};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, LocalItemId, LocalVersionChange};
 use crate::sync_plan::ItemVersions;
@@ -203,7 +203,7 @@ impl ItemStore<'_> {
         self.write(|tx| {
             let mut outcomes = Vec::with_capacity(items.len());
             for (item, is_name_ignored) in items {
-                outcomes.push(forget_tries_when_written(tx, item, commit_show_item(tx, item, *is_name_ignored)?)?);
+                outcomes.push(commit_show_item(tx, item, *is_name_ignored)?);
             }
             Ok(outcomes)
         })

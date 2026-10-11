@@ -20,8 +20,8 @@ fn the_item_an_upload_left_is_found_by_its_reference_with_its_file() {
     let mut store = store_with_listed_root();
     let (file, other) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "other"));
     let in_another_drive = OneDriveItemReference { drive_id: DriveId::new("d2").unwrap(), item_id: OneDriveItemId::new("BAD") };
-    store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap();
-    store.step_memory().remember_mismatched_item(other, &left(in_another_drive.clone())).unwrap();
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap(), LeftToRemove);
+    assert_eq!(store.step_memory().remember_mismatched_item(other, &left(in_another_drive.clone())).unwrap(), LeftToRemove);
     let found = |store: &mut TreeStore, item: &OneDriveItemReference| store.step_memory().find_mismatched_item(item).unwrap();
     assert_eq!(found(&mut store, &reference("BAD")), Some(MismatchedItemUpload { mismatched_item: left(reference("BAD")), file: Some(file) }));
     assert_eq!(found(&mut store, &in_another_drive).map(|upload| upload.file), Some(Some(other)), "the same id in another drive is another item");
@@ -46,8 +46,8 @@ fn the_item_an_upload_left_is_found_by_its_reference_with_its_file() {
 fn an_item_the_folder_has_is_never_left_to_be_removed() {
     let mut store = store_with_listed_root();
     let (file, gone) = (make_file(&mut store, ROOT, "report"), make_file(&mut store, ROOT, "gone"));
-    store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap();
-    store.step_memory().remember_mismatched_item(gone, &left(reference("WORSE"))).unwrap();
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap(), LeftToRemove);
+    assert_eq!(store.step_memory().remember_mismatched_item(gone, &left(reference("WORSE"))).unwrap(), LeftToRemove);
     remove(&mut store, gone);
     assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), [left(reference("WORSE"))]);
 
@@ -60,9 +60,24 @@ fn an_item_the_folder_has_is_never_left_to_be_removed() {
     assert_eq!((kept(&store, file), store.step_memory().list_mismatched_item_removals(10).unwrap()), (ItemMemory::default(), vec![]));
     assert_eq!((count(&store, "mismatched_item_removals"), store.step_memory().find_mismatched_item(&reference("BAD")).unwrap()), (0, None));
 
-    store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap();
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap(), OfFolder, "the step is told, and does not ask its removal");
     assert_eq!(kept(&store, file), ItemMemory::default(), "nothing is kept of an item the folder has");
     let shown = store.item_store().find_bound_item(&reference("WORSE")).unwrap().unwrap().local_item_id;
     store.item_store().clear_local_and_synced_version(shown).unwrap();
     assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), [], "void for good");
+}
+
+/// A second upload of the same file leaves another item with other content: the first is
+/// in OneDrive still, and is left to remove by itself; it is not lost with the memory of
+/// the file, which holds the later one.
+#[test]
+fn an_item_an_earlier_upload_of_the_file_left_is_left_to_remove_when_another_is_kept() {
+    let mut store = store_with_listed_root();
+    let file = make_file(&mut store, ROOT, "report");
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap(), LeftToRemove);
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD"))).unwrap(), LeftToRemove);
+    assert_eq!(store.step_memory().list_mismatched_item_removals(10).unwrap(), [], "the same item given again");
+    assert_eq!(store.step_memory().remember_mismatched_item(file, &left(reference("BAD2"))).unwrap(), LeftToRemove);
+    assert_eq!((kept(&store, file).mismatched_item, store.step_memory().list_mismatched_item_removals(10).unwrap()), (Some(left(reference("BAD2"))), vec![left(reference("BAD"))]));
+    assert_eq!(store.step_memory().find_mismatched_item(&reference("BAD")).unwrap(), Some(MismatchedItemUpload { mismatched_item: left(reference("BAD")), file: None }));
 }
