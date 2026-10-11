@@ -15,10 +15,10 @@
 //!
 //! **Built, then served.** [`ItemMount::build`] makes every part, runs the check at start
 //! and answers a mount that is NOT over the folder yet, with what answers the kernel's
-//! requests. [`ItemMount::serve`] puts it over the folder with a `fuser::Filesystem`.
-//! Before the switch nothing implements that `Filesystem` over `ItemKernelRequests`: the
-//! build and everything else here are filled and tested now (step 0c); `serve`'s body and
-//! its caller are the switch's. The folder's start, its stop, its take-down and the switch
+//! requests. [`ItemMount::serve`] takes those and puts the mount over the folder with a
+//! `fuser::Filesystem` it makes over them. Before the switch nothing implements that
+//! `Filesystem` over `ItemKernelRequests`: the build and everything else here are filled
+//! and tested now (step 0c); `serve`'s body is the switch's. The folder's start, its stop, its take-down and the switch
 //! of the access mode are tested over a mount that was built and not served.
 //!
 //! **What the folder's sync takes from it:** the runner of the steps towards the folder,
@@ -137,15 +137,18 @@ impl ItemMount {
         Ok((Arc::new(mount), kernel_requests))
     }
 
-    /// Mounts over the folder and serves it with `filesystem`, which answers the kernel
-    /// through the `ItemKernelRequests` the build gave; then starts the bridge's thread
-    /// with the session's notifier as the kernel's cached pages
+    /// Mounts over the folder and serves it: `kernel_requests` is what the build gave
+    /// with this mount, taken whole, and the `fuser::Filesystem` that answers the kernel
+    /// through it is made here; then starts the bridge's thread with the session's
+    /// notifier as the kernel's cached pages
     /// (`ItemInotifyBridge::start(read_connections, Some(Arc::new(session.notifier())))`):
     /// without it a read through the mount is answered the old content of a file a step
     /// changed, from the kernel's cache.
-    /// After this the folder's path is the mount. THE SWITCH'S: its body, the
-    /// `Filesystem` and its caller are written with the switch.
-    pub fn serve<F: fuser::Filesystem + Send + 'static>(self: &Arc<Self>, filesystem: F) -> std::io::Result<()> {
+    /// After this the folder's path is the mount. Called by the folder's start, right
+    /// after the build (`sync::sync_tasks::start_order::start_folder_sync`, stage 3); a
+    /// failure leaves the mount built and not served, for the caller to stop. THE
+    /// SWITCH'S: its body and the `Filesystem` are written with the switch.
+    pub fn serve(self: &Arc<Self>, kernel_requests: ItemKernelRequests) -> std::io::Result<()> {
         todo!()
     }
 
