@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 use super::drive::OneDriveChanges;
 use super::plan_input::CallerFacts;
+use super::step_stand_in::hash_of;
 use crate::model::{FolderVisibility, Item, ItemKind, LocalItemId};
 use crate::{ItemVersions, OneDriveStep, RowStep, SyncStep, TreeStore};
 
@@ -29,6 +30,8 @@ pub(super) fn find_what_a_directory_removal_must_not_take(store: &mut TreeStore,
             Some(format!("item {}, which the folder shows", row.local_item_id))
         } else if row.synced_place.is_none() && row.synced_content.is_none() {
             Some(format!("item {}, which the folder never showed", row.local_item_id))
+        } else if row.synced_content.as_ref().map(hash_of) != row.onedrive.as_ref().and_then(|onedrive| onedrive.content.as_ref()).map(hash_of) {
+            Some(format!("item {}, whose content OneDrive changed since it was removed here", row.local_item_id))
         } else {
             None
         }
@@ -38,7 +41,8 @@ pub(super) fn find_what_a_directory_removal_must_not_take(store: &mut TreeStore,
 /// What `step`, a step of a plan made now, must not be; `None` when it may leave.
 ///
 /// - The removal of a directory while a listing is under way, or that takes from OneDrive
-///   what the folder shows, what it never showed, or what a request not settled is about.
+///   what the folder shows, what it never showed, a content OneDrive changed since the
+///   file was removed here, or what a request not settled is about.
 /// - The move of a directory the folder cannot show.
 /// - A merge with an item the folder cannot show.
 /// - A file that gives up its binding because OneDrive has other content, when that
