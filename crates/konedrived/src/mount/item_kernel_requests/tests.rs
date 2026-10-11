@@ -890,6 +890,7 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
     let mount = Requests::over(fixture, Arc::clone(&bridge));
     let its_thread = find_thread_id(&bridge);
     let kept = mount.fixture.make_own_file("kept.txt", b"kept").local_item_id;
+    let kept_directory = mount.fixture.make_own_directory("kept").local_item_id;
     let rows_before = mount.fixture.list_items();
     // In a read-only folder too: the bridge announces there as well.
     mount.fixture.access_mode_switch.switch_to_read_only();
@@ -905,6 +906,10 @@ fn the_bridges_own_requests_are_answered_from_the_rows_and_make_nothing() {
     // setattr: as getattr.
     let touched = mount.set_time_as(kept, None, 5, its_thread).unwrap();
     assert_eq!((touched.ino, touched.size), (to_node_id(kept), 4));
+    assert_ne!(seconds_of(touched.mtime), 5);
+    // Of a directory too: the touch a change of its marks is announced by.
+    let touched = mount.set_time_as(kept_directory, None, 5, its_thread).unwrap();
+    assert_eq!(touched.ino, to_node_id(kept_directory));
     assert_ne!(seconds_of(touched.mtime), 5);
     // lookup, with nothing being announced: from the rows.
     let name = OsString::from("kept.txt");

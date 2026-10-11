@@ -314,6 +314,31 @@ fn the_kernels_pages_of_a_changed_content_are_dropped_before_the_file_is_touched
     assert_eq!(*page_cache.dropped.lock().unwrap(), [(file, long_ago)], "the pages of the file alone, once, while it still had its old time");
 }
 
+/// A sync mark or a pin that changed is a touch of the file or the directory, so that who
+/// watches it reads the mark again, and no change of content: nothing the kernel cached
+/// is dropped for it.
+#[test]
+fn a_change_of_the_marks_touches_a_file_and_a_directory_and_drops_no_cached_page() {
+    let fixture = ItemFixture::new();
+    let docs = fixture.show_onedrive_directory("docs").local_item_id;
+    let file = fixture.show_onedrive_file("docs/a.txt", b"hello").local_item_id;
+    let watched = tempfile::tempdir().unwrap();
+    let (directory_path, path) = (watched.path().join("docs"), watched.path().join("docs/a.txt"));
+    fs::create_dir(&directory_path).unwrap();
+    fs::write(&path, b"").unwrap();
+    let long_ago = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(long_ago).unwrap();
+    fs::File::open(&directory_path).unwrap().set_modified(long_ago).unwrap();
+    let page_cache = Arc::new(RecordedPageCache { path: path.clone(), dropped: Default::default() });
+    let bridge = Arc::new(ItemInotifyBridge::new(watched.path().to_owned()));
+    bridge.start(Arc::clone(&fixture.read_connections), Some(Arc::clone(&page_cache) as Arc<dyn KernelPageCache>)).unwrap();
+    bridge.announce(vec![ItemAnnouncement::MarksChanged { item: file, place: place_in(docs, "a.txt") }, ItemAnnouncement::MarksChanged { item: docs, place: place_in(LocalItemId::ROOT, "docs") }]);
+    let is_touched = |path: &std::path::Path| fs::metadata(path).unwrap().modified().unwrap() > long_ago;
+    wait_until("the file and the directory are touched", || is_touched(&path) && is_touched(&directory_path));
+    bridge.stop();
+    assert_eq!(*page_cache.dropped.lock().unwrap(), [], "the content did not change");
+}
+
 #[test]
 fn an_announcement_in_a_directory_the_folder_no_longer_shows_is_skipped_and_the_next_performed() {
     let fixture = ItemFixture::new();

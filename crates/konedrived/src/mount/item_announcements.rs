@@ -97,7 +97,7 @@ pub(super) fn decide_system_call(announcement: &ItemAnnouncement, directory_path
         (ItemAnnouncement::Appeared { .. }, Some(ItemKind::Directory)) => AnnouncementSystemCall::Mkdir(path),
         (ItemAnnouncement::Appeared { .. }, Some(ItemKind::File)) => AnnouncementSystemCall::Mknod(path),
         (ItemAnnouncement::ContentChanged { .. }, Some(ItemKind::File)) => AnnouncementSystemCall::Utimensat(path),
-        // TODO: check that a touch of a directory through the mount (`utimensat`) is answered without a change of the rows, as a file's by the bridge's thread is, and that the bridge drops no cached page for it, and fix if needed.
+        // A touch of a file or of a directory alike: the mount answers the bridge's own `utimensat` from the rows and writes none (`ItemKernelRequests::queue_set_modified_time` asks whose thread it is before any job, whatever the kind), and the bridge drops no cached page for it (`ItemInotifyBridge::perform_queued`).
         (ItemAnnouncement::MarksChanged { .. }, Some(_)) => AnnouncementSystemCall::Utimensat(path),
         (ItemAnnouncement::Appeared { .. } | ItemAnnouncement::MarksChanged { .. }, None) | (ItemAnnouncement::ContentChanged { .. }, None | Some(ItemKind::Directory)) => return None,
     })

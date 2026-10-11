@@ -143,8 +143,9 @@ impl ItemInotifyBridge {
                     }
                 };
                 // The kernel's cached pages of the old content go first: the touch tells
-                // the watchers, and whoever reads then asks the mount.
-                if let (AnnouncementSystemCall::Utimensat(_), Some(page_cache)) = (&system_call, self.page_cache.get()) {
+                // the watchers, and whoever reads then asks the mount. A change of the
+                // marks alone is a touch too, and drops nothing: the content is as it was.
+                if let (ItemAnnouncement::ContentChanged { .. }, AnnouncementSystemCall::Utimensat(_), Some(page_cache)) = (&announcement, &system_call, self.page_cache.get()) {
                     if let Err(error) = page_cache.invalidate(announcement.item()) {
                         tracing::debug!("the kernel's cached pages of item {} could not be dropped: {error}", announcement.item());
                     }
