@@ -45,12 +45,15 @@ pub(crate) async fn account(daemon: &Daemon, option: Option<&str>, command: Acco
             println!("Renamed {} to {}.", target.label, label.trim());
         }
         AccountCmd::Remove { named } => {
-            // TODO: before `Accounts.Remove`, which is never refused for what is unsent: the warning of the account's folder (`sync::folder::warn_of_unsent_changes` over that account's proxies), and the removal only when it answers to go on. Not called yet: its body is `todo!()`.
             let accounts = daemon.accounts().await?;
             daemon.check_loaded(&accounts).await?;
             let target = choose(&accounts, Some((&named, Source::Argument)))?;
             let sync = daemon.sync(&target.path).await?;
             let folder = sync.folder.path().await.unwrap_or_default();
+            // Never refused for what is unsent: the user is told what stays only here, and may leave it.
+            if !super::sync::folder::warn_of_unsent_changes(&sync).await? {
+                return Ok(());
+            }
             // Read first: the list goes with the account. Where each listed file was rescued
             // to is the one thing about rescues this can know.
             let conflicts = sync.conflicts.list().await.unwrap_or_default();

@@ -35,7 +35,10 @@ pub(super) async fn folder_command(
             println!("{tag}{}", said::registered_text(&absolute));
         }
         FolderCmd::Forget => {
-            // TODO: before the call: `warn_of_unsent_changes(proxy)`, and the call only when it answers to go on. Not called yet: its body is `todo!()`.
+            // Never refused for what is unsent: the user is told what stays only here, and may leave it.
+            if !warn_of_unsent_changes(proxy).await? {
+                return Ok(());
+            }
             explained(chosen, proxy, SyncAction::Forget, proxy.folder.unregister().await).await?;
             println!("{tag}{}", said::FORGOTTEN);
             fail_if_folder_unhealthy(proxy).await?;
@@ -204,7 +207,7 @@ async fn ignore(chosen: &Chosen, proxy: &FolderProxies<'_>, action: IgnoreCmd) -
 /// asks whether to go on (a `--yes` of the command answers it). Whether the caller goes
 /// on; `true` at once for 0. A count that cannot be read is said, and asked about too.
 // TODO: wording
-#[allow(dead_code, unused_variables)]
+#[allow(unused_variables)]
 pub(crate) async fn warn_of_unsent_changes(proxy: &FolderProxies<'_>) -> anyhow::Result<bool> {
     todo!()
 }

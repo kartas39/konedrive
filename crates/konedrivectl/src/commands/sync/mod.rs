@@ -2,7 +2,7 @@
 //! commands that take a path (`path.rs`).
 
 mod explain;
-mod folder;
+pub(crate) mod folder;
 mod path;
 
 use anyhow::anyhow;
