@@ -154,6 +154,12 @@ pub(super) enum PlaceRefusal {
     PlaceHeld { path: PathBuf },
     /// The disk refused: the errno.
     Disk { errno: i32, path: PathBuf },
+    /// The disk refused (the errno), and the entry of `path` that was set aside for the
+    /// change could not be put back: it is under its aside name, and its row says it is
+    /// at `path`. The disk is NOT as it was. The caller keeps its record of the change,
+    /// from which the check at start puts the entry back, and asks for the mount's
+    /// take-down, as after an undo that failed.
+    NotPutBack { errno: i32, path: PathBuf },
 }
 
 /// What a directory made above a place is marked with: the item id of its binding, for
@@ -628,7 +634,9 @@ impl PlaceChange<'_> {
     /// is a plain one (`PlaceUndo::MoveBack`), after the directories above `to` that are
     /// not on disk were made, each marked: the marks are of the names of `to`, read as
     /// [`make_entry`](Self::make_entry) reads them. A directory at `to` that holds what
-    /// no row says is not set aside: the place is held.
+    /// no row says is not set aside: the place is held. When the move fails the displaced
+    /// entry is put back; when that fails too it stays under its aside name, and the
+    /// refusal says so (`PlaceRefusal::NotPutBack`).
     pub(super) fn move_entry_over(&self, from: &Path, to: &Path, replaced: LocalItemId, directory_marks: &DirectoryMarks) -> Result<PlaceUndo, PlaceRefusal> {
         let place_changes = self.place_changes;
         let set_aside = PathBuf::from(make_aside_entry_name(replaced));
@@ -642,8 +650,9 @@ impl PlaceChange<'_> {
                 match place_changes.rename_without_replacing(from, to) {
                     Ok(()) => Ok(PlaceUndo::MoveBackAndRestore { from: from.to_owned(), to: to.to_owned(), set_aside }),
                     Err(error) => {
-                        if let Err(error) = place_changes.rename_without_replacing(&set_aside, to) {
-                            tracing::error!("cannot put {} back in the backing directory from {}, where it was set aside for a move that failed: {error}", to.display(), set_aside.display());
+                        if let Err(put_back) = place_changes.rename_without_replacing(&set_aside, to) {
+                            tracing::error!("cannot put {} back in the backing directory from {}, where it was set aside for a move that failed: {put_back}", to.display(), set_aside.display());
+                            return Err(PlaceRefusal::NotPutBack { errno: error.raw_os_error().unwrap_or(libc::EIO), path: to.to_owned() });
                         }
                         Err(self.describe_move_refusal(&error, from, to))
                     }

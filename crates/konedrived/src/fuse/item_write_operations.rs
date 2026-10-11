@@ -45,6 +45,7 @@
 // test: a_failed_row_is_undone_on_disk_and_the_program_gets_the_errno
 // test: a_death_at_each_point_of_each_operation_is_settled_by_the_check_at_start
 // test: an_undo_that_fails_asks_for_the_mounts_take_down
+// test: a_change_refused_with_an_entry_that_could_not_be_put_back_keeps_its_record_and_asks_for_the_take_down
 // test: every_operation_wakes_the_plan_after_its_row_and_never_before
 // test: a_read_only_folder_refuses_every_operation_before_anything_is_read
 // test: a_reader_that_opens_by_path_during_an_operation_gets_the_file_of_its_row
@@ -108,11 +109,13 @@ pub(super) fn decide_store_errno(error: &TreeError) -> Errno {
 }
 
 /// The errno a program gets when the backing directory refuses a change: `EEXIST` for a
-/// place the disk holds though the rows say it is free, else the disk's own. Pure.
+/// place the disk holds though the rows say it is free, `EIO` when the change left an
+/// entry set aside that could not be put back, else the disk's own. Pure.
 pub(super) fn decide_place_errno(refusal: &PlaceRefusal) -> Errno {
     match refusal {
         PlaceRefusal::PlaceHeld { .. } => Errno::EEXIST,
         PlaceRefusal::Disk { errno, .. } => Errno::from_i32(*errno),
+        PlaceRefusal::NotPutBack { .. } => Errno::EIO,
     }
 }
 
@@ -221,10 +224,19 @@ impl ItemWriteOperations {
         let _ = self.run_store_job("the record of a change of the backing directory that was not made could not be taken", move |store| store.item_store().forget_place_change_record(record));
     }
 
-    /// The backing directory refused the change of `record` and nothing of it is on disk:
-    /// the record is taken, and the errno is that of [`decide_place_errno`].
+    /// The backing directory refused the change of `record`. Nothing of it is on disk:
+    /// the record is taken, and the errno is that of [`decide_place_errno`]. An entry it
+    /// had set aside could not be put back (`PlaceRefusal::NotPutBack`): the record
+    /// stands, for the check at start to put the entry back from, the mount's take-down
+    /// is asked for, and the errno is `EIO` — as after an undo that failed.
     fn refuse_place_change(&self, record: PlaceChangeRecordId, refusal: &PlaceRefusal) -> Errno {
-        self.forget_place_change_record(record);
+        match refusal {
+            PlaceRefusal::PlaceHeld { .. } | PlaceRefusal::Disk { .. } => self.forget_place_change_record(record),
+            PlaceRefusal::NotPutBack { path, errno } => {
+                tracing::error!("{} was set aside in the backing directory for a change that failed (errno {errno}) and could not be put back; the mount is taken down", path.display());
+                self.mount_take_down.ask(TakeDownCause::UndoFailed { path: path.clone() });
+            }
+        }
         decide_place_errno(refusal)
     }
 

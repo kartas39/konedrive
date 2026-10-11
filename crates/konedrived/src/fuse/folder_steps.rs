@@ -604,6 +604,12 @@ impl FolderSteps {
         match refusal {
             PlaceRefusal::PlaceHeld { path } => StepOutcome::NotRun(StepObstacle::PlaceHeldOnDisk { path }),
             PlaceRefusal::Disk { errno, path } => StepOutcome::Failed(StepFailure::Disk { errno, path }),
+            // No change a step makes sets an entry aside for a move (`move_entry_over` is
+            // the mount's rename alone): answered as an undo that failed is.
+            PlaceRefusal::NotPutBack { path, .. } => {
+                self.mount_take_down.ask(TakeDownCause::UndoFailed { path: path.clone() });
+                StepOutcome::Failed(StepFailure::UndoFailed { path })
+            }
         }
     }
 

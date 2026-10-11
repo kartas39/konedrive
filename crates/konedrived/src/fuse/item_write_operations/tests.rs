@@ -240,6 +240,31 @@ fn a_place_held_on_disk_is_eexist_and_any_other_refusal_the_disks_own_errno() {
     assert_eq!(decide_place_errno(&PlaceRefusal::PlaceHeld { path: "a/b".into() }), Errno::EEXIST);
     assert_eq!(decide_place_errno(&PlaceRefusal::Disk { errno: libc::ENOSPC, path: "a/b".into() }), Errno::ENOSPC);
     assert_eq!(decide_place_errno(&PlaceRefusal::Disk { errno: libc::ENOENT, path: "a/b".into() }), Errno::ENOENT);
+    assert_eq!(decide_place_errno(&PlaceRefusal::NotPutBack { errno: libc::ENOSPC, path: "a/b".into() }), Errno::EIO);
+}
+
+/// The review's S1: an entry that was set aside for a move and could not be put back
+/// when the move failed is at its aside name, with a row that says it is at its place.
+/// Its record must stand — the check at start puts the entry back from it, and what is
+/// still set aside with no record is removed at the next start — and the mount go down.
+#[test]
+fn a_change_refused_with_an_entry_that_could_not_be_put_back_keeps_its_record_and_asks_for_the_take_down() {
+    let operations = OperationsFixture::new();
+    let displaced = operations.fixture.make_own_file("doc.txt", b"the user's file").local_item_id;
+    let moved = operations.fixture.make_own_file("doc.new", b"saved").local_item_id;
+    let record = move |operations: &ItemWriteOperations| {
+        let place = |name: &str| ItemPlace { parent_local_item_id: LocalItemId::ROOT, name: name.into() };
+        operations.write_place_change_record(PlaceChangeRecord::MoveEntryOver { item: moved, from: place("doc.new"), to: place("doc.txt"), replaced: displaced, aside_name: crate::folder::disk::make_aside_entry_name(displaced) }).unwrap()
+    };
+    // A refusal that left the disk as it was: the record goes, and nothing else happens.
+    let errno = operations.run(move |operations| operations.refuse_place_change(record(operations), &PlaceRefusal::Disk { errno: libc::ENOSPC, path: "doc.txt".into() }));
+    assert_eq!((errno, operations.list_records().len(), operations.take_downs()), (Errno::ENOSPC, 0, vec![]));
+    // One that left the displaced entry aside.
+    let errno = operations.run(move |operations| operations.refuse_place_change(record(operations), &PlaceRefusal::NotPutBack { errno: libc::ENOSPC, path: "doc.txt".into() }));
+    assert_eq!(errno, Errno::EIO);
+    assert!(matches!(operations.list_records()[..], [PlaceChangeRecord::MoveEntryOver { replaced, .. }] if replaced == displaced), "the record stands for the check at start: {:?}", operations.list_records());
+    assert_eq!(operations.take_downs(), [TakeDownCause::UndoFailed { path: "doc.txt".into() }]);
+    assert!(!operations.fixture.access_mode_switch.is_read_write(), "the folder takes no further change");
 }
 
 #[test]

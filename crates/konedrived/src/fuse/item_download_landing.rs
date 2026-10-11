@@ -234,7 +234,8 @@ impl ItemDownloadLanding {
                 self.forget_record(item, record);
                 Err(match refusal {
                     PlaceRefusal::PlaceHeld { path } => ItemLandingOutcome::PlaceHeld { path },
-                    PlaceRefusal::Disk { errno, path } => {
+                    // A link sets nothing aside: nothing is left to put back.
+                    PlaceRefusal::Disk { errno, path } | PlaceRefusal::NotPutBack { errno, path } => {
                         tracing::warn!("the downloaded copy of item {item} could not be named {}: errno {errno}", path.display());
                         ItemLandingOutcome::Failed { errno }
                     }
