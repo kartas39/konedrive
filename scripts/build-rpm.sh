@@ -84,13 +84,17 @@ mkdir -p "$top/SOURCES" "$top/SPECS" "$top/tree" "$top/vendor-stage"
 tree="$top/tree/$name"
 git -C "$root" archive --format=tar --prefix="$name/" HEAD | tar -xf - -C "$top/tree"
 
+# The version the workspace's packages have in git: only they take the build's version in
+# Cargo.lock. A package with no source that is not the workspace's (vendor/fuser) keeps its own.
+git_version=$(sed -n '/^\[workspace\.package\]$/,/^\[/s/^version = "\(.*\)"$/\1/p' "$tree/Cargo.toml")
+[ -n "$git_version" ]
 sed -i '/^\[workspace\.package\]$/,/^\[/s/^version = ".*"$/version = "'"$cargo_version"'"/' "$tree/Cargo.toml"
 sed -n '/^\[workspace\.package\]$/,/^\[/p' "$tree/Cargo.toml" | grep -qx "version = \"$cargo_version\""
 
-awk -v v="$cargo_version" '
+awk -v v="$cargo_version" -v git="$git_version" '
     function flush(   i) {
         for (i = 1; i <= n; i++) {
-            if (package && !source && buf[i] ~ /^version = /) buf[i] = "version = \"" v "\""
+            if (package && !source && buf[i] == "version = \"" git "\"") buf[i] = "version = \"" v "\""
             print buf[i]
         }
         n = 0; package = 0; source = 0
