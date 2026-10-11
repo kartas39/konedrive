@@ -74,11 +74,6 @@ pub enum StepsTowardsOneDrive {
     StillRunning,
 }
 
-/// Whether the mount asked to be taken down for a fault: it is read-only for good then.
-fn is_take_down_asked(mount: &ItemMount) -> bool {
-    mount.folder_step_parts().mount_take_down.is_asked()
-}
-
 /// Whether a step towards OneDrive is among `steps`: one that sends content or
 /// metadata. Pure.
 fn has_step_towards_onedrive(steps: &[RunningStep]) -> bool {
@@ -118,14 +113,11 @@ pub async fn switch_to_read_only(mount: &ItemMount, sending_holds: &SendingHolds
 }
 
 /// Switches the folder to read-write: the order of the module's doc. What was unsent
-/// under the hold is planned at once. `Err`, with nothing changed, for a mount whose
-/// take-down was asked (`MountTakeDown::is_asked`): it made itself read-only for a fault
-/// and is never made to take changes again.
+/// under the hold is planned at once. `Err`, with the hold left on, for a mount whose
+/// take-down was asked: the mount's own switch refuses it (`ItemMount::switch_to_read_write`,
+/// in one step with the switch), and this passes the answer on.
 pub async fn switch_to_read_write(mount: &ItemMount, sending_holds: &SendingHolds) -> Result<(), String> {
-    if is_take_down_asked(mount) {
-        return Err("the folder's mount is to be taken down for a fault: it takes no change until the folder was started again".to_owned());
-    }
-    mount.switch_to_read_write();
+    mount.switch_to_read_write().map_err(|error| error.to_string())?;
     sending_holds.set_folder_read_only(false);
     Ok(())
 }
@@ -140,13 +132,9 @@ pub async fn apply_wanted_access_mode(mount: &ItemMount, sending_holds: &Sending
             sending_holds.set_folder_read_only(true);
             mount.switch_to_read_only().await.map_err(|error| error.to_string())?;
         }
-        // The mount made itself read-only for its fault, and stays so: the start goes
-        // on, and the owner's take-down follows.
-        Mode::ReadWrite if is_take_down_asked(mount) => sending_holds.set_folder_read_only(true),
-        Mode::ReadWrite => {
-            mount.switch_to_read_write();
-            sending_holds.set_folder_read_only(false);
-        }
+        // A mount that asked to be taken down refuses, and stays read-only under the
+        // hold: the start goes on, and the owner's take-down follows.
+        Mode::ReadWrite => sending_holds.set_folder_read_only(mount.switch_to_read_write().is_err()),
     }
     Ok(())
 }

@@ -25,7 +25,7 @@
 //! To read-write it is switched at once: an operation that began in a read-only folder was
 //! refused at its start, and none is under way.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use std::sync::Arc;
 
@@ -42,22 +42,32 @@ pub(super) enum AccessMode {
     ReadWrite,
 }
 
-/// The holder of a folder's access mode.
+/// The folder takes no change, and may be switched to read-write.
+const READ_ONLY: u8 = 0;
+/// The folder takes changes.
+const READ_WRITE: u8 = 1;
+/// The folder takes no change and never will again: its mount asked to be taken down.
+const READ_ONLY_FOR_TAKE_DOWN: u8 = 2;
+
+/// The holder of a folder's access mode: one value, so that a switch and the refusal of
+/// one are a single step. Once the mount asked to be taken down
+/// ([`hold_read_only_for_take_down`](Self::hold_read_only_for_take_down)) the folder is
+/// read-only for as long as this mount lives, and no switch makes it read-write.
 pub struct AccessModeSwitch {
-    is_read_write: AtomicBool,
+    state: AtomicU8,
 }
 
 impl AccessModeSwitch {
     /// The switch of a folder in `access_mode`. A mount starts every folder read-only.
     pub(super) fn new(access_mode: AccessMode) -> Self {
-        AccessModeSwitch { is_read_write: AtomicBool::new(access_mode == AccessMode::ReadWrite) }
+        AccessModeSwitch { state: AtomicU8::new(if access_mode == AccessMode::ReadWrite { READ_WRITE } else { READ_ONLY }) }
     }
 
     /// The folder's access mode now.
     pub(super) fn access_mode(&self) -> AccessMode {
-        match self.is_read_write.load(Ordering::SeqCst) {
-            true => AccessMode::ReadWrite,
-            false => AccessMode::ReadOnly,
+        match self.state.load(Ordering::SeqCst) {
+            READ_WRITE => AccessMode::ReadWrite,
+            _ => AccessMode::ReadOnly,
         }
     }
 
@@ -99,16 +109,33 @@ impl AccessModeSwitch {
         }
     }
 
-    /// The folder takes changes from now on. Whether that changed the mode.
+    /// The folder takes changes from now on. Whether that changed the mode: not for a
+    /// folder that takes them already, and not for one whose mount asked to be taken
+    /// down, which stays read-only ([`is_held_for_take_down`](Self::is_held_for_take_down)
+    /// tells the two apart). The look and the switch are one step.
     pub(super) fn switch_to_read_write(&self) -> bool {
-        !self.is_read_write.swap(true, Ordering::SeqCst)
+        self.state.compare_exchange(READ_ONLY, READ_WRITE, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    /// The mount asked to be taken down: the folder takes no change from now on, and no
+    /// switch makes it take changes again. Whether it took changes before. One step: a
+    /// switch to read-write that came just before is undone by it, and one that comes
+    /// after is refused. Called by `MountTakeDown::ask`, on the write-operation thread.
+    pub(super) fn hold_read_only_for_take_down(&self) -> bool {
+        self.state.swap(READ_ONLY_FOR_TAKE_DOWN, Ordering::SeqCst) == READ_WRITE
+    }
+
+    /// Whether the folder is read-only because its mount asked to be taken down. Once
+    /// true, true for good.
+    pub(super) fn is_held_for_take_down(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == READ_ONLY_FOR_TAKE_DOWN
     }
 
     /// The folder takes no change from now on. Whether that changed the mode. Made where no
     /// write operation runs: on the write-operation thread
     /// ([`switch_to_read_only_on_thread`](Self::switch_to_read_only_on_thread)).
     pub(super) fn switch_to_read_only(&self) -> bool {
-        self.is_read_write.swap(false, Ordering::SeqCst)
+        self.state.compare_exchange(READ_WRITE, READ_ONLY, Ordering::SeqCst, Ordering::SeqCst).is_ok()
     }
 }
 

@@ -147,8 +147,8 @@ fn after_a_stop_and_the_drop_of_the_mount_no_clone_of_the_store_is_held_by_it() 
 fn a_switch_to_read_only_is_made_on_the_write_operation_thread() {
     let fixture = ItemFixture::new();
     let (mount, _kernel_requests) = build(&fixture);
-    assert!(mount.switch_to_read_write(), "it was read-only");
-    assert!(!mount.switch_to_read_write(), "and is read-write already");
+    assert!(mount.switch_to_read_write().expect("no take-down was asked"), "it was read-only");
+    assert!(!mount.switch_to_read_write().expect("no take-down was asked"), "and is read-write already");
     // The thread waits for the tree lock: no job of it runs.
     let tree = fixture.tree_lock.blocking_lock();
     fixture.runtime().block_on(async {

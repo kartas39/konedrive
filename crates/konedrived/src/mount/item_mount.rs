@@ -280,9 +280,18 @@ impl ItemMount {
     /// The folder takes changes from now on. Whether it was read-only before. Made at
     /// once, not on the write-operation thread: a write operation that began in a
     /// read-only folder was refused at its start, so none is under way that the switch
-    /// could overtake.
-    pub fn switch_to_read_write(&self) -> bool {
-        self.access_mode_switch.switch_to_read_write()
+    /// could overtake. `Err`, with the folder left read-only, for a mount that asked to
+    /// be taken down (`MountTakeDown::ask`): the refusal and the switch are one step of
+    /// the mount's switch, so no asking falls between them — one that comes after a
+    /// switch that went through puts the folder back to read-only itself.
+    pub fn switch_to_read_write(&self) -> std::io::Result<bool> {
+        let changed = self.access_mode_switch.switch_to_read_write();
+        // True for good once it is: read after the switch, it says of this very switch
+        // that it was refused, or undone since.
+        if self.access_mode_switch.is_held_for_take_down() {
+            return Err(to_io_error("the mount is to be taken down for a fault: it takes no change until the folder is started again"));
+        }
+        Ok(changed)
     }
 
     /// The folder refuses every change from now on: made as a job of the write-operation
