@@ -232,6 +232,20 @@ fn an_item_both_sides_have_with_nothing_agreed_on_agrees_on_one_place_and_gives_
     }
 }
 
+/// The third review's S5: what the folder shows in a directory that gives up its binding in
+/// this plan is not sent into the item the binding was of. It waits for the directory:
+/// the plans after send the directory as a new one, and then what is in it.
+#[test]
+fn what_the_folder_shows_in_a_directory_that_gives_up_a_guessed_binding_waits_for_it() {
+    let mut copy = moved_in_onedrive(synced_directory(3, ROOT, "copy"), id(4), "docs");
+    (copy.synced_place, copy.synced_content) = (None, None);
+    let given = input(vec![copy, synced_directory(4, ROOT, "a"), made_file(5, id(3), "new.txt"), made_directory(6, id(3), "sub"), moved_here(synced_file(7, ROOT, "seven"), id(3), "seven")]);
+    assert_eq!(answer(&given, 3), row_step(RowStep::GiveUpBinding { item: versions(&given, 3) }));
+    for shown_in_it in [5, 6, 7] {
+        assert_eq!(answer(&given, shown_in_it), Answer::Wait(WaitReason::AnotherItem(id(3))), "item {shown_in_it}");
+    }
+}
+
 /// The design's "a name OneDrive cannot hold is not sent and not altered": also the name a
 /// move gives. Today: `a_name_onedrive_refuses_or_a_file_too_large_waits_for_the_user`
 /// (`fuse/detections/entry_created/tests.rs`) is of a new item; a rename to such a name is

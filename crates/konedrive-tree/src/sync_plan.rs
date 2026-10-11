@@ -73,6 +73,7 @@ mod sync_step;
 pub use conflict_copy_name::make_conflict_copy_name;
 pub use name_exchange::make_temporary_name;
 pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
+pub(crate) use side_change::{compare_local_content, ContentChange};
 pub use sync_step::{FolderStep, ItemVersions, OneDriveStep, RowStep, SyncStep};
 
 use plan_items::PlanItems;

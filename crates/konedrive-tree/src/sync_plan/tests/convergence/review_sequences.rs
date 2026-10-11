@@ -319,3 +319,79 @@ fn sorted(mut steps: Vec<String>) -> Vec<String> {
     steps.sort();
     steps
 }
+
+/// A file made here and one OneDrive made under its name with the same content, merged
+/// into one item by a step that was just written: the id of the row. No plan was made
+/// since the merge.
+fn merge_new_file_with_onedrives(world: &mut World) -> LocalItemId {
+    let x = make_file(world, ROOT, "x");
+    write_listing_of_changes(&mut world.store, &[listed_file("X1", "R", "x", (888, "h888-5888"), "e-X1")]);
+    for _ in 0..ROUNDS {
+        let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+        assert!(!plan.steps.is_empty(), "no merge was planned");
+        for step in &plan.steps {
+            assert_eq!(world.stand_in.run(&mut world.store, step), StepOutcome::Written, "{step:?}");
+        }
+        if plan.steps.iter().any(|step| matches!(step, SyncStep::Row(RowStep::MergeItems { .. }))) {
+            assert_eq!(row(world, x).onedrive_item, Some(onedrive_reference("X1")));
+            return x;
+        }
+    }
+    panic!("no merge was planned");
+}
+
+/// The third review's S4 c, its two sequences: a merge was just written, and then OneDrive
+/// renames the item, or the user does. The merge is something agreed on, so the binding is
+/// no guess: the rename is a move of one item, towards the folder or towards OneDrive, and
+/// no second item is made on either side.
+#[test]
+fn an_item_renamed_on_either_side_right_after_its_merge_is_moved_and_not_sent_as_new() {
+    let mut world = World::new(1);
+    let x = merge_new_file_with_onedrives(&mut world);
+    write_listing_of_changes(&mut world.store, &[listed_file("X1", "R", "y", (888, "h888-5888"), "e-X1-2")]);
+    let ran = run_and_tell_steps(&mut world);
+    assert!(ran.contains(&format!("{x}:MoveItem")) && !ran.iter().any(|step| step.ends_with("GiveUpBinding") || step.ends_with("SendNewFile") || step.ends_with("ShowItem")), "{ran:?}");
+    let moved = row(&mut world, x);
+    assert_eq!((local_place(&moved), onedrive_place(&moved), moved.synced_place.clone(), moved.onedrive_item.clone()), (Some(place(ROOT, "y")), Some(place(ROOT, "y")), Some(place(ROOT, "y")), Some(onedrive_reference("X1"))));
+
+    let mut world = World::new(1);
+    let x = merge_new_file_with_onedrives(&mut world);
+    move_here(&mut world, x, ROOT, "x-renamed");
+    let ran = run_and_tell_steps(&mut world);
+    assert!(ran.contains(&format!("{x}:SendMove")) && !ran.iter().any(|step| step.ends_with("GiveUpBinding") || step.ends_with("SendNewFile") || step.ends_with("ShowItem")), "{ran:?}");
+    let moved = row(&mut world, x);
+    assert_eq!((local_place(&moved), onedrive_place(&moved), moved.onedrive_item.clone()), (Some(place(ROOT, "x-renamed")), Some(place(ROOT, "x-renamed")), Some(onedrive_reference("X1"))));
+    assert_eq!(world.store.item_store().find_item_at(ROOT, "x".as_ref()).unwrap(), None, "no second item under the old name");
+}
+
+/// The third review's S5, its sequence: an entry `copy` the check at start bound by its
+/// mark to the directory OneDrive has as `a/docs`, with the user's own `new.txt` in it.
+/// The binding is a guess and is given up; the file waits for that, and is sent once, into
+/// the directory the folder's `copy` is made as. Nothing of the user's is ever sent into
+/// the item the binding was of.
+#[test]
+fn a_new_file_in_a_directory_that_gives_up_a_guessed_binding_is_not_sent_into_the_item_the_binding_was_of() {
+    let mut world = World::new(1);
+    let a = find(&mut world, ROOT, "a");
+    let copy = apply(&mut world, LocalVersionChange::Made { kind: ItemKind::Directory, place: place(ROOT, "copy"), content: None, is_name_ignored: false, replaced: None });
+    world.store.item_store().bind_item(copy, &onedrive_reference("Q1")).unwrap();
+    let new = make_file(&mut world, copy, "new.txt");
+    write_listing_of_changes(&mut world.store, &[listed_directory("Q1", "D1", "docs", "e-Q1")]);
+    assert_eq!((local_place(&row(&mut world, copy)), onedrive_place(&row(&mut world, copy))), (Some(place(ROOT, "copy")), Some(place(a, "docs"))));
+
+    let (_, plan) = plan_next_steps(&mut world.store, &world.facts, &mut world.widening);
+    let steps: Vec<String> = plan.steps.iter().map(|step| format!("{}:{:?}", step.local_item_id(), std::mem::discriminant(step))).collect();
+    assert_eq!(plan.steps.len(), 1, "{steps:?}");
+    assert!(matches!(&plan.steps[0], SyncStep::Row(RowStep::GiveUpBinding { item }) if item.local_item_id == copy), "{:?}", plan.steps);
+    assert_eq!(plan.waits.iter().find(|wait| wait.item == new).map(|wait| wait.reason.clone()), Some(WaitReason::AnotherItem(copy)));
+
+    let ran = run_and_tell_steps(&mut world);
+    assert_eq!(ran.iter().filter(|step| step.starts_with(&format!("{new}:"))).collect::<Vec<_>>(), [&format!("{new}:SendNewFile")], "{ran:?}");
+    let made = ran.iter().position(|step| *step == format!("{copy}:MakeDirectory")).expect("the folder's directory is made in OneDrive");
+    assert!(made < ran.iter().position(|step| *step == format!("{new}:SendNewFile")).unwrap(), "{ran:?}");
+    let (copy_row, new_row) = (row(&mut world, copy), row(&mut world, new));
+    assert!(copy_row.onedrive_item.is_some() && copy_row.onedrive_item != Some(onedrive_reference("Q1")));
+    assert_eq!((local_place(&new_row), onedrive_place(&new_row)), (Some(place(copy, "new.txt")), Some(place(copy, "new.txt"))));
+    let docs = world.store.item_store().find_bound_item(&onedrive_reference("Q1")).unwrap().unwrap();
+    assert_eq!(world.store.item_store().list_children_in_onedrive(docs.local_item_id).unwrap(), [], "OneDrive's directory holds nothing of the user's");
+}

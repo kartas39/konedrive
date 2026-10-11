@@ -87,8 +87,8 @@ use super::step_memory::{
 };
 use super::{check_can_hold, check_directory, check_empty, find_item_at, refuse, ItemStore};
 use crate::model::{ContentPresence, ContentVersion, Item, ItemKind, ItemPlace, ItemVersion, LocalItemId, OneDriveItemReference};
-use crate::sync_plan::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory, ItemVersions};
-use crate::{ConfirmedOneDriveVersion, TreeError};
+use crate::sync_plan::{compare_local_content, decide_directory_removal, ContentChange, DirectoryRemovalOutcome, ItemBelowRemovedDirectory, ItemVersions};
+use crate::{ConfirmedOneDriveVersion, FoldedName, TreeError};
 
 /// What became of a step's commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,7 +312,14 @@ impl ItemStore<'_> {
 
     /// The commit of [`RowStep::MergeItems`](crate::RowStep::MergeItems)
     /// ([`merge_items`](Self::merge_items)). Nothing is written unless the versions of both
-    /// items are still their rows'.
+    /// items are still their rows'. A merge is something the two sides agree on, and the
+    /// commit writes it: the place the folder has the item at is the place agreed on,
+    /// where OneDrive has it in the same directory under a name that is the same as
+    /// OneDrive compares names, and the local content is the content agreed on, where it
+    /// is the same bytes as OneDrive's. Another spelling of the name in OneDrive, another
+    /// cTag or time of the content then read as what OneDrive changed, which the plan
+    /// made next follows or agrees on; and the row is no more one of which nothing is
+    /// agreed on, whose binding a later plan would take for a guess.
     pub fn commit_merge_items(&mut self, local: &ItemVersions, onedrive: &ItemVersions) -> Result<StepCommitOutcome, TreeError> {
         self.write(|tx| commit_merge_items(tx, local, onedrive))
     }
@@ -748,6 +755,19 @@ pub(crate) fn commit_merge_items(tx: &Transaction<'_>, local: &ItemVersions, one
         return Ok(StepCommitOutcome::RowsChanged);
     }
     merge_items(tx, local.local_item_id, onedrive.local_item_id)?;
+    let mut row = read_row(tx, local.local_item_id)?;
+    let (here, in_onedrive) = (row.local.clone(), row.onedrive.clone());
+    let place_of = |version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.place.clone());
+    let content_of = |version: &Option<ItemVersion>| version.as_ref().and_then(|version| version.content.clone());
+    if let (Some(here), Some(in_onedrive)) = (place_of(&here), place_of(&in_onedrive)) {
+        if here.parent_local_item_id == in_onedrive.parent_local_item_id && FoldedName::of(&here.name) == FoldedName::of(&in_onedrive.name) {
+            row.synced_place = Some(here);
+        }
+    }
+    if row.kind == ItemKind::File && compare_local_content(content_of(&here).as_ref(), content_of(&in_onedrive).as_ref()) == ContentChange::Same {
+        row.synced_content = content_of(&here);
+    }
+    write_item(tx, &row)?;
     Ok(StepCommitOutcome::Written)
 }
 

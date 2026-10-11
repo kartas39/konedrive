@@ -428,8 +428,13 @@ fn an_item_that_gives_up_its_binding_is_the_users_own_and_another_row_has_what_i
     assert_eq!((of_onedrive.local, of_onedrive.onedrive.unwrap().content, of_onedrive.onedrive_etag.as_deref()), (None, Some(listed_content(8, "h-new")), Some("e-A-2")));
 }
 
+/// The third review's S4: a merge is something the two sides agree on. The two items were
+/// in one directory under one name as OneDrive compares names, and two files had one
+/// content: the commit writes that as agreed on, the place and the content as the folder
+/// has them. The binding of the row is then no guess to any later plan, and what either
+/// side does next reads as that side's change.
 #[test]
-fn two_items_merged_are_one_row_with_both_sides_and_nothing_agreed_on() {
+fn two_items_merged_are_one_row_with_both_sides_that_agree_on_the_place_and_the_content_they_were_merged_for() {
     let mut store = store_with_listed_root();
     let directory = make(&mut store, ItemKind::Directory, ROOT, "d");
     write_listing_of_changes(&mut store, &[listed_directory("D", "R", "d", "e-D")]);
@@ -443,8 +448,25 @@ fn two_items_merged_are_one_row_with_both_sides_and_nothing_agreed_on() {
 
     commit(&mut store, directory, |items, planned_from| items.commit_merge_items(planned_from, &of_onedrive));
     let merged = row(&mut store, directory);
-    assert_eq!((merged.onedrive_item, merged.local.unwrap().place, merged.onedrive.unwrap().place, merged.synced_place), (Some(reference("D")), Some(place(ROOT, "d")), Some(place(ROOT, "d")), None));
+    assert_eq!((merged.onedrive_item.clone(), merged.local.clone().unwrap().place, merged.onedrive.clone().unwrap().place, merged.synced_place.clone()), (Some(reference("D")), Some(place(ROOT, "d")), Some(place(ROOT, "d")), Some(place(ROOT, "d"))));
+    assert!(agrees(&merged), "{merged:?}");
     assert_eq!(store.item_store().find_item(listed).unwrap(), None);
+
+    // Two files of one hash, under names that differ by the case of a letter: the place
+    // agreed on is the folder's, so that OneDrive's spelling reads as OneDrive's change,
+    // which the folder follows; the content agreed on is the local one, the same bytes.
+    let file = make(&mut store, ItemKind::File, ROOT, "Readme");
+    let made = versions(&mut store, file);
+    store.item_store().commit_hash_local_content(&made, "h-F").unwrap();
+    write_listing_of_changes(&mut store, &[listed_file("F", "R", "README", (5, "h-F"), "e-F")]);
+    let listed = bound(&mut store, "F").local_item_id;
+    let of_onedrive = versions(&mut store, listed);
+    commit(&mut store, file, |items, planned_from| items.commit_merge_items(planned_from, &of_onedrive));
+    let merged = row(&mut store, file);
+    let local = merged.local.clone().unwrap();
+    assert_eq!((local.place.clone(), merged.onedrive.clone().unwrap().place, merged.synced_place.clone()), (Some(place(ROOT, "Readme")), Some(place(ROOT, "README")), Some(place(ROOT, "Readme"))));
+    assert_eq!((merged.synced_content.clone(), merged.unsent_since), (local.content, None), "the same bytes: nothing is unsent");
+    assert_eq!(merged.onedrive.unwrap().content, Some(listed_content(5, "h-F")));
 }
 
 #[test]
