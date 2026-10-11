@@ -993,3 +993,6 @@ fn read_unsent_removals(store: &mut TreeStore) -> Result<Vec<Item>, TreeError> {
     }
     Ok(removals)
 }
+
+#[cfg(test)]
+mod tests;
