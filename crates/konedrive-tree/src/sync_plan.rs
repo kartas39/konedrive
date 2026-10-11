@@ -74,6 +74,7 @@ mod sync_step;
 mod tried_step;
 
 pub use conflict_copy_name::make_conflict_copy_name;
+pub use item_decision::READ_ONLY_FOLDER;
 pub use name_exchange::make_temporary_name;
 pub(crate) use removed_directory::{decide_directory_removal, DirectoryRemovalOutcome, ItemBelowRemovedDirectory};
 pub use side_change::is_same_content_but_for_time;

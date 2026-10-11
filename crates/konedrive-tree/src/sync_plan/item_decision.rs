@@ -445,7 +445,7 @@ fn find_decision_not_to_send(case: &ItemCase<'_>, sent_part: SentPart) -> Option
 
 /// What stands behind "not allowed now" for an item that waits for its folder to be
 /// read-write again.
-pub(crate) const READ_ONLY_FOLDER: &str = "the folder is read-only";
+pub const READ_ONLY_FOLDER: &str = "the folder is read-only";
 
 /// A step towards OneDrive that sends the item into the directory the folder shows it in,
 /// under its name here: made by `step` from that directory's binding and the name. Waits

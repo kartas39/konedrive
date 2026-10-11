@@ -48,13 +48,15 @@ pub use konedrive_reason::WaitsFor;
 /// The reasons a change waits or is refused for: `konedrive-reason`'s, named here so that
 /// the daemon does not need that crate.
 pub use konedrive_reason::Reason;
+/// The groups of those reasons, in the order the window shows them (`Group::ALL`).
+pub use konedrive_reason::Group;
 pub use read::ReadStore;
 pub use schema::SCHEMA_VERSION;
 pub use schema::{decide_old_store, list_old_store_upload_sessions, OldStoreDecision, RebuildLoss, StoreOrigin, StoredVersion};
 pub use shared::{Store, QUEUE};
 pub use sync_plan::{
     is_same_content_but_for_time, make_conflict_copy_name, make_sync_plan, make_temporary_name, ExclusionReason, FolderStep, FolderStepKind, ItemExclusion, ItemVersions, ItemWait, NextTry, OneDriveStep, PlanFault, RowStep, RowStepKind, SendingState, SyncPlan, SyncPlanInput, SyncStep, TriedStep,
-    WaitReason,
+    WaitReason, READ_ONLY_FOLDER,
 };
 
 /// A chain of parents longer than this is a cycle or corruption, not a drive.

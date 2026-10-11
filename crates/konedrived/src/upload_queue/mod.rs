@@ -93,7 +93,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason, NotInFolder, Transfer};
-use konedrive_tree::{ContentVersion, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentRemoval, UnsentTotal, WaitReason, WaitsFor};
+use konedrive_tree::{ContentVersion, Group, Item, ItemKind, ItemMemory, ItemNotShown, ItemReader, ItemVersions, LocalItemId, Reason, StepCommitOutcome, TreeError, TreeStore, UnsentRemoval, UnsentTotal, WaitReason, WaitsFor, READ_ONLY_FOLDER};
 
 use crate::sync_parts::published_plan::{decide_is_shown_blocked, ItemAnswer, PublishedPlan};
 use crate::sync_parts::running_steps::{RunningStep, RunningSteps, StepClass};
@@ -330,8 +330,7 @@ pub fn decide_queue_reason(kind: UnsentKind, state: QueueState, entry: &UnsentEn
         return said;
     }
     if sending.hold == Some(SendingHold::FolderReadOnly) && state == QueueState::Waiting {
-        // TODO: contract — the reason of a read-only folder's wait is `konedrive-tree`'s `READ_ONLY_FOLDER` (crates/konedrive-tree/src/sync_plan/item_decision.rs:448), which is `pub(crate)`: its text is repeated in `FOLDER_READ_ONLY`.
-        return (Some(Reason::NotAllowed(Some(FOLDER_READ_ONLY.to_owned()))), 0);
+        return (Some(Reason::NotAllowed(Some(READ_ONLY_FOLDER.to_owned()))), 0);
     }
     if sending.is_onedrive_full && kind.sends_content() {
         return (Some(Reason::WaitingForSpace), 0);
@@ -517,15 +516,15 @@ pub fn decide_kept_back_reason(kind: UnsentKind, state: QueueState, entry: &Unse
 /// `waiting` or of none. Pure. The groups and the keys are `konedrive-reason`'s,
 /// unchanged.
 pub fn summarize_kept_back(entries: &[UnsentEntry], sending: &QueueConditions) -> Vec<KeptBackReason> {
-    // By the group's place in the order, then by key: how many, and their bytes.
-    let mut sums: BTreeMap<(usize, String), (u64, u64)> = BTreeMap::new();
+    // By the group, in the groups' order (`Group`'s own), then by key: how many, and their bytes.
+    let mut sums: BTreeMap<(Group, String), (u64, u64)> = BTreeMap::new();
     for entry in entries {
         let Some((kind, state, reason)) = find_kept_back(entry, sending) else { continue };
-        let sum = sums.entry((decide_group_rank(&reason, state == QueueState::Blocked), reason.key().to_owned())).or_default();
+        let sum = sums.entry((decide_group(&reason, state == QueueState::Blocked), reason.key().to_owned())).or_default();
         sum.0 = sum.0.saturating_add(1);
         sum.1 = sum.1.saturating_add(find_content_size(kind, &entry.item));
     }
-    sums.into_iter().map(|((rank, reason), (count, bytes))| KeptBackReason { group: GROUP_WORDS[rank].to_owned(), reason, count: saturate(count), bytes }).collect()
+    sums.into_iter().map(|((group, reason), (count, bytes))| KeptBackReason { group: group.as_str().to_owned(), reason, count: saturate(count), bytes }).collect()
 }
 
 /// The entries of `entries` that `NotUploaded()` lists: those whose state is `blocked`.
@@ -619,26 +618,14 @@ pub fn is_removal_held(answers: &BTreeMap<LocalItemId, ItemAnswer>) -> bool {
 /// How many rows a reader below asks the store for at a time.
 const READ_PAGE: usize = 500;
 
-/// The words of the groups of what is kept back, in the order the window shows them:
-/// `konedrive_reason::Group::ALL`, as `Group::as_str` spells each.
-// TODO: contract — `konedrive-tree` names `Reason` for the daemon and not `konedrive_reason::Group` (crates/konedrive-tree/src/lib.rs:50), and the daemon does not depend on `konedrive-reason`: the groups' words and their order are repeated here.
-const GROUP_WORDS: [&str; 4] = ["one-action", "per-file", "never", "waiting"];
-const PER_FILE_GROUP: usize = 1;
-const WAITING_GROUP: usize = 3;
-
-/// The detail of the reason of an entry that waits because the folder is read-only: the
-/// plan's own text for that wait.
-const FOLDER_READ_ONLY: &str = "the folder is read-only";
-
-/// The place in [`GROUP_WORDS`] of the group what is kept back for `reason` is shown in:
-/// the reason's (`Reason::group`), `waiting` for a reason of no group, and `per-file`
-/// for a `blocked` entry whose reason is of the group `waiting` or of none. Pure.
-fn decide_group_rank(reason: &Reason, is_blocked: bool) -> usize {
-    let of_reason = reason.group().and_then(|group| GROUP_WORDS.iter().position(|word| *word == group.as_str()));
-    match of_reason {
-        Some(WAITING_GROUP) | None if is_blocked => PER_FILE_GROUP,
-        Some(rank) => rank,
-        None => WAITING_GROUP,
+/// The group what is kept back for `reason` is shown in: the reason's (`Reason::group`),
+/// `waiting` for a reason of no group, and `per-file` for a `blocked` entry whose reason
+/// is of the group `waiting` or of none. Pure.
+fn decide_group(reason: &Reason, is_blocked: bool) -> Group {
+    match reason.group() {
+        Some(Group::Waiting) | None if is_blocked => Group::PerFile,
+        Some(group) => group,
+        None => Group::Waiting,
     }
 }
 
